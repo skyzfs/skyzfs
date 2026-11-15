@@ -20,6 +20,13 @@
 //! sync runs (D1 of the review of #105). A cut lets the waiting writes
 //! go first, as a flush waits for them.
 //!
+//! Half the programs take a second schedule, which the map's rules allow
+//! a caller and the store does not use: a write that waits while a sync
+//! runs has its page written at once, and still waits for the next
+//! sync. Then a page is written with a bit set again while a sync runs,
+//! and the model reaches D1's own case and a sync counted for writes
+//! that came after it began (S1 of the review of #105).
+//!
 //! Two volumes: a small one written anywhere, and one of 4200 regions,
 //! written in a few regions at each end, whose bits lie in more than
 //! the first sector of their page (a page torn in its first sector
@@ -225,6 +232,15 @@ struct Run {
     syncing: Option<usize>,
     /// The writes that wait for that sync: blocks `from .. from + n`.
     waiting: Vec<(u64, u64)>,
+    /// Whether a write that comes while a sync runs, into a region whose
+    /// bit is not durable, has its page written at once and still waits
+    /// for the next sync. The map's rules allow a caller that does; the
+    /// store writes the page when the next sync begins. Half the
+    /// programs take each schedule (S1 of the review of #105).
+    pages_at_once: bool,
+    /// Why the run stopped other than at the power cut: the writes that
+    /// wait for the map were not let go (S2 of the review of #105).
+    stuck: Option<String>,
 }
 
 impl Run {
@@ -249,6 +265,8 @@ impl Run {
             released: None,
             syncing: None,
             waiting: Vec::new(),
+            pages_at_once: false,
+            stuck: None,
         }
     }
 
@@ -334,12 +352,28 @@ impl Run {
                 self.waiting.push((from, n));
                 if self.syncing.is_none() {
                     self.begin_sync()?;
+                } else if self.pages_at_once {
+                    self.write_pages()?;
                 }
             }
             Step::SyncEnd => self.end_sync()?,
             Step::Cut => {
                 // The flush waits for the writes that wait for the map.
+                // Two syncs let every one go: the one under way, and one
+                // that covers the bits set while it ran. A bit that never
+                // becomes durable is a defect, and stops the run here
+                // rather than looping for ever.
+                let mut syncs = 0;
                 while !self.waiting.is_empty() {
+                    syncs += 1;
+                    if syncs > 4 {
+                        self.stuck = Some(format!(
+                            "writes still wait for the map after {} syncs: {:?}",
+                            syncs - 1,
+                            self.waiting
+                        ));
+                        return Err(PowerCut);
+                    }
                     if self.syncing.is_none() {
                         self.begin_sync()?;
                     }
@@ -437,9 +471,11 @@ fn check(
     steps: &[Step],
     mutants: u128,
     cut_after: u64,
+    pages_at_once: bool,
     rng: &mut Rng,
 ) -> Result<(bool, u64), String> {
     let mut run = Run::new(volume, mutants, cut_after);
+    run.pages_at_once = pages_at_once;
     let mut stopped = run.start().is_err();
     if !stopped {
         for &step in steps {
@@ -448,6 +484,12 @@ fn check(
                 break;
             }
         }
+    }
+    if let Some(why) = run.stuck {
+        return Err(match cut_after {
+            u64::MAX => format!("{why} (no power cut)"),
+            _ => format!("{why} (power cut after event {cut_after})"),
+        });
     }
     let bytes = run.file.after_power_cut(rng);
     let must = run.must_hold();
@@ -479,13 +521,14 @@ fn every_prefix(
     mutants: u128,
     seed: u64,
     tries: u64,
+    pages_at_once: bool,
 ) -> Result<bool, String> {
     let mut rng = Rng(seed);
-    let (_, total) = check(volume, steps, mutants, u64::MAX, &mut rng)?;
+    let (_, total) = check(volume, steps, mutants, u64::MAX, pages_at_once, &mut rng)?;
     let mut narrowed = false;
     for cut_after in 0..=total {
         for _ in 0..tries {
-            narrowed |= check(volume, steps, mutants, cut_after, &mut rng)?.0;
+            narrowed |= check(volume, steps, mutants, cut_after, pages_at_once, &mut rng)?.0;
         }
     }
     Ok(narrowed)
@@ -498,7 +541,8 @@ fn programs(seeds: std::ops::Range<u64>, mutants: u128) -> Result<u64, String> {
     for volume in [SMALL, LARGE] {
         for seed in seeds.clone() {
             let steps = program(volume, &mut Rng(seed), 40);
-            if every_prefix(volume, &steps, mutants, seed ^ 0x5eed, 3)
+            let pages_at_once = seed % 2 == 1;
+            if every_prefix(volume, &steps, mutants, seed ^ 0x5eed, 3, pages_at_once)
                 .map_err(|e| format!("{} regions, seed {seed}: {e}", volume.regions))?
             {
                 narrowed += 1;
@@ -521,7 +565,8 @@ fn after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block() {
     );
 }
 
-/// Each defect of the map's own rules fails the model test.
+/// Each defect of the map's own rules fails the model test. A bit whose
+/// page is never written fails it by the bound on a cut's drain.
 #[test]
 fn the_model_test_notices_each_defect_of_the_map() {
     for mutant in [
@@ -530,6 +575,7 @@ fn the_model_test_notices_each_defect_of_the_map() {
         Mutants::INTENT_CLEARED_BEFORE_COMMIT,
         Mutants::INTENT_TORN_TRUSTED,
         Mutants::INTENT_SYNC_UNNARROWED,
+        Mutants::INTENT_SET_UNWRITTEN,
     ] {
         assert!(
             programs(0..60, mutant).is_err(),

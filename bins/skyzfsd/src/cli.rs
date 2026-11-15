@@ -4,6 +4,7 @@
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--io-threads N] [--hold-cuts]
+//!                [--intent-region-mib N]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -81,6 +82,14 @@ pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
 /// the merged daemon; it is that one constant, and the help says it
 /// (a test holds the two together).
 pub const DEFAULT_IO_THREADS: u16 = io_threads(IoMode::DEFAULT_THREADS);
+/// A region of the intent map unless `--intent-region-mib` is given, in
+/// MiB: the store's provisional default.
+pub const DEFAULT_INTENT_REGION_MIB: u64 = skyzfs_local::inplace::DEFAULT_INTENT_REGION >> 20;
+/// The smallest region `--intent-region-mib` takes: 1 MiB, above the
+/// store's own smallest.
+pub const MIN_INTENT_REGION_MIB: u64 = 1;
+/// The largest region `--intent-region-mib` takes: the store's.
+pub const MAX_INTENT_REGION_MIB: u64 = skyzfs_local::inplace::MAX_INTENT_REGION >> 20;
 
 /// A count of the store's I/O threads as the command line takes it;
 /// one that does not fit does not compile.
@@ -96,7 +105,8 @@ const MIB: u64 = 1 << 20;
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--io-threads N] [--hold-cuts] [--kernel-has-async-delete]
+                 [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                 [--kernel-has-async-delete]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -180,7 +190,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--io-threads N] [--hold-cuts] [--kernel-has-async-delete]
+                [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -225,6 +236,16 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       file syncs and no failure is acknowledged; otherwise it begins a
       new one. Nothing lets a held cut go yet but the test hooks: it is
       off unless given.
+      With --hold-cuts the volume also keeps intent.map beside the
+      image: a bit for each region, set and synced before the first
+      write into a region that was clean since the newest cut
+      committed, so that after a restart of the machine, or a failure
+      that is acknowledged, the next cut holds only the regions it
+      names. --intent-region-mib N (a power of two from 1 to 1024, 64
+      unless given) sets the size of a region; only with --hold-cuts.
+      A start with another size than the map's counts the whole volume
+      once. A start that cannot write and sync the map is refused
+      (exit 1); a write that cannot fails the volume.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -396,6 +417,9 @@ pub struct Serve {
     /// volume's run directory (M2.2b). Off until the uploader (M2.4)
     /// lets held cuts go.
     pub hold_cuts: bool,
+    /// `--intent-region-mib`: the size of a region of the intent map,
+    /// in MiB, where it is given (only with `--hold-cuts`; M2.3).
+    pub intent_region_mib: Option<u64>,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -553,6 +577,7 @@ const SERVE: &[Opt] = &[
     opt("--depth", true, false),
     opt("--io-threads", true, false),
     opt("--hold-cuts", false, false),
+    opt("--intent-region-mib", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -770,6 +795,19 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             let threads = small("--io-threads", DEFAULT_IO_THREADS, MAX_IO_THREADS)?;
             let in_place_io = IoMode::with_threads(usize::from(threads))
                 .ok_or(UsageError::Value("--io-threads".into(), "out of range"))?;
+            let hold_cuts = given.flag("--hold-cuts");
+            let intent_region_mib = given.number("--intent-region-mib")?;
+            if let Some(mib) = intent_region_mib {
+                let name = || "--intent-region-mib".to_owned();
+                if !hold_cuts {
+                    return Err(UsageError::Value(name(), "only with --hold-cuts"));
+                }
+                if !mib.is_power_of_two()
+                    || !(MIN_INTENT_REGION_MIB..=MAX_INTENT_REGION_MIB).contains(&mib)
+                {
+                    return Err(UsageError::Value(name(), "out of range"));
+                }
+            }
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -778,7 +816,8 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 in_place_io,
-                hold_cuts: given.flag("--hold-cuts"),
+                hold_cuts,
+                intent_region_mib,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {

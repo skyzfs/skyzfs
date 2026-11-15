@@ -100,6 +100,13 @@ pub struct HoldCuts {
     /// The bound on the copies, in bytes; `None`: the provisional
     /// default, 1/256 of the volume and at least 256 MiB.
     pub bound: Option<u64>,
+    /// The size of a region of the intent map, in bytes: a power of two
+    /// from [`super::MIN_INTENT_REGION`] (64 blocks) to
+    /// [`super::MAX_INTENT_REGION`] (1 GiB), or the open is refused;
+    /// `None`: the provisional default, 64 MiB (M2.3). A start with
+    /// another size than the map was kept with counts the whole volume
+    /// once.
+    pub intent_region: Option<u64>,
 }
 
 /// Where a store's cut state lives: a region that a death of the daemon

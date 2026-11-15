@@ -62,6 +62,34 @@ fn a_shape_counts_its_regions_and_pages() {
     assert_eq!(large.bit_pages(), 2);
 }
 
+/// The count of the regions named is the length of their list, on a
+/// map of two bit pages whose last word in each page is half used, with
+/// every region named, none, and some.
+#[test]
+fn the_regions_named_are_counted_as_listed() {
+    let shape = Shape {
+        identity: ID,
+        region_blocks: 64,
+        blocks: 64 * (PER_PAGE + 100) - 3,
+    };
+    let mut map = IntentMap::new(shape, T1, Mutants::default());
+    assert_eq!(map.named_count(), shape.regions());
+    assert_eq!(map.named_count(), map.named().len() as u64);
+    // Nothing changed anywhere: every bit is cleared.
+    map.clear(|_, _| false);
+    assert_eq!(map.named_count(), 0);
+    let mut seed = 0x5eed_u64;
+    for _ in 0..500 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let region = (seed >> 33) % shape.regions();
+        map.set(region * 64, 1);
+    }
+    for region in [PER_PAGE - 1, PER_PAGE, shape.regions() - 1] {
+        map.set(region * 64, 1);
+    }
+    assert_eq!(map.named_count(), map.named().len() as u64);
+}
+
 /// A new map names every region, and what it writes reads back as it
 /// was: the bits, the token and the base.
 #[test]

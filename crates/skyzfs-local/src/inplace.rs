@@ -215,6 +215,35 @@
 //! `take_up_cut_state`. A store started with no region holds no cut, as
 //! the daemon's does unless told to (`serve --hold-cuts`): before the
 //! uploader (M2.4) nothing lets a held cut go but the rigs' commands.
+//!
+//! # The intent map (M2.3)
+//!
+//! Beside the cut state, a store that holds cuts keeps the intent map
+//! (`inplace/intent.rs`): a bit for each region of the volume (64 MiB
+//! by default, [`HoldCuts::intent_region`]), in `intent.map` in the
+//! volume's directory, on the image's own durable file system. A region
+//! that may differ from the newest committed cut has its bit set on the
+//! disk. So a write or a write-zeroes into a region whose bit the disk
+//! does not hold waits until the bit's page is written and the map
+//! synced; a failure there fails the volume, as a failed write does.
+//! The sync is on the map's file's helper, as the image's are, and one
+//! sync covers every bit set since the one before it began. Only the
+//! waiting request, and those that must not run beside it (one that
+//! overlaps it, a flush), wait: the queue's thread goes on with the
+//! rest (the lead's ruling on M2.3b). A bit is cleared only after its cut is committed
+//! (the test-hooks build's release stands in for that until M2.4), and
+//! only where nothing in the region changed after that cut's instant.
+//! After a restart of the machine the cut state is gone, and after a
+//! failure that is acknowledged it is not taken up; where the start
+//! takes the map up, the new state counts as changed only the blocks of
+//! the regions it names, and otherwise the whole volume. The map is
+//! taken up after an acknowledged failure as after a power cut: no
+//! write began before its bit was durable (the lead's question 1 on
+//! M2.3). The start says which ([`InPlace::intent_at_start`]), keeps
+//! the map under its own token, and is refused where it cannot write
+//! and sync it ([`StartError::Intent`]). The map's syncs on the write
+//! path, with their time, are in [`InPlace::intent_figures`] and the
+//! status (version 14).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -227,14 +256,17 @@ use skyzfs_blk::{
 };
 
 use crate::io::{Dir, File, NotBegun};
-use crate::store::{FailureObserver, Zeroes};
+use crate::store::{FailureObserver, Spent, Zeroes};
 use cuts::CutRule;
 use pool::{Done, Job, Pool};
 use skyzfs_uberblock::State;
 use state::CutState;
 
 pub use cuts::{Cut, Cuts, Seen, Watcher};
-pub use state::{Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase};
+pub use state::{
+    Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase, DEFAULT_INTENT_REGION,
+    MAX_INTENT_REGION, MIN_INTENT_REGION,
+};
 
 pub use start::{
     create, create_zero_filled, identity_of, lock, CutRegion, HoldCuts, OpenError, OpenOptions,
@@ -439,12 +471,15 @@ impl Mutants {
     /// once (M2.3).
     pub(crate) const INTENT_WRITE_UNCOVERED: u128 = 1 << 64;
     /// A cut's bits are cleared before the cut is committed in object
-    /// storage.
+    /// storage (the model test's: the store clears only at a release).
     #[cfg(test)]
     pub(crate) const INTENT_CLEARED_BEFORE_COMMIT: u128 = 1 << 65;
     /// A bit is cleared although its region changed after the
     /// committed cut's instant.
     pub(crate) const INTENT_CLEARED_CHANGED: u128 = 1 << 66;
+    /// A start that does not trust the cut state but takes up the map
+    /// begins the new state with none of the regions the map names.
+    pub(crate) const INTENT_NOT_CARRIED: u128 = 1 << 67;
     /// A map is taken up whatever start token it names.
     pub(crate) const INTENT_TOKEN_UNCHECKED: u128 = 1 << 68;
     /// A bit page whose checksum fails is taken up as it reads.
@@ -453,6 +488,12 @@ impl Mutants {
     /// record as it was: a bit the write clears and a later one sets
     /// again is made durable by the sync (D1 of the review of #105).
     pub(crate) const INTENT_SYNC_UNNARROWED: u128 = 1 << 70;
+    /// When a sync of the map ends, every request that waits for the
+    /// map begins, its bits durable or not.
+    pub(crate) const INTENT_RELEASED_UNCHECKED: u128 = 1 << 71;
+    /// Setting a bit does not ask for its page to be written: no sync
+    /// makes it durable (the review's plant A9 on #105).
+    pub(crate) const INTENT_SET_UNWRITTEN: u128 = 1 << 72;
 
     pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0
@@ -480,6 +521,11 @@ pub enum StartError {
     /// volume has not failed.
     #[error("the in-place store's I/O: {0}")]
     Io(String),
+    /// The intent map could not be written and synced before the start
+    /// serves (M2.3). Nothing was written to the volume: the map the
+    /// next start finds names what it named. The volume has not failed.
+    #[error("the intent map: {0}")]
+    Intent(String),
 }
 
 /// How the in-place store reads and writes the home image: by direct
@@ -617,6 +663,11 @@ pub struct InPlace<D: Dir> {
     state: Option<CutState<state::StoreRegion>>,
     /// The copies file, once opened.
     copies: Option<D::File>,
+    /// The intent map and its file, kept beside the cut state (M2.3,
+    /// `intent.rs`).
+    intent: Option<Intent<D::File>>,
+    /// What the start did with the intent map.
+    intent_at_start: Option<IntentAtStart>,
     /// The flushes that carry a cut to its flush's completion, with the
     /// cut's number.
     flushing: BTreeMap<RequestId, u64>,
@@ -843,12 +894,33 @@ impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
         // What was submitted is done before the store goes, as it is on
         // the caller's thread: what waits is executed once what it waits
-        // for has ended. Then the threads end, before the lock is gone.
-        while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+        // for has ended, and a request that waits for the intent map
+        // once the map's sync has ended (D2 of the review of #106, and
+        // Codex's P2 there). Then the threads end, before the lock is
+        // gone.
+        loop {
+            let for_map = self
+                .intent
+                .as_ref()
+                .is_some_and(|intent| !intent.waiting.is_empty());
+            let on_threads = self.pool.is_some() && !self.busy.is_empty();
+            if !(on_threads || for_map || !self.deferred.is_empty()) {
+                break;
+            }
             // Under the defect, a write that waited behind another is
             // held back when it is begun here: hand it over each time.
             self.release_early(true);
+            if for_map {
+                if self.intent_syncing() {
+                    self.settle_intent(true);
+                } else if self.failed {
+                    self.settle_failed();
+                } else {
+                    self.begin_intent_sync();
+                }
+            }
             self.collect(Duration::from_millis(10));
+            self.run_deferred();
         }
         self.pool = None;
         self.marker.finish();
@@ -882,6 +954,101 @@ pub enum CutsTakenUp {
     /// A new state was begun, with no cut held and the whole volume
     /// counted as changed, for the reason given.
     Begun(String),
+}
+
+/// What a start did with the intent map ([`InPlace::intent_at_start`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntentAtStart {
+    /// The map was taken up. It named `named` of the volume's
+    /// `regions`; where the cut state was begun anew, only their blocks
+    /// count as changed.
+    TakenUp {
+        /// The regions it named.
+        named: u64,
+        /// The volume's regions.
+        regions: u64,
+    },
+    /// A new map was begun, with every region named, for the reason
+    /// given.
+    Begun(String),
+}
+
+/// The intent map and its file (`intent.rs`).
+struct Intent<F> {
+    map: intent::IntentMap,
+    file: F,
+    /// The syncs of the file on the write path, each with its time from
+    /// the first page's write to the sync's end.
+    syncs: Spent,
+    /// A sync of the file under way on its helper, begun on the write
+    /// path: when its first page was written.
+    syncing: Option<std::time::Instant>,
+    /// The writes and write-zeroes that wait for their regions' bits to
+    /// be durable, in the order they came.
+    waiting: VecDeque<Waiting>,
+    /// How many requests have waited for the map since the start.
+    waits: u64,
+    /// How many syncs of the file have begun on the write path since
+    /// the start.
+    begun: u64,
+    /// How many commits have cleared bits since the start.
+    commits: u64,
+}
+
+/// A request that waits for the intent map, with the syncs begun and
+/// the commits made when its bits were last set. A sync that begins
+/// after that makes them durable, unless a commit clears one first
+/// ([`InPlace::intent_synced`]).
+struct Waiting {
+    request: Request,
+    begun: u64,
+    commits: u64,
+}
+
+impl<F> Intent<F> {
+    /// The bytes of each request that waits for the map, as a request
+    /// on the threads is shown to [`InPlace::must_wait`]: all of them
+    /// write.
+    fn waiting_ranges(&self) -> impl Iterator<Item = (u64, u64, bool)> + '_ {
+        self.waiting.iter().filter_map(|waiting| {
+            mutation_span(&waiting.request.op).map(|(offset, len)| (offset, offset + len, true))
+        })
+    }
+}
+
+/// The bytes a write or a write-zeroes changes, as `(offset, len)`.
+fn mutation_span(op: &Op) -> Option<(u64, u64)> {
+    match op {
+        Op::Write { offset, data } => Some((*offset, data.len() as u64)),
+        Op::WriteZeroes { offset, len } => Some((*offset, *len)),
+        _ => None,
+    }
+}
+
+/// The blocks that `len` bytes at `offset` touch, as `(first, count)`.
+fn blocks_of(offset: u64, len: u64) -> (u64, u64) {
+    let first = offset / skyzfs_blk::BLOCK_SIZE;
+    let count = offset.saturating_add(len).div_ceil(skyzfs_blk::BLOCK_SIZE) - first;
+    (first, count)
+}
+
+/// The intent map's figures, for the status.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IntentFigures {
+    /// The volume's regions.
+    pub regions: u64,
+    /// The regions named now.
+    pub named: u64,
+    /// The bytes of a region.
+    pub region_bytes: u64,
+    /// The syncs of the map on the write path since the start, with
+    /// their time: from the first page's write to the sync's end, on
+    /// the file's helper. One sync covers every bit set since the last
+    /// began (M2.T4's figure).
+    pub syncs: Spent,
+    /// The writes and write-zeroes that waited for a sync of the map
+    /// since the start: those into a region whose bit was not durable.
+    pub waits: u64,
 }
 
 /// The copies file as the start found it.
@@ -946,6 +1113,8 @@ impl<D: Dir> InPlace<D> {
             cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
             state: None,
             copies: None,
+            intent: None,
+            intent_at_start: None,
             flushing: BTreeMap::new(),
             marks_after: Vec::new(),
             cuts_at_start: None,
@@ -968,8 +1137,12 @@ impl<D: Dir> InPlace<D> {
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
+        // Before the cut state and the intent map are touched, so that a
+        // start refused for want of direct I/O creates no map (the
+        // review of #106).
+        store.check_direct_io().map_err(StartError::Io)?;
         if let Some(cuts) = parts.cuts {
-            store.take_up_cut_state(cuts);
+            store.take_up_cut_state(cuts)?;
         }
         store.empty_cache().map_err(StartError::CacheKept)?;
         store.read_rings();
@@ -1013,15 +1186,12 @@ impl<D: Dir> InPlace<D> {
         &self.rings_unread
     }
 
-    /// Check what direct I/O asks, and start the threads.
+    /// Check what direct I/O asks, where the store's I/O is direct.
     ///
     /// Direct I/O takes the request's own buffer, which is aligned to a
     /// block ([`Buf::ALIGN`]), at the request's offset, which is a whole
     /// number of blocks: the file system's alignment must divide both.
-    fn set_up_io(&mut self) -> Result<(), String>
-    where
-        D::File: Send + 'static,
-    {
+    fn check_direct_io(&self) -> Result<(), String> {
         if self.io.direct {
             let align = self
                 .home
@@ -1039,6 +1209,14 @@ impl<D: Dir> InPlace<D> {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Start the I/O threads, if the store has any.
+    fn set_up_io(&mut self) -> Result<(), String>
+    where
+        D::File: Send + 'static,
+    {
         if self.io.threads > 0 {
             let files = (0..self.io.threads)
                 .map(|_| self.dir.open(crate::store::HOME_NAME))
@@ -1201,6 +1379,13 @@ impl<D: Dir> InPlace<D> {
         self.syncing.is_some()
     }
 
+    /// Whether a sync of the intent map is under way on the write path.
+    fn intent_syncing(&self) -> bool {
+        self.intent
+            .as_ref()
+            .is_some_and(|intent| intent.syncing.is_some())
+    }
+
     /// Requests submitted and not yet handed out.
     pub fn in_flight(&self) -> usize {
         self.ids.len()
@@ -1277,12 +1462,26 @@ impl<D: Dir> InPlace<D> {
         self.ready.push(Completion { id, result, buf });
     }
 
-    /// Every flush under way or waiting fails with the volume.
+    /// Every flush under way or waiting fails with the volume, and so
+    /// does every request that waits for the intent map.
     fn settle_failed(&mut self) {
         let mut flushes = self.syncing.take().unwrap_or_default();
         flushes.append(&mut self.waiting);
         for id in flushes {
             self.complete(id, Err(BlkError::Failed), None);
+        }
+        let waiting = self
+            .intent
+            .as_mut()
+            .map(|intent| std::mem::take(&mut intent.waiting))
+            .unwrap_or_default();
+        for Waiting {
+            request: Request { id, op },
+            ..
+        } in waiting
+        {
+            let buf = buffer_of(op);
+            self.complete(id, Err(BlkError::Failed), buf);
         }
     }
 
@@ -1324,50 +1523,16 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Err(BlkError::ReadOnly), buf);
             }
             Op::Write { offset, data } => {
-                let len = data.len() as u64;
-                let after = self.mutants.has(Mutants::COPY_AFTER_OVERWRITE);
-                if !after {
-                    if let Err(e) = self.note_change(offset, len) {
-                        let result = self.mutated(Err(e));
-                        return self.complete(id, result, Some(data));
-                    }
+                if !self.name_in_intent(offset, data.len() as u64) {
+                    return self.wait_for_intent(id, Op::Write { offset, data });
                 }
-                if self.pool.is_some() {
-                    let end = offset + len;
-                    self.on_thread(id, (offset, end, true), Job::Write { id, offset, data });
-                    if after {
-                        // The defect: the copy races the write.
-                        let _ = self.note_change(offset, len);
-                    }
-                    return;
-                }
-                let written = if self.io.direct {
-                    self.home.write_direct_at(offset, &data)
-                } else {
-                    self.home.write_at(offset, &data)
-                };
-                if after {
-                    let _ = self.note_change(offset, len);
-                }
-                let result = self.mutated(written);
-                if result.is_ok() {
-                    self.cuts.applied(id);
-                    self.record_cuts();
-                }
-                self.complete(id, result, Some(data));
+                self.write(id, offset, data);
             }
             Op::WriteZeroes { offset, len } => {
-                if let Err(e) = self.note_change(offset, len) {
-                    let result = self.mutated(Err(e));
-                    return self.complete(id, result, None);
+                if !self.name_in_intent(offset, len) {
+                    return self.wait_for_intent(id, Op::WriteZeroes { offset, len });
                 }
-                let zeroed = self.zero(offset, len);
-                let result = self.mutated(zeroed);
-                if result.is_ok() {
-                    self.cuts.zeroed(id);
-                    self.record_cuts();
-                }
-                self.complete(id, result, None);
+                self.write_zeroes(id, offset, len);
             }
             // Rule R6 lets a discarded block keep its content. The
             // discard still counts as a change for the flush behind
@@ -1382,6 +1547,60 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Ok(()), None)
             }
         }
+    }
+
+    /// A write whose regions the intent map holds durably (or that the
+    /// store keeps no map for): its copies for the held cuts, then the
+    /// write itself, on the threads or here.
+    fn write(&mut self, id: RequestId, offset: u64, data: Buf) {
+        let len = data.len() as u64;
+        let after = self.mutants.has(Mutants::COPY_AFTER_OVERWRITE);
+        if !after {
+            if let Err(e) = self.note_change(offset, len) {
+                let result = self.mutated(Err(e));
+                return self.complete(id, result, Some(data));
+            }
+        }
+        if self.pool.is_some() {
+            let end = offset + len;
+            self.on_thread(id, (offset, end, true), Job::Write { id, offset, data });
+            if after {
+                // The defect: the copy races the write.
+                let _ = self.note_change(offset, len);
+            }
+            return;
+        }
+        let written = if self.io.direct {
+            self.home.write_direct_at(offset, &data)
+        } else {
+            self.home.write_at(offset, &data)
+        };
+        if after {
+            let _ = self.note_change(offset, len);
+        }
+        let result = self.mutated(written);
+        if result.is_ok() {
+            self.cuts.applied(id);
+            self.record_cuts();
+        }
+        self.complete(id, result, Some(data));
+    }
+
+    /// A write-zeroes whose regions the intent map holds durably (or
+    /// that the store keeps no map for): its copies for the held cuts,
+    /// then the zeros, here.
+    fn write_zeroes(&mut self, id: RequestId, offset: u64, len: u64) {
+        if let Err(e) = self.note_change(offset, len) {
+            let result = self.mutated(Err(e));
+            return self.complete(id, result, None);
+        }
+        let zeroed = self.zero(offset, len);
+        let result = self.mutated(zeroed);
+        if result.is_ok() {
+            self.cuts.zeroed(id);
+            self.record_cuts();
+        }
+        self.complete(id, result, None);
     }
 
     /// Hand `job` to the threads; `range` is its bytes and whether it
@@ -1577,8 +1796,18 @@ impl<D: Dir> InPlace<D> {
     /// they came in), and a flush for every write (a flush covers what
     /// was acknowledged before it; this one also waits for what was
     /// submitted before it, the stricter reading).
+    ///
+    /// A request that waits for the intent map counts here as a write on
+    /// the threads.
     fn must_wait(&self, op: &Op) -> bool {
-        if self.busy.is_empty() {
+        let waiting = self
+            .intent
+            .as_ref()
+            .map(|intent| intent.waiting_ranges())
+            .into_iter()
+            .flatten();
+        let mut busy = self.busy.values().copied().chain(waiting).peekable();
+        if busy.peek().is_none() {
             return false;
         }
         let (offset, len, write) = match op {
@@ -1586,16 +1815,14 @@ impl<D: Dir> InPlace<D> {
             Op::Write { offset, data } => (*offset, data.len() as u64, true),
             Op::WriteZeroes { offset, len } => (*offset, *len, true),
             Op::Flush if self.mutants.has(Mutants::FLUSH_PASSES_WRITES) => return false,
-            Op::Flush => return self.busy.values().any(|&(_, _, write)| write),
+            Op::Flush => return busy.any(|(_, _, write)| write),
             Op::Discard { .. } => return false,
         };
         if self.mutants.has(Mutants::OVERLAP_UNORDERED) {
             return false;
         }
         let end = offset.saturating_add(len);
-        self.busy
-            .values()
-            .any(|&(from, to, busy_write)| (write || busy_write) && from < end && offset < to)
+        busy.any(|(from, to, busy_write)| (write || busy_write) && from < end && offset < to)
     }
 
     /// Execute `request` now, or let it wait behind what waits already
@@ -1633,7 +1860,11 @@ impl<D: Dir> InPlace<D> {
     /// on the threads still alive come back as they end, and fail.
     fn collect(&mut self, timeout: Duration) {
         let Some(pool) = &self.pool else {
-            return;
+            // Nothing is on threads, but a request deferred behind one
+            // that waited for the map may go on now: where the volume
+            // failed, it fails at once, and not when the map's sync ends
+            // (N1 of the next look at #106).
+            return self.run_deferred();
         };
         let mut done = Vec::new();
         pool.take(&mut done, timeout);
@@ -1691,6 +1922,11 @@ impl<D: Dir> InPlace<D> {
             }
             self.complete(id, result, Some(buf));
         }
+        self.run_deferred();
+    }
+
+    /// Execute, in order, the requests that wait and no longer have to.
+    fn run_deferred(&mut self) {
         while let Some(front) = self.deferred.front() {
             if self.must_wait(&front.op) {
                 break;
@@ -1773,6 +2009,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
         self.release_early(false);
+        self.settle_intent(false);
         self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
@@ -1787,8 +2024,15 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
         self.release_early(false);
+        self.settle_intent(false);
         self.collect(Duration::ZERO);
         self.settle(false);
+        if self.ready.is_empty() && !timeout.is_zero() && self.intent_syncing() {
+            // The requests that wait for the map begin when its sync
+            // ends.
+            self.settle_intent(true);
+            self.collect(Duration::ZERO);
+        }
         if self.ready.is_empty() && !timeout.is_zero() {
             if self.busy.is_empty() {
                 self.settle(true);
@@ -2013,7 +2257,16 @@ impl<D: Dir> InPlace<D> {
     /// client that wrote the marked uberblock was the old device's,
     /// which can send no flush to this one; whatever writes the pool
     /// next on a created device marks afresh.
-    fn take_up_cut_state(&mut self, cuts: CutsAtStart) {
+    ///
+    /// The intent map (M2.3, `intent.rs`) is read beside it and taken up
+    /// by its own rules. Where the cut state is begun anew and the map
+    /// is taken up, only the blocks of the regions the map names count
+    /// as changed in the new state, not the whole volume. Either way the
+    /// map is then kept under this start's token, or begun anew with
+    /// every region named, and written and synced before the start
+    /// serves; a start that cannot do that is refused
+    /// ([`StartError::Intent`]).
+    fn take_up_cut_state(&mut self, cuts: CutsAtStart) -> Result<(), StartError> {
         let CutsAtStart {
             region:
                 state::Taken {
@@ -2022,11 +2275,22 @@ impl<D: Dir> InPlace<D> {
                     owner,
                     start,
                     bound,
+                    intent_region_blocks,
                 },
             acknowledged,
             taken_over,
         } = cuts;
         let size = self.geometry.size_bytes();
+        let shape = intent::Shape {
+            identity: owner.volume,
+            region_blocks: intent_region_blocks,
+            blocks: size / skyzfs_blk::BLOCK_SIZE,
+        };
+        let (found_map, map_file) = self.read_intent(shape);
+        let found_map = found_map.and_then(|map| {
+            map.trust(Some(owner.start))?;
+            Ok(map)
+        });
         let copies = self.sync_copies();
         let trusted = if acknowledged && !self.mutants.has(Mutants::ACKNOWLEDGED_TRUSTED) {
             Err(("the start acknowledges a failure".to_owned(), region))
@@ -2067,18 +2331,345 @@ impl<D: Dir> InPlace<D> {
             }
             Err((why, region)) => {
                 self.cuts_at_start = Some(CutsTakenUp::Begun(why));
-                CutState::begin(
+                // The regions the map names, and no others, may differ
+                // from the newest committed cut (design §5.2).
+                let changed: Option<Vec<(u64, u64)>> = found_map.as_ref().ok().map(|map| {
+                    if self.mutants.has(Mutants::INTENT_NOT_CARRIED) {
+                        return Vec::new();
+                    }
+                    map.named()
+                        .into_iter()
+                        .map(|region| shape.blocks_of(region))
+                        .collect()
+                });
+                CutState::begin_with(
                     region,
                     size,
                     bound,
                     state::Owner { start, ..owner },
                     self.mutants,
+                    changed.as_deref(),
                 )
             }
         };
         self.cuts
             .restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());
         self.state = Some(cut_state);
+        self.keep_intent(shape, start, found_map, map_file)
+            .map_err(|e| StartError::Intent(e.to_string()))
+    }
+
+    /// The intent map this start finds, and its file: `None` where
+    /// there is none to read.
+    fn read_intent(
+        &self,
+        shape: intent::Shape,
+    ) -> (Result<intent::IntentMap, intent::Distrust>, Option<D::File>) {
+        let file = match self.dir.open(intent::INTENT_NAME) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return (Err(intent::Distrust::Missing), None);
+            }
+            Err(e) => return (Err(intent::Distrust::Unreadable(e.to_string())), None),
+        };
+        let read = || -> Result<intent::IntentMap, intent::Distrust> {
+            let unreadable = |e: io::Error| intent::Distrust::Unreadable(e.to_string());
+            if file.len().map_err(unreadable)? != shape.file_len() {
+                return Err(intent::Distrust::Shape);
+            }
+            let pages = (shape.file_len() / intent::PAGE as u64) as usize;
+            let mut bytes = skyzfs_blk::Buf::zeroed(pages);
+            if self.io.direct {
+                file.read_direct_at(0, &mut bytes)
+            } else {
+                file.read_at(0, &mut bytes)
+            }
+            .map_err(unreadable)?;
+            intent::IntentMap::read(&bytes, shape, self.mutants)
+        };
+        (read(), Some(file))
+    }
+
+    /// Keep the intent map from this start on: the one found, under
+    /// this start's token `start`, or a new one with every region named
+    /// in a new file. Its pages are written and synced before the start
+    /// serves.
+    fn keep_intent(
+        &mut self,
+        shape: intent::Shape,
+        start: [u8; 16],
+        found: Result<intent::IntentMap, intent::Distrust>,
+        file: Option<D::File>,
+    ) -> io::Result<()> {
+        let (map, file) = match (found, file) {
+            (Ok(mut map), Some(file)) => {
+                self.intent_at_start = Some(IntentAtStart::TakenUp {
+                    named: map.named_count(),
+                    regions: shape.regions(),
+                });
+                map.kept_by(start);
+                (map, file)
+            }
+            (found, file) => {
+                let why = match found {
+                    Err(why) => why.to_string(),
+                    Ok(_) => "the intent map could not be opened".to_owned(),
+                };
+                self.intent_at_start = Some(IntentAtStart::Begun(why));
+                drop(file);
+                match self.dir.remove(intent::INTENT_NAME) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+                let file = self.dir.create(intent::INTENT_NAME)?;
+                // The new file's name is durable only once the directory
+                // is synced (D1 of the review of #106): without it a
+                // power cut can leave no map, and the next cut is the
+                // whole volume.
+                self.dir.sync()?;
+                (intent::IntentMap::new(shape, start, self.mutants), file)
+            }
+        };
+        self.intent = Some(Intent {
+            map,
+            file,
+            syncs: Spent::default(),
+            syncing: None,
+            waiting: VecDeque::new(),
+            begun: 0,
+            commits: 0,
+            waits: 0,
+        });
+        self.write_intent(true)
+    }
+
+    /// Write the intent map's pages that are to be written, by direct
+    /// I/O where the store's I/O is direct, and with `sync` sync the
+    /// file after them.
+    fn write_intent(&mut self, sync: bool) -> io::Result<()> {
+        let direct = self.io.direct;
+        let Some(intent) = &mut self.intent else {
+            return Ok(());
+        };
+        for (at, image) in intent.map.write_begin() {
+            if direct {
+                intent.file.write_direct_at(at, &image)?;
+            } else {
+                intent.file.write_at(at, &image)?;
+            }
+        }
+        if sync {
+            intent.map.sync_begin();
+            let synced = intent.file.sync();
+            intent.map.synced(synced.is_ok());
+            synced?;
+        }
+        Ok(())
+    }
+
+    /// Whether a write or a write-zeroes of `len` bytes at `offset` may
+    /// begin now: the store keeps no intent map, or the map holds the
+    /// bits of every region it touches durably. Where it does not, the
+    /// bits are set here, and the request is to wait for the sync of
+    /// the map that covers them ([`InPlace::wait_for_intent`]).
+    fn name_in_intent(&mut self, offset: u64, len: u64) -> bool {
+        let Some(intent) = &mut self.intent else {
+            return true;
+        };
+        let (first, count) = blocks_of(offset, len);
+        if intent.map.covers(first, count) {
+            return true;
+        }
+        intent.map.set(first, count);
+        // True where a bit cleared and not yet written is set again.
+        intent.map.covers(first, count)
+    }
+
+    /// Let a write or a write-zeroes whose regions' bits are not durable
+    /// wait for the sync of the map that makes them so, and begin that
+    /// sync if none is under way. Only the requests that must not run
+    /// beside it wait with it ([`InPlace::must_wait`]): one that
+    /// overlaps it, and a flush.
+    ///
+    /// The sync is on the map's file's helper, as the image's are, and
+    /// not on the queue's thread (the lead's ruling on M2.3b): a sync
+    /// there would hold every request of the device. One sync covers
+    /// every bit set since the one before it began, so the requests
+    /// that come into clean regions while a sync is under way wait for
+    /// the next one, together. The pages are written here, by direct
+    /// I/O: a page of 4 KiB at a time, as a copy for a held cut is.
+    fn wait_for_intent(&mut self, id: RequestId, op: Op) {
+        let Some(intent) = &mut self.intent else {
+            return self.resume(id, op);
+        };
+        intent.waits += 1;
+        intent.waiting.push_back(Waiting {
+            request: Request { id, op },
+            begun: intent.begun,
+            commits: intent.commits,
+        });
+        if intent.syncing.is_none() {
+            self.begin_intent_sync();
+        }
+    }
+
+    /// Write the map's pages that are to be written and begin a sync of
+    /// its file on the helper. A failure fails the volume, and with it
+    /// every request that waits for the map: a write without its bit
+    /// would leave a region the map does not name, and the bit's write
+    /// cannot be known (the lead's answer (a) to question 1 on M2.3).
+    /// Where the file cannot begin a sync on a helper, the sync is made
+    /// here.
+    fn begin_intent_sync(&mut self) {
+        let direct = self.io.direct;
+        let wake = self.wake.clone();
+        let Some(intent) = &mut self.intent else {
+            return;
+        };
+        intent.syncing = Some(std::time::Instant::now());
+        intent.begun += 1;
+        let written = intent
+            .map
+            .write_begin()
+            .into_iter()
+            .try_for_each(|(at, image)| {
+                if direct {
+                    intent.file.write_direct_at(at, &image)
+                } else {
+                    intent.file.write_at(at, &image)
+                }
+            });
+        let begun = written.and_then(|()| {
+            intent.map.sync_begin();
+            intent.file.sync_begin(Box::new(move || {
+                if let Some(wake) = wake {
+                    wake();
+                }
+            }))
+        });
+        match begun {
+            Ok(()) => {}
+            Err(e) if NotBegun::is(&e) => {
+                let synced = intent.file.sync();
+                self.intent_synced(synced);
+            }
+            Err(e) => self.intent_synced(Err(e)),
+        }
+    }
+
+    /// See whether the map's sync under way has ended; with `wait`,
+    /// wait for it.
+    fn settle_intent(&mut self, wait: bool) {
+        let Some(intent) = &mut self.intent else {
+            return;
+        };
+        if intent.syncing.is_none() {
+            return;
+        }
+        if let Some(result) = intent.file.sync_end(wait) {
+            self.intent_synced(result);
+        }
+    }
+
+    /// The map's sync under way has ended with `result`. Where it
+    /// succeeded, the requests whose regions it made durable begin, in
+    /// the order they came. One whose bit is not durable yet waits for
+    /// the next sync, which begins here: its bit was set after this
+    /// sync began, or a clear after a commit took it away while it
+    /// waited (`intent_committed`), and it is set again, for the write
+    /// has not changed the region yet.
+    ///
+    /// A bit set before this sync began, and not cleared by a commit
+    /// since, is durable when it ends: where one is not, the map is
+    /// wrong, and the volume fails. Setting it again and syncing would
+    /// go on for ever (the addendum to the review of #106).
+    fn intent_synced(&mut self, result: io::Result<()>) {
+        let unchecked = self.mutants.has(Mutants::INTENT_RELEASED_UNCHECKED);
+        let Some(intent) = &mut self.intent else {
+            return;
+        };
+        intent.map.synced(result.is_ok());
+        if let Some(began) = intent.syncing.take() {
+            intent.syncs.add(began.elapsed());
+        }
+        if result.is_err() {
+            if !self.failed {
+                self.fail();
+            }
+            self.settle_failed();
+            return self.run_deferred();
+        }
+        let mut ready = Vec::new();
+        let mut lost = false;
+        for waiting in std::mem::take(&mut intent.waiting) {
+            let Some((offset, len)) = mutation_span(&waiting.request.op) else {
+                ready.push(waiting.request);
+                continue;
+            };
+            let (first, count) = blocks_of(offset, len);
+            if intent.map.covers(first, count) || unchecked {
+                ready.push(waiting.request);
+            } else {
+                lost |= waiting.begun < intent.begun && waiting.commits == intent.commits;
+                intent.map.set(first, count);
+                intent.waiting.push_back(Waiting {
+                    begun: intent.begun,
+                    commits: intent.commits,
+                    ..waiting
+                });
+            }
+        }
+        if lost {
+            if !self.failed {
+                self.fail();
+            }
+            self.settle_failed();
+        }
+        for Request { id, op } in ready {
+            self.resume(id, op);
+        }
+        let next = self
+            .intent
+            .as_ref()
+            .is_some_and(|intent| !intent.waiting.is_empty() && intent.syncing.is_none());
+        if next && !self.failed {
+            self.begin_intent_sync();
+        }
+        self.run_deferred();
+    }
+
+    /// A write or a write-zeroes that waited for the map goes on, unless
+    /// the volume failed meanwhile.
+    fn resume(&mut self, id: RequestId, op: Op) {
+        if self.failed {
+            let buf = buffer_of(op);
+            return self.complete(id, Err(BlkError::Failed), buf);
+        }
+        match op {
+            Op::Write { offset, data } => self.write(id, offset, data),
+            Op::WriteZeroes { offset, len } => self.write_zeroes(id, offset, len),
+            op => self.execute(id, op),
+        }
+    }
+
+    /// What the start did with the intent map, if the store holds cuts.
+    pub fn intent_at_start(&self) -> Option<&IntentAtStart> {
+        self.intent_at_start.as_ref()
+    }
+
+    /// The intent map's figures, if the store holds cuts.
+    pub fn intent_figures(&self) -> Option<IntentFigures> {
+        self.intent.as_ref().map(|intent| {
+            let shape = intent.map.shape();
+            IntentFigures {
+                regions: shape.regions(),
+                named: intent.map.named_count(),
+                region_bytes: shape.region_blocks * skyzfs_blk::BLOCK_SIZE,
+                syncs: intent.syncs,
+                waits: intent.waits,
+            }
+        })
     }
 
     /// Sync the copies file, if there is one, as the start does before
@@ -2245,11 +2836,58 @@ impl<D: Dir> InPlace<D> {
 
     /// Held cut `number`, the one being uploaded, is uploaded: let it
     /// go. Whether it was that cut.
+    ///
+    /// The release stands in for the commit in object storage (M2.4):
+    /// after it the intent map names the cut as its base, and clears the
+    /// bits of the regions in which nothing changed after the cut's
+    /// instant (`intent.rs`). The pages are written without a sync; one
+    /// that cannot be written fails the volume, as on the write path.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn release_cut(&mut self, number: u64) -> bool {
-        self.state
+        let group = self
+            .held_cuts()
+            .into_iter()
+            .find(|cut| cut.number == number)
+            .map(|cut| cut.state.txg);
+        let released = self
+            .state
             .as_mut()
-            .is_some_and(|state| state.release(number))
+            .is_some_and(|state| state.release(number));
+        if let (true, Some(group)) = (released, group) {
+            self.intent_committed(number, group);
+        }
+        released
+    }
+
+    /// Cut `number` of group `group` is committed in object storage:
+    /// see [`InPlace::release_cut`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn intent_committed(&mut self, number: u64, group: u64) {
+        let changed = self
+            .state
+            .as_ref()
+            .and_then(|state| state.changed_after(number));
+        let Some(intent) = &mut self.intent else {
+            return;
+        };
+        let region_blocks = intent.map.shape().region_blocks;
+        let changed: Option<BTreeSet<u64>> = changed.map(|words| {
+            words
+                .iter()
+                .map(|&word| word as u64 * 64 / region_blocks)
+                .collect()
+        });
+        intent.map.commit(intent::Base { number, group });
+        intent.commits += 1;
+        intent.map.clear(|first, _| {
+            changed
+                .as_ref()
+                .is_none_or(|regions| regions.contains(&(first / region_blocks)))
+        });
+        if self.write_intent(false).is_err() {
+            self.fail();
+            self.settle_failed();
+        }
     }
 }
 

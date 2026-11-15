@@ -122,6 +122,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         depth: 64,
         in_place_io: skyzfs_local::inplace::IoMode::default(),
         hold_cuts: false,
+        intent_region_mib: None,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -263,6 +264,50 @@ fn the_in_place_store_does_direct_io_on_its_threads() {
             ..
         }))
     ));
+}
+
+/// `--intent-region-mib N` sets the intent map's region, a power of two
+/// from 1 to 1024 MiB, and only with `--hold-cuts`; the help says the
+/// default, which is the store's.
+#[test]
+fn the_intent_region_is_a_power_of_two_of_mib_with_held_cuts() {
+    assert_eq!(
+        serve("serve --dir /v/a --hold-cuts").intent_region_mib,
+        None
+    );
+    for n in [1, 4, 64, 1024] {
+        let given = serve(&format!(
+            "serve --dir /v/a --hold-cuts --intent-region-mib {n}"
+        ));
+        assert_eq!(given.intent_region_mib, Some(n));
+    }
+    for n in ["0", "3", "2048", "x"] {
+        assert!(
+            matches!(
+                plain(&format!(
+                    "serve --dir /v/a --hold-cuts --intent-region-mib {n}"
+                )),
+                Err(UsageError::Value(..))
+            ),
+            "{n}"
+        );
+    }
+    assert_eq!(
+        plain("serve --dir /v/a --intent-region-mib 4"),
+        Err(UsageError::Value(
+            "--intent-region-mib".into(),
+            "only with --hold-cuts"
+        ))
+    );
+    assert_eq!(DEFAULT_INTENT_REGION_MIB, 64);
+    assert_eq!(MAX_INTENT_REGION_MIB, 1024);
+    let said = format!(
+        "--intent-region-mib N (a power of two from {MIN_INTENT_REGION_MIB} to \
+         {MAX_INTENT_REGION_MIB}, {DEFAULT_INTENT_REGION_MIB}"
+    );
+    let help = HELP.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains(&said), "the help does not say {said:?}");
 }
 
 /// The default and the bound of `--io-threads` are the store's own

@@ -180,14 +180,16 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{CutRegion, CutsTakenUp, HoldCuts, InPlace, OpenOptions, StartError};
+use skyzfs_local::inplace::{
+    CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, StartError,
+};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{
-    self, Board, CutStateShown, HeldShown, Pace, Status, StoreShown, ZeroesShown,
+    self, Board, CutStateShown, HeldShown, IntentShown, Pace, Status, StoreShown, ZeroesShown,
 };
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
@@ -583,7 +585,48 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         io_queue: Some(store.io_queue()),
         cuts: Some(store.cuts()),
         held: Some(held_shown(store)),
+        intent: Some(intent_shown(store)),
     }
+}
+
+/// The intent map as the status file says it.
+fn intent_shown(store: &Target) -> IntentShown {
+    let Some(figures) = store.intent_figures() else {
+        return IntentShown::default();
+    };
+    let (state, named_at_start) = intent_at_start_shown(store.intent_at_start(), figures.regions);
+    IntentShown {
+        state,
+        region_bytes: figures.region_bytes,
+        regions: figures.regions,
+        named: figures.named,
+        named_at_start,
+        syncs: figures.syncs,
+        waits: figures.waits,
+    }
+}
+
+/// What the start did with the intent map, as the status file says it,
+/// and how many of the volume's `regions` it named then: a map taken up
+/// names what it named, and a new map names every region.
+fn intent_at_start_shown(at_start: Option<&IntentAtStart>, regions: u64) -> (CutStateShown, u64) {
+    match at_start {
+        Some(IntentAtStart::TakenUp { named, .. }) => (CutStateShown::TakenUp, *named),
+        Some(IntentAtStart::Begun(_)) => (CutStateShown::Begun, regions),
+        None => (CutStateShown::Off, 0),
+    }
+}
+
+/// The held cuts' options of a start that holds cuts, with their state
+/// at `path` and the region of the intent map that `--intent-region-mib`
+/// gives, if any.
+fn hold_cuts_of(serve: &Serve, path: std::path::PathBuf, boot: [u8; 16]) -> Option<HoldCuts> {
+    serve.hold_cuts.then(|| HoldCuts {
+        region: CutRegion::Named(path),
+        boot,
+        bound: None,
+        intent_region: serve.intent_region_mib.map(|mib| mib << 20),
+    })
 }
 
 /// The held cuts as the status file says them.
@@ -743,13 +786,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // open maps it, allocated and locked, under the volume's lock and
     // before a device is touched, and is refused where it cannot.
     let cuts_path = records.volume_run_dir().join(CUTS_STATE);
-    if serve.hold_cuts {
-        options.hold_cuts = Some(HoldCuts {
-            region: CutRegion::Named(cuts_path.clone()),
-            boot,
-            bound: None,
-        });
-    }
+    options.hold_cuts = hold_cuts_of(serve, cuts_path.clone(), boot);
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -862,7 +899,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // it cannot show that, it serves nothing. The volume has not
         // failed, and the device waits as after any start that fails
         // after the lifecycle added it.
-        Err(refused @ (StartError::CacheKept(_) | StartError::Io(_))) => {
+        Err(refused @ (StartError::CacheKept(_) | StartError::Io(_) | StartError::Intent(_))) => {
             return Err(format!(
                 "the in-place store: {refused}. Nothing was served and the volume has not failed"
             ))
@@ -879,8 +916,19 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             cuts_path.display()
         )),
         Some(CutsTakenUp::Begun(why)) => say(format_args!(
-            "held cuts: a new state in {}, with the whole volume counted as changed: {why}",
+            "held cuts: a new state in {}: {why}",
             cuts_path.display()
+        )),
+    }
+    match served.intent_at_start() {
+        None => {}
+        Some(IntentAtStart::TakenUp { named, regions }) => say(format_args!(
+            "intent map: taken up, naming {named} of {regions} regions (a new cut state counts \
+             only their blocks as changed)"
+        )),
+        Some(IntentAtStart::Begun(why)) => say(format_args!(
+            "intent map: begun anew with every region named (a new cut state counts the whole \
+             volume as changed): {why}"
         )),
     }
     let queue_began = std::time::Instant::now();
@@ -1839,6 +1887,51 @@ mod tests {
         assert!(by_flag.contains("still waits"), "{by_flag}");
         assert!(!by_flag.contains(&goes_on), "{by_flag}");
         assert!(!by_flag.contains(&alone), "{by_flag}");
+    }
+
+    /// `--intent-region-mib N` reaches the store as N MiB, only with
+    /// `--hold-cuts`; without it the store's default holds (G4 of the
+    /// review of #106).
+    #[test]
+    fn the_intent_region_reaches_the_store() {
+        let parsed = |line: &str| match crate::cli::parse(line.split_whitespace().map(String::from))
+        {
+            Ok(crate::cli::Command::Serve(serve)) => serve,
+            other => panic!("{line}: {other:?}"),
+        };
+        let path = std::path::PathBuf::from("/run/v/cuts");
+        let boot = [7; 16];
+        let given = parsed("serve --dir /v/a --hold-cuts --intent-region-mib 4");
+        let hold = hold_cuts_of(&given, path.clone(), boot).expect("cuts are held");
+        assert_eq!(hold.intent_region, Some(4 << 20));
+        assert_eq!(hold.boot, boot);
+        assert!(matches!(&hold.region, CutRegion::Named(at) if *at == path));
+        let default = parsed("serve --dir /v/a --hold-cuts");
+        let hold = hold_cuts_of(&default, path.clone(), boot).expect("cuts are held");
+        assert_eq!(hold.intent_region, None, "the store's default");
+        assert!(hold_cuts_of(&parsed("serve --dir /v/a"), path, boot).is_none());
+    }
+
+    /// The status says how many regions the map named at the start: a
+    /// map taken up, what it named; a new map, every region (G4 of the
+    /// review of #106).
+    #[test]
+    fn a_new_map_names_every_region_at_the_start() {
+        assert_eq!(
+            intent_at_start_shown(Some(&IntentAtStart::Begun("no map".into())), 9),
+            (CutStateShown::Begun, 9)
+        );
+        assert_eq!(
+            intent_at_start_shown(
+                Some(&IntentAtStart::TakenUp {
+                    named: 2,
+                    regions: 9
+                }),
+                9
+            ),
+            (CutStateShown::TakenUp, 2)
+        );
+        assert_eq!(intent_at_start_shown(None, 9), (CutStateShown::Off, 0));
     }
 
     /// A failure is noted with the image's reason (code 7), while the
