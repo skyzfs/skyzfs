@@ -1966,9 +1966,13 @@ impl<D: Dir> InPlace<D> {
     ///   that takes a direct write through its cache, and the tests'
     ///   I/O through the cache. There a writeback that failed after the
     ///   copy was written would have the next read of it return what the
-    ///   disk holds, and the kernel reports the failure to the first
-    ///   sync after it, this one. A copies file that is missing is as
-    ///   good as synced only if the state names no copy;
+    ///   disk holds. The kernel reports such a failure to the first sync
+    ///   after it only while the file's inode stays in memory: one
+    ///   evicted while no daemon held the file loses the error (the
+    ///   review of #100, Q1). So this sync narrows that case and does
+    ///   not close it; for the daemon's own copies the direct write
+    ///   does. A copies file that is missing is as good as synced only
+    ///   if the state names no copy;
     /// - the start does not acknowledge a failure: a failed volume's
     ///   state is not one this start can vouch for;
     /// - the volume was not opened since the instance that kept the

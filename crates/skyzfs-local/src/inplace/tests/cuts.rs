@@ -1310,6 +1310,47 @@ fn the_copies_are_written_and_read_past_the_cache() {
     }
 }
 
+/// Where the copies file takes no direct I/O, a copy is never written
+/// through the cache instead (M2.2c's reading 2, the review of #104,
+/// S1): the copy fails, the cut that needs it goes, and the client's
+/// write goes on. Nothing reaches the copies file, so no page of it
+/// waits in the cache for a writeback. The defect, planted by hand: a
+/// copy that falls back to the cache when its direct write is refused,
+/// which keeps cut 1 and leaves a page.
+#[test]
+fn a_copy_the_file_system_will_not_write_directly_is_not_written_through_the_cache() {
+    for io in [IoMode::default(), ON_CALLER] {
+        let case = format!("{io:?}");
+        let disk = created(34, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, io);
+        write(&mut store, 5, 0x55).unwrap();
+        // Cut 1, the whole volume (the state is new).
+        group(&mut store, 100, 7, 70);
+        disk.refuse_direct_io_of(COPIES_NAME);
+        let before = disk.writes_of(COPIES_NAME);
+        assert_eq!(write(&mut store, 5, 0x66), Ok(()), "{case}");
+        assert!(store.held_cuts().is_empty(), "{case}: cut 1 is let go");
+        assert_eq!(store.cut_figures().abandoned, 1, "{case}");
+        assert_eq!(store.cut_figures().copied, 0, "{case}");
+        assert_eq!(
+            disk.writes_of(COPIES_NAME),
+            before,
+            "{case}: the copy was written another way"
+        );
+        let pages = disk
+            .open(COPIES_NAME)
+            .map_or(0, |file| file.cached_pages().expect("the count"));
+        assert_eq!(pages, 0, "{case}: a page of the copies file is cached");
+        disk.clear_faults();
+        assert_eq!(
+            read(&mut store, 5).unwrap(),
+            vec![0x66; BLOCK_USIZE],
+            "{case}"
+        );
+    }
+}
+
 /// The same with cut 1 kept: block 5 changed after cut 1's instant
 /// and is copied for it before the copies are refused, so cut 1 still
 /// reads 0x55 once cut 2 has gone, and its copies are not freed.
