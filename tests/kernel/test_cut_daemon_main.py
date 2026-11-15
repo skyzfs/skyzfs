@@ -22,7 +22,7 @@ import cut_ref  # noqa: E402
 import test_cut_daemon_check as t  # noqa: E402
 
 
-def recording(tamper_log=None, status=None, name='life', tamper_kstat=None):
+def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)})."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
@@ -31,12 +31,12 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None):
         text = tamper_log(text)
     d = tempfile.mkdtemp(prefix='cdc-')
     try:
-        return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat)
+        return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
-def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat):
+def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name):
     log = os.path.join(d, 'requests.tsv')
     with open(log, 'w') as f:
         f.write(text)
@@ -58,7 +58,7 @@ def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat):
             groups = tamper_kstat(k, groups)
         with open(os.path.join(d, f'txgs-{k}.txt'), 'w') as f:
             f.write(''.join(f'{g} 0 C 0 0 1\n' for g in groups))
-    p = subprocess.run([sys.executable, '-I', '-B', cdc.__file__, name, d, log, '-', str(dev)],
+    p = subprocess.run([sys.executable, '-I', '-B', cdc.__file__, as_name or name, d, log, '-', str(dev)],
                        capture_output=True, text=True)
     lines = {}
     with open(os.path.join(d, 'results.tsv')) as f:
@@ -164,6 +164,22 @@ class Main(unittest.TestCase):
         self.assertEqual(lines['cuts'][0], 'ERROR', lines['cuts'])
         self.assertIn('1 flushes after a write with FUA', lines['cuts'][1])
         self.assertEqual(rc, 2)
+
+    def test_a_control_that_differs_from_its_table(self):
+        """life judged as rewind: the rule txg-alone gives life's own cuts
+        (same), where the table says rewind's must be caught. A control
+        that differs from its table, in either direction, fails the check
+        (the review of #99, its next look)."""
+        rc, lines = recording(as_name='rewind')
+        self.assertEqual(lines['cuts'][0], 'PASS', lines['cuts'])
+        self.assertEqual(lines['ctl_txg-alone'][0], 'SAME', lines['ctl_txg-alone'])
+        self.assertIn('DIFFERS', lines['ctl_txg-alone'][1])
+        self.assertEqual(rc, 1)
+
+    def test_a_recording_with_no_row(self):
+        rc, lines = recording(as_name='nosuch')
+        self.assertEqual(rc, 2, lines)
+        self.assertIn('no row of EXPECTED', lines['rig_error'][1])
 
     def test_a_second_instance_is_the_rigs_error(self):
         rc, lines = recording(lambda text: text + f'999999999\t7\tstart\t0\t-\t-\t-\t64\n')
