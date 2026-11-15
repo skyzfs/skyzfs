@@ -325,6 +325,31 @@ def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 
     w('status-held.txt', status_held)
 
 
+UNPLACED_WRITTEN = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2},
+                    {'number': 2, 'group': 6, 'opens': 'itself', 'blocks': 1}]
+
+
+def unplaced_log(rewrite=False):
+    """A write of block 1 (a) received, a write-zeroes over block 1
+    received before it is applied (the store runs the write first, then
+    the zeros; the model the other way), a write of block 2 (b), cut 1;
+    then (rewrite) a write of block 1 (d) received after the
+    write-zeroes, a write of block 3 (c), cut 2 -> (records, cuts)."""
+    a, b, c, dd = 'a' * 16, 'b' * 16, 'c' * 16, 'd' * 16
+    text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+            f'2\t{PID}\trecv\t3\twrite\t8\t8\t-\n3\t{PID}\trecv\t4\twrite_zeroes\t8\t8\t-\n'
+            f'4\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{a}\n5\t{PID}\tcommit\t4\twrite_zeroes\t8\t8\t0\n'
+            f'6\t{PID}\trecv\t5\twrite\t16\t8\t-\n7\t{PID}\tapplied\t5\twrite\t-\t-\t-\t{b}\n'
+            f'8\t{PID}\trecv\t1\tflush\t0\t0\t-\n9\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+            f'10\t{PID}\tcut\t1\tflush\titself\t1\t5\n'
+            + (f'11\t{PID}\trecv\t3\twrite\t8\t8\t-\n12\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{dd}\n'
+               if rewrite else '')
+            + f'13\t{PID}\trecv\t6\twrite\t24\t8\t-\n14\t{PID}\tapplied\t6\twrite\t-\t-\t-\t{c}\n'
+            f'15\t{PID}\trecv\t1\tflush\t0\t0\t-\n16\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+            f'17\t{PID}\tcut\t1\tflush\titself\t2\t6\n')
+    return cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+
+
 class HeldFixture(unittest.TestCase):
     """The images a right daemon would leave on the fixture life."""
 
@@ -379,7 +404,7 @@ class HeldContent(HeldFixture):
         b = sorted(blocks[mid])[0]
         blocks[mid][b] = '0' * 16
         ok, detail, _, _ = self.judge(blocks=blocks)
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn(f'cut {mid}', detail)
         self.assertIn(f'block {b}: ', detail)
         self.assertIn(f"{'0' * 16} held", detail)
@@ -394,14 +419,14 @@ class HeldContent(HeldFixture):
         written = [dict(w) for w in self.written]
         written[1]['group'] += 1
         ok, detail = self.judge(written)[:2]
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn('its cut line says', detail)
 
     def test_the_held_answer_differs_from_the_cut_line(self):
         written = [dict(w) for w in self.written]
         written[1]['opens'] = 'rewind' if written[1]['opens'] == 'itself' else 'itself'
         ok, detail = self.judge(written)[:2]
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn('its cut line says', detail)
 
     def test_a_block_written_and_in_no_map(self):
@@ -417,7 +442,7 @@ class HeldContent(HeldFixture):
         final = dict(self.final)
         del final[b]
         ok, detail = self.judge(blocks=blocks, final=final)[:2]
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn(f'block {b}: ', detail)
 
     def test_a_block_never_written_held_in_a_map(self):
@@ -429,19 +454,24 @@ class HeldContent(HeldFixture):
         final = dict(self.final)
         final[10 ** 5] = 'f' * 16
         ok, detail = self.judge(blocks=blocks, final=final)[:2]
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn(f'block {10 ** 5}: {cdc.ZERO} wanted', detail)
 
     def test_the_last_cut_not_written(self):
-        ok, detail = self.judge(self.written[:-1])[:2]
-        self.assertFalse(ok)
+        final = {}
+        for w in self.written[:-1]:
+            final.update(self.blocks[w['number']])
+        final = {b: h for b, h in final.items() if h != cdc.ZERO}
+        ok, detail = self.judge(self.written[:-1], final=final)[:2]
+        self.assertIs(ok, False)
         self.assertIn('the last cut written', detail)
+        self.assertNotIn('after the drain', detail)
 
     def test_a_block_outside_every_map(self):
         final = dict(self.final)
         final[10 ** 5] = 'f' * 16
         ok, detail = self.judge(final=final)[:2]
-        self.assertFalse(ok)
+        self.assertIs(ok, False)
         self.assertIn('differ from what the maps wrote', detail)
 
     def test_no_cut_written(self):
@@ -490,6 +520,32 @@ class HeldContent(HeldFixture):
         recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
         wz = [r for r in recs if r.get('op') == 'write_zeroes']
         self.assertEqual([r['ambiguous'] for r in wz], [{2}, set()])
+
+    def test_the_unplaced_blocks_of_each_cut(self):
+        """Codex on #103: ambiguity is the cuts' after the write-zeroes,
+        ends where a write received after it sets the block again, and a
+        definite wrong block beside it stays a verdict."""
+        b, c = 'b' * 16, 'c' * 16
+        recs, dcuts = unplaced_log()
+        right = {1: {1: cdc.ZERO, 2: b}, 2: {3: c}}
+        ok, detail, _, wrong = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN, right, {2: b, 3: c})
+        self.assertIsNone(ok, detail)
+        self.assertEqual(wrong, {1})
+        # another block wrong too: a verdict
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN, {1: {1: cdc.ZERO, 2: c}, 2: {3: c}},
+                                            {2: c, 3: c})
+        self.assertIs(ok, False, detail)
+        # block 1 set again by a write received after the write-zeroes:
+        # cut 2 must hold it, and zeros there are a verdict
+        recs, dcuts = unplaced_log(rewrite=True)
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN, right, {2: b, 3: c})
+        self.assertIs(ok, False, detail)
+        self.assertIn('cut 2', detail)
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN,
+                                            {1: {1: cdc.ZERO, 2: b}, 2: {1: 'd' * 16, 3: c}},
+                                            {1: 'd' * 16, 2: b, 3: c})
+        self.assertIsNone(ok, detail)
+        self.assertIn('cut 1', detail)
 
     def test_write_zeroes_read_as_zeros(self):
         model = {}
@@ -631,21 +687,25 @@ class HeldLines(HeldFixture):
         rc, lines = self.lines(blocks=blocks)
         self.assertEqual((rc, lines['held_content'][0]), ((1, False), 'FAIL'))
 
-    def unplaced_zeroes(self, at):
-        """The records with a write-zeroes after every cut whose blocks
-        are not placed for certain: {at}."""
-        return self.recs + [{'flags': ['discard'], 'op': 'write_zeroes', 'offset': at * 4096, 'bytes': 4096,
-                             'ambiguous': {at}, 'i': len(self.recs)}]
+    def test_a_wrong_block_is_a_verdict_whatever_the_log_holds_after(self):
+        """A write-zeroes that cannot be placed, after every cut, explains
+        no wrong block of theirs (Codex on #103)."""
+        blocks, bad = self.wrong_in_mid(7)
+        recs = self.recs + [{'flags': ['discard'], 'op': 'write_zeroes', 'offset': bad[-1] * 4096, 'bytes': 4096,
+                             'ambiguous': {bad[-1]}, 'seq': 10 ** 9, 'i': len(self.recs)}]
+        rc, lines = self.lines(blocks=blocks, recs=recs)
+        self.assertEqual((rc, lines['held_content'][0]), ((1, False), 'FAIL'))
 
     def test_a_wrong_block_under_an_unplaced_write_zeroes(self):
-        """The rig's error, not a verdict, wherever the block is among the
-        wrong ones; a wrong block elsewhere is a verdict."""
-        blocks, bad = self.wrong_in_mid(7)
-        rc, lines = self.lines(blocks=blocks, recs=self.unplaced_zeroes(bad[-1]))
+        """The rig's error, not a verdict, where every wrong block is
+        under it (the store ran the write first, the model the
+        write-zeroes)."""
+        recs, dcuts = unplaced_log()
+        rc, lines = self.lines(recs=recs, dcuts=dcuts, written=UNPLACED_WRITTEN,
+                               blocks={1: {1: cdc.ZERO, 2: 'b' * 16}, 2: {3: 'c' * 16}},
+                               image={2: 'b' * 16, 3: 'c' * 16})
         self.assertEqual((rc, lines['held_content'][0]), ((0, True), 'ERROR'))
-        self.assertIn(f'blocks [{bad[-1]}] were under a write-zeroes', lines['held_content'][1])
-        rc, lines = self.lines(blocks=blocks, recs=self.unplaced_zeroes(10 ** 5))
-        self.assertEqual((rc, lines['held_content'][0]), ((1, False), 'FAIL'))
+        self.assertIn('blocks [1] (1 in all) were held wrong under a write-zeroes', lines['held_content'][1])
 
     def test_edges_must_send_both(self):
         """And hold a cut across its write-zeroes: a block of a cut after

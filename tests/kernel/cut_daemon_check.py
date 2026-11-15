@@ -100,10 +100,12 @@ The second stage, where DIR/holder.log says the holder ran
   upload onto the image before it does. Also: each written cut's group
   and answer are its cut line's, the last cut counted was written, and
   the image after the drain holds nothing the maps did not write
-  (DIR/held-image.tsv). A failed `held_content` whose wrong blocks
-  include one under a write-zeroes received while an overlapping write
-  was in the store is the rig's error: the store ran the write first,
-  the log does not say when the write-zeroes ran.
+  (DIR/held-image.tsv). A failed `held_content` is the rig's error
+  (ERROR) only where every wrong block is under a write-zeroes received
+  while an overlapping write was in the store (the store ran the write
+  first; the log does not say when the write-zeroes ran), in a cut after
+  it, with no write received after the write-zeroes setting the block
+  again by the cut's instant, and nothing else is wrong.
 - controls: the middle written cut's image against the reference at the
   cut before it (`content_early`), and the image before its write
   against the reference at its instant (`content_stale`): both caught.
@@ -251,7 +253,7 @@ def records_of(lines, marks):
                 raise RigError(f"request log line {ln['line']}: a recv without its sectors")
             off, n = int(ln['sector']) * SECTOR, int(ln['sectors']) * SECTOR
             if ln['op'] == 'write':
-                pending[ln['tag']] = (off, n)
+                pending[ln['tag']] = (off, n, ln['line'])
                 data.pop(ln['tag'], None)
             elif ln['op'] == 'write_zeroes':
                 # Placed at its receipt, or behind a flush (below). A write
@@ -260,9 +262,11 @@ def records_of(lines, marks):
                 # received) and after it here: their shared blocks are not
                 # placed for certain.
                 lo, hi = off // BLOCK, (off + n - 1) // BLOCK
-                amb = {b for (o, m) in pending.values() for b in range(max(lo, o // BLOCK),
-                                                                       min(hi, (o + m - 1) // BLOCK) + 1)}
-                z = {'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op'], 'ambiguous': amb}
+                amb = {b for (o, m, _) in pending.values() for b in range(max(lo, o // BLOCK),
+                                                                          min(hi, (o + m - 1) // BLOCK) + 1)}
+                # seq: its recv line, to tell the writes received after it
+                z = {'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op'], 'ambiguous': amb,
+                     'seq': ln['line']}
                 zeroing[ln['tag']] = z
                 behind(z)
             elif ln['op'] == 'flush':
@@ -285,8 +289,8 @@ def records_of(lines, marks):
         elif ev == 'applied':
             if ln['tag'] not in pending:
                 raise RigError(f"request log line {ln['line']}: write {ln['tag']} applied with no recv before it")
-            off, n = pending.pop(ln['tag'])
-            r = {'flags': [], 'offset': off, 'bytes': n, 'pos': None, 'tag': ln['tag'], 'ns': ln['ns']}
+            off, n, seq = pending.pop(ln['tag'])
+            r = {'flags': [], 'offset': off, 'bytes': n, 'pos': None, 'tag': ln['tag'], 'ns': ln['ns'], 'seq': seq}
             if ln['extra']:
                 # Since M2.2b: each 4 KiB block the write touches, from its
                 # first, as the write leaves it; `-` where it covers part.
@@ -497,7 +501,11 @@ def read_hashes(text, what, keyed=True):
 def held_content(records, dcuts, written, blocks, final=None):
     """The cuts the holder wrote, each against the reference's content at
     its instant -> (ok, detail, controls {name: (verdict, detail)}, every
-    block held wrong).
+    block held wrong). ok is None, not False, where the only thing wrong
+    is blocks the check cannot place (the rig's error): blocks under a
+    write-zeroes received while an overlapping write was in the store,
+    in a cut whose instant is after it, and that no write received after
+    the write-zeroes had set again by then.
 
     written: read_held; blocks: {number: {block: hash}} of each cut's map
     as the rig's image held it after the write; final: {block: hash} of
@@ -510,7 +518,8 @@ def held_content(records, dcuts, written, blocks, final=None):
         raise RigError('the holder wrote no cut')
     image, model, at = {}, {}, 0
     bad, notes, total = [], [], [0, 0, 0]
-    wrong_blocks = set()
+    wrong_blocks, unplaced, definite = set(), set(), False
+    live = {}       # block -> the recv line of the write-zeroes that left it unplaced
     mid = written[len(written) // 2]['number']
     ctl = {}
     prev_image = None
@@ -522,6 +531,7 @@ def held_content(records, dcuts, written, blocks, final=None):
         if (w['group'], w['opens'] == 'itself') != (d['txg'], d['itself']):
             bad.append(f"cut {n}: held as group {w['group']} ({w['opens']}), its cut line says group {d['txg']} "
                        f"({'itself' if d['itself'] else 'rewind'})")
+            definite = True
         if n == mid:
             prev_image = dict(image)
             # content_early: the reference at the barrier of the cut before
@@ -534,10 +544,24 @@ def held_content(records, dcuts, written, blocks, final=None):
             raise RigError(f'cut {n} was written and no block of its map was hashed')
         image.update(blocks[n])
         while at < d['prefix']:
-            apply(model, records[at])
+            r = records[at]
+            apply(model, r)
+            if r.get('op') == 'write_zeroes':
+                for b in r['ambiguous']:
+                    live[b] = r['seq']
+            elif cut_ref.is_write(r) and 'seq' in r:
+                # A write received after the write-zeroes ran after it in
+                # the store too (it waits for an overlap): the block is
+                # placed again.
+                for b in range(r['offset'] // BLOCK, (r['offset'] + r['bytes'] - 1) // BLOCK + 1):
+                    if b in live and r['seq'] > live[b]:
+                        del live[b]
             at += 1
         compared, unknown, either, wrong = held_compare(model, image, limit=10 ** 9)
-        wrong_blocks |= {x[0] for x in wrong}
+        here = {x[0] for x in wrong}
+        wrong_blocks |= here
+        unplaced |= here & set(live)
+        definite = definite or bool(here - set(live))
         wrong = wrong[:5] + [None] * (len(wrong) - 5) if len(wrong) > 5 else wrong
         total[0] += compared
         total[1] += unknown
@@ -552,12 +576,18 @@ def held_content(records, dcuts, written, blocks, final=None):
     last = len(dcuts)
     if written[-1]['number'] != last:
         bad.append(f"the last cut written is {written[-1]['number']}, the last counted {last}")
+        definite = True
     if final is not None:
         stray = [b for b in sorted(set(final) | {b for b, h in image.items() if h != ZERO})
                  if final.get(b, ZERO) != image.get(b, ZERO)]
         if stray:
             bad.append(f'{len(stray)} blocks of the image after the drain differ from what the maps wrote, '
                        f'for example {stray[:5]}')
+            definite = True
+    if unplaced:
+        notes.append(f'blocks {sorted(unplaced)[:5]} ({len(unplaced)} in all) were held wrong under a write-zeroes '
+                     'received while an overlapping write was in the store, which the check cannot place'
+                     + ('' if definite else '; nothing else was wrong'))
     notes.append(f'{len(written)} of {last} cuts written and released; {total[0]} blocks compared over them, '
                  f'{total[2]} of them discarded (either content), {total[1]} not known to the reference (a write '
                  f'that covers part of a block)')
@@ -566,7 +596,8 @@ def held_content(records, dcuts, written, blocks, final=None):
         wrong = ctl.get(c)
         controls[c] = ('caught', f'cut {mid}: {len(wrong)} blocks differ') if wrong \
             else ('missed', f'cut {mid}: as the reference')
-    return not bad, '; '.join(bad + notes), controls, wrong_blocks
+    ok = True if not bad else (False if definite else None)
+    return ok, '; '.join(bad + notes), controls, wrong_blocks
 
 
 def reference(cs, op):
@@ -690,10 +721,8 @@ def held_lines(put, rdir, inst, records, dcuts, status, dev, name=''):
     blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
     final_image = read_hashes(read_file(rdir, 'held-image.tsv'), 'held-image.tsv', keyed=False)
     ok, detail, controls, wrong = held_content(records, dcuts, written, blocks, final_image)
-    amb = set().union(*(r.get('ambiguous', set()) for r in records))
-    if not ok and wrong & amb:
-        put('held_content', 'ERROR', f'{detail}; blocks {sorted(wrong & amb)[:5]} were under a write-zeroes '
-            'received while an overlapping write was in the store, which the check cannot place')
+    if ok is None:
+        put('held_content', 'ERROR', detail)
         errored = True
     else:
         put('held_content', 'PASS' if ok else 'FAIL', detail)
