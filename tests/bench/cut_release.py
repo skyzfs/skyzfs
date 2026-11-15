@@ -22,9 +22,16 @@ uploaded, as with an upload slower than the pool. It writes nothing out:
 what it measures is the store's side of a release, not an upload's
 reads.
 
+A release refused because the store abandoned the cut after `held`
+answered (at the copy bound, or after a failed copy) is not its error:
+as the cut rig's holder does, it asks `held` again and goes on if the
+cut is no longer the one being uploaded. A refused `held`, or a release
+refused while the cut is still being uploaded, is.
+
 Out: OUT, one line per release, `ns number newest`, with the monotonic
-time the release was answered; and, at the end, a line `# released N,
-polls P` or `# ERROR ...`.
+time the release was answered; a line `# ns cut N gone after ...` for
+each cut abandoned before its release; and, at the end, a line
+`# released N, gone G, polls P` or `# ERROR ...`.
 
 Exit 0 at STOP, 2 for its own error (the daemon gone, no reply, a
 refusal)."""
@@ -53,7 +60,7 @@ def due(held, every):
 class Releaser:
     def __init__(self, daemon, every, out):
         self.d, self.every, self.out = daemon, every, out
-        self.released = self.polls = 0
+        self.released = self.gone = self.polls = 0
 
     def held(self):
         ok, lines, last = self.d.send('held', REPLY_S)
@@ -70,7 +77,12 @@ class Releaser:
             return False
         ok, _, last = self.d.send(f'release {n}', REPLY_S)
         if not ok:
-            raise ch.HolderError(f'release {n} refused: {last}')
+            if any(c['number'] == n and c['phase'] == 'uploading' for c in self.held()):
+                raise ch.HolderError(f'release {n} refused while cut {n} is still being uploaded: {last}')
+            self.gone += 1
+            self.out.write(f'# {time.monotonic_ns()} cut {n} gone after its release was refused ({last})\n')
+            self.out.flush()
+            return False
         self.released += 1
         self.out.write(f"{time.monotonic_ns()}\t{n}\t{max(c['number'] for c in held)}\n")
         self.out.flush()
@@ -90,9 +102,9 @@ def main():
             while not os.path.exists(stop):
                 if not r.step():
                     time.sleep(POLL_S)
-            f.write(f'# released {r.released}, polls {r.polls}\n')
+            f.write(f'# released {r.released}, gone {r.gone}, polls {r.polls}\n')
         except (ch.HolderError, OSError) as e:
-            f.write(f'# ERROR {type(e).__name__}: {e} (released {r.released}, polls {r.polls})\n')
+            f.write(f'# ERROR {type(e).__name__}: {e} (released {r.released}, gone {r.gone}, polls {r.polls})\n')
             print(f'cut_release: {e}', file=sys.stderr)
             rc = 2
     sys.exit(rc)

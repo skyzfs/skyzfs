@@ -140,6 +140,19 @@ class Bracketed(unittest.TestCase):
         self.assertIsNone(b['ratio'])
         self.assertIn('NO VERDICT: its daemon was traced or recorded (TB_PERF_RECORD)', b['verdict'])
 
+    def test_a_row_whose_releaser_ended_has_no_verdict(self):
+        """TB_SKZ_RELEASE: a row whose releaser ended before the window
+        did was not measured as its label says (M2.T4)."""
+        rows = [row(1, 'zfs-slog', 1000),
+                row(2, 'zfs-skyzfsd', 950, skyzfsd={'release': {'every': 1, 'ended': '# ERROR HolderError: no reply'}}),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: its releaser of held cuts (TB_SKZ_RELEASE) ended', b['verdict'])
+        self.assertIn('no reply', b['verdict'])
+        rows[1]['skyzfsd']['release'] = {'every': 1, 'in_window': 23, 'running': True}
+        self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'at least 0.90')
+
     def test_a_recorded_row_has_no_verdict(self):
         rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, perf_record={'threads': {}}),
                 row(3, 'zfs-slog', 1000)]

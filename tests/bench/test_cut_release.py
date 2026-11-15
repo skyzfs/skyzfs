@@ -38,6 +38,65 @@ class Due(unittest.TestCase):
         self.assertIsNone(cr.due([cut(3, 'uploading')], 2))
 
 
+class Scripted:
+    """A daemon that answers each command with the next of `replies`."""
+    def __init__(self, *replies):
+        self.replies, self.sent = list(replies), []
+
+    def send(self, cmd, timeout=None):
+        self.sent.append(cmd)
+        return self.replies.pop(0)
+
+
+def held(*cuts):
+    return True, [f'{n} {n + 4} {phase} itself 0' for n, phase in cuts], 'ok'
+
+
+REFUSED = (False, [], 'refused: cut 1 is not the one being uploaded')
+
+
+class Refusals(unittest.TestCase):
+    def test_a_cut_abandoned_before_its_release(self):
+        """The store abandoned cut 1 between `held` and `release`: the
+        releaser goes on, and releases the next cut in turn."""
+        out = io.StringIO()
+        d = Scripted(held((1, 'uploading'), (2, 'waiting')), REFUSED, held((2, 'uploading')),
+                     held((2, 'uploading')), (True, [], 'ok'))
+        r = cr.Releaser(d, 1, out)
+        self.assertFalse(r.step())
+        self.assertEqual((r.released, r.gone), (0, 1))
+        self.assertTrue(r.step())
+        self.assertEqual(d.sent, ['held', 'release 1', 'held', 'held', 'release 2'])
+        lines = out.getvalue().splitlines()
+        self.assertRegex(lines[0], r'^# \d+ cut 1 gone after its release was refused \(refused: cut 1 is not')
+        self.assertEqual(lines[1].split('\t')[1:], ['2', '2'])
+        self.assertEqual((r.released, r.gone, r.polls), (1, 1, 2))
+
+    def test_a_cut_gone_and_another_uploading(self):
+        """Cut 1 abandoned and cut 2 now being uploaded: cut 1 is gone."""
+        r = cr.Releaser(Scripted(held((1, 'uploading')), REFUSED, held((2, 'uploading'))), 1, io.StringIO())
+        self.assertFalse(r.step())
+        self.assertEqual(r.gone, 1)
+
+    def test_a_release_refused_while_the_cut_is_still_uploaded(self):
+        r = cr.Releaser(Scripted(held((1, 'uploading')), REFUSED, held((1, 'uploading'), (2, 'waiting'))),
+                        1, io.StringIO())
+        with self.assertRaisesRegex(ch.HolderError, 'release 1 refused while cut 1 is still being uploaded'):
+            r.step()
+        self.assertEqual(r.gone, 0)
+
+    def test_a_refused_held_is_its_error(self):
+        """A daemon without --hold-cuts refuses `held`: not "nothing held"."""
+        r = cr.Releaser(Scripted((False, [], 'refused: held cuts are off')), 1, io.StringIO())
+        with self.assertRaisesRegex(ch.HolderError, 'held refused: refused: held cuts are off'):
+            r.step()
+
+    def test_a_refused_held_after_a_refused_release(self):
+        r = cr.Releaser(Scripted(held((1, 'uploading')), REFUSED, (False, [], 'refused: busy')), 1, io.StringIO())
+        with self.assertRaisesRegex(ch.HolderError, 'held refused'):
+            r.step()
+
+
 class AgainstAFake(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -82,7 +141,7 @@ class AgainstAFake(unittest.TestCase):
 
     def test_a_refused_release(self):
         r = cr.Releaser(self.fake({'1': [5, 'itself', {}]}, stuck=[1]), 1, io.StringIO())
-        with self.assertRaisesRegex(ch.HolderError, 'release 1 refused'):
+        with self.assertRaisesRegex(ch.HolderError, 'release 1 refused while cut 1 is still being uploaded'):
             r.step()
 
     def test_main_to_the_stop(self):
@@ -100,7 +159,7 @@ class AgainstAFake(unittest.TestCase):
         with open(out) as f:
             lines = f.read().splitlines()
         self.assertEqual([ln.split('\t')[1] for ln in lines[:-1]], ['1', '2'])
-        self.assertTrue(lines[-1].startswith('# released 2, polls '), lines[-1])
+        self.assertTrue(lines[-1].startswith('# released 2, gone 0, polls '), lines[-1])
 
     def test_main_with_no_daemon_answering(self):
         """A release build has no commands: no reply, the releaser's error."""

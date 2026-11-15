@@ -94,6 +94,29 @@ PATH="$T/bin:$PATH" TB_TOPOLOGIES="zfs-skyzfsd no-such-topology" TB_SKYZFSD=$T/c
     bash "$ROOT/tests/bench/topology-bench.sh" > "$T/bench.log" 2>&1 || rc=$?
 is "the benchmark: the row ends with 64" "$rc" 64
 has "  and says why" "$(cat "$T/bench.log")" "TB_SKYZFSD_ARGS (--store,in-place): --store in-place: this build of skyzfsd"
+# TB_SKZ_RELEASE (M2.T4): a releaser with no held cuts to release, or a
+# build with no commands about them, ends the row with 64 before
+# anything runs; with both, the row gets past the check (and ends on the
+# unknown topology after it).
+bench_release() { # REF ARGS -> "rc|log"
+    local rc=0
+    PATH="$T/bin:$PATH" TB_TOPOLOGIES="zfs-skyzfsd no-such-topology" TB_SKYZFSD=$T/current TB_SKYZFSD_REF=$1 TB_SKYZFSD_ARGS=$2 \
+        TB_SKZ_RELEASE=1 TB_OUT=$T/bench-out TB_WORK=$T/bench-work bash "$ROOT/tests/bench/topology-bench.sh" > "$T/bench.log" 2>&1 || rc=$?
+    echo "$rc|$(cat "$T/bench.log")"
+}
+r=$(bench_release abc+hooks "--queues,1")
+is "TB_SKZ_RELEASE without --hold-cuts: the row ends with 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_RELEASE needs --hold-cuts in TB_SKYZFSD_ARGS ('--queues,1')"
+r=$(bench_release abc "--hold-cuts")
+is "TB_SKZ_RELEASE with a build without the test hooks: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_RELEASE needs a build with the test hooks, TB_SKYZFSD_REF=<ref>+hooks, not 'abc'"
+r=$(bench_release "" "--hold-cuts")
+has "  a build that says nothing of its ref is refused too" "$r" "not '': a release build"
+r=$(bench_release abc+hooks "--queues,1,--hold-cuts")
+has "TB_SKZ_RELEASE with both: past the check" "$r" "unknown topology: no-such-topology"
+has "  --hold-cuts may come anywhere, and with spaces" "$(bench_release abc+hooks "--hold-cuts --queues 1")" "unknown topology: no-such-topology"
+is "  --hold-cutsx is not --hold-cuts" "$(bench_release abc+hooks "--hold-cutsx" | head -c 2)" 64
+has "    and it is refused for it" "$(bench_release abc+hooks "--hold-cutsx")" "needs --hold-cuts"
 # skz_start, which serves each row, uses the same check and adds
 # --store in-place for a build from before M1.3t-d.
 start=$(sed -n '/^skz_start() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")

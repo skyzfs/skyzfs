@@ -92,6 +92,10 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
         out['verdict'] = (f"NO VERDICT: its daemon was traced or recorded ({', '.join(row['slowed_by'])}), "
                           'which slows it, though the output is missing')
         return out
+    ended = (row.get('skyzfsd') or {}).get('release', {}).get('ended')
+    if ended:
+        out['verdict'] = f'NO VERDICT: its releaser of held cuts (TB_SKZ_RELEASE) ended before the window did ({ended})'
+        return out
     if row.get('syscalls'):
         out['verdict'] = 'NO VERDICT: its system calls were traced (TB_SYSCALLS), which slows the daemon'
         return out
