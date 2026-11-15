@@ -18,8 +18,11 @@ the daemon's own order, the order design §5.2 counts in:
   (the log writes those out whole);
 - a flush is placed at its `barrier` line: the daemon's added flush
   after a write with FUA (`fua_flush`) is a flush of its own;
-- a discard or a write-zeroes at its `recv` line, where the store places
-  it relative to a flush;
+- a write-zeroes at its `recv` line, where the store places it relative
+  to a flush, as a range that reads as zeros after it (cut_ref's
+  `discard`: no uberblock left in the slots it covers);
+- a discard not at all: the store keeps a discarded block's content
+  (rule R6), so the slots it covers still hold what they held;
 - the recording's marks (DIR/marks.tsv, CLOCK_MONOTONIC as the log's)
   by their time.
 
@@ -133,8 +136,9 @@ def records_of(lines, marks):
             if ln['op'] == 'write':
                 pending[ln['tag']] = (off, n)
                 data.pop(ln['tag'], None)
-            elif ln['op'] in ('discard', 'write_zeroes'):
+            elif ln['op'] == 'write_zeroes':
                 add({'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op']})
+            # A discard changes no content on the daemon's volume (R6).
         elif ev == 'label':
             try:
                 data[ln['tag']] = bytes.fromhex(ln['result'])

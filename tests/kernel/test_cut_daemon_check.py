@@ -163,11 +163,13 @@ class Parse(unittest.TestCase):
         with self.assertRaises(RigError):
             cdc.read_of(recs, 512 << 20)(recs[0])
 
-    def test_discards_and_write_zeroes_at_their_recv(self):
+    def test_write_zeroes_at_its_recv_and_a_discard_changes_nothing(self):
+        """The daemon keeps a discarded block's content (R6); a
+        write-zeroes reads as zeros, placed by its recv line."""
         text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\trecv\t3\twrite_zeroes\t8\t8\t-\n'
                 f'3\t{PID}\trecv\t4\tdiscard\t16\t8\t-\n')
         recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
-        self.assertEqual([(r['flags'], r['offset']) for r in recs], [(['discard'], 4096), (['discard'], 8192)])
+        self.assertEqual([(r['flags'], r['offset']) for r in recs], [(['discard'], 4096)])
 
 
 class Status(unittest.TestCase):
