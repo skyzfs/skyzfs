@@ -773,15 +773,16 @@ fn a_header_known_not_to_verify_can_be_completed_by_its_tail() {
 }
 
 /// A new label's ring, written whole by `vdev_label_init` with an
-/// uberblock of group 0 at its start that no slot verifies, and then
-/// ZFS's write of the slot after it: every place stays known, and the
-/// next group is chosen. Group 0 is never greater than a cut's, so its
-/// fields are not followed past the write that brought them. Fails
-/// where they are, as for a greater group: ZFS's first uberblock writes
-/// into a new pool would leave the ring's first place unknown until its
-/// own slot is written again.
+/// uberblock of group 0 at its start that no slot verifies, as a volume
+/// attached to, replacing a device of, or added to a pool that has
+/// synced gets it, and then ZFS's write of the slot after it: every
+/// place stays known, and the next group is chosen. Group 0 ranks below
+/// every cut's state, so its fields are not followed past the write
+/// that brought them. Fails where they are, as for a greater group:
+/// ZFS's first uberblock writes to such a volume would leave the ring's
+/// first place unknown until its own slot is written again.
 #[test]
-fn a_new_rings_group_zero_is_not_followed_into_the_next_slot() {
+fn a_labelled_rings_group_zero_is_not_followed_into_the_next_slot() {
     let labels = Labels::for_size(64 * MIB);
     let rings: Vec<Ring> = labels.rings().collect();
     let mut view = View::empty(labels);
@@ -796,4 +797,25 @@ fn a_new_rings_group_zero_is_not_followed_into_the_next_slot() {
         view.saw(at, &sealed(&slot_at(5, 1, 100, 0), at));
     }
     assert!(view.is_known() && view.chosen(&state(5, 1), false));
+}
+
+/// An uberblock found in a write shorter than a slot that could begin
+/// at its place is left unknown, whatever that slot's size: a 1 KiB
+/// write puts the fields of group 9 at 2 KiB into a ring, where a slot
+/// of 2 KiB could begin and one of 4 or 8 KiB could not. Nothing there
+/// verifies, and the rest of a 2 KiB slot may lie past the write. Fails
+/// where the second rule asks one size alone, such as 8 KiB (the next
+/// look of the review of #96, which offered this test).
+#[test]
+fn a_header_in_a_write_shorter_than_its_slot_leaves_its_place_unknown() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let mut view = View::empty(labels);
+    for ring in labels.rings() {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    let at = ring.start + 2 * KIB;
+    let s = slot(ByteOrder::Little, 9, 1, 2 * KIB);
+    view.saw(at, &s[..KIB as usize]);
+    assert!(!view.is_known());
 }
