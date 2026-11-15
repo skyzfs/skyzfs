@@ -1860,7 +1860,11 @@ impl<D: Dir> InPlace<D> {
     /// on the threads still alive come back as they end, and fail.
     fn collect(&mut self, timeout: Duration) {
         let Some(pool) = &self.pool else {
-            return;
+            // Nothing is on threads, but a request deferred behind one
+            // that waited for the map may go on now: where the volume
+            // failed, it fails at once, and not when the map's sync ends
+            // (N1 of the next look at #106).
+            return self.run_deferred();
         };
         let mut done = Vec::new();
         pool.take(&mut done, timeout);

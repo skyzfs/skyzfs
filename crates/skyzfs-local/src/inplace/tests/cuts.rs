@@ -2907,6 +2907,48 @@ fn a_sync_of_the_map_that_leaves_a_bit_set_before_it_unwritten_fails_the_volume(
     }
 }
 
+/// A request deferred behind a write that waits for the map is answered
+/// when the volume fails, while the map's sync is still held, with I/O
+/// threads or none (N1 of the next look at #106, and Codex's P2 on
+/// ab2d7f2). Without threads nothing ran what was deferred until the
+/// map's sync ended, which on a disk whose sync never returns is never.
+/// Then the drop ends.
+#[test]
+fn a_request_deferred_behind_a_write_that_waits_for_the_map_is_answered_at_a_failure() {
+    for io in [IoMode::default(), ON_CALLER] {
+        let case = format!("{io:?}");
+        let disk = created(52, 0);
+        let mut store = committed_one(&disk, 0, io);
+        disk.hold_syncs_of(intent::INTENT_NAME);
+        submit(&mut store, 1, write_op(150, 0x66));
+        submit(&mut store, 2, read_op(150));
+        let mut done = Vec::new();
+        polled(&mut store, &mut done, 1, Duration::from_millis(50));
+        let early = ended(&done);
+        store.fail_now();
+        polled(&mut store, &mut done, 2, Duration::from_millis(500));
+        let mut answered = ended(&done);
+        answered.sort_by_key(|(id, _)| *id);
+        disk.release_syncs();
+        let (tell, dropped) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(store);
+            let _ = tell.send(());
+        });
+        assert!(early.is_empty(), "{case}: {early:?}");
+        assert_eq!(
+            answered,
+            [(1, Err(BlkError::Failed)), (2, Err(BlkError::Failed))],
+            "{case}"
+        );
+        assert_eq!(
+            dropped.recv_timeout(DRAIN),
+            Ok(()),
+            "{case}: the drop did not end"
+        );
+    }
+}
+
 /// A write of the map that fails when a commit clears bits fails the
 /// volume, as a failed write of the store does (G4 of the review of
 /// #106).
