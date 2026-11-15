@@ -1202,7 +1202,7 @@ Coding replayed M2.T1's nine recorded pools (512 MiB each, 13,946 writes in all)
 | 16 MiB | 1.0% | 31.8 (23.6 to 53.8) | 78.9 MiB | 0.6% | 10.7 |
 | 64 MiB | 0.4% | 88 (63 to 170) | 224.9 MiB | 0.2% | 26.6 |
 
-At 64 MiB the map names about 44% of these small pools at every flush; 1 to 4 MiB names a few times what changed, where counting the named regions whole is good enough and a comparison with the uploaded cut would buy little. The pools are small and their workloads short, so the shares are not a large volume's. The provisional default stays 64 MiB until M2.T4 has the cost of the map's sync on the write path at 1, 4 and 64 MiB; the default is set from the two together.
+At 64 MiB the map names about 44% of these small pools at every flush; 1 to 4 MiB names a few times what changed, where counting the named regions whole is good enough and a comparison with the uploaded cut would buy little. The pools are small and their workloads short, so the shares are not a large volume's. The default was set to 4 MiB from these and M2.T4's second round (below).
 
 ### The write path with held cuts, round 1 (M2.T4, 2026-11-15)
 
@@ -1226,6 +1226,25 @@ Run 43720102842: one sequence on one machine (Ubuntu 26.04, x86_64), no origin d
 Ratios to the enclosing model rows on tpcb: map 1 MiB 0.506 and no map 0.381 (both below 0.90, bracket 7.0%); map 64 MiB 0.721, map 4 MiB 0.479, buffered 0.802, no held cuts 0.805 (no verdict, brackets 11.6% to 28.8%).
 
 **Reading.** In this regime direct copies cost about half the throughput and buffered copies cost nothing that one run can see: the four rows with direct copies run at 1460 to 2328 tps with p99 of 28 to 102 ms, while buffered copies and no held cuts sit together at about 3010 tps and p99 of 23 to 25 ms. The work disk takes 2.6 to 2.8 writes a transaction with direct copies against 0.8 with buffered ones: a direct read and a direct write for each copied block, made on the queue's thread, as the review of M2.2c foresaw (its R3). The spread among the direct rows is as large as the models' drift, so the run ranks no region size. Round 2 (test-hooks builds with a holder that releases every cut, and every fourth) shows whether the cost holds when cuts come and go as under an upload.
+
+### The intent map's cost with cuts released, round 2 (M2.T4, 2026-11-15)
+
+Run 43726791081: one sequence on one machine (AWS, Ubuntu 26.04, x86_64, work disk write-through), no origin delay, scale 100, 8 clients, 120 s a workload; one run behind every figure. The machine was steady (tpcb models 7603 to 7858, brackets 0.4% to 3.3%). Every daemon row is a test-hooks build with `--hold-cuts`; a releaser beside the workload lets cuts go as an upload would, every cut at once (r1, 98 releases a row) or each once three newer ones are taken (r4, 31 or 32). No cut was abandoned and hardly any write had to be copied, so the rows show the map's cost and not the copies'.
+
+| Row | tpcb tps | Ratio to model | Map syncs / writes that waited | Sync time, sum / largest | select tps (ratio) |
+|---|---|---|---|---|---|
+| r1, 64 MiB | 6886 | 0.891 | 188 / 278 | 64 ms / 19 ms | 46690 (0.847) |
+| r1, 4 MiB | 6629 | 0.857 | 1196 / 1573 | 222 ms / 18 ms | 46140 (0.837) |
+| r1, 1 MiB | 6277 | 0.801 | 3858 / 4899 | 867 ms / 45 ms | 39967 (0.717) |
+| r1, no map | 6790 | 0.866 | | | 47318 (0.849) |
+| r4, 64 MiB | 6874 | 0.885 | 86 / 110 | 14 ms / 1 ms | 47179 (0.842) |
+| r4, 4 MiB | 6754 | 0.869 | 1187 / 1738 | 236 ms / 18 ms | 45278 (0.808) |
+| r4, 1 MiB | 6381 | 0.821 | 3800 / 5476 | 869 ms / 31 ms | 40564 (0.720) |
+| r4, no map | 6982 | 0.899 | | | 45994 (0.817) |
+
+p99 was 3.9 to 4.4 ms in every daemon row (models 3.5 to 3.8) and p99.9 8 ms throughout. Against the no-map build at the same release rate: 64 MiB costs nothing that one run shows; 4 MiB costs 2 to 3% on tpcb and about 2% on select, too little to separate from one run; 1 MiB costs 7.6 to 8.6% on tpcb and 12 to 16% on select, more than its summed sync time explains, so the queue's thread is held by the map's page writes too. The release rate barely matters. **Every daemon row is below 0.90 of the model, the no-map rows included**: the test-hooks build with held cuts is itself at 0.82 to 0.90 here, where M1's criterion had the release build without held cuts at the model's level. What part of that is the test-hooks build and what part the held cuts is not separated yet.
+
+**The default region is 4 MiB** (lead, 2026-11-15): at 64 MiB the map names about 88 times what changed on the recorded pools, at 4 MiB about 9 times for a cost one run cannot separate from none, and 1 MiB costs too much. 256 pages of map for a TiB.
 
 ### What is open in M2
 
