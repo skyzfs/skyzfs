@@ -332,6 +332,10 @@ class NodeB:
                 return
             imported = True
             rc, out, _ = run(['zfs', 'list', '-H', '-t', 'snapshot', '-o', 'name', POOL], 60)
+            # An empty list is a pool without snapshots; a list that did
+            # not come is the rig's error, not a missing snapshot.
+            if rc:
+                raise RigError(f'zfs list of the snapshots: {replay_check.stage("zfs list", rc)}: {flat(out)[:200]}')
             have = out.split()
             if f'{POOL}@{snap}' not in have:
                 seen.put('snapshot', False, f'no snapshot {snap}: it has {len(have)} '
@@ -339,6 +343,8 @@ class NodeB:
                 return
             seen.put('snapshot', True, f'{POOL}@{snap} is listed')
             rc, out, _ = run(['mount', '-t', 'zfs', '-o', 'ro', f'{POOL}@{snap}', self.mnt], 60)
+            if rc in replay_check.RIG_RC:
+                raise RigError(f'mount of {POOL}@{snap}: {replay_check.stage("mount", rc)}')
             if rc:
                 seen.put('mount', False, f'mount of {POOL}@{snap}: {flat(out)[:200]}')
                 return

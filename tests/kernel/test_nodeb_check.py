@@ -231,6 +231,52 @@ class VerifyPaths(unittest.TestCase):
         self.assertEqual(list(seen.stages), ['refs', 'content', 'import', 'snapshot', 'mount', 'files', 'copies'])
 
 
+class SnapshotPaths(unittest.TestCase):
+    """snapshot_files with run stubbed: a zfs list or a mount that does
+    not come to an end is the rig's error, not a catch (review of #97,
+    the look at 0f2f8c7)."""
+
+    def calls(self, answers):
+        nb = nodeb_check.NodeB.__new__(nodeb_check.NodeB)
+        nb.image, nb.alt, nb.mnt, nb.logdev = '/nonexistent/img', '/nonexistent/alt', '/nonexistent/mnt', None
+        saved = nodeb_check.run
+
+        def run(cmd, timeout=None):
+            key = cmd[0] if cmd[0] not in ('zpool', 'zfs') else f'{cmd[0]} {cmd[1]}'
+            return answers.get(key, (0, '', ''))
+        nodeb_check.run = run
+        self.addCleanup(setattr, nodeb_check, 'run', saved)
+        answers.setdefault('zpool list', (1, 'no such pool', ''))
+        answers.setdefault('losetup', (0, '/dev/loop9\n', ''))
+        seen = nodeb_check.Seen()
+        return nb, seen
+
+    def test_a_list_that_times_out_is_the_rigs(self):
+        nb, seen = self.calls({'zfs list': (124, '', '')})
+        with self.assertRaises(RigError):
+            nb.snapshot_files('s24', {}, seen)
+
+    def test_a_list_that_fails_is_the_rigs(self):
+        nb, seen = self.calls({'zfs list': (1, 'cannot open', '')})
+        with self.assertRaises(RigError):
+            nb.snapshot_files('s24', {}, seen)
+
+    def test_an_empty_list_is_a_missing_snapshot(self):
+        nb, seen = self.calls({'zfs list': (0, '', '')})
+        nb.snapshot_files('s24', {}, seen)
+        self.assertEqual(seen.failed(), 'snapshot')
+
+    def test_a_mount_that_times_out_is_the_rigs(self):
+        nb, seen = self.calls({'zfs list': (0, 'skzcut@s24\n', ''), 'mount': (124, '', '')})
+        with self.assertRaises(RigError):
+            nb.snapshot_files('s24', {}, seen)
+
+    def test_a_mount_that_fails_is_a_stage(self):
+        nb, seen = self.calls({'zfs list': (0, 'skzcut@s24\n', ''), 'mount': (32, 'I/O error', '')})
+        nb.snapshot_files('s24', {}, seen)
+        self.assertEqual(seen.failed(), 'mount')
+
+
 class Expected(unittest.TestCase):
     def test_every_control_has_its_stages(self):
         self.assertEqual(set(nodeb_check.EXPECTED), set(nodeb_check.CONTROLS))
