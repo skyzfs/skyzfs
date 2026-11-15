@@ -10,9 +10,9 @@
 //! §5.2. Here the same record goes through this crate's parser and
 //! through the store's rule, one request at a time, and both must agree
 //! with the reference in full. Each cut must also say whether it opens
-//! as itself exactly where the fixture's check (`check.tsv`, from
-//! `zdb -e -u` at each cut's instant) found the volume opening at the
-//! cut's own group (work package M2.1b).
+//! as itself exactly where the fixture's `opens.tsv` says it does: the
+//! reference's reading of the rings at each cut's instant, which the
+//! cut rig held to `zdb -e -u` (work package M2.1b).
 //!
 //! What the recordings show of the count's defects (probed on
 //! 2026-11-15 with all nine pools; [`the_recordings_notice_the_defects_of_a_repeat`]
@@ -365,7 +365,11 @@ fn replay(pool: &Pool, mutants: u64, restart: bool) -> Vec<Counted> {
 /// that failed the check for another reason is not one this test can
 /// judge. A stale cut (multihost: the state of an older cut written
 /// again after a newer one) has `itself` 0 though the check passes it,
-/// since it opens where the reference says it opens.
+/// since it opens where the reference says it opens. Since #94 no
+/// fixture holds a `cut_N FAIL` line (the fixtures' own test,
+/// `tests/kernel/test_cut_ref.py`, refuses one): the lines are read
+/// here only so that a fixture made otherwise cannot disagree with
+/// `opens.tsv` unseen.
 fn reference(pool: &Pool) -> Vec<Counted> {
     let text = std::fs::read_to_string(pool.dir.join("cuts.tsv")).expect("cuts");
     assert_eq!(
@@ -425,11 +429,12 @@ fn reference(pool: &Pool) -> Vec<Counted> {
 
 /// The store's rule makes the reference's cuts from each recorded pool:
 /// the same count, and each cut with the same group at the barrier of
-/// the same flush. Each says it opens as itself exactly where the
-/// check opened the volume at the cut's own group: in the rewind, cuts
-/// 23 to 28 (the new history's groups 39 to 48, whose volumes open at
-/// the abandoned history's 51) do not, and the new history's own 51,
-/// cut 29, does (design §5.2, "Whether a cut opens as itself").
+/// the same flush. Each says it opens as itself exactly where
+/// `opens.tsv` says it does: in the rewind, cuts 23 to 28 (the new
+/// history's groups 39 to 48, whose volumes open at the abandoned
+/// history's 51) do not, and the new history's own 51, cut 29, does;
+/// in `multihost`, the stale cuts 10 and 27 do not (design §5.2,
+/// "Whether a cut opens as itself").
 #[test]
 fn the_rule_makes_the_reference_cuts_of_every_recorded_pool() {
     for pool in pools() {
@@ -473,6 +478,13 @@ fn a_store_begun_at_each_session_says_which_cuts_open_as_themselves() {
 /// the pools named (the module's documentation says why): a change to
 /// the fixtures or to the rule that loses one of them is noticed here,
 /// as one that adds a pool is.
+///
+/// Some of these pins rest on what one recording run happened to do:
+/// `multihost` shows a stale write only where MMP rewrote a state after
+/// a newer cut, which some runs never do (#94). A refresh of the
+/// fixtures can therefore fail this test with nothing wrong in the
+/// rule; whoever refreshes them sets this table to what the new
+/// recordings notice (the review of #95, its S5).
 #[test]
 fn the_recordings_notice_the_defects_of_a_repeat() {
     let pools = pools();
@@ -499,6 +511,11 @@ fn the_recordings_notice_the_defects_of_a_repeat() {
             .filter(|pool| replay(pool, mutants, false) != reference(pool))
             .map(|pool| pool.name.as_str())
             .collect();
-        assert_eq!(noticed, noticed_in, "{defect}");
+        assert_eq!(
+            noticed, noticed_in,
+            "{defect}: the pools that notice it. If the fixtures were just refreshed, a \
+             recording may lack the race this pin rests on (MMP's stale write, a stray flush): \
+             set the table to what the new recordings notice"
+        );
     }
 }

@@ -415,3 +415,28 @@ fn a_position_covered_in_part_is_not_known() {
     view.zeroed(ring.start + 8, 8);
     assert!(!view.is_known());
 }
+
+/// While a ring is not known, no state is chosen, though the rings
+/// that are known hold one uberblock and nothing above it (the review
+/// of #95, its S2, whose reproducer this is). Fails where
+/// `View::chosen` does not ask `is_known()` (plant V1), and where
+/// `View::unknown` covers the first ring alone (plant V13).
+#[test]
+fn a_ring_not_known_leaves_no_state_chosen() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::unknown(labels);
+    // The start read three rings; the last could not be read.
+    for ring in &rings[..3] {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    for ring in &rings[..3] {
+        view.saw(ring.start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
+    }
+    assert!(!view.is_known());
+    assert!(!view.chosen(&state(9, 1), false));
+    // Once the last ring is known too, the state is chosen.
+    view.saw(rings[3].start, &vec![0; RING_SIZE as usize]);
+    view.saw(rings[3].start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
+}
