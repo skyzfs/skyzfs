@@ -1,0 +1,5 @@
+cargo fmt: exit 0 
+test result: FAILED. 41 passed; 3 failed; 1 ignored; 0 measured; 146 filtered out; finished in 19.00s
+failed at the head: ['a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost', 'a_start_that_holds_no_cuts_between_two_that_do', 'an_acknowledged_failure_whose_start_is_lost_before_its_second_phase']
+reproducers.patch: 322 lines
+finished

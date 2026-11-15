@@ -1,0 +1,322 @@
+diff --git a/crates/skyzfs-local/src/inplace/state/tests.rs b/crates/skyzfs-local/src/inplace/state/tests.rs
+index acc93b1..dfc2880 100644
+--- a/crates/skyzfs-local/src/inplace/state/tests.rs
++++ b/crates/skyzfs-local/src/inplace/state/tests.rs
+@@ -1111,3 +1111,166 @@ fn the_state_of_a_tebibyte_takes_146_mib() {
+     assert_eq!((all - maps) / MIB, 16, "records: {} bytes", all - maps);
+     assert!(all - 146 * MIB < 4096, "header: {} bytes", all - 146 * MIB);
+ }
++
++/// a disk that refuses copies while told to.
++struct Refusing {
++    disk: Disk,
++    refuse: bool,
++}
++
++impl Copier for Refusing {
++    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
++        self.disk.read_image(block, buf)
++    }
++
++    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
++        if self.refuse {
++            return Err(io::Error::other("no space left"));
++        }
++        self.disk.write_copy(slot, buf)
++    }
++}
++
++const REFUSING_BOUND: u64 = 64 * BLOCK_SIZE;
++
++/// cut 1 was let go as uploaded; cut 2 is being uploaded (block
++/// 20), cut 3 waits (blocks 30 to 32), cut 4's flush is under way
++/// (block 40), and block 50 is in the open map.
++fn three_held(region: &MemRegion) -> (CutState<MemRegion>, Refusing) {
++    let mut state = CutState::begin(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0));
++    let mut io = Refusing {
++        disk: Disk {
++            image: vec![0; BLOCKS as usize],
++            copies: BTreeMap::new(),
++        },
++        refuse: false,
++    };
++    state.change(10, 1, &mut io).expect("the change");
++    assert_eq!(state.freeze(&marked(1), true), 1);
++    state.flushed(1);
++    assert!(state.release(1));
++    state.change(20, 1, &mut io).expect("the change");
++    assert_eq!(state.freeze(&marked(2), true), 2);
++    state.flushed(2);
++    state.change(30, 3, &mut io).expect("the change");
++    // Two more blocks in other words of the map, so that cut 3's map
++    // weighs more than the open map that takes it.
++    state.change(100, 1, &mut io).expect("the change");
++    state.change(170, 1, &mut io).expect("the change");
++    assert_eq!(state.freeze(&marked(3), true), 3);
++    state.flushed(3);
++    state.change(40, 1, &mut io).expect("the change");
++    assert_eq!(state.freeze(&marked(4), true), 4);
++    state.change(50, 1, &mut io).expect("the change");
++    let held: Vec<(u64, Phase)> = state.held().iter().map(|c| (c.number, c.phase)).collect();
++    assert_eq!(
++        held,
++        [
++            (2, Phase::Uploading),
++            (3, Phase::Waiting),
++            (4, Phase::Flushing)
++        ]
++    );
++    (state, io)
++}
++
++#[test]
++fn a_refused_copy_lets_go_the_cut_that_reads_it_and_every_newer_one() {
++    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
++    let (mut state, mut io) = three_held(&region);
++    io.refuse = true;
++    // Block 32 is in cut 3's map; block 33 has not changed before.
++    state.change(32, 2, &mut io).expect("the change goes on");
++    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
++    assert_eq!(
++        held,
++        [2],
++        "cut 3 read block 32, and cut 4 would once it took cut 3's map"
++    );
++    io.refuse = false;
++    let five = state.freeze(&marked(5), true);
++    let map = state.map(five);
++    for block in [30, 31, 32, 33, 40, 50, 100, 170] {
++        assert!(
++            map.contains(&block),
++            "cut {five} lacks block {block}: {map:?}"
++        );
++    }
++}
++
++#[test]
++fn a_death_while_a_refused_copy_lets_cuts_go() {
++    quiet_deaths();
++    let mut deaths = 0;
++    for death in 0u64.. {
++        let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
++        let (mut state, mut io) = three_held(&region);
++        io.refuse = true;
++        region.die_at(death);
++        let done = catch_unwind(AssertUnwindSafe(|| state.change(32, 2, &mut io)));
++        region.revive();
++        match done {
++            Ok(_) => break,
++            Err(payload) => {
++                if payload.downcast_ref::<Lost>().is_none() {
++                    std::panic::resume_unwind(payload);
++                }
++            }
++        }
++        deaths += 1;
++        drop(state);
++        let mut state = CutState::restore(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0))
++            .map_err(|(e, _)| e)
++            .expect("the state");
++        let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
++        // The map never skips a cut.
++        if held.contains(&4) && !held.contains(&3) {
++            let map = state.map(4);
++            assert!(
++                map.contains(&30),
++                "a death at store {death}: cut 4 is held without cut 3 and lacks its blocks: held {held:?}, cut 4's map {map:?}"
++            );
++        }
++        // The write comes again, with copies still refused.
++        state.change(32, 2, &mut io).expect("the change goes on");
++        let next = state.freeze(&marked(9), true);
++        let mut all = BTreeSet::new();
++        for cut in state.held() {
++            if cut.number > 2 {
++                all.extend(state.map(cut.number));
++            }
++        }
++        for block in [30, 31, 32, 33, 40, 50, 100, 170] {
++            assert!(
++                all.contains(&block),
++                "a death at store {death}: block {block} is in no cut after cut 2 (the next is {next}): {all:?}"
++            );
++        }
++    }
++    assert!(deaths > 0);
++}
++
++#[test]
++fn a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo() {
++    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
++    let (mut state, mut io) = three_held(&region);
++    io.refuse = true;
++    // Block 20 is in cut 2's map alone: cut 2 reads it, and every cut goes.
++    state.change(20, 1, &mut io).expect("the change goes on");
++    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
++    assert!(held.is_empty(), "{held:?}");
++    io.refuse = false;
++    let five = state.freeze(&marked(5), true);
++    let cut = state.held()[0];
++    let map = state.map(five);
++    assert_eq!(
++        cut.lo, 1,
++        "cut {five} holds the changes since cut 1, the last let go as uploaded"
++    );
++    for block in [20, 30, 31, 32, 40, 50, 100, 170] {
++        assert!(
++            map.contains(&block),
++            "cut {five} lacks block {block}: {map:?}"
++        );
++    }
++}
+diff --git a/crates/skyzfs-local/src/inplace/tests/cuts.rs b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+index 87cef99..5d1a489 100644
+--- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
++++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+@@ -1728,3 +1728,146 @@ fn a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes() {
+         "a slot completed by its second half was taken for an empty place"
+     );
+ }
++
++/// The store's options with the cut state in `region`.
++fn holding(region: &state::MemRegion, acknowledge: bool) -> OpenOptions {
++    OpenOptions {
++        io: ON_CALLER,
++        acknowledge_failure: acknowledge,
++        hold_cuts: Some(HoldCuts {
++            region: CutRegion::Memory(region.clone()),
++            boot: state::tests::BOOT,
++            bound: Some(TEST_BOUND),
++        }),
++        ..OpenOptions::default()
++    }
++}
++
++#[test]
++fn a_start_that_holds_no_cuts_between_two_that_do() {
++    let disk = created(40, 0);
++    let region = region();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    write(&mut store, 5, 0x55).unwrap();
++    group(&mut store, 100, 7, 70);
++    assert_eq!(cut_block(&mut store, 1, 5), vec![0x55; BLOCK_USIZE]);
++    drop(store);
++    disk.kill();
++
++    // A daemon without --hold-cuts: the store is told of no region.
++    let mut store = start_io(&disk, 0, false, ON_CALLER).expect("opens");
++    assert_eq!(store.cuts_at_start(), None);
++    write(&mut store, 5, 0x66).unwrap();
++    assert!(run(&mut store, 300, Op::Flush).result.is_ok());
++    drop(store);
++    disk.kill();
++
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    let held: Vec<u64> = store.held_cuts().iter().map(|c| c.number).collect();
++    let five = if held.contains(&1) {
++        cut_block(&mut store, 1, 5)[0]
++    } else {
++        0
++    };
++    assert!(
++        held.is_empty() || five == 0x55,
++        "cut 1 reads block 5 as {five:#x}; the volume held 0x55 at its instant"
++    );
++}
++
++#[test]
++fn an_acknowledged_failure_whose_start_is_lost_before_its_second_phase() {
++    let disk = created(41, 0);
++    let region = region();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    write(&mut store, 5, 0x55).unwrap();
++    group(&mut store, 100, 7, 70);
++    // The volume fails: a write of the image is refused.
++    disk.fail_write_of(HOME_NAME);
++    assert_eq!(write(&mut store, 6, 0x66), Err(BlkError::Failed));
++    drop(store);
++    disk.kill();
++    disk.clear_faults();
++
++    // Without the acknowledgement the start is refused.
++    let refused = Opened::open(
++        disk.clone(),
++        lock(&disk).expect("the lock"),
++        holding(&region, false),
++    )
++    .map_err(|(e, _)| e)
++    .err();
++    assert!(
++        matches!(refused, Some(OpenError::MarkedFailed)),
++        "{refused:?}"
++    );
++
++    // With it the open takes the marker away, and the daemon is lost
++    // before its second phase.
++    let opened = Opened::open(
++        disk.clone(),
++        lock(&disk).expect("the lock"),
++        holding(&region, true),
++    )
++    .map_err(|(e, _)| e)
++    .expect("opens");
++    assert!(opened.acknowledged());
++    drop(opened);
++    disk.kill();
++
++    // The next start has nothing to acknowledge.
++    let opened = Opened::open(
++        disk.clone(),
++        lock(&disk).expect("the lock"),
++        holding(&region, false),
++    )
++    .map_err(|(e, _)| e)
++    .expect("opens");
++    assert!(!opened.acknowledged());
++    let store = opened
++        .start_with(None, Mutants(0))
++        .expect("the in-place store");
++    let held: Vec<u64> = store.held_cuts().iter().map(|c| c.number).collect();
++    assert!(
++        matches!(store.cuts_at_start(), Some(CutsTakenUp::Begun(_))),
++        "the state of a failed volume was taken up, with cuts {held:?}"
++    );
++}
++
++#[test]
++fn a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost() {
++    state::tests::quiet_deaths();
++    let disk = created(42, 0);
++    let region = region();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    write(&mut store, 5, 0x55).unwrap();
++    group(&mut store, 100, 7, 70);
++    write(&mut store, 5, 0x66).unwrap();
++    assert!(store.cut_figures().copied > 0);
++    drop(store);
++    disk.kill();
++
++    // The writeback of the copies has failed. This start's sync hears
++    // it, and the start is lost at its first store into the region.
++    disk.fail_sync_of(COPIES_NAME);
++    region.die_at(0);
++    let lost = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        start_on(&disk, 0, &region, ON_CALLER)
++    }));
++    region.revive();
++    match lost {
++        Ok(_) => panic!("the start made no store into the region"),
++        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => {}
++        Err(payload) => std::panic::resume_unwind(payload),
++    }
++    disk.kill();
++    // The kernel reports a failed writeback once: the next sync succeeds.
++    disk.clear_faults();
++
++    let store = start_on(&disk, 0, &region, ON_CALLER);
++    let held: Vec<u64> = store.held_cuts().iter().map(|c| c.number).collect();
++    assert!(
++        matches!(store.cuts_at_start(), Some(CutsTakenUp::Begun(_))),
++        "a state whose copies failed to sync was taken up, with cuts {held:?}"
++    );
++}

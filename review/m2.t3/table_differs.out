@@ -1,0 +1,5 @@
+exit 1
+cuts ('PASS', '26 cuts, each at the same barrier with the same group and the same answer to itself')
+ctl_txg-alone ('SAME', "the rule txg-alone gives the design's 26 cuts here (expected: caught; DIFFERS)")
+ctl_count-repeats ('SAME', "the rule count-repeats gives the design's 26 cuts here (expected: same)")
+ctl_early ('CAUGHT', "the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 77, the reference's group 4 (rewind) at record 71 (expected: caught)")

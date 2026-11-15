@@ -1,0 +1,8 @@
+T1 the rule on the region having been there is dropped: SURVIVED
+T2 a missing copies file is never as good as synced: KILLED by 1: a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before
+T3 a missing copies file is always as good as synced: KILLED by 1: a_held_cut_is_taken_up_only_where_its_state_is_trusted
+T4 the copies file is opened and not synced: KILLED by 1: a_held_cut_is_taken_up_only_where_its_state_is_trusted
+T5 a copies file that cannot be opened counts as missing: SURVIVED
+T6 the mark is dropped on a device taken over too: KILLED by 2: a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole, a_start_on_a_created_device_keeps_no_mark
+T7 the store is told the device was taken over whatever the caller says: KILLED by 1: a_start_on_a_created_device_keeps_no_mark
+T8 the store is told no failure is acknowledged: KILLED by 1: a_held_cut_is_taken_up_only_where_its_state_is_trusted

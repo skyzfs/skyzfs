@@ -1,0 +1,31 @@
+as the head has it:
+    exit 0
+    review: 1: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.01s
+A1 only the cut that reads the content goes, not the newer ones:
+    exit 101
+    test inplace::state::tests::review_a_death_while_a_refused_copy_lets_cuts_go ... FAILED
+    test inplace::state::tests::review_a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo ... FAILED
+    test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.11s
+    a death at store 1: cut 4 is held without cut 3 and lacks its blocks: held [2, 4], cut 4's map [40]
+    left: [2, 4]
+    right: [2]
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+A2 the cuts go oldest first:
+    exit 101
+    test inplace::state::tests::review_a_death_while_a_refused_copy_lets_cuts_go ... FAILED
+    review: 1: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.09s
+    a death at store 1: cut 4 is held without cut 3 and lacks its blocks: held [2, 4], cut 4's map [40]
+    left: 3
+    right: 1
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+A8 the open map is not read again after the cuts went:
+    exit 101
+    test inplace::state::tests::review_a_death_while_a_refused_copy_lets_cuts_go ... FAILED
+    review: 1: cut 5's map: [30, 31, 32, 40, 50, 100, 170]
+    test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.09s
+    a death at store 0: block 33 is in no cut after cut 2 (the next is 5): {30, 31, 32, 40, 50, 100, 170}
+    cut 5 lacks block 33: [30, 31, 32, 40, 50, 100, 170]
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+finished

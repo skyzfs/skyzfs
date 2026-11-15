@@ -1,0 +1,13 @@
+exit 101
+    test inplace::tests::cuts::review_a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost ... review: after a start that heard the copies' failed sync and was lost: Some(TakenUp), held [1]
+    test inplace::tests::cuts::review_a_start_that_holds_no_cuts_between_two_that_do ... review: after a start that held no cuts: Some(TakenUp), held [1], cut 1 reads block 5 as 0x66
+    test inplace::tests::cuts::review_an_acknowledged_failure_whose_start_is_lost_before_its_second_phase ... review: after a failure acknowledged by a start that was lost: Some(TakenUp), held [1]
+    test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.17s
+    thread 'inplace::tests::cuts::review_a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost' (6386) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:1878:5:
+    a state whose copies failed to sync was taken up, with cuts [1]
+    thread 'inplace::tests::cuts::review_a_start_that_holds_no_cuts_between_two_that_do' (6437) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:1776:5:
+    cut 1 reads block 5 as 0x66; the volume held 0x55 at its instant
+    thread 'inplace::tests::cuts::review_an_acknowledged_failure_whose_start_is_lost_before_its_second_phase' (6454) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:1836:5:
+    the state of a failed volume was taken up, with cuts [1]
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+finished

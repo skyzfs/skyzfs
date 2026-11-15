@@ -1,0 +1,40 @@
+R1 a write is placed at its recv line, with no bytes: KILLED by test_cut_daemon_check.py: test_a_copy_applied_while_a_flush_carries_its_state, test_a_flush_received_before_the_uberblock_was_applied, test_each_list_is_told_by_what_it_names, test_every_control_is_caught, test_life, test_rewind_has_cuts_that_do_not_open_as_themselves, test_the_columns_of_an_applied_line_since_m2_2b_2, test_the_rules_on_the_fixtures; test_cut_daemon_main.py: test_a_cut_counted_at_the_flush_after_its_own, test_a_cut_the_daemon_did_not_count, test_a_failed_cuts_with_what_the_check_cannot_place, test_a_right_daemon, test_a_session_whose_kstat_has_a_group_the_daemon_did_not_cut, test_a_status_one_cut_behind, test_cut_numbers
+R2 a flush is one record at its barrier (no receipt): KILLED by test_cut_daemon_check.py: test_a_flush_received_before_the_uberblock_was_applied
+R3 a write-zeroes changes nothing: KILLED by test_cut_daemon_check.py: test_write_zeroes_at_its_recv_and_a_discard_changes_nothing
+R4 a discard reads as zeros too: KILLED by test_cut_daemon_check.py: test_write_zeroes_at_its_recv_and_a_discard_changes_nothing
+R5 a write keeps no bytes of its label line: KILLED by test_cut_daemon_check.py: test_a_copy_applied_while_a_flush_carries_its_state, test_a_flush_received_before_the_uberblock_was_applied, test_each_list_is_told_by_what_it_names, test_every_control_is_caught, test_life, test_rewind_has_cuts_that_do_not_open_as_themselves, test_the_rules_on_the_fixtures; test_cut_daemon_main.py: test_a_cut_counted_at_the_flush_after_its_own, test_a_cut_the_daemon_did_not_count, test_a_failed_cuts_with_what_the_check_cannot_place, test_a_right_daemon, test_a_session_whose_kstat_has_a_group_the_daemon_did_not_cut, test_a_status_one_cut_behind, test_cut_numbers
+R6 the marks all come after the last line: KILLED by test_cut_daemon_main.py: test_a_failed_cuts_with_what_the_check_cannot_place, test_a_right_daemon, test_cut_numbers
+R7 a cut's instant is the record after its barrier: KILLED by test_cut_daemon_check.py: test_a_flush_received_before_the_uberblock_was_applied, test_each_list_is_told_by_what_it_names, test_every_control_is_caught, test_life, test_rewind_has_cuts_that_do_not_open_as_themselves, test_the_rules_on_the_fixtures; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+R8 a cut line need not follow its own barrier: SURVIVED
+R9 a mark at a line's own time comes after it: SURVIVED
+R10 a write is placed at its commit line, not where it was applied: KILLED by test_cut_daemon_check.py: test_a_flush_received_before_the_uberblock_was_applied, test_a_write_to_a_label_with_no_label_line, test_an_applied_write_with_no_recv, test_the_columns_of_an_applied_line_since_m2_2b_2
+R11 a label line of another length is taken: SURVIVED
+R12 a barrier of a flush that was never received is taken: KILLED by test_cut_daemon_check.py: test_guards_of_the_receipt
+P1 a line of any number of columns is read: KILLED by test_cut_daemon_check.py: test_the_columns_of_an_applied_line_since_m2_2b_2
+P2 a line of a pid with no start line is dropped: KILLED by test_cut_daemon_check.py: test_bad_lines
+C1 the count is not compared: KILLED by test_cut_daemon_check.py: test_each_list_is_told_by_what_it_names, test_every_control_is_caught; test_cut_daemon_main.py: test_a_cut_the_daemon_did_not_count, test_a_right_daemon, test_cut_numbers
+C2 the instant is not compared: KILLED by test_cut_daemon_check.py: test_every_control_is_caught; test_cut_daemon_main.py: test_a_cut_counted_at_the_flush_after_its_own, test_a_right_daemon, test_cut_numbers
+C3 the answer to itself is not compared: KILLED by test_cut_daemon_check.py: test_every_control_is_caught; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+C4 the group is not compared: KILLED by test_cut_daemon_check.py: test_every_control_is_caught; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+T1 a status written before the last cut is held to its values alone: NOT APPLIED (found [0] times)
+T2 no slack: NOT APPLIED (found [0] times)
+T3 the status's age is not taken off: NOT APPLIED (found [0] times)
+T4 cut_opens is not compared: KILLED by test_cut_daemon_check.py: test_each_value
+T5 cut_group is not compared: KILLED by test_cut_daemon_check.py: test_each_value
+T6 the count is not compared: KILLED by test_cut_daemon_check.py: test_each_value
+T7 a read that ended before it began is taken: KILLED by test_cut_daemon_check.py: test_no_time_for_the_status
+N1 numbers that do not count from 1 pass: KILLED by test_cut_daemon_check.py: test_numbers; test_cut_daemon_main.py: test_cut_numbers
+M1 a failed cuts line does not fail the check: NOT APPLIED (found [0] times)
+M2 a failed status line does not fail the check: KILLED by test_cut_daemon_main.py: test_a_status_one_cut_behind
+M3 a control that was missed does not fail the check: SURVIVED
+M4 more than one instance is read as the first: KILLED by test_cut_daemon_main.py: test_a_second_instance_is_the_rigs_error
+M5 the rig's own error ends as a verdict: KILLED by test_cut_daemon_main.py: test_a_second_instance_is_the_rigs_error
+M6 failed sessions do not fail the check: KILLED by test_cut_daemon_main.py: test_a_session_whose_kstat_has_a_group_the_daemon_did_not_cut
+M7 wrong cut numbers do not fail the check: KILLED by test_cut_daemon_main.py: test_cut_numbers
+M8 the early control compares the daemon with the design's reference: NOT APPLIED (found [0] times)
+K1 the drop control drops nothing: NOT APPLIED (found [0] times)
+F1 a receipt leaves the mark where it was: KILLED by test_cut_daemon_check.py: test_a_copy_applied_while_a_flush_carries_its_state, test_a_flush_received_before_the_uberblock_was_applied, test_each_list_is_told_by_what_it_names, test_every_control_is_caught, test_life, test_rewind_has_cuts_that_do_not_open_as_themselves, test_the_rules_on_the_fixtures; test_cut_daemon_main.py: test_a_failed_cuts_with_what_the_check_cannot_place, test_a_right_daemon, test_cut_numbers
+F2 a received flush's barrier loses the mark made since its receipt: KILLED by test_cut_daemon_check.py: test_a_mark_made_since_the_receipt_outlives_the_barrier
+F3 an uberblock that repeats a carried mark marks again: KILLED by test_cut_daemon_check.py: test_a_copy_applied_while_a_flush_carries_its_state
+F4 a received flush's barrier takes the mark made since its receipt when it carries none: KILLED by test_cut_daemon_check.py: test_a_flush_received_before_the_uberblock_was_applied, test_a_mark_made_since_the_receipt_outlives_the_barrier
+F5 a flush received twice before its barrier is taken: KILLED by test_cut_daemon_check.py: test_guards_of_the_receipt
