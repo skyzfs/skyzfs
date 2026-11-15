@@ -4228,6 +4228,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-nodeb"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "skynbd-engine",
+ "skynbd-format",
+ "skynbd-refs",
+ "skynbd-store",
+ "skynbd-types",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
 name = "skyzfs-uberblock"
 version = "0.0.1"
 dependencies = [

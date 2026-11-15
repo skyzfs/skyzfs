@@ -333,6 +333,19 @@ there, and the user decides when it merges.
   imported read-only on ZFS 2.4.1; the check imports it writable from a
   copy. The recorded pools in `tests/fixtures/pools` are what the
   daemon's parser and cut rule are tested against.
+- **The node B rig.** `skyzfs-nodeb-rig.yml` (M2.T2) runs MinIO on the
+  runner and, for the `life` and `slog` recordings, puts a reference
+  cut into object storage through the engine (`bins/skyzfs-nodeb`, the
+  uploader's stand-in) and reads it back as node B, which has only the
+  bucket: it lists the refs, imports the pool read-only without its
+  log device (`-m`), compares snapshot *t*'s files with the source's
+  digests and checks every copy of every block. zdb cannot walk a cut
+  whose intent log is on a log device it does not have, so the check
+  gives zdb the log device as it was created; node B never has it
+  (`nodeb_zdb_device`). Five controls must each be caught at their
+  stage (`ctl_digest`, `ctl_early`, `ctl_lacks`, `ctl_later`,
+  `ctl_hole`). Both 26.04 images on a pull request that touches its
+  files.
 - **A pool whose device was deleted goes on reading ONLINE while it
   only writes**, and posts tens of thousands of events a second. A tool
   that reads `zpool events` from it does not come to an end: cut such a
