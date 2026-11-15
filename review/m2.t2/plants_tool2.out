@@ -1,0 +1,8 @@
+T3 put: no commit before the snapshot: SURVIVED
+T5 get: the file is not set to the volume's size: SURVIVED
+T6 get: reads the head whatever ref is asked for: KILLED by a_put_image_reads_back_through_a_second_ref_store
+U1 get: a commit that cannot be opened is the rig's error: KILLED by a_ref_whose_objects_are_gone_is_unreadable
+U2 get: a range that cannot be read is the rig's error: SURVIVED
+U3 get: a ref that cannot be read ends with exit 2: SURVIVED
+U4 get: a ref that is not there ends with exit 2: SURVIVED
+U5 get: a ref that is not there reads as one that cannot be read: KILLED by a_put_image_reads_back_through_a_second_ref_store

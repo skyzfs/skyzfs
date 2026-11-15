@@ -1,0 +1,28 @@
+L1 later_uberblock: an uberblock before the instant counts: KILLED by test_later_uberblock
+C8 choose: no check that a cut comes before: SURVIVED
+C9 choose: the early cut may be of the snapshot's group or later: SURVIVED
+N1 compare: nothing differs: KILLED by test_each_difference
+N2 compare: the digests are not compared: KILLED by test_each_difference
+N3 compare: files the source did not hold pass: KILLED by test_each_difference
+N4 compare: files node B lacks pass: KILLED by test_each_difference
+N5 failed: the last stage that failed: KILLED by test_order_is_the_stages_not_the_calls
+N6 failed: the first that failed in the order of the calls: KILLED by test_order_is_the_stages_not_the_calls
+N7 control_verdict: caught at any stage is as expected: KILLED by test_the_first_stage_that_failed
+N8 control_verdict: a control that is missed is as expected: KILLED by test_missed
+N9 flat: the text as it is: KILLED by test_flat, test_the_first_stage_that_failed
+N10 Seen.put: the detail is not made one line: KILLED by test_the_first_stage_that_failed
+N11 Seen.ok: a stage that did not run is ok: KILLED by test_the_first_stage_that_failed
+N12 EXPECTED: early may be caught at the import: KILLED by test_every_control_has_its_stages
+N13 EXPECTED: digest may be caught at the copies: KILLED by test_every_control_has_its_stages
+N14 EXPECTED: hole may be caught at the refs: KILLED by test_every_control_has_its_stages
+N15 EXPECTED: lacks may be caught at the snapshot: SURVIVED
+M1 main: early need not be otherwise clean: SURVIVED
+M2 main: the digest control holds the cut against the unchanged digests: SURVIVED
+M3 main: a multihost pool is not refused: SURVIVED
+M4 main: any other exception is not the rig's error: SURVIVED
+M5 verify: zdb's abort on a control is the rig's error: SURVIVED
+M6 verify: zdb's abort on the published cut is a failed stage: SURVIVED
+M7 verify: a ref whose content cannot be read is the rig's error: SURVIVED
+M8 main: a control that differs does not fail the run: SURVIVED
+M9 main: the published cut's failure does not fail the run: SURVIVED
+M10 NodeB: zdb is not given the log device: SURVIVED

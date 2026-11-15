@@ -1,0 +1,5 @@
+1. a control, zdb timed out: refs ok: snap/t among 1 refs; content ok: read snap/t c0 1; import ok: read-only; snapshot ok: skzcut@s24; files ok: 24 files, each as the source held it; copies FAILED: rig: zdb timed out:
+   lacks: ('caught at copies', True)
+   later: ('caught at copies', True)
+   hole: ('caught at copies', True)
+2. the published cut, import failed, zdb aborted: RigError: rig: zdb died with signal 6: PANIC: Pool has encountered an uncorrectable I/O failure
