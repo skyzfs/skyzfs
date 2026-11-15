@@ -1,0 +1,80 @@
+Two tests for the rule "while any position is unknown, no cut opens as
+itself" (#95, M2.1b). Both pass at d665a95. Each fails with the plant
+named in its comment, which the pull request's own tests do not notice.
+
+--- a/crates/skyzfs-uberblock/src/tests.rs
++++ b/crates/skyzfs-uberblock/src/tests.rs
+@@ -417,3 +417,27 @@ fn a_position_covered_in_part_is_not_known() {
+     view.zeroed(ring.start + 8, 8);
+     assert!(!view.is_known());
+ }
++
++/// While a ring is not known, no state is chosen, though the rings
++/// that are known hold one uberblock and nothing above it. Fails where
++/// `View::chosen` does not ask `is_known()` (plant V1), and where
++/// `View::unknown` covers the first ring alone (plant V13).
++#[test]
++fn a_ring_not_known_leaves_no_state_chosen() {
++    let labels = Labels::for_size(64 * MIB);
++    let rings: Vec<Ring> = labels.rings().collect();
++    let mut view = View::unknown(labels);
++    // The start read three rings; the last could not be read.
++    for ring in &rings[..3] {
++        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
++    }
++    for ring in &rings[..3] {
++        view.saw(ring.start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
++    }
++    assert!(!view.is_known());
++    assert!(!view.chosen(&state(9, 1), false));
++    // Once the last ring is known too, the state is chosen.
++    view.saw(rings[3].start, &vec![0; RING_SIZE as usize]);
++    view.saw(rings[3].start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
++    assert!(view.is_known() && view.chosen(&state(9, 1), false));
++}
+--- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
++++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+@@ -810,3 +810,48 @@ fn another_state_under_the_carried_group_marks() {
+         "a carried state compared by its group alone is not noticed"
+     );
+ }
++
++/// A start that could not read a ring goes on, and no cut opens as
++/// itself until that ring has been written again (`read_rings`). The
++/// start's reads are failed one at a time: among those after which the
++/// store still starts, exactly four leave the first cut a rewind, the
++/// four rings. Fails where a ring that could not be read is taken as
++/// read (plants C4 and C6: every such start says `itself`).
++#[test]
++fn a_ring_the_start_could_not_read_leaves_no_cut_itself() {
++    let mut rewinds = 0;
++    let mut starts = 0;
++    for after in 0..64 {
++        let disk = created(19, 0);
++        disk.fail_read(after, false);
++        let Ok(opened) = opened(&disk, false, IoMode::default()) else {
++            continue;
++        };
++        let Ok(mut store) = opened.start_with(None, Mutants(0)) else {
++            continue;
++        };
++        disk.clear_faults();
++        starts += 1;
++        let mut id = 0;
++        for label in 0..LABELS {
++            id += 1;
++            assert!(run(&mut store, id, uberblock_write(label, 10, 1))
++                .result
++                .is_ok());
++        }
++        id += 1;
++        assert!(run(&mut store, id, Op::Flush).result.is_ok());
++        match newest(&store) {
++            Some((10, true)) => {}
++            Some((10, false)) => rewinds += 1,
++            other => panic!("after {after}: {other:?}"),
++        }
++    }
++    assert!(starts > 4, "the starts that went on: {starts}");
++    assert_eq!(rewinds, 4, "one start for each ring that could not be read");
++}
