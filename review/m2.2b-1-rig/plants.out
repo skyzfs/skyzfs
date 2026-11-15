@@ -1,0 +1,7 @@
+P1 the token has no rule of its own: KILLED by 3: test_only_the_start_token_is_allowed_by_its_name, test_the_start_token_may_appear_or_be_rewritten, test_the_start_token_may_not_go
+P2 the token may go as well: KILLED by 1: test_the_start_token_may_not_go
+P3 the token is allowed by a pattern, not by its name: KILLED by 1: test_only_the_start_token_is_allowed_by_its_name
+P4 the two lists are taken the other way round: KILLED by 2: test_the_start_token_may_appear_or_be_rewritten, test_the_start_token_may_not_go
+P5 the token is allowed beside the status file, with no rule of its own: KILLED by 2: test_only_the_start_token_is_allowed_by_its_name, test_the_start_token_may_not_go
+P6 a token that only appeared is named as removed: KILLED by 1: test_the_start_token_may_appear_or_be_rewritten
+P7 the token's rule comes before the image's and takes every name: KILLED by 6: test_a_failure_marker_may_not_appear_or_go, test_any_other_file_is_named, test_only_the_start_token_is_allowed_by_its_name, test_the_image_and_the_identity_file_may_not, test_the_log_files_are_no_longer_allowed, test_the_start_token_may_not_go
