@@ -1134,6 +1134,10 @@ The copies themselves are in `copies.img` beside the image, at most the bound, o
 
 **Found on the way.** The review's first look at M2.2b-1 found two ways a stale state was trusted (a start that held no cuts between two that did; an acknowledged failure lost before the new state began), which the start token closes for every instance the state never saw. Open after it: a copy can be lost with no trace while copies are buffered (M2.2c).
 
+### The content of held cuts, first run (M2.T3 stage 2a, skyzfs/skyzfs#103, 2026-11-15)
+
+One run on one Ubuntu 26.04 runner (43701571141), the daemon of `zfs-topology` at 1df9b32 with `--hold-cuts`. Beside each recording's workload a holder loops: list the held cuts, write the one being uploaded onto an image, hash every block, release. Every cut written holds the reference's content at its instant, block by block, rebuilt from the request log's hashes. Cuts written of cuts counted: life 5 of 26, slog 6 of 36, rewind 19 of 32, rewindsync 13 of 32, rewindf 10 of 29, multihost 34 of 87, config 6 of 26, stray 2 of 18, autotrim 7 of 40 (381688 comparisons of discarded blocks, where the daemon kept the old content), full 56 of 218. The cuts not written were replaced while they waited. Both content controls are caught on every recording. No cut was abandoned at the bound, and no write-zeroes and no block written in part appeared, so those paths are not yet shown by this rig.
+
 ### What the first recordings of real pools showed (M2.T1, 2026-11-14)
 
 One runner, one pass (Ubuntu 26.04, kernel 7.0.0-1019-azure, ZFS 2.4.1; run 43631961753), before the package's pull request: a 512 MiB pool at ashift 12 on dm-log-writes, recorded from `zpool create`. Each reference cut was checked three ways: `zdb` opens the volume at the cut's group, every copy of every reachable block passes its checksum, and the kernel imports it read-only.
