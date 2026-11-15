@@ -1427,7 +1427,10 @@ fn a_region_that_cannot_be_had_refuses_the_open() {
 /// A volume made again where one was, whose run directory and so whose
 /// region is the same, does not take up the old volume's cuts: the
 /// state carries the volume's identity (M2.2b). Not checking it is
-/// noticed.
+/// noticed. The start token's rule is planted away in both runs: the
+/// new volume here has none of the old one's tokens, which the token's
+/// rule alone would refuse; the identity stands for a volume made again
+/// in a directory that kept the old token's file.
 #[test]
 fn a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before() {
     let next_volume = |mutants: u64| -> (CutsTakenUp, Vec<u64>) {
@@ -1442,7 +1445,7 @@ fn a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before() {
         let held = store.held_cuts().iter().map(|c| c.state.txg).collect();
         (store.cuts_at_start().cloned().expect("held cuts"), held)
     };
-    match next_volume(0) {
+    match next_volume(Mutants::START_UNCHECKED) {
         (CutsTakenUp::Begun(why), held) => {
             assert!(why.contains("another volume"), "{why}");
             assert!(held.is_empty(), "{held:?}");
@@ -1450,7 +1453,7 @@ fn a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before() {
         other => panic!("{other:?}"),
     }
     assert_eq!(
-        next_volume(Mutants::IDENTITY_UNCHECKED),
+        next_volume(Mutants::IDENTITY_UNCHECKED | Mutants::START_UNCHECKED),
         (CutsTakenUp::TakenUp, vec![7]),
         "a state of another volume taken up is not noticed"
     );
@@ -1985,4 +1988,283 @@ fn a_death_while_a_refused_copy_lets_a_cut_go_counts_it_once() {
         death += 1;
     }
     assert!(death > 3, "{death} stores");
+}
+
+/// The store's options with the cut state in `region`.
+fn holding(region: &state::MemRegion, acknowledge: bool) -> OpenOptions {
+    OpenOptions {
+        io: ON_CALLER,
+        acknowledge_failure: acknowledge,
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Memory(region.clone()),
+            boot: state::tests::BOOT,
+            bound: Some(TEST_BOUND),
+        }),
+        ..OpenOptions::default()
+    }
+}
+
+/// The held cuts' numbers, and what the start did with the state.
+fn after_start(store: &InPlace<SimDisk>) -> (Option<CutsTakenUp>, Vec<u64>) {
+    let held = store.held_cuts().iter().map(|c| c.number).collect();
+    (store.cuts_at_start().cloned(), held)
+}
+
+/// Whether the start began a new state because the volume was opened
+/// after the instance that kept the old one.
+fn begun_for_an_open_between(taken: &Option<CutsTakenUp>) -> bool {
+    matches!(taken, Some(CutsTakenUp::Begun(why)) if why.contains("opened after"))
+}
+
+/// Cut 1 is held with block 5 at 0x55. A start told of no region (a
+/// daemon without `--hold-cuts`, or one whose run directory is another)
+/// writes 0x66 to block 5, with no copy made. What the next start that
+/// holds cuts does, under `mutants`, and what cut 1 reads for block 5
+/// if it is held.
+fn opened_between(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, Option<u8>) {
+    let disk = created(40, 0);
+    let region = region();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert_eq!(cut_block(&mut store, 1, 5), vec![0x55; BLOCK_USIZE]);
+    drop(store);
+    disk.kill();
+    let mut store = start_io(&disk, mutants, false, ON_CALLER).expect("opens");
+    assert_eq!(store.cuts_at_start(), None);
+    write(&mut store, 5, 0x66).unwrap();
+    assert!(run(&mut store, 300, Op::Flush).result.is_ok());
+    drop(store);
+    disk.kill();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    let (taken, held) = after_start(&store);
+    let five = held.contains(&1).then(|| cut_block(&mut store, 1, 5)[0]);
+    (taken, held, five)
+}
+
+/// A start that holds no cuts, between two that do, leaves a state the
+/// third does not take up: it wrote a block cut 1 reads with no copy
+/// made, and its open changed the start token (the review of #100, D1,
+/// and Codex's thread). With the token's rule planted away, the third
+/// start takes cut 1 up, and it reads 0x66 for block 5, which held 0x55
+/// at its instant.
+#[test]
+fn a_start_that_holds_no_cuts_between_two_that_do() {
+    let (taken, held, _) = opened_between(0);
+    assert!(
+        begun_for_an_open_between(&taken),
+        "{taken:?}, held {held:?}"
+    );
+    assert!(held.is_empty(), "{held:?}");
+    let (taken, held, five) = opened_between(Mutants::START_UNCHECKED);
+    assert_eq!(
+        (taken, held, five),
+        (Some(CutsTakenUp::TakenUp), vec![1], Some(0x66)),
+        "the start token's rule planted away is not noticed"
+    );
+}
+
+/// Cut 1 is held and the volume fails. A start that acknowledges the
+/// failure opens the volume, which takes the marker away, and is lost
+/// before its second phase. What the next start does under `mutants`.
+fn acknowledged_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
+    let disk = created(41, 0);
+    let region = region();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    // The volume fails: a write of the image is refused.
+    disk.fail_write_of(HOME_NAME);
+    assert_eq!(write(&mut store, 6, 0x66), Err(BlkError::Failed));
+    drop(store);
+    disk.kill();
+    disk.clear_faults();
+    let open = |acknowledge: bool| {
+        Opened::open_with(
+            disk.clone(),
+            lock(&disk).expect("the lock"),
+            holding(&region, acknowledge),
+            Mutants(mutants),
+        )
+        .map_err(|(e, _)| e)
+    };
+    // Without the acknowledgement the start is refused.
+    let refused = open(false).err();
+    assert!(
+        matches!(refused, Some(OpenError::MarkedFailed)),
+        "{refused:?}"
+    );
+    // With it the open takes the marker away, and the daemon is lost
+    // before its second phase.
+    let opened = open(true).expect("opens");
+    assert!(opened.acknowledged());
+    drop(opened);
+    disk.kill();
+    // The next start has nothing to acknowledge.
+    let opened = open(false).expect("opens");
+    assert!(!opened.acknowledged());
+    let store = opened
+        .start_with(None, Mutants(mutants))
+        .expect("the in-place store");
+    after_start(&store)
+}
+
+/// A failure acknowledged by a start that is lost before its second
+/// phase: the marker is gone, and the next start, which acknowledges
+/// nothing, does not take up the failed volume's state, as the
+/// acknowledging open changed the start token before it took the marker
+/// away (the review of #100, D2, and Codex's thread). With the token's
+/// rule planted away it does.
+#[test]
+fn an_acknowledged_failure_whose_start_is_lost_before_its_second_phase() {
+    let (taken, held) = acknowledged_and_lost(0);
+    assert!(
+        begun_for_an_open_between(&taken),
+        "{taken:?}, held {held:?}"
+    );
+    assert_eq!(
+        acknowledged_and_lost(Mutants::START_UNCHECKED),
+        (Some(CutsTakenUp::TakenUp), vec![1]),
+        "the start token's rule planted away is not noticed"
+    );
+}
+
+/// Cut 1 is held and a copy made for it. The writeback of the copies
+/// fails; the next start's sync hears it, and that start is lost at its
+/// first store into the region. What the start after it does under
+/// `mutants`, the kernel having reported the failure once.
+fn heard_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
+    state::tests::quiet_deaths();
+    let disk = created(42, 0);
+    let region = region();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    write(&mut store, 5, 0x66).unwrap();
+    assert!(store.cut_figures().copied > 0);
+    drop(store);
+    disk.kill();
+    disk.fail_sync_of(COPIES_NAME);
+    region.die_at(0);
+    let lost = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        start_on(&disk, mutants, &region, ON_CALLER)
+    }));
+    region.revive();
+    match lost {
+        Ok(_) => panic!("the start made no store into the region"),
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => {}
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+    disk.kill();
+    // The kernel reports a failed writeback once: the next sync succeeds.
+    disk.clear_faults();
+    let store = start_on(&disk, mutants, &region, ON_CALLER);
+    after_start(&store)
+}
+
+/// A failed sync of the copies, heard by a start that is lost before it
+/// begins the new state, leaves a state the next start does not take
+/// up, though its own sync succeeds: the lost start's open changed the
+/// start token (the review of #100, D3). The state is read and judged
+/// before anything is stored in it, so that start's first store is the
+/// new state's. With the token's rule planted away the next start takes
+/// the state up.
+#[test]
+fn a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost() {
+    let (taken, held) = heard_and_lost(0);
+    assert!(
+        begun_for_an_open_between(&taken),
+        "{taken:?}, held {held:?}"
+    );
+    assert_eq!(
+        heard_and_lost(Mutants::START_UNCHECKED),
+        (Some(CutsTakenUp::TakenUp), vec![1]),
+        "the start token's rule planted away is not noticed"
+    );
+}
+
+/// What the next start does after a start that trusted the state was
+/// lost at store `death` of the region: the outcome, the held cuts, and
+/// whether the lost start died at all. Cut 1 is held, and group 8's
+/// flush was under way at the kill, so that the lost start has a cut's
+/// flush to finish.
+fn lost_while_taking_up(death: u64) -> (Option<CutsTakenUp>, Vec<u64>, bool) {
+    state::tests::quiet_deaths();
+    let disk = created(43, 3);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    for label in 0..LABELS {
+        let done = run(
+            &mut store,
+            200 + label as u64,
+            uberblock_write(label, 8, 80),
+        );
+        assert!(done.result.is_ok());
+    }
+    // Received and past its barrier, its sync not yet ended.
+    store
+        .submit(Request {
+            id: RequestId(210),
+            op: Op::Flush,
+        })
+        .unwrap();
+    drop(store);
+    disk.kill();
+    region.die_at(death);
+    let lost = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        start_on(&disk, 0, &region, ON_CALLER)
+    }));
+    region.revive();
+    let died = match lost {
+        Ok(store) => {
+            drop(store);
+            false
+        }
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    disk.kill();
+    let store = start_on(&disk, 0, &region, ON_CALLER);
+    let (taken, held) = after_start(&store);
+    (taken, held, died)
+}
+
+/// A start that trusted the state records its new start token in it
+/// before anything else, and only then finishes what a death
+/// interrupted: lost while it finishes, it leaves a state the next start
+/// takes up and finishes. Lost at the token's first or second word, it
+/// leaves a token the next start does not find, and the state is begun
+/// anew. Fails where the token is recorded after the state is settled:
+/// a start lost while it settles would then cost the held cuts.
+#[test]
+fn a_start_lost_after_it_trusted_the_state_leaves_it_to_the_next() {
+    let mut after_the_token = 0;
+    let mut death = 0;
+    loop {
+        let (taken, held, died) = lost_while_taking_up(death);
+        if death < 2 {
+            assert!(
+                begun_for_an_open_between(&taken),
+                "death at {death}: {taken:?}, held {held:?}"
+            );
+        } else {
+            assert_eq!(
+                (taken.clone(), held.first().copied()),
+                (Some(CutsTakenUp::TakenUp), Some(1)),
+                "death at {death}: held {held:?}"
+            );
+        }
+        if !died {
+            break;
+        }
+        if death >= 2 {
+            after_the_token += 1;
+        }
+        death += 1;
+    }
+    assert!(
+        after_the_token > 0,
+        "the start made no store after the token"
+    );
 }

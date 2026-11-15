@@ -127,8 +127,10 @@
 //! daemon leaves as the last store left it: a file mapped into the
 //! daemon is such a region, since the kernel keeps its pages when the
 //! process dies (`skyzfs-mapped`, [`StoreRegion`]). Its header names
-//! its owner ([`Owner`]): the volume's identity and the machine's boot,
-//! without which a start does not take it up. Every change is ordered
+//! its owner ([`Owner`]): the volume's identity, the machine's boot,
+//! and the start token of the open under which it was kept
+//! ([`crate::volume::START_NAME`]), without which a start does not take
+//! it up. Every change is ordered
 //! so that a death after any store leaves a state that the next
 //! instance can take up ([`CutState::restore`]), finishing what a death
 //! interrupted: a cut whose flush was under way takes the start's sync
@@ -288,8 +290,12 @@ pub(crate) struct Taken {
     /// Whether the region was there with the length the volume needs:
     /// only then can it hold a state to take up.
     pub(crate) kept: bool,
-    /// Whose the state is to be.
+    /// Whose a state must be to be taken up: with the start token this
+    /// open found.
     pub(crate) owner: Owner,
+    /// The start token this open wrote, under which the state is kept
+    /// from this start on.
+    pub(crate) start: [u8; 16],
     /// The bound on the copies, in bytes.
     pub(crate) bound: u64,
 }
@@ -298,10 +304,15 @@ impl Taken {
     /// Have the region `hold` names for a volume of `size` bytes: map a
     /// named one, allocated in full and locked, or take the memory
     /// given. An error says why the region cannot be had.
+    ///
+    /// `found` is the start token this open found, none where there was
+    /// none to read whole, and `start` the one it writes.
     pub(crate) fn open(
         hold: &super::HoldCuts,
         size: u64,
         identity: [u8; 16],
+        found: Option<[u8; 16]>,
+        start: [u8; 16],
     ) -> Result<Self, String> {
         let bound = hold.bound.unwrap_or_else(|| default_bound(size));
         let words = words_for(size / BLOCK_SIZE, records_for(bound));
@@ -325,7 +336,11 @@ impl Taken {
             owner: Owner {
                 volume: identity,
                 boot: hold.boot,
+                // No token found matches no state: a begun state's
+                // token is random.
+                start: found.unwrap_or_default(),
             },
+            start,
             bound,
         })
     }
@@ -381,22 +396,25 @@ mod at {
     pub(super) const BOOT: usize = 4;
     /// The volume's identity, two words likewise.
     pub(super) const IDENTITY: usize = 6;
+    /// The start token under which the state is kept, two words
+    /// likewise.
+    pub(super) const START: usize = 8;
     /// The count of cuts, and in the top byte the open map: one store
     /// moves both.
-    pub(super) const COUNT: usize = 8;
+    pub(super) const COUNT: usize = 10;
     /// The `lo` of the next cut when no cut is held.
-    pub(super) const OPEN_LO: usize = 9;
+    pub(super) const OPEN_LO: usize = 11;
     /// The epoch in which the whole volume counts as changed; 0: none.
-    pub(super) const WHOLE: usize = 10;
+    pub(super) const WHOLE: usize = 12;
     /// The cuts abandoned at the bound, and in the top byte the entry
     /// plus one of a cut being abandoned (0: none): one store counts
     /// that cut and ends its abandoning.
-    pub(super) const ABANDONED: usize = 11;
+    pub(super) const ABANDONED: usize = 13;
     /// The second part of the open map while it takes a cut's map.
-    pub(super) const OPEN_ALSO: usize = 12;
+    pub(super) const OPEN_ALSO: usize = 14;
     /// Which of the two mark slots holds the mark: 0 none, 1 or 2.
-    pub(super) const MARK_SEL: usize = 13;
-    pub(super) const MARK: usize = 14;
+    pub(super) const MARK_SEL: usize = 15;
+    pub(super) const MARK: usize = 16;
     /// Which of the two slots holds the newest cut's state: 0 none;
     /// and, at `NEWEST_ITSELF`, whether that cut opens as itself, so
     /// that one store chooses both.
@@ -603,16 +621,28 @@ pub enum RegionError {
     /// in the same directory, whose run directory is the same.
     #[error("the cut state is of another volume (its identity differs)")]
     Identity,
+    /// The volume was opened again after the instance that kept the
+    /// state: by a start that held no cuts, by one with another run
+    /// directory, or by one lost before it took the state up or began
+    /// a new one. What that open served, or what it heard of the
+    /// copies, the state does not know.
+    #[error("the volume was opened after the instance that kept the cut state")]
+    Start,
 }
 
-/// Whose a state is: the volume's identity and the machine's boot. A
-/// state is taken up only by its owner.
+/// Whose a state is: the volume's identity, the machine's boot, and
+/// the start token of the open under which it is kept. A state is taken
+/// up only by its owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner {
     /// The volume's identity ([`crate::volume::Volume::identity`]).
     pub volume: [u8; 16],
     /// The boot id of the machine.
     pub boot: [u8; 16],
+    /// The start token ([`crate::volume::START_NAME`]): the one this
+    /// open found, when a state is checked; the one it wrote, when a
+    /// state is begun or taken up.
+    pub start: [u8; 16],
 }
 
 /// Sixteen bytes as the two words of the region's header.
@@ -645,6 +675,9 @@ impl<R: Region> CutState<R> {
         }
         for (i, word) in id_words(owner.volume).into_iter().enumerate() {
             region.store(at::IDENTITY + i, word);
+        }
+        for (i, word) in id_words(owner.start).into_iter().enumerate() {
+            region.store(at::START + i, word);
         }
         region.store(at::WHOLE, 1);
         region.store(at::OPEN_ALSO, NO_MAP);
@@ -712,6 +745,9 @@ impl<R: Region> CutState<R> {
         if words(at::BOOT) != id_words(owner.boot) && !mutants.has(Mutants::BOOT_UNCHECKED) {
             return Err(RegionError::Boot);
         }
+        if words(at::START) != id_words(owner.start) && !mutants.has(Mutants::START_UNCHECKED) {
+            return Err(RegionError::Start);
+        }
         Ok((blocks, capacity))
     }
 
@@ -731,9 +767,23 @@ impl<R: Region> CutState<R> {
         owner: Owner,
         mutants: Mutants,
     ) -> Result<Self, (RegionError, R)> {
-        let mut state = Self::view(region, size, bound, owner, mutants)?;
-        state.settle();
-        Ok(state)
+        let state = Self::view(region, size, bound, owner, mutants)?;
+        Ok(state.take_up(owner.start))
+    }
+
+    /// Take up this state, read with [`CutState::view`] and trusted, as
+    /// a start does once it has written `start` as the volume's start
+    /// token: the state is kept under that token from its first store,
+    /// and then what a death interrupted is finished. A start lost
+    /// while it finishes leaves a state the next start takes up and
+    /// finishes; one lost before leaves the token it found, which the
+    /// next start no longer finds.
+    pub(crate) fn take_up(mut self, start: [u8; 16]) -> Self {
+        for (i, word) in id_words(start).into_iter().enumerate() {
+            self.store(at::START + i, word);
+        }
+        self.settle();
+        self
     }
 
     fn new(region: R, blocks: u64, capacity: usize, bound: u64, mutants: Mutants) -> Self {

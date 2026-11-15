@@ -25,6 +25,17 @@
 //! reading this one. A daemon that meets a version it does not know
 //! refuses the volume and says so; it does not guess.
 //!
+//! # The start token
+//!
+//! [`START_NAME`] in the volume's directory holds sixteen random bytes,
+//! which every open of the volume writes anew, synced, before it
+//! changes anything else ([`write_start_token`]). A held cut's state
+//! records the token under which its instance served, and a start takes
+//! the state up only if the token it found is that one (M2.2b): an open
+//! between them, with cuts held or not, from the same run directory or
+//! another, changes the token, and the state is begun anew. A token
+//! that cannot be read whole is none, and matches no state.
+//!
 //! A directory that holds the log store's superblock ([`LEGACY_NAME`])
 //! was made by a daemon from before M1.3t and is refused: the volume is
 //! to be created again. There is no conversion.
@@ -46,6 +57,40 @@ pub const MARKER_NAME: &str = "volume.failed";
 /// The log store's superblock: a directory that holds it was made by a
 /// daemon with a log store, before M1.3t.
 pub const LEGACY_NAME: &str = "log.super";
+
+/// The start token's name in the volume's directory (see the module
+/// documentation).
+pub const START_NAME: &str = "volume.start";
+
+/// The length of a start token.
+const START_LEN: u64 = 16;
+
+/// The start token the last open wrote, if it can be read whole.
+pub fn start_token<D: Dir>(dir: &D) -> Option<[u8; 16]> {
+    let file = dir.open(START_NAME).ok()?;
+    if file.len().ok()? != START_LEN {
+        return None;
+    }
+    let mut token = [0; 16];
+    file.read_at(0, &mut token).ok()?;
+    Some(token)
+}
+
+/// Write `token` as the start token, and sync it: the file, and the
+/// directory where the file is new.
+pub fn write_start_token<D: Dir>(dir: &D, token: [u8; 16]) -> io::Result<()> {
+    let (mut file, created) = match dir.open(START_NAME) {
+        Ok(file) => (file, false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (dir.create(START_NAME)?, true),
+        Err(e) => return Err(e),
+    };
+    file.write_at(0, &token)?;
+    file.sync()?;
+    if created {
+        dir.sync()?;
+    }
+    Ok(())
+}
 
 const MAGIC: &[u8; 8] = b"SKYZVOL1";
 const LEN: usize = 60;

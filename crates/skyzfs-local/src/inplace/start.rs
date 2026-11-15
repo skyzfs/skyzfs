@@ -9,11 +9,13 @@
 //! 1. **The open** ([`Opened::open`]), under the volume's lock, in the
 //!    lifecycle: the volume file is read and checked, the failure
 //!    marker is looked at, the home image is opened and checked
-//!    against the volume file, and a store that holds cuts maps the
-//!    region of its cut state ([`HoldCuts`]). A volume this daemon
-//!    cannot serve is refused by reason ([`OpenError`]), and nothing is
-//!    written but the removal of an acknowledged marker and the
-//!    region. None of these refusals fails the volume.
+//!    against the volume file, a store that holds cuts maps the region
+//!    of its cut state ([`HoldCuts`]), and a new start token is written
+//!    ([`crate::volume::START_NAME`]), whether the store holds cuts or
+//!    not, before an acknowledged marker is removed. A volume this
+//!    daemon cannot serve is refused by reason ([`OpenError`]), and
+//!    nothing is written but the token, the removal of an acknowledged
+//!    marker and the region. None of these refusals fails the volume.
 //! 2. **The start** ([`Opened::start`]), once the device is this
 //!    instance's: the home image is synced, the kernel's cache of it
 //!    dropped, and the I/O threads started ([`InPlace::assemble`]). A
@@ -461,7 +463,9 @@ impl<D: Dir> Opened<D> {
     /// are held to the volume's write unit; the failure marker refuses
     /// the volume unless `options` acknowledge it, and is then removed
     /// and the directory synced; the home image must be of the volume's
-    /// size. Nothing else is written, and no refusal fails the volume.
+    /// size; a new start token is written ([`crate::volume::START_NAME`]),
+    /// before the marker goes. Nothing else is written, and no refusal
+    /// fails the volume.
     pub fn open(dir: D, lock: D::Lock, options: OpenOptions) -> Result<Self, (OpenError, D::Lock)> {
         Self::open_with(dir, lock, options, Mutants::default())
     }
@@ -534,14 +538,23 @@ impl<D: Dir> Opened<D> {
         if marked && !options.acknowledge_failure {
             return Err(OpenError::MarkedFailed);
         }
-        // The region before the marker goes: a start refused here
-        // leaves the volume as it found it.
+        // A new start token, written by every open before it changes
+        // anything else, held cuts or not: a cut state is taken up only
+        // under the token its instance served under, so that no open
+        // between is missed (`crate::volume::START_NAME`).
+        let found = crate::volume::start_token(dir);
+        let mut start = [0u8; 16];
+        getrandom::fill(&mut start).map_err(|_| OpenError::NoRandomness)?;
+        // The region before the token and the marker: a start refused
+        // here leaves the volume as it found it.
         let cuts = options
             .hold_cuts
             .as_ref()
-            .map(|hold| super::state::Taken::open(hold, volume.size, volume.identity))
+            .map(|hold| super::state::Taken::open(hold, volume.size, volume.identity, found, start))
             .transpose()
             .map_err(OpenError::CutRegion)?;
+        crate::volume::write_start_token(dir, start)
+            .map_err(io_error("writing the start token"))?;
         if marked {
             // Acknowledged: the marker goes, durably, before anything
             // is served. Where that fails the volume stays marked, and

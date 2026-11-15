@@ -412,6 +412,9 @@ impl Mutants {
     pub(crate) const MAP_NOT_CLEARED: u64 = 1 << 55;
     /// A cut state begun in another boot is taken up.
     pub(crate) const BOOT_UNCHECKED: u64 = 1 << 56;
+    /// A cut state kept under another start token is taken up: the
+    /// volume was opened after the instance that kept it.
+    pub(crate) const START_UNCHECKED: u64 = 1 << 62;
     /// A cut state of a volume with another identity is taken up.
     pub(crate) const IDENTITY_UNCHECKED: u64 = 1 << 60;
     /// The start does not sync the copies file before it trusts the
@@ -1932,7 +1935,19 @@ impl<D: Dir> InPlace<D> {
     ///   copies file that is missing is as good as synced only if the
     ///   state names no copy;
     /// - the start does not acknowledge a failure: a failed volume's
-    ///   state is not one this start can vouch for.
+    ///   state is not one this start can vouch for;
+    /// - the volume was not opened since the instance that kept the
+    ///   state (the review of #100, D1 to D3). The state is kept under
+    ///   the start token of the open its instance served under, and
+    ///   every open writes a new token before it changes anything else
+    ///   ([`crate::volume::START_NAME`]). Without that rule a start that
+    ///   held no cuts, or held them in another run directory, could
+    ///   write blocks a held cut reads with no copy made; and a start
+    ///   lost after its open took the failure marker away, or after its
+    ///   sync heard of a failed writeback of the copies, would leave a
+    ///   state the next start trusts. The new token is recorded in the
+    ///   state only once it is trusted, before the start finishes what
+    ///   a death interrupted, or when a new state begins.
     ///
     /// A state taken up on a device this instance created, not took
     /// over, keeps no mark (coding's reading, M2.2b, agreed with the
@@ -1947,6 +1962,7 @@ impl<D: Dir> InPlace<D> {
                     region,
                     kept,
                     owner,
+                    start,
                     bound,
                 },
             acknowledged,
@@ -1962,7 +1978,8 @@ impl<D: Dir> InPlace<D> {
                 region,
             ))
         } else {
-            match CutState::restore(region, size, bound, owner, self.mutants) {
+            // Read as it is: nothing is stored until it is trusted.
+            match CutState::view(region, size, bound, owner, self.mutants) {
                 Err((e, region)) => Err((e.to_string(), region)),
                 Ok(cut_state) => match copies {
                     CopiesAtStart::Synced => Ok(cut_state),
@@ -1979,7 +1996,8 @@ impl<D: Dir> InPlace<D> {
             }
         };
         let cut_state = match trusted {
-            Ok(mut cut_state) => {
+            Ok(cut_state) => {
+                let mut cut_state = cut_state.take_up(start);
                 if !taken_over
                     && cut_state.mark().is_some()
                     && !self.mutants.has(Mutants::MARK_KEPT_ON_CREATED)
@@ -1991,7 +2009,13 @@ impl<D: Dir> InPlace<D> {
             }
             Err((why, region)) => {
                 self.cuts_at_start = Some(CutsTakenUp::Begun(why));
-                CutState::begin(region, size, bound, owner, self.mutants)
+                CutState::begin(
+                    region,
+                    size,
+                    bound,
+                    state::Owner { start, ..owner },
+                    self.mutants,
+                )
             }
         };
         self.cuts
