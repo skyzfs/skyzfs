@@ -1,0 +1,5 @@
+skyzfs-local plain: exit 0; 258 ok, 0 failed, 4 ignored
+skyzfsd plain: exit 0; 66 ok, 0 failed, 4 ignored
+skyzfs-local --features test-hooks: exit 0; 260 ok, 0 failed, 4 ignored
+skyzfsd --features test-hooks: exit 0; 99 ok, 0 failed, 4 ignored
+finished
