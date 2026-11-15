@@ -124,11 +124,14 @@ fn an_uberblock_write_is_found_in_each_ring_in_either_byte_order() {
                                 timestamp: 1_763_000_000 + 77 + n,
                                 seq: 0,
                             },
+                            // No checksum of its own: the slot ends in
+                            // the magic, not in a `zio_eck_t`.
+                            slot: None,
                         }],
                         "slot {n} of {size} bytes in label {} ({order:?})",
                         ring.label
                     );
-                    assert!(found[0].counts());
+                    assert!(found[0].counts() && !found[0].verified());
                 }
             }
         }
@@ -297,7 +300,16 @@ fn a_repeat_is_the_same_group_and_root_as_the_mark_or_the_newest_cut() {
     assert!(!is_repeat(None, None, &state(40, 7)));
 }
 
-/// A slot like [`slot`] with its timestamp and its multihost config set.
+/// `s` with its label checksum, as ZFS writes it at `at` (little
+/// endian).
+fn sealed(s: &[u8], at: u64) -> Vec<u8> {
+    let mut s = s.to_vec();
+    seal(&mut s, at, ByteOrder::Little);
+    s
+}
+
+/// A slot like [`slot`], of 4 KiB, with its timestamp and its multihost
+/// config set.
 fn slot_at(txg: u64, root: u64, timestamp: u64, config: u64) -> Vec<u8> {
     let mut s = slot(ByteOrder::Little, txg, root, 4 * KIB);
     s[TIMESTAMP_AT..TIMESTAMP_AT + 8].copy_from_slice(&timestamp.to_le_bytes());
@@ -361,7 +373,8 @@ fn the_view_chooses_the_state_an_import_opens() {
     assert_eq!(view.uberblocks().count(), 0);
     let put = |view: &mut View, slot: u64, s: &[u8]| {
         for ring in &rings {
-            view.saw(ring.start + slot * 4 * KIB, s);
+            let at = ring.start + slot * 4 * KIB;
+            view.saw(at, &sealed(s, at));
         }
     };
     // The abandoned history: 51 at slot 19.
@@ -383,10 +396,8 @@ fn the_view_chooses_the_state_an_import_opens() {
     assert!(view.chosen(&state(51, 510), false));
     // Another state equal by the order: neither is chosen.
     let rings0 = rings[0];
-    view.saw(
-        rings0.start + 5 * 4 * KIB,
-        &slot_at(51, 777, 3005, (4 << 32) | 2),
-    );
+    let at = rings0.start + 5 * 4 * KIB;
+    view.saw(at, &sealed(&slot_at(51, 777, 3005, (4 << 32) | 2), at));
     assert!(!view.chosen(&state(51, 510), false));
     assert!(!view.chosen(&state(51, 777), false));
     // Zeroed, it is gone.
@@ -395,25 +406,116 @@ fn the_view_chooses_the_state_an_import_opens() {
 }
 
 /// A position covered only in part is not known: what it holds then is
-/// not known. Covered whole again, it is.
+/// not known. Covered whole again, it is. A held slot changed past the
+/// fields read, but within the slot, is not known either: its checksum
+/// covers those bytes (the review of #96, its S1). Bytes past the slot
+/// leave it as it is.
 #[test]
 fn a_position_covered_in_part_is_not_known() {
     let labels = Labels::for_size(64 * MIB);
     let ring = labels.rings().next().expect("label 0");
     let mut view = View::empty(labels);
-    view.saw(ring.start, &slot_at(9, 1, 100, 0));
+    let nine = sealed(&slot_at(9, 1, 100, 0), ring.start);
+    view.saw(ring.start, &nine);
     assert!(view.chosen(&state(9, 1), false));
     // Bytes 16 to 32 of the slot: its group.
     view.saw(ring.start + 16, &[0; 16]);
     assert!(!view.is_known());
     assert!(!view.chosen(&state(9, 1), false));
-    // Bytes after the fields read leave the position as it is.
-    view.saw(ring.start, &slot_at(9, 1, 100, 0));
+    // Bytes after the fields read, within the slot: not known.
+    view.saw(ring.start, &nine);
     view.saw(ring.start + READ_LEN as u64, &[0; 64]);
+    assert!(!view.is_known());
+    // Bytes past the slot leave the position as it is.
+    view.saw(ring.start, &nine);
+    view.saw(ring.start + 4 * KIB, &[0; KIB as usize]);
     assert!(view.is_known() && view.chosen(&state(9, 1), false));
     // Zeros over part of it: not known.
     view.zeroed(ring.start + 8, 8);
     assert!(!view.is_known());
+}
+
+/// A slot sealed as ZFS writes it, at each size ZFS uses, in each ring
+/// and in either byte order, is verified at its own size and no other.
+/// It is not verified when a byte of it changes, when its checksum was
+/// made for another place (a slot copied elsewhere), or when the write
+/// holds only part of it.
+#[test]
+fn an_uberblock_is_verified_by_its_label_checksum() {
+    let labels = Labels::for_size(64 * MIB);
+    for size in SLOT_SIZES {
+        let slots = RING_SIZE / size;
+        for ring in labels.rings() {
+            for n in [1, slots - 1] {
+                for order in [ByteOrder::Little, ByteOrder::Big] {
+                    let at = ring.start + n * size;
+                    let mut s = slot(order, 77 + n, n, size);
+                    seal(&mut s, at, order);
+                    assert!(label_checksum_holds(&s, at));
+                    let found = labels.uberblocks_in(at, &s);
+                    assert_eq!(found.len(), 1);
+                    assert_eq!(
+                        found[0].slot,
+                        Some(size),
+                        "slot {n} of {size} bytes in label {} ({order:?})",
+                        ring.label
+                    );
+                    // Another place.
+                    assert!(!label_checksum_holds(&s, at + size));
+                    let mut elsewhere = slot(order, 77 + n, n, size);
+                    seal(&mut elsewhere, at - size, order);
+                    assert!(!labels.uberblocks_in(at, &elsewhere)[0].verified());
+                    // A byte changed: the root block pointer's.
+                    let mut changed = s.clone();
+                    changed[ROOT_AT + 3] ^= 1;
+                    assert!(!labels.uberblocks_in(at, &changed)[0].verified());
+                    // Part of the slot.
+                    let part = &s[..size as usize / 2];
+                    if part.len() >= READ_LEN {
+                        assert!(!labels.uberblocks_in(at, part)[0].verified());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The checksum's words follow the byte order its magic shows: a slot
+/// sealed big endian holds, and the same slot with its four words
+/// written little endian, under the same big-endian magic, does not.
+/// (The magic itself is hashed, so changing it would break the checksum
+/// in either order and show nothing of the order: the review of #96,
+/// its S3.)
+#[test]
+fn the_checksum_is_read_in_the_order_its_magic_shows() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let at = ring.start + 4 * KIB;
+    let mut s = slot(ByteOrder::Big, 9, 1, 4 * KIB);
+    seal(&mut s, at, ByteOrder::Big);
+    assert!(label_checksum_holds(&s, at));
+    let eck = s.len() - ECK_LEN;
+    for n in 0..4 {
+        let to = eck + 8 + 8 * n;
+        let mut word = [0; 8];
+        word.copy_from_slice(&s[to..to + 8]);
+        s[to..to + 8].copy_from_slice(&u64::from_be_bytes(word).to_le_bytes());
+    }
+    assert!(!label_checksum_holds(&s, at));
+}
+
+/// What a new label writes, the whole ring at once with an uberblock of
+/// group 0 at its start, carries no checksum of the slot's own: it is
+/// found and not verified.
+#[test]
+fn a_new_labels_ring_is_not_verified() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let mut whole = vec![0; RING_SIZE as usize];
+    whole[..SLOT_MIN as usize].copy_from_slice(&slot(ByteOrder::Little, 0, 0, SLOT_MIN));
+    let found = labels.uberblocks_in(ring.start, &whole);
+    assert_eq!(found.len(), 1);
+    assert!(!found[0].counts() && !found[0].verified());
 }
 
 /// While a ring is not known, no state is chosen, though the rings
@@ -430,13 +532,290 @@ fn a_ring_not_known_leaves_no_state_chosen() {
     for ring in &rings[..3] {
         view.saw(ring.start, &vec![0; RING_SIZE as usize]);
     }
+    // Sealed, as M2.1c counts only a slot whose label checksum holds.
     for ring in &rings[..3] {
-        view.saw(ring.start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
+        let at = ring.start + 9 * 4 * KIB;
+        view.saw(at, &sealed(&slot_at(9, 1, 100, 0), at));
     }
     assert!(!view.is_known());
     assert!(!view.chosen(&state(9, 1), false));
     // Once the last ring is known too, the state is chosen.
     view.saw(rings[3].start, &vec![0; RING_SIZE as usize]);
-    view.saw(rings[3].start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
+    let at = rings[3].start + 9 * 4 * KIB;
+    view.saw(at, &sealed(&slot_at(9, 1, 100, 0), at));
     assert!(view.is_known() && view.chosen(&state(9, 1), false));
+}
+
+/// The label checksum of one slot as ZFS computes it, with answers that
+/// do not come from this crate: they were computed from the OpenZFS
+/// 2.4.1 sources (`zio_checksum_compute` with `ZIO_CHECKSUM_LABEL`,
+/// `abd_checksum_sha256`) with Python's hashlib. The slot is 1 KiB at
+/// 0x20400, the uberblock magic and group 7 with zeros after, as a
+/// little-endian and as a big-endian host writes it. `seal` and
+/// `label_checksum_holds` share `label_checksum`, so a slot the tests
+/// seal themselves cannot show an error both would make: for a
+/// big-endian writer, of which there is no recording, this is the one
+/// test that could. From the review of #96, its S2 (points 2 and 3).
+#[test]
+fn the_label_checksum_gives_the_answers_zfs_gives() {
+    const AT: u64 = 0x20400;
+    let cases = [
+        (
+            ByteOrder::Little,
+            "6e7c41876ec86b3c96c86ae658f2957456e6c4ad5cdd7c5670dab273fb616b2d",
+        ),
+        (
+            ByteOrder::Big,
+            "021d60e737324c57bd910abcd993623e8e838e506fe22bc488c8ac6dbca378f9",
+        ),
+    ];
+    for (order, last) in cases {
+        let mut s = vec![0u8; SLOT_MIN as usize];
+        s[..8].copy_from_slice(&order.bytes(MAGIC));
+        s[16..24].copy_from_slice(&order.bytes(7));
+        seal(&mut s, AT, order);
+        let words: String = s[s.len() - 32..]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(words, last, "{order:?}");
+        assert!(label_checksum_holds(&s, AT), "{order:?}");
+        // Each of the four words counts, and so does the checksum's
+        // magic, which is hashed.
+        for at in [8, 16, 24, 32, 40] {
+            let mut changed = s.clone();
+            let byte = changed.len() - at;
+            changed[byte] ^= 1;
+            assert!(!label_checksum_holds(&changed, AT), "{order:?}, {at}");
+        }
+    }
+}
+
+/// A slot whose checksum holds, at a place where no slot of its size
+/// begins, is not verified: ZFS reads a ring only at whole slots of the
+/// pool's size. From the review of #96, its S2.
+#[test]
+fn a_slot_out_of_step_with_the_ring_is_not_verified() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    for (size, into) in [
+        (2 * KIB, KIB),
+        (4 * KIB, KIB),
+        (4 * KIB, 2 * KIB),
+        (8 * KIB, 4 * KIB),
+    ] {
+        let at = ring.start + size + into;
+        let mut s = slot(ByteOrder::Little, 9, 1, size);
+        seal(&mut s, at, ByteOrder::Little);
+        assert!(label_checksum_holds(&s, at));
+        let found = labels.uberblocks_in(at, &s);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].slot, None, "{size} bytes, {into} into a slot");
+    }
+}
+
+/// A slot whose checksum carries no magic is held against its words as
+/// a little-endian host reads them: `zio_checksum_error_impl` asks only
+/// whether the magic reads swapped, and takes any other for its own
+/// order. The magic is hashed, so the words are those of the slot with
+/// that magic in place. From the review of #96, its S2.
+#[test]
+fn a_checksum_without_its_magic_is_read_as_a_little_endian_host_reads_it() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let at = ring.start + 4 * KIB;
+    let mut s = slot(ByteOrder::Little, 9, 1, 4 * KIB);
+    seal(&mut s, at, ByteOrder::Little);
+    let eck = s.len() - ECK_LEN;
+    s[eck..eck + 8].copy_from_slice(&[0x55; 8]);
+    assert!(!label_checksum_holds(&s, at));
+    let words = label_checksum(&s, at, ByteOrder::Little);
+    for (n, word) in words.into_iter().enumerate() {
+        let to = eck + 8 + 8 * n;
+        s[to..to + 8].copy_from_slice(&word.to_le_bytes());
+    }
+    assert!(label_checksum_holds(&s, at));
+    assert_eq!(labels.uberblocks_in(at, &s)[0].slot, Some(4 * KIB));
+}
+
+/// The view holds only what ZFS takes for an uberblock: a slot with the
+/// magic and a group whose checksum does not hold leaves its place
+/// known and empty, and the same slot sealed is held. From the review
+/// of #96, its S2.
+#[test]
+fn the_view_holds_no_uberblock_whose_checksum_fails() {
+    let labels = Labels::for_size(64 * MIB);
+    let mut view = View::empty(labels);
+    for ring in labels.rings() {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    let ring = labels.rings().next().expect("label 0");
+    let at = ring.start + 4 * KIB;
+    let unsealed = slot_at(9, 1, 100, 0);
+    view.saw(at, &unsealed);
+    assert!(view.is_known());
+    assert_eq!(view.uberblocks().count(), 0);
+    assert!(!view.chosen(&state(9, 1), false));
+    view.saw(at, &sealed(&unsealed, at));
+    assert!(view.chosen(&state(9, 1), false));
+}
+
+/// An uberblock is valid by its whole slot, so a change to any of the
+/// slot counts (the review of #96, its S1, whose test this is, and
+/// Codex's finding there). (1) A held 8 KiB slot whose second half is
+/// zeroed no longer verifies on the volume: the view does not go on
+/// choosing it. (2) The same slot arriving in two writes, head then
+/// tail, is whole and valid on the volume: the view does not call its
+/// place known and empty. Both fail where the view follows a slot by its
+/// first `READ_LEN` bytes alone, as at 8da0a73.
+#[test]
+fn a_change_to_any_part_of_a_slot_counts() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let size = 8 * KIB;
+    let at = rings[0].start + size;
+    let mut s = slot(ByteOrder::Little, 9, 1, size);
+    seal(&mut s, at, ByteOrder::Little);
+    let read = |view: &mut View| {
+        for ring in &rings {
+            view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+        }
+    };
+    // (1)
+    let mut view = View::empty(labels);
+    read(&mut view);
+    view.saw(at, &s);
+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
+    view.zeroed(at + 4 * KIB, 4 * KIB);
+    let mut on_disk = s.clone();
+    on_disk[4 * KIB as usize..].fill(0);
+    assert!(!label_checksum_holds(&on_disk, at));
+    assert!(!view.chosen(&state(9, 1), false));
+    // Written whole again, it is held again.
+    view.saw(at, &s);
+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
+    // (2)
+    let mut view = View::empty(labels);
+    read(&mut view);
+    view.saw(at, &s[..4 * KIB as usize]);
+    view.saw(at + 4 * KIB, &s[4 * KIB as usize..]);
+    assert!(label_checksum_holds(&s, at));
+    assert!(!view.is_known() || view.chosen(&state(9, 1), false));
+}
+
+/// What ZFS writes leaves every place known: a slot of 4 KiB written
+/// whole where a slot of 8 KiB could also begin, and a ring read whole.
+/// The view's care for slots written in part costs ZFS's own writes
+/// nothing.
+#[test]
+fn whole_slots_leave_every_place_known() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::unknown(labels);
+    let mut ring = vec![0; RING_SIZE as usize];
+    let at = rings[0].start + 8 * KIB;
+    let mut s = slot(ByteOrder::Little, 9, 1, 4 * KIB);
+    seal(&mut s, at, ByteOrder::Little);
+    ring[8 * KIB as usize..12 * KIB as usize].copy_from_slice(&s);
+    view.saw(rings[0].start, &ring);
+    for ring in &rings[1..] {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
+    let at = rings[1].start + 16 * KIB;
+    let mut s = slot(ByteOrder::Little, 10, 2, 4 * KIB);
+    seal(&mut s, at, ByteOrder::Little);
+    view.saw(at, &s);
+    assert!(view.is_known() && view.chosen(&state(10, 2), false));
+}
+
+/// A header the volume already holds, known not to verify, is completed
+/// by a later write that does not touch the header: the volume then
+/// holds a valid slot, and the view must not call its place known and
+/// empty. (a) The damaged slot is in a ring read at the start. (b) It
+/// comes in a write that holds the whole slot. In both, the write that
+/// restores the slot's second half is the one that makes it valid.
+/// From the next look of the review of #96, whose test this is, and
+/// Codex's second finding there; both fail at 110d2b6.
+#[test]
+fn a_header_known_not_to_verify_can_be_completed_by_its_tail() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let size = 8 * KIB;
+    let at = rings[0].start + size;
+    let mut s = slot(ByteOrder::Little, 99, 9, size);
+    seal(&mut s, at, ByteOrder::Little);
+    assert!(label_checksum_holds(&s, at));
+    let mut damaged = s.clone();
+    damaged[4 * KIB as usize..].fill(0);
+    let tail = &s[4 * KIB as usize..];
+    // (a)
+    let mut view = View::unknown(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        if ring.label == 0 {
+            whole[size as usize..2 * size as usize].copy_from_slice(&damaged);
+        }
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+    // (b)
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    view.saw(at, &damaged);
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+}
+
+/// A new label's ring, written whole by `vdev_label_init` with an
+/// uberblock of group 0 at its start that no slot verifies, as a volume
+/// attached to, replacing a device of, or added to a pool that has
+/// synced gets it, and then ZFS's write of the slot after it: every
+/// place stays known, and the next group is chosen. Group 0 ranks below
+/// every cut's state, so its fields are not followed past the write
+/// that brought them. Fails where they are, as for a greater group:
+/// ZFS's first uberblock writes to such a volume would leave the ring's
+/// first place unknown until its own slot is written again.
+#[test]
+fn a_labelled_rings_group_zero_is_not_followed_into_the_next_slot() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        whole[..SLOT_MIN as usize].copy_from_slice(&slot(ByteOrder::Little, 0, 0, SLOT_MIN));
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known());
+    for ring in &rings {
+        let at = ring.start + 4 * KIB;
+        view.saw(at, &sealed(&slot_at(5, 1, 100, 0), at));
+    }
+    assert!(view.is_known() && view.chosen(&state(5, 1), false));
+}
+
+/// An uberblock found in a write shorter than a slot that could begin
+/// at its place is left unknown, whatever that slot's size: a 1 KiB
+/// write puts the fields of group 9 at 2 KiB into a ring, where a slot
+/// of 2 KiB could begin and one of 4 or 8 KiB could not. Nothing there
+/// verifies, and the rest of a 2 KiB slot may lie past the write. Fails
+/// where the second rule asks one size alone, such as 8 KiB (the next
+/// look of the review of #96, which offered this test).
+#[test]
+fn a_header_in_a_write_shorter_than_its_slot_leaves_its_place_unknown() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let mut view = View::empty(labels);
+    for ring in labels.rings() {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    let at = ring.start + 2 * KIB;
+    let s = slot(ByteOrder::Little, 9, 1, 2 * KIB);
+    view.saw(at, &s[..KIB as usize]);
+    assert!(!view.is_known());
 }
