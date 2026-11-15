@@ -1,6 +1,6 @@
 [package]
 name = "skyzfs-ublk-sys"
-description = "The SkyZFS binding to the kernel's ublk driver: the control commands and one queue, over libublk (design §4.2). The only SkyZFS crate with unsafe code"
+description = "The SkyZFS binding to the kernel's ublk driver: the control commands and one queue, over libublk (design §4.2). One of the two SkyZFS crates with unsafe code, with skyzfs-mapped"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true

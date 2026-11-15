@@ -180,7 +180,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{InPlace, OpenOptions, StartError};
+use skyzfs_local::inplace::{CutRegion, CutsTakenUp, HoldCuts, InPlace, OpenOptions, StartError};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
@@ -208,6 +208,9 @@ pub type Target = InPlace<FsDir>;
 /// The log store's reasons (codes 1 to 3) are no longer given, and the
 /// note still reads them.
 const FAILURE: Reason = Reason::ImageFailed;
+
+/// The held cuts' state, in the volume's run directory (`--hold-cuts`).
+pub const CUTS_STATE: &str = "cuts.state";
 
 /// How often a start asks again about a device of its own that is
 /// still shown as live: 50 times, 100 ms apart, 5 s.
@@ -680,6 +683,19 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         io: serve.in_place_io,
         ..OpenOptions::default()
     };
+    // The held cuts' state, in the volume's run directory, which is
+    // tmpfs where the run directory is `/run`: kept while the machine
+    // is up, never written back, gone at a reboot (M2.2b). The store's
+    // open maps it, allocated and locked, under the volume's lock and
+    // before a device is touched, and is refused where it cannot.
+    let cuts_path = records.volume_run_dir().join(CUTS_STATE);
+    if serve.hold_cuts {
+        options.hold_cuts = Some(HoldCuts {
+            region: CutRegion::Named(cuts_path.clone()),
+            boot,
+            bound: None,
+        });
+    }
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -704,7 +720,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         acknowledge_failure: serve.acknowledge_failure,
         async_delete_asserted: serve.async_delete_asserted,
     };
-    let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
+    let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
         Err(Stop::Unsupported(why)) => return Err(not_served(&why)),
         Err(Stop::Held) => {
@@ -743,6 +759,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let recovered = 0u64;
     let (log_bytes, log_records) = (0u64, 0u64);
     let took_over = ready.took_over;
+    if took_over {
+        // The mark the held cuts' state holds is kept only on a device
+        // taken over (`InPlace::take_up_cut_state`).
+        ready.store.device_taken_over();
+    }
     let to_device = began.elapsed();
     let waker = Waker::new({
         let wake = wake.clone();
@@ -794,6 +815,17 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     };
 
+    match served.cuts_at_start() {
+        None => {}
+        Some(CutsTakenUp::TakenUp) => say(format_args!(
+            "held cuts: the state in {} was taken up",
+            cuts_path.display()
+        )),
+        Some(CutsTakenUp::Begun(why)) => say(format_args!(
+            "held cuts: a new state in {}, with the whole volume counted as changed: {why}",
+            cuts_path.display()
+        )),
+    }
     let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
         number,

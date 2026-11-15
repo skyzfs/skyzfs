@@ -3,7 +3,7 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
-//!                [--queues 1] [--depth N] [--io-threads N]
+//!                [--queues 1] [--depth N] [--io-threads N] [--hold-cuts]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -91,7 +91,7 @@ const MIB: u64 = 1 << 20;
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--io-threads N] [--kernel-has-async-delete]
+                 [--io-threads N] [--hold-cuts] [--kernel-has-async-delete]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -175,7 +175,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--io-threads N] [--kernel-has-async-delete]
+                [--io-threads N] [--hold-cuts] [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -208,6 +208,18 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A volume made by a daemon with a log store (before M1.3t) is
       refused, as is a directory whose file volume is missing or
       damaged: none of these fails the volume. Create it again.
+      --hold-cuts holds the pool's newest cuts as they were (design
+      §5.2): before a write changes a block a held cut reads, the block
+      is copied into copies.img beside the image, up to a bound of
+      1/256 of the volume (at least 256 MiB). The cuts' state is kept
+      in the run directory's volume directory (cuts.state, on tmpfs),
+      allocated and locked in memory at the start: 146 MiB for each
+      TiB of the volume, and at least 1 MiB. A start that cannot allocate or lock it is refused (exit
+      1) before a device is touched, and says what limit refused it.
+      A later start in the same boot takes the state up if the copies
+      file syncs and no failure is acknowledged; otherwise it begins a
+      new one. Nothing lets a held cut go yet but the test hooks: it is
+      off unless given.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -375,6 +387,10 @@ pub struct Serve {
     /// `--io-threads`: how the store reads and writes (direct I/O on
     /// that many threads).
     pub in_place_io: skyzfs_local::inplace::IoMode,
+    /// `--hold-cuts`: the store holds cuts, with their state in the
+    /// volume's run directory (M2.2b). Off until the uploader (M2.4)
+    /// lets held cuts go.
+    pub hold_cuts: bool,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -527,6 +543,7 @@ const SERVE: &[Opt] = &[
     opt("--queues", true, false),
     opt("--depth", true, false),
     opt("--io-threads", true, false),
+    opt("--hold-cuts", false, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -736,6 +753,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 in_place_io,
+                hold_cuts: given.flag("--hold-cuts"),
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {

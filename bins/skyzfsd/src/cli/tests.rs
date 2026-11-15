@@ -121,6 +121,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         queues: 1,
         depth: 64,
         in_place_io: skyzfs_local::inplace::IoMode::default(),
+        hold_cuts: false,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -131,7 +132,8 @@ fn serve_has_the_agreed_defaults_and_options() {
     );
     let full = serve(
         "serve --run-dir /tmp/run --acknowledge-failure --dir /v/a --queues 1 --depth 128 \
-         --unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem --kernel-has-async-delete",
+         --unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem --kernel-has-async-delete \
+         --hold-cuts",
     );
     assert_eq!(
         full,
@@ -141,6 +143,7 @@ fn serve_has_the_agreed_defaults_and_options() {
             async_delete_asserted: true,
             queues: 1,
             depth: 128,
+            hold_cuts: true,
             allow_unlocked_memory: true,
             allow_any_filesystem: true,
             ..default

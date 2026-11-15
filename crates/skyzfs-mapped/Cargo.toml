@@ -1,0 +1,15 @@
+[package]
+name = "skyzfs-mapped"
+description = "A file mapped into the daemon and locked in memory, as words a death leaves as they were (design §5.2)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `fallocate` to allocate the file in full, `mmap`, `mlock`, and the
+# room and the lock limit that an error names.
+rustix = { version = "1", features = ["fs", "mm", "process"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

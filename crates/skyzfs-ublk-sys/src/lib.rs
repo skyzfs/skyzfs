@@ -2,9 +2,10 @@
 //! the lifecycle's [`Control`](skyzfs_ublk::lifecycle::Control) and the
 //! pump's [`Queue`](skyzfs_ublk::pump::Queue) over a real kernel.
 //!
-//! **This is the only SkyZFS crate that may hold `unsafe`.** Every
-//! `unsafe` block says why it is sound. `skyzfs-ublk` and the daemon
-//! forbid it.
+//! **This crate and `skyzfs-mapped` (one module: a file mapped and
+//! locked, for the held cuts' state) are the only SkyZFS crates that
+//! may hold `unsafe`.** Every `unsafe` block says why it is sound.
+//! `skyzfs-ublk` and the daemon forbid it.
 //!
 //! # What is the library's and what is ours
 //!

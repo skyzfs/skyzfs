@@ -116,11 +116,14 @@
 //! The state lives in a [`Region`] of 64-bit words, which a death of the
 //! daemon leaves as the last store left it: a file mapped into the
 //! daemon is such a region, since the kernel keeps its pages when the
-//! process dies (M2.2b). Every change is ordered so that a death after
-//! any store leaves a state that the next instance can take up
-//! ([`CutState::restore`]), finishing what a death interrupted: a cut
-//! whose flush was under way takes the start's sync as its flush, a map
-//! being taken is moved whole, and a map no cut owns is cleared. What is
+//! process dies (`skyzfs-mapped`, [`StoreRegion`]). Its header names
+//! its owner ([`Owner`]): the volume's identity and the machine's boot,
+//! without which a start does not take it up. Every change is ordered
+//! so that a death after any store leaves a state that the next
+//! instance can take up ([`CutState::restore`]), finishing what a death
+//! interrupted: a cut whose flush was under way takes the start's sync
+//! as its flush, a map being taken is moved whole, and a map no cut
+//! owns is cleared. What is
 //! kept only in memory (where each block's records are, which records
 //! are free) is made again from the region at each start.
 //!
@@ -234,6 +237,90 @@ impl Region for MemRegion {
     }
 }
 
+/// The region a store's cut state lives in ([`super::CutRegion`]).
+#[derive(Debug)]
+pub enum StoreRegion {
+    /// A region in memory (the tests').
+    Memory(MemRegion),
+    /// A region the kernel keeps while the machine is up, mapped and
+    /// locked.
+    Mapped(skyzfs_mapped::Mapped),
+}
+
+impl Region for StoreRegion {
+    fn words(&self) -> usize {
+        match self {
+            StoreRegion::Memory(region) => region.words(),
+            StoreRegion::Mapped(region) => region.words(),
+        }
+    }
+
+    fn load(&self, at: usize) -> u64 {
+        match self {
+            StoreRegion::Memory(region) => region.load(at),
+            StoreRegion::Mapped(region) => region.load(at),
+        }
+    }
+
+    fn store(&mut self, at: usize, value: u64) {
+        match self {
+            StoreRegion::Memory(region) => region.store(at, value),
+            StoreRegion::Mapped(region) => region.store(at, value),
+        }
+    }
+}
+
+/// A store's cut state's region as its open had it, with what its
+/// start needs to take the state up or begin one.
+#[derive(Debug)]
+pub(crate) struct Taken {
+    pub(crate) region: StoreRegion,
+    /// Whether the region was there with the length the volume needs:
+    /// only then can it hold a state to take up.
+    pub(crate) kept: bool,
+    /// Whose the state is to be.
+    pub(crate) owner: Owner,
+    /// The bound on the copies, in bytes.
+    pub(crate) bound: u64,
+}
+
+impl Taken {
+    /// Have the region `hold` names for a volume of `size` bytes: map a
+    /// named one, allocated in full and locked, or take the memory
+    /// given. An error says why the region cannot be had.
+    pub(crate) fn open(
+        hold: &super::HoldCuts,
+        size: u64,
+        identity: [u8; 16],
+    ) -> Result<Self, String> {
+        let bound = hold.bound.unwrap_or_else(|| default_bound(size));
+        let words = words_for(size / BLOCK_SIZE, records_for(bound));
+        let (region, kept) = match &hold.region {
+            super::CutRegion::Memory(region) if region.words() >= words => {
+                (StoreRegion::Memory(region.clone()), true)
+            }
+            super::CutRegion::Memory(_) => (StoreRegion::Memory(MemRegion::new(words)), false),
+            super::CutRegion::Named(path) => {
+                let (region, opened) =
+                    skyzfs_mapped::Mapped::open(path, words).map_err(|e| e.to_string())?;
+                (
+                    StoreRegion::Mapped(region),
+                    opened == skyzfs_mapped::Opened::Kept,
+                )
+            }
+        };
+        Ok(Self {
+            region,
+            kept,
+            owner: Owner {
+                volume: identity,
+                boot: hold.boot,
+            },
+            bound,
+        })
+    }
+}
+
 /// The region's magic: `SKYZCUT1`.
 const MAGIC: u64 = u64::from_le_bytes(*b"SKYZCUT1");
 /// The version of the region's format this code reads and writes.
@@ -270,20 +357,25 @@ mod at {
     pub(super) const VERSION: usize = 1;
     pub(super) const BLOCKS: usize = 2;
     pub(super) const RECORDS: usize = 3;
+    /// The boot the state was begun in: two words, the boot id's bytes
+    /// in order.
+    pub(super) const BOOT: usize = 4;
+    /// The volume's identity, two words likewise.
+    pub(super) const IDENTITY: usize = 6;
     /// The count of cuts, and in the top byte the open map: one store
     /// moves both.
-    pub(super) const COUNT: usize = 4;
+    pub(super) const COUNT: usize = 8;
     /// The `lo` of the next cut when no cut is held.
-    pub(super) const OPEN_LO: usize = 5;
+    pub(super) const OPEN_LO: usize = 9;
     /// The epoch in which the whole volume counts as changed; 0: none.
-    pub(super) const WHOLE: usize = 6;
+    pub(super) const WHOLE: usize = 10;
     /// The cuts abandoned at the bound.
-    pub(super) const ABANDONED: usize = 7;
+    pub(super) const ABANDONED: usize = 11;
     /// The second part of the open map while it takes a cut's map.
-    pub(super) const OPEN_ALSO: usize = 8;
+    pub(super) const OPEN_ALSO: usize = 12;
     /// Which of the two mark slots holds the mark: 0 none, 1 or 2.
-    pub(super) const MARK_SEL: usize = 9;
-    pub(super) const MARK: usize = 10;
+    pub(super) const MARK_SEL: usize = 13;
+    pub(super) const MARK: usize = 14;
     /// Which of the two slots holds the newest cut's state: 0 none.
     pub(super) const NEWEST_SEL: usize = MARK + 2 * STATE_WORDS;
     pub(super) const NEWEST: usize = NEWEST_SEL + 1;
@@ -479,13 +571,42 @@ pub enum RegionError {
     Version(u64),
     #[error("the cut state is of another volume: {0}")]
     Shape(String),
+    /// The state was begun in another boot of the machine: a region
+    /// kept on a file system that outlives a boot (the daemon's is on
+    /// tmpfs, which does not), whose copies a crash may have lost.
+    #[error("the cut state was begun in another boot")]
+    Boot,
+    /// The state is of a volume with another identity: one made again
+    /// in the same directory, whose run directory is the same.
+    #[error("the cut state is of another volume (its identity differs)")]
+    Identity,
+}
+
+/// Whose a state is: the volume's identity and the machine's boot. A
+/// state is taken up only by its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owner {
+    /// The volume's identity ([`crate::volume::Volume::identity`]).
+    pub volume: [u8; 16],
+    /// The boot id of the machine.
+    pub boot: [u8; 16],
+}
+
+/// Sixteen bytes as the two words of the region's header.
+fn id_words(id: [u8; 16]) -> [u64; 2] {
+    let mut words = [0; 2];
+    let (eights, _) = id.as_chunks::<8>();
+    for (word, eight) in words.iter_mut().zip(eights) {
+        *word = u64::from_le_bytes(*eight);
+    }
+    words
 }
 
 impl<R: Region> CutState<R> {
     /// Begin a state in `region` for a volume of `size` bytes, with a
-    /// bound of `bound` bytes on the copies: no cut, and the whole
-    /// volume counted as changed in the first epoch.
-    pub fn begin(mut region: R, size: u64, bound: u64, mutants: Mutants) -> Self {
+    /// bound of `bound` bytes on the copies, owned by `owner`: no cut,
+    /// and the whole volume counted as changed in the first epoch.
+    pub fn begin(mut region: R, size: u64, bound: u64, owner: Owner, mutants: Mutants) -> Self {
         let blocks = size / BLOCK_SIZE;
         let capacity = records_for(bound);
         for i in 0..region.words() {
@@ -496,6 +617,12 @@ impl<R: Region> CutState<R> {
         region.store(at::VERSION, VERSION);
         region.store(at::BLOCKS, blocks);
         region.store(at::RECORDS, capacity as u64);
+        for (i, word) in id_words(owner.boot).into_iter().enumerate() {
+            region.store(at::BOOT + i, word);
+        }
+        for (i, word) in id_words(owner.volume).into_iter().enumerate() {
+            region.store(at::IDENTITY + i, word);
+        }
         region.store(at::WHOLE, 1);
         region.store(at::OPEN_ALSO, NO_MAP);
         region.store(at::MAGIC, MAGIC);
@@ -504,13 +631,34 @@ impl<R: Region> CutState<R> {
 
     /// The state that `region` holds, read as it is, with nothing
     /// finished: what a reader beside the daemon sees at any store. The
-    /// tests read it so at the instant of a death.
+    /// tests read it so at the instant of a death. A state that is not
+    /// `owner`'s is not read. Where none is read, the region comes back
+    /// with the reason.
     pub(crate) fn view(
         region: R,
         size: u64,
         bound: u64,
+        owner: Owner,
         mutants: Mutants,
-    ) -> Result<Self, RegionError> {
+    ) -> Result<Self, (RegionError, R)> {
+        match Self::check(&region, size, owner, mutants) {
+            Ok((blocks, capacity)) => {
+                let mut state = Self::new(region, blocks, capacity, bound, mutants);
+                state.index();
+                Ok(state)
+            }
+            Err(e) => Err((e, region)),
+        }
+    }
+
+    /// Whether `region` holds a state this daemon reads, for a volume of
+    /// `size` bytes, owned by `owner`: its blocks and its records.
+    fn check(
+        region: &R,
+        size: u64,
+        owner: Owner,
+        mutants: Mutants,
+    ) -> Result<(u64, usize), RegionError> {
         if region.load(at::MAGIC) != MAGIC {
             return Err(RegionError::Empty);
         }
@@ -532,21 +680,35 @@ impl<R: Region> CutState<R> {
                 region.words()
             )));
         }
-        let mut state = Self::new(region, blocks, capacity, bound, mutants);
-        state.index();
-        Ok(state)
+        let words = |at: usize| [region.load(at), region.load(at + 1)];
+        if words(at::IDENTITY) != id_words(owner.volume)
+            && !mutants.has(Mutants::IDENTITY_UNCHECKED)
+        {
+            return Err(RegionError::Identity);
+        }
+        if words(at::BOOT) != id_words(owner.boot) && !mutants.has(Mutants::BOOT_UNCHECKED) {
+            return Err(RegionError::Boot);
+        }
+        Ok((blocks, capacity))
+    }
+
+    /// The region, given back.
+    pub(crate) fn into_region(self) -> R {
+        self.region
     }
 
     /// Take up the state that `region` holds for a volume of `size`
-    /// bytes, as a start after a lost daemon does, once the start's
-    /// sync has succeeded: finish what a death interrupted.
+    /// bytes, owned by `owner`, as a start after a lost daemon does,
+    /// once the start's sync has succeeded: finish what a death
+    /// interrupted.
     pub fn restore(
         region: R,
         size: u64,
         bound: u64,
+        owner: Owner,
         mutants: Mutants,
-    ) -> Result<Self, RegionError> {
-        let mut state = Self::view(region, size, bound, mutants)?;
+    ) -> Result<Self, (RegionError, R)> {
+        let mut state = Self::view(region, size, bound, owner, mutants)?;
         state.settle();
         Ok(state)
     }

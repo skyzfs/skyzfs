@@ -88,8 +88,11 @@ impl InPlaceHarness {
             read_only,
             acknowledge_failure,
             io: self.io,
-            cut_region: self.held_cuts.then(|| super::state::MemRegion::new(0)),
-            cut_bound: self.held_cuts.then_some(16 * skyzfs_blk::BLOCK_SIZE),
+            hold_cuts: self.held_cuts.then(|| super::HoldCuts {
+                region: super::CutRegion::Memory(super::state::MemRegion::new(0)),
+                boot: [0; 16],
+                bound: Some(16 * skyzfs_blk::BLOCK_SIZE),
+            }),
             ..OpenOptions::default()
         }
     }

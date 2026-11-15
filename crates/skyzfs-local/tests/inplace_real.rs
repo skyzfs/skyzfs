@@ -760,3 +760,158 @@ fn the_waker_is_called_when_a_sync_ends_on_real_files() {
     assert_eq!(done[0].id, RequestId(9));
     assert_eq!(done[0].result, Ok(()));
 }
+
+/// The variables that tell `held_cut_kill_test_child` where the volume
+/// and the region of its cut state are.
+#[cfg(feature = "test-hooks")]
+const CUT_CHILD_DIR: &str = "SKYZFS_CUT_CHILD_DIR";
+#[cfg(feature = "test-hooks")]
+const CUT_CHILD_REGION: &str = "SKYZFS_CUT_CHILD_REGION";
+
+/// The boot of the held-cut tests.
+#[cfg(feature = "test-hooks")]
+const BOOT: [u8; 16] = *b"a boot on a disk";
+
+/// Start on `dir` holding cuts, with their state in the mapped region
+/// at `region`, in boot `boot`; `taken_over` says whether the device is
+/// one this start took over.
+#[cfg(feature = "test-hooks")]
+fn start_holding(
+    dir: &FsDir,
+    region: &std::path::Path,
+    boot: [u8; 16],
+    taken_over: bool,
+) -> OnFiles {
+    use skyzfs_local::inplace::{CutRegion, HoldCuts};
+    let options = OpenOptions {
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Named(region.to_owned()),
+            boot,
+            bound: None,
+        }),
+        ..OpenOptions::default()
+    };
+    let mut opened = Opened::open(dir.clone(), lock(dir).unwrap(), options)
+        .map_err(|(e, _)| e)
+        .unwrap();
+    if taken_over {
+        opened.device_taken_over();
+    }
+    opened.start(None).expect("the in-place store")
+}
+
+/// The uberblock write of group `txg` to label 0 of the tests' volume,
+/// in the slot the group chooses, sealed as ZFS seals it.
+#[cfg(feature = "test-hooks")]
+fn uberblock_write(txg: u64) -> Op {
+    use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC, RING_SIZE};
+    let ring = Labels::for_size(config().size_mib << 20)
+        .rings()
+        .next()
+        .unwrap()
+        .start;
+    let offset = ring + (txg % (RING_SIZE / BLOCK)) * BLOCK;
+    let mut data = Buf::filled(1, 0);
+    let mut put = |at: usize, word: u64| data[at..at + 8].copy_from_slice(&word.to_le_bytes());
+    put(0, MAGIC);
+    put(8, 5000);
+    put(16, txg);
+    for n in 0..16 {
+        put(40 + 8 * n, (txg * 10).rotate_left(n as u32) ^ 0x5a5a);
+    }
+    seal(&mut data, offset, ByteOrder::Little);
+    Op::Write { offset, data }
+}
+
+/// Not a test of its own: the child of
+/// `a_held_cut_outlives_kill_9_in_its_mapped_region`. Writes block 5,
+/// cuts group 7, writes block 5 again, which copies it for the cut,
+/// says so, and waits to be killed.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn held_cut_kill_test_child() {
+    let (Some(path), Some(region)) = (
+        std::env::var_os(CUT_CHILD_DIR),
+        std::env::var_os(CUT_CHILD_REGION),
+    ) else {
+        return;
+    };
+    let Some(dir) = on_disk(std::path::Path::new(&path)) else {
+        return;
+    };
+    let mut store = start_holding(&dir, std::path::Path::new(&region), BOOT, false);
+    write(&mut store, 5, Buf::filled(1, 0x55));
+    assert_eq!(run(&mut store, uberblock_write(7)).result, Ok(()));
+    flush(&mut store);
+    let held: Vec<u64> = store.held_cuts().iter().map(|c| c.state.txg).collect();
+    assert_eq!(held, [7]);
+    write(&mut store, 5, Buf::filled(1, 0x66));
+    assert!(store.cut_figures().copied > 0);
+    let mut out = std::io::stderr().lock();
+    out.write_all(b"ready\n").unwrap();
+    out.flush().unwrap();
+    drop(out);
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Held cuts outlive a real `kill -9` (M2.2b): a child process holds a
+/// cut whose block 5 it has overwritten, so the cut reads it from its
+/// copy, and is killed. The next start, in the same boot and on the
+/// device taken over, takes the state up from the mapped region and
+/// reads the cut as it was, and the volume as it is; a start in another
+/// boot begins a new state and says why.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn a_held_cut_outlives_kill_9_in_its_mapped_region() {
+    use skyzfs_local::inplace::CutsTakenUp;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let region = run_dir.path().join("cuts.state");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "held_cut_kill_test_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CUT_CHILD_DIR, tmp.path())
+        .env(CUT_CHILD_REGION, &region)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let ready = lines.find_map(|line| (line.ok()? == "ready").then_some(()));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(ready.is_some(), "the child never held its cut");
+
+    let mut store = start_holding(&dir, &region, BOOT, true);
+    assert_eq!(store.cuts_at_start(), Some(&CutsTakenUp::TakenUp));
+    let held: Vec<(u64, u64)> = store
+        .held_cuts()
+        .iter()
+        .map(|c| (c.number, c.state.txg))
+        .collect();
+    assert_eq!(held, [(1, 7)]);
+    let mut buf = Buf::filled(1, 0xEE);
+    assert!(store.read_cut(1, 5, &mut buf).unwrap());
+    assert_eq!(buf.to_vec(), vec![0x55; BLOCK as usize]);
+    assert_eq!(read(&mut store, 5, 1).to_vec(), vec![0x66; BLOCK as usize]);
+    drop(store);
+
+    let mut another = BOOT;
+    another[0] ^= 1;
+    let store = start_holding(&dir, &region, another, true);
+    match store.cuts_at_start() {
+        Some(CutsTakenUp::Begun(why)) => assert!(why.contains("another boot"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(store.held_cuts().is_empty());
+}

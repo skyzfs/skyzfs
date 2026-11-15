@@ -892,22 +892,59 @@ fn region() -> state::MemRegion {
     ))
 }
 
-/// Start on `disk` with the cut state in `region`.
+/// How a test's start comes to the volume: in which boot, whether it
+/// acknowledges a failure, and whether its device is one it took over.
+#[derive(Debug, Clone, Copy)]
+struct Coming {
+    boot: [u8; 16],
+    acknowledging: bool,
+    taken_over: bool,
+}
+
+/// A daemon's start after a death of the one before, in the same boot:
+/// it takes the device over.
+const TAKING_OVER: Coming = Coming {
+    boot: state::tests::BOOT,
+    acknowledging: false,
+    taken_over: true,
+};
+
+/// Start on `disk` with the cut state in `region`, taking the device
+/// over.
 fn start_on(
     disk: &SimDisk,
     mutants: u64,
     region: &state::MemRegion,
     io: IoMode,
 ) -> InPlace<SimDisk> {
+    start_as(disk, mutants, region, io, TAKING_OVER)
+}
+
+/// Start on `disk` with the cut state in `region`, as `coming` says.
+fn start_as(
+    disk: &SimDisk,
+    mutants: u64,
+    region: &state::MemRegion,
+    io: IoMode,
+    coming: Coming,
+) -> InPlace<SimDisk> {
     let options = OpenOptions {
         io,
-        cut_region: Some(region.clone()),
-        cut_bound: Some(TEST_BOUND),
+        acknowledge_failure: coming.acknowledging,
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Memory(region.clone()),
+            boot: coming.boot,
+            bound: Some(TEST_BOUND),
+        }),
         ..OpenOptions::default()
     };
-    Opened::open(disk.clone(), lock(disk).expect("the lock"), options)
+    let mut opened = Opened::open(disk.clone(), lock(disk).expect("the lock"), options)
         .map_err(|(e, _)| e)
-        .expect("opens")
+        .expect("opens");
+    if coming.taken_over {
+        opened.device_taken_over();
+    }
+    opened
         .start_with(None, Mutants(mutants))
         .expect("the in-place store")
 }
@@ -1102,4 +1139,220 @@ fn a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole() {
             "{name}: not noticed"
         );
     }
+}
+
+/// What a start makes of the cut held when the daemon before it was
+/// lost: block 5 was written after cut 1's instant, so the cut reads it
+/// from its copy. `between` does to the disk what happened between the
+/// two daemons. What the start did, the held cuts' numbers, and block 5
+/// of cut 1 if it is held.
+fn after_a_loss(
+    mutants: u64,
+    coming: Coming,
+    between: &dyn Fn(&SimDisk),
+) -> (CutsTakenUp, Vec<u64>, Option<Vec<u8>>) {
+    let disk = created(32, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    write(&mut store, 5, 0x66).unwrap();
+    assert!(store.cut_figures().copied > 0);
+    drop(store);
+    disk.kill();
+    between(&disk);
+    let mut store = start_as(&disk, mutants, &region, ON_CALLER, coming);
+    let taken = store
+        .cuts_at_start()
+        .cloned()
+        .expect("the store holds cuts");
+    let held: Vec<u64> = store.held_cuts().iter().map(|c| c.number).collect();
+    // Cut 1, the oldest, holds the whole volume. A copy a wrongly
+    // trusted state names may not read at all: that is no content.
+    let five = (!held.is_empty()).then(|| {
+        let mut buf = Buf::filled(1, 0xEE);
+        match store.read_cut(1, 5, &mut buf) {
+            Ok(true) => buf.to_vec(),
+            _ => Vec::new(),
+        }
+    });
+    (taken, held, five)
+}
+
+/// A start takes up the cut state the daemon before it left only where
+/// it can trust it (M2.2b): in the same boot, after a sync of the copies
+/// that succeeded, and when it does not acknowledge a failure; on a
+/// device taken over or created. Otherwise it begins a new state, holds
+/// no cut, and says why. Each rule's absence is noticed.
+#[test]
+fn a_held_cut_is_taken_up_only_where_its_state_is_trusted() {
+    let nothing = |_: &SimDisk| {};
+    let created_device = Coming {
+        taken_over: false,
+        ..TAKING_OVER
+    };
+    for coming in [TAKING_OVER, created_device] {
+        let (taken, held, five) = after_a_loss(0, coming, &nothing);
+        assert_eq!(taken, CutsTakenUp::TakenUp, "{coming:?}");
+        assert_eq!(held, [1], "{coming:?}");
+        assert_eq!(five, Some(vec![0x55; BLOCK_USIZE]), "{coming:?}");
+    }
+    let mut another_boot = TAKING_OVER;
+    another_boot.boot[0] ^= 1;
+    let acknowledging = Coming {
+        acknowledging: true,
+        ..TAKING_OVER
+    };
+    let unsynced = |disk: &SimDisk| disk.fail_sync_of(COPIES_NAME);
+    let removed = |disk: &SimDisk| disk.remove(COPIES_NAME).expect("the copies file goes");
+    /// A case: its name, the mutant that plants its rule away, how the
+    /// start comes, what happened before it, and what the start says.
+    type Case<'a> = (&'a str, u64, Coming, &'a dyn Fn(&SimDisk), &'a str);
+    let cases: [Case; 4] = [
+        (
+            "another boot",
+            Mutants::BOOT_UNCHECKED,
+            another_boot,
+            &nothing,
+            "begun in another boot",
+        ),
+        (
+            "a failure acknowledged",
+            Mutants::ACKNOWLEDGED_TRUSTED,
+            acknowledging,
+            &nothing,
+            "acknowledges a failure",
+        ),
+        (
+            "a failed sync of the copies",
+            Mutants::COPIES_SYNC_UNCHECKED,
+            TAKING_OVER,
+            &unsynced,
+            "could not be synced",
+        ),
+        (
+            "no copies file",
+            Mutants::COPIES_SYNC_UNCHECKED,
+            TAKING_OVER,
+            &removed,
+            "the copies file is missing",
+        ),
+    ];
+    for (name, mutant, coming, between, says) in cases {
+        let (taken, held, _) = after_a_loss(0, coming, between);
+        match taken {
+            CutsTakenUp::Begun(why) => assert!(why.contains(says), "{name}: {why}"),
+            CutsTakenUp::TakenUp => panic!("{name}: the state was taken up"),
+        }
+        assert!(held.is_empty(), "{name}: {held:?}");
+        let (taken, held, _) = after_a_loss(mutant, coming, between);
+        assert_eq!(
+            (taken, held),
+            (CutsTakenUp::TakenUp, vec![1]),
+            "{name}: not noticed"
+        );
+    }
+}
+
+/// A start on a device it took over keeps the mark the state holds, so
+/// that the flush ZFS sends after the marked write cuts its group; a
+/// start on a created device drops it, since no client of the old
+/// device can send that flush to the new one (M2.2b). Keeping it is
+/// noticed.
+#[test]
+fn a_start_on_a_created_device_keeps_no_mark() {
+    let after_the_next_flush = |mutants: u64, taken_over: bool| -> Vec<u64> {
+        let disk = created(33, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, ON_CALLER);
+        group(&mut store, 100, 7, 70);
+        assert!(run(&mut store, 200, uberblock_write(0, 8, 80))
+            .result
+            .is_ok());
+        drop(store);
+        disk.kill();
+        let coming = Coming {
+            taken_over,
+            ..TAKING_OVER
+        };
+        let mut store = start_as(&disk, mutants, &region, ON_CALLER, coming);
+        assert!(run(&mut store, 201, Op::Flush).result.is_ok());
+        store.held_cuts().iter().map(|c| c.state.txg).collect()
+    };
+    assert_eq!(after_the_next_flush(0, true), [7, 8]);
+    assert_eq!(after_the_next_flush(0, false), [7]);
+    assert_eq!(
+        after_the_next_flush(Mutants::MARK_KEPT_ON_CREATED, false),
+        [7, 8],
+        "a mark kept on a created device is not noticed"
+    );
+}
+
+/// A region the open cannot have refuses the open by its reason and
+/// with its name, before anything of the volume is written: a volume
+/// marked as failed keeps its marker although the open was told to
+/// acknowledge it.
+#[test]
+fn a_region_that_cannot_be_had_refuses_the_open() {
+    let disk = created(34, 0);
+    disk.create(crate::volume::MARKER_NAME)
+        .and_then(|mut marker| marker.sync())
+        .expect("the marker");
+    let missing = std::env::temp_dir()
+        .join("skyzfs-no-such-directory")
+        .join("cuts.state");
+    let options = OpenOptions {
+        acknowledge_failure: true,
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Named(missing),
+            boot: state::tests::BOOT,
+            bound: Some(TEST_BOUND),
+        }),
+        ..OpenOptions::default()
+    };
+    let Err((error, _lock)) = Opened::open(disk.clone(), lock(&disk).expect("the lock"), options)
+    else {
+        panic!("the open went on without its region");
+    };
+    match &error {
+        OpenError::CutRegion(why) => assert!(why.contains("skyzfs-no-such-directory"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(disk
+        .list()
+        .expect("the names")
+        .iter()
+        .any(|name| name == crate::volume::MARKER_NAME));
+}
+
+/// A volume made again where one was, whose run directory and so whose
+/// region is the same, does not take up the old volume's cuts: the
+/// state carries the volume's identity (M2.2b). Not checking it is
+/// noticed.
+#[test]
+fn a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before() {
+    let next_volume = |mutants: u64| -> (CutsTakenUp, Vec<u64>) {
+        let region = region();
+        let old = created(35, 0);
+        let mut store = start_on(&old, 0, &region, ON_CALLER);
+        group(&mut store, 100, 7, 70);
+        drop(store);
+        old.kill();
+        let new = created(36, 0);
+        let store = start_on(&new, mutants, &region, ON_CALLER);
+        let held = store.held_cuts().iter().map(|c| c.state.txg).collect();
+        (store.cuts_at_start().cloned().expect("held cuts"), held)
+    };
+    match next_volume(0) {
+        (CutsTakenUp::Begun(why), held) => {
+            assert!(why.contains("another volume"), "{why}");
+            assert!(held.is_empty(), "{held:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        next_volume(Mutants::IDENTITY_UNCHECKED),
+        (CutsTakenUp::TakenUp, vec![7]),
+        "a state of another volume taken up is not noticed"
+    );
 }

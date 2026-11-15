@@ -19,6 +19,13 @@ use super::*;
 /// meets several words and their summary.
 const BLOCKS: u64 = 200;
 const SIZE: u64 = BLOCKS * BLOCK_SIZE;
+/// The boot the tests' states are begun in.
+pub(crate) const BOOT: [u8; 16] = *b"the tests' boot.";
+/// The owner of the tests' states.
+const OWNER: Owner = Owner {
+    volume: *b"the tests' disk.",
+    boot: BOOT,
+};
 /// Where a program's changes begin: twelve blocks, some at the edges of
 /// a map's words, so that programs change the same blocks often.
 const STARTS: [u64; 12] = [0, 1, 2, 62, 63, 64, 65, 126, 127, 128, 190, 197];
@@ -202,7 +209,7 @@ impl World {
     fn new(mutants: u64, bound_blocks: u64) -> Self {
         let bound = bound_blocks * BLOCK_SIZE;
         let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
-        let state = CutState::begin(region.clone(), SIZE, bound, Mutants(mutants));
+        let state = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(mutants));
         Self {
             region,
             state,
@@ -250,8 +257,9 @@ impl World {
                 // it died, before anything is finished: every held cut's
                 // map whole, mid-taking too, and its content.
                 self.region.revive();
-                let view = CutState::view(self.region.clone(), SIZE, self.bound, self.mutants)
-                    .map_err(|e| e.to_string())?;
+                let view =
+                    CutState::view(self.region.clone(), SIZE, self.bound, OWNER, self.mutants)
+                        .map_err(|(e, _)| e.to_string())?;
                 self.check_cuts(&view)
                     .map_err(|e| format!("read at the death in {step:?}: {e}"))?;
                 self.restart(step)?;
@@ -418,8 +426,8 @@ impl World {
     fn restart(&mut self, step: Step) -> Result<(), String> {
         self.region.revive();
         let before = self.state.held();
-        self.state = CutState::restore(self.region.clone(), SIZE, self.bound, self.mutants)
-            .map_err(|e| e.to_string())?;
+        self.state = CutState::restore(self.region.clone(), SIZE, self.bound, OWNER, self.mutants)
+            .map_err(|(e, _)| e.to_string())?;
         // Flushes under way are done by the start's sync.
         self.flushing.clear();
         let after = self.state.held();
@@ -1014,28 +1022,50 @@ fn the_tests_notice_each_defect_of_the_cut_state() {
     }
 }
 
-/// A region of another version is refused, and one with no magic, and
-/// one of another volume's size.
+/// A region of another version is refused, and one with no magic, one
+/// of another volume's size or identity, and one begun in another boot,
+/// each unless its check is planted away; the region comes back with
+/// the reason.
 #[test]
-fn a_region_of_another_version_or_volume_is_refused() {
+fn a_region_of_another_version_volume_or_boot_is_refused() {
     let bound = 2 * BLOCK_SIZE;
     let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
-    assert_eq!(
-        CutState::restore(region.clone(), SIZE, bound, Mutants(0)).err(),
-        Some(RegionError::Empty)
-    );
-    let _ = CutState::begin(region.clone(), SIZE, bound, Mutants(0));
-    assert!(CutState::restore(region.clone(), SIZE, bound, Mutants(0)).is_ok());
+    let refused = |size: u64, owner: Owner, mutants: u64| {
+        CutState::restore(region.clone(), size, bound, owner, Mutants(mutants))
+            .err()
+            .map(|(e, _)| e)
+    };
+    assert_eq!(refused(SIZE, OWNER, 0), Some(RegionError::Empty));
+    let _ = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(0));
+    assert_eq!(refused(SIZE, OWNER, 0), None);
     assert!(matches!(
-        CutState::restore(region.clone(), SIZE * 2, bound, Mutants(0)).err(),
+        refused(SIZE * 2, OWNER, 0),
         Some(RegionError::Shape(_))
     ));
+    let mut another_boot = OWNER;
+    another_boot.boot[15] ^= 1;
+    assert_eq!(refused(SIZE, another_boot, 0), Some(RegionError::Boot));
+    assert_eq!(refused(SIZE, another_boot, Mutants::BOOT_UNCHECKED), None);
+    let mut another_volume = OWNER;
+    another_volume.volume[0] ^= 1;
+    assert_eq!(
+        refused(SIZE, another_volume, 0),
+        Some(RegionError::Identity)
+    );
+    assert_eq!(
+        refused(SIZE, another_volume, Mutants::IDENTITY_UNCHECKED),
+        None
+    );
     let mut other = region.clone();
     other.store(at::VERSION, VERSION + 1);
     assert_eq!(
-        CutState::restore(region, SIZE, bound, Mutants(0)).err(),
+        refused(SIZE, OWNER, 0),
         Some(RegionError::Version(VERSION + 1))
     );
+    let Err((_, back)) = CutState::restore(other.clone(), SIZE, bound, OWNER, Mutants(0)) else {
+        panic!("a region of another version was taken up");
+    };
+    assert_eq!(back.load(at::VERSION), VERSION + 1);
 }
 
 /// A new state counts the whole volume as changed: its first cut's map

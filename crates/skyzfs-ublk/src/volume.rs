@@ -13,8 +13,10 @@
 //! - **Anything else** ([`OpenError::Other`]): a volume file that is
 //!   missing, damaged, of a version this daemon does not know or of the
 //!   log store; a home image that does not fit it; a file system or a
-//!   page larger than the volume's write unit; a call that failed. The
-//!   daemon stops, deletes nothing, and the volume has not failed.
+//!   page larger than the volume's write unit; a region for the held
+//!   cuts that cannot be mapped, allocated or locked; a call that
+//!   failed. The daemon stops, deletes nothing, and the volume has not
+//!   failed.
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +71,12 @@ pub fn classify(error: &inplace::OpenError) -> OpenError {
         | E::Pages { .. }) => OpenError::Other(format!(
             "{refused}. Nothing was written and the volume is not failed. A device of this \
                  volume that waits for a server is left as it is; `skyzfsd detach` removes it"
+        )),
+        // The region is the run directory's, not the volume's.
+        refused @ E::CutRegion(_) => OpenError::Other(format!(
+            "{refused}. Nothing of the volume was written and the volume is not failed. A \
+             device of this volume that waits for a server is left as it is; `skyzfsd detach` \
+             removes it"
         )),
         other => OpenError::Other(other.to_string()),
     }

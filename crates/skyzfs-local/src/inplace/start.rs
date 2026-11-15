@@ -8,17 +8,19 @@
 //!
 //! 1. **The open** ([`Opened::open`]), under the volume's lock, in the
 //!    lifecycle: the volume file is read and checked, the failure
-//!    marker is looked at, and the home image is opened and checked
-//!    against the volume file. A volume this daemon cannot serve is
-//!    refused by reason ([`OpenError`]), and nothing is written but
-//!    the removal of an acknowledged marker. None of these refusals
-//!    fails the volume.
+//!    marker is looked at, the home image is opened and checked
+//!    against the volume file, and a store that holds cuts maps the
+//!    region of its cut state ([`HoldCuts`]). A volume this daemon
+//!    cannot serve is refused by reason ([`OpenError`]), and nothing is
+//!    written but the removal of an acknowledged marker and the
+//!    region. None of these refusals fails the volume.
 //! 2. **The start** ([`Opened::start`]), once the device is this
 //!    instance's: the home image is synced, the kernel's cache of it
 //!    dropped, and the I/O threads started ([`InPlace::assemble`]). A
 //!    failed sync there fails the volume ([`StartError::Failed`]).
 
 use std::io;
+use std::path::PathBuf;
 
 use skyzfs_blk::{Base, Geometry, BLOCK_SIZE, BLOCK_USIZE, SIZE_UNIT};
 
@@ -78,14 +80,39 @@ pub struct OpenOptions {
     pub on_failure: Option<FailureObserver>,
     /// How the store reads and writes the home image ([`IoMode`]).
     pub io: IoMode,
-    /// Where the cut state lives (`state.rs`): a region that a death of
-    /// the daemon leaves as it was, taken up by the next start. `None`:
-    /// the store holds no cut, as the daemon's does until M2.2b maps a
-    /// file (nothing lets a held cut go before the uploader).
-    pub cut_region: Option<super::state::MemRegion>,
-    /// The bound on the cut state's copies, in bytes; `None`: the
-    /// provisional default (`state::default_bound`).
-    pub cut_bound: Option<u64>,
+    /// Whether the store holds cuts, and where their state lives
+    /// ([`HoldCuts`]). `None`: it holds none, as the daemon's does
+    /// unless it is told to (`serve --hold-cuts`): before the uploader
+    /// (M2.4) nothing lets a held cut go but the rigs' commands.
+    pub hold_cuts: Option<HoldCuts>,
+}
+
+/// How a store holds cuts (design §5.2; `inplace/state.rs`).
+#[derive(Debug, Clone)]
+pub struct HoldCuts {
+    /// Where the cut state lives.
+    pub region: CutRegion,
+    /// The id of this boot of the machine. The state is begun under it
+    /// and taken up by a later start only in the same boot.
+    pub boot: [u8; 16],
+    /// The bound on the copies, in bytes; `None`: the provisional
+    /// default, 1/256 of the volume and at least 256 MiB.
+    pub bound: Option<u64>,
+}
+
+/// Where a store's cut state lives: a region that a death of the daemon
+/// leaves as it was, for the next start to take up.
+#[derive(Debug, Clone)]
+pub enum CutRegion {
+    /// A region in memory, which every start given it shares: what the
+    /// kernel's pages of a mapped file are to a daemon that dies. The
+    /// tests'. One too small for the volume is replaced by a new one.
+    Memory(super::state::MemRegion),
+    /// A region the kernel keeps while the machine is up, by its name
+    /// (`skyzfs-mapped`): on Linux a file's path, which the daemon puts
+    /// in the volume's run directory, on tmpfs. The open maps it,
+    /// allocated in full and locked, and is refused where it cannot.
+    Named(PathBuf),
 }
 
 impl Default for OpenOptions {
@@ -96,8 +123,7 @@ impl Default for OpenOptions {
             acknowledge_failure: false,
             on_failure: None,
             io: IoMode::default(),
-            cut_region: None,
-            cut_bound: None,
+            hold_cuts: None,
         }
     }
 }
@@ -162,6 +188,11 @@ pub enum OpenError {
         /// The volume's write unit.
         unit: u64,
     },
+    /// The region of the cut state could not be mapped, allocated in
+    /// full or locked ([`HoldCuts`]): the error names the limit that
+    /// refused it where one did. Nothing was written but the region.
+    #[error("the region of the held cuts: {0}")]
+    CutRegion(String),
     /// The system's page is larger than the volume's write unit.
     /// Nothing was written.
     #[error(
@@ -383,6 +414,16 @@ fn write_marker<D: Dir>(dir: &D, unsynced: bool) -> bool {
     file.sync().is_ok() && (unsynced || dir.sync().is_ok())
 }
 
+/// What the open finds: the home image, the volume, the device, whether
+/// a failure was acknowledged, and the held cuts' region.
+type OpenedParts<D> = (
+    <D as Dir>::File,
+    Volume,
+    Geometry,
+    bool,
+    Option<super::state::Taken>,
+);
+
 /// A volume opened under its lock, and not yet started: the first
 /// phase of a start (see [`Opened::open`] and [`Opened::start`]).
 pub struct Opened<D: Dir> {
@@ -393,6 +434,10 @@ pub struct Opened<D: Dir> {
     geometry: Geometry,
     options: OpenOptions,
     acknowledged: bool,
+    /// The cut state's region, as the open had it.
+    cuts: Option<super::state::Taken>,
+    /// Whether the device is one this instance took over.
+    taken_over: bool,
 }
 
 impl<D: Dir> std::fmt::Debug for Opened<D> {
@@ -429,7 +474,7 @@ impl<D: Dir> Opened<D> {
         mutants: Mutants,
     ) -> Result<Self, (OpenError, D::Lock)> {
         match Self::open_unlocked(&dir, &options, mutants) {
-            Ok((home, volume, geometry, acknowledged)) => Ok(Self {
+            Ok((home, volume, geometry, acknowledged, cuts)) => Ok(Self {
                 dir,
                 home,
                 lock,
@@ -437,6 +482,8 @@ impl<D: Dir> Opened<D> {
                 geometry,
                 options,
                 acknowledged,
+                cuts,
+                taken_over: false,
             }),
             Err(e) => Err((e, lock)),
         }
@@ -446,7 +493,7 @@ impl<D: Dir> Opened<D> {
         dir: &D,
         options: &OpenOptions,
         mutants: Mutants,
-    ) -> Result<(D::File, Volume, Geometry, bool), OpenError> {
+    ) -> Result<OpenedParts<D>, OpenError> {
         let volume = Volume::read(dir)?;
         let unit = u64::from(volume.write_unit);
         if !mutants.has(Mutants::ANY_PAGES) {
@@ -487,6 +534,14 @@ impl<D: Dir> Opened<D> {
         if marked && !options.acknowledge_failure {
             return Err(OpenError::MarkedFailed);
         }
+        // The region before the marker goes: a start refused here
+        // leaves the volume as it found it.
+        let cuts = options
+            .hold_cuts
+            .as_ref()
+            .map(|hold| super::state::Taken::open(hold, volume.size, volume.identity))
+            .transpose()
+            .map_err(OpenError::CutRegion)?;
         if marked {
             // Acknowledged: the marker goes, durably, before anything
             // is served. Where that fails the volume stays marked, and
@@ -495,7 +550,7 @@ impl<D: Dir> Opened<D> {
                 .and_then(|()| dir.sync())
                 .map_err(io_error("removing the failure marker"))?;
         }
-        Ok((home, volume, geometry, marked))
+        Ok((home, volume, geometry, marked, cuts))
     }
 
     /// The volume as its file says.
@@ -517,6 +572,14 @@ impl<D: Dir> Opened<D> {
     /// the marker, as it was told to.
     pub fn acknowledged(&self) -> bool {
         self.acknowledged
+    }
+
+    /// The device this volume is served as is one this instance took
+    /// over, not one it created: the mark the cut state holds is kept
+    /// (`InPlace::take_up_cut_state`). Without this call the start
+    /// takes the device for a created one.
+    pub fn device_taken_over(&mut self) {
+        self.taken_over = true;
     }
 
     /// The second phase: sync the home image, drop the kernel's cache of
@@ -561,8 +624,11 @@ impl<D: Dir> Opened<D> {
                 marker,
                 observer: self.options.on_failure,
                 io: self.options.io,
-                cut_region: self.options.cut_region,
-                cut_bound: self.options.cut_bound,
+                cuts: self.cuts.map(|region| super::CutsAtStart {
+                    region,
+                    acknowledged: self.options.acknowledge_failure,
+                    taken_over: self.taken_over,
+                }),
             },
             waker.map(Waker::into_call),
             mutants,
