@@ -43,7 +43,7 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use skyzfs_uberblock::{ByteOrder, Labels};
+use skyzfs_uberblock::{label_checksum_holds, ByteOrder, Labels, SLOT_SIZES};
 
 use super::*;
 use crate::inplace::cuts::CutRule;
@@ -230,9 +230,13 @@ fn the_parser_finds_every_uberblock_the_reference_finds() {
 }
 
 /// Every uberblock ZFS wrote into the recorded pools carries a label
-/// checksum that holds, at the slot's own size (work package M2.1c):
-/// the checksum as this crate computes it is ZFS's. None of them is of
-/// group 0 (`vdev_label_init`'s, whose ring is written as one I/O).
+/// checksum that holds at one slot size and at no other the write holds
+/// whole (work package M2.1c): the checksum as this crate computes it is
+/// ZFS's, and the sizes tried cannot disagree. None of them is of group
+/// 0 (`vdev_label_init`'s, whose ring is written as one I/O). All nine
+/// recordings are of `ashift` 12, so the size is 4 KiB in each: slots of
+/// 1, 2 and 8 KiB, and a big-endian writer, rest on the crate's own
+/// tests (the review of #96, its S3).
 #[test]
 fn every_recorded_uberblock_is_verified_by_its_label_checksum() {
     for pool in pools() {
@@ -240,10 +244,21 @@ fn every_recorded_uberblock_is_verified_by_its_label_checksum() {
         let mut found = 0;
         for record in &pool.records {
             let Some(data) = &record.data else { continue };
+            let end = record.offset + data.len() as u64;
             for ub in labels.uberblocks_in(record.offset, data) {
+                let ring = labels.rings().nth(ub.label).expect("its label");
+                let holds: Vec<u64> = SLOT_SIZES
+                    .into_iter()
+                    .filter(|&size| {
+                        let i = (ub.at - record.offset) as usize;
+                        (ub.at - ring.start).is_multiple_of(size)
+                            && ub.at + size <= end
+                            && label_checksum_holds(&data[i..i + size as usize], ub.at)
+                    })
+                    .collect();
                 assert!(
-                    ub.counts() && ub.verified(),
-                    "{}: record {}, label {}, slot at {}: {:?}",
+                    ub.counts() && ub.verified() && holds == [4 << 10],
+                    "{}: record {}, label {}, slot at {}: {:?}, holds at {holds:?}",
                     pool.name,
                     record.i,
                     ub.label,

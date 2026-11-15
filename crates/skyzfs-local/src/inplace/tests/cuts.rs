@@ -967,3 +967,131 @@ fn a_write_ended_without_being_applied_changes_nothing() {
     group(&mut rule, 11, 2, true);
     assert_eq!(newest(&rule), (2, Some((11, true))));
 }
+
+/// Bytes ZFS would pass over that lie in a ring when the store starts
+/// are not in view either: the check applies to the rings read at the
+/// start as it does to a write (work package M2.1c). The first
+/// attachment writes group 10 and then forged bytes of group 99 into
+/// label 1's slot, with no checksum; the next starts on that volume and
+/// group 11's cut opens as itself, as an import would open group 11. A
+/// start that takes the forged bytes for an uberblock holds group 99 as
+/// the greatest in view, and every cut says it opens only with a rewind
+/// until that slot is written again. From the review of #96, its S2.
+#[test]
+fn bytes_zfs_would_pass_over_at_the_start_are_not_in_view() {
+    let disk = created(19, 0);
+    let mut id = 0;
+    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+        id += 1;
+        assert!(run(store, id, op).result.is_ok());
+    };
+    let mut store = start(&disk, 0, false).unwrap();
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 10, 1));
+    }
+    step(
+        &mut store,
+        Op::Write {
+            offset: ring(1) + (99 % RING_SLOTS) * SLOT,
+            data: uberblock(99, 9),
+        },
+    );
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((10, true)));
+    drop(store);
+    let mut store = start(&disk, 0, false).unwrap();
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 11, 2));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((11, true)));
+}
+
+/// The store follows a slot by all its bytes (the review of #96, its
+/// S1, and Codex's finding there), with slots of 8 KiB, as a pool of
+/// `ashift` 13 writes them, and a writer other than ZFS writing half of
+/// one:
+///
+/// 1. group 10 written whole to the four labels is cut, and opens as
+///    itself;
+/// 2. group 11 written whole to label 0 alone, then the second half of
+///    that slot zeroed before the flush: on the volume the slot no
+///    longer verifies and an import opens group 10, so cut 11 does not
+///    open as itself;
+/// 3. group 27, whose slot is 11's, written whole to the four labels:
+///    that place is known again, and the cut opens as itself;
+/// 4. on another volume, group 11 written whole to labels 1 to 3, and
+///    group 12 to label 0 in two halves, head then tail: on the volume
+///    label 0 holds a valid 12, greater than the cut's 11, so cut 11
+///    does not open as itself.
+///
+/// Steps 2 and 4 fail where the view follows a slot by its first bytes
+/// alone, as at 8da0a73: they say `itself`.
+#[test]
+fn a_slot_is_followed_by_all_its_bytes() {
+    const BIG: u64 = 8 * KIB;
+    let at =
+        |label: usize, txg: u64| ring(label) + (txg % (skyzfs_uberblock::RING_SIZE / BIG)) * BIG;
+    let whole = |label: usize, txg: u64| {
+        let mut data = Buf::filled(2, 0);
+        data[..BLOCK_USIZE].copy_from_slice(&uberblock(txg, txg));
+        slot_write(at(label, txg), data)
+    };
+    let mut id = 0;
+    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+        id += 1;
+        assert!(run(store, id, op).result.is_ok());
+    };
+    let disk = created(23, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    for label in 0..LABELS {
+        step(&mut store, whole(label, 10));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((10, true)));
+    step(&mut store, whole(0, 11));
+    step(
+        &mut store,
+        Op::WriteZeroes {
+            offset: at(0, 11) + BLOCK,
+            len: BLOCK,
+        },
+    );
+    step(&mut store, Op::Flush);
+    assert_eq!(
+        newest(&store),
+        Some((11, false)),
+        "a slot torn after its uberblock was applied was still taken whole"
+    );
+    for label in 0..LABELS {
+        step(&mut store, whole(label, 27));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((27, true)));
+    drop(store);
+
+    let disk = created(29, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    for label in 1..LABELS {
+        step(&mut store, whole(label, 11));
+    }
+    let Op::Write { offset, data } = whole(0, 12) else {
+        unreachable!("a write")
+    };
+    for half in 0..2 {
+        let bytes = &data[half * BLOCK_USIZE..(half + 1) * BLOCK_USIZE];
+        step(
+            &mut store,
+            Op::Write {
+                offset: offset + half as u64 * BLOCK,
+                data: Buf::from_blocks(bytes).expect("one block"),
+            },
+        );
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(
+        newest(&store),
+        Some((11, false)),
+        "a slot written in two halves was taken for an empty place"
+    );
+}

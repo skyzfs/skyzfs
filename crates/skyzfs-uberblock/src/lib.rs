@@ -484,11 +484,27 @@ fn read_at(bytes: &[u8], at: u64, label: usize) -> Option<Uberblock> {
 /// blocks, and no position's bytes cross a block, so that does not
 /// happen through it.)
 ///
-/// What it does not see: the label's checksum is not checked, so a slot
-/// that ZFS rejects for its checksum is still in the view. That can only
-/// make [`View::chosen`] say no where ZFS would open the state, not the
-/// other way. And only this volume's labels are in it: a pool whose
-/// other vdevs hold a greater uberblock is not seen.
+/// It holds only what ZFS takes for an uberblock: one whose label
+/// checksum holds ([`Uberblock::verified`], work package M2.1c). That
+/// checksum is over the whole slot, so a slot is followed by all its
+/// bytes, not by its first [`READ_LEN`] alone (the review of #96, its
+/// S1):
+///
+/// - a change that reaches a held uberblock's slot without holding the
+///   slot whole leaves its position unknown, since its checksum may no
+///   longer hold;
+/// - an uberblock found in a change that does not hold whole every slot
+///   that could begin at its position, none of whose held slots
+///   verifies, leaves its position unknown, since the rest of a slot
+///   that verifies may lie outside the change.
+///
+/// Both err toward "not chosen" until the slot is written whole again.
+/// ZFS writes a slot as one I/O and a ring is read whole, so neither
+/// happens to ZFS's own writes: only to a writer that writes part of a
+/// slot, such as `zpool labelclear` or `dd`.
+///
+/// What it does not see: only this volume's labels are in it, so a pool
+/// whose other vdevs hold a greater uberblock is not seen.
 #[derive(Debug, Clone)]
 pub struct View {
     labels: Labels,
@@ -531,12 +547,9 @@ impl View {
         self.held.values()
     }
 
-    /// `data` was read or written at `offset`. Only the uberblocks ZFS
-    /// takes for one ([`Uberblock::verified`]) are held: an import
-    /// passes over the others.
+    /// `data` was read or written at `offset`.
     pub fn saw(&mut self, offset: u64, data: &[u8]) {
-        let mut found = self.labels.uberblocks_in(offset, data);
-        found.retain(Uberblock::verified);
+        let found = self.labels.uberblocks_in(offset, data);
         self.changed(offset, data.len() as u64, &found);
     }
 
@@ -546,9 +559,10 @@ impl View {
     }
 
     /// `len` bytes at `offset` were written, and `found` is what
-    /// [`Labels::uberblocks_in`] found in them that an import would take
-    /// for an uberblock: for a caller that parsed the write already. It
-    /// holds what it is given; [`View::saw`] keeps the verified ones.
+    /// [`Labels::uberblocks_in`] found in them: for a caller that parsed
+    /// the write already. Only the uberblocks ZFS takes for one
+    /// ([`Uberblock::verified`]) are held: an import passes over the
+    /// others. This is the one place that filter is applied.
     pub fn changed(&mut self, offset: u64, len: u64, found: &[Uberblock]) {
         let end = offset.saturating_add(len);
         for ring in self.labels.rings() {
@@ -566,9 +580,44 @@ impl View {
                 at += SLOT_MIN;
             }
         }
-        for uberblock in found {
-            self.held.insert(uberblock.at, *uberblock);
+        // A held uberblock whose slot the change reaches past its first
+        // READ_LEN bytes, without holding the slot whole: what is there
+        // now may not verify.
+        let torn: Vec<u64> = self
+            .held
+            .values()
+            .filter(|uberblock| {
+                let slot_end = uberblock.at + uberblock.slot.unwrap_or(SLOT_MIN);
+                uberblock.at < end && offset < slot_end
+            })
+            .map(|uberblock| uberblock.at)
+            .collect();
+        for at in torn {
+            self.held.remove(&at);
+            self.unknown.insert(at);
         }
+        for uberblock in found {
+            if uberblock.verified() {
+                self.held.insert(uberblock.at, *uberblock);
+            } else if self.may_go_on(uberblock.at, end) {
+                self.unknown.insert(uberblock.at);
+            }
+        }
+    }
+
+    /// Whether a slot that could begin at `at`, in a ring of these
+    /// labels, ends after `end`: an uberblock found at `at` in a change
+    /// that ends at `end` could then belong to a slot that verifies with
+    /// bytes the change did not write.
+    fn may_go_on(&self, at: u64, end: u64) -> bool {
+        self.labels
+            .rings()
+            .filter(|ring| ring.start <= at && at < ring.end())
+            .any(|ring| {
+                SLOT_SIZES
+                    .into_iter()
+                    .any(|size| (at - ring.start).is_multiple_of(size) && at + size > end)
+            })
     }
 
     /// Whether an import of the volume as the view has it would open the
