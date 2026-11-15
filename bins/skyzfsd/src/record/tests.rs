@@ -513,6 +513,7 @@ fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
     let cut = skyzfs_local::inplace::Cut {
         number: 1,
         group: 77,
+        itself: true,
     };
     watcher(Seen::Cut(RequestId(1), cut));
     queue.commit(1, 0, None);
@@ -520,7 +521,13 @@ fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
     let added = RequestId(3 | 1 << 32);
     assert_eq!(tag_of(added), (3, true));
     watcher(Seen::Barrier(added));
-    watcher(Seen::Cut(added, cut));
+    watcher(Seen::Cut(
+        added,
+        skyzfs_local::inplace::Cut {
+            itself: false,
+            ..cut
+        },
+    ));
     let p = pid();
     assert_eq!(
         lines(&path),
@@ -531,10 +538,10 @@ fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
             format!("{p}\tapplied\t0\twrite\t-\t-\t-"),
             format!("{p}\tcommit\t0\twrite\t4096\t8\t4096"),
             format!("{p}\tbarrier\t1\tflush\t-\t-\t-"),
-            format!("{p}\tcut\t1\tflush\t-\t-\t77"),
+            format!("{p}\tcut\t1\tflush\titself\t-\t77"),
             format!("{p}\tcommit\t1\tflush\t0\t0\t0"),
             format!("{p}\tbarrier\t3\tfua_flush\t-\t-\t-"),
-            format!("{p}\tcut\t3\tfua_flush\t-\t-\t77"),
+            format!("{p}\tcut\t3\tfua_flush\trewind\t-\t77"),
         ]
     );
 }

@@ -36,6 +36,22 @@ fn uberblock(txg: u64, root: u64) -> Buf {
     slot
 }
 
+/// The same with the uberblock's time set to `timestamp`.
+fn stamped(txg: u64, root: u64, timestamp: u64) -> Buf {
+    let mut slot = uberblock(txg, root);
+    slot[32..40].copy_from_slice(&timestamp.to_le_bytes());
+    slot
+}
+
+/// The same as a multihost write makes it: a later time, and the
+/// multihost magic with sequence `seq` marked valid.
+fn multihost(txg: u64, root: u64, timestamp: u64, seq: u64) -> Buf {
+    let mut slot = stamped(txg, root, timestamp);
+    slot[176..184].copy_from_slice(&skyzfs_uberblock::MMP_MAGIC.to_le_bytes());
+    slot[192..200].copy_from_slice(&((seq << 32) | 0x02).to_le_bytes());
+    slot
+}
+
 /// The uberblock write of group `txg` and root `root` to label `label`,
 /// in the slot the group chooses.
 fn uberblock_write(label: usize, txg: u64, root: u64) -> Op {
@@ -54,6 +70,11 @@ fn other_write() -> Op {
         offset: 32 * KIB,
         data: Buf::filled(1, 0x77),
     }
+}
+
+/// The newest cut's group, and whether it opens as itself.
+fn newest(store: &InPlace<SimDisk>) -> Option<(u64, bool)> {
+    store.cuts().newest.map(|cut| (cut.group, cut.itself))
 }
 
 /// The count and the newest cut's group.
@@ -352,6 +373,7 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
         let cut = Cut {
             number: 1,
             group: 5,
+            itself: true,
         };
         assert_eq!(
             *heard.lock().expect("lock"),
@@ -366,6 +388,138 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
             "{io:?}"
         );
     }
+}
+
+/// A store begun on a volume that already holds a pool reads its rings
+/// before the first request (design §5.2, "Whether a cut opens as
+/// itself"), with every I/O the store has. The first attachment writes
+/// group 10 to the four labels. The next is a rewind import to group 8,
+/// whose cut does not open as itself: group 10 is still in every ring,
+/// and an import opens that. The import's own group 10, written over
+/// the old one's slot in every label, does. A start that does not read
+/// the rings is noticed: it takes group 8 to open as itself.
+#[test]
+fn a_store_begun_on_a_pool_reads_its_rings_first() {
+    let opens = |mutants: u64, io: IoMode| {
+        let disk = created(12, 0);
+        let mut id = 0;
+        let mut group = |store: &mut InPlace<SimDisk>, txg: u64, root: u64| {
+            for label in 0..LABELS {
+                id += 1;
+                assert!(run(store, id, uberblock_write(label, txg, root))
+                    .result
+                    .is_ok());
+            }
+            id += 1;
+            assert!(run(store, id, Op::Flush).result.is_ok());
+            newest(store)
+        };
+        let mut store = start_io(&disk, mutants, false, io).unwrap();
+        let mut seen = vec![group(&mut store, 10, 1)];
+        drop(store);
+        let mut store = start_io(&disk, mutants, false, io).unwrap();
+        seen.push(newest(&store));
+        seen.push(group(&mut store, 8, 2));
+        seen.push(group(&mut store, 10, 3));
+        seen
+    };
+    let wanted = [Some((10, true)), None, Some((8, false)), Some((10, true))];
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        assert_eq!(opens(0, io), wanted, "{io:?}");
+    }
+    assert_eq!(
+        opens(Mutants::RINGS_UNREAD, IoMode::default()),
+        [Some((10, true)), None, Some((8, true)), Some((10, true))],
+        "a start that does not read the rings is not noticed"
+    );
+}
+
+/// Among uberblocks of one group an import takes the later time, then
+/// the greater multihost sequence (`vdev_uberblock_compare`). Here a
+/// multihost pool's copy of group 10 is left in label 2's multihost slot
+/// when a rewind import writes another group 10, later: an import opens
+/// the later one, so its cut opens as itself, while group 9 before it
+/// does not. Taking the group alone for the order is noticed: it calls
+/// the two states of group 10 a tie, and so a rewind.
+#[test]
+fn a_group_written_twice_opens_as_its_later_state() {
+    let opens = |mutants: u64| {
+        let disk = created(13, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut seen = Vec::new();
+        let mut step = |store: &mut InPlace<SimDisk>, writes: &[(usize, u64)], slot: Buf| {
+            for &(label, at) in writes {
+                id += 1;
+                let write = Op::Write {
+                    offset: ring(label) + at * SLOT,
+                    data: slot.clone(),
+                };
+                assert!(run(store, id, write).result.is_ok());
+            }
+            id += 1;
+            assert!(run(store, id, Op::Flush).result.is_ok());
+            seen.push(newest(store));
+        };
+        let every = |at: u64| (0..LABELS).map(|label| (label, at)).collect::<Vec<_>>();
+        step(&mut store, &every(10), stamped(10, 1, 100));
+        // The multihost write of the same state, later.
+        step(&mut store, &[(2, RING_SLOTS - 1)], stamped(10, 1, 150));
+        // The rewind import's groups.
+        step(&mut store, &every(9), stamped(9, 2, 200));
+        step(&mut store, &every(10), stamped(10, 3, 300));
+        seen
+    };
+    assert_eq!(
+        opens(0),
+        [
+            Some((10, true)),
+            Some((10, true)),
+            Some((9, false)),
+            Some((10, true))
+        ]
+    );
+    assert_eq!(
+        opens(Mutants::ORDER_BY_GROUP),
+        [
+            Some((10, true)),
+            Some((10, true)),
+            Some((9, false)),
+            Some((10, false))
+        ],
+        "the group alone for the order is not noticed"
+    );
+}
+
+/// What a write-zeroes leaves in a ring is known: zeros, which hold no
+/// uberblock. Once group 10 is zeroed out of every ring, the cut of
+/// group 8 opens as itself; before, it would not.
+#[test]
+fn a_ring_zeroed_holds_no_uberblock() {
+    let disk = created(14, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    let mut id = 0;
+    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+        id += 1;
+        assert!(run(store, id, op).result.is_ok());
+    };
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 10, 1));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((10, true)));
+    for label in 0..LABELS {
+        let zeroes = Op::WriteZeroes {
+            offset: ring(label) + 10 * SLOT,
+            len: SLOT,
+        };
+        step(&mut store, zeroes);
+    }
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 8, 2));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((8, true)));
 }
 
 /// ZFS issues a group's four label writes at once, and a stray flush
@@ -459,6 +613,7 @@ fn a_flush_behind_a_sync_under_way_has_its_barrier_when_executed() {
     let cut = Cut {
         number: 1,
         group: 5,
+        itself: true,
     };
     assert_eq!(
         *heard.lock().expect("lock"),
@@ -507,4 +662,243 @@ fn a_flush_that_joins_a_sync_has_its_barrier_and_its_cut() {
     }
     assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 3);
     assert_eq!(while_syncing, (1, Some(7)), "the joined flush's cut");
+}
+
+/// A multihost pool writes the cut's own uberblock again, with a later
+/// time and a multihost sequence, into the ring's last slot. That copy
+/// ranks above the uberblock that marks the cut, but it is the cut's
+/// own state, and an import opens that state: the cut opens as itself,
+/// here with the copy applied before the cut's flush. Comparing
+/// uberblocks and not states is noticed: it calls every such cut a
+/// rewind (the lead's reading of M2.1b, point 4).
+#[test]
+fn a_multihost_copy_of_the_cuts_own_state_leaves_it_itself() {
+    let opens = |mutants: u64| {
+        let disk = created(15, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let write = |offset: u64, data: Buf| Op::Write { offset, data };
+        let mut seen = Vec::new();
+        for (txg, root, at) in [(10, 1, 100), (11, 2, 200)] {
+            for label in 0..LABELS {
+                let slot = stamped(txg, root, at);
+                step(&mut store, write(ring(label) + txg * SLOT, slot));
+            }
+            let copy = multihost(txg, root, at + 50, 3);
+            step(&mut store, write(ring(2) + (RING_SLOTS - 1) * SLOT, copy));
+            step(&mut store, Op::Flush);
+            seen.push(newest(&store));
+        }
+        seen
+    };
+    assert_eq!(opens(0), [Some((10, true)), Some((11, true))]);
+    assert_eq!(
+        opens(Mutants::ITSELF_BY_RANK),
+        [Some((10, false)), Some((11, false))],
+        "uberblocks compared and not states is not noticed"
+    );
+}
+
+/// A rewind import by `-F` begins its new history at the abandoned
+/// best group (OpenZFS 2.4.1, `spa.c` 6342 and 4713): its first
+/// uberblock has that group, another root and a later time, and an
+/// import chooses it at once. Here a stray flush comes after two of its
+/// four label writes, while the other two labels still hold the
+/// abandoned state of the same group: that cut opens as itself, and the
+/// labels after it are repeats. Taking the group alone for the order is
+/// noticed: it calls the two states of group 12 a tie, and so a rewind.
+#[test]
+fn a_rewind_by_f_opens_as_its_first_group_at_once() {
+    let opens = |mutants: u64| {
+        let disk = created(16, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let write = |label: usize, root: u64, at: u64| Op::Write {
+            offset: ring(label) + 12 * SLOT,
+            data: stamped(12, root, at),
+        };
+        let mut seen = Vec::new();
+        for label in 0..LABELS {
+            step(&mut store, write(label, 1, 100));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        // The import by -F: group 12 again, another root, later.
+        for label in 0..2 {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        for label in 2..LABELS {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        seen
+    };
+    assert_eq!(
+        opens(0),
+        [
+            (1, Some((12, true))),
+            (2, Some((12, true))),
+            (2, Some((12, true)))
+        ]
+    );
+    assert_eq!(
+        opens(Mutants::ORDER_BY_GROUP),
+        [
+            (1, Some((12, true))),
+            (2, Some((12, false))),
+            (2, Some((12, false)))
+        ],
+        "the group alone for the order is not noticed"
+    );
+}
+
+/// Another state under the group a flush carries, applied between that
+/// flush's receipt and its barrier, is not a repeat of the carried
+/// state: it marks, and the next flush cuts it. Here the abandoned
+/// state of group 12 marks; a write of group 12's new state, as the
+/// first group of a rewind by `-F` writes it, is received and held on a
+/// thread; a flush carries the abandoned state's cut; then the write is
+/// let go before that flush's barrier. The abandoned state's cut does
+/// not open as itself (the new state is later in view), and the new
+/// state's does. A carried state compared by its group alone (the
+/// defect `REPEAT_BY_GROUP`, for the carried comparison) is noticed:
+/// the new state makes no cut (the review of M2.1, its C2).
+#[test]
+fn another_state_under_the_carried_group_marks() {
+    let counts = |mutants: u64| {
+        let disk = created(18, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let write = |label: usize, root: u64, at: u64| Op::Write {
+            offset: ring(label) + 12 * SLOT,
+            data: stamped(12, root, at),
+        };
+        assert!(run(&mut store, 1, write(0, 1, 100)).result.is_ok());
+        disk.hold_direct_io(1);
+        let _release = Releases(&disk);
+        let request = |id, op| Request {
+            id: RequestId(id),
+            op,
+        };
+        store.submit(request(2, write(1, 2, 200))).unwrap();
+        until_held(&disk);
+        store.submit(request(3, Op::Flush)).unwrap();
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        let mut store = release_and_drain(&disk, store, &mut done);
+        assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 2);
+        let at_the_flush = (store.cuts().count, newest(&store));
+        assert!(run(&mut store, 4, Op::Flush).result.is_ok());
+        (at_the_flush, (store.cuts().count, newest(&store)))
+    };
+    assert_eq!(counts(0), ((1, Some((12, false))), (2, Some((12, true)))));
+    assert_eq!(
+        counts(Mutants::REPEAT_BY_GROUP),
+        ((1, Some((12, false))), (1, Some((12, false)))),
+        "a carried state compared by its group alone is not noticed"
+    );
+}
+
+/// A start that could not read a ring goes on, and no cut opens as
+/// itself until that ring has been written again (`read_rings`; the
+/// review of #95, its S2, whose reproducer this is). The
+/// start's reads are failed one at a time: among those after which the
+/// store still starts, exactly four leave the first cut a rewind, the
+/// four rings. Fails where a ring that could not be read is taken as
+/// read (plant C4: every such start says `itself`).
+#[test]
+fn a_ring_the_start_could_not_read_leaves_no_cut_itself() {
+    let mut rewinds = 0;
+    let mut starts = 0;
+    for after in 0..64 {
+        let disk = created(19, 0);
+        disk.fail_read(after, false);
+        let Ok(opened) = opened(&disk, false, IoMode::default()) else {
+            continue;
+        };
+        let Ok(mut store) = opened.start_with(None, Mutants(0)) else {
+            continue;
+        };
+        disk.clear_faults();
+        starts += 1;
+        let mut id = 0;
+        for label in 0..LABELS {
+            id += 1;
+            assert!(run(&mut store, id, uberblock_write(label, 10, 1))
+                .result
+                .is_ok());
+        }
+        id += 1;
+        assert!(run(&mut store, id, Op::Flush).result.is_ok());
+        match newest(&store) {
+            Some((10, true)) => {}
+            Some((10, false)) => rewinds += 1,
+            other => panic!("after {after}: {other:?}"),
+        }
+        // The store says which ring it could not read: one where the
+        // cut is a rewind, none where it is itself (S3).
+        let unread = store.rings_unread().len();
+        assert_eq!(
+            unread,
+            usize::from(newest(&store) == Some((10, false))),
+            "after {after}: {:?}",
+            store.rings_unread()
+        );
+    }
+    assert!(starts > 4, "the starts that went on: {starts}");
+    assert_eq!(rewinds, 4, "one start for each ring that could not be read");
+}
+
+/// A write the store received and ended without applying it (refused,
+/// as a read-only volume refuses one) changes nothing: it does not mark,
+/// and the view keeps what the volume holds, so the flush after it
+/// counts no cut and the newest cut still opens as itself (the review
+/// of #95, its S6: a rule that applied the change at its end passed
+/// every test).
+#[test]
+fn a_write_ended_without_being_applied_changes_nothing() {
+    use crate::inplace::cuts::CutRule;
+    let mut rule = CutRule::new(1 << 20, Mutants(0));
+    for (offset, len) in rule.rings() {
+        rule.read_at_start(offset, &vec![0; len as usize]);
+    }
+    let mut id = 0;
+    let mut group = |rule: &mut CutRule, txg: u64, root: u64, applied: bool| {
+        for label in 0..LABELS {
+            id += 1;
+            rule.received(RequestId(id), &uberblock_write(label, txg, root));
+            if applied {
+                rule.applied(RequestId(id));
+            }
+            rule.ended(RequestId(id));
+        }
+        id += 1;
+        rule.received(RequestId(id), &Op::Flush);
+        rule.barrier(RequestId(id));
+        rule.ended(RequestId(id));
+    };
+    let newest = |rule: &CutRule| {
+        let cuts = rule.cuts();
+        (cuts.count, cuts.newest.map(|cut| (cut.group, cut.itself)))
+    };
+    group(&mut rule, 10, 1, true);
+    assert_eq!(newest(&rule), (1, Some((10, true))));
+    group(&mut rule, 11, 2, false);
+    assert_eq!(
+        newest(&rule),
+        (1, Some((10, true))),
+        "writes ended unapplied marked or changed the view"
+    );
+    group(&mut rule, 11, 2, true);
+    assert_eq!(newest(&rule), (2, Some((11, true))));
 }

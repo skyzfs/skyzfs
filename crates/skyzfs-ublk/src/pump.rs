@@ -95,7 +95,7 @@
 //!   first is named. A pump whose volume failed only counts it.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use skyzfs_local::store::Spent;
 
@@ -376,26 +376,21 @@ pub struct PumpTiming {
     pub to_submit: Spent,
     /// Reads: from the request being finished to its commit to the
     /// queue. Finished is when the target had the completion ready, if
-    /// the target says so (the store does: the end of its call), else
-    /// when the pump took the completion or refused the request. So it
-    /// holds the time until the pump's thread came to take the
-    /// completion.
+    /// the target says so ([`PumpTarget::ready_at`]), else when the
+    /// pump took the completion or refused the request. The in-place
+    /// store does not say: it completes a request on the pump's own
+    /// thread, in its poll, so the completion is ready when the pump
+    /// takes it, and this is what the commit waited for after that: the
+    /// other completions of the batch. A write that is followed by a
+    /// flush of the pump's own counts the flush's completion.
+    ///
+    /// Until the status file's twelfth version (M2.1b) the first part
+    /// of this time, from the completion being ready to the pump taking
+    /// it, was kept apart. Only the log store said when a completion
+    /// was ready, and after it was removed (M1.3t) that part was 0.
     pub read_to_commit: Spent,
     /// The same for every other request.
     pub other_to_commit: Spent,
-    /// Reads: the first part of [`PumpTiming::read_to_commit`] alone,
-    /// from the target having the completion ready to the pump taking
-    /// it, which is the hand-over from the target's thread to the
-    /// pump's. Counted at the commit, so the count is that of
-    /// `read_to_commit`, and the rest of that time is what the commit
-    /// waited for after the pump had the completion: the other
-    /// completions of the batch. Zero
-    /// for a request the target never had, and where the target does
-    /// not say when a completion was ready. A write that is followed
-    /// by a flush of the pump's own counts the flush's completion.
-    pub read_to_taken: Spent,
-    /// The same for every other request.
-    pub other_to_taken: Spent,
 }
 
 /// What the pump notes for a tag in flight.
@@ -405,9 +400,6 @@ struct Stamp {
     fetched: Instant,
     /// When it was finished.
     finished: Instant,
-    /// From the target having its completion ready to the pump taking
-    /// it.
-    taken: Duration,
     /// Whether it is a read.
     read: bool,
 }
@@ -541,7 +533,6 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         let stamp = Stamp {
             fetched: now,
             finished: now,
-            taken: Duration::ZERO,
             read: false,
         };
         let stamps = (0..queue.depth()).map(|_| stamp).collect();
@@ -963,7 +954,6 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
                 self.slots[usize::from(tag)] = Slot::Finished;
                 self.stamps[usize::from(tag)] = Stamp {
                     finished: Instant::now(),
-                    taken: Duration::ZERO,
                     read: false,
                     ..self.stamps[usize::from(tag)]
                 };
@@ -1096,7 +1086,6 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         let now = Instant::now();
         let stamp = &mut self.stamps[usize::from(tag)];
         stamp.finished = ready.unwrap_or(now);
-        stamp.taken = now.saturating_duration_since(stamp.finished);
         stamp.read = matches!(plan.action, Action::Read { .. });
         self.finished
             .push((tag, self.translator.result(plan, outcome), buf));
@@ -1115,10 +1104,8 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
             let waited = now.saturating_duration_since(stamp.finished);
             if stamp.read {
                 self.timing.read_to_commit.add(waited);
-                self.timing.read_to_taken.add(stamp.taken);
             } else {
                 self.timing.other_to_commit.add(waited);
-                self.timing.other_to_taken.add(stamp.taken);
             }
             self.queue.commit(tag, result, buf);
         }
@@ -1128,7 +1115,9 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
 /// The in-place store: what the kernel issues again after a lost
 /// process is applied again, which rule R9 allows. It has no thread of
 /// its own that could end, and it keeps no time of when a completion
-/// was ready.
+/// was ready: it completes a request on the pump's own thread, in its
+/// poll, when it takes an I/O thread's result. The time from an I/O
+/// thread's end of a job to that poll is in no number.
 impl<D: skyzfs_local::io::Dir> PumpTarget for skyzfs_local::inplace::InPlace<D> {
     fn gone(&self) -> bool {
         false

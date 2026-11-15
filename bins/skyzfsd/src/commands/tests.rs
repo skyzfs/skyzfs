@@ -193,6 +193,7 @@ fn sample() -> Status {
                 newest: Some(Cut {
                     number: 3,
                     group: 12,
+                    itself: true,
                 }),
             }),
             ..StoreShown::default()
@@ -256,6 +257,7 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
         ("first_write_copies", "0"),
         ("cuts", "3"),
         ("cut_group", "12"),
+        ("cut_opens", "itself"),
         ("pid", "4242"),
         ("age_ms", "250"),
     ] {

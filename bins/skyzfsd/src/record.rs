@@ -75,8 +75,11 @@
 //!   that tag that carried FUA.
 //! - `cut`: the store counted a cut at that barrier (design §5.2), after
 //!   its `barrier` line; the result column is the cut's transaction
-//!   group. The `cut` lines of an instance are its cuts in order: their
-//!   number is that instance's `cuts` in `status`.
+//!   group, and the sector column says whether it opens as itself:
+//!   `itself` if an import of the volume at its instant, with no
+//!   rewind, opens its uberblock's pool state, `rewind` if it opens only
+//!   with a rewind to its group. The `cut` lines of an instance are its
+//!   cuts in order: their number is that instance's `cuts` in `status`.
 //!
 //! The store's three lines (`applied`, `barrier`, `cut`) are written on
 //! the queue's thread, which drives the store, through a second handle
@@ -261,7 +264,8 @@ fn store_columns(seen: Seen) -> String {
         }
         Seen::Cut(id, cut) => {
             let (tag, op) = named(id);
-            format!("cut\t{tag}\t{op}\t-\t-\t{}", cut.group)
+            let opens = if cut.itself { "itself" } else { "rewind" };
+            format!("cut\t{tag}\t{op}\t{opens}\t-\t{}", cut.group)
         }
     }
 }

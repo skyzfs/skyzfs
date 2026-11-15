@@ -295,7 +295,8 @@ impl Mutants {
     /// barrier.
     pub(crate) const CUT_AT_RECEIPT: u64 = 1 << 32;
     /// A repeat is told by its group alone, not by its group and root
-    /// block pointer: after a rewind import a new state under a group
+    /// block pointer, against the mark, a cut a flush carries and the
+    /// newest cut: after a rewind import a new state under a group
     /// already used makes no cut.
     pub(crate) const REPEAT_BY_GROUP: u64 = 1 << 33;
     /// A repeat is compared with the uberblock applied before it alone,
@@ -312,6 +313,19 @@ impl Mutants {
     /// between that flush's receipt and its barrier, marks it again, and
     /// the next flush cuts the same state twice (the review of M2.1).
     pub(crate) const REPEAT_WHILE_CARRIED: u64 = 1 << 36;
+    /// Whether a cut opens as itself is judged by the group alone, not
+    /// by ZFS's order (the group, then the timestamp, then the
+    /// multihost sequence).
+    pub(crate) const ORDER_BY_GROUP: u64 = 1 << 37;
+    /// The start does not read the rings: they are taken to hold no
+    /// uberblock, and what was written before the store began is not
+    /// seen.
+    pub(crate) const RINGS_UNREAD: u64 = 1 << 38;
+    /// A cut opens as itself only if no uberblock in view ranks above
+    /// the one that marks it: uberblocks are compared, not states, so a
+    /// multihost copy of the cut's own state with a later timestamp
+    /// makes it a rewind (the lead's reading of M2.1b, point 4).
+    pub(crate) const ITSELF_BY_RANK: u64 = 1 << 39;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -471,6 +485,9 @@ pub struct InPlace<D: Dir> {
     marker: Marker,
     /// The count of cuts (`cuts.rs`).
     cuts: CutRule,
+    /// The rings the start could not read: each one's offset on the
+    /// volume and the error ([`InPlace::rings_unread`]).
+    rings_unread: Vec<(u64, String)>,
 }
 
 /// Writes the failure marker, on whichever thread runs it.
@@ -757,6 +774,7 @@ impl<D: Dir> InPlace<D> {
             held_early: Vec::new(),
             marker: Marker::new(parts.marker, mutants),
             cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
+            rings_unread: Vec::new(),
         };
         // What the instance before this one wrote by direct I/O may be
         // in the device's volatile cache only: this sync makes it
@@ -776,8 +794,45 @@ impl<D: Dir> InPlace<D> {
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
         store.empty_cache().map_err(StartError::CacheKept)?;
+        store.read_rings();
         store.set_up_io().map_err(StartError::Io)?;
         Ok(store)
+    }
+
+    /// Read the four labels' uberblock rings, so that the count of cuts
+    /// knows what an import would choose among before the first request
+    /// (design §5.2, "Whether a cut opens as itself"; `cuts.rs`). It is
+    /// the store's one read of the volume's content on its own account:
+    /// four reads of 128 KiB, 512 KiB in all, on the caller's thread
+    /// before the I/O threads start. They come after the cache is
+    /// emptied and checked, so they read the disk, and by direct I/O
+    /// where the store's I/O is direct, so they leave nothing in the
+    /// cache. On a volume that holds no pool they read holes. A ring
+    /// that cannot be read stays unknown, and then no cut opens as
+    /// itself until every position of that ring has been written again;
+    /// the start goes on, as a failed read fails nothing else, and says
+    /// which it could not read ([`InPlace::rings_unread`]).
+    fn read_rings(&mut self) {
+        for (offset, len) in self.cuts.rings() {
+            let mut buf = Buf::zeroed((len / skyzfs_blk::BLOCK_SIZE) as usize);
+            let read = if self.io.direct {
+                self.home.read_direct_at(offset, &mut buf)
+            } else {
+                self.home.read_at(offset, &mut buf)
+            };
+            match read {
+                Ok(()) => self.cuts.read_at_start(offset, &buf),
+                Err(e) => self.rings_unread.push((offset, e.to_string())),
+            }
+        }
+    }
+
+    /// The labels' rings the start could not read, by their offset on
+    /// the volume, with the error: until every position of each has
+    /// been written again, no cut opens as itself (the start's
+    /// `read_rings` says why), and the daemon says so once at the start.
+    pub fn rings_unread(&self) -> &[(u64, String)] {
+        &self.rings_unread
     }
 
     /// Check what direct I/O asks, and start the threads.
@@ -1104,6 +1159,9 @@ impl<D: Dir> InPlace<D> {
             Op::WriteZeroes { offset, len } => {
                 let zeroed = self.zero(offset, len);
                 let result = self.mutated(zeroed);
+                if result.is_ok() {
+                    self.cuts.zeroed(id);
+                }
                 self.complete(id, result, None);
             }
             // Rule R6 lets a discarded block keep its content. The

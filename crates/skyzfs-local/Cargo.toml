@@ -19,6 +19,9 @@ skyzfs-blk = { workspace = true }
 skyzfs-uberblock = { workspace = true }
 
 [dev-dependencies]
+# For the recorded pools' records (`tests/fixtures/pools`), which are
+# gzipped.
+flate2 = { workspace = true }
 proptest = { workspace = true }
 # For the real-file tests of the in-place store: the call that counts a
 # file's cached pages (`cachestat`), which this crate does not make.
