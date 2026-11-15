@@ -1,0 +1,6 @@
+W2 a flush does not wait for a write that waits for the map: KILLED by 1: a_flush_waits_for_a_write_that_waits_for_the_map
+W3 a write-zeroes does not ask the map: KILLED by 1: after_a_power_cut_the_next_cut_holds_every_block_changed_since_the_newest_commit
+W9 a failed write of the map at a release does not fail the volume: KILLED by 1: a_failed_write_of_the_map_at_a_commit_fails_the_volume
+W10 a write that waited goes on though the volume failed meanwhile: KILLED by 1: a_write_that_waited_does_not_begin_after_the_volume_failed
+S8 a map taken up is not written before the start serves: KILLED by 1: after_a_reboot_the_next_cut_holds_the_regions_the_map_names
+finished

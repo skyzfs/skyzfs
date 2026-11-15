@@ -1,0 +1,5 @@
+test inplace::tests::cuts::review_a_store_dropped_while_a_write_waits_for_the_map ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.21s
+a read behind the write: false; the drop ended in 15 s: true; writes of the image: 1
+a read behind the write: true; the drop ended in 15 s: true; writes of the image: 1
+exit 0

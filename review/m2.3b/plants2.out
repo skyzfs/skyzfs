@@ -1,0 +1,13 @@
+as the head has it: ([], [])
+D1a the directory is not synced after the map's creation: KILLED by 2: after_a_power_cut_the_next_cut_holds_every_block_changed_since_the_newest_commit, after_a_reboot_the_next_cut_holds_the_regions_the_map_names
+D2a the drop does not look at the map's sync: KILLED by 1: a_store_dropped_while_a_write_waits_for_the_map_does_the_write_first
+D2b the drop does not go on for a request that waits for the map: KILLED by 1: a_store_dropped_while_a_write_waits_for_the_map_does_the_write_first
+D2c the drop does not run what was deferred when there are no threads: SURVIVED
+L1 a bit set while the sync ran counts as lost when the sync ends: KILLED by 1: writes_into_clean_regions_while_the_map_syncs_share_the_next_sync
+L2 a bit a commit cleared counts as lost: KILLED by 1: a_write_whose_bit_a_clear_takes_while_it_waits_sets_it_again
+L3 a bit that a sync left unwritten is set again, with no end: KILLED by 1: a_sync_of_the_map_that_leaves_a_bit_set_before_it_unwritten_fails_the_volume
+L4 a lost bit fails the waiting requests and not the volume: KILLED by 1: a_sync_of_the_map_that_leaves_a_bit_set_before_it_unwritten_fails_the_volume
+C1 direct I/O is checked after the map is kept: KILLED by 1: a_start_refused_for_direct_io_creates_no_map
+N1 the count takes a page's last, short word as a whole one: KILLED by 1: the_regions_named_are_counted_as_listed
+N2 the count takes the volume's last, short word as a whole one: SURVIVED
+finished

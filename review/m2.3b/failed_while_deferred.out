@@ -1,0 +1,17 @@
+as the head has it
+  test inplace::tests::cuts::review_a_store_that_failed_with_a_read_deferred_is_dropped ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.31s
+  IoMode { direct: true, threads: 8 }: answered within 200 ms of the failure, the map's sync still held: [(1, Err(Failed)), (2, Err(Failed))]
+  IoMode { direct: true, threads: 8 }: the drop ended in 15 s, the map's sync still held: true
+  IoMode { direct: true, threads: 0 }: answered within 200 ms of the failure, the map's sync still held: [(1, Err(Failed))]
+  IoMode { direct: true, threads: 0 }: the drop ended in 15 s, the map's sync still held: true
+  exit 0
+with D2c planted (no run_deferred in the drop)
+  test inplace::tests::cuts::review_a_store_that_failed_with_a_read_deferred_is_dropped ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 15.30s
+  IoMode { direct: true, threads: 8 }: answered within 200 ms of the failure, the map's sync still held: [(1, Err(Failed)), (2, Err(Failed))]
+  IoMode { direct: true, threads: 8 }: the drop ended in 15 s, the map's sync still held: true
+  IoMode { direct: true, threads: 0 }: answered within 200 ms of the failure, the map's sync still held: [(1, Err(Failed))]
+  IoMode { direct: true, threads: 0 }: the drop ended in 15 s, the map's sync still held: false
+  exit 0
+finished
