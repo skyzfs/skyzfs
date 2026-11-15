@@ -317,9 +317,10 @@ pub(crate) struct Taken {
 /// The default region of the intent map: 4 MiB, the lead's decision
 /// from M2.T4's second round. At 64 MiB the map named about 88 times
 /// what had changed since the newest committed cut, and at 1 MiB its
-/// page writes on the queue's thread cost 8% of tpcb and 12 to 16% of
-/// select. At 4 MiB it names about nine times what changed, and the
-/// cost of 2 to 3% could not be told apart from noise in one run.
+/// syncs and its page writes on the queue's thread cost 8% of tpcb and
+/// 12 to 16% of select. At 4 MiB it names about nine times what
+/// changed, and the cost of 2 to 3% could not be told apart from noise
+/// in one run.
 pub const DEFAULT_INTENT_REGION: u64 = 4 << 20;
 /// The smallest region of the intent map: a word of the cut state's
 /// maps (64 blocks).
