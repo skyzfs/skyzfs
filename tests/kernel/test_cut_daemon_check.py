@@ -329,12 +329,13 @@ UNPLACED_WRITTEN = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2},
                     {'number': 2, 'group': 6, 'opens': 'itself', 'blocks': 1}]
 
 
-def unplaced_log(rewrite=False):
+def unplaced_log(rewrite=False, rezero=False):
     """A write of block 1 (a) received, a write-zeroes over block 1
     received before it is applied (the store runs the write first, then
     the zeros; the model the other way), a write of block 2 (b), cut 1;
     then (rewrite) a write of block 1 (d) received after the
-    write-zeroes, a write of block 3 (c), cut 2 -> (records, cuts)."""
+    write-zeroes, or (rezero) a write-zeroes of block 1 with nothing
+    pending, a write of block 3 (c), cut 2 -> (records, cuts)."""
     a, b, c, dd = 'a' * 16, 'b' * 16, 'c' * 16, 'd' * 16
     text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
             f'2\t{PID}\trecv\t3\twrite\t8\t8\t-\n3\t{PID}\trecv\t4\twrite_zeroes\t8\t8\t-\n'
@@ -344,6 +345,8 @@ def unplaced_log(rewrite=False):
             f'10\t{PID}\tcut\t1\tflush\titself\t1\t5\n'
             + (f'11\t{PID}\trecv\t3\twrite\t8\t8\t-\n12\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{dd}\n'
                if rewrite else '')
+            + (f'11\t{PID}\trecv\t7\twrite_zeroes\t8\t8\t-\n12\t{PID}\tcommit\t7\twrite_zeroes\t8\t8\t0\n'
+               if rezero else '')
             + f'13\t{PID}\trecv\t6\twrite\t24\t8\t-\n14\t{PID}\tapplied\t6\twrite\t-\t-\t-\t{c}\n'
             f'15\t{PID}\trecv\t1\tflush\t0\t0\t-\n16\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
             f'17\t{PID}\tcut\t1\tflush\titself\t2\t6\n')
@@ -546,6 +549,21 @@ class HeldContent(HeldFixture):
                                             {1: 'd' * 16, 2: b, 3: c})
         self.assertIsNone(ok, detail)
         self.assertIn('cut 1', detail)
+        # block 1 zeroed again by a write-zeroes received after the first,
+        # with no write pending: cut 2 must hold zeros there (Codex on
+        # #103, at a37b914)
+        recs, dcuts = unplaced_log(rezero=True)
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN,
+                                            {1: {1: cdc.ZERO, 2: b}, 2: {1: 'a' * 16, 3: c}},
+                                            {1: 'a' * 16, 2: b, 3: c})
+        self.assertIs(ok, False, detail)
+        self.assertIn('cut 2', detail)
+        # zeros there: only cut 1's unplaced block is left
+        ok, detail, _, wrong = cdc.held_content(recs, dcuts, UNPLACED_WRITTEN, {1: {1: cdc.ZERO, 2: b}, 2: {3: c}},
+                                                {2: b, 3: c})
+        self.assertIsNone(ok, detail)
+        self.assertNotIn('cut 2', detail)
+        self.assertEqual(wrong, {1})
 
     def test_write_zeroes_read_as_zeros(self):
         model = {}

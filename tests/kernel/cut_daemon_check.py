@@ -104,8 +104,9 @@ The second stage, where DIR/holder.log says the holder ran
   (ERROR) only where every wrong block is under a write-zeroes received
   while an overlapping write was in the store (the store ran the write
   first; the log does not say when the write-zeroes ran), in a cut after
-  it, with no write received after the write-zeroes setting the block
-  again by the cut's instant, and nothing else is wrong.
+  it, with no write or write-zeroes received after the write-zeroes
+  setting the block again by the cut's instant, and nothing else is
+  wrong.
 - controls: the middle written cut's image against the reference at the
   cut before it (`content_early`), and the image before its write
   against the reference at its instant (`content_stale`): both caught.
@@ -555,6 +556,13 @@ def held_content(records, dcuts, written, blocks, final=None):
             r = records[at]
             apply(model, r)
             if r.get('op') == 'write_zeroes':
+                # A write-zeroes received after another places the blocks
+                # it covers whole again (it waits for the other in the
+                # store), unless a write it overlaps was pending at its own
+                # receipt: then they are its own to leave unplaced.
+                for b in full_blocks(r['offset'], r['bytes'])[0]:
+                    if b in live and r['seq'] > live[b]:
+                        del live[b]
                 for b in r['ambiguous']:
                     live[b] = r['seq']
             elif cut_ref.is_write(r) and 'seq' in r:
