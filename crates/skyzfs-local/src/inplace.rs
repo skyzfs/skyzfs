@@ -1994,15 +1994,8 @@ impl<D: Dir> InPlace<D> {
                 CutState::begin(region, size, bound, owner, self.mutants)
             }
         };
-        let newest = cut_state.newest().map(|newest| {
-            let itself = cut_state
-                .held()
-                .iter()
-                .any(|cut| cut.number == cut_state.count() && cut.itself);
-            (newest, itself)
-        });
         self.cuts
-            .restore(cut_state.count(), newest, cut_state.mark());
+            .restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());
         self.state = Some(cut_state);
     }
 
@@ -2030,6 +2023,15 @@ impl<D: Dir> InPlace<D> {
     /// store holds cuts.
     pub fn cuts_at_start(&self) -> Option<&CutsTakenUp> {
         self.cuts_at_start.as_ref()
+    }
+
+    /// The conformance harness's mark: as if an uberblock write naming
+    /// `state` had just been applied, so that the next flush received
+    /// cuts it. Recorded in the cut state at once (`harness.rs`).
+    #[cfg(test)]
+    pub(crate) fn mark_as_applied(&mut self, state: State) {
+        self.cuts.applied_state(RequestId(u64::MAX), state);
+        self.record_cuts();
     }
 
     /// Record in the cut state what the rule has just done: a mark, or a
@@ -2111,9 +2113,22 @@ impl<D: Dir> InPlace<D> {
     /// (with `false`, `buf` is untouched and the image the cut is
     /// uploaded onto holds the block). Beside the write path: a block a
     /// write has changed since the instant is read from its copy, which
-    /// was whole before the write began.
+    /// was whole before the write began. A block past the volume's end,
+    /// or a buffer of another size than a block, is refused.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn read_cut(&mut self, number: u64, block: u64, buf: &mut [u8]) -> io::Result<bool> {
+        if block >= self.geometry.size_bytes() / skyzfs_blk::BLOCK_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the block lies past the volume's end",
+            ));
+        }
+        if buf.len() != skyzfs_blk::BLOCK_USIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a cut is read one block at a time",
+            ));
+        }
         let read = self
             .state
             .as_ref()

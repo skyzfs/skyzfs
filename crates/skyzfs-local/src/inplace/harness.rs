@@ -40,15 +40,57 @@
 //!   volume as after a power cut (rule R11); the case
 //!   `reopened_failed_volume_holds_what_was_flushed` fails on a store
 //!   that does not.
+//!
+//! With [`InPlaceHarness::held_cuts`] the store holds cuts beneath the
+//! suite's cases. A cut needs a mark and a flush after it, and the
+//! suite writes no uberblock; an uberblock written by the harness would
+//! change blocks the suite reads. So before each flush the suite sends,
+//! the harness marks a new state as an applied uberblock write marks it
+//! ([`InPlace::mark_as_applied`]), and every flush makes a cut. What a
+//! held cut reads is judged by the cut state's own tests; here, that
+//! the cuts change nothing a client sees.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use skyzfs_blk::conformance::{Capabilities, Harness, HarnessError, Spec};
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId};
 
+use skyzfs_uberblock::{State, ROOT_WORDS};
+
+use super::state::{self, MemRegion};
 use super::{create, lock, InPlace, Mutants, OpenOptions, Opened, VolumeConfig};
 use crate::sim::{SeededCut, SimDisk};
 use crate::store::HOME_NAME;
+
+/// The volume's size.
+const VOLUME_MIB: u64 = 4;
+/// The bound on the copies when the store holds cuts: sixteen blocks.
+const HELD_BOUND: u64 = 16 * skyzfs_blk::BLOCK_SIZE;
+
+/// What the cuts did beneath the suite's cases, on this thread (the
+/// suite runs its cases on the caller's thread): the test of the suite
+/// with held cuts checks that each happened.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Seen {
+    /// The most cuts one volume counted.
+    pub(crate) cuts: u64,
+    /// Flushes received while copies were held.
+    pub(crate) copied: u64,
+    /// The most cuts one volume abandoned at the bound.
+    pub(crate) abandoned: u64,
+    /// Starts after a kill that took up held cuts.
+    pub(crate) taken_up: u64,
+}
+
+thread_local! {
+    static SEEN: RefCell<Seen> = RefCell::new(Seen::default());
+}
+
+/// What the cuts did on this thread since the last call.
+pub(crate) fn seen() -> Seen {
+    SEEN.with(|seen| seen.replace(Seen::default()))
+}
 
 /// Whether a target created with `seed` has its failure come when the
 /// I/O threads have ended their jobs and a flush's sync is under way
@@ -74,31 +116,51 @@ pub(crate) struct InPlaceHarness {
     /// 16 KiB or 64 KiB on some arm64 kernels. Passed in, not read
     /// from the host, so that every size runs everywhere.
     pub(crate) page: u64,
-    /// Whether the store holds cuts: each start then has a cut state of
-    /// its own, with a bound of sixteen blocks, so that writes are
-    /// copied for a held cut and cuts are abandoned at the bound
-    /// beneath the suite's cases.
+    /// Whether the store holds cuts (see the module documentation).
+    /// Each volume then has one cut state, with a bound of sixteen
+    /// blocks, kept across kills; a power cut and a reopen after a
+    /// failure begin a new one, as the disk lost there what was not
+    /// synced. Every flush makes a cut, so writes are copied for held
+    /// cuts, cuts are abandoned at the bound, and a start after a kill
+    /// takes up the cuts held before it.
     pub(crate) held_cuts: bool,
 }
 
 impl InPlaceHarness {
-    fn options(&self, read_only: bool, acknowledge_failure: bool) -> OpenOptions {
+    fn options(
+        &self,
+        read_only: bool,
+        acknowledge_failure: bool,
+        region: Option<MemRegion>,
+    ) -> OpenOptions {
         OpenOptions {
             queue_depth: self.queue_depth,
             read_only,
             acknowledge_failure,
             io: self.io,
-            hold_cuts: self.held_cuts.then(|| super::HoldCuts {
-                region: super::CutRegion::Memory(super::state::MemRegion::new(0)),
+            hold_cuts: region.map(|region| super::HoldCuts {
+                region: super::CutRegion::Memory(region),
                 boot: [0; 16],
-                bound: Some(16 * skyzfs_blk::BLOCK_SIZE),
+                bound: Some(HELD_BOUND),
             }),
             ..OpenOptions::default()
         }
     }
 
-    /// Start on `disk`: the open under the lock, then the start. A
-    /// volume marked as failed is not served again: everything fails.
+    /// A new cut state for the volume, if the store holds cuts: sized
+    /// for it, so that the store takes it up and makes none of its own.
+    fn new_region(&self) -> Option<MemRegion> {
+        self.held_cuts.then(|| {
+            MemRegion::new(state::words_for(
+                (VOLUME_MIB << 20) / skyzfs_blk::BLOCK_SIZE,
+                state::records_for(HELD_BOUND),
+            ))
+        })
+    }
+
+    /// Start on `disk` with the cut state in `region`: the open under
+    /// the lock, then the start. A volume marked as failed is not served
+    /// again: everything fails.
     fn start(
         &self,
         disk: SimDisk,
@@ -106,9 +168,10 @@ impl InPlaceHarness {
         acknowledge_failure: bool,
         before: Option<Geometry>,
         settle_at_failure: bool,
+        region: Option<MemRegion>,
     ) -> Result<OnSim, HarnessError> {
         disk.set_sync_delay(self.sync_delay);
-        let options = self.options(read_only, acknowledge_failure);
+        let options = self.options(read_only, acknowledge_failure, region.clone());
         let opened = lock(&disk)
             .and_then(|lock| Opened::open(disk.clone(), lock, options).map_err(|(e, _)| e));
         let store = match opened {
@@ -123,12 +186,19 @@ impl InPlaceHarness {
                     disk,
                     geometry,
                     settle_at_failure,
+                    region,
+                    held_cuts: self.held_cuts,
                 });
             }
         };
         let geometry = store.geometry();
         let inner = match store.start_with(None, Mutants(self.mutants)) {
-            Ok(store) => Inner::Live(Box::new(store)),
+            Ok(store) => {
+                if before.is_some() && !store.held_cuts().is_empty() {
+                    SEEN.with(|seen| seen.borrow_mut().taken_up += 1);
+                }
+                Inner::Live(Box::new(store))
+            }
             // The start's sync met the failed disk.
             Err(_) if before.is_some() => Inner::Gone(Vec::new()),
             Err(error) => return Err(HarnessError(format!("the in-place store: {error}"))),
@@ -138,6 +208,8 @@ impl InPlaceHarness {
             disk,
             geometry,
             settle_at_failure,
+            region,
+            held_cuts: self.held_cuts,
         })
     }
 }
@@ -150,6 +222,10 @@ pub(crate) struct OnSim {
     geometry: Geometry,
     /// [`settles_at_failure`] of the seed it was created with.
     settle_at_failure: bool,
+    /// The volume's cut state, if the store holds cuts.
+    region: Option<MemRegion>,
+    /// Whether each flush makes a cut ([`InPlaceHarness::held_cuts`]).
+    held_cuts: bool,
 }
 
 enum Inner {
@@ -182,7 +258,27 @@ impl BlockTarget for OnSim {
 
     fn submit(&mut self, request: Request) -> Result<(), skyzfs_blk::SubmitError> {
         match &mut self.inner {
-            Inner::Live(store) => store.submit(request),
+            Inner::Live(store) => {
+                if self.held_cuts && matches!(request.op, Op::Flush) {
+                    let figures = store.cut_figures();
+                    let count = store.cuts().count;
+                    SEEN.with(|seen| {
+                        let mut seen = seen.borrow_mut();
+                        seen.cuts = seen.cuts.max(count);
+                        seen.copied += u64::from(figures.copied > 0);
+                        seen.abandoned = seen.abandoned.max(figures.abandoned);
+                    });
+                    // A new state, which the flush cuts at its barrier;
+                    // the same again if the last was not cut, which is
+                    // then a repeat of the mark.
+                    let group = count + 1;
+                    store.mark_as_applied(State {
+                        txg: group,
+                        root: [group; ROOT_WORDS],
+                    });
+                }
+                store.submit(request)
+            }
             Inner::Gone(queue) => {
                 queue.push(request);
                 Ok(())
@@ -242,7 +338,7 @@ impl Harness for InPlaceHarness {
             mutants: 0,
             ..*self
         };
-        let mut first = plain.start(disk, false, false, None, false)?;
+        let mut first = plain.start(disk, false, false, None, false, self.new_region())?;
         let store = first
             .store()
             .ok_or_else(|| HarnessError("the first start did not serve".into()))?;
@@ -279,7 +375,12 @@ impl Harness for InPlaceHarness {
         if done.iter().any(|c| c.result.is_err()) {
             return Err(HarnessError("the first instance's writes failed".into()));
         }
-        let OnSim { inner, disk, .. } = first;
+        let OnSim {
+            inner,
+            disk,
+            region,
+            ..
+        } = first;
         drop(inner);
         disk.kill();
         self.start(
@@ -288,15 +389,19 @@ impl Harness for InPlaceHarness {
             false,
             None,
             settles_at_failure(spec.seed),
+            region,
         )
     }
 
+    /// The cut state is kept: it outlives the process.
     fn kill(&mut self, target: OnSim, _seed: u64) -> Result<OnSim, HarnessError> {
         let OnSim {
             inner,
             disk,
             geometry,
             settle_at_failure,
+            region,
+            ..
         } = target;
         if let Inner::Live(store) = inner {
             store.abandon();
@@ -308,6 +413,7 @@ impl Harness for InPlaceHarness {
             false,
             Some(geometry),
             settle_at_failure,
+            region,
         )
     }
 
@@ -316,13 +422,15 @@ impl Harness for InPlaceHarness {
         7
     }
 
-    /// The simulated disk's own cut, drawn from `keep`.
+    /// The simulated disk's own cut, drawn from `keep`. The cut state,
+    /// in memory, is lost with it.
     fn power_cut(&mut self, target: OnSim, keep: u64) -> Result<OnSim, HarnessError> {
         let OnSim {
             inner,
             disk,
             geometry,
             settle_at_failure,
+            ..
         } = target;
         drop(inner);
         disk.power_cut(SeededCut::new(keep ^ 0x5EED_C0DE));
@@ -332,6 +440,7 @@ impl Harness for InPlaceHarness {
             false,
             Some(geometry),
             settle_at_failure,
+            self.new_region(),
         )
     }
 
@@ -357,12 +466,14 @@ impl Harness for InPlaceHarness {
         Ok(())
     }
 
+    /// A new cut state: the volume is served as after a power cut.
     fn reopen_failed(&mut self, target: OnSim) -> Result<OnSim, HarnessError> {
         let OnSim {
             inner,
             disk,
             geometry,
             settle_at_failure,
+            ..
         } = target;
         drop(inner);
         disk.clear_faults();
@@ -373,6 +484,7 @@ impl Harness for InPlaceHarness {
             true,
             Some(geometry),
             settle_at_failure,
+            self.new_region(),
         )
     }
 }
