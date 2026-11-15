@@ -873,3 +873,97 @@ fn bytes_zfs_would_pass_over_make_no_cut() {
         );
     }
 }
+
+/// A start that could not read a ring goes on, and no cut opens as
+/// itself until that ring has been written again (`read_rings`; the
+/// review of #95, its S2, whose reproducer this is). The
+/// start's reads are failed one at a time: among those after which the
+/// store still starts, exactly four leave the first cut a rewind, the
+/// four rings. Fails where a ring that could not be read is taken as
+/// read (plant C4: every such start says `itself`).
+#[test]
+fn a_ring_the_start_could_not_read_leaves_no_cut_itself() {
+    let mut rewinds = 0;
+    let mut starts = 0;
+    for after in 0..64 {
+        let disk = created(19, 0);
+        disk.fail_read(after, false);
+        let Ok(opened) = opened(&disk, false, IoMode::default()) else {
+            continue;
+        };
+        let Ok(mut store) = opened.start_with(None, Mutants(0)) else {
+            continue;
+        };
+        disk.clear_faults();
+        starts += 1;
+        let mut id = 0;
+        for label in 0..LABELS {
+            id += 1;
+            assert!(run(&mut store, id, uberblock_write(label, 10, 1))
+                .result
+                .is_ok());
+        }
+        id += 1;
+        assert!(run(&mut store, id, Op::Flush).result.is_ok());
+        match newest(&store) {
+            Some((10, true)) => {}
+            Some((10, false)) => rewinds += 1,
+            other => panic!("after {after}: {other:?}"),
+        }
+        // The store says which ring it could not read: one where the
+        // cut is a rewind, none where it is itself (S3).
+        let unread = store.rings_unread().len();
+        assert_eq!(
+            unread,
+            usize::from(newest(&store) == Some((10, false))),
+            "after {after}: {:?}",
+            store.rings_unread()
+        );
+    }
+    assert!(starts > 4, "the starts that went on: {starts}");
+    assert_eq!(rewinds, 4, "one start for each ring that could not be read");
+}
+
+/// A write the store received and ended without applying it (refused,
+/// as a read-only volume refuses one) changes nothing: it does not mark,
+/// and the view keeps what the volume holds, so the flush after it
+/// counts no cut and the newest cut still opens as itself (the review
+/// of #95, its S6: a rule that applied the change at its end passed
+/// every test).
+#[test]
+fn a_write_ended_without_being_applied_changes_nothing() {
+    use crate::inplace::cuts::CutRule;
+    let mut rule = CutRule::new(1 << 20, Mutants(0));
+    for (offset, len) in rule.rings() {
+        rule.read_at_start(offset, &vec![0; len as usize]);
+    }
+    let mut id = 0;
+    let mut group = |rule: &mut CutRule, txg: u64, root: u64, applied: bool| {
+        for label in 0..LABELS {
+            id += 1;
+            rule.received(RequestId(id), &uberblock_write(label, txg, root));
+            if applied {
+                rule.applied(RequestId(id));
+            }
+            rule.ended(RequestId(id));
+        }
+        id += 1;
+        rule.received(RequestId(id), &Op::Flush);
+        rule.barrier(RequestId(id));
+        rule.ended(RequestId(id));
+    };
+    let newest = |rule: &CutRule| {
+        let cuts = rule.cuts();
+        (cuts.count, cuts.newest.map(|cut| (cut.group, cut.itself)))
+    };
+    group(&mut rule, 10, 1, true);
+    assert_eq!(newest(&rule), (1, Some((10, true))));
+    group(&mut rule, 11, 2, false);
+    assert_eq!(
+        newest(&rule),
+        (1, Some((10, true))),
+        "writes ended unapplied marked or changed the view"
+    );
+    group(&mut rule, 11, 2, true);
+    assert_eq!(newest(&rule), (2, Some((11, true))));
+}
