@@ -1,0 +1,10 @@
+README.md: not a fixture (NotADirectoryError)
+autotrim: 40 cuts; design same (40); early caught (40); count-repeats same (40); txg-alone same (40); previous same (40); an added cut caught
+config: 26 cuts; design same (26); early caught (26); count-repeats same (26); txg-alone same (26); previous same (26); an added cut caught
+life: 26 cuts; design same (26); early caught (26); count-repeats same (26); txg-alone same (26); previous same (26); an added cut caught
+multihost: 93 cuts; design same (93); early caught (93); count-repeats caught (108); txg-alone caught (91); previous caught (93); an added cut caught
+rewind: 32 cuts; design same (32); early caught (32); count-repeats same (32); txg-alone caught (31); previous same (32); an added cut caught
+rewindf: 29 cuts; design same (29); early caught (29); count-repeats same (29); txg-alone caught (28); previous same (29); an added cut caught
+rewindsync: 32 cuts; design same (32); early caught (32); count-repeats same (32); txg-alone same (32); previous same (32); an added cut caught
+slog: 29 cuts; design same (29); early caught (29); count-repeats same (29); txg-alone same (29); previous same (29); an added cut caught
+stray: 17 cuts; design same (17); early caught (17); count-repeats caught (30); txg-alone same (17); previous same (17); an added cut caught

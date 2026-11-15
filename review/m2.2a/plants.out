@@ -27,3 +27,14 @@ S24 give: the donor is let go before its heir names its map: KILLED by a_death_a
 S35 flush_failed: the failed cut's map is dropped: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
 S37 release: the cut that waits is not the next to be uploaded: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
 S38 freeze: the mark the cut took is kept: SURVIVED
+M1 move_into: the summary of the map moved from is left: SURVIVED
+M2 clear: the summary before the words: KILLED by a_death_at_any_store_leaves_every_held_cut_whole
+M3 move_into: the word moved to is not noted in its summary: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+I1 store: a write-zeroes does not pass through the cut state: SURVIVED
+I2 store: a flush that completes is told to the cut state as failed, and one that fails as completed: KILLED by a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole, a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite
+I3 store: the completion of a cut's flush is not told to the cut state: KILLED by a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite
+I4 store: the next instance is not given the mark: KILLED by a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole
+I5 store: the next instance is not given the count: SURVIVED
+I6 store: the next instance is not given the newest cut: SURVIVED
+I7 store: the change is noted for the write's first block alone: SURVIVED
+I8 store: a copy that cannot be made does not fail the write: SURVIVED

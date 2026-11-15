@@ -1,0 +1,11 @@
+on the caller's thread, with Q1 (the pull request's test as it is):
+    exit 0
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 178 filtered out; finished in 0.04s
+on one I/O thread, as the head has it:
+    exit 0
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 178 filtered out; finished in 0.15s
+on one I/O thread, with Q1:
+    exit 101
+    thread 'inplace::tests::cuts::a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole' (21645) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:1092:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 178 filtered out; finished in 0.19s
+    error: test failed, to rerun pass `-p skyzfs-local --lib`

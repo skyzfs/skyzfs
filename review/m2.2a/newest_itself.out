@@ -1,0 +1,8 @@
+exit 101
+    review: let go before the death: false; the next instance: count 1, newest Some((7, true))
+    review: let go before the death: true; the next instance: count 1, newest Some((7, false))
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.16s
+    assertion `left == right` failed: let go: true
+    left: Some((7, false))
+    right: Some((7, true))
+    error: test failed, to rerun pass `-p skyzfs-local --lib`

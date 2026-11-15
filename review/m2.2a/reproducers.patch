@@ -1,0 +1,230 @@
+diff --git a/crates/skyzfs-local/src/inplace/state/tests.rs b/crates/skyzfs-local/src/inplace/state/tests.rs
+index b31ddba..fd7c974 100644
+--- a/crates/skyzfs-local/src/inplace/state/tests.rs
++++ b/crates/skyzfs-local/src/inplace/state/tests.rs
+@@ -423,6 +423,14 @@ impl World {
+         // Flushes under way are done by the start's sync.
+         self.flushing.clear();
+         let after = self.state.held();
++        if after.iter().any(|c| c.phase == Phase::Flushing) {
++            return Err(format!(
++                "after a start a cut's flush is still under way: {after:?}"
++            ));
++        }
++        if !after.is_empty() && !after.iter().any(|c| c.phase == Phase::Uploading) {
++            return Err(format!("after a start no cut is being uploaded: {after:?}"));
++        }
+         // No cut is lost by a death but the one being uploaded, whose
+         // abandoning or release the death interrupted; one that a newer
+         // cut replaced, taking its map, when the start's sync completed
+@@ -1081,3 +1089,72 @@ fn the_state_of_a_tebibyte_takes_146_mib() {
+     assert_eq!((all - maps) / MIB, 16, "records: {} bytes", all - maps);
+     assert!(all - 146 * MIB < 4096, "header: {} bytes", all - 146 * MIB);
+ }
++
++/// a free slot keeps the epochs of its last use, here [2,4), which hold cut 3.
++#[test]
++fn a_death_between_a_records_two_words() {
++    let mut steps = UPLOADED_FIRST.to_vec();
++    steps.extend([
++        // Cut 2 (being uploaded) changes blocks 0 and 1.
++        Step::Write(0, 1),
++        Step::Write(1, 1),
++        Step::Cut,
++        Step::Flushed,
++        // Cut 3 (waits) changes block 1 alone: slot 0 = (1, [2,3)).
++        Step::Write(1, 1),
++        Step::Cut,
++        Step::Flushed,
++        // Epoch 4: slot 1 = (1, [3,4)), cut 3's own copy; slot 2 = (0, [2,4)), cut 2's.
++        Step::Write(1, 1),
++        Step::Write(0, 1),
++        // Cut 2 goes: slots 2 and 0 are freed, slot 2 with epochs that hold cut 3.
++        Step::Release,
++        // Cut 4 (waits) holds blocks 0 and 1.
++        Step::Cut,
++        Step::Flushed,
++        // Epoch 5: block 0's copy takes slot 0, block 1's takes slot 2.
++        Step::Write(0, 1),
++        Step::Write(1, 1),
++    ]);
++    let stores = stores_of(&steps, 0, 64);
++    assert!(stores > 0);
++    for death in 0..stores {
++        if let Err(e) = run(&steps, 0, 64, Some(death)) {
++            panic!("death at store {death} of {stores}: {e}");
++        }
++    }
++}
++
++/// a cut recorded and not counted is none, whatever comes before the freeze is done
++/// again.
++#[test]
++fn a_cut_recorded_and_not_counted_is_none() {
++    quiet_deaths();
++    let bound = 64 * BLOCK_SIZE;
++    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
++    let mut state = CutState::begin(region.clone(), SIZE, bound, Mutants(0));
++    let mut disk = Disk {
++        image: vec![0; BLOCKS as usize],
++        copies: BTreeMap::new(),
++    };
++    state.change(0, 1, &mut disk).unwrap();
++    assert_eq!(state.freeze(&marked(1), true), 1);
++    state.flushed(1);
++    state.change(1, 1, &mut disk).unwrap();
++    assert_eq!(state.freeze(&marked(2), true), 2);
++    state.flushed(2);
++    state.change(2, 1, &mut disk).unwrap();
++    // Lost in cut 3's freeze, after the first word of its record.
++    region.die_at(1);
++    let lost = catch_unwind(AssertUnwindSafe(|| state.freeze(&marked(3), true)));
++    assert!(lost.is_err());
++    region.revive();
++    let mut state = CutState::restore(region.clone(), SIZE, bound, Mutants(0)).unwrap();
++    // Cut 1 is uploaded before the flush comes again.
++    assert!(state.release(1));
++    state.change(3, 1, &mut disk).unwrap();
++    assert_eq!(state.freeze(&marked(3), true), 3);
++    let held: Vec<(u64, Phase)> = state.held().iter().map(|c| (c.number, c.phase)).collect();
++    assert_eq!(held, [(2, Phase::Uploading), (3, Phase::Flushing)]);
++    assert_eq!(state.map(3), [2, 3]);
++}
+diff --git a/crates/skyzfs-local/src/inplace/tests/cuts.rs b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+index cf53d72..77c881e 100644
+--- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
++++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+@@ -1381,3 +1381,133 @@ fn a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes() {
+         "a slot completed by its second half was taken for an empty place"
+     );
+ }
++
++/// what a death at store `death` of group 8's flush leaves, after the next instance
++/// has had the flush again: whether the run died, the count, and the held cuts' numbers and
++/// groups.
++fn lost_in_a_cut(death: u64) -> (bool, u64, Vec<(u64, u64)>) {
++    state::tests::quiet_deaths();
++    let disk = created(33, 0);
++    let region = region();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    group(&mut store, 100, 7, 70);
++    for label in 0..LABELS {
++        let done = run(
++            &mut store,
++            200 + label as u64,
++            uberblock_write(label, 8, 80),
++        );
++        assert!(done.result.is_ok());
++    }
++    let id = RequestId(210);
++    let mut done = Vec::new();
++    region.die_at(death);
++    let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        store.submit(Request { id, op: Op::Flush }).unwrap();
++        while done.is_empty() {
++            store.wait(&mut done, WAIT);
++        }
++    }));
++    region.revive();
++    let died = match lived {
++        Ok(()) => false,
++        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
++        Err(payload) => std::panic::resume_unwind(payload),
++    };
++    if died {
++        drop(store);
++        disk.kill();
++        store = start_on(&disk, 0, &region, ON_CALLER);
++        // The flush's completion never went out: the kernel issues it again.
++        assert!(run(&mut store, 211, Op::Flush).result.is_ok());
++    }
++    assert!(run(&mut store, 212, Op::Flush).result.is_ok());
++    let held = store
++        .held_cuts()
++        .iter()
++        .map(|c| (c.number, c.state.txg))
++        .collect();
++    (died, store.cuts().count, held)
++}
++
++#[test]
++fn a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once() {
++    let mut death = 0;
++    loop {
++        let (died, count, held) = lost_in_a_cut(death);
++        assert_eq!(
++            (count, held.clone()),
++            (2, vec![(1, 7), (2, 8)]),
++            "death at store {death}: count {count}, held {held:?}"
++        );
++        if !died {
++            break;
++        }
++        death += 1;
++    }
++    assert!(death > 20, "{death} stores");
++}
++
++#[test]
++fn a_repeat_of_the_newest_cut_marks_nothing_after_a_lost_daemon() {
++    let disk = created(35, 0);
++    let region = region();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    group(&mut store, 100, 7, 70);
++    for (i, label) in [0usize, 2].into_iter().enumerate() {
++        let done = run(&mut store, 200 + i as u64, uberblock_write(label, 8, 80));
++        assert!(done.result.is_ok());
++    }
++    assert!(run(&mut store, 210, Op::Flush).result.is_ok());
++    assert_eq!(store.cuts().count, 2);
++    drop(store);
++    disk.kill();
++    let mut store = start_on(&disk, 0, &region, ON_CALLER);
++    for (i, label) in [1usize, 3].into_iter().enumerate() {
++        let done = run(&mut store, 220 + i as u64, uberblock_write(label, 8, 80));
++        assert!(done.result.is_ok());
++    }
++    assert!(run(&mut store, 230, Op::Flush).result.is_ok());
++    let held: Vec<(u64, u64)> = store
++        .held_cuts()
++        .iter()
++        .map(|c| (c.number, c.state.txg))
++        .collect();
++    assert_eq!(
++        store.cuts().count,
++        2,
++        "a repeat of the newest cut's uberblock was cut: {held:?}"
++    );
++}
++
++#[test]
++fn a_held_cut_reads_as_the_volume_at_its_instant_after_a_write_zeroes() {
++    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
++        let disk = created(36, 0);
++        let region = region();
++        let mut store = start_on(&disk, 0, &region, io);
++        write(&mut store, 5, 0x55).unwrap();
++        write(&mut store, 6, 0x66).unwrap();
++        group(&mut store, 100, 7, 70);
++        let zeroed = run(
++            &mut store,
++            300,
++            Op::WriteZeroes {
++                offset: 5 * BLOCK,
++                len: 2 * BLOCK,
++            },
++        );
++        assert!(zeroed.result.is_ok(), "{io:?}");
++        assert_eq!(read(&mut store, 5).unwrap(), vec![0; BLOCK_USIZE], "{io:?}");
++        assert_eq!(
++            cut_block(&mut store, 1, 5),
++            vec![0x55; BLOCK_USIZE],
++            "{io:?}"
++        );
++        assert_eq!(
++            cut_block(&mut store, 1, 6),
++            vec![0x66; BLOCK_USIZE],
++            "{io:?}"
++        );
++    }
++}

@@ -1,0 +1,12 @@
+as the head has it:
+    exit 0
+    review: the next instance: count 2, held [(1, 7), (2, 8)]
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.01s
+with the next instance not given the newest cut (I6):
+    exit 101
+    review: the next instance: count 3, held [(1, 7), (3, 8)]
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.08s
+    assertion `left == right` failed: a repeat of the newest cut's uberblock was cut: [(1, 7), (3, 8)]
+    left: 3
+    right: 2
+    error: test failed, to rerun pass `-p skyzfs-local --lib`

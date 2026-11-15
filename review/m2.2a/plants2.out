@@ -9,3 +9,5 @@ P11 give: a cut that takes a map keeps its own lo: KILLED by a_death_at_any_stor
 P14 needed: a record is needed by any held cut whose map holds its block: KILLED by the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs, the_tests_notice_each_defect_of_the_cut_state
 P15 wanted: the oldest held cut whose map holds the block dates the record: KILLED by a_death_at_any_store_leaves_every_held_cut_whole
 Q1 store: a write the threads applied does not record its mark at once: SURVIVED
+Q2 store: a write applied on the caller's thread does not record its mark at once: KILLED by a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole
+Q3 store: a flush at its barrier does not record its cut at once: KILLED by a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole, a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite

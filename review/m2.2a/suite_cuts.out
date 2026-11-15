@@ -1,3 +1,5 @@
 a mark is recorded in the cut state: NEVER REACHED (the suite passes)
 a cut is frozen: NEVER REACHED (the suite passes)
 a block is copied for a held cut: NEVER REACHED (the suite passes)
+a cut is abandoned at the bound: NEVER REACHED (the suite passes)
+a block's bit is set in the open map (the control: the suite does reach the cut state): reached (the suite fails)

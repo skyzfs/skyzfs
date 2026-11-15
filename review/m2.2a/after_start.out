@@ -1,0 +1,11 @@
+as the head has it, with both additions: exit 0 []
+S7 settle: a cut whose flush was under way does not take the start's sync as its flush: NOTICED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+    the review's case, death at 22: step 0 (Cut): review: after a start a cut's flush is still under way: [HeldCut { number: 1, lo: 0, phase: Flushing, state: State { txg: 101, root: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, itself: true }]
+    bound 2, seed 0, death at store 22: step 0 (Cut): review: after a start a cut's flush is still under way: [HeldCut { number: 1, lo: 0, phase: Flushing, state: State { txg: 101, root: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, itself: true }]
+P1 settle: with no cut being uploaded, the oldest that waits is left waiting: NOTICED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+    the review's case, death at 138: step 12 (Write(1, 1)): review: after a start no cut is being uploaded: [HeldCut { number: 3, lo: 1, phase: Waiting, state: State { txg: 103, root: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3] }, itself: true }]
+    bound 2, seed 4, death at store 168: step 38 (Write(63, 3)): review: after a start no cut is being uploaded: [HeldCut { number: 3, lo: 0, phase: Waiting, state: State { txg: 103, root: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3] }, itself: true }]
+S21 settle: a cut recorded and not counted is left in its slot: NOTICED by review_a_cut_recorded_and_not_counted_is_none
+    assertion `left == right` failed
+    left: [(2, Uploading), (3, Flushing), (3, Flushing)]
+    right: [(2, Uploading), (3, Flushing)]

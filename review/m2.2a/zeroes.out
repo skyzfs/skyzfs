@@ -1,0 +1,10 @@
+as the head has it:
+    exit 0
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.01s
+with a write-zeroes not noted (I1):
+    exit 101
+    assertion `left == right` failed: IoMode { direct: true, threads: 8 }
+    left: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    right: [85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.09s
+    error: test failed, to rerun pass `-p skyzfs-local --lib`

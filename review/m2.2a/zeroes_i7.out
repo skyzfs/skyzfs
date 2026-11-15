@@ -1,0 +1,4 @@
+the write-zeroes test (two blocks) with the change noted for the first block alone (I7): exit 101
+    assertion `left == right` failed: IoMode { direct: true, threads: 8 }
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.08s
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
