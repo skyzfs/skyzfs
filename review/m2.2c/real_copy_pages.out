@@ -1,0 +1,12 @@
+as the head has it:
+    exit 0
+    review: held [1]; copies.img is 12288 bytes, 12288 bytes copied; its pages in the cache after the copies: Ok(0)
+    review: cut 1 reads block 6 as 0x55 (Ok(true)); pages in the cache after the read: Ok(0)
+W a copy is written through the cache:
+    exit 0
+    review: held [1]; copies.img is 12288 bytes, 12288 bytes copied; its pages in the cache after the copies: Ok(3)
+    review: cut 1 reads block 6 as 0x55 (Ok(true)); pages in the cache after the read: Ok(3)
+R a copy is read through the cache:
+    exit 0
+    review: held [1]; copies.img is 12288 bytes, 12288 bytes copied; its pages in the cache after the copies: Ok(0)
+    review: cut 1 reads block 6 as 0x55 (Ok(true)); pages in the cache after the read: Ok(1)

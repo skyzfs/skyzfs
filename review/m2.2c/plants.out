@@ -1,0 +1,9 @@
+as the head has it: failed [], broken []
+W a copy is written through the cache: KILLED by 1: the_copies_are_written_and_read_past_the_cache
+R a copy is read through the cache: KILLED by 1: the_copies_are_written_and_read_past_the_cache
+W2 a copy is written by direct I/O whatever the store's I/O is: KILLED by 1: the_copies_are_written_and_read_past_the_cache
+R2 a copy is read by direct I/O whatever the store's I/O is: SURVIVED
+W3 a copy that takes no direct write is written through the cache: SURVIVED
+T4 the copies file is opened and not synced by the start: KILLED by 2: a_held_cut_is_taken_up_only_where_its_state_is_trusted, a_start_that_heard_a_failed_sync_of_the_copies_lost_at_any_store
+E3 a region's file is emptied only where it grows: KILLED by 1: a_region_only_cut_short_keeps_nothing
+finished
