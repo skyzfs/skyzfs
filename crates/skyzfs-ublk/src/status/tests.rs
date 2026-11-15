@@ -1490,3 +1490,32 @@ fn a_write_asked_for_again_is_made_within_an_interval() {
     board.stop();
     assert_eq!(thread.join().expect("the publishing thread"), 0);
 }
+
+/// A newest cut that opens only with a rewind goes through the file as
+/// one: written as 2, and read back as not itself, as is any value but
+/// 1 (the review of #95, its S1, whose reproducer this is). Fails where both answers are written as 1 (plant T1) and where
+/// any value but 0 reads as itself (plant T2).
+#[test]
+fn a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one() {
+    let mut status = sample();
+    if let Some(Cuts {
+        newest: Some(cut), ..
+    }) = status.shown.cuts.as_mut()
+    {
+        cut.itself = false;
+    }
+    let bytes = encode(&status);
+    assert_eq!(u64_at(&bytes, 304), 2);
+    let itself = |bytes: &[u8]| {
+        decode(bytes)
+            .expect("a status")
+            .shown
+            .cuts
+            .and_then(|cuts| cuts.newest)
+            .map(|cut| cut.itself)
+    };
+    assert_eq!(itself(&bytes), Some(false));
+    let mut other = bytes;
+    other[304..312].copy_from_slice(&3u64.to_le_bytes());
+    assert_eq!(itself(&other), Some(false));
+}

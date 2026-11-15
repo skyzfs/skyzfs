@@ -260,6 +260,20 @@ fn say(text: impl std::fmt::Display) {
     crate::to_stderr(&format!("skyzfsd: {text}\n"));
 }
 
+/// The line the start says when it could not read some of the labels'
+/// rings (`InPlace::rings_unread`), or `None` when it read them all: why
+/// no cut opens as itself for a while, which `status` alone does not
+/// tell from a rewind import.
+pub fn rings_unread_said(unread: &[(u64, String)]) -> Option<String> {
+    let (first, why) = unread.first()?;
+    Some(format!(
+        "the start could not read {} of the labels' 4 uberblock rings (the first at byte {first}: \
+         {why}): no cut opens as itself until every slot of each has been written again, which \
+         takes ZFS up to one transaction group a slot",
+        unread.len()
+    ))
+}
+
 /// The magic number of a ZFS file system in `statfs`.
 pub const ZFS_SUPER_MAGIC: u64 = 0x2fc1_2fc1;
 
@@ -854,6 +868,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             ))
         }
     };
+    if let Some(said) = rings_unread_said(served.rings_unread()) {
+        say(said);
+    }
 
     match served.cuts_at_start() {
         None => {}
@@ -3605,5 +3622,22 @@ mod tests {
             3,
             "the store was handed nothing more"
         );
+    }
+
+    /// The start says once which of the labels' rings it could not read,
+    /// and nothing when it read them all (the review of #95, its S3).
+    #[test]
+    fn the_start_says_when_it_could_not_read_a_ring() {
+        assert_eq!(rings_unread_said(&[]), None);
+        let unread = [
+            (393_216, "Input/output error (os error 5)".to_string()),
+            (8_650_752, "Input/output error (os error 5)".to_string()),
+        ];
+        let Some(said) = rings_unread_said(&unread) else {
+            panic!("nothing said of two rings not read");
+        };
+        assert!(said.contains("could not read 2 of the labels' 4"), "{said}");
+        assert!(said.contains("byte 393216: Input/output error"), "{said}");
+        assert!(said.contains("no cut opens as itself"), "{said}");
     }
 }
