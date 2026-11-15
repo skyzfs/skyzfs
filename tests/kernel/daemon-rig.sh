@@ -2372,13 +2372,19 @@ check_g() {
 # (chattr +j on data=ordered).
 GJ_MIB=16
 # What a refused start may leave changed in the volume's directory (the
-# lead, M1.T30): nothing but the status file. The image and the volume's
-# identity file (`volume`, from M1.3t) are byte-identical, and no
-# failure marker appears or goes (log.failed, volume.failed). The
-# allowance for the log store's files (log.super, log.N), which its
-# checkpoint at a start rewrote, went with the log store (M1.3t). Every
-# changed file is named in the line.
+# lead, M1.T30): nothing but the status file, and the start token. The
+# image and the volume's identity file (`volume`, from M1.3t) are
+# byte-identical, and no failure marker appears or goes (log.failed,
+# volume.failed). The allowance for the log store's files (log.super,
+# log.N), which its checkpoint at a start rewrote, went with the log
+# store (M1.3t). Every changed file is named in the line.
+# The start token (`volume.start`, M2.2b-1, design §5.2's start
+# generation): every open of a volume writes a new one, synced, before
+# it serves, a start that is then refused included (the lead's decision
+# on #100, B1). It may appear or be rewritten; a refused start that
+# removes it is named as wrong.
 GJ_MAY_CHANGE='^status$'
+GJ_START_TOKEN='volume.start'
 # dir -> "DIGEST  NAME" for every entry under it, dotfiles and
 # directories too (a directory's digest is "dir"), sorted by name
 gj_digests() {
@@ -2393,6 +2399,8 @@ gj_files_judged() {
     for f in $1 $2; do
         case $f in
             home.img|volume) [[ $out == *"$f changed"* ]] || out+="$f changed; " ;;
+            "$GJ_START_TOKEN")
+                [[ " $1 " == *" $f "* ]] || [[ $out == *"$f removed"* ]] || out+="the start token $f removed; " ;;
             log.failed|volume.failed)
                 if [[ " $1 " == *" $f "* ]]; then [[ $out == *"$f appeared"* ]] || out+="a failure marker $f appeared or was rewritten; "
                 else [[ $out == *"$f removed"* ]] || out+="a failure marker $f removed; "; fi ;;
