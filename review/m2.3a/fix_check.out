@@ -1,0 +1,5 @@
+the head, with the two tests of this review: 11 passed, failed ['review_two_writes_of_a_page_during_one_sync']
+fix: a write during a sync takes its cleared bits from that sync: 12 passed, failed []
+A1 with the pull request's tests: 10 passed, failed []
+A1 with the sharper test: 10 passed, failed ['review_a_bit_cleared_by_a_later_write_and_set_again']
+sector: the checksum over the first sector only: 9 passed, failed ['after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block']

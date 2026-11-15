@@ -58,7 +58,7 @@ fn review_two_writes_of_a_page_during_one_sync() {
 '''
 
 
-def main():
+def main():  # run as a script only
     env = dict(os.environ, CARGO_INCREMENTAL='0', CARGO_TARGET_DIR=TARGET)
     full = os.path.join(ROOT, TESTS)
     orig = open(full).read()
