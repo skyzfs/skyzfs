@@ -40,11 +40,14 @@
 //! Anything else, or a command the store cannot carry out, is answered
 //! `TOKEN refused: REASON` (`- refused: …` when the line has no token).
 //!
-//! **After the volume has failed** every command is refused, and a write
-//! under way is refused at its next slice: design §5.2 does not trust
-//! the cut state of a failed volume, so neither do its commands. That
-//! is a conservative reading of the design, which says it of the next
-//! start; the review of #101 noticed that the commands answered on.
+//! **After the volume has failed** the commands go on, a write under way
+//! included. Design §5.2 ("When a cut may leave the machine") has the
+//! instance that saw the failure still upload a cut whose flush had
+//! completed: each of its blocks is untouched since that flush or was
+//! copied before the write that changed it began. A failure fails every
+//! flush under way, and each lets go the cut it was making; until it is
+//! answered, that cut is refused as any cut whose flush is under way.
+//! It is the next start that trusts none of the state.
 //!
 //! **One command at a time.** A command that comes while a write is
 //! under way is refused as busy, and that reply is replaced by the
@@ -74,8 +77,6 @@ pub const COMMAND: &str = "cut-command";
 pub const REPLY: &str = "cut-reply";
 /// Where the reply is written before it is renamed.
 const REPLY_TEMP: &str = "cut-reply.tmp";
-/// Why a command is refused once the volume has failed.
-const FAILED: &str = "the volume has failed, and its held cuts are not trusted";
 /// The blocks a write takes after each turn of the queue: 1 MiB.
 pub const SLICE: usize = 256;
 
@@ -110,8 +111,6 @@ pub trait Cuts {
     /// Let held cut `number`, the one being uploaded, go: whether it was
     /// that cut.
     fn release(&mut self, number: u64) -> bool;
-    /// Whether the volume has failed.
-    fn failed(&self) -> bool;
 }
 
 impl<D: skyzfs_local::io::Dir> Cuts for skyzfs_local::inplace::InPlace<D> {
@@ -142,10 +141,6 @@ impl<D: skyzfs_local::io::Dir> Cuts for skyzfs_local::inplace::InPlace<D> {
 
     fn release(&mut self, number: u64) -> bool {
         self.release_cut(number)
-    }
-
-    fn failed(&self) -> bool {
-        self.is_failed()
     }
 }
 
@@ -278,7 +273,6 @@ impl Commands {
         };
         let reply = match command {
             Err(why) => refused(&token, &why),
-            Ok(_) if cuts.failed() => refused(&token, FAILED),
             Ok(_) if self.job.is_some() => {
                 let number = self.job.as_ref().map_or(0, |job| job.number);
                 refused(
@@ -395,12 +389,6 @@ fn begin(token: &str, number: u64, path: PathBuf, cuts: &impl Cuts) -> Result<Jo
 
 /// Write the next slice of `job`: its reply when it is done, or failed.
 fn slice(job: &mut Job, cuts: &mut impl Cuts) -> Option<String> {
-    if cuts.failed() {
-        return Some(refused(
-            &job.token,
-            &format!("after {} of {} blocks: {FAILED}", job.next, job.map.len()),
-        ));
-    }
     let end = (job.next + SLICE).min(job.map.len());
     for at in job.next..end {
         let block = job.map[at];

@@ -26,7 +26,6 @@ struct Stand {
     let_go_after: Option<usize>,
     grows_after: Option<usize>,
     released: Vec<u64>,
-    failed: bool,
 }
 
 fn content(number: u64, block: u64) -> u8 {
@@ -94,10 +93,6 @@ impl Cuts for Stand {
             self.released.push(number);
         }
         uploading
-    }
-
-    fn failed(&self) -> bool {
-        self.failed
     }
 }
 
@@ -404,7 +399,8 @@ fn a_write_whose_map_grew_under_it_is_refused() {
 // The in-place store, on a simulated disk.
 
 const WAIT: Duration = Duration::from_secs(60);
-const SIZE_MIB: u64 = 1;
+/// Two slices: the first cut, the whole volume, is written in two turns.
+const SIZE_MIB: u64 = 2;
 const BLOCKS: u64 = SIZE_MIB << 8;
 
 type Store = InPlace<SimDisk>;
@@ -470,7 +466,11 @@ fn cut(store: &mut Store, txg: u64) -> u64 {
 
 /// A volume on a simulated disk, started with held cuts in memory.
 fn held_cuts_store() -> Store {
-    let disk = SimDisk::new(11);
+    held_cuts_store_on(SimDisk::new(11))
+}
+
+/// The same on `disk`, for a test that changes the disk under it.
+fn held_cuts_store_on(disk: SimDisk) -> Store {
     let config = VolumeConfig {
         volume: *b"held cuts' rig  ",
         size_mib: SIZE_MIB,
@@ -615,40 +615,73 @@ fn a_turn_with_no_signal_reads_no_command() {
     assert_eq!(stand.released, [3]);
 }
 
-/// Once the volume has failed no command is carried out: design §5.2
-/// does not trust the cut state of a failed volume. From the review of
-/// #101 (its remark on the commands after a failure).
+/// After the volume has failed, the instance that saw it still writes
+/// out and lets go each cut whose flush had completed, a write under
+/// way included (design §5.2, "When a cut may leave the machine"). The
+/// cut whose flush failed with the volume is let go with it, so it is
+/// refused. The lead's decision on the review of #101: a commit in its
+/// review refused every command once the volume had failed.
 #[test]
-fn no_command_is_carried_out_once_the_volume_has_failed() {
+fn after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go() {
+    let disk = SimDisk::new(13);
+    let mut store = held_cuts_store_on(disk.clone());
     let mut rig = Rig::new();
-    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[1]), (4, CutPhase::Waiting, &[2])]);
-    stand.failed = true;
-    let refusal = "refused: the volume has failed, and its held cuts are not trusted\n";
-    rig.send("h held", &mut stand);
-    assert_eq!(rig.reply(), format!("h {refusal}"));
-    rig.send("r release 3", &mut stand);
-    assert_eq!(rig.reply(), format!("r {refusal}"));
-    assert!(stand.released.is_empty());
-    let image = rig.image(8);
-    assert!(!rig.send(&format!("w write 4 {}", image.display()), &mut stand));
-    assert_eq!(rig.reply(), format!("w {refusal}"));
-}
+    write(&mut store, 5 * BLOCK_SIZE, Buf::filled(1, 0x11));
+    let first_slot = cut(&mut store, 7);
+    write(&mut store, 5 * BLOCK_SIZE, Buf::filled(1, 0x22));
+    let second_slot = cut(&mut store, 8);
+    write(&mut store, 5 * BLOCK_SIZE, Buf::filled(1, 0x44));
+    write(&mut store, 9 * BLOCK_SIZE, Buf::filled(1, 0x33));
 
-/// A write under way when the volume fails is refused at its next
-/// slice, and says how far it came.
-#[test]
-fn a_write_under_way_is_refused_when_the_volume_fails() {
-    let mut rig = Rig::new();
-    let map: Vec<u64> = (0..300).collect();
-    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[]), (4, CutPhase::Waiting, &map)]);
-    let image = rig.image(300);
-    assert!(rig.send(&format!("w write 4 {}", image.display()), &mut stand));
+    // Cut 1's write begins: the first of its two slices.
+    let image = rig.image(BLOCKS as usize);
+    assert!(rig.send(&format!("w write 1 {}", image.display()), &mut store));
     assert_eq!(rig.reply(), "", "no reply after the first slice");
-    stand.failed = true;
-    assert!(!rig.commands.turn(false, &mut stand));
-    assert_eq!(
-        rig.reply(),
-        "w refused: after 256 of 300 blocks: the volume has failed, and its held cuts are not \
-         trusted\n"
-    );
+
+    // Group 9's flush fails, and the volume with it.
+    let (offset, slot) = uberblock(9);
+    write(&mut store, offset, slot);
+    disk.fail_sync_of(skyzfs_local::store::HOME_NAME);
+    let done = run(&mut store, u64::MAX, Op::Flush);
+    assert!(done.result.is_err(), "the flush: {:?}", done.result);
+    assert!(store.is_failed());
+
+    // The write under way goes on to its end, as at the instant.
+    rig.finish(&mut store);
+    assert_eq!(rig.reply(), format!("w ok {BLOCKS} blocks\n"));
+    let written = std::fs::read(&image).expect("the image");
+    let block = |n: u64| &written[n as usize * BLOCK_USIZE..(n as usize + 1) * BLOCK_USIZE];
+    assert!(block(5).iter().all(|&b| b == 0x11), "block 5 of cut 1");
+    assert!(block(9).iter().all(|&b| b == 0), "block 9 of cut 1");
+    assert_eq!(block(first_slot), &uberblock(7).1[..]);
+    rig.reply_gone();
+
+    // Cut 3, whose flush failed, is not held; cuts 1 and 2 are.
+    rig.send("h held", &mut store);
+    let reply = rig.reply();
+    let lines: Vec<&str> = reply.lines().collect();
+    assert_eq!(lines.len(), 3, "{reply}");
+    assert!(lines[0].starts_with("1 7 uploading "), "{reply}");
+    assert!(lines[1].starts_with("2 8 waiting "), "{reply}");
+    assert_eq!(lines[2], "h ok");
+    rig.send(&format!("w3 write 3 {}", image.display()), &mut store);
+    assert_eq!(rig.reply(), "w3 refused: no cut 3 is held\n");
+
+    // Cut 2 is written as at its instant, and both are let go in turn.
+    rig.send(&format!("w2 write 2 {}", image.display()), &mut store);
+    rig.finish(&mut store);
+    let mut changed = [5, second_slot];
+    changed.sort_unstable();
+    assert_eq!(rig.reply(), format!("w2 ok {} blocks\n", changed.len()));
+    let written = std::fs::read(&image).expect("the image");
+    let block = |n: u64| &written[n as usize * BLOCK_USIZE..(n as usize + 1) * BLOCK_USIZE];
+    assert!(block(5).iter().all(|&b| b == 0x22), "block 5 of cut 2");
+    rig.send("r release 1", &mut store);
+    assert_eq!(rig.reply(), "r ok\n");
+    rig.send("h2 held", &mut store);
+    assert!(rig.reply().starts_with("2 8 uploading "), "{}", rig.reply());
+    rig.send("r2 release 2", &mut store);
+    assert_eq!(rig.reply(), "r2 ok\n");
+    rig.send("h3 held", &mut store);
+    assert_eq!(rig.reply(), "h3 ok\n");
 }
