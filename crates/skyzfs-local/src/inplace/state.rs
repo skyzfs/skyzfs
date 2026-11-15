@@ -406,8 +406,9 @@ mod at {
     pub(super) const OPEN_LO: usize = 11;
     /// The epoch in which the whole volume counts as changed; 0: none.
     pub(super) const WHOLE: usize = 12;
-    /// The cuts abandoned at the bound, and in the top byte the entry
-    /// plus one of a cut being abandoned (0: none): one store counts
+    /// The cuts abandoned at the bound or let go at a copy that could
+    /// not be made, and in the top byte the entry plus one of a cut
+    /// being abandoned (0: none): one store counts
     /// that cut and ends its abandoning.
     pub(super) const ABANDONED: usize = 13;
     /// The second part of the open map while it takes a cut's map.
@@ -519,7 +520,8 @@ pub struct Figures {
     pub copied: u64,
     /// The bound on them.
     pub bound: u64,
-    /// The cuts abandoned at the bound.
+    /// The cuts abandoned at the bound or let go at a copy that could
+    /// not be made.
     pub abandoned: u64,
 }
 

@@ -2004,8 +2004,11 @@ fn holding(region: &state::MemRegion, acknowledge: bool) -> OpenOptions {
     }
 }
 
-/// The held cuts' numbers, and what the start did with the state.
-fn after_start(store: &InPlace<SimDisk>) -> (Option<CutsTakenUp>, Vec<u64>) {
+/// What a start did with the cut state, and the held cuts' numbers.
+type AfterStart = (Option<CutsTakenUp>, Vec<u64>);
+
+/// What the start did with the state, and the held cuts' numbers.
+fn after_start(store: &InPlace<SimDisk>) -> AfterStart {
     let held = store.held_cuts().iter().map(|c| c.number).collect();
     (store.cuts_at_start().cloned(), held)
 }
@@ -2161,10 +2164,7 @@ fn an_acknowledged_failure_whose_start_is_lost_before_its_second_phase() {
 /// open came to its end, and what the next start, which acknowledges
 /// nothing, makes of the volume under `mutants`: refused for the marker,
 /// or opened, with what it took up.
-fn acknowledging_open_lost_at(
-    after: u64,
-    mutants: u64,
-) -> (bool, Result<(Option<CutsTakenUp>, Vec<u64>), OpenError>) {
+fn acknowledging_open_lost_at(after: u64, mutants: u64) -> (bool, Result<AfterStart, OpenError>) {
     let disk = created(43, 0);
     let region = region();
     let mut store = start_on(&disk, mutants, &region, ON_CALLER);
