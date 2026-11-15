@@ -36,6 +36,11 @@
 //! another, changes the token, and the state is begun anew. A token
 //! that cannot be read whole is none, and matches no state.
 //!
+//! Design §5.2 calls it the start generation. It is random and not
+//! counted: the rule needs only that it changes, and a random token
+//! never comes again, even where the file was lost or a volume was made
+//! again in the directory, where a count would start over.
+//!
 //! A directory that holds the log store's superblock ([`LEGACY_NAME`])
 //! was made by a daemon from before M1.3t and is refused: the volume is
 //! to be created again. There is no conversion.

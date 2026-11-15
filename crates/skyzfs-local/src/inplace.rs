@@ -413,8 +413,15 @@ impl Mutants {
     /// A cut state begun in another boot is taken up.
     pub(crate) const BOOT_UNCHECKED: u64 = 1 << 56;
     /// A cut state kept under another start token is taken up: the
-    /// volume was opened after the instance that kept it.
+    /// volume was opened after the instance that kept it. A token has
+    /// no order, so this is also the state trusted on the token of a
+    /// start older than the last: every state of this volume names one.
     pub(crate) const START_UNCHECKED: u64 = 1 << 62;
+    /// An open that holds no cuts leaves the start token as it found it.
+    pub(crate) const START_KEPT_WITHOUT_CUTS: u64 = 1 << 1;
+    /// An open writes its start token after it removes an acknowledged
+    /// failure marker, where it is written before.
+    pub(crate) const START_AFTER_ACKNOWLEDGING: u64 = 1 << 63;
     /// A cut state of a volume with another identity is taken up.
     pub(crate) const IDENTITY_UNCHECKED: u64 = 1 << 60;
     /// The start does not sync the copies file before it trusts the
