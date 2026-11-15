@@ -728,3 +728,72 @@ fn whole_slots_leave_every_place_known() {
     view.saw(at, &s);
     assert!(view.is_known() && view.chosen(&state(10, 2), false));
 }
+
+/// A header the volume already holds, known not to verify, is completed
+/// by a later write that does not touch the header: the volume then
+/// holds a valid slot, and the view must not call its place known and
+/// empty. (a) The damaged slot is in a ring read at the start. (b) It
+/// comes in a write that holds the whole slot. In both, the write that
+/// restores the slot's second half is the one that makes it valid.
+/// From the next look of the review of #96, whose test this is, and
+/// Codex's second finding there; both fail at 110d2b6.
+#[test]
+fn a_header_known_not_to_verify_can_be_completed_by_its_tail() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let size = 8 * KIB;
+    let at = rings[0].start + size;
+    let mut s = slot(ByteOrder::Little, 99, 9, size);
+    seal(&mut s, at, ByteOrder::Little);
+    assert!(label_checksum_holds(&s, at));
+    let mut damaged = s.clone();
+    damaged[4 * KIB as usize..].fill(0);
+    let tail = &s[4 * KIB as usize..];
+    // (a)
+    let mut view = View::unknown(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        if ring.label == 0 {
+            whole[size as usize..2 * size as usize].copy_from_slice(&damaged);
+        }
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+    // (b)
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    view.saw(at, &damaged);
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+}
+
+/// A new label's ring, written whole by `vdev_label_init` with an
+/// uberblock of group 0 at its start that no slot verifies, and then
+/// ZFS's write of the slot after it: every place stays known, and the
+/// next group is chosen. Group 0 is never greater than a cut's, so its
+/// fields are not followed past the write that brought them. Fails
+/// where they are, as for a greater group: ZFS's first uberblock writes
+/// into a new pool would leave the ring's first place unknown until its
+/// own slot is written again.
+#[test]
+fn a_new_rings_group_zero_is_not_followed_into_the_next_slot() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        whole[..SLOT_MIN as usize].copy_from_slice(&slot(ByteOrder::Little, 0, 0, SLOT_MIN));
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known());
+    for ring in &rings {
+        let at = ring.start + 4 * KIB;
+        view.saw(at, &sealed(&slot_at(5, 1, 100, 0), at));
+    }
+    assert!(view.is_known() && view.chosen(&state(5, 1), false));
+}

@@ -496,7 +496,16 @@ fn read_at(bytes: &[u8], at: u64, label: usize) -> Option<Uberblock> {
 /// - an uberblock found in a change that does not hold whole every slot
 ///   that could begin at its position, none of whose held slots
 ///   verifies, leaves its position unknown, since the rest of a slot
-///   that verifies may lie outside the change.
+///   that verifies may lie outside the change;
+/// - an uberblock of a group above zero found where every slot that
+///   could begin is held whole and none verifies is remembered, and a
+///   later change that reaches the largest of those slots past its
+///   fields, without covering them, leaves its position unknown, since
+///   that change may complete a slot that verifies (the next look of
+///   the same review, and Codex's second finding there). A group of 0
+///   is not remembered: it is never greater than a cut's, and
+///   `vdev_label_init` writes one at the start of every new ring, whose
+///   neighbours ZFS then writes.
 ///
 /// Both err toward "not chosen" until the slot is written whole again.
 /// ZFS writes a slot as one I/O and a ring is read whole, so neither
@@ -512,6 +521,11 @@ pub struct View {
     held: std::collections::BTreeMap<u64, Uberblock>,
     /// The positions whose content is not known.
     unknown: std::collections::BTreeSet<u64>,
+    /// The known positions that hold an uberblock's fields with a group
+    /// above zero but no slot that verifies, each with the end of the
+    /// largest slot that could begin there: a later change to the rest
+    /// of that slot could make it verify.
+    rejected: std::collections::BTreeMap<u64, u64>,
 }
 
 impl View {
@@ -525,6 +539,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown,
+            rejected: Default::default(),
         }
     }
 
@@ -534,6 +549,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown: Default::default(),
+            rejected: Default::default(),
         }
     }
 
@@ -571,6 +587,7 @@ impl View {
                 let whole = offset <= at && at + READ_LEN as u64 <= end;
                 if at + READ_LEN as u64 > offset {
                     self.held.remove(&at);
+                    self.rejected.remove(&at);
                     if whole {
                         self.unknown.remove(&at);
                     } else {
@@ -596,13 +613,45 @@ impl View {
             self.held.remove(&at);
             self.unknown.insert(at);
         }
+        // A place whose fields are known not to verify, whose largest
+        // slot the change reaches past them: the rest may now complete
+        // it (the next look of the review of #96, and Codex's second
+        // finding there).
+        let completed: Vec<u64> = self
+            .rejected
+            .iter()
+            .filter(|&(&at, &slot_end)| at < end && offset < slot_end)
+            .map(|(&at, _)| at)
+            .collect();
+        for at in completed {
+            self.rejected.remove(&at);
+            self.unknown.insert(at);
+        }
         for uberblock in found {
             if uberblock.verified() {
                 self.held.insert(uberblock.at, *uberblock);
             } else if self.may_go_on(uberblock.at, end) {
                 self.unknown.insert(uberblock.at);
+            } else if uberblock.counts() {
+                if let Some(slot_end) = self.largest_slot_end(uberblock.at) {
+                    self.rejected.insert(uberblock.at, slot_end);
+                }
             }
         }
+    }
+
+    /// The end of the largest slot that could begin at `at`, in a ring of
+    /// these labels.
+    fn largest_slot_end(&self, at: u64) -> Option<u64> {
+        let ring = self
+            .labels
+            .rings()
+            .find(|ring| ring.start <= at && at < ring.end())?;
+        SLOT_SIZES
+            .into_iter()
+            .filter(|&size| (at - ring.start).is_multiple_of(size))
+            .max()
+            .map(|size| at + size)
     }
 
     /// Whether a slot that could begin at `at`, in a ring of these

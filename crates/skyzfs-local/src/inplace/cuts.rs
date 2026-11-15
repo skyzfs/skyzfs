@@ -135,16 +135,17 @@
 //!   conservative readings of M2.1b, where the design is silent). The
 //!   view holds only slots whose label checksum holds (M2.1c), and it
 //!   follows a slot by all its bytes: a change to part of a held slot,
-//!   or an uberblock found in a write that holds only part of a slot
-//!   that could begin there, leaves that position unknown until the
-//!   slot is written whole again (the review of #96, its S1; ZFS writes
-//!   a slot as one I/O, so only another writer does that). A position
-//!   the start could not read is unknown, and so is one a write covered
-//!   only in part; while any is, no cut opens as itself. Two different
-//!   states that tie at the greatest rank are taken as a rewind, though
-//!   an import opens one of them. And the view says which state an
-//!   import chooses, not that the state opens: that rests on its
-//!   blocks, which the rings do not show.
+//!   an uberblock found in a write that holds only part of a slot that
+//!   could begin there, or a change to the rest of a slot whose fields
+//!   are known not to verify, leaves that position unknown until the
+//!   slot is written whole again (the review of #96 and its next look;
+//!   ZFS writes a slot as one I/O, so only another writer does that). A
+//!   position the start could not read is unknown, and so is one a
+//!   write covered only in part; while any is, no cut opens as itself.
+//!   Two different states that tie at the greatest rank are taken as a
+//!   rewind, though an import opens one of them. And the view says
+//!   which state an import chooses, not that the state opens: that
+//!   rests on its blocks, which the rings do not show.
 //! - **"Itself" is defined on the volume alone, on purpose.** The
 //!   product's pool has one more top-level vdev, the node's log device
 //!   (design §6.1), and ZFS writes uberblocks to its labels too; the
