@@ -83,7 +83,7 @@ pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
 /// (a test holds the two together).
 pub const DEFAULT_IO_THREADS: u16 = io_threads(IoMode::DEFAULT_THREADS);
 /// A region of the intent map unless `--intent-region-mib` is given, in
-/// MiB: the store's provisional default.
+/// MiB: the store's default.
 pub const DEFAULT_INTENT_REGION_MIB: u64 = skyzfs_local::inplace::DEFAULT_INTENT_REGION >> 20;
 /// The smallest region `--intent-region-mib` takes: 1 MiB, above the
 /// store's own smallest.
@@ -241,7 +241,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       write into a region that was clean since the newest cut
       committed, so that after a restart of the machine, or a failure
       that is acknowledged, the next cut holds only the regions it
-      names. --intent-region-mib N (a power of two from 1 to 1024, 64
+      names. --intent-region-mib N (a power of two from 1 to 1024, 4
       unless given) sets the size of a region; only with --hold-cuts.
       A start with another size than the map's counts the whole volume
       once. A start that cannot write and sync the map is refused

@@ -219,7 +219,7 @@
 //! # The intent map (M2.3)
 //!
 //! Beside the cut state, a store that holds cuts keeps the intent map
-//! (`inplace/intent.rs`): a bit for each region of the volume (64 MiB
+//! (`inplace/intent.rs`): a bit for each region of the volume (4 MiB
 //! by default, [`HoldCuts::intent_region`]), in `intent.map` in the
 //! volume's directory, on the image's own durable file system. A region
 //! that may differ from the newest committed cut has its bit set on the
