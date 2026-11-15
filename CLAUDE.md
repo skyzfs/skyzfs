@@ -338,8 +338,15 @@ there, and the user decides when it merges.
   the same ten pools through `skyzfsd` and holds the daemon's own cut
   lines, from its request log, against the reference: the count, the
   flush each cut falls on, its group and whether it opens as itself
-  (`tests/kernel/cut_daemon_check.py`). Ubuntu 26.04 and 26.04-arm on a
-  pull request. Exit codes and `recordings.tsv` as the cut rig's.
+  (`tests/kernel/cut_daemon_check.py`). Since stage 2a (M2.2 merged)
+  the daemon runs with `--hold-cuts` and a holder beside the workload
+  writes each cut being uploaded onto an image and releases it
+  (`tests/kernel/cut_hold.py`); `held_content` holds every written cut,
+  block by block, against the content rebuilt from the request log, and
+  two more recordings run, `bound` (a cut abandoned at the bound) and
+  `edges` (write-zeroes and discard), twelve in all. Ubuntu 26.04 and
+  26.04-arm on a pull request. Exit codes and `recordings.tsv` as the
+  cut rig's.
 - **The node B rig.** `skyzfs-nodeb-rig.yml` (M2.T2) runs MinIO on the
   runner and, for the `life` and `slog` recordings, puts a reference
   cut into object storage through the engine (`bins/skyzfs-nodeb`, the

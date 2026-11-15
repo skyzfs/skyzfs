@@ -74,6 +74,13 @@
 # check is called with the request log in place of LOG and `-` for
 # BASE. stray's 20 ms delay of the back labels has no place below the
 # daemon and is left out.
+# With CUT_HOLD=1 as well (M2.T3, second stage) the daemon holds cuts
+# (`serve --hold-cuts`), and a holder (cut_hold.py) stands in for the
+# uploader beside the recording: it writes each cut being uploaded onto
+# an image of the rig's, hashes the blocks of its map, and releases it;
+# after the export it records what is held beside the status and
+# drains. Its files (DIR/held*.tsv, held-final.txt, status-held.txt,
+# holder.log) are for the check's second stage.
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -108,7 +115,9 @@ OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
 ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
-RECS=${*:-$ALL}
+# Only where the daemon holds cuts (CUT_HOLD=1): what the ten above
+# never make the daemon do (M2.T3).
+HELD_ONLY="bound edges"
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
@@ -122,6 +131,9 @@ FILES=${CUT_FILES:-6}
 CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
 SERVER=${CUT_SERVER:-log-writes}
 SKYZFSD=${CUT_SKYZFSD:-}
+HOLD=${CUT_HOLD:-0}
+[ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
+RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
     daemon) [ -x "$SKYZFSD" ] || { echo "CUT_SERVER=daemon needs CUT_SKYZFSD, the daemon's binary" >&2; exit 64; }
@@ -133,7 +145,7 @@ for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there 
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
-VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
@@ -198,6 +210,7 @@ cleanup() {
     local rc=$?
     set +e
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
+    [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
@@ -250,7 +263,9 @@ begin_daemon() {
     rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
     timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
-    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
+    local hold=()
+    [ "$HOLD" != 1 ] || hold=(--hold-cuts)
+    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do
         DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$VOL.ready" | head -n 1)
@@ -260,9 +275,30 @@ begin_daemon() {
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] || rig_error "skyzfsd serve was not ready in 120 s"
     : > "$RDIR/marks.tsv"
+    if [ "$HOLD" = 1 ]; then
+        rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
+        rm -f "$WORK/hold.pause"
+        CUT_HOLD_PAUSE="$WORK/hold.pause" python3 -I "$HERE/cut_hold.py" "$RDIR" "$SERVE_PID" "$VOL" "$RUN" \
+            "$WORK/held.img" $((VDEV_MB << 20)) "$WORK/hold.stop" "$SKYZFSD" 2> "$RDIR/holder.err" &
+        HOLD_PID=$!
+    fi
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
 end_daemon() {
+    local _i
+    if [ -n "$HOLD_PID" ]; then
+        # The holder records what is held beside the status, then
+        # writes and releases every cut still held (its drain is bound
+        # to 600 s; the check reads its log).
+        touch "$WORK/hold.stop"
+        for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
+        if kill -0 "$HOLD_PID" 2>/dev/null; then
+            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+            rig_error "the holder did not end 720 s after the stop: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+        fi
+        wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
+    fi
     # The daemon rewrites its status at most every 100 ms, when a counter
     # changed: a second after the export it holds the last cut. The times
     # around the read bound, with the status's age_ms, when it was written.
@@ -528,6 +564,75 @@ rec_autotrim() {
     export_pool
     echo "$batch" > /sys/module/zfs/parameters/zfs_trim_txg_batch
 }
+# bound (held cuts only): the holder keeps the first cut, which maps the
+# whole volume of a new state, while the pool writes 320 MiB of new
+# data. Every block first written after the cut is copied, the copies
+# pass the bound (1/256 of the volume, at least 256 MiB), and the cut is
+# abandoned: its map passes to the cut that waits.
+rec_bound() {
+    local k
+    touch "$WORK/hold.pause"
+    create_pool
+    for k in $(seq 1 10); do
+        dd if=/dev/urandom of="$MNT/b$k" bs=1M count=32 status=none
+        z 60 zpool sync "$POOL"
+    done
+    rm -f "$WORK/hold.pause"
+    load 2
+    export_pool
+}
+
+# The holder paused with no cut held: a cut taken from here on is the
+# one being uploaded, and stays held until hold_go. The pool is synced
+# and left idle; the holder writes what it holds, and is paused again
+# until it says it holds nothing (cut_hold.py writes hold.pause.held).
+hold_idle() {
+    local k t
+    z 60 zpool sync "$POOL"
+    for k in $(seq 1 20); do
+        rm -f "$WORK/hold.pause" "$WORK/hold.pause.held"
+        sleep 5
+        touch "$WORK/hold.pause"
+        for t in $(seq 1 600); do
+            [ -e "$WORK/hold.pause.held" ] && break
+            sleep 0.2
+        done
+        [ -e "$WORK/hold.pause.held" ] || rig_error "the holder did not say it had paused in 120 s"
+        [ -s "$WORK/hold.pause.held" ] || return 0
+    done
+    rig_error "the holder still held cuts after 20 pauses on an idle pool: $(cat "$WORK/hold.pause.held")"
+}
+hold_go() { rm -f "$WORK/hold.pause" "$WORK/hold.pause.held"; }
+
+# edges (held cuts only): requests ZFS does not send, into the area
+# between the front labels and the first metaslab (512 KiB to 4 MiB,
+# which ZFS leaves alone): a write, write-zeroes over half of it, a
+# discard over a quarter, a write of one block. The device's logical
+# block is 4 KiB (skyzfs-ublk-sys's parameters), so no request covers
+# part of a block. The holder is paused with nothing held before the
+# write, and the sync after it takes a cut that stays held, as the one
+# being uploaded, across the write-zeroes, the discard and the last
+# write: written after them, it must hold the first write's data where
+# the home now has zeros (the review of #103, S5). Loads between the
+# others make cuts that wait and are replaced.
+rec_edges() {
+    local base=$((1 << 20))
+    create_pool
+    load 1
+    hold_idle
+    dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
+    z 60 zpool sync "$POOL"
+    load 1
+    z 60 blkdiscard -f -z -o "$base" -l $((128 << 10)) "$DEV"
+    load 1
+    z 60 blkdiscard -f -o $((base + (128 << 10))) -l $((64 << 10)) "$DEV"
+    load 1
+    dd if=/dev/urandom of="$DEV" bs=4K count=1 seek=$(( (base + (192 << 10)) >> 12 )) oflag=direct conv=notrunc status=none
+    hold_go
+    load 1
+    export_pool
+}
+
 rec_full() {
     local k
     create_pool
