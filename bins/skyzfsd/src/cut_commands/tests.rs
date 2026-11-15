@@ -484,6 +484,7 @@ fn held_cuts_store_on(disk: SimDisk) -> Store {
             region: CutRegion::Memory(MemRegion::new(1)),
             boot: [7; 16],
             bound: None,
+            intent_region: None,
         }),
         ..OpenOptions::default()
     };

@@ -788,6 +788,7 @@ fn start_holding(
             region: CutRegion::Named(region.to_owned()),
             boot,
             bound: None,
+            intent_region: None,
         }),
         ..OpenOptions::default()
     };

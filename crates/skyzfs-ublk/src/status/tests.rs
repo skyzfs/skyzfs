@@ -67,6 +67,19 @@ fn sample() -> Status {
                 bound: 32,
                 abandoned: 33,
             }),
+            intent: Some(IntentShown {
+                state: CutStateShown::TakenUp,
+                region_bytes: 34,
+                regions: 35,
+                named: 36,
+                named_at_start: 37,
+                syncs: Spent {
+                    count: 38,
+                    sum_ns: 39,
+                    max_ns: 40,
+                },
+                waits: 41,
+            }),
         },
     }
 }
@@ -76,8 +89,8 @@ fn sample() -> Status {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 352);
-    assert_eq!(&bytes[..8], b"SKYZST13");
+    assert_eq!(bytes.len(), 424);
+    assert_eq!(&bytes[..8], b"SKYZST14");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -115,6 +128,15 @@ fn the_file_has_the_documented_layout() {
         (328, 31),
         (336, 32),
         (344, 33),
+        (352, 1),
+        (360, 34),
+        (368, 35),
+        (376, 36),
+        (384, 37),
+        (392, 38),
+        (400, 39),
+        (408, 40),
+        (416, 41),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -202,6 +224,7 @@ fn as_of(version: u32) -> Status {
     status.version = version;
     status.shown.cuts = None;
     status.shown.held = None;
+    status.shown.intent = None;
     if version < 10 {
         status.counters.commands_aborted = 0;
         status.counters.commands_failed = 0;
@@ -288,7 +311,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 6] = [
+    let versions: [(&[u8; 8], usize); 7] = [
+        (b"SKYZST14", 424),
         (b"SKYZST13", 352),
         (b"SKYZST12", 312),
         (b"SKYZST11", 336),
@@ -395,6 +419,86 @@ fn eleventh_file() -> Vec<u8> {
     bytes
 }
 
+/// A file of the thirteenth version (352 bytes, `SKYZST13`): this
+/// version's fields up to the intent map, at the same places.
+fn thirteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..352].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST13");
+    bytes
+}
+
+/// A file of the thirteenth version is still read, with the held cuts
+/// and without the intent map, whose keys `status` does not print for
+/// it.
+#[test]
+fn a_file_of_the_thirteenth_version_is_read_without_the_intent_map() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    fs::write(&path, thirteenth_file()).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let mut expected = sample();
+    expected.version = 13;
+    expected.shown.intent = None;
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cuts_held"), Some("2"));
+    assert!(!lines.iter().any(|(key, _)| key.starts_with("intent_")));
+}
+
+/// The intent map is printed from a fourteenth file, every key whether
+/// or not the store keeps one; a state this version does not know is
+/// printed as unsaid.
+#[test]
+fn status_prints_the_intent_map() {
+    let lines_of = |intent: IntentShown| {
+        let mut status = sample();
+        status.shown.intent = Some(intent);
+        let read = decode(&encode(&status)).expect("a status");
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(sample().shown.intent.expect("intent"));
+    for (key, said) in [
+        ("intent_state", "taken_up"),
+        ("intent_region_bytes", "34"),
+        ("intent_regions", "35"),
+        ("intent_named", "36"),
+        ("intent_named_at_start", "37"),
+        ("intent_syncs", "38"),
+        ("intent_sync_ns", "39"),
+        ("intent_sync_max_ns", "40"),
+        ("intent_waits", "41"),
+    ] {
+        assert_eq!(value(&lines, key), Some(said), "{key}");
+    }
+    let off = lines_of(IntentShown::default());
+    assert_eq!(value(&off, "intent_state"), Some("off"));
+    assert_eq!(value(&off, "intent_named"), Some("0"));
+    let begun = lines_of(IntentShown {
+        state: CutStateShown::Begun,
+        ..IntentShown::default()
+    });
+    assert_eq!(value(&begun, "intent_state"), Some("begun"));
+    let mut bytes = encode(&sample());
+    bytes[352..360].copy_from_slice(&7u64.to_le_bytes());
+    let read = decode(&bytes).expect("a status");
+    assert_eq!(
+        read.shown.intent.map(|intent| intent.state),
+        Some(CutStateShown::Unsaid)
+    );
+}
+
 /// A file of the twelfth version (312 bytes, `SKYZST12`): this
 /// version's fields up to the held cuts, at the same places.
 fn twelfth_file() -> Vec<u8> {
@@ -414,6 +518,7 @@ fn a_file_of_the_twelfth_version_is_read_without_held_cuts() {
     let mut expected = sample();
     expected.version = 12;
     expected.shown.held = None;
+    expected.shown.intent = None;
     assert_eq!(read, expected);
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
@@ -485,6 +590,7 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     let mut expected = sample();
     expected.version = 11;
     expected.shown.held = None;
+    expected.shown.intent = None;
     if let Some(Cuts {
         newest: Some(cut), ..
     }) = expected.shown.cuts.as_mut()
@@ -932,6 +1038,15 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "cut_copied_bytes",
             "cut_bound_bytes",
             "cuts_abandoned",
+            "intent_state",
+            "intent_region_bytes",
+            "intent_regions",
+            "intent_named",
+            "intent_named_at_start",
+            "intent_syncs",
+            "intent_sync_ns",
+            "intent_sync_max_ns",
+            "intent_waits",
             "pid",
             "counters"
         ]
@@ -1342,7 +1457,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut thirteenth = encode(&sample()).to_vec();
+    let mut fourteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1350,6 +1465,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("11", b"SKYZST11"),
         ("12", b"SKYZST12"),
         ("13", b"SKYZST13"),
+        ("14", b"SKYZST14"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -1357,7 +1473,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "10" => tenth_file(),
             "11" => eleventh_file(),
             "12" => twelfth_file(),
-            _ => std::mem::take(&mut thirteenth),
+            "13" => thirteenth_file(),
+            _ => std::mem::take(&mut fourteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1372,7 +1489,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 13);
+    assert_eq!(VERSION, 14);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

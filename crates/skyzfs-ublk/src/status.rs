@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 352
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 424
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,12 +18,19 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's thirteenth version (M2.2b). It adds the held
-//! cuts after the twelfth's fields: whether the store holds cuts and
-//! what its start did with their state, how many are held, the bytes
-//! their copies take, the bound, and the cuts abandoned at it. Nothing
-//! is dropped or moved. The twelfth (`SKYZST12`, 312 bytes) is still
-//! read, without the held cuts.
+//! This is the file's fourteenth version (M2.3b). It adds the intent
+//! map after the thirteenth's fields: what the start did with the map,
+//! the size of a region, the regions, those named now and those the
+//! start's map named, the map's syncs on the write path with their
+//! time, and the requests that waited for one. Nothing is dropped or
+//! moved. The thirteenth (`SKYZST13`, 352
+//! bytes) is still read, without the intent map.
+//!
+//! The thirteenth version (M2.2b) added the held cuts after the
+//! twelfth's fields: whether the store holds cuts and what its start
+//! did with their state, how many are held, the bytes their copies
+//! take, the bound, and the cuts abandoned at it. The twelfth
+//! (`SKYZST12`, 312 bytes) is still read, without the held cuts.
 //!
 //! The twelfth version (M2.1b) added whether the
 //! newest cut opens as itself (design §5.2), after the eleventh's
@@ -58,7 +65,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST13` |
+//! | 0 | 8 | magic `SKYZST14` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -89,6 +96,13 @@
 //! | 328 | 8 | `cut_copied_bytes`: the bytes the copies of held cuts take now |
 //! | 336 | 8 | `cut_bound_bytes`: the bound on them |
 //! | 344 | 8 | `cuts_abandoned`: the cuts abandoned at the bound or let go at a copy that could not be made, since the state began (kept across a start that takes the state up) |
+//! | 352 | 8 | `intent_state`: what the start did with the intent map (M2.3): 0 the store keeps none (it holds no cuts); 1 it took the map up, so that only the regions it named count as changed where the cut state was begun anew; 2 it began a new map, which names every region. Any other value is read as "not said" |
+//! | 360 | 8 | `intent_region_bytes`: the size of a region of the map |
+//! | 368 | 8 | `intent_regions`: the volume's regions |
+//! | 376 | 8 | `intent_named`: the regions the map names now |
+//! | 384 | 8 | `intent_named_at_start`: the regions the map named when the start took it up (every region where it began one) |
+//! | 392 | 24 | the map's syncs on the write path since this daemon started serving: how many, their summed time from the first page's write to the sync's end, the longest. A sync runs on the map's file's helper, not on the queue's thread, and covers every bit set since the one before it began |
+//! | 416 | 8 | `intent_waits`: the writes and write-zeroes that waited for a sync of the map since this daemon started serving, those into a region whose bit was not durable. Only they and the requests behind them (one that overlaps them, a flush) waited |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -140,10 +154,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST13";
+const MAGIC: &[u8; 8] = b"SKYZST14";
 /// The version this crate writes.
-pub const VERSION: u32 = 13;
-const LEN: usize = 352;
+pub const VERSION: u32 = 14;
+const LEN: usize = 424;
+
+/// The thirteenth version: the fourteenth without its intent map
+/// (offset 352), which is read as absent.
+const THIRTEENTH_MAGIC: &[u8; 8] = b"SKYZST13";
+const THIRTEENTH_LEN: usize = 352;
 
 /// The twelfth version: the thirteenth without its held cuts (offset
 /// 312), which are read as absent.
@@ -224,6 +243,32 @@ pub struct StoreShown {
     /// The held cuts. `None` in a file of a version before the
     /// thirteenth.
     pub held: Option<HeldShown>,
+    /// The intent map. `None` in a file of a version before the
+    /// fourteenth.
+    pub intent: Option<IntentShown>,
+}
+
+/// The intent map, as the status file says it (`serve --hold-cuts`,
+/// M2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IntentShown {
+    /// What the start did with the map: [`CutStateShown::Off`] where
+    /// the store keeps none, [`CutStateShown::TakenUp`] where it took
+    /// the map up, [`CutStateShown::Begun`] where it began a new one.
+    pub state: CutStateShown,
+    /// The size of a region.
+    pub region_bytes: u64,
+    /// The volume's regions.
+    pub regions: u64,
+    /// The regions named now.
+    pub named: u64,
+    /// The regions named when the start took the map up, or every
+    /// region where it began one.
+    pub named_at_start: u64,
+    /// The map's syncs on the write path, with their time.
+    pub syncs: Spent,
+    /// The writes and write-zeroes that waited for a sync of the map.
+    pub waits: u64,
 }
 
 /// The held cuts, as the status file says them (`serve --hold-cuts`).
@@ -416,6 +461,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     let q = shown.io_queue.unwrap_or_default();
     let cuts = shown.cuts.unwrap_or_default();
     let held = shown.held.unwrap_or_default();
+    let intent = shown.intent.unwrap_or_default();
     let fields = [
         status.written_ms,
         c.reads,
@@ -449,6 +495,15 @@ fn encode(status: &Status) -> [u8; LEN] {
         held.copied,
         held.bound,
         held.abandoned,
+        intent.state.code(),
+        intent.region_bytes,
+        intent.regions,
+        intent.named,
+        intent.named_at_start,
+        intent.syncs.count,
+        intent.syncs.sum_ns,
+        intent.syncs.max_ns,
+        intent.waits,
     ];
     let pump = pump_fields(&shown.pump);
     for (i, field) in fields.iter().chain(&pump).chain(&after).enumerate() {
@@ -488,6 +543,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        14
+    } else if is(THIRTEENTH_LEN, THIRTEENTH_MAGIC) {
         13
     } else if is(TWELFTH_LEN, TWELFTH_MAGIC) {
         12
@@ -552,12 +609,26 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             bound: field(336),
             abandoned: field(344),
         });
+        let intent = (version >= 14).then(|| IntentShown {
+            state: CutStateShown::of(field(352)),
+            region_bytes: field(360),
+            regions: field(368),
+            named: field(376),
+            named_at_start: field(384),
+            syncs: Spent {
+                count: field(392),
+                sum_ns: field(400),
+                max_ns: field(408),
+            },
+            waits: field(416),
+        });
         let shown = StoreShown {
             zeroes: ZeroesShown::of(field(136)),
             pump: pump_of(&pump),
             io_queue: Some(io_queue_at(bytes, after(216))),
             cuts: Some(cuts),
             held,
+            intent,
         };
         (field(112), field(120), field(128), shown)
     } else {
@@ -573,6 +644,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             io_queue: (version >= 9).then(|| io_queue_at(bytes, tenth::IO_QUEUE)),
             cuts: None,
             held: None,
+            intent: None,
         };
         (
             field(tenth::FAILURES),
@@ -1193,6 +1265,23 @@ pub fn report(
                 ("cut_copied_bytes", held.copied),
                 ("cut_bound_bytes", held.bound),
                 ("cuts_abandoned", held.abandoned),
+            ] {
+                lines.push((key, value.to_string()));
+            }
+        }
+        // The intent map, from a file that has it, after the held cuts:
+        // every key, as for them.
+        if let Some(intent) = shown.intent {
+            lines.push(("intent_state", intent.state.said().to_string()));
+            for (key, value) in [
+                ("intent_region_bytes", intent.region_bytes),
+                ("intent_regions", intent.regions),
+                ("intent_named", intent.named),
+                ("intent_named_at_start", intent.named_at_start),
+                ("intent_syncs", intent.syncs.count),
+                ("intent_sync_ns", intent.syncs.sum_ns),
+                ("intent_sync_max_ns", intent.syncs.max_ns),
+                ("intent_waits", intent.waits),
             ] {
                 lines.push((key, value.to_string()));
             }

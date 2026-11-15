@@ -50,13 +50,13 @@
 //!
 //! # The file
 //!
-//! `intent.map` in the volume's directory, written by direct I/O as the
-//! image is (the store keeps it from M2.3b on, and distrusts a map that
-//! is missing or cannot be read). Pages of 4 KiB: page 0 is the header,
-//! and page *p* ≥ 1 holds the bits of regions `(p - 1) * PER_PAGE ..`;
-//! a bit set is a region named. Every page ends with a CRC-32C of the
-//! rest of it, and a bit page begins with its own number, so that a
-//! page torn by a power cut, or one written for another place, is seen.
+//! [`INTENT_NAME`] in the volume's directory, written by direct I/O as
+//! the image is. Pages of 4 KiB: page 0 is the header, and page *p* ≥ 1
+//! holds the bits of regions `(p - 1) * PER_PAGE ..`; a bit set is a
+//! region named. Every page ends with a CRC-32C of the rest of it, and
+//! a bit page begins with its own number, so that a page torn by a
+//! power cut, or one written for another place, is seen. A map that is
+//! missing or cannot be read is not taken up.
 //!
 //! # Trust
 //!
@@ -97,15 +97,18 @@
 //! left it: in a region the map names if that write came after the
 //! base, and otherwise as the base holds it.
 
-// The store keeps the map from M2.3b on; until then only the tests use
-// it.
-#![cfg_attr(not(test), allow(dead_code))]
+// Clearing a bit follows a commit, which only the test-hooks build's
+// release stands in for until M2.4.
+#![cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
 
 use std::collections::BTreeMap;
 
 use skyzfs_blk::Buf;
 
 use super::Mutants;
+
+/// The intent map's name in the volume's directory.
+pub(crate) const INTENT_NAME: &str = "intent.map";
 
 /// A page of the file.
 pub(crate) const PAGE: usize = 4096;
@@ -184,6 +187,12 @@ impl Shape {
 /// Why a start does not take up the map it found.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Distrust {
+    /// There is no map.
+    #[error("there is no intent map")]
+    Missing,
+    /// It could not be read whole.
+    #[error("the intent map could not be read: {0}")]
+    Unreadable(String),
     /// A page's checksum does not hold, or a bit page names another
     /// place: a page torn by a power cut, or damaged.
     #[error("page {0} of the intent map is not whole")]

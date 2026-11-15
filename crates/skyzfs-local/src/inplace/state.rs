@@ -116,10 +116,12 @@
 //! # The whole volume
 //!
 //! A state that begins on a volume, or that is not trusted, counts every
-//! block as changed in the open epoch ([`CutState::begin`]): no image is
-//! uploaded yet, or the state cannot say what changed. Its next cut's
-//! map is then the whole volume, until M2.3 narrows that after a restart
-//! of the machine.
+//! block as changed in the open epoch ([`CutState::begin_with`]): no
+//! image is uploaded yet, or the state cannot say what changed. Its next
+//! cut's map is then the whole volume. Where the store's intent map is
+//! taken up (M2.3, `intent.rs`), the new state counts instead only the
+//! blocks of the regions the map names, in the open map: the rest of
+//! the volume is as the newest committed cut holds it.
 //!
 //! # The region, and its size
 //!
@@ -222,6 +224,16 @@ impl MemRegion {
     pub fn stores(&self) -> u64 {
         self.mem().stores
     }
+
+    /// A region of its own holding what this one holds now: a file
+    /// that a power cut left as it was then.
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Self {
+        Self(Arc::new(Mutex::new(Mem {
+            words: self.mem().words.clone(),
+            ..Mem::default()
+        })))
+    }
 }
 
 impl Region for MemRegion {
@@ -298,7 +310,18 @@ pub(crate) struct Taken {
     pub(crate) start: [u8; 16],
     /// The bound on the copies, in bytes.
     pub(crate) bound: u64,
+    /// The blocks of a region of the intent map.
+    pub(crate) intent_region_blocks: u64,
 }
+
+/// The provisional default of a region of the intent map: 64 MiB (the
+/// lead's decision on M2.3; the final one follows M2.T4).
+pub const DEFAULT_INTENT_REGION: u64 = 64 << 20;
+/// The smallest region of the intent map: a word of the cut state's
+/// maps (64 blocks).
+pub const MIN_INTENT_REGION: u64 = 64 * BLOCK_SIZE;
+/// The largest region of the intent map: 1 GiB.
+pub const MAX_INTENT_REGION: u64 = 1 << 30;
 
 impl Taken {
     /// Have the region `hold` names for a volume of `size` bytes: map a
@@ -315,6 +338,15 @@ impl Taken {
         start: [u8; 16],
     ) -> Result<Self, String> {
         let bound = hold.bound.unwrap_or_else(|| default_bound(size));
+        let intent_region = hold.intent_region.unwrap_or(DEFAULT_INTENT_REGION);
+        if !intent_region.is_power_of_two()
+            || !(MIN_INTENT_REGION..=MAX_INTENT_REGION).contains(&intent_region)
+        {
+            return Err(format!(
+                "a region of the intent map of {intent_region} bytes: it must be a power of two \
+                 from {MIN_INTENT_REGION} to {MAX_INTENT_REGION} bytes"
+            ));
+        }
         let words = words_for(size / BLOCK_SIZE, records_for(bound));
         let (region, kept) = match &hold.region {
             super::CutRegion::Memory(region) if region.words() >= words => {
@@ -342,6 +374,7 @@ impl Taken {
             },
             start,
             bound,
+            intent_region_blocks: intent_region / BLOCK_SIZE,
         })
     }
 }
@@ -663,7 +696,25 @@ impl<R: Region> CutState<R> {
     /// Begin a state in `region` for a volume of `size` bytes, with a
     /// bound of `bound` bytes on the copies, owned by `owner`: no cut,
     /// and the whole volume counted as changed in the first epoch.
-    pub fn begin(mut region: R, size: u64, bound: u64, owner: Owner, mutants: Mutants) -> Self {
+    #[cfg(test)]
+    pub fn begin(region: R, size: u64, bound: u64, owner: Owner, mutants: Mutants) -> Self {
+        Self::begin_with(region, size, bound, owner, mutants, None)
+    }
+
+    /// The same, with only the blocks of `changed`, each a `(first,
+    /// count)`, counted as changed in the first epoch where it is given:
+    /// the regions an intent map names after a restart of the machine,
+    /// the rest of the volume being as the newest committed cut holds it
+    /// (M2.3). They are put in the open map before the state is marked
+    /// as one, so a death in between leaves no state to take up.
+    pub(crate) fn begin_with(
+        mut region: R,
+        size: u64,
+        bound: u64,
+        owner: Owner,
+        mutants: Mutants,
+        changed: Option<&[(u64, u64)]>,
+    ) -> Self {
         let blocks = size / BLOCK_SIZE;
         let capacity = records_for(bound);
         for i in 0..region.words() {
@@ -683,8 +734,17 @@ impl<R: Region> CutState<R> {
         for (i, word) in id_words(owner.start).into_iter().enumerate() {
             region.store(at::START + i, word);
         }
-        region.store(at::WHOLE, 1);
         region.store(at::OPEN_ALSO, NO_MAP);
+        match changed {
+            None => region.store(at::WHOLE, 1),
+            Some(changed) => {
+                // The open map is map 0: the count's word is 0.
+                let maps = Maps::new(at::HEADER, blocks, mutants);
+                for &(first, count) in changed {
+                    maps.insert_range(&mut region, 0, first, count);
+                }
+            }
+        }
         region.store(at::MAGIC, MAGIC);
         Self::new(region, blocks, capacity, bound, mutants)
     }

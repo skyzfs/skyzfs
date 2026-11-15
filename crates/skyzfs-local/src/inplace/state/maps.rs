@@ -153,6 +153,37 @@ impl Maps {
         }
     }
 
+    /// Put blocks `first..first + count` in map `map`, a word at a time:
+    /// each word's summary bit before the word, as [`Maps::insert`]
+    /// does. For a map nothing names yet (a state being begun, M2.3).
+    pub(super) fn insert_range(
+        &self,
+        region: &mut impl Region,
+        map: usize,
+        first: u64,
+        count: u64,
+    ) {
+        let end = first.saturating_add(count).min(self.blocks);
+        let mut block = first;
+        while block < end {
+            let word = (block / 64) as usize;
+            let within = block % 64;
+            let take = (64 - within).min(end - block);
+            let mask = if take == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << take) - 1) << within
+            };
+            self.note_word(region, map, word);
+            let at = self.bits_base(map) + word;
+            let bits = region.load(at);
+            if bits | mask != bits {
+                region.store(at, bits | mask);
+            }
+            block += take;
+        }
+    }
+
     /// The words set in any of `maps`, in order: a word `w` holds blocks
     /// `64 w .. 64 w + 64`.
     #[cfg_attr(not(test), allow(dead_code))]

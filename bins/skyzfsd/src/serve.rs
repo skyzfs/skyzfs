@@ -180,14 +180,16 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{CutRegion, CutsTakenUp, HoldCuts, InPlace, OpenOptions, StartError};
+use skyzfs_local::inplace::{
+    CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, StartError,
+};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{
-    self, Board, CutStateShown, HeldShown, Pace, Status, StoreShown, ZeroesShown,
+    self, Board, CutStateShown, HeldShown, IntentShown, Pace, Status, StoreShown, ZeroesShown,
 };
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
@@ -583,6 +585,28 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         io_queue: Some(store.io_queue()),
         cuts: Some(store.cuts()),
         held: Some(held_shown(store)),
+        intent: Some(intent_shown(store)),
+    }
+}
+
+/// The intent map as the status file says it.
+fn intent_shown(store: &Target) -> IntentShown {
+    let Some(figures) = store.intent_figures() else {
+        return IntentShown::default();
+    };
+    let (state, named_at_start) = match store.intent_at_start() {
+        Some(IntentAtStart::TakenUp { named, .. }) => (CutStateShown::TakenUp, *named),
+        Some(IntentAtStart::Begun(_)) => (CutStateShown::Begun, figures.regions),
+        None => (CutStateShown::Off, 0),
+    };
+    IntentShown {
+        state,
+        region_bytes: figures.region_bytes,
+        regions: figures.regions,
+        named: figures.named,
+        named_at_start,
+        syncs: figures.syncs,
+        waits: figures.waits,
     }
 }
 
@@ -748,6 +772,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             region: CutRegion::Named(cuts_path.clone()),
             boot,
             bound: None,
+            intent_region: serve.intent_region_mib.map(|mib| mib << 20),
         });
     }
     options.on_failure = Some(FailureObserver::new({
@@ -862,7 +887,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // it cannot show that, it serves nothing. The volume has not
         // failed, and the device waits as after any start that fails
         // after the lifecycle added it.
-        Err(refused @ (StartError::CacheKept(_) | StartError::Io(_))) => {
+        Err(refused @ (StartError::CacheKept(_) | StartError::Io(_) | StartError::Intent(_))) => {
             return Err(format!(
                 "the in-place store: {refused}. Nothing was served and the volume has not failed"
             ))
@@ -879,8 +904,19 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             cuts_path.display()
         )),
         Some(CutsTakenUp::Begun(why)) => say(format_args!(
-            "held cuts: a new state in {}, with the whole volume counted as changed: {why}",
+            "held cuts: a new state in {}: {why}",
             cuts_path.display()
+        )),
+    }
+    match served.intent_at_start() {
+        None => {}
+        Some(IntentAtStart::TakenUp { named, regions }) => say(format_args!(
+            "intent map: taken up, naming {named} of {regions} regions (a new cut state counts \
+             only their blocks as changed)"
+        )),
+        Some(IntentAtStart::Begun(why)) => say(format_args!(
+            "intent map: begun anew with every region named (a new cut state counts the whole \
+             volume as changed): {why}"
         )),
     }
     let queue_began = std::time::Instant::now();
