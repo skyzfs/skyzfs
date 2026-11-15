@@ -1,0 +1,43 @@
+V1 chosen: unknown positions ignored: SURVIVED
+V2 chosen: a tie with another state is itself: KILLED by U: the_view_chooses_the_state_an_import_opens; L: a_group_written_twice_opens_as_its_later_state, a_rewind_by_f_opens_as_its_first_group_at_once
+V3 changed: an overwritten uberblock stays: KILLED by U: the_view_chooses_the_state_an_import_opens; L: a_ring_zeroed_holds_no_uberblock
+V4 changed: a part-covered position is known: KILLED by U: a_position_covered_in_part_is_not_known
+V5 changed: a position before the write is touched: KILLED by U: a_position_covered_in_part_is_not_known
+V6 zeroed: changes nothing: KILLED by U: a_position_covered_in_part_is_not_known, the_view_chooses_the_state_an_import_opens
+V7 rank: sequence without the MMP magic: KILLED by U: the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence
+V8 rank: sequence without its valid bit: KILLED by U: the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence
+V9 rank: sequence shifted wrong: KILLED by U: the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence
+V10 rank: timestamp read from guid_sum: KILLED by U: an_uberblock_write_is_found_in_each_ring_in_either_byte_order; L: a_group_written_twice_opens_as_its_later_state, a_rewind_by_f_opens_as_its_first_group_at_once, another_state_under_the_carried_group_marks
+V11 rank: timestamp before group: KILLED by U: the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence, the_view_chooses_the_state_an_import_opens; L: a_group_written_twice_opens_as_its_later_state, a_store_begun_at_each_session_says_which_cuts_open_as_themselves, the_recordings_notice_the_defects_of_a_repeat, the_rule_makes_the_reference_cuts_of_every_recorded_pool
+V12 rank: no sequence: KILLED by U: the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence
+V13 unknown: only the first ring: SURVIVED
+V14 changed: only the first ring: KILLED by U: the_view_chooses_the_state_an_import_opens; L: a_flush_behind_a_sync_under_way_has_its_barrier_when_executed, a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_rewind_by_f_opens_as_its_first_group_at_once, a_ring_zeroed_holds_no_uberblock (+6)
+V15 chosen: no uberblock in view is itself: KILLED by U: a_position_covered_in_part_is_not_known, the_view_chooses_the_state_an_import_opens
+V16 changed: found not inserted: KILLED by U: a_position_covered_in_part_is_not_known, the_view_chooses_the_state_an_import_opens; L: a_flush_behind_a_sync_under_way_has_its_barrier_when_executed, a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_rewind_by_f_opens_as_its_first_group_at_once, a_ring_zeroed_holds_no_uberblock (+6)
+C1 count: every cut is itself: KILLED by L: a_group_written_twice_opens_as_its_later_state, a_rewind_by_f_opens_as_its_first_group_at_once, a_store_begun_on_a_pool_reads_its_rings_first, another_state_under_the_carried_group_marks, a_store_begun_at_each_session_says_which_cuts_open_as_themselves (+2)
+C2 received: a write-zeroes is not noted: KILLED by L: a_ring_zeroed_holds_no_uberblock
+C3 store: a write-zeroes applied is not told: KILLED by L: a_ring_zeroed_holds_no_uberblock
+C4 start: a ring that cannot be read is taken as read: SURVIVED
+C5 start: the last ring is not read: KILLED by L: a_flush_behind_a_sync_under_way_has_its_barrier_when_executed, a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_rewind_by_f_opens_as_its_first_group_at_once, a_ring_zeroed_holds_no_uberblock (+3)
+C6 start: the rings are read as zeros: KILLED by L: a_store_begun_on_a_pool_reads_its_rings_first
+C7 apply: the view is not changed by a write: KILLED by L: a_flush_behind_a_sync_under_way_has_its_barrier_when_executed, a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_rewind_by_f_opens_as_its_first_group_at_once, a_ring_zeroed_holds_no_uberblock (+6)
+C8 count: itself judged by the newest cut before: KILLED by L: a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_new_root_under_a_group_already_used_makes_a_cut, a_rewind_by_f_opens_as_its_first_group_at_once, a_ring_zeroed_holds_no_uberblock (+7)
+C9 ended: a change not applied is applied: SURVIVED
+T1 status: itself and rewind both written as 1: SURVIVED
+T2 status: any value but 0 reads as itself: SURVIVED
+T3 status: version 11 said to say itself: SURVIVED
+T4 status: cut_opens printed for version 11: KILLED by S: a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself
+T5 status: version 11 cut group not shifted: KILLED by S: a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself
+T6 status: version 11 commands not shifted: KILLED by S: a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself
+T7 status: version 11 io queue not shifted: KILLED by S: a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself
+T8 status: itself and rewind swapped in print: KILLED by S: the_report_shows_the_cuts_and_the_newest_group_once_there_is_one
+T9 request log: itself and rewind swapped: KILLED by H: the_stores_lines_name_the_tag_and_fall_among_the_queues
+T10 status: version 11 cuts count not shifted: KILLED by S: a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself
+
+# T9 was run again with --features test-hooks (kind H): the request log is in that build alone.
+# With review/m2.1b/reproducers.patch applied:
+V1 chosen: unknown positions ignored: KILLED by U: a_ring_not_known_leaves_no_state_chosen; L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+V13 unknown: only the first ring: KILLED by U: a_ring_not_known_leaves_no_state_chosen; L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+C4 start: a ring that cannot be read is taken as read: KILLED by L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+T1 status: itself and rewind both written as 1: KILLED by S: a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one
+T2 status: any value but 0 reads as itself: KILLED by S: a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one

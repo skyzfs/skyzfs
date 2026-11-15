@@ -1,40 +1,12 @@
-Two tests for the rule "while any position is unknown, no cut opens as
-itself" (#95, M2.1b). Both pass at d665a95. Each fails with the plant
-named in its comment, which the pull request's own tests do not notice.
+Three tests for #95 (M2.1b) at d665a95. Each passes there and fails with the plant
+its comment names, which the pull request's own tests do not notice.
+Apply with: git apply review/m2.1b/reproducers.patch
 
---- a/crates/skyzfs-uberblock/src/tests.rs
-+++ b/crates/skyzfs-uberblock/src/tests.rs
-@@ -417,3 +417,27 @@ fn a_position_covered_in_part_is_not_known() {
-     view.zeroed(ring.start + 8, 8);
-     assert!(!view.is_known());
- }
-+
-+/// While a ring is not known, no state is chosen, though the rings
-+/// that are known hold one uberblock and nothing above it. Fails where
-+/// `View::chosen` does not ask `is_known()` (plant V1), and where
-+/// `View::unknown` covers the first ring alone (plant V13).
-+#[test]
-+fn a_ring_not_known_leaves_no_state_chosen() {
-+    let labels = Labels::for_size(64 * MIB);
-+    let rings: Vec<Ring> = labels.rings().collect();
-+    let mut view = View::unknown(labels);
-+    // The start read three rings; the last could not be read.
-+    for ring in &rings[..3] {
-+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
-+    }
-+    for ring in &rings[..3] {
-+        view.saw(ring.start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
-+    }
-+    assert!(!view.is_known());
-+    assert!(!view.chosen(&state(9, 1), false));
-+    // Once the last ring is known too, the state is chosen.
-+    view.saw(rings[3].start, &vec![0; RING_SIZE as usize]);
-+    view.saw(rings[3].start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
-+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
-+}
+diff --git a/crates/skyzfs-local/src/inplace/tests/cuts.rs b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+index 05c6cf9..3cbc668 100644
 --- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
 +++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
-@@ -810,3 +810,48 @@ fn another_state_under_the_carried_group_marks() {
+@@ -808,3 +808,43 @@ fn another_state_under_the_carried_group_marks() {
          "a carried state compared by its group alone is not noticed"
      );
  }
@@ -44,7 +16,7 @@ named in its comment, which the pull request's own tests do not notice.
 +/// start's reads are failed one at a time: among those after which the
 +/// store still starts, exactly four leave the first cut a rewind, the
 +/// four rings. Fails where a ring that could not be read is taken as
-+/// read (plants C4 and C6: every such start says `itself`).
++/// read (plant C4: every such start says `itself`).
 +#[test]
 +fn a_ring_the_start_could_not_read_leaves_no_cut_itself() {
 +    let mut rewinds = 0;
@@ -77,4 +49,73 @@ named in its comment, which the pull request's own tests do not notice.
 +    }
 +    assert!(starts > 4, "the starts that went on: {starts}");
 +    assert_eq!(rewinds, 4, "one start for each ring that could not be read");
++}
+diff --git a/crates/skyzfs-uberblock/src/tests.rs b/crates/skyzfs-uberblock/src/tests.rs
+index d5ff416..4605905 100644
+--- a/crates/skyzfs-uberblock/src/tests.rs
++++ b/crates/skyzfs-uberblock/src/tests.rs
+@@ -415,3 +415,27 @@ fn a_position_covered_in_part_is_not_known() {
+     view.zeroed(ring.start + 8, 8);
+     assert!(!view.is_known());
+ }
++
++/// While a ring is not known, no state is chosen, though the rings
++/// that are known hold one uberblock and nothing above it. Fails where
++/// `View::chosen` does not ask `is_known()` (plant V1), and where
++/// `View::unknown` covers the first ring alone (plant V13).
++#[test]
++fn a_ring_not_known_leaves_no_state_chosen() {
++    let labels = Labels::for_size(64 * MIB);
++    let rings: Vec<Ring> = labels.rings().collect();
++    let mut view = View::unknown(labels);
++    // The start read three rings; the last could not be read.
++    for ring in &rings[..3] {
++        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
++    }
++    for ring in &rings[..3] {
++        view.saw(ring.start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
++    }
++    assert!(!view.is_known());
++    assert!(!view.chosen(&state(9, 1), false));
++    // Once the last ring is known too, the state is chosen.
++    view.saw(rings[3].start, &vec![0; RING_SIZE as usize]);
++    view.saw(rings[3].start + 9 * 4 * KIB, &slot_at(9, 1, 100, 0));
++    assert!(view.is_known() && view.chosen(&state(9, 1), false));
++}
+diff --git a/crates/skyzfs-ublk/src/status/tests.rs b/crates/skyzfs-ublk/src/status/tests.rs
+index 51891ae..83c3018 100644
+--- a/crates/skyzfs-ublk/src/status/tests.rs
++++ b/crates/skyzfs-ublk/src/status/tests.rs
+@@ -1391,3 +1391,32 @@ fn a_write_asked_for_again_is_made_within_an_interval() {
+     board.stop();
+     assert_eq!(thread.join().expect("the publishing thread"), 0);
+ }
++
++/// A newest cut that opens only with a rewind goes through the file as
++/// one: written as 2, and read back as not itself, as is any value but
++/// 1. Fails where both answers are written as 1 (plant T1) and where
++/// any value but 0 reads as itself (plant T2).
++#[test]
++fn a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one() {
++    let mut status = sample();
++    if let Some(Cuts {
++        newest: Some(cut), ..
++    }) = status.shown.cuts.as_mut()
++    {
++        cut.itself = false;
++    }
++    let bytes = encode(&status);
++    assert_eq!(u64_at(&bytes, 304), 2);
++    let itself = |bytes: &[u8]| {
++        decode(bytes)
++            .expect("a status")
++            .shown
++            .cuts
++            .and_then(|cuts| cuts.newest)
++            .map(|cut| cut.itself)
++    };
++    assert_eq!(itself(&bytes), Some(false));
++    let mut other = bytes;
++    other[304..312].copy_from_slice(&3u64.to_le_bytes());
++    assert_eq!(itself(&other), Some(false));
 +}
