@@ -152,7 +152,18 @@ def cuts(records, ubs, rule='design'):
 
     A cut: n (its number in the count), txg, rootbp, ub_record (the
     write that marked it), flush_record and prefix (the records before
-    the instant)."""
+    the instant).
+
+    A flush is one record where its receipt and its barrier are one
+    point, as dm-log-writes records them. The daemon's request log has
+    both (M2.T3): a record flagged `receipt` (with the flush's `tag`)
+    where the flush was received, and the flush record, flagged
+    `received`, at its barrier. Design §5.2 cuts at the barrier of the
+    first flush *received* after the mark: the receipt takes the mark
+    and the barrier counts the cut, so an uberblock applied between
+    the two (a write received before the flush) is not that flush's to
+    cut, and one that repeats the state the flush carries marks
+    nothing."""
     if rule not in ('design', 'txg-alone', 'count-repeats', 'early', 'previous'):
         raise ValueError(f'no rule {rule}')
     by_record = {}
@@ -163,20 +174,30 @@ def cuts(records, ubs, rule='design'):
     newest = None               # (txg, rootbp) of the newest cut
     seen = set()                # groups seen, for txg-alone
     mark = None
+    carried = {}                # tag -> the mark a received flush carries to its barrier
     last_flush = None           # the prefix of the last flush's barrier, for `early`
 
     def barrier(r, prefix):
         nonlocal mark, newest, last_flush
+        if r.get('received'):
+            mark, kept = carried.pop(r['tag'], None), mark
         if mark is not None:
             out.append({'n': len(out) + 1, 'txg': mark['txg'], 'rootbp': mark['rootbp'], 'timestamp': mark['timestamp'],
                         'ub_record': mark['record'], 'flush_record': r['i'],
                         'prefix': prefix if rule != 'early' else mark['early']})
             newest = (mark['txg'], mark['rootbp'])
             mark = None
+        if r.get('received'):
+            mark = kept
         last_flush = prefix
 
     for r in records:
         flags = set(r['flags'])
+        if 'receipt' in flags:
+            if r['tag'] in carried:
+                raise ValueError(f"record {r['i']}: flush {r['tag']} received twice before its barrier")
+            carried[r['tag']], mark = mark, None
+            continue
         if 'flush' in flags:
             # A flush that carries data flushes before its data.
             barrier(r, r['i'])
@@ -192,7 +213,8 @@ def cuts(records, ubs, rule='design'):
             elif rule == 'previous' and key == prev:
                 u['taken'] = 'repeat'
             elif rule not in ('txg-alone', 'previous') and (
-                    key == newest or (mark is not None and key == (mark['txg'], mark['rootbp']))):
+                    key == newest or (mark is not None and key == (mark['txg'], mark['rootbp']))
+                    or any(c is not None and key == (c['txg'], c['rootbp']) for c in carried.values())):
                 u['taken'] = 'repeat'
             else:
                 u['taken'] = 'marks'
