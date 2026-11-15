@@ -76,7 +76,7 @@
 //! (`tests/recorded.rs`).
 //!
 //! A test build can watch the rule's moments ([`Seen`],
-//! [`InPlace::watch`](super::InPlace::watch)): every write applied,
+//! `InPlace::watch`, with the `test-hooks` feature): every write applied,
 //! every flush's barrier, and every cut counted, each as it happens on
 //! the thread that drives the store. The daemon's request log writes
 //! them down (`skyzfsd serve --request-log`).

@@ -14,19 +14,24 @@
 //! `zdb -e -u` at each cut's instant) found the volume opening at the
 //! cut's own group (work package M2.1b).
 //!
-//! What the recordings do not show: none of the count's defects changes
-//! what these five pools make (`life`, `rewind`, `config`, `stray`,
-//! `autotrim`; probed on 2026-11-14). No flush in them falls between
-//! one group's uberblock writes, so a repeat never follows a cut and
-//! counting repeats makes no other cut; no uberblock of group 0 is in a
-//! record; and the rewind's group used twice (51) never meets its
-//! earlier self as the mark or the newest cut, so a repeat told by the
-//! group alone makes the same cuts. The store's own tests are what
-//! notice those defects (`tests/cuts.rs`). The `multihost` recording,
-//! not in yet, is the one whose stale writes are repeats after a cut.
-//! Of the two defects of whether a cut opens as itself, the recordings
+//! What the recordings show of the count's defects (probed on
+//! 2026-11-15 with all nine pools; [`the_recordings_notice_the_defects_of_a_repeat`]
+//! holds it):
+//!
+//! - every uberblock write counted as a mark changes the cuts of
+//!   `multihost` (MMP writes the newest state again after its cut) and
+//!   of `stray` (flushes fall between one group's uberblock writes);
+//! - a stale write that moves the mark changes `multihost`'s;
+//! - a repeat told by its group alone changes `rewindf`'s, where `-FX`
+//!   writes group 43 again with another root block pointer, when one
+//!   store sees the whole record (a store begun at each session does
+//!   not see the first 43 as its newest cut).
+//!
+//! None of the count's other defects changes what the recordings make,
+//! and the store's own tests are what notice them (`tests/cuts.rs`). Of
+//! the two defects of whether a cut opens as itself, the recordings
 //! notice the rings not read at a start, and not the group alone for
-//! the order (see the last test).
+//! the order (see [`a_store_begun_at_each_session_says_which_cuts_open_as_themselves`]).
 //!
 //! The order the store is given is the record's: a write is received
 //! and applied before the next record, a flush is received and reaches
@@ -351,11 +356,16 @@ fn replay(pool: &Pool, mutants: u64, restart: bool) -> Vec<Counted> {
 }
 
 /// The reference's cuts of a recorded pool, with whether each opens as
-/// itself: those whose volume `zdb -e -u` opened at another group (the
-/// check's `cut_N FAIL ... zdb selects group G`) do not, and every
-/// other one does, since the check passed it at its own group. A cut
+/// itself: `itself` in the fixture's `opens.tsv`, which is 1 where the
+/// best uberblock in the labels' rings at the cut's instant is the cut's
+/// own state (the fixtures' README: "the cuts the store says open as
+/// themselves are exactly those with `itself` 1"). The check's lines
+/// must agree: a cut whose volume `zdb -e -u` opened at another group
+/// (`cut_N FAIL ... zdb selects group G`) has `itself` 0, and a cut
 /// that failed the check for another reason is not one this test can
-/// judge.
+/// judge. A stale cut (multihost: the state of an older cut written
+/// again after a newer one) has `itself` 0 though the check passes it,
+/// since it opens where the reference says it opens.
 fn reference(pool: &Pool) -> Vec<Counted> {
     let text = std::fs::read_to_string(pool.dir.join("cuts.tsv")).expect("cuts");
     assert_eq!(
@@ -364,29 +374,52 @@ fn reference(pool: &Pool) -> Vec<Counted> {
         "{}: the format",
         pool.name
     );
-    let check = std::fs::read_to_string(pool.dir.join("check.tsv")).expect("check");
-    let elsewhere: Vec<u64> = rows(&check)
+    // n txg prefix zdb_txg ring_txg itself whole.
+    let opens = std::fs::read_to_string(pool.dir.join("opens.tsv")).expect("opens");
+    let itself: std::collections::BTreeMap<u64, bool> = rows(&opens)
         .into_iter()
-        .filter(|c| c[0].starts_with("cut_") && c.get(1).is_some_and(|v| v == "FAIL"))
         .map(|c| {
-            assert!(
-                c.get(2)
-                    .is_some_and(|why| why.contains("zdb selects group")),
-                "{}: a cut failed the check for another reason: {c:?}",
-                pool.name
-            );
-            c[0]["cut_".len()..].parse().expect("a cut's number")
+            let n: u64 = c[0].parse().expect("a cut's number");
+            (n, c[5] == "1")
         })
         .collect();
+    let check = std::fs::read_to_string(pool.dir.join("check.tsv")).expect("check");
+    for c in rows(&check) {
+        if !(c[0].starts_with("cut_") && c.get(1).is_some_and(|v| v == "FAIL")) {
+            continue;
+        }
+        assert!(
+            c.get(2)
+                .is_some_and(|why| why.contains("zdb selects group")),
+            "{}: a cut failed the check for another reason: {c:?}",
+            pool.name
+        );
+        let n: u64 = c[0]["cut_".len()..].parse().expect("a cut's number");
+        assert_eq!(
+            itself.get(&n),
+            Some(&false),
+            "{}: cut {n} opened at another group by the check, but not by opens.tsv",
+            pool.name
+        );
+    }
     // n txg prefix ub_record flush_record rootbp.
     let wanted: Vec<Counted> = rows(&text)
         .into_iter()
         .map(|c| {
             let n = |at: usize| c[at].parse::<u64>().expect("a number");
-            (n(0), n(1), n(4), n(2), !elsewhere.contains(&n(0)))
+            let opens = *itself
+                .get(&n(0))
+                .unwrap_or_else(|| panic!("{}: cut {} is not in opens.tsv", pool.name, n(0)));
+            (n(0), n(1), n(4), n(2), opens)
         })
         .collect();
     assert!(!wanted.is_empty(), "{}: no cut", pool.name);
+    assert_eq!(
+        itself.len(),
+        wanted.len(),
+        "{}: opens.tsv and cuts.tsv list other cuts",
+        pool.name
+    );
     wanted
 }
 
@@ -417,8 +450,8 @@ fn the_rule_makes_the_reference_cuts_of_every_recorded_pool() {
 /// slot an uberblock goes to is its group modulo the ring's slots: the
 /// new history's 51 is written over the abandoned 51 in every label
 /// before the flush that cuts it. A multihost pool keeps the ring's last
-/// slot for its own writes, where an abandoned state can outlive that;
-/// the `multihost` recording, not in yet, is the one that could show it.
+/// slot for its own writes, where an abandoned state could outlive that;
+/// the `multihost` recording does not show it either (it has no rewind).
 #[test]
 fn a_store_begun_at_each_session_says_which_cuts_open_as_themselves() {
     let pools = pools();
@@ -434,4 +467,38 @@ fn a_store_begun_at_each_session_says_which_cuts_open_as_themselves() {
         unread, right,
         "a start that does not read the rings is not noticed"
     );
+}
+
+/// The defects of a repeat that the recordings notice, each in exactly
+/// the pools named (the module's documentation says why): a change to
+/// the fixtures or to the rule that loses one of them is noticed here,
+/// as one that adds a pool is.
+#[test]
+fn the_recordings_notice_the_defects_of_a_repeat() {
+    let pools = pools();
+    let cases: [(&str, u64, &[&str]); 3] = [
+        (
+            "every uberblock write counted",
+            Mutants::REPEAT_COUNTED,
+            &["multihost", "stray"],
+        ),
+        (
+            "a stale write moves the mark",
+            Mutants::STALE_MOVES_MARK,
+            &["multihost"],
+        ),
+        (
+            "a repeat told by its group alone",
+            Mutants::REPEAT_BY_GROUP,
+            &["rewindf"],
+        ),
+    ];
+    for (defect, mutants, noticed_in) in cases {
+        let noticed: Vec<&str> = pools
+            .iter()
+            .filter(|pool| replay(pool, mutants, false) != reference(pool))
+            .map(|pool| pool.name.as_str())
+            .collect();
+        assert_eq!(noticed, noticed_in, "{defect}");
+    }
 }
