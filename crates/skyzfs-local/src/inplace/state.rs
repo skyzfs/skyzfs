@@ -527,7 +527,7 @@ pub trait Copier {
 
 /// The most blocks a change plans at once, and so the most one read of
 /// the image or one write of the copies moves: 1 MiB, eight records of
-/// ZFS's default 128 KiB (coding's choice, M2.2d). A change of more is
+/// ZFS's default 128 KiB (the lead's decision, M2.2d). A change of more is
 /// planned and copied a part at a time, which keeps the plan and the
 /// buffer small for a write-zeroes over much of the volume.
 pub const RUN_BLOCKS: u64 = 256;
@@ -1820,7 +1820,9 @@ impl<R: Region> CutState<R> {
     /// is copied for a cut that is gone (the review of #100, its plant
     /// A9).
     ///
-    /// A run's failure is its first block's (coding's reading, M2.2d):
+    /// A run's failure is its first block's (the lead's decision, M2.2d:
+    /// it lets more cuts go on an error, the safe side, and errors are
+    /// rare):
     /// which block a failed read or write of several was at is not
     /// known. Where the error was a later block's own, the cuts that
     /// need the first block go too, which M2.2c, a block at a time,

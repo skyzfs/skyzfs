@@ -1707,6 +1707,90 @@ fn a_refused_run_stops_the_copies_after_it() {
     );
 }
 
+/// A disk that fails the `nth` write of copies, once.
+struct FailingNth {
+    disk: Disk,
+    nth: u64,
+    writes: u64,
+}
+
+impl Copier for FailingNth {
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.disk.read_image(first, buf)
+    }
+
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
+        self.writes += 1;
+        if self.writes == self.nth {
+            return Err(io::Error::other("no space left"));
+        }
+        self.disk.write_copies(first, buf)
+    }
+}
+
+/// A run that fails in the middle of a change, with an older cut that
+/// stays (G1 of the review of #107; its scenarios). On `three_held`,
+/// the second write of copies fails:
+///
+/// - **X**, blocks 20 to 40. The runs are block 20 for cut 2, blocks 30
+///   to 32 for cut 3, and block 40 for cut 4. Cuts 3 and 4 go. Cut 2
+///   stays: it reads block 20 from the copy made before the failure,
+///   and the next cut's map holds every block of the change, those
+///   before the failed run included.
+/// - **Y**, blocks 30 to 170. The runs are blocks 30 to 32 for cut 3,
+///   block 40 for cut 4, then blocks 100 and 170 for cut 3. Cut 4 goes
+///   alone. Cut 3 stays: it reads 100 and 170 from copies made when the
+///   rest is planned again, not from the slots planned for them before
+///   the failure, which were never written.
+#[test]
+fn a_failed_run_in_the_middle_of_a_change_keeps_what_an_older_cut_reads() {
+    for (name, first, count, cut, blocks, held) in [
+        ("X", 20u64, 21u64, 2u64, vec![20u64], vec![2u64]),
+        ("Y", 30, 141, 3, vec![30, 31, 32, 100, 170], vec![2, 3]),
+    ] {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+        let (mut state, io) = three_held(&region);
+        let mut io = FailingNth {
+            disk: io.disk,
+            nth: 2,
+            writes: 0,
+        };
+        for block in 0..BLOCKS {
+            io.disk.image[block as usize] = 1000 + block;
+        }
+        state
+            .change(first, count, &mut io)
+            .expect("the change goes on");
+        // The change's own writes.
+        for block in first..first + count {
+            io.disk.image[block as usize] = 9000 + block;
+        }
+        let now: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+        assert_eq!(now, held, "{name}");
+        for &block in &blocks {
+            let content = match state.read(cut, block) {
+                Some(Read::Copy(slot)) => io.disk.copies.get(&slot).copied(),
+                Some(Read::Image) => Some(io.disk.image[block as usize]),
+                other => panic!("{name}: cut {cut}, block {block}: {other:?}"),
+            };
+            assert_eq!(
+                content,
+                Some(1000 + block),
+                "{name}: cut {cut}, block {block}"
+            );
+        }
+        let next = state.freeze(&marked(5), true);
+        let map = state.map(next);
+        let lacks: Vec<u64> = (first..first + count)
+            .filter(|block| !map.contains(block))
+            .collect();
+        assert!(
+            lacks.is_empty(),
+            "{name}: the next cut's map lacks {lacks:?}"
+        );
+    }
+}
+
 /// A cut abandoned at the bound while a change is planned takes with it
 /// the copies planned for it (M2.2d), as M2.2c freed their records with
 /// the cut: no copy stays that no held cut reads. Cut 1, the whole
