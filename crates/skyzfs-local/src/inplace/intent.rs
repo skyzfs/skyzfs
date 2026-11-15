@@ -442,7 +442,9 @@ impl IntentMap {
             if let Some(w) = self.bits.get_mut(word) {
                 *w |= bit;
             }
-            if !self.is_set(&self.durable, region) {
+            if !self.is_set(&self.durable, region)
+                && !self.mutants.has(Mutants::INTENT_SET_UNWRITTEN)
+            {
                 self.dirty.insert(region / PER_PAGE + 1);
             }
         }

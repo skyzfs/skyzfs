@@ -2871,6 +2871,42 @@ fn a_write_that_waited_does_not_begin_after_the_volume_failed() {
     );
 }
 
+/// A sync of the map that ends without making durable a bit set before
+/// it began, with no commit since to clear it, fails the volume: the
+/// map is wrong, and to set the bit again and sync would go on for
+/// ever (the addendum to the review of #106). The defect of the map
+/// that gets there: setting a bit does not ask for its page to be
+/// written. The write fails with the volume.
+///
+/// The store runs on a thread of the test's, which sends what it saw
+/// before it drops the store: where the volume does not fail, the drop
+/// would sync for ever too, and the store is leaked instead.
+#[test]
+fn a_sync_of_the_map_that_leaves_a_bit_set_before_it_unwritten_fails_the_volume() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let disk = created(51, 0);
+            let mut store = committed_one(&disk, Mutants::INTENT_SET_UNWRITTEN, io);
+            submit(&mut store, 1, write_op(150, 0x66));
+            let mut done = Vec::new();
+            polled(&mut store, &mut done, 1, DRAIN);
+            let failed = store.is_failed();
+            let _ = tell.send((ended(&done), failed));
+            if failed {
+                drop(store);
+            } else {
+                std::mem::forget(store);
+            }
+        });
+        assert_eq!(
+            told.recv_timeout(DRAIN * 2),
+            Ok((vec![(1, Err(BlkError::Failed))], true)),
+            "{io:?}"
+        );
+    }
+}
+
 /// A write of the map that fails when a commit clears bits fails the
 /// volume, as a failed write of the store does (G4 of the review of
 /// #106).

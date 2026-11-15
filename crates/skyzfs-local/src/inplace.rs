@@ -491,6 +491,9 @@ impl Mutants {
     /// When a sync of the map ends, every request that waits for the
     /// map begins, its bits durable or not.
     pub(crate) const INTENT_RELEASED_UNCHECKED: u128 = 1 << 71;
+    /// Setting a bit does not ask for its page to be written: no sync
+    /// makes it durable (the review's plant A9 on #105).
+    pub(crate) const INTENT_SET_UNWRITTEN: u128 = 1 << 72;
 
     pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0
@@ -982,9 +985,24 @@ struct Intent<F> {
     syncing: Option<std::time::Instant>,
     /// The writes and write-zeroes that wait for their regions' bits to
     /// be durable, in the order they came.
-    waiting: VecDeque<Request>,
+    waiting: VecDeque<Waiting>,
     /// How many requests have waited for the map since the start.
     waits: u64,
+    /// How many syncs of the file have begun on the write path since
+    /// the start.
+    begun: u64,
+    /// How many commits have cleared bits since the start.
+    commits: u64,
+}
+
+/// A request that waits for the intent map, with the syncs begun and
+/// the commits made when its bits were last set. A sync that begins
+/// after that makes them durable, unless a commit clears one first
+/// ([`InPlace::intent_synced`]).
+struct Waiting {
+    request: Request,
+    begun: u64,
+    commits: u64,
 }
 
 impl<F> Intent<F> {
@@ -992,8 +1010,8 @@ impl<F> Intent<F> {
     /// on the threads is shown to [`InPlace::must_wait`]: all of them
     /// write.
     fn waiting_ranges(&self) -> impl Iterator<Item = (u64, u64, bool)> + '_ {
-        self.waiting.iter().filter_map(|request| {
-            mutation_span(&request.op).map(|(offset, len)| (offset, offset + len, true))
+        self.waiting.iter().filter_map(|waiting| {
+            mutation_span(&waiting.request.op).map(|(offset, len)| (offset, offset + len, true))
         })
     }
 }
@@ -1457,7 +1475,11 @@ impl<D: Dir> InPlace<D> {
             .as_mut()
             .map(|intent| std::mem::take(&mut intent.waiting))
             .unwrap_or_default();
-        for Request { id, op } in waiting {
+        for Waiting {
+            request: Request { id, op },
+            ..
+        } in waiting
+        {
             let buf = buffer_of(op);
             self.complete(id, Err(BlkError::Failed), buf);
         }
@@ -2411,6 +2433,8 @@ impl<D: Dir> InPlace<D> {
             syncs: Spent::default(),
             syncing: None,
             waiting: VecDeque::new(),
+            begun: 0,
+            commits: 0,
             waits: 0,
         });
         self.write_intent(true)
@@ -2476,7 +2500,11 @@ impl<D: Dir> InPlace<D> {
             return self.resume(id, op);
         };
         intent.waits += 1;
-        intent.waiting.push_back(Request { id, op });
+        intent.waiting.push_back(Waiting {
+            request: Request { id, op },
+            begun: intent.begun,
+            commits: intent.commits,
+        });
         if intent.syncing.is_none() {
             self.begin_intent_sync();
         }
@@ -2496,6 +2524,7 @@ impl<D: Dir> InPlace<D> {
             return;
         };
         intent.syncing = Some(std::time::Instant::now());
+        intent.begun += 1;
         let written = intent
             .map
             .write_begin()
@@ -2546,6 +2575,11 @@ impl<D: Dir> InPlace<D> {
     /// sync began, or a clear after a commit took it away while it
     /// waited (`intent_committed`), and it is set again, for the write
     /// has not changed the region yet.
+    ///
+    /// A bit set before this sync began, and not cleared by a commit
+    /// since, is durable when it ends: where one is not, the map is
+    /// wrong, and the volume fails. Setting it again and syncing would
+    /// go on for ever (the addendum to the review of #106).
     fn intent_synced(&mut self, result: io::Result<()>) {
         let unchecked = self.mutants.has(Mutants::INTENT_RELEASED_UNCHECKED);
         let Some(intent) = &mut self.intent else {
@@ -2563,18 +2597,30 @@ impl<D: Dir> InPlace<D> {
             return self.run_deferred();
         }
         let mut ready = Vec::new();
-        for request in std::mem::take(&mut intent.waiting) {
-            let Some((offset, len)) = mutation_span(&request.op) else {
-                ready.push(request);
+        let mut lost = false;
+        for waiting in std::mem::take(&mut intent.waiting) {
+            let Some((offset, len)) = mutation_span(&waiting.request.op) else {
+                ready.push(waiting.request);
                 continue;
             };
             let (first, count) = blocks_of(offset, len);
             if intent.map.covers(first, count) || unchecked {
-                ready.push(request);
+                ready.push(waiting.request);
             } else {
+                lost |= waiting.begun < intent.begun && waiting.commits == intent.commits;
                 intent.map.set(first, count);
-                intent.waiting.push_back(request);
+                intent.waiting.push_back(Waiting {
+                    begun: intent.begun,
+                    commits: intent.commits,
+                    ..waiting
+                });
             }
+        }
+        if lost {
+            if !self.failed {
+                self.fail();
+            }
+            self.settle_failed();
         }
         for Request { id, op } in ready {
             self.resume(id, op);
@@ -2828,6 +2874,7 @@ impl<D: Dir> InPlace<D> {
                 .collect()
         });
         intent.map.commit(intent::Base { number, group });
+        intent.commits += 1;
         intent.map.clear(|first, _| {
             changed
                 .as_ref()

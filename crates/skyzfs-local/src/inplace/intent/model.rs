@@ -565,7 +565,8 @@ fn after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block() {
     );
 }
 
-/// Each defect of the map's own rules fails the model test.
+/// Each defect of the map's own rules fails the model test. A bit whose
+/// page is never written fails it by the bound on a cut's drain.
 #[test]
 fn the_model_test_notices_each_defect_of_the_map() {
     for mutant in [
@@ -574,6 +575,7 @@ fn the_model_test_notices_each_defect_of_the_map() {
         Mutants::INTENT_CLEARED_BEFORE_COMMIT,
         Mutants::INTENT_TORN_TRUSTED,
         Mutants::INTENT_SYNC_UNNARROWED,
+        Mutants::INTENT_SET_UNWRITTEN,
     ] {
         assert!(
             programs(0..60, mutant).is_err(),
