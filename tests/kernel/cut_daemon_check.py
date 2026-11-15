@@ -34,7 +34,13 @@ cut_ref.opens for whether each opens as itself) are then held to:
   and the same answer to whether it opens as itself (`itself` or
   `rewind`);
 - `status`: `skyzfsd status` read before the detach (DIR/status.txt):
-  `cuts`, `cut_group` and `cut_opens` of the last cut;
+  `cuts`, `cut_group` and `cut_opens` of the last cut. The daemon
+  rewrites its status file at most every 100 ms, when a counter has
+  changed, so the rig reads it a second after the last export and
+  writes the monotonic times before and after the read
+  (DIR/status-time.tsv); with the status's `age_ms` they bound when the
+  status was written. A status written before the daemon's last `cut`
+  line fails: a second is ten of the daemon's intervals;
 - `sessions` and `import_syncs_before_return`: what ZFS says it synced,
   as the cut rig judges the reference (cut_check.py).
 
@@ -163,7 +169,7 @@ def records_of(lines, marks):
             if last_barrier is None or last_barrier['tag'] != ln['tag'] or last_barrier['op'] != ln['op']:
                 raise RigError(f"request log line {ln['line']}: a cut that does not follow its own barrier")
             dcuts.append({'txg': int(ln['result']), 'itself': ln['sector'] == 'itself',
-                          'prefix': last_barrier['i'], 'line': ln['line']})
+                          'prefix': last_barrier['i'], 'line': ln['line'], 'ns': ln['ns']})
     marks_until(float('inf'))
     return records, dcuts
 
@@ -221,8 +227,39 @@ def read_status(text):
     return out
 
 
-def status_verdict(status, ref):
-    """status.txt's values and the reference's cuts -> (ok, detail)."""
+# How far apart a cut line's time and the status's own count of it may
+# be: the log line and the counter are not written at one instant.
+SLACK_NS = 2_000_000
+
+
+def status_window(status, text):
+    """status-time.tsv (`BEFORE_NS AFTER_NS` of the read) and the status's
+    age_ms -> (lo, hi): the monotonic times between which the status was
+    written."""
+    f = text.split()
+    age = status.get('age_ms', '')
+    if len(f) != 2 or not all(x.isdigit() for x in f) or not age.isdigit():
+        raise RigError(f'no time for the status: status-time.tsv {text.strip()!r}, age_ms {age!r}')
+    before, after = int(f[0]), int(f[1])
+    if after < before:
+        raise RigError(f'status-time.tsv: the read ended before it began ({before} {after})')
+    age_ns = int(age) * 1_000_000
+    return before - age_ns - 1_000_000, after - age_ns
+
+
+def status_verdict(status, ref, times=None, window=None):
+    """status.txt's values and the reference's cuts -> (ok, detail).
+
+    times: the monotonic times of the daemon's cut lines; window: when the
+    status was written (status_window). Without them the status is held
+    to every cut."""
+    if window is not None and times:
+        lo, hi = window
+        if hi + SLACK_NS < times[-1]:
+            k = sum(1 for t in times if t <= hi)
+            return False, (f'the status was written before the daemon\'s last cut line, at most {k} of '
+                           f'{len(times)} cuts after; it was {(times[-1] - hi) / 1e6:.0f} ms older than that '
+                           f'line when the rig read it a second after the export')
     want = {'cuts': str(len(ref))}
     if ref:
         want['cut_group'] = str(ref[-1]['txg'])
@@ -271,7 +308,9 @@ def main():
         put('obs_opens_as_itself', 'INFO', f'{n_self} of {len(ref)} cuts open as themselves, by the reference')
         with open(os.path.join(rdir, 'status.txt')) as f:
             status = read_status(f.read())
-        ok, detail = status_verdict(status, ref)
+        with open(os.path.join(rdir, 'status-time.tsv')) as f:
+            window = status_window(status, f.read())
+        ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], window)
         put('status', 'PASS' if ok else 'FAIL', detail)
         if not ok:
             rc = 1

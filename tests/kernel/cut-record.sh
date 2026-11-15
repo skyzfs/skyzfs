@@ -263,8 +263,16 @@ begin_daemon() {
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
 end_daemon() {
+    # The daemon rewrites its status at most every 100 ms, when a counter
+    # changed: a second after the export it holds the last cut. The times
+    # around the read bound, with the status's age_ms, when it was written.
+    sleep 1
+    local before after
+    before=$(python3 -c 'import time; print(time.monotonic_ns())')
     timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status.txt" 2>&1 \
         || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/status.txt")"
+    after=$(python3 -c 'import time; print(time.monotonic_ns())')
+    printf '%s\t%s\n' "$before" "$after" > "$RDIR/status-time.tsv"
     # serve ends on SIGTERM, with 0; detach then deletes the device.
     kill -TERM "$SERVE_PID" 2>/dev/null || true
     serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"

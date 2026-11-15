@@ -188,6 +188,35 @@ class Status(unittest.TestCase):
     def test_no_cut(self):
         self.assertTrue(cdc.status_verdict(cdc.read_status('cuts 0\n'), [])[0])
 
+    def test_a_status_written_before_the_last_cut(self):
+        """Run 43675273810: the status read at once after the export was
+        one write behind (cuts 22 of 26). The rig now reads it a second
+        later; one older than the last cut line still fails, and says so."""
+        last = cdc.read_status('cuts 2\ncut_group 9\ncut_opens rewind\nage_ms 80\n')
+        stale = cdc.read_status('cuts 1\ncut_group 5\ncut_opens itself\nage_ms 80\n')
+        ms = 1_000_000
+        times = [100 * ms, 300 * ms]
+        window = cdc.status_window(last, f'{400 * ms}\t{420 * ms}\n')
+        self.assertEqual(window, (319 * ms, 340 * ms))
+        ok, detail = cdc.status_verdict(last, self.REF, times, window)
+        self.assertTrue(ok, detail)
+        # Written after the last cut line and still one behind.
+        self.assertFalse(cdc.status_verdict(stale, self.REF, times, window)[0])
+        window = cdc.status_window(stale, f'{350 * ms}\t{360 * ms}\n')
+        ok, detail = cdc.status_verdict(stale, self.REF, times, window)
+        self.assertFalse(ok)
+        self.assertIn('before the daemon\'s last cut line, at most 1 of 2', detail)
+        # Within the slack of the last line, the values decide.
+        window = cdc.status_window(last, f'{379 * ms}\t{381 * ms}\n')
+        self.assertTrue(cdc.status_verdict(last, self.REF, times, window)[0])
+        self.assertFalse(cdc.status_verdict(stale, self.REF, times, window)[0])
+
+    def test_no_time_for_the_status(self):
+        for st, text in (('age_ms 3\n', ''), ('age_ms 3\n', '5\tx\n'), ('cuts 1\n', '5\t6\n'),
+                         ('age_ms 3\n', '6\t5\n')):
+            with self.assertRaises(RigError):
+                cdc.status_window(cdc.read_status(st), text)
+
 
 class Expected(unittest.TestCase):
     def test_every_control_is_caught(self):
