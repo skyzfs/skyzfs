@@ -40,15 +40,20 @@ struct Disk {
 }
 
 impl Copier for Disk {
-    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
-        buf[..8].copy_from_slice(&self.image[block as usize].to_le_bytes());
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        for (i, block) in buf.chunks_mut(BLOCK_SIZE as usize).enumerate() {
+            block[..8].copy_from_slice(&self.image[first as usize + i].to_le_bytes());
+        }
         Ok(())
     }
 
-    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(&buf[..8]);
-        self.copies.insert(slot, u64::from_le_bytes(word));
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
+        for (i, block) in buf.chunks(BLOCK_SIZE as usize).enumerate() {
+            let mut word = [0u8; 8];
+            word.copy_from_slice(&block[..8]);
+            self.copies
+                .insert(first + i as u32, u64::from_le_bytes(word));
+        }
         Ok(())
     }
 }
@@ -1231,15 +1236,15 @@ struct Refusing {
 }
 
 impl Copier for Refusing {
-    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.disk.read_image(block, buf)
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.disk.read_image(first, buf)
     }
 
-    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
         if self.refuse {
             return Err(io::Error::other("no space left"));
         }
-        self.disk.write_copy(slot, buf)
+        self.disk.write_copies(first, buf)
     }
 }
 
@@ -1510,16 +1515,16 @@ struct RefusingFirst {
 }
 
 impl Copier for RefusingFirst {
-    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.disk.read_image(block, buf)
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.disk.read_image(first, buf)
     }
 
-    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
         if !self.refused {
             self.refused = true;
             return Err(io::Error::other("no space left"));
         }
-        self.disk.write_copy(slot, buf)
+        self.disk.write_copies(first, buf)
     }
 }
 
@@ -1553,6 +1558,178 @@ fn a_refused_copy_that_lets_every_cut_go_copies_nothing_more() {
         "blocks 6 and 7 were copied for a cut that is gone"
     );
     assert!(io.disk.copies.is_empty(), "{:?}", io.disk.copies.keys());
+}
+
+/// Calls that each moved a run, as `(first, blocks)`.
+type Runs<T> = Vec<(T, usize)>;
+
+/// A disk that counts the reads of the image and the writes of the
+/// copies.
+struct Counting {
+    disk: Disk,
+    reads: Runs<u64>,
+    writes: Runs<u32>,
+}
+
+impl Counting {
+    fn new(blocks: u64) -> Self {
+        Counting {
+            disk: Disk {
+                image: (0..blocks).map(|b| 1000 + b).collect(),
+                copies: BTreeMap::new(),
+            },
+            reads: Vec::new(),
+            writes: Vec::new(),
+        }
+    }
+
+    /// The I/O since the last call, and none after it.
+    fn taken(&mut self) -> (Runs<u64>, Runs<u32>) {
+        (
+            std::mem::take(&mut self.reads),
+            std::mem::take(&mut self.writes),
+        )
+    }
+}
+
+impl Copier for Counting {
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.reads.push((first, buf.len() / BLOCK_SIZE as usize));
+        self.disk.read_image(first, buf)
+    }
+
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
+        self.writes.push((first, buf.len() / BLOCK_SIZE as usize));
+        self.disk.write_copies(first, buf)
+    }
+}
+
+/// A change copies the blocks a held cut reads in runs (M2.2d): one read
+/// of the image and one write of the copies file for each run of blocks
+/// that are consecutive and go to consecutive slots, not one of each a
+/// block (M2.2c). Cut 1 counts the whole volume (the state is new), so
+/// it reads every block.
+///
+/// - A change of 32 blocks is one run.
+/// - A change with a block of the open map in its middle is two: that
+///   block changed already since cut 1's instant.
+/// - A change of 300 blocks is planned 256 at a time, the most one read
+///   or one write moves (1 MiB).
+/// - After cut 1 is let go its slots are free again, in the order its
+///   records were freed. A change for cut 2 takes 32 of them, and they
+///   are given in the order of their blocks: one run, not 32.
+///
+/// Each held cut reads every block of these as it was at its instant.
+#[test]
+fn a_change_copies_each_run_in_one_read_and_one_write() {
+    const MANY: u64 = 600;
+    let size = MANY * BLOCK_SIZE;
+    let bound = MANY * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(MANY, records_for(bound)));
+    let mut state = CutState::begin(region, size, bound, OWNER, Mutants(0));
+    let mut io = Counting::new(MANY);
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    let reads = |state: &CutState<MemRegion>, io: &Counting, number: u64, blocks: &[u64]| {
+        for &block in blocks {
+            let content = match state.read(number, block) {
+                Some(Read::Copy(slot)) => io.disk.copies.get(&slot).copied(),
+                other => panic!("cut {number}, block {block}: {other:?}"),
+            };
+            assert_eq!(content, Some(1000 + block), "cut {number}, block {block}");
+        }
+    };
+
+    state.change(0, 32, &mut io).expect("the change");
+    assert_eq!(io.taken(), (vec![(0, 32)], vec![(0, 32)]));
+
+    state.change(50, 1, &mut io).expect("the change");
+    assert_eq!(io.taken(), (vec![(50, 1)], vec![(32, 1)]));
+    state.change(45, 10, &mut io).expect("the change");
+    assert_eq!(
+        io.taken(),
+        (vec![(45, 5), (51, 4)], vec![(33, 5), (38, 4)]),
+        "block 50 is in the open map"
+    );
+
+    state.change(100, 300, &mut io).expect("the change");
+    assert_eq!(
+        io.taken(),
+        (vec![(100, 256), (356, 44)], vec![(42, 256), (298, 44)])
+    );
+    let changed: Vec<u64> = (0..32).chain(45..55).chain(100..400).collect();
+    reads(&state, &io, 1, &changed);
+
+    assert!(state.release(1));
+    assert_eq!(state.figures().copied, 0, "cut 1's copies are freed");
+    assert_eq!(state.freeze(&marked(2), true), 2);
+    state.flushed(2);
+    state.change(0, 32, &mut io).expect("the change");
+    let (read, written) = io.taken();
+    assert_eq!(read, [(0, 32)]);
+    assert_eq!(written.len(), 1, "the slots of one run: {written:?}");
+    reads(&state, &io, 2, &(0..32).collect::<Vec<_>>());
+}
+
+/// A refused run stops a change's copies there (M2.2d): nothing after it
+/// is read or written, and the change goes on from the next block,
+/// planned again under the cuts still held. Cut 1 counts the whole
+/// volume (the state is new) and reads every block. Block 6 is copied
+/// first, so it is in the open map, and blocks 5 and 7 are two runs.
+/// The first is refused, and cut 1 goes with block 6's copy; block 7's
+/// copy, for a cut that is gone, is never written.
+#[test]
+fn a_refused_run_stops_the_copies_after_it() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let mut state = CutState::begin(region, SIZE, REFUSING_BOUND, OWNER, Mutants(0));
+    let mut io = RefusingFirst {
+        disk: Disk {
+            image: vec![0; BLOCKS as usize],
+            copies: BTreeMap::new(),
+        },
+        // The first refusal is to come later.
+        refused: true,
+    };
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    state.change(6, 1, &mut io).expect("the change");
+    let slots: Vec<u32> = io.disk.copies.keys().copied().collect();
+    assert_eq!(slots.len(), 1, "block 6's copy");
+    io.refused = false;
+    state.change(5, 3, &mut io).expect("the write goes on");
+    assert!(io.refused, "block 5's copy was asked and refused");
+    assert!(state.held().is_empty(), "{:?}", state.held());
+    assert_eq!(state.figures().copied, 0);
+    assert_eq!(
+        io.disk.copies.keys().copied().collect::<Vec<_>>(),
+        slots,
+        "block 7 was copied for a cut that is gone"
+    );
+}
+
+/// A cut abandoned at the bound while a change is planned takes with it
+/// the copies planned for it (M2.2d), as M2.2c freed their records with
+/// the cut: no copy stays that no held cut reads. Cut 1, the whole
+/// volume, is the only cut held, and the bound is three blocks. Blocks
+/// 0 and 1 are copied; then a change of blocks 2 and 3 plans block 2's
+/// copy, the third, and block 3's would pass the bound. Cut 1 goes, and
+/// gives its map to the open map, so no cut reads block 2 either.
+#[test]
+fn a_cut_abandoned_while_a_change_is_planned_takes_its_planned_copies() {
+    let bound = 3 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let mut state = CutState::begin(region, SIZE, bound, OWNER, Mutants(0));
+    let mut io = Counting::new(BLOCKS);
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    state.change(0, 2, &mut io).expect("the change");
+    assert_eq!(state.figures().copied, 2 * BLOCK_SIZE);
+    io.taken();
+    state.change(2, 2, &mut io).expect("the change");
+    assert!(state.held().is_empty(), "cut 1 is abandoned at the bound");
+    assert_eq!(state.figures().abandoned, 1);
+    assert_eq!(state.figures().copied, 0, "a copy no cut reads stays");
+    assert_eq!(io.taken(), (vec![], vec![]), "a copy for no cut was made");
 }
 
 /// Two starts in a row after a daemon lost at any store of a change that

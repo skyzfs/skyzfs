@@ -1310,6 +1310,62 @@ fn the_copies_are_written_and_read_past_the_cache() {
     }
 }
 
+/// A write over a held cut copies its blocks in one read of the image
+/// and one write of the copies file (M2.2d), not one of each a block
+/// (M2.2c): 32 blocks, 128 KiB, the size of a ZFS record, every one of
+/// which cut 1 reads. The cut reads each block as it was. The defect,
+/// planted by hand: a copy a block.
+///
+/// Blocks 64 to 95 are the first half of label 1, outside every ring.
+#[test]
+fn a_write_over_a_held_cut_copies_its_blocks_in_one_read_and_one_write() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(60, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        for block in 64..96 {
+            write(&mut store, block, block as u8).unwrap();
+        }
+        // Cut 1, the whole volume (the state is new).
+        group(&mut store, 100, 7, 70);
+        let reads = disk.reads_of(crate::store::HOME_NAME);
+        let writes = disk.writes_of(COPIES_NAME);
+        let done = run(
+            &mut store,
+            1,
+            Op::Write {
+                offset: 64 * BLOCK,
+                data: Buf::filled(32, 0xAB),
+            },
+        );
+        assert_eq!(done.result, Ok(()), "{case}");
+        assert_eq!(
+            disk.reads_of(crate::store::HOME_NAME),
+            reads + 1,
+            "{case}: one read of the image"
+        );
+        assert_eq!(
+            disk.writes_of(COPIES_NAME),
+            writes + 1,
+            "{case}: one write of the copies"
+        );
+        assert_eq!(store.cut_figures().copied, 32 * BLOCK, "{case}");
+        for block in 64..96 {
+            let mut buf = Buf::filled(1, 0xEE);
+            assert_eq!(
+                store.read_cut(1, block, &mut buf).ok(),
+                Some(true),
+                "{case}"
+            );
+            assert_eq!(
+                buf.to_vec(),
+                vec![block as u8; BLOCK_USIZE],
+                "{case}: block {block}"
+            );
+        }
+    }
+}
+
 /// Where the copies file takes no direct I/O, a copy is never written
 /// through the cache instead (M2.2c's reading 2, the review of #104,
 /// S1): the copy fails, the cut that needs it goes, and the client's

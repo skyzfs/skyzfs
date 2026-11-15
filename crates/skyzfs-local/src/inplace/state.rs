@@ -36,6 +36,15 @@
 //!   block is begun: a death at any point leaves a block whose change
 //!   has not begun, or one whose record holds what a cut reads. A
 //!   record is kept only while a held cut needs it (below).
+//!
+//!   A change's copies are planned first, each with a slot taken for
+//!   it, as M2.2c decided them block by block; then they are made in
+//!   runs, one read of the image and one write of the copies file for
+//!   each run of blocks that are consecutive and go to consecutive
+//!   slots; then they are recorded, and then the bits are set (M2.2d,
+//!   [`CutState::change`]). The order of the rules is the same for every
+//!   block. A death before a copy's record leaves its slot free at the
+//!   next start, which makes the free slots again from the records.
 //! - **The held cuts** (D7), [`HELD`] at most: the one being uploaded,
 //!   the one that waits, and the one whose flush is under way. A cut is
 //!   held from its instant. When its flush completes it replaces the
@@ -501,16 +510,88 @@ pub enum Read {
     Copy(u32),
 }
 
-/// The I/O the state asks for when it keeps a block's content: read the
-/// block from the home image, and write a copy.
+/// The I/O the state asks for when it keeps blocks' content: read a run
+/// of blocks from the home image, and write their copies into a run of
+/// slots, each in one call (M2.2d). A buffer holds whole blocks, at most
+/// [`RUN_BLOCKS`], and is aligned for direct I/O.
 pub trait Copier {
-    /// Read block `block` of the home image into `buf`, one block.
-    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()>;
-    /// Write `buf`, one block, into slot `slot` of the copies file.
-    /// Whole before it returns: a later instance reads it. The store
-    /// writes it by direct I/O, so that a failure of the write is its
-    /// error and not a later writeback's (M2.2c).
-    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()>;
+    /// Read the blocks of the home image from block `first`, as many as
+    /// `buf` holds, into `buf`.
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()>;
+    /// Write `buf` into the slots of the copies file from slot `first`,
+    /// a block a slot. Whole before it returns: a later instance reads
+    /// it. The store writes it by direct I/O, so that a failure of the
+    /// write is its error and not a later writeback's (M2.2c).
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()>;
+}
+
+/// The most blocks a change plans at once, and so the most one read of
+/// the image or one write of the copies moves: 1 MiB, eight records of
+/// ZFS's default 128 KiB (coding's choice, M2.2d). A change of more is
+/// planned and copied a part at a time, which keeps the plan and the
+/// buffer small for a write-zeroes over much of the volume.
+pub const RUN_BLOCKS: u64 = 256;
+
+/// A copy a change makes: block `block`'s content now, into slot `slot`,
+/// recorded for the epochs `[lo, epoch)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Planned {
+    block: u64,
+    slot: usize,
+    lo: u64,
+}
+
+/// What a part of a change does, decided before any of its I/O (M2.2d):
+/// the copies to make, each with a slot taken for it, in the order of
+/// their blocks; and the blocks from `from` to `to` whose bits it sets
+/// once the copies are recorded. Made on the queue's thread
+/// ([`CutState::plan`]); the copies are made from it
+/// ([`Plan::copy`]), and the state records them ([`CutState::record_plan`]).
+/// So the copies could be made on another thread between the two
+/// (M2.2e), while the state stays on the queue's.
+#[derive(Debug)]
+struct Plan {
+    epoch: u64,
+    from: u64,
+    to: u64,
+    copies: Vec<Planned>,
+}
+
+impl Plan {
+    /// The copies in runs, each consecutive in block and in slot, as the
+    /// index of its first copy and its length.
+    fn runs(&self) -> Vec<(usize, usize)> {
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for (i, copy) in self.copies.iter().enumerate() {
+            if let Some((at, n)) = runs.last_mut() {
+                let last = self.copies[*at + *n - 1];
+                if last.block + 1 == copy.block && last.slot + 1 == copy.slot {
+                    *n += 1;
+                    continue;
+                }
+            }
+            runs.push((i, 1));
+        }
+        runs
+    }
+
+    /// Make the copies, a run at a time: one read of the image and one
+    /// write of the copies file a run. At the first that fails, stop,
+    /// with the index of its run's first copy: nothing after it is read
+    /// or written.
+    fn copy(&self, io: &mut dyn Copier) -> Result<(), (usize, io::Error)> {
+        for (at, n) in self.runs() {
+            let first = self.copies[at];
+            // Aligned, for a read by direct I/O.
+            let mut buf = skyzfs_blk::Buf::zeroed(n);
+            let slot = u32::try_from(first.slot)
+                .map_err(|_| (at, io::Error::other("a slot past the copies file's reach")))?;
+            io.read_image(first.block, &mut buf)
+                .and_then(|()| io.write_copies(slot, &buf))
+                .map_err(|e| (at, e))?;
+        }
+        Ok(())
+    }
 }
 
 /// The figures for the status (M2.2b).
@@ -1334,11 +1415,9 @@ impl<R: Region> CutState<R> {
     /// store that clears it, after the cut is gone: a start that finds
     /// the entry counts the cut if it is gone, which is exact whatever
     /// store a death came at (the review of #98).
-    fn abandon(&mut self) -> bool {
+    fn abandon(&mut self) -> Option<u64> {
         let holds = self.holds();
-        let Some(oldest) = holds.first().copied() else {
-            return false;
-        };
+        let oldest = holds.first().copied()?;
         let abandoned = self.begin_abandoning(&oldest);
         let waiting = holds
             .iter()
@@ -1377,12 +1456,16 @@ impl<R: Region> CutState<R> {
             }
         }
         self.store(at::ABANDONED, abandoned + 1);
-        self.free_unneeded(
-            self.mutants
-                .has(Mutants::ABANDONED_COPIES_FREED)
-                .then_some(oldest.cut.number),
-        );
-        true
+        self.free_unneeded(self.all_of(oldest.cut.number));
+        Some(oldest.cut.number)
+    }
+
+    /// Under [`Mutants::ABANDONED_COPIES_FREED`], the cut abandoned,
+    /// whose copies are all freed.
+    fn all_of(&self, abandoned: u64) -> Option<u64> {
+        self.mutants
+            .has(Mutants::ABANDONED_COPIES_FREED)
+            .then_some(abandoned)
     }
 
     /// Finish what a death interrupted, at a start whose sync has
@@ -1520,11 +1603,17 @@ impl<R: Region> CutState<R> {
             let Some(record) = self.record(index) else {
                 continue;
             };
-            let of_gone = all_of.is_some_and(|number| record.lo <= number && number < record.hi);
-            if of_gone || !self.needed(&record, &holds) {
+            if self.unneeded(&record, &holds, all_of) {
                 self.free_record(index, &record);
             }
         }
+    }
+
+    /// Whether `record` is to be freed: no held cut reads it, or (under
+    /// the defect) it is of the cut `all_of` names.
+    fn unneeded(&self, record: &Record, holds: &[Held], all_of: Option<u64>) -> bool {
+        let of_gone = all_of.is_some_and(|number| record.lo <= number && number < record.hi);
+        of_gone || !self.needed(record, holds)
     }
 
     fn free_record(&mut self, index: usize, record: &Record) {
@@ -1607,6 +1696,13 @@ impl<R: Region> CutState<R> {
     /// bit is set in the open map. The caller begins the change only
     /// after this returns.
     ///
+    /// The change is planned, copied and recorded a part of at most
+    /// [`RUN_BLOCKS`] at a time ([`CutState::plan`], [`Plan::copy`],
+    /// [`CutState::record_plan`]): its copies are made in runs, one read of
+    /// the image and one write of the copies file a run (M2.2d), and not
+    /// one of each a block (M2.2c). The order of the rules is the same
+    /// for every block: copy whole, then record, then bit.
+    ///
     /// A copy that cannot be made (the copies file's file system is
     /// full, its write fails, or the read of the image fails) lets go
     /// the cuts that need it ([`CutState::abandon_needing`]), and the
@@ -1614,47 +1710,163 @@ impl<R: Region> CutState<R> {
     /// (the owner's ruling, through the lead, M2.2b). This returns an
     /// error only with the defect that fails the change instead.
     pub fn change(&mut self, first: u64, count: u64, io: &mut dyn Copier) -> io::Result<()> {
-        let epoch = self.epoch();
         let end = first.saturating_add(count).min(self.blocks);
-        // Read once for the change, and again only after the bound let
+        let mut from = first;
+        while from < end {
+            let plan = self.plan(from, end.min(from.saturating_add(RUN_BLOCKS)));
+            let made = plan.copy(io);
+            from = self.record_plan(plan, made)?;
+        }
+        Ok(())
+    }
+
+    /// Plan the blocks from `from` to `to` of a change: which need a
+    /// copy, each with a slot taken for it, as the change of M2.2c
+    /// decided block by block. A block in the open map changed already
+    /// since the newest cut's instant, and no cut reads what it holds
+    /// now. A block with a record made for this change, by an instance
+    /// that died before the block's bit, needs none either.
+    ///
+    /// At the bound the oldest cuts go, and with them perhaps the need:
+    /// a copy planned for an earlier block that no held cut now needs
+    /// is taken out of the plan, as its record would have been freed
+    /// with the cut ([`CutState::unplan`]). Nothing else is stored.
+    ///
+    /// The slots are then given to the copies in the order of their
+    /// blocks, so that consecutive blocks go to consecutive slots where
+    /// the slots free allow: one run.
+    fn plan(&mut self, from: u64, to: u64) -> Plan {
+        let mut plan = Plan {
+            epoch: self.epoch(),
+            from,
+            to,
+            copies: Vec::new(),
+        };
+        // Read once for the plan, and again only after the bound let
         // cuts go.
         let mut holds = self.holds();
         let mut open = self.open();
-        for block in first..end {
+        for block in from..to {
             if self.in_parts(open, block) {
-                // Changed already since the newest cut's instant: no cut
-                // reads what it holds now.
                 continue;
             }
-            // A record made for this change by an instance that died
-            // before the block's bit.
             let done = !holds.is_empty()
                 && self
                     .records_of(block)
                     .iter()
-                    .any(|(_, record)| record.hi == epoch);
-            if !done && self.wanted(&holds, block).is_some() {
-                if self.copied() + BLOCK_SIZE > self.bound() {
-                    // At the bound the oldest cuts go, and with them
-                    // perhaps the need.
-                    while self.copied() + BLOCK_SIZE > self.bound() && self.abandon() {}
-                    holds = self.holds();
-                    open = self.open();
+                    .any(|(_, record)| record.hi == plan.epoch);
+            if done || self.wanted(&holds, block).is_none() {
+                continue;
+            }
+            if self.copied() + BLOCK_SIZE > self.bound() {
+                while self.copied() + BLOCK_SIZE > self.bound() {
+                    let Some(gone) = self.abandon() else {
+                        break;
+                    };
+                    self.unplan(&mut plan, gone);
                 }
-                if let Some(lo) = self.wanted(&holds, block) {
-                    if let Err(e) = self.copy(block, lo, epoch, io) {
-                        if self.mutants.has(Mutants::COPY_FAILURE_FAILS) {
-                            return Err(e);
-                        }
-                        self.abandon_needing(&holds, block);
-                        holds = self.holds();
-                        open = self.open();
-                    }
+                holds = self.holds();
+                open = self.open();
+            }
+            if let Some(lo) = self.wanted(&holds, block) {
+                // With no slot free the bound in force is past the
+                // room, which `bound` does not allow: not reached.
+                if let Some(slot) = self.free_records.pop() {
+                    plan.copies.push(Planned { block, slot, lo });
                 }
             }
-            self.maps.insert(&mut self.region, open.first, block);
         }
-        Ok(())
+        let mut slots: Vec<usize> = plan.copies.iter().map(|copy| copy.slot).collect();
+        slots.sort_unstable();
+        for (copy, slot) in plan.copies.iter_mut().zip(slots) {
+            copy.slot = slot;
+        }
+        plan
+    }
+
+    /// Cut `gone` was abandoned at the bound while a part of a change
+    /// was planned: the copies planned so far that no held cut needs
+    /// now, as [`CutState::free_unneeded`] would free their records, go
+    /// from the plan, and their slots are free again.
+    fn unplan(&mut self, plan: &mut Plan, gone: u64) {
+        let holds = self.holds();
+        let all_of = self.all_of(gone);
+        let planned = std::mem::take(&mut plan.copies);
+        for copy in planned {
+            let record = Record {
+                block: copy.block,
+                lo: copy.lo,
+                hi: plan.epoch,
+            };
+            if self.unneeded(&record, &holds, all_of) {
+                self.free_records.push(copy.slot);
+            } else {
+                plan.copies.push(copy);
+            }
+        }
+    }
+
+    /// Record the copies a part of a change made, then set the bits of
+    /// its blocks: of each block from `from` to `to` that is not in the
+    /// open map. Returns where the change goes on.
+    ///
+    /// Where a run failed (`made`), the copies before it are recorded,
+    /// and the blocks before its first block get their bits. That
+    /// block's copy could not be made: the cuts that need it go
+    /// ([`CutState::abandon_needing`]), and then its bit is set, as
+    /// M2.2c did block by block. The copies after it are not recorded,
+    /// and their slots are free again. The change goes on from the next
+    /// block, planned again under the cuts still held, so that nothing
+    /// is copied for a cut that is gone (the review of #100, its plant
+    /// A9).
+    ///
+    /// A run's failure is its first block's (coding's reading, M2.2d):
+    /// which block a failed read or write of several was at is not
+    /// known. Where the error was a later block's own, the cuts that
+    /// need the first block go too, which M2.2c, a block at a time,
+    /// kept; the later block fails again when the rest is copied. Trying
+    /// a failed run again block by block would keep them, but would
+    /// also keep the cuts after a refusal that does not come again,
+    /// which M2.2c let go (`a_refused_copy_that_lets_every_cut_go_copies_nothing_more`).
+    fn record_plan(&mut self, plan: Plan, made: Result<(), (usize, io::Error)>) -> io::Result<u64> {
+        let (made, failed) = match made {
+            Ok(()) => (plan.copies.len(), None),
+            Err((at, e)) => (at, Some(e)),
+        };
+        for copy in &plan.copies[..made] {
+            let base = self.record_base(copy.slot);
+            self.store_record(base + 1, copy.lo | (plan.epoch << 32));
+            self.store_record(base, copy.block + 1);
+            self.by_block.entry(copy.block).or_default().push(copy.slot);
+        }
+        for copy in plan.copies[made..].iter().rev() {
+            self.free_records.push(copy.slot);
+        }
+        let Some(e) = failed else {
+            self.set_bits(plan.from, plan.to);
+            return Ok(plan.to);
+        };
+        let block = plan.copies[made].block;
+        self.set_bits(plan.from, block);
+        if self.mutants.has(Mutants::COPY_FAILURE_FAILS) {
+            return Err(e);
+        }
+        let holds = self.holds();
+        self.abandon_needing(&holds, block);
+        let open = self.open();
+        self.maps.insert(&mut self.region, open.first, block);
+        Ok(block + 1)
+    }
+
+    /// Set the bit of each block from `from` to `to` that is not in the
+    /// open map, in its first part.
+    fn set_bits(&mut self, from: u64, to: u64) {
+        let open = self.open();
+        for block in from..to {
+            if !self.in_parts(open, block) {
+                self.maps.insert(&mut self.region, open.first, block);
+            }
+        }
     }
 
     /// A copy of block `block`'s content now could not be made: let go
@@ -1681,29 +1893,6 @@ impl<R: Region> CutState<R> {
             self.store(at::ABANDONED, abandoned + 1);
         }
         self.free_unneeded(None);
-    }
-
-    /// Copy block `block` of the home image, whole, into a free record's
-    /// slot, then record it for the epochs `[lo, hi)`.
-    fn copy(&mut self, block: u64, lo: u64, hi: u64, io: &mut dyn Copier) -> io::Result<()> {
-        let Some(index) = self.free_records.pop() else {
-            // Not reached: the bound in force is within the room.
-            return Ok(());
-        };
-        // Aligned, for a read by direct I/O.
-        let mut buf = skyzfs_blk::Buf::zeroed(1);
-        let done = io
-            .read_image(block, &mut buf)
-            .and_then(|()| io.write_copy(index as u32, &buf));
-        if let Err(e) = done {
-            self.free_records.push(index);
-            return Err(e);
-        }
-        let base = self.record_base(index);
-        self.store_record(base + 1, lo | (hi << 32));
-        self.store_record(base, block + 1);
-        self.by_block.entry(block).or_default().push(index);
-        Ok(())
     }
 
     // ---- reading a held cut ----

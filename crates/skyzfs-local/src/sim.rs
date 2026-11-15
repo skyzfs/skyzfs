@@ -465,6 +465,8 @@ struct State {
     /// Calls that wrote to or deallocated in each file, by name: see
     /// [`SimDisk::writes_of`].
     writes_of: BTreeMap<String, u64>,
+    /// Calls that read each file, by name: see [`SimDisk::reads_of`].
+    reads_of: BTreeMap<String, u64>,
     /// The files with a sync that ended later under way, by inode: how
     /// many handles have one.
     syncing: BTreeMap<u64, u64>,
@@ -583,6 +585,13 @@ impl State {
         }
     }
 
+    /// A call read the file `inode`: counted under its name.
+    fn count_read(&mut self, inode: u64) {
+        if let Some(name) = self.name_of(inode).map(str::to_string) {
+            *self.reads_of.entry(name).or_default() += 1;
+        }
+    }
+
     /// A sync that ends later, of the file `inode`, is no longer under
     /// way.
     fn sync_over(&mut self, inode: u64) {
@@ -683,6 +692,7 @@ impl SimDisk {
                 held_waiting: 0,
                 begins_refused: 0,
                 writes_of: BTreeMap::new(),
+                reads_of: BTreeMap::new(),
                 syncing: BTreeMap::new(),
                 writes_while_syncing: BTreeMap::new(),
                 halt: None,
@@ -1162,6 +1172,14 @@ impl SimDisk {
         self.lock().writes_of.get(name).copied().unwrap_or(0)
     }
 
+    /// How many calls of the [`File`] reads (through the cache, of the
+    /// device, or direct) the file named `name` has had so far, failed
+    /// ones included and refused direct ones not (counted under the name
+    /// it had at the call).
+    pub fn reads_of(&self, name: &str) -> u64 {
+        self.lock().reads_of.get(name).copied().unwrap_or(0)
+    }
+
     /// Every call that started writeback so far, in order: the file's
     /// name (where it still has one), the offset and the length.
     pub fn writebacks(&self) -> Vec<(String, u64, u64)> {
@@ -1605,6 +1623,7 @@ impl SimFile {
             state.direct_allowed(self.inode)?;
         }
         let device = how != Through::Cache;
+        state.count_read(self.inode);
         if state.read_fault_of.is_some()
             && state.read_fault_of.as_deref() == state.name_of(self.inode)
         {
@@ -2643,6 +2662,22 @@ mod tests {
         assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
     }
 
+    /// Each read of a file is counted under its name, whichever way it
+    /// reads, and a failed one too.
+    #[test]
+    fn reads_are_counted_by_file() {
+        let disk = disk_with(1, 1);
+        let f = disk.open("f").unwrap();
+        f.write_direct_at(0, &skyzfs_blk::Buf::filled(2, 1))
+            .unwrap();
+        let mut buf = skyzfs_blk::Buf::zeroed(2);
+        f.read_at(0, &mut buf).unwrap();
+        f.read_direct_at(0, &mut buf).unwrap();
+        disk.fail_read_of("f");
+        assert!(f.read_at(0, &mut buf).is_err());
+        assert_eq!((disk.reads_of("f"), disk.reads_of("g")), (3, 0));
+    }
+
     /// One file can refuse direct I/O while the others take it: its
     /// direct writes and reads fail as invalid and count nothing, its
     /// writes through the cache go on, and clearing the faults ends it.
@@ -2662,7 +2697,9 @@ mod tests {
             "a refused write is not counted"
         );
         let mut buf = skyzfs_blk::Buf::zeroed(1);
+        let reads = disk.reads_of("f");
         assert!(f.read_direct_at(0, &mut buf).is_err());
+        assert_eq!(disk.reads_of("f"), reads, "a refused read is not counted");
         g.write_direct_at(0, &block).unwrap();
         f.write_at(0, &[3; 4]).unwrap();
         assert_eq!(read(&disk, "f", 0, 4), [3; 4]);
