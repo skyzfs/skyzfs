@@ -1203,6 +1203,29 @@ Coding replayed M2.T1's nine recorded pools (512 MiB each, 13,946 writes in all)
 
 At 64 MiB the map names about 44% of these small pools at every flush; 1 to 4 MiB names a few times what changed, where counting the named regions whole is good enough and a comparison with the uploaded cut would buy little. The pools are small and their workloads short, so the shares are not a large volume's. The provisional default stays 64 MiB until M2.T4 has the cost of the map's sync on the write path at 1, 4 and 64 MiB; the default is set from the two together.
 
+### The write path with held cuts, round 1 (M2.T4, 2026-11-15)
+
+Run 43720102842: one sequence on one machine (Ubuntu 26.04, x86_64), no origin delay, scale 100, 8 clients, 120 s a workload, release builds. One run behind every figure, and the model rows moved during it (tpcb from 2765 to 3964 tps, select from 26572 to 17259), so most rows have no verdict.
+
+**What the rows are.** No cut is ever released in a release build, so the copies run up to the 256 MiB bound, the cut is abandoned and it starts again (7 to 20 cuts abandoned of about 24 in a window): every first write of a block after a cut copies. That is the copy path's worst case, not an upload's steady state. The intent map does no work in any row: a new volume's state names every region at its start and nothing clears a bit, so `intent_syncs` and `intent_waits` are 0, and the three map rows differ from "no map" only in the build.
+
+| Row | tpcb tps | p50 / p99 / p99.9 / max, ms | Abandoned | select tps (p99 ms) |
+|---|---|---|---|---|
+| model 1 | 2765 | 1.50 / 30.0 / 172 / 474 | | 26572 (1.01) |
+| map 64 MiB, direct copies (M2.3b at e9281c9) | 2328 | 1.69 / 27.6 / 175 / 495 | 10 | 15854 (4.5) |
+| map 4 MiB, direct copies | 1546 | 1.71 / 88.8 / 237 / 401 | 7 | 17035 (3.7) |
+| model 2 | 3694 | 1.51 / 11.0 / 69 / 1169 | | 25713 (1.08) |
+| map 1 MiB, direct copies | 1938 | 1.85 / 47.8 / 228 / 519 | 9 | 16479 (3.7) |
+| no map, direct copies (0c3df3c) | 1460 | 1.69 / 102.0 / 315 / 541 | 7 | 17252 (4.3) |
+| model 3 | 3964 | 1.49 / 9.9 / 71 / 494 | | 17259 (1.26) |
+| buffered copies (9e48d3f, before M2.2c) | 3006 | 1.62 / 25.2 / 117 / 547 | 14 | 22024 (1.32) |
+| no held cuts (M2.3b without `--hold-cuts`) | 3016 | 1.58 / 23.0 / 149 / 811 | 0 | 19594 (1.29) |
+| model 4 | 3529 | 1.50 / 13.5 / 83 / 547 | | 19373 (1.17) |
+
+Ratios to the enclosing model rows on tpcb: map 1 MiB 0.506 and no map 0.381 (both below 0.90, bracket 7.0%); map 64 MiB 0.721, map 4 MiB 0.479, buffered 0.802, no held cuts 0.805 (no verdict, brackets 11.6% to 28.8%).
+
+**Reading.** In this regime direct copies cost about half the throughput and buffered copies cost nothing that one run can see: the four rows with direct copies run at 1460 to 2328 tps with p99 of 28 to 102 ms, while buffered copies and no held cuts sit together at about 3010 tps and p99 of 23 to 25 ms. The work disk takes 2.6 to 2.8 writes a transaction with direct copies against 0.8 with buffered ones: a direct read and a direct write for each copied block, made on the queue's thread, as the review of M2.2c foresaw (its R3). The spread among the direct rows is as large as the models' drift, so the run ranks no region size. Round 2 (test-hooks builds with a holder that releases every cut, and every fourth) shows whether the cost holds when cuts come and go as under an upload.
+
 ### What is open in M2
 
 - **The bound's default.** D7 gives the rule and no number. M2.2 is built with a provisional default so that the rigs run (below); the default is set from M2.T4's figures.
