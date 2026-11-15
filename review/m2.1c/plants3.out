@@ -5,3 +5,5 @@ A4 changed: a remembered place whose fields are written again stays remembered: 
 A5 changed: any change that begins before the slot's end reaches it: KILLED by L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view
 A6 changed: any change that ends after the place reaches it: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view
 A7 changed: a place reached is forgotten and left known: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes
+A8 changed: nothing is remembered: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes
+R12 may_go_on: 8 KiB alone is asked: KILLED by U: a_header_in_a_write_shorter_than_its_slot_leaves_its_place_unknown
