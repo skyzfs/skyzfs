@@ -4,3 +4,5 @@ M2b only the first page of the file is allocated: SURVIVED
 M3 the region is not locked: SURVIVED
 M4 the mapping is private: KILLED by 3: a_death_leaves_every_store_made_before_it, a_held_cut_outlives_kill_9_in_its_mapped_region, stores_are_there_for_the_next_open
 M5 the file is emptied at each open: KILLED by 3: a_death_leaves_every_store_made_before_it, a_held_cut_outlives_kill_9_in_its_mapped_region, stores_are_there_for_the_next_open
+M6 the file is readable by all: SURVIVED
+M7 a new region is said to be kept: KILLED by 1: stores_are_there_for_the_next_open

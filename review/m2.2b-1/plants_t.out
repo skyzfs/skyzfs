@@ -6,3 +6,6 @@ T5 a copies file that cannot be opened counts as missing: SURVIVED
 T6 the mark is dropped on a device taken over too: KILLED by 2: a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole, a_start_on_a_created_device_keeps_no_mark
 T7 the store is told the device was taken over whatever the caller says: KILLED by 1: a_start_on_a_created_device_keeps_no_mark
 T8 the store is told no failure is acknowledged: KILLED by 1: a_held_cut_is_taken_up_only_where_its_state_is_trusted
+T9 the boot is compared by its second word alone: KILLED by 2: a_held_cut_is_taken_up_only_where_its_state_is_trusted, a_held_cut_outlives_kill_9_in_its_mapped_region
+T10 the boot is compared by its first word alone: KILLED by 1: a_region_of_another_version_volume_or_boot_is_refused
+T11 the identity is compared by its first word alone: SURVIVED
