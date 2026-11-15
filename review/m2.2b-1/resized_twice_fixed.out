@@ -1,0 +1,9 @@
+exit 0
+review: before: cut 1 reads blocks 5, 6, 7 as [55, 55, 55]; copied 12288 bytes
+review: an open with 3280 bytes: Resized
+review: an open with 1051840 bytes: Resized
+review: the region's file: 1051840 bytes, then 3280, then 1051840
+review: the next start: Some(Begun("the region holds no cut state (no magic)")), held []
+test review_a_region_shrunk_and_regrown_by_two_refused_opens ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.02s
+finished

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """#100 at 5fd84fb: Codex's P2 on `skyzfs-mapped/src/linux.rs:95`, at the store.
 
-    resized_twice.py CHECKOUT TARGET_DIR
+    resized_twice.py CHECKOUT TARGET_DIR [open]
+
+With `open` the two lengths are given through `Mapped::open` itself (which is not refused here,
+and does to the file what a refused open has done by the time the lock fails), so that a fix in
+that open is seen. Without it the file's length is set directly, as the open did at 5fd84fb.
 
 `Mapped::open` gives a region's file the length asked before it allocates, maps and locks it,
 and the store's open maps the region before it writes its start token. So an open with another
@@ -24,6 +28,7 @@ import subprocess
 import sys
 
 ROOT, TARGET = sys.argv[1], sys.argv[2]
+THROUGH_OPEN = sys.argv[3:] == ['open']
 TESTS = 'crates/skyzfs-local/tests/inplace_real.rs'
 TEST = r'''
 #[cfg(feature = "test-hooks")]
@@ -58,12 +63,22 @@ fn review_a_region_shrunk_and_regrown_by_two_refused_opens() {
     // What two refused opens do to the file: the length a bound of one
     // block asks for (the default bound keeps 65536 records of two
     // words), then the first length again.
-    let file = std::fs::OpenOptions::new().write(true).open(&region).unwrap();
-    let len = file.metadata().unwrap().len();
+    let len = std::fs::metadata(&region).unwrap().len();
     let small = len - 65535 * 16;
-    file.set_len(small).unwrap();
-    file.set_len(len).unwrap();
-    drop(file);
+    if std::env::var_os("REVIEW_THROUGH_OPEN").is_some() {
+        // Through the region's own open, which here is not refused:
+        // it does to the file what a refused one has done by the lock.
+        for bytes in [small, len] {
+            let (mapped, opened) = skyzfs_mapped::Mapped::open(&region, (bytes / 8) as usize).unwrap();
+            println!("review: an open with {bytes} bytes: {opened:?}");
+            drop(mapped);
+        }
+    } else {
+        let file = std::fs::OpenOptions::new().write(true).open(&region).unwrap();
+        file.set_len(small).unwrap();
+        file.set_len(len).unwrap();
+        drop(file);
+    }
     println!("review: the region's file: {len} bytes, then {small}, then {len}");
 
     let mut store = start_holding(&dir, &region, BOOT, true);
@@ -88,6 +103,8 @@ RUN = ['cargo', 'test', '-p', 'skyzfs-local', '--features', 'test-hooks', '--tes
 
 def main():
     env = dict(os.environ, CARGO_INCREMENTAL='0', CARGO_TARGET_DIR=TARGET)
+    if THROUGH_OPEN:
+        env['REVIEW_THROUGH_OPEN'] = '1'
     path = os.path.join(ROOT, TESTS)
     orig = open(path).read()
     try:
