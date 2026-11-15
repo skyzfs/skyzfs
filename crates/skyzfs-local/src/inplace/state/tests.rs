@@ -471,7 +471,12 @@ impl World {
             }
         }
         // The cuts abandoned: in a change, the oldest cuts held before
-        // it that are lost, each once; in any other step, none.
+        // it that are lost, each once; in any other step, none. This
+        // world's copier never refuses, so a change abandons only at the
+        // bound, oldest first. A refused copy lets go the newest cuts
+        // instead, which this check would have to know if the world
+        // refused copies; its count across a death is held by
+        // `a_death_while_a_refused_copy_lets_a_cut_go_counts_it_once`.
         let lost_oldest = held
             .iter()
             .take_while(|cut| !after.iter().any(|c| c.number == cut.number))
@@ -1548,4 +1553,68 @@ fn a_refused_copy_that_lets_every_cut_go_copies_nothing_more() {
         "blocks 6 and 7 were copied for a cut that is gone"
     );
     assert!(io.disk.copies.is_empty(), "{:?}", io.disk.copies.keys());
+}
+
+/// Two starts in a row after a daemon lost at any store of a change that
+/// abandons a cut at the bound count it once: the first start counts the
+/// cut whose abandoning a death interrupted and clears the entry in one
+/// store, so the second finds nothing to count. Cut 1 counts the whole
+/// volume, the bound is two blocks, and the third copy abandons it.
+/// From the review of #98 (`second_start.py`): with the entry left in
+/// the word when its cut is counted, the second start counts it again.
+#[test]
+fn a_second_start_after_a_death_in_an_abandoning_counts_the_cut_once() {
+    quiet_deaths();
+    let bound = 2 * BLOCK_SIZE;
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+        let mut state = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(0));
+        let mut disk = Disk {
+            image: vec![0; BLOCKS as usize],
+            copies: BTreeMap::new(),
+        };
+        state.change(0, 1, &mut disk).expect("the change");
+        assert_eq!(state.freeze(&marked(1), true), 1);
+        state.flushed(1);
+        state.change(1, 1, &mut disk).expect("the change");
+        state.change(2, 1, &mut disk).expect("the change");
+        assert_eq!(state.figures().abandoned, 0);
+        region.die_at(death);
+        let done = catch_unwind(AssertUnwindSafe(|| state.change(3, 1, &mut disk)));
+        region.revive();
+        match done {
+            Ok(result) => {
+                result.expect("the change");
+                assert_eq!(state.figures().abandoned, 1);
+                break;
+            }
+            Err(payload) => {
+                if payload.downcast_ref::<Lost>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        deaths += 1;
+        drop(state);
+        let start = || {
+            CutState::restore(region.clone(), SIZE, bound, OWNER, Mutants(0))
+                .map_err(|(e, _)| e)
+                .expect("the state")
+        };
+        let first = start();
+        let (held, once) = (first.held().len() as u64, first.figures().abandoned);
+        drop(first);
+        let twice = start().figures().abandoned;
+        assert_eq!(
+            once, twice,
+            "a death at store {death}: the first start counts {once} abandoned, the second {twice}"
+        );
+        assert_eq!(
+            once + held,
+            1,
+            "a death at store {death}: cut 1 is held or counted"
+        );
+    }
+    assert!(deaths > 0);
 }

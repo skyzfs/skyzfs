@@ -2240,6 +2240,15 @@ fn an_acknowledging_open_lost_at_any_write_leaves_the_marker_or_a_new_token() {
 /// first store into the region. What the start after it does under
 /// `mutants`, the kernel having reported the failure once.
 fn heard_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
+    let (taken, held, died) = heard_and_lost_at(0, mutants);
+    assert!(died, "the start made no store into the region");
+    (taken, held)
+}
+
+/// The same with the start that hears the failure lost at store `death`
+/// into the region: the next start's outcome and held cuts, and whether
+/// the lost start died at all.
+fn heard_and_lost_at(death: u64, mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, bool) {
     state::tests::quiet_deaths();
     let disk = created(42, 0);
     let region = region();
@@ -2251,21 +2260,25 @@ fn heard_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
     drop(store);
     disk.kill();
     disk.fail_sync_of(COPIES_NAME);
-    region.die_at(0);
+    region.die_at(death);
     let lost = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         start_on(&disk, mutants, &region, ON_CALLER)
     }));
     region.revive();
-    match lost {
-        Ok(_) => panic!("the start made no store into the region"),
-        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => {}
+    let died = match lost {
+        Ok(store) => {
+            drop(store);
+            false
+        }
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
         Err(payload) => std::panic::resume_unwind(payload),
-    }
+    };
     disk.kill();
     // The kernel reports a failed writeback once: the next sync succeeds.
     disk.clear_faults();
     let store = start_on(&disk, mutants, &region, ON_CALLER);
-    after_start(&store)
+    let (taken, held) = after_start(&store);
+    (taken, held, died)
 }
 
 /// A failed sync of the copies, heard by a start that is lost before it
@@ -2287,6 +2300,32 @@ fn a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost() {
         (Some(CutsTakenUp::TakenUp), vec![1]),
         "the start token's rule planted away is not noticed"
     );
+}
+
+/// A start that hears of a failed writeback of the copies, lost at any
+/// store into the region, leaves no state that holds cut 1: it judges
+/// the copies before it records its token in the state, so whatever it
+/// stored is the new state's. Lost before that state is whole, the next
+/// start begins one; lost after, the next start takes up the new state,
+/// which holds no cut. Fails where the start takes the state up before
+/// it has judged the copies (the next look at #100, K8): lost after the
+/// token's two words, it leaves the old state under the token the next
+/// start finds.
+#[test]
+fn a_start_that_heard_a_failed_sync_of_the_copies_lost_at_any_store() {
+    let mut death = 0;
+    loop {
+        let (taken, held, died) = heard_and_lost_at(death, 0);
+        assert!(
+            taken.is_some() && held.is_empty(),
+            "death at {death}: {taken:?}, held {held:?}"
+        );
+        if !died {
+            break;
+        }
+        death += 1;
+    }
+    assert!(death > 2, "the start made {death} stores");
 }
 
 /// What the next start does after a start that trusted the state was
