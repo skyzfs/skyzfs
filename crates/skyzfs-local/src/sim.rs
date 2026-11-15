@@ -425,6 +425,9 @@ struct State {
     write_fault_of: Option<String>,
     read_fault_of: Option<String>,
     read_fault: Option<Fault>,
+    /// The file whose direct reads and writes are refused, as on a file
+    /// system without direct I/O.
+    direct_refused_of: Option<String>,
     /// The file system has no call that deallocates.
     no_holes: bool,
     /// The file system's block size, or none if it cannot be asked.
@@ -509,6 +512,20 @@ fn injected(what: &str) -> io::Error {
 }
 
 impl State {
+    /// Whether the file `inode` takes direct I/O at all: not where
+    /// [`SimDisk::refuse_direct_io_of`] names it.
+    fn direct_allowed(&self, inode: u64) -> io::Result<()> {
+        if self.direct_refused_of.is_some()
+            && self.direct_refused_of.as_deref() == self.name_of(inode)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the simulated file system refused direct I/O on this file",
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether a direct request at `offset` of `len` bytes, in memory at
     /// `address`, is one the file system takes: unsupported where it
     /// has no direct I/O, invalid where it is not aligned.
@@ -650,6 +667,7 @@ impl SimDisk {
                 write_fault_of: None,
                 read_fault_of: None,
                 read_fault: None,
+                direct_refused_of: None,
                 no_holes: false,
                 block_size: Some(SECTOR),
                 block_sizes_of: BTreeMap::new(),
@@ -721,6 +739,7 @@ impl SimDisk {
         state.write_fault_of = None;
         state.writeback_fault_of = None;
         state.read_fault_of = None;
+        state.direct_refused_of = None;
         state.halt = None;
         state.read_fault = None;
         let inodes: Vec<u64> = state.inodes.keys().copied().collect();
@@ -812,6 +831,15 @@ impl SimDisk {
     /// cut: for a test that needs one particular file to refuse.
     pub fn fail_write_of(&self, name: &str) {
         self.lock().write_fault_of = Some(name.to_owned());
+    }
+
+    /// Every direct read and write of the file called `name` is refused
+    /// from now on (`EINVAL`), as by a file system that has no direct
+    /// I/O for it, until the faults are cleared or the power is cut.
+    /// Its reads and writes through the cache go on. Nothing is counted
+    /// of a refused one.
+    pub fn refuse_direct_io_of(&self, name: &str) {
+        self.lock().direct_refused_of = Some(name.to_owned());
     }
 
     /// Every read of the file called `name` fails from now on, through
@@ -980,6 +1008,7 @@ impl SimDisk {
         state.write_fault_of = None;
         state.writeback_fault_of = None;
         state.read_fault_of = None;
+        state.direct_refused_of = None;
         state.halt = None;
         state.read_fault = None;
     }
@@ -1397,6 +1426,7 @@ impl SimFile {
         self.check(state)?;
         if how == Through::Direct {
             state.direct_fits(offset, data.len(), data.as_ptr() as usize)?;
+            state.direct_allowed(self.inode)?;
         }
         if state.halted(true) {
             return Err(injected("halt"));
@@ -1572,6 +1602,7 @@ impl SimFile {
         }
         if how == Through::Direct {
             state.direct_fits(offset, buf.len(), buf.as_ptr() as usize)?;
+            state.direct_allowed(self.inode)?;
         }
         let device = how != Through::Cache;
         if state.read_fault_of.is_some()
@@ -2609,6 +2640,34 @@ mod tests {
         assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
         disk.clear_faults();
         f.write_at(0, &[2; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
+    }
+
+    /// One file can refuse direct I/O while the others take it: its
+    /// direct writes and reads fail as invalid and count nothing, its
+    /// writes through the cache go on, and clearing the faults ends it.
+    #[test]
+    fn one_file_can_refuse_direct_io() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        let g = disk.create("g").unwrap();
+        let block = skyzfs_blk::Buf::filled(1, 2);
+        disk.refuse_direct_io_of("f");
+        let writes = disk.writes_of("f");
+        let refused = f.write_direct_at(0, &block).map_err(|e| e.kind());
+        assert_eq!(refused, Err(io::ErrorKind::InvalidInput));
+        assert_eq!(
+            disk.writes_of("f"),
+            writes,
+            "a refused write is not counted"
+        );
+        let mut buf = skyzfs_blk::Buf::zeroed(1);
+        assert!(f.read_direct_at(0, &mut buf).is_err());
+        g.write_direct_at(0, &block).unwrap();
+        f.write_at(0, &[3; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [3; 4]);
+        disk.clear_faults();
+        f.write_direct_at(0, &block).unwrap();
         assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
     }
 

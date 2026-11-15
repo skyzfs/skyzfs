@@ -193,8 +193,9 @@
 //! is the cut's. Before a write or a write-zeroes is begun, on the
 //! queue's thread, its blocks pass through the cut state: a block a
 //! held cut reads is read from the home image and copied into
-//! `copies.img` there and then, and the write begins only after the
-//! copy is written. A copy that cannot be made (a full file system:
+//! `copies.img` there and then, by direct I/O as the image is written
+//! (M2.2c), and the write begins only after the copy is written. A copy
+//! that cannot be made (a full file system:
 //! `copies.img` grows a slot at a time and is not allocated up to the
 //! bound; or a failed write of it, or read of the image) lets go the
 //! held cuts that need it, and the write goes on: a recovery point is
@@ -1906,9 +1907,25 @@ fn open_copies<'a, D: Dir>(
 }
 
 /// The cut state's I/O: the home image read as the store reads it, and
-/// the copies file written through the kernel's cache, which a death of
-/// the daemon leaves to the next instance (the state is trusted in no
-/// other boot, M2.2b).
+/// the copies file written the same way, by direct I/O in the daemon
+/// (M2.2c; `read_cut` reads the copies so too).
+///
+/// A copy written by direct I/O was taken by the device when its write
+/// returns, and a failure of it is that write's own error, which lets
+/// go the cuts that need the copy there and then (`state.rs`). Through
+/// the kernel's cache a write returned before the device took it: a
+/// writeback that failed later was reported to no one if the file's
+/// inode was evicted while no daemon held the file, and the next read
+/// of the copy returned what the disk held (the review of #100, Q1).
+/// What the device took, a death of the daemon leaves to the next
+/// instance; a reboot may lose it, and the state is trusted in no other
+/// boot (M2.2b).
+///
+/// A copies file that takes no direct I/O, or not at a block's
+/// alignment, fails every copy, and each lets go the cuts that need it:
+/// no copy falls back to the kernel's cache (coding's reading, M2.2c).
+/// The start checks direct I/O on the home image, in the same directory
+/// and so on the same file system.
 struct Copies<'a, D: Dir> {
     dir: &'a D,
     home: &'a D::File,
@@ -1927,7 +1944,13 @@ impl<D: Dir> state::Copier for Copies<'_, D> {
     }
 
     fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
-        open_copies(self.dir, self.copies)?.write_at(u64::from(slot) * skyzfs_blk::BLOCK_SIZE, buf)
+        let at = u64::from(slot) * skyzfs_blk::BLOCK_SIZE;
+        let file = open_copies(self.dir, self.copies)?;
+        if self.direct {
+            file.write_direct_at(at, buf)
+        } else {
+            file.write_at(at, buf)
+        }
     }
 }
 
@@ -1953,13 +1976,22 @@ impl<D: Dir> InPlace<D> {
     ///   daemon's region is on tmpfs, which a reboot empties; the boot
     ///   id guards a region kept elsewhere);
     /// - the copies file was synced by this start, and the sync
-    ///   succeeded: a copy is written through the kernel's cache and not
-    ///   synced while the volume is served (the lead's decision 6), so a
-    ///   writeback that failed after the copy was written would have
-    ///   the next read of it return what the disk holds. The kernel
-    ///   reports such a failure to the first sync after it, this one. A
-    ///   copies file that is missing is as good as synced only if the
-    ///   state names no copy;
+    ///   succeeded. A copy is not synced while the volume is served (the
+    ///   lead's decision 6). The daemon writes it by direct I/O
+    ///   ([`Copies`]), so a copy the device refused failed at its write
+    ///   and let its cuts go then, and no page of it waits for a
+    ///   writeback. The sync stays for what that does not cover, as the
+    ///   start's sync of the image does (design §5.1): a file system
+    ///   that takes a direct write through its cache, and the tests'
+    ///   I/O through the cache. There a writeback that failed after the
+    ///   copy was written would have the next read of it return what the
+    ///   disk holds. The kernel reports such a failure to the first sync
+    ///   after it only while the file's inode stays in memory: one
+    ///   evicted while no daemon held the file loses the error (the
+    ///   review of #100, Q1). So this sync narrows that case and does
+    ///   not close it; for the daemon's own copies the direct write
+    ///   does. A copies file that is missing is as good as synced only
+    ///   if the state names no copy;
     /// - the start does not acknowledge a failure: a failed volume's
     ///   state is not one this start can vouch for;
     /// - the volume was not opened since the instance that kept the
@@ -2163,8 +2195,11 @@ impl<D: Dir> InPlace<D> {
     /// (with `false`, `buf` is untouched and the image the cut is
     /// uploaded onto holds the block). Beside the write path: a block a
     /// write has changed since the instant is read from its copy, which
-    /// was whole before the write began. A block past the volume's end,
-    /// or a buffer of another size than a block, is refused.
+    /// was whole before the write began. The image and the copies are
+    /// read by direct I/O where the store's I/O is direct, as they were
+    /// written, so that no page of the copies file is left in the
+    /// kernel's cache (M2.2c). A block past the volume's end, or a
+    /// buffer of another size than a block, is refused.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn read_cut(&mut self, number: u64, block: u64, buf: &mut [u8]) -> io::Result<bool> {
         if block >= self.geometry.size_bytes() / skyzfs_blk::BLOCK_SIZE {
@@ -2196,8 +2231,13 @@ impl<D: Dir> InPlace<D> {
                 Ok(true)
             }
             state::Read::Copy(slot) => {
+                let at = u64::from(slot) * skyzfs_blk::BLOCK_SIZE;
                 let file = open_copies(&self.dir, &mut self.copies)?;
-                file.read_at(u64::from(slot) * skyzfs_blk::BLOCK_SIZE, buf)?;
+                if self.io.direct {
+                    file.read_direct_at(at, buf)?;
+                } else {
+                    file.read_at(at, buf)?;
+                }
                 Ok(true)
             }
         }
