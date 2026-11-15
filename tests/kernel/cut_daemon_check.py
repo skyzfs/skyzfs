@@ -44,17 +44,36 @@ cut_ref.opens for whether each opens as itself) are then held to:
   rewrites its status file at most every 100 ms, when a counter has
   changed, so the rig reads it a second after the last export and
   writes the monotonic times before and after the read
-  (DIR/status-time.tsv); with the status's `age_ms` they bound when the
-  status was written. A status written before the daemon's last `cut`
-  line fails: a second is ten of the daemon's intervals;
+  (DIR/status-time.tsv). The values are held to the last cut; where
+  they differ, the read's time less the status's `age_ms` (a difference
+  of /proc/uptime, which ticks every 10 ms) says whether the status was
+  written before the daemon's last `cut` line, which after a second,
+  ten of the daemon's intervals, is the daemon's fault too;
 - `sessions` and `import_syncs_before_return`: what ZFS says it synced,
   as the cut rig judges the reference (cut_check.py).
 
-Controls (`ctl_*`, `EXPECTED`): the daemon's list with one cut dropped,
-with one group moved by one, with one answer turned, and the
-reference's cuts by the rule `early` (each at the flush before its
-own): each must make `cuts` fail. They show that the comparison would
-see each kind of wrong count.
+Controls (`ctl_*`, `EXPECTED`), wrong lists that must make `cuts` fail,
+so that the comparison is shown to see each thing it compares:
+- `drop`: the middle cut left out; `last`: the last cut left out;
+  `extra`: one cut more after the last (the count alone tells these);
+- `group`: one group moved by one; `opens`: one answer turned;
+  `late`: one cut at the next barrier, with its group and answer (the
+  instant alone tells it);
+- `early`: the reference by the rule `early` (each cut at the barrier
+  before its own);
+- `txg-alone`, `count-repeats`, `previous`: the reference by the rules
+  that key a repeat on the group alone, count every uberblock write,
+  and compare only with the write before. Where a recording has
+  nothing that tells a rule from the design's (no group written twice,
+  no flush between copies of an uberblock, no stale multihost write)
+  the rule gives the design's cuts, and the control says `same`; the
+  table says where each must be caught.
+
+A `cuts` line that fails where the log holds what the check cannot
+place is the rig's error (ERROR), not a verdict: the daemon's flush
+after a write with FUA, received when the write completed with no line
+of its own, and a write-zeroes over a label, applied when it ran with
+no line of its own. ZFS issues neither; no recording has had one.
 
 Not judged here: the volume's content at a cut's instant (the next
 stage, after M2.2b), and a daemon that is started again on the volume
@@ -74,8 +93,24 @@ import cut_check  # noqa: E402
 import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-CONTROLS = ('drop', 'group', 'opens', 'early')
-EXPECTED = {ctl: 'caught' for ctl in CONTROLS}
+RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full')
+LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
+RULES = ('early', 'txg-alone', 'count-repeats', 'previous')
+CONTROLS = LISTS + RULES
+# By recording. The rules' columns are the runs on 192427b and 2c67c42's
+# first run (43675946002, 43676360281 on both images): txg-alone tells
+# the rewinds whose new history writes a group the old one used (and
+# rewindsync and multihost in dm-log-writes' runs, cut_check); count-
+# repeats tells a flush between copies of an uberblock (multihost
+# always; stray in two of three, its flushes being the rig's, every
+# 2 ms); previous tells a stale multihost write (one of three).
+EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
+    'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
+                      rewindsync=('same', 'caught'), multihost=('same', 'caught')),
+    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught')),
+    'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught')),
+})
+CLOCK_NS = 10_000_000       # the tick of /proc/uptime, which age_ms is a difference of
 SECTOR = 512
 
 
@@ -244,15 +279,39 @@ def reference(cs, op):
     return [{'txg': c['txg'], 'itself': op[c['n']]['itself'], 'prefix': c['prefix']} for c in cs]
 
 
-def mutants(dcuts):
-    """The controls' wrong lists of the daemon's cuts -> {name: list or None when it cannot be built}."""
-    out = {}
+def mutants(dcuts, barriers):
+    """The controls' wrong lists of the daemon's cuts -> {name: list or None
+    when it cannot be built}. barriers: the records of every barrier, in
+    order."""
     if not dcuts:
-        return {'drop': None, 'group': None, 'opens': None}
+        return {c: None for c in LISTS}
     mid = len(dcuts) // 2
-    out['drop'] = dcuts[:mid] + dcuts[mid + 1:]
-    out['group'] = [dict(c, txg=c['txg'] + 1) if k == mid else c for k, c in enumerate(dcuts)]
-    out['opens'] = [dict(c, itself=not c['itself']) if k == mid else c for k, c in enumerate(dcuts)]
+
+    def after(prefix):
+        return next((b for b in barriers if b > prefix), None)
+    out = {
+        'drop': dcuts[:mid] + dcuts[mid + 1:],
+        'last': dcuts[:-1],
+        'extra': dcuts + [dict(dcuts[-1], prefix=after(dcuts[-1]['prefix']) or dcuts[-1]['prefix'] + 1)],
+        'group': [dict(c, txg=c['txg'] + 1) if k == mid else c for k, c in enumerate(dcuts)],
+        'opens': [dict(c, itself=not c['itself']) if k == mid else c for k, c in enumerate(dcuts)],
+    }
+    nxt = after(dcuts[mid]['prefix'])
+    out['late'] = None if nxt is None else [dict(c, prefix=nxt) if k == mid else c for k, c in enumerate(dcuts)]
+    return out
+
+
+def unplaced(records, dev_bytes):
+    """What the log does not place where the store applied it -> [str]."""
+    labels = cut_ref.label_offsets(dev_bytes)
+    out = []
+    n = sum(1 for r in records if r.get('op') == 'fua_flush')
+    if n:
+        out.append(f'{n} flushes after a write with FUA')
+    n = sum(1 for r in records if r.get('op') == 'write_zeroes'
+            and cut_ref.touches_label(r['offset'], r['bytes'], labels))
+    if n:
+        out.append(f'{n} write-zeroes over a label')
     return out
 
 
@@ -265,15 +324,10 @@ def read_status(text):
     return out
 
 
-# How far apart a cut line's time and the status's own count of it may
-# be: the log line and the counter are not written at one instant.
-SLACK_NS = 2_000_000
-
-
 def status_window(status, text):
     """status-time.tsv (`BEFORE_NS AFTER_NS` of the read) and the status's
-    age_ms -> (lo, hi): the monotonic times between which the status was
-    written."""
+    age_ms -> the latest monotonic time at which the status can have
+    been written."""
     f = text.split()
     age = status.get('age_ms', '')
     if len(f) != 2 or not all(x.isdigit() for x in f) or not age.isdigit():
@@ -281,31 +335,28 @@ def status_window(status, text):
     before, after = int(f[0]), int(f[1])
     if after < before:
         raise RigError(f'status-time.tsv: the read ended before it began ({before} {after})')
-    age_ns = int(age) * 1_000_000
-    return before - age_ns - 1_000_000, after - age_ns
+    return after - int(age) * 1_000_000 + CLOCK_NS
 
 
-def status_verdict(status, ref, times=None, window=None):
+def status_verdict(status, ref, times=None, latest=None):
     """status.txt's values and the reference's cuts -> (ok, detail).
 
-    times: the monotonic times of the daemon's cut lines; window: when the
-    status was written (status_window). Without them the status is held
-    to every cut."""
-    if window is not None and times:
-        lo, hi = window
-        if hi + SLACK_NS < times[-1]:
-            k = sum(1 for t in times if t <= hi)
-            return False, (f'the status was written before the daemon\'s last cut line, at most {k} of '
-                           f'{len(times)} cuts after; it was {(times[-1] - hi) / 1e6:.0f} ms older than that '
-                           f'line when the rig read it a second after the export')
+    The values are held to the last cut. Where they differ, times (of the
+    daemon's cut lines) and latest (status_window) say whether the status
+    was written before the last cut line."""
     want = {'cuts': str(len(ref))}
     if ref:
         want['cut_group'] = str(ref[-1]['txg'])
         want['cut_opens'] = 'itself' if ref[-1]['itself'] else 'rewind'
     bad = [f'{k} {status.get(k)!r}, not {v!r}' for k, v in want.items() if status.get(k) != v]
-    if bad:
-        return False, '; '.join(bad)
-    return True, ', '.join(f'{k} {v}' for k, v in want.items())
+    if not bad:
+        return True, ', '.join(f'{k} {v}' for k, v in want.items())
+    if latest is not None and times and latest < times[-1]:
+        k = sum(1 for t in times if t <= latest)
+        bad.append(f'the status was written before the daemon\'s last cut line, after at most {k} of '
+                   f'{len(times)}, at least {(times[-1] - latest) / 1e6:.0f} ms before it, and read a second '
+                   'after the export')
+    return False, '; '.join(bad)
 
 
 def main():
@@ -320,8 +371,10 @@ def main():
         lines.append(f'{key}\t{verdict}\t{flat(detail)}')
         print(f'{name}: {key}: {verdict}: {flat(detail)}', flush=True)
 
-    rc = 0
+    rc, errored = 0, False
     try:
+        if name not in RECS:
+            raise RigError(f'no row of EXPECTED for the recording {name!r}')
         with open(log) as f:
             instances = parse_log(f.read())
         if len(instances) != 1:
@@ -339,8 +392,13 @@ def main():
             f"with their bytes), {sum(1 for u in taken if u['taken'] == 'marks')} uberblock writes that mark, of "
             f"{len(taken)}; {sum(1 for r in records if 'mark' in r['flags'])} marks")
         ok, detail = compare(dcuts, ref)
-        put('cuts', 'PASS' if ok else 'FAIL', detail)
-        if not ok:
+        cannot = [] if ok else unplaced(records, dev)
+        if cannot:
+            put('cuts', 'ERROR', f"{detail}; the log holds what the check cannot place ({', '.join(cannot)})")
+            errored = True
+        else:
+            put('cuts', 'PASS' if ok else 'FAIL', detail)
+        if not ok and not cannot:
             rc = 1
         verdict, detail = numbers_verdict(dcuts)
         put('cut_numbers', verdict, detail)
@@ -351,8 +409,8 @@ def main():
         with open(os.path.join(rdir, 'status.txt')) as f:
             status = read_status(f.read())
         with open(os.path.join(rdir, 'status-time.tsv')) as f:
-            window = status_window(status, f.read())
-        ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], window)
+            latest = status_window(status, f.read())
+        ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], latest)
         put('status', 'PASS' if ok else 'FAIL', detail)
         if not ok:
             rc = 1
@@ -384,21 +442,28 @@ def main():
             rc = 1
         # The controls: each wrong list must fail the comparison.
         got = {}
-        for ctl, wrong in mutants(dcuts).items():
+        barriers = [r['i'] for r in records if 'flush' in r['flags']]
+        for ctl, wrong in mutants(dcuts, barriers).items():
             if wrong is None:
-                got[ctl] = ('not built', 'the daemon counted no cut')
+                got[ctl] = ('not built', 'no cut, or no barrier after the middle one')
             else:
                 ok, detail = compare(wrong, ref)
                 got[ctl] = ('missed' if ok else 'caught', detail)
-        ecs, _ = cut_ref.cuts(records, ubs, 'early')
-        eref = reference(ecs, cut_ref.opens(records, read, dev, ecs))
-        ok, detail = compare(dcuts, eref)
-        got['early'] = ('missed' if ok else 'caught', f"the reference by the rule early: {detail}")
+        for rule in RULES:
+            rcs, _ = cut_ref.cuts(records, ubs, rule)
+            rref = reference(rcs, cut_ref.opens(records, read, dev, rcs))
+            if rule != 'early' and compare(rref, ref)[0]:
+                got[rule] = ('same', f'the rule {rule} gives the design\'s {len(ref)} cuts here')
+                continue
+            ok, detail = compare(dcuts, rref)
+            got[rule] = ('missed' if ok else 'caught', f'the reference by the rule {rule}: {detail}')
         for ctl in CONTROLS:
             verdict, detail = got[ctl]
-            good = verdict == EXPECTED[ctl]
+            want = EXPECTED[ctl][name]
+            good = verdict in want if isinstance(want, tuple) else verdict == want
+            want = ' or '.join(want) if isinstance(want, tuple) else want
             put(f'ctl_{ctl}', verdict.upper().replace(' ', '_'),
-                f"{detail} (expected: {EXPECTED[ctl]}{'' if good else '; DIFFERS'})")
+                f"{detail} (expected: {want}{'' if good else '; DIFFERS'})")
             if not good:
                 rc = 1
     except RigError as e:
@@ -406,6 +471,8 @@ def main():
         rc = 2
     except Exception as e:  # noqa: BLE001 -- anything else is the rig's too, not a verdict
         put('rig_error', 'ERROR', f'{type(e).__name__}: {e}')
+        rc = 2
+    if errored and rc == 0:
         rc = 2
     put('time', 'INFO', f'{time.monotonic() - t0:.0f} s')
     with open(os.path.join(rdir, 'results.tsv'), 'a') as f:

@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_cut_daemon_check.py -v
+      - run: python3 tests/kernel/test_cut_daemon_main.py -v
 
   record:
     name: record through skyzfsd and check, ${{ matrix.image }}

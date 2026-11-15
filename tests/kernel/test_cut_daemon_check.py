@@ -133,13 +133,44 @@ class RoundTrip(unittest.TestCase):
 
     def test_every_control_is_caught(self):
         recs, rread, dev, dcuts, ref, ubs = self.run_on('life')
-        for ctl, wrong in cdc.mutants(dcuts).items():
+        barriers = [r['i'] for r in recs if 'flush' in r['flags']]
+        wrongs = cdc.mutants(dcuts, barriers)
+        self.assertEqual(set(wrongs), set(cdc.LISTS))
+        for ctl, wrong in wrongs.items():
             ok, detail = cdc.compare(wrong, ref)
             self.assertFalse(ok, ctl)
         ecs, _ = cut_ref.cuts(recs, ubs, 'early')
         eref = cdc.reference(ecs, cut_ref.opens(recs, rread, dev, ecs))
         ok, detail = cdc.compare(dcuts, eref)
         self.assertFalse(ok, 'early')
+
+    def test_each_list_is_told_by_what_it_names(self):
+        """last and extra by the count alone, late by the instant alone (the
+        review of #99, S1)."""
+        recs, _, _, dcuts, ref, _ = self.run_on('life')
+        wrongs = cdc.mutants(dcuts, [r['i'] for r in recs if 'flush' in r['flags']])
+        for ctl in ('last', 'extra'):
+            self.assertIn('the daemon counted', cdc.compare(wrongs[ctl], ref)[1], ctl)
+        mid = len(dcuts) // 2
+        late = wrongs['late'][mid]
+        self.assertEqual((late['txg'], late['itself']), (dcuts[mid]['txg'], dcuts[mid]['itself']))
+        self.assertGreater(late['prefix'], dcuts[mid]['prefix'])
+        self.assertEqual(cdc.mutants([], []), {c: None for c in cdc.LISTS})
+        self.assertIsNone(cdc.mutants(dcuts, [r['i'] for r in recs if 'flush' in r['flags']
+                                              and r['i'] <= dcuts[mid]['prefix']])['late'])
+
+    def test_the_rules_on_the_fixtures(self):
+        """Each rule control is caught where EXPECTED says it must be, on the
+        recordings of M2.T1 read through the daemon's log."""
+        for name in ('life', 'rewind', 'multihost'):
+            recs, rread, dev, dcuts, ref, ubs = self.run_on(name)
+            for rule in cdc.RULES:
+                rcs, _ = cut_ref.cuts(recs, ubs, rule)
+                rref = cdc.reference(rcs, cut_ref.opens(recs, rread, dev, rcs))
+                same = rule != 'early' and cdc.compare(rref, ref)[0]
+                verdict = 'same' if same else ('missed' if cdc.compare(dcuts, rref)[0] else 'caught')
+                want = cdc.EXPECTED[rule][name]
+                self.assertIn(verdict, want if isinstance(want, tuple) else (want,), (name, rule))
 
     def test_a_flush_received_before_the_uberblock_was_applied(self):
         """Design §5.2 cuts at the first flush *received* after the mark.
@@ -170,6 +201,62 @@ class RoundTrip(unittest.TestCase):
         fubs = cut_ref.scan(flat, cdc.read_of(flat, dev), dev)
         fcs, _ = cut_ref.cuts(flat, fubs)
         self.assertEqual(fcs[0]['flush_record'], [r['i'] for r in flat if r.get('tag') == '63' and 'flush' in r['flags']][0])
+
+    def test_a_copy_applied_while_a_flush_carries_its_state(self):
+        """A stray flush received after the first copy of a group's
+        uberblock was applied, with its barrier after the second: it cuts
+        the group at its own barrier, and the copy it carries past marks
+        nothing, so the group is cut once (the review of #99, S5, its
+        test_receipt.py)."""
+        records, read, dev = fixture('life')
+        cs, _ = daemon_cuts_of(records, read, dev)
+        first = cs[0]
+        copies = sorted({u['record'] for u in cut_ref.scan(records, read, dev)
+                         if (u['txg'], u['rootbp']) == (first['txg'], first['rootbp'])})
+        self.assertGreaterEqual(len(copies), 2)
+        text, marks = request_log(records, read, dev, {}, stray_before={copies[1]})
+        recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], cdc.read_marks(marks))
+        rread = cdc.read_of(recs, dev)
+        rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, dev))
+        stray = [r['i'] for r in recs if 'flush' in r['flags'] and r.get('tag') == '63']
+        self.assertEqual(len(stray), 1)
+        self.assertEqual(rcs[0]['flush_record'], stray[0], "the stray flush carried the first copy's mark")
+        self.assertEqual([c['txg'] for c in rcs], [c['txg'] for c in cs], 'each group is cut once')
+
+    def test_a_mark_made_since_the_receipt_outlives_the_barrier(self):
+        """A flush received before every copy of a group's uberblock was
+        applied, whose barrier comes after the last copy, carries no mark;
+        the mark the copies made is the next flush's to cut (the review of
+        #99, S5: cut_ref.cuts's `mark = kept`)."""
+        records, read, dev = fixture('life')
+        cs, _ = daemon_cuts_of(records, read, dev)
+        first = cs[0]
+        copies = sorted({u['record'] for u in cut_ref.scan(records, read, dev)
+                         if (u['txg'], u['rootbp']) == (first['txg'], first['rootbp'])})
+        self.assertTrue(all(c < first['flush_record'] for c in copies))
+        # The fixture reads a record's bytes by its number: the two added
+        # records take numbers between their neighbours'.
+        out = []
+        for r in records:
+            if r['i'] == copies[0]:
+                out.append({'i': r['i'] - 0.5, 'flags': ['receipt'], 'offset': 0, 'bytes': 0, 'tag': '63'})
+            out.append(r)
+            if r['i'] == copies[-1]:
+                out.append({'i': r['i'] + 0.5, 'flags': ['flush'], 'offset': 0, 'bytes': 0, 'tag': '63',
+                            'received': True})
+        rcs, _ = cut_ref.cuts(out, cut_ref.scan(out, read, dev))
+        stray = [r['i'] for r in out if r.get('tag') == '63' and 'flush' in r['flags']]
+        self.assertEqual([c['txg'] for c in rcs], [c['txg'] for c in cs])
+        self.assertNotIn(stray[0], [c['flush_record'] for c in rcs])
+        self.assertGreater(rcs[0]['flush_record'], stray[0])
+
+    def test_guards_of_the_receipt(self):
+        with self.assertRaises(ValueError):
+            cut_ref.cuts([{'i': 0, 'flags': ['receipt'], 'tag': '1', 'offset': 0, 'bytes': 0},
+                          {'i': 1, 'flags': ['receipt'], 'tag': '1', 'offset': 0, 'bytes': 0}], [])
+        text = f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+        with self.assertRaises(RigError):
+            cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
 
     def test_a_cut_line_with_no_barrier_before_it(self):
         text = f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcut\t1\tflush\titself\t-\t9\n'
@@ -240,26 +327,27 @@ class Status(unittest.TestCase):
 
     def test_a_status_written_before_the_last_cut(self):
         """Run 43675273810: the status read at once after the export was
-        one write behind (cuts 22 of 26). The rig now reads it a second
-        later; one older than the last cut line still fails, and says so."""
+        one write behind (cuts 22 of 26). The rig reads it a second later.
+        The values decide; the time only says why they differ (the review
+        of #99, S3: age_ms is a difference of /proc/uptime, which ticks
+        every 10 ms)."""
         last = cdc.read_status('cuts 2\ncut_group 9\ncut_opens rewind\nage_ms 80\n')
         stale = cdc.read_status('cuts 1\ncut_group 5\ncut_opens itself\nage_ms 80\n')
         ms = 1_000_000
         times = [100 * ms, 300 * ms]
-        window = cdc.status_window(last, f'{400 * ms}\t{420 * ms}\n')
-        self.assertEqual(window, (319 * ms, 340 * ms))
-        ok, detail = cdc.status_verdict(last, self.REF, times, window)
-        self.assertTrue(ok, detail)
-        # Written after the last cut line and still one behind.
-        self.assertFalse(cdc.status_verdict(stale, self.REF, times, window)[0])
-        window = cdc.status_window(stale, f'{350 * ms}\t{360 * ms}\n')
-        ok, detail = cdc.status_verdict(stale, self.REF, times, window)
+        latest = cdc.status_window(last, f'{400 * ms}\t{420 * ms}\n')
+        self.assertEqual(latest, 350 * ms)
+        self.assertTrue(cdc.status_verdict(last, self.REF, times, latest)[0])
+        ok, detail = cdc.status_verdict(stale, self.REF, times, latest)
         self.assertFalse(ok)
-        self.assertIn('before the daemon\'s last cut line, at most 1 of 2', detail)
-        # Within the slack of the last line, the values decide.
-        window = cdc.status_window(last, f'{379 * ms}\t{381 * ms}\n')
-        self.assertTrue(cdc.status_verdict(last, self.REF, times, window)[0])
-        self.assertFalse(cdc.status_verdict(stale, self.REF, times, window)[0])
+        self.assertNotIn('before the daemon', detail)
+        latest = cdc.status_window(stale, f'{350 * ms}\t{360 * ms}\n')
+        ok, detail = cdc.status_verdict(stale, self.REF, times, latest)
+        self.assertFalse(ok)
+        self.assertIn('before the daemon\'s last cut line, after at most 1 of 2', detail)
+        # A right status whose window, read early, ends before the last
+        # cut line: the clock's tick, not the daemon.
+        self.assertTrue(cdc.status_verdict(last, self.REF, times, 299 * ms)[0])
 
     def test_no_time_for_the_status(self):
         for st, text in (('age_ms 3\n', ''), ('age_ms 3\n', '5\tx\n'), ('cuts 1\n', '5\t6\n'),
@@ -281,8 +369,28 @@ class Numbers(unittest.TestCase):
 
 
 class Expected(unittest.TestCase):
-    def test_every_control_is_caught(self):
-        self.assertEqual(cdc.EXPECTED, {c: 'caught' for c in ('drop', 'group', 'opens', 'early')})
+    def test_the_table(self):
+        self.assertEqual(set(cdc.EXPECTED), set(cdc.CONTROLS))
+        for ctl in cdc.LISTS + ('early',):
+            self.assertEqual(cdc.EXPECTED[ctl], {r: 'caught' for r in cdc.RECS}, ctl)
+        for ctl in ('txg-alone', 'count-repeats', 'previous'):
+            self.assertEqual(set(cdc.EXPECTED[ctl]), set(cdc.RECS), ctl)
+        # where each rule must be told for sure
+        self.assertEqual(cdc.EXPECTED['txg-alone']['rewind'], 'caught')
+        self.assertEqual(cdc.EXPECTED['count-repeats']['multihost'], 'caught')
+
+
+class Unplaced(unittest.TestCase):
+    """What the log cannot place makes a failed `cuts` the rig's error (the
+    review of #99, S4, and Codex's two findings)."""
+    def test_unplaced(self):
+        dev = 512 << 20
+        recs = [{'flags': ['flush'], 'op': 'flush', 'offset': 0, 'bytes': 0},
+                {'flags': ['discard'], 'op': 'write_zeroes', 'offset': 1 << 20, 'bytes': 4096}]
+        self.assertEqual(cdc.unplaced(recs, dev), [])
+        recs += [{'flags': ['flush'], 'op': 'fua_flush', 'offset': 0, 'bytes': 0},
+                 {'flags': ['discard'], 'op': 'write_zeroes', 'offset': 200 << 10, 'bytes': 4096}]
+        self.assertEqual(cdc.unplaced(recs, dev), ['1 flushes after a write with FUA', '1 write-zeroes over a label'])
 
 
 if __name__ == '__main__':
