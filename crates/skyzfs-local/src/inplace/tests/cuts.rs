@@ -1253,6 +1253,63 @@ fn a_copy_that_cannot_be_made_lets_its_cuts_go_and_the_write_goes_on() {
     }
 }
 
+/// The copies are written and read by direct I/O where the store's I/O
+/// is (M2.2c): no page of the copies file is in the kernel's cache once
+/// a copy is made, or once a held cut is read from it, so no copy waits
+/// for a writeback whose failure can be lost (the review of #100, Q1).
+/// A copy whose write the disk then fails lets go the cut that needs it
+/// at that write, which goes on. Through the cache (the tests' I/O
+/// only) the copy leaves its page: the count does see one. The defects,
+/// each planted by hand (M2.2c's description): a copy written through
+/// the cache, and one read through it.
+#[test]
+fn the_copies_are_written_and_read_past_the_cache() {
+    let copies_pages = |disk: &SimDisk| -> u64 {
+        disk.open(COPIES_NAME)
+            .and_then(|file| file.cached_pages())
+            .expect("the copies file's pages in the cache")
+    };
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(36, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, io);
+        write(&mut store, 5, 0x55).unwrap();
+        // Cut 1, the whole volume (the state is new).
+        group(&mut store, 100, 7, 70);
+        let before = disk.writes_of(COPIES_NAME);
+        // Copied for cut 1, which reads 0x55.
+        write(&mut store, 5, 0x66).unwrap();
+        assert_eq!(disk.writes_of(COPIES_NAME), before + 1, "{case}: one copy");
+        let written = copies_pages(&disk);
+        let mut buf = Buf::filled(1, 0xEE);
+        assert_eq!(store.read_cut(1, 5, &mut buf).ok(), Some(true), "{case}");
+        assert_eq!(buf.to_vec(), vec![0x55; BLOCK_USIZE], "{case}");
+        let after_read = copies_pages(&disk);
+        if io.direct {
+            assert_eq!(written, 0, "{case}: the copy's write left a page");
+            assert_eq!(after_read, 0, "{case}: the copy's read left a page");
+        } else {
+            assert!(
+                written > 0,
+                "{case}: a copy through the cache leaves its page"
+            );
+        }
+        // The disk fails the next copy's write. Cut 1, the whole
+        // volume, reads block 9, and goes at that write.
+        disk.fail_write_of(COPIES_NAME);
+        assert_eq!(write(&mut store, 9, 0x99), Ok(()), "{case}");
+        assert!(store.held_cuts().is_empty(), "{case}");
+        assert_eq!(store.cut_figures().abandoned, 1, "{case}");
+        disk.clear_faults();
+        assert_eq!(
+            read(&mut store, 9).unwrap(),
+            vec![0x99; BLOCK_USIZE],
+            "{case}"
+        );
+    }
+}
+
 /// The same with cut 1 kept: block 5 changed after cut 1's instant
 /// and is copied for it before the copies are refused, so cut 1 still
 /// reads 0x55 once cut 2 has gone, and its copies are not freed.

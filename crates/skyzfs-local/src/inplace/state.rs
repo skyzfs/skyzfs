@@ -507,7 +507,9 @@ pub trait Copier {
     /// Read block `block` of the home image into `buf`, one block.
     fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()>;
     /// Write `buf`, one block, into slot `slot` of the copies file.
-    /// Whole before it returns: a later instance reads it.
+    /// Whole before it returns: a later instance reads it. The store
+    /// writes it by direct I/O, so that a failure of the write is its
+    /// error and not a later writeback's (M2.2c).
     fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()>;
 }
 
