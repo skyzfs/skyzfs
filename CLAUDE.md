@@ -397,7 +397,13 @@ there, and the user decides when it merges.
   fast, and the work disk's mount options and write cache.
   `TB_SYSCALLS=1` on an entry traces the daemon's system calls and
   `TB_PERF_RECORD=1` records a profile of it (M1.T15); a row that was
-  traced or recorded counts for no ratio.
+  traced or recorded counts for no ratio. Since M2.T4 an entry's
+  `TB_SKYZFSD_REF=<ref>+hooks` builds that daemon with its test hooks,
+  and `TB_SKZ_RELEASE=N` runs a releaser beside it
+  (`tests/bench/cut_release.py`) that lets each held cut go once N-1
+  newer ones are taken, as an upload would; without it a daemon with
+  `--hold-cuts` never releases a cut and the row is the copy path's
+  worst case. A release row gives its releases in the window.
   `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own, and
   postgres runs in a cgroup of its own in every row; rows from before
   M1.T12 are not known to be comparable in tps with rows after it. The
