@@ -1,0 +1,17 @@
+zeroed 3 copies of the root block of group 43: DVA[0]=<0:4cc1000:1000> DVA[1]=<0:215d000:1000> DVA[2]=<0:6066000:1000>
+== zpool import -d (the listing)
+  pool: skzcut
+    id: 17381704309268045757
+ state: FAULTED
+status: The pool metadata is corrupted.
+action: The pool cannot be imported due to damaged devices or data.
+   see: https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-72
+config:
+
+	skzcut        FAULTED  corrupted data
+	  skz-cut-lw  ONLINE
+== zpool import -F
+cannot import 'skzcut': one or more devices is currently unavailable
+== zpool import -FX
+imported with -FX
+groups committed after the import: 45 46 47 

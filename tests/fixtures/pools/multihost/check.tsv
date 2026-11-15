@@ -1,0 +1,13 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+obs_multihost_import	INFO	the imports are writable, each from a copy of the cut's image: ZFS 2.4 refuses a read-only import of a multihost pool that was not exported (its claim writes uberblocks)
+records	INFO	2754, of which 94 uberblock writes mark, of 558
+cuts	PASS	93 of 93 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	NOT_ALL	91 of 93 cuts open as themselves; the others: cut 10 (group 11, stale): does not open as itself: the pool opens at group 12, and that state is whole: 99 blocks, 180 copies; at its own group (zdb -t, import -T): 99 blocks, 180 copies; cut 27 (group 27, stale): does not open as itself: the pool opens at group 28, and that state is whole: 360 blocks, 514 copies; at its own group (zdb -t, import -T): 360 blocks, 514 copies (expected: all or not all)
+obs_stale_cuts	2	cut 10 (the state of cut 8), cut 27 (the state of cut 25)
+sessions	PASS	1 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_early	CAUGHT	cut 48 (group 49) at record 1610 and not 1615: opens: zdb selects group 48 (timestamp 1794695404), the rings' best is 49 (1794695404); the cut is 49 (expected: caught)
+ctl_withheld	CAUGHT	cut 48 without record 1609 (8192 bytes at 158572544): copies: 2 of 1059 copies do not pass their block's checksum, in 2 blocks, of which 0 have no copy that passes; the first is copy 0 of 3 at byte 158576640: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:933b000:1000> DVA[1]=<0:2211000:1000> DVA[2]=<0:a05a000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=49L/49P fill=88 cksum=00000002b203356d:00000a5b6 (expected: caught)
+ctl_later	CAUGHT	cut 6 (group 9) with record 790 (write, 131072 bytes at 71405568, 445 records after the instant): copies: 10 of 177 copies do not pass their block's checksum, in 10 blocks, of which 0 have no copy that passes; the first is copy 2 of 3 at byte 71520256: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:65e000:1000> DVA[1]=<0:205e000:1000> DVA[2]=<0:4035000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=9L/9P fill=50 cksum=0000000354790275:00000cca3c50 (expected: not built or caught)
+ctl_txg-alone	MISSED	91 cuts against 93: every session as committed (expected: same; DIFFERS)
+ctl_count-repeats	CAUGHT	108 cuts against 93: session 1: the cuts give 93 groups, the kstat 76 committed; first difference at 8: cuts [11, 12, 12, 13, 14], committed [11, 12, 13, 14, 15] (expected: caught)

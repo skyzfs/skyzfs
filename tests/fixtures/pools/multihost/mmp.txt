@@ -1,0 +1,1 @@
+MMP for this recording: was zfs_multihost_interval=1000 zfs_multihost_fail_intervals=10 zfs_multihost_import_intervals=20 (now 100 ms, 0 failure intervals, 1 import interval)
