@@ -74,6 +74,13 @@
 # check is called with the request log in place of LOG and `-` for
 # BASE. stray's 20 ms delay of the back labels has no place below the
 # daemon and is left out.
+# With CUT_HOLD=1 as well (M2.T3, second stage) the daemon holds cuts
+# (`serve --hold-cuts`), and a holder (cut_hold.py) stands in for the
+# uploader beside the recording: it writes each cut being uploaded onto
+# an image of the rig's, hashes the blocks of its map, and releases it;
+# after the export it records what is held beside the status and
+# drains. Its files (DIR/held*.tsv, held-final.txt, status-held.txt,
+# holder.log) are for the check's second stage.
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -122,6 +129,7 @@ FILES=${CUT_FILES:-6}
 CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
 SERVER=${CUT_SERVER:-log-writes}
 SKYZFSD=${CUT_SKYZFSD:-}
+HOLD=${CUT_HOLD:-0}
 case $SERVER in
     log-writes) ;;
     daemon) [ -x "$SKYZFSD" ] || { echo "CUT_SERVER=daemon needs CUT_SKYZFSD, the daemon's binary" >&2; exit 64; }
@@ -133,7 +141,7 @@ for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there 
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
-VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
@@ -198,6 +206,7 @@ cleanup() {
     local rc=$?
     set +e
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
+    [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
@@ -250,7 +259,9 @@ begin_daemon() {
     rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
     timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
-    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
+    local hold=()
+    [ "$HOLD" != 1 ] || hold=(--hold-cuts)
+    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do
         DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$VOL.ready" | head -n 1)
@@ -260,9 +271,29 @@ begin_daemon() {
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] || rig_error "skyzfsd serve was not ready in 120 s"
     : > "$RDIR/marks.tsv"
+    if [ "$HOLD" = 1 ]; then
+        rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
+        python3 -I "$HERE/cut_hold.py" "$RDIR" "$SERVE_PID" "$VOL" "$RUN" "$WORK/held.img" $((VDEV_MB << 20)) \
+            "$WORK/hold.stop" "$SKYZFSD" 2> "$RDIR/holder.err" &
+        HOLD_PID=$!
+    fi
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
 end_daemon() {
+    local _i
+    if [ -n "$HOLD_PID" ]; then
+        # The holder records what is held beside the status, then
+        # writes and releases every cut still held (its drain is bound
+        # to 600 s; the check reads its log).
+        touch "$WORK/hold.stop"
+        for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
+        if kill -0 "$HOLD_PID" 2>/dev/null; then
+            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+            rig_error "the holder did not end 720 s after the stop: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+        fi
+        wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
+    fi
     # The daemon rewrites its status at most every 100 ms, when a counter
     # changed: a second after the export it holds the last cut. The times
     # around the read bound, with the status's age_ms, when it was written.

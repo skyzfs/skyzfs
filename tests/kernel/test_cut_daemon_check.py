@@ -3,6 +3,7 @@
 need no kernel: a recorded pool's fixture (tests/fixtures/pools) written
 out as the daemon's request log would hold it, read back, and held to
 the reference."""
+import hashlib
 import os
 import sys
 import unittest
@@ -17,7 +18,22 @@ FIXTURES = os.path.join(HERE, '..', 'fixtures', 'pools')
 PID = '4242'
 
 
-def request_log(records, read, dev, cuts_at=None, start=True, stray_before=()):
+def syn(i, b):
+    """A write's stand-in hash of block b: the fixtures keep the bytes of
+    label writes alone."""
+    return hashlib.sha256(f'{i}:{b}'.encode()).digest()[:8].hex()
+
+
+def syn_hashes(r):
+    """An applied line's ninth column for fixture write r."""
+    off, n = r['offset'], r['bytes']
+    out = []
+    for b in range(off // 4096, (off + n - 1) // 4096 + 1):
+        out.append(syn(r['i'], b) if b * 4096 >= off and (b + 1) * 4096 <= off + n else '-')
+    return ','.join(out)
+
+
+def request_log(records, read, dev, cuts_at=None, start=True, stray_before=(), hashes=False):
     """A fixture's records as the daemon's request log, and the marks.
 
     A write: recv, label (where it touches a label), applied. A flush:
@@ -28,7 +44,8 @@ def request_log(records, read, dev, cuts_at=None, start=True, stray_before=()):
 
     stray_before: writes of the fixture that a stray flush is received
     after and reaches its barrier between their apply and their commit,
-    as run 43676360281's stray recording had it."""
+    as run 43676360281's stray recording had it. hashes: applied lines
+    carry stand-in hashes (syn), and cut lines their numbers."""
     labels = cut_ref.label_offsets(dev)
     out, marks = [], []
     ns = 1000
@@ -41,13 +58,16 @@ def request_log(records, read, dev, cuts_at=None, start=True, stray_before=()):
     if start:
         line('start', '0', result='64')
     cuts_at = cuts_at or {}
+    counted = 0
 
     def barrier(r, op):
         line('recv', '1', 'flush', '0', '0')
         line('barrier', '1', op)
+        nonlocal counted
         c = cuts_at.get((r['i'], op))
         if c:
-            line('cut', '1', op, 'itself' if c[1] else 'rewind', '-', str(c[0]))
+            counted += 1
+            line('cut', '1', op, 'itself' if c[1] else 'rewind', str(counted) if hashes else '-', str(c[0]))
 
     for r in records:
         flags = set(r['flags'])
@@ -68,7 +88,11 @@ def request_log(records, read, dev, cuts_at=None, start=True, stray_before=()):
                 line('recv', '63', 'flush', '0', '0')
             if cut_ref.touches_label(r['offset'], r['bytes'], labels):
                 line('label', '3', 'write', sec, n, read(r).hex())
-            line('applied', '3', 'write')
+            if hashes:
+                out.append(f'{ns + 1}\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{syn_hashes(r)}')
+                ns += 1
+            else:
+                line('applied', '3', 'write')
             if stray:
                 line('barrier', '63', 'flush')
             line('commit', '3', 'write', sec, n, str(r['bytes']))
@@ -264,6 +288,133 @@ class RoundTrip(unittest.TestCase):
             cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
 
 
+class HeldContent(unittest.TestCase):
+    """The second stage: the content of each held cut the holder wrote,
+    against the reference's at the cut's instant. The images a right
+    daemon would leave are built here from the fixture's own records,
+    apart from the check's model: a write sets its blocks, a discard
+    keeps them (R6)."""
+
+    def setUp(self):
+        records, read, dev = fixture('life')
+        cs, at = daemon_cuts_of(records, read, dev)
+        op = cut_ref.opens(records, read, dev, cs)
+        text, marks = request_log(records, read, dev, at, hashes=True)
+        self.recs, self.dcuts = cdc.records_of(cdc.parse_log(text)[0]['lines'], cdc.read_marks(marks))
+        # The images, cut by cut, from the fixture's records.
+        image, at_rec, prev = {}, 0, {}
+        self.written, self.blocks = [], {}
+        for c in cs:
+            while at_rec < c['prefix']:
+                r = records[at_rec]
+                if cut_ref.is_write(r):
+                    for b in range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1):
+                        image[b] = syn(r['i'], b)
+                at_rec += 1
+            changed = {b: h for b, h in image.items() if prev.get(b) != h}
+            self.written.append({'number': c['n'], 'group': c['txg'], 'blocks': len(changed),
+                                 'opens': 'itself' if op[c['n']]['itself'] else 'rewind'})
+            self.blocks[c['n']] = changed
+            prev = dict(image)
+        self.final = dict(image)
+
+    def judge(self, written=None, blocks=None, final=None):
+        return cdc.held_content(self.recs, self.dcuts, written or self.written, blocks or self.blocks,
+                                self.final if final is None else final)
+
+    def test_a_right_daemon(self):
+        ok, detail, controls = self.judge()
+        self.assertTrue(ok, detail)
+        self.assertIn(f'{len(self.written)} of {len(self.dcuts)} cuts written', detail)
+        self.assertEqual({c: v for c, (v, _) in controls.items()}, cdc.CONTENT_EXPECTED)
+
+    def test_some_cuts_written(self):
+        """Cuts let go or replaced while waiting are never written: the next
+        written cut's map holds their blocks."""
+        keep = [w for k, w in enumerate(self.written) if k % 3 == 2 or k == len(self.written) - 1]
+        blocks, acc = {}, {}
+        for w in self.written:
+            acc.update(self.blocks[w['number']])
+            if w in keep:
+                blocks[w['number']], acc = acc, {}
+        ok, detail, _ = self.judge(keep, blocks)
+        self.assertTrue(ok, detail)
+
+    def test_a_block_held_wrong(self):
+        mid = self.written[len(self.written) // 2]['number']
+        blocks = {n: dict(m) for n, m in self.blocks.items()}
+        b = sorted(blocks[mid])[0]
+        blocks[mid][b] = '0' * 16
+        ok, detail, _ = self.judge(blocks=blocks)
+        self.assertFalse(ok)
+        self.assertIn(f'cut {mid}', detail)
+        self.assertIn(f'block {b}: ', detail)
+        self.assertIn(f"{'0' * 16} held", detail)
+
+    def test_a_block_left_out_of_a_map(self):
+        mid = self.written[len(self.written) // 2]['number']
+        blocks = {n: dict(m) for n, m in self.blocks.items()}
+        del blocks[mid][sorted(blocks[mid])[-1]]
+        self.assertFalse(self.judge(blocks=blocks)[0])
+
+    def test_the_held_group_differs_from_the_cut_line(self):
+        written = [dict(w) for w in self.written]
+        written[1]['group'] += 1
+        ok, detail = self.judge(written)[:2]
+        self.assertFalse(ok)
+        self.assertIn('its cut line says', detail)
+
+    def test_the_last_cut_not_written(self):
+        ok, detail = self.judge(self.written[:-1])[:2]
+        self.assertFalse(ok)
+        self.assertIn('the last cut written', detail)
+
+    def test_a_block_outside_every_map(self):
+        final = dict(self.final)
+        final[10 ** 5] = 'f' * 16
+        ok, detail = self.judge(final=final)[:2]
+        self.assertFalse(ok)
+        self.assertIn('differ from what the maps wrote', detail)
+
+    def test_no_cut_written(self):
+        with self.assertRaises(RigError):
+            cdc.held_content(self.recs, self.dcuts, [], {})
+
+    def test_a_discarded_block_reads_either(self):
+        """A block discarded after a write: its old content or zeros (the
+        lead, M2.T3); a block a write covers in part is not known."""
+        a = 'a' * 16
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+                f'2\t{PID}\trecv\t3\twrite\t16\t8\t-\n3\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{a}\n'
+                f'4\t{PID}\trecv\t4\twrite\t81\t2\t-\n5\t{PID}\tapplied\t4\twrite\t-\t-\t-\t-\n'
+                f'6\t{PID}\trecv\t1\tflush\t0\t0\t-\n7\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+                f'8\t{PID}\tcut\t1\tflush\titself\t1\t5\n'
+                f'9\t{PID}\trecv\t2\tdiscard\t16\t8\t-\n'
+                f'10\t{PID}\trecv\t1\tflush\t0\t0\t-\n11\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+                f'12\t{PID}\tcut\t1\tflush\titself\t2\t6\n')
+        recs, dcuts = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+        written = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2},
+                   {'number': 2, 'group': 6, 'opens': 'itself', 'blocks': 1}]
+        for held, want in ((a, True), (cdc.ZERO, True), ('b' * 16, False)):
+            blocks = {1: {2: a, 10: 'c' * 16}, 2: {2: held}}
+            ok, detail, _ = cdc.held_content(recs, dcuts, written, blocks)
+            self.assertEqual(ok, want, (held, detail))
+        ok, detail, _ = cdc.held_content(recs, dcuts, written, {1: {2: a, 10: 'c' * 16}, 2: {2: a}})
+        self.assertIn('1 of them discarded', detail)
+        self.assertIn('not known to the reference', detail)
+
+    def test_write_zeroes_read_as_zeros(self):
+        model = {}
+        cdc.apply(model, {'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096, 'bytes': 8192 + 512})
+        self.assertEqual(model, {1: cdc.ZERO, 2: cdc.ZERO, 3: None})
+
+    def test_hashes_must_cover_the_write(self):
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\trecv\t3\twrite\t16\t16\t-\n'
+                f'3\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{"a" * 16}\n')
+        with self.assertRaises(RigError):
+            cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+
+
 class Parse(unittest.TestCase):
     def test_instances(self):
         text = (f'1\t7\tstart\t0\t-\t-\t-\t64\n2\t7\trecv\t3\twrite\t0\t8\t-\n'
@@ -306,7 +457,10 @@ class Parse(unittest.TestCase):
         text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\trecv\t3\twrite_zeroes\t8\t8\t-\n'
                 f'3\t{PID}\trecv\t4\tdiscard\t16\t8\t-\n')
         recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
-        self.assertEqual([(r['flags'], r['offset']) for r in recs], [(['discard'], 4096)])
+        self.assertEqual([(r['flags'], r['offset']) for r in recs], [(['discard'], 4096), (['trim'], 8192)])
+        # A trim is for the held cuts' content alone: no write to cut_ref,
+        # and nothing it zeroes.
+        self.assertFalse(cut_ref.is_write(recs[1]))
 
 
 class Status(unittest.TestCase):

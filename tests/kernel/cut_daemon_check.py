@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The cut rig on the daemon, first stage (M2.T3, design §5.2): the
-daemon's count of cuts, their groups and whether each opens as itself,
-against the reference.
+"""The cut rig on the daemon (M2.T3, design §5.2): the daemon's count of
+cuts, their groups and whether each opens as itself, against the
+reference (the first stage); and where the daemon held cuts, the content
+of each cut the rig's holder wrote out (the second stage).
 
 Usage: cut_daemon_check.py NAME DIR REQUEST_LOG - DEV_BYTES [LOG_DEVICE_IMAGE]
 
@@ -75,13 +76,39 @@ after a write with FUA, received when the write completed with no line
 of its own, and a write-zeroes over a label, applied when it ran with
 no line of its own. ZFS issues neither; no recording has had one.
 
-Not judged here: the volume's content at a cut's instant (the next
-stage, after M2.2b), and a daemon that is started again on the volume
-(the count is per instance, and the rings it starts from are the
-volume's). A request log with more than one instance is the rig's error.
+The second stage, where DIR/holder.log says the holder ran
+(cut_hold.py; the daemon served with --hold-cuts):
+- `cut_state`: the request log's `cuts` line and the status both say
+  `begun`, as a new volume's first start with --hold-cuts does;
+- `cuts_held`: the status's count of held cuts is the number of lines
+  `held` listed, both read after the export (DIR/held-final.txt,
+  DIR/status-held.txt);
+- `held_content`: each cut the holder wrote (DIR/held.tsv) holds, block
+  by block, the reference's content at the cut's instant. The reference
+  plays the request log's records up to the cut's barrier: a write sets
+  each 4 KiB block it touches to the hash its `applied` line gives (a
+  block it covers in part is not known, and counted); a write-zeroes
+  sets zeros; a discard leaves either the block's content or zeros (the
+  store keeps it, R6; the lead accepts both). Blocks never written are
+  zeros. The holder hashed each block of the cut's map as its image held
+  it after the write (DIR/held-blocks.tsv); the image accumulates, as an
+  upload onto the image before it does. Also: each written cut's group
+  and answer are its cut line's, the last cut counted was written, and
+  the image after the drain holds nothing the maps did not write
+  (DIR/held-image.tsv). A failed `held_content` in a log with a
+  write-zeroes is the rig's error (placed at its receipt, run later).
+- controls: the middle written cut's image against the reference at the
+  cut before it (`content_early`), and the image before its write
+  against the reference at its instant (`content_stale`): both caught.
+
+Not judged here: a daemon that is started again on the volume (the
+count is per instance, and the rings it starts from are the volume's),
+and a held cut written after the volume failed. A request log with more
+than one instance is the rig's error.
 
 Exit 0: everything as the reference; 1: a verdict; 2: the rig's error.
 """
+import hashlib
 import os
 import re
 import sys
@@ -112,6 +139,10 @@ EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **
 })
 CLOCK_NS = 10_000_000       # the tick of /proc/uptime, which age_ms is a difference of
 SECTOR = 512
+BLOCK = 4096
+ZERO = hashlib.sha256(bytes(BLOCK)).digest()[:8].hex()
+CONTENT_CONTROLS = ('content_early', 'content_stale')
+CONTENT_EXPECTED = {c: 'caught' for c in CONTENT_CONTROLS}
 
 
 def flat(text):
@@ -194,7 +225,11 @@ def records_of(lines, marks):
                 # The receipt takes the mark; the barrier counts the cut.
                 add({'flags': ['receipt'], 'offset': 0, 'bytes': 0, 'tag': ln['tag']})
                 received.add(ln['tag'])
-            # A discard changes no content on the daemon's volume (R6).
+            elif ln['op'] == 'discard':
+                # A discard changes no content in the store (R6), and
+                # nothing of cut_ref's reads a `trim`: only the content of
+                # held cuts does, which accepts either for it.
+                add({'flags': ['trim'], 'offset': off, 'bytes': n})
         elif ev == 'label':
             try:
                 data[ln['tag']] = bytes.fromhex(ln['result'])
@@ -205,6 +240,15 @@ def records_of(lines, marks):
                 raise RigError(f"request log line {ln['line']}: write {ln['tag']} applied with no recv before it")
             off, n = pending.pop(ln['tag'])
             r = {'flags': [], 'offset': off, 'bytes': n, 'pos': None, 'tag': ln['tag']}
+            if ln['extra']:
+                # Since M2.2b: each 4 KiB block the write touches, from its
+                # first, as the write leaves it; `-` where it covers part.
+                hs = ln['extra'][0].split(',')
+                if len(hs) != len(range(off // BLOCK, (off + n - 1) // BLOCK + 1)) \
+                        or any(h != '-' and not re.fullmatch(r'[0-9a-f]{16}', h) for h in hs):
+                    raise RigError(f"request log line {ln['line']}: write {ln['tag']}'s hashes are not one for each "
+                                   f"block it touches ({len(hs)} for {n} bytes at {off})")
+                r['hashes'] = [None if h == '-' else h for h in hs]
             b = data.pop(ln['tag'], None)
             if b is not None:
                 if len(b) != n:
@@ -273,6 +317,170 @@ def numbers_verdict(dcuts):
         if n != str(k + 1):
             return 'FAIL', f"cut line {k + 1} (request log line {dcuts[k]['line']}) carries the number {n!r}"
     return 'PASS', f'the {len(nums)} cut lines are numbered 1 to {len(nums)}'
+
+
+def full_blocks(off, n):
+    """The blocks a range covers whole, and those it covers in part."""
+    first, last = off // BLOCK, (off + n - 1) // BLOCK
+    whole = [b for b in range(first, last + 1) if b * BLOCK >= off and (b + 1) * BLOCK <= off + n]
+    part = [b for b in range(first, last + 1) if b not in set(whole)]
+    return whole, part
+
+
+def apply(model, r):
+    """Record r's change to the content model {block: hash, a frozenset of
+    hashes any of which is right, or None for not known}."""
+    flags = r['flags']
+    if 'trim' in flags:
+        whole, part = full_blocks(r['offset'], r['bytes'])
+        for b in whole:
+            cur = model.get(b, ZERO)
+            model[b] = None if cur is None else (cur | {ZERO} if isinstance(cur, frozenset) else frozenset({cur, ZERO}))
+        for b in part:
+            model[b] = None
+    elif 'discard' in flags:            # a write-zeroes
+        whole, part = full_blocks(r['offset'], r['bytes'])
+        for b in whole:
+            model[b] = ZERO
+        for b in part:
+            model[b] = None
+    elif cut_ref.is_write(r):
+        first = r['offset'] // BLOCK
+        hs = r.get('hashes')
+        for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+            model[b] = hs[k] if hs is not None else None
+
+
+def same(expected, got):
+    """-> True, False, or None when the model does not know the block."""
+    if expected is None or (isinstance(expected, frozenset) and None in expected):
+        return None
+    if isinstance(expected, frozenset):
+        return got in expected
+    return got == expected
+
+
+def held_compare(model, image, limit=5):
+    """The model and an image {block: hash} (zeros elsewhere) -> (compared,
+    not known, either, [wrong blocks, at most limit])."""
+    compared = unknown = either = 0
+    bad = []
+    for b in set(model) | set(image):
+        e = model.get(b, ZERO)
+        v = same(e, image.get(b, ZERO))
+        if v is None:
+            unknown += 1
+            continue
+        compared += 1
+        either += isinstance(e, frozenset)
+        if not v:
+            bad.append(b)
+    bad.sort()
+    wrong = []
+    for b in bad:
+        if len(wrong) < limit:
+            e = model.get(b, ZERO)
+            wrong.append((b, e if not isinstance(e, frozenset) else '|'.join(sorted(e)), image.get(b, ZERO)))
+        else:
+            wrong.append(None)
+    return compared, unknown, either, wrong
+
+
+def read_held(text):
+    """held.tsv -> [{'number', 'group', 'opens', 'blocks'}]."""
+    out = []
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 6 or not all(x.isdigit() for x in (f[0], f[1], f[3])) or f[2] not in ('itself', 'rewind'):
+            raise RigError(f'held.tsv line {k + 1}: not `number group opens blocks ns ns`: {ln!r}')
+        out.append({'number': int(f[0]), 'group': int(f[1]), 'opens': f[2], 'blocks': int(f[3])})
+    return out
+
+
+def read_hashes(text, what, keyed=True):
+    """`number block hash` (keyed) or `block hash` lines -> {number: {block: hash}} or {block: hash}."""
+    out = {}
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != (3 if keyed else 2) or not all(x.isdigit() for x in f[:-1]) \
+                or not re.fullmatch(r'[0-9a-f]{16}', f[-1]):
+            raise RigError(f'{what} line {k + 1}: {ln!r}')
+        if keyed:
+            out.setdefault(int(f[0]), {})[int(f[1])] = f[2]
+        else:
+            out[int(f[0])] = f[1]
+    return out
+
+
+def held_content(records, dcuts, written, blocks, final=None):
+    """The cuts the holder wrote, each against the reference's content at
+    its instant -> (ok, detail, controls {name: (verdict, detail)}).
+
+    written: read_held; blocks: {number: {block: hash}} of each cut's map
+    as the rig's image held it after the write; final: {block: hash} of
+    the image's blocks that are not zeros after the drain."""
+    by_number = {}
+    for k, d in enumerate(dcuts):
+        if d['number'] != '-':
+            by_number[int(d['number'])] = k
+    if not written:
+        raise RigError('the holder wrote no cut')
+    image, model, at = {}, {}, 0
+    bad, notes, total = [], [], [0, 0, 0]
+    mid = written[len(written) // 2]['number']
+    ctl = {}
+    prev_image = None
+    for w in written:
+        n = w['number']
+        if n not in by_number:
+            raise RigError(f'the holder wrote cut {n}, which has no cut line in the request log')
+        d = dcuts[by_number[n]]
+        if (w['group'], w['opens'] == 'itself') != (d['txg'], d['itself']):
+            bad.append(f"cut {n}: held as group {w['group']} ({w['opens']}), its cut line says group {d['txg']} "
+                       f"({'itself' if d['itself'] else 'rewind'})")
+        if n == mid:
+            prev_image = dict(image)
+            # content_early: the reference at the barrier of the cut before
+            k = by_number[n]
+            early_at = dcuts[k - 1]['prefix'] if k > 0 else 0
+            early = {}
+            for r in records[:early_at]:
+                apply(early, r)
+        if n not in blocks:
+            raise RigError(f'cut {n} was written and no block of its map was hashed')
+        image.update(blocks[n])
+        while at < d['prefix']:
+            apply(model, records[at])
+            at += 1
+        compared, unknown, either, wrong = held_compare(model, image)
+        total[0] += compared
+        total[1] += unknown
+        total[2] += either
+        if wrong:
+            shown = [x for x in wrong if x is not None]
+            bad.append(f"cut {n} (group {d['txg']}): {len(wrong)} blocks differ from the reference at its instant, "
+                       f"for example " + ', '.join(f'block {b}: {e} wanted, {g} held' for b, e, g in shown))
+        if n == mid:
+            ctl['content_early'] = held_compare(early, image)[3]
+            ctl['content_stale'] = held_compare(model, prev_image)[3]
+    last = len(dcuts)
+    if written[-1]['number'] != last:
+        bad.append(f"the last cut written is {written[-1]['number']}, the last counted {last}")
+    if final is not None:
+        stray = [b for b in sorted(set(final) | {b for b, h in image.items() if h != ZERO})
+                 if final.get(b, ZERO) != image.get(b, ZERO)]
+        if stray:
+            bad.append(f'{len(stray)} blocks of the image after the drain differ from what the maps wrote, '
+                       f'for example {stray[:5]}')
+    notes.append(f'{len(written)} of {last} cuts written and released; {total[0]} blocks compared over them, '
+                 f'{total[2]} of them discarded (either content), {total[1]} not known to the reference (a write '
+                 f'that covers part of a block)')
+    controls = {}
+    for c in CONTENT_CONTROLS:
+        wrong = ctl.get(c)
+        controls[c] = ('caught', f'cut {mid}: {len(wrong)} blocks differ') if wrong \
+            else ('missed', f'cut {mid}: as the reference')
+    return not bad, '; '.join(bad + notes), controls
 
 
 def reference(cs, op):
@@ -359,6 +567,58 @@ def status_verdict(status, ref, times=None, latest=None):
     return False, '; '.join(bad)
 
 
+def read_file(rdir, name):
+    try:
+        with open(os.path.join(rdir, name)) as f:
+            return f.read()
+    except FileNotFoundError:
+        raise RigError(f'no {name}: the holder did not get as far') from None
+
+
+def held_lines(put, rdir, inst, records, dcuts, status, dev):
+    """The second stage's lines, where the holder ran -> (1 when a line is a
+    verdict against the daemon, else 0; whether a line is the rig's ERROR)."""
+    rc, errored = 0, False
+    log = read_file(rdir, 'holder.log')
+    err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
+    if err:
+        raise RigError(f"the holder: {err[0].split(chr(9), 1)[1]}")
+    # The state: a new volume's first start begins one, by the log's
+    # `cuts` line and by the status.
+    said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
+    st = status.get('cut_state')
+    ok = said == ['begun'] and st == 'begun'
+    put('cut_state', 'PASS' if ok else 'FAIL', f"the request log's cuts line says {said or 'nothing'}, the status "
+        f"{st!r}; a new volume's first start with --hold-cuts begins a state")
+    rc = rc if ok else 1
+    # cuts_held against the list, both read after the export
+    final = read_file(rdir, 'held-final.txt').splitlines()
+    sh = read_status(read_file(rdir, 'status-held.txt'))
+    if any(ln.startswith('refused') for ln in final):
+        raise RigError(f'held at the stop was refused: {final}')
+    ok = sh.get('cuts_held') == str(len(final))
+    put('cuts_held', 'PASS' if ok else 'FAIL', f"the status says {sh.get('cuts_held')!r} held, `held` listed "
+        f"{len(final)} ({'; '.join(final) or 'none'}), a second and a half apart after the export")
+    rc = rc if ok else 1
+    written = read_held(read_file(rdir, 'held.tsv'))
+    blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
+    final_image = read_hashes(read_file(rdir, 'held-image.tsv'), 'held-image.tsv', keyed=False)
+    ok, detail, controls = held_content(records, dcuts, written, blocks, final_image)
+    if not ok and any(r.get('op') == 'write_zeroes' for r in records):
+        put('held_content', 'ERROR', f'{detail}; the log holds write-zeroes, which the check places at their '
+            'receipt and the store may run later')
+        errored = True
+    else:
+        put('held_content', 'PASS' if ok else 'FAIL', detail)
+        rc = rc if ok else 1
+    for c in CONTENT_CONTROLS:
+        verdict, d = controls[c]
+        good = verdict == CONTENT_EXPECTED[c]
+        put(f'ctl_{c}', verdict.upper(), f"{d} (expected: {CONTENT_EXPECTED[c]}{'' if good else '; DIFFERS'})")
+        rc = rc if good else 1
+    return rc, errored
+
+
 def main():
     if len(sys.argv) not in (6, 7):
         sys.exit(__doc__)
@@ -414,6 +674,9 @@ def main():
         put('status', 'PASS' if ok else 'FAIL', detail)
         if not ok:
             rc = 1
+        if os.path.exists(os.path.join(rdir, 'holder.log')):
+            v, e = held_lines(put, rdir, instances[0], records, dcuts, status, dev)
+            rc, errored = max(rc, v), errored or e
         # What ZFS says it synced, as the cut rig holds the reference to it.
         kstats = {}
         for fn in os.listdir(rdir):
