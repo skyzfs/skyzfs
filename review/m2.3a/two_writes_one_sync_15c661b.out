@@ -1,0 +1,7 @@
+test inplace::intent::tests::review_two_writes_of_a_page_during_one_sync ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 223 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+before S1 ends: covers region 2 = false
+after S1 ends:  covers region 2 = false
+the disk with W2 kept and W3 lost: trust Ok(()), names [0, 1]
+exit 0

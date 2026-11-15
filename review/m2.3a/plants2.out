@@ -1,0 +1,10 @@
+as the head has it: ([], [])
+N1 a page written while a sync runs leaves that sync's record as it was: KILLED by 3: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+N2 the first draft: the sync makes durable what it covered and the last write has set: KILLED by 1: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it
+N3 a sync that ends covers the writes issued after it began: KILLED by 3: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_sync_covers_only_the_writes_issued_before_it_began, the_model_test_notices_each_defect_of_the_map
+N4 kept_by does not ask for the header to be written: KILLED by 1: a_map_kept_by_a_start_has_its_header_written_with_the_new_token
+N5 the token is compared by its first half: KILLED by 1: a_token_that_differs_in_its_last_byte_is_another_starts
+N6 the narrowing is of the page before (another page's record): KILLED by 3: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+N7 a page written while a sync runs is covered by that sync (its record replaced): KILLED by 2: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_sync_covers_only_the_writes_issued_before_it_began
+N8 a page written with a bit cleared leaves the bit durable: KILLED by 5: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, a_bit_covers_a_write_only_once_its_write_is_synced, a_sync_covers_only_the_writes_issued_before_it_began, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+finished

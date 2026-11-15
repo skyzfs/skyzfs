@@ -1,0 +1,28 @@
+as the head has it: failed [], broken []
+A1 a sync makes durable what it covered, whatever was written since: NOT APPLIED (found 0 times)
+A2 a page written with a bit cleared leaves the bit durable: KILLED by 5: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, a_bit_covers_a_write_only_once_its_write_is_synced, a_sync_covers_only_the_writes_issued_before_it_began, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+A3 a failed sync makes its writes durable: KILLED by 1: a_bit_covers_a_write_only_once_its_write_is_synced
+A4 a sync that ends covers the writes issued after it began: KILLED by 3: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_sync_covers_only_the_writes_issued_before_it_began, the_model_test_notices_each_defect_of_the_map
+A5 a bit cleared and not yet written covers a write: KILLED by 1: a_bit_covers_a_write_only_once_its_write_is_synced
+A6 a bit set covers a write, durable or not: KILLED by 5: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, a_bit_covers_a_write_only_once_its_write_is_synced, a_sync_covers_only_the_writes_issued_before_it_began, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+A7 a bit is durable once its page is written, with no sync: KILLED by 4: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_covers_a_write_only_once_its_write_is_synced, a_sync_covers_only_the_writes_issued_before_it_began, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+A8 a new map is durable before it is written: KILLED by 1: a_bit_covers_a_write_only_once_its_write_is_synced
+A9 set does not ask for the page to be written: KILLED by 4: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, a_bit_covers_a_write_only_once_its_write_is_synced, a_sync_covers_only_the_writes_issued_before_it_began
+A13 the writes a failed sync covered are covered by the next sync: SURVIVED
+A14 a page written again keeps the bits of its earlier unsynced write: KILLED by 1: after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+C1 a commit does not ask for the header to be written: KILLED by 5: a_map_is_not_taken_up_after_a_start_that_did_not_keep_it, a_map_kept_by_a_start_has_its_header_written_with_the_new_token, a_map_reads_back_as_written, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block, the_model_test_notices_each_defect_of_the_map
+C2 a clear does not ask for the page to be written: KILLED by 8: a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it, a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync, a_bit_covers_a_write_only_once_its_write_is_synced, a_map_is_not_taken_up_after_a_start_that_did_not_keep_it, a_map_reads_back_as_written, a_sync_covers_only_the_writes_issued_before_it_began, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block, the_model_test_notices_each_defect_of_the_map
+P1 changed_after leaves out the newer held cuts: KILLED by 1: after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+P2 changed_after leaves out the open map: KILLED by 1: after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+C5 changed_after leaves out the second part of a map (an abandoned cut handed on): SURVIVED
+C6 changed_after leaves out the cut after the committed one: KILLED by 1: after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block
+C7 changed_after leaves out the first part of a map that has two: SURVIVED
+T1 a map with no base is taken up: KILLED by 1: a_map_is_trusted_only_under_its_token_and_with_a_base
+T2 a bit page's number is not checked: KILLED by 1: a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up
+T3 the header's checksum is not checked: KILLED by 1: a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up
+T4 kept_by does not ask for the header to be written: KILLED by 1: a_map_kept_by_a_start_has_its_header_written_with_the_new_token
+T5 the volume's identity is not checked: KILLED by 1: a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up
+T6 the region size and the volume's length in the header are not checked: KILLED by 1: a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up
+T7 the token is compared by its first half: KILLED by 1: a_token_that_differs_in_its_last_byte_is_another_starts
+F1 the checksum covers the first sector only: KILLED by 8: a_bit_covers_a_write_only_once_its_write_is_synced, a_map_is_not_taken_up_after_a_start_that_did_not_keep_it, a_map_is_trusted_only_under_its_token_and_with_a_base, a_map_kept_by_a_start_has_its_header_written_with_the_new_token, a_map_reads_back_as_written, a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up, after_a_power_cut_at_any_point_the_next_cut_holds_every_changed_block, the_model_test_notices_each_defect_of_the_map
+finished
