@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """The cut rig's summary: OUT/recordings.tsv and each OUT/NAME/results.tsv as a table.
 
-    cut_summary.py OUT IMAGE
+    cut_summary.py OUT IMAGE [TITLE]
+
+TITLE is the heading's, "Cut rig (M2.T1)" by default; the node B rig
+(M2.T2) gives its own.
 """
 import json
 import os
@@ -10,7 +13,8 @@ import sys
 
 def main():
     out, image = sys.argv[1], sys.argv[2]
-    print(f'## Cut rig (M2.T1), {image}\n')
+    title = sys.argv[3] if len(sys.argv) > 3 else 'Cut rig (M2.T1)'
+    print(f'## {title}, {image}\n')
     zv = os.path.join(out, 'zfs-version.txt')
     if os.path.exists(zv):
         print(f"ZFS: {open(zv).read().strip().replace(chr(10), ', ')}; kernel {os.uname().release}\n")

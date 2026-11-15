@@ -22,6 +22,7 @@ members = [
     "bins/skynbdctl",
     "bins/skynbd-csi-driver",
     "bins/skyzfs-blkcheck",
+    "bins/skyzfs-nodeb",
     "bins/skyzfsd",
 ]
 
