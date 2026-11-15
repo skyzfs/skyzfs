@@ -1,0 +1,17 @@
+N1 a failed cuts line does not fail the check: KILLED by test_cut_daemon_main.py: test_a_cut_counted_at_the_flush_after_its_own, test_a_cut_the_daemon_did_not_count
+N2 a cuts line that is the rig's error ends with 0: KILLED by test_cut_daemon_main.py: test_a_failed_cuts_with_what_the_check_cannot_place
+N3 a cuts line that passes is an error too where the log holds what cannot be placed: SURVIVED
+N4 the control last leaves nothing out: KILLED by test_cut_daemon_check.py: test_each_list_is_told_by_what_it_names, test_every_control_is_caught; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+N5 the control extra adds nothing: KILLED by test_cut_daemon_check.py: test_each_list_is_told_by_what_it_names, test_every_control_is_caught; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+N6 the control late moves nothing: KILLED by test_cut_daemon_check.py: test_each_list_is_told_by_what_it_names, test_every_control_is_caught; test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+N7 a rule that gives the design's cuts is compared all the same: KILLED by test_cut_daemon_main.py: test_a_control_that_differs_from_its_table, test_a_failed_cuts_with_what_the_check_cannot_place, test_a_right_daemon, test_cut_numbers
+N8 a control that differs from the table does not fail the check: KILLED by test_cut_daemon_main.py: test_a_control_that_differs_from_its_table
+N9 where the table allows two verdicts it allows any: SURVIVED
+N10 a recording with no row of the table is taken: KILLED by test_cut_daemon_main.py: test_a_recording_with_no_row
+N11 the status's time without the clock's tick: KILLED by test_cut_daemon_check.py: test_a_status_written_before_the_last_cut
+N12 a write-zeroes anywhere counts as one the check cannot place: KILLED by test_cut_daemon_check.py: test_unplaced
+N13 the control early is the reference by the design's rule: KILLED by test_cut_daemon_main.py: test_a_right_daemon, test_cut_numbers
+N14 a flush after a write with FUA is not counted as unplaced: KILLED by test_cut_daemon_check.py: test_unplaced; test_cut_daemon_main.py: test_a_failed_cuts_with_what_the_check_cannot_place
+N15 a status that differs passes if it was written after the last cut: KILLED by test_cut_daemon_check.py: test_a_status_written_before_the_last_cut; test_cut_daemon_main.py: test_a_status_one_cut_behind
+N16 the table expects txg-alone to be the same on rewind: KILLED by test_cut_daemon_check.py: test_the_rules_on_the_fixtures, test_the_table; test_cut_daemon_main.py: test_a_control_that_differs_from_its_table
+N17 the table expects count-repeats to be the same on multihost: KILLED by test_cut_daemon_check.py: test_the_rules_on_the_fixtures, test_the_table
