@@ -54,6 +54,14 @@
 //!   cut being uploaded gives its map to the cut that waits; with none
 //!   waiting, to the cut whose flush is under way; with neither, to the
 //!   open map. Writes are never held.
+//! - **A copy that cannot be made**: the copies file is not allocated
+//!   up to the bound; it grows a slot at a time, and reuses the slots
+//!   of records it frees, so a full file system can refuse a copy, as
+//!   can a failing write of the file or read of the image. The cut that
+//!   reads the block's content then goes, with every newer one, which
+//!   would read it once it took that cut's map; older cuts stay, and
+//!   the client's write goes on. A recovery point is worth less than
+//!   the volume (the owner's ruling, through the lead, M2.2b).
 //! - **The mark** of an applied uberblock write that no cut has taken
 //!   yet, and the newest cut's group and root block pointer: the repeat
 //!   rule compares with them (`cuts.rs`).
@@ -1445,8 +1453,14 @@ impl<R: Region> CutState<R> {
     /// zeroed in the open epoch. The content a held cut reads of each is
     /// copied first, whole, through `io`, and recorded; then the block's
     /// bit is set in the open map. The caller begins the change only
-    /// after this returns, and a failure of `io` fails the change before
-    /// it begins.
+    /// after this returns.
+    ///
+    /// A copy that cannot be made (the copies file's file system is
+    /// full, its write fails, or the read of the image fails) lets go
+    /// the cuts that need it ([`CutState::abandon_needing`]), and the
+    /// change goes on: a recovery point is worth less than the volume
+    /// (the owner's ruling, through the lead, M2.2b). This returns an
+    /// error only with the defect that fails the change instead.
     pub fn change(&mut self, first: u64, count: u64, io: &mut dyn Copier) -> io::Result<()> {
         let epoch = self.epoch();
         let end = first.saturating_add(count).min(self.blocks);
@@ -1476,12 +1490,45 @@ impl<R: Region> CutState<R> {
                     open = self.open();
                 }
                 if let Some(lo) = self.wanted(&holds, block) {
-                    self.copy(block, lo, epoch, io)?;
+                    if let Err(e) = self.copy(block, lo, epoch, io) {
+                        if self.mutants.has(Mutants::COPY_FAILURE_FAILS) {
+                            return Err(e);
+                        }
+                        self.abandon_needing(&holds, block);
+                        holds = self.holds();
+                        open = self.open();
+                    }
                 }
             }
             self.maps.insert(&mut self.region, open.first, block);
         }
         Ok(())
+    }
+
+    /// A copy of block `block`'s content now could not be made: let go
+    /// the held cut that reads that content, and every newer one, which
+    /// would read it as soon as it took that cut's map. Each goes newest
+    /// first and gives its map to the open map, as a cut whose flush is
+    /// under way does at a freeze, and each counts as abandoned. The
+    /// cuts older than the one that reads the content read their own
+    /// content of the block (their copy, or the image they are uploaded
+    /// onto), so they stay. Where no held cut's map holds the block, the
+    /// cut that reads it is the newest that counts the whole volume as
+    /// changed.
+    fn abandon_needing(&mut self, holds: &[Held], block: u64) {
+        let needing = holds
+            .iter()
+            .rposition(|h| self.in_parts(h.parts, block))
+            .or_else(|| holds.iter().rposition(|h| self.is_whole(&h.cut)));
+        let Some(from) = needing else {
+            return;
+        };
+        for held in holds[from..].iter().rev() {
+            self.give(*held, Heir::Open);
+            let abandoned = self.load(at::ABANDONED) + 1;
+            self.store(at::ABANDONED, abandoned);
+        }
+        self.free_unneeded(None);
     }
 
     /// Copy block `block` of the home image, whole, into a free record's

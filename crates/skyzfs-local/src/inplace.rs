@@ -194,9 +194,13 @@
 //! queue's thread, its blocks pass through the cut state: a block a
 //! held cut reads is read from the home image and copied into
 //! `copies.img` there and then, and the write begins only after the
-//! copy is written. A copy that cannot be made fails the volume, as a
-//! failed write does, and the write is not begun. A discard is not
-//! noted: it changes no content here.
+//! copy is written. A copy that cannot be made (a full file system:
+//! `copies.img` grows a slot at a time and is not allocated up to the
+//! bound; or a failed write of it, or read of the image) lets go the
+//! held cuts that need it, and the write goes on: a recovery point is
+//! worth less than the volume (the owner's ruling, through the lead,
+//! M2.2b; `state.rs`). A discard is not noted: it changes no content
+//! here.
 //!
 //! The region ([`CutRegion`]) is a named one the kernel keeps while the
 //! machine is up, which the open maps, allocated in full and locked
@@ -417,6 +421,9 @@ impl Mutants {
     pub(crate) const ACKNOWLEDGED_TRUSTED: u64 = 1 << 58;
     /// A start on a created device keeps the mark the state holds.
     pub(crate) const MARK_KEPT_ON_CREATED: u64 = 1 << 59;
+    /// A copy that cannot be made fails the change, and so the volume,
+    /// instead of letting go the cuts that need it.
+    pub(crate) const COPY_FAILURE_FAILS: u64 = 1 << 61;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0

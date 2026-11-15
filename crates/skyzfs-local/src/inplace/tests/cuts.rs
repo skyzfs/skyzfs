@@ -1179,6 +1179,100 @@ fn after_a_loss(
     (taken, held, five)
 }
 
+/// A copy that cannot be made (writes to the copies file refused, as a
+/// full file system refuses them, or the image's read refused) lets go
+/// the held cut that reads the block's content and every newer one; an
+/// older cut, which reads its own copy of the block, stays; the
+/// client's write goes on, and the volume does not fail (the owner's
+/// ruling, through the lead, M2.2b). Where the cut that reads the block
+/// is the one that counts the whole volume as changed, it goes too.
+/// The defect fails the volume at the first refused copy.
+#[test]
+fn a_copy_that_cannot_be_made_lets_its_cuts_go_and_the_write_goes_on() {
+    let refuse_copies = |disk: &SimDisk| disk.fail_write_of(COPIES_NAME);
+    let refuse_image = |disk: &SimDisk| disk.fail_read_of(crate::store::HOME_NAME);
+    /// A fault: its name, and what sets it on the disk.
+    type Fault<'a> = (&'a str, &'a dyn Fn(&SimDisk));
+    let faults: [Fault; 2] = [
+        ("the copies file's write", &refuse_copies),
+        ("the image's read", &refuse_image),
+    ];
+    for (fault, refuse) in faults {
+        for io in [IoMode::default(), ON_CALLER] {
+            for mutants in [0, Mutants::COPY_FAILURE_FAILS] {
+                let case = format!("{fault}, {io:?}, mutants {mutants:#x}");
+                let disk = created(34, 0);
+                let region = region();
+                let mut store = start_on(&disk, mutants, &region, io);
+                write(&mut store, 5, 0x55).unwrap();
+                // Cut 1, the whole volume (the state is new), uploaded.
+                group(&mut store, 100, 7, 70);
+                // Copied for cut 1, which reads 0x55.
+                write(&mut store, 5, 0x66).unwrap();
+                // Cut 2, waiting: its map holds block 5.
+                group(&mut store, 200, 8, 80);
+                let held = |store: &InPlace<SimDisk>| -> Vec<u64> {
+                    store.held_cuts().iter().map(|c| c.number).collect()
+                };
+                assert_eq!(held(&store), [1, 2], "{case}");
+                refuse(&disk);
+                let written = write(&mut store, 5, 0x77);
+                if mutants != 0 {
+                    assert_eq!(written, Err(BlkError::Failed), "{case}");
+                    continue;
+                }
+                assert_eq!(written, Ok(()), "{case}");
+                assert_eq!(held(&store), [1], "{case}: cut 2 read 0x66, now gone");
+                assert_eq!(store.cut_figures().abandoned, 1, "{case}");
+                // Block 9 changed in no held cut's epochs: cut 1, the
+                // whole volume, reads it, and goes.
+                assert_eq!(write(&mut store, 9, 0x99), Ok(()), "{case}");
+                assert_eq!(held(&store), Vec::<u64>::new(), "{case}");
+                assert_eq!(store.cut_figures().abandoned, 2, "{case}");
+                disk.clear_faults();
+                assert_eq!(
+                    read(&mut store, 5).unwrap(),
+                    vec![0x77; BLOCK_USIZE],
+                    "{case}"
+                );
+                assert_eq!(
+                    read(&mut store, 9).unwrap(),
+                    vec![0x99; BLOCK_USIZE],
+                    "{case}"
+                );
+                // The volume serves on, and holds the next cut.
+                group(&mut store, 300, 9, 90);
+                assert_eq!(held(&store), [3], "{case}");
+            }
+        }
+    }
+}
+
+/// The same with cut 1 kept: block 5 changed after cut 1's instant
+/// and is copied for it before the copies are refused, so cut 1 still
+/// reads 0x55 once cut 2 has gone, and its copies are not freed.
+#[test]
+fn a_cut_older_than_the_one_a_refused_copy_needs_reads_on() {
+    for io in [IoMode::default(), ON_CALLER] {
+        let disk = created(35, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, io);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        write(&mut store, 5, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        disk.fail_write_of(COPIES_NAME);
+        assert_eq!(write(&mut store, 5, 0x77), Ok(()), "{io:?}");
+        let mut buf = Buf::filled(1, 0xEE);
+        assert_eq!(store.read_cut(1, 5, &mut buf).ok(), Some(true), "{io:?}");
+        assert_eq!(buf.to_vec(), vec![0x55; BLOCK_USIZE], "{io:?}");
+        assert!(
+            store.read_cut(2, 5, &mut buf).is_err(),
+            "{io:?}: cut 2 is gone"
+        );
+    }
+}
+
 /// A start takes up the cut state the daemon before it left only where
 /// it can trust it (M2.2b): in the same boot, after a sync of the copies
 /// that succeeded, and when it does not acknowledge a failure; on a
