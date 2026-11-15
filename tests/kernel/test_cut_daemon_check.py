@@ -288,10 +288,45 @@ class RoundTrip(unittest.TestCase):
             cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
 
 
+def held_images(records, cs, op):
+    """The images a right daemon would leave, built from a fixture's own
+    records apart from the check's model: a write sets its blocks, a
+    discard keeps them (R6). -> (held.tsv's cuts, {number: map's block
+    hashes}, the image after the drain)."""
+    image, at_rec, prev = {}, 0, {}
+    written, blocks = [], {}
+    for c in cs:
+        while at_rec < c['prefix']:
+            r = records[at_rec]
+            if cut_ref.is_write(r):
+                for b in range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1):
+                    image[b] = syn(r['i'], b)
+            at_rec += 1
+        changed = {b: h for b, h in image.items() if prev.get(b) != h}
+        written.append({'number': c['n'], 'group': c['txg'], 'blocks': len(changed),
+                        'opens': 'itself' if op[c['n']]['itself'] else 'rewind'})
+        blocks[c['n']] = changed
+        prev = dict(image)
+    return written, blocks, dict(image)
+
+
+def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 9 uploading itself 3\n',
+                 status_held='cuts_held 1\n'):
+    """The holder's files in recording directory d."""
+    def w(fn, text):
+        with open(os.path.join(d, fn), 'w') as f:
+            f.write(text)
+    w('holder.log', log)
+    w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t{x.get('asked', 1)}\t"
+                          f"{x.get('asked', 1) + 1}\n" for x in written))
+    w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in blocks.items() for b, h in m.items()))
+    w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(final.items())))
+    w('held-final.txt', held_final)
+    w('status-held.txt', status_held)
+
+
 class HeldFixture(unittest.TestCase):
-    """The images a right daemon would leave, built from the fixture
-    life's own records apart from the check's model: a write sets its
-    blocks, a discard keeps them (R6)."""
+    """The images a right daemon would leave on the fixture life."""
 
     def setUp(self):
         records, read, dev = fixture('life')
@@ -299,22 +334,17 @@ class HeldFixture(unittest.TestCase):
         op = cut_ref.opens(records, read, dev, cs)
         text, marks = request_log(records, read, dev, at, hashes=True)
         self.recs, self.dcuts = cdc.records_of(cdc.parse_log(text)[0]['lines'], cdc.read_marks(marks))
-        # The images, cut by cut, from the fixture's records.
-        image, at_rec, prev = {}, 0, {}
-        self.written, self.blocks = [], {}
-        for c in cs:
-            while at_rec < c['prefix']:
-                r = records[at_rec]
-                if cut_ref.is_write(r):
-                    for b in range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1):
-                        image[b] = syn(r['i'], b)
-                at_rec += 1
-            changed = {b: h for b, h in image.items() if prev.get(b) != h}
-            self.written.append({'number': c['n'], 'group': c['txg'], 'blocks': len(changed),
-                                 'opens': 'itself' if op[c['n']]['itself'] else 'rewind'})
-            self.blocks[c['n']] = changed
-            prev = dict(image)
-        self.final = dict(image)
+        self.written, self.blocks, self.final = held_images(records, cs, op)
+
+    def wrong_in_mid(self, k=1, value='0' * 16):
+        """The maps with the first k blocks of the middle written cut's
+        map held wrong -> (maps, the blocks made wrong)."""
+        mid = self.written[len(self.written) // 2]['number']
+        blocks = {n: dict(m) for n, m in self.blocks.items()}
+        bad = sorted(blocks[mid])[:k]
+        for b in bad:
+            blocks[mid][b] = value
+        return blocks, bad
 
     def judge(self, written=None, blocks=None, final=None):
         return cdc.held_content(self.recs, self.dcuts, written or self.written, blocks or self.blocks,
@@ -366,6 +396,41 @@ class HeldContent(HeldFixture):
         ok, detail = self.judge(written)[:2]
         self.assertFalse(ok)
         self.assertIn('its cut line says', detail)
+
+    def test_the_held_answer_differs_from_the_cut_line(self):
+        written = [dict(w) for w in self.written]
+        written[1]['opens'] = 'rewind' if written[1]['opens'] == 'itself' else 'itself'
+        ok, detail = self.judge(written)[:2]
+        self.assertFalse(ok)
+        self.assertIn('its cut line says', detail)
+
+    def test_a_block_written_and_in_no_map(self):
+        """A block the reference wrote that no map held and the image does
+        not hold (the review of #103, S2): zeros held, its write wanted."""
+        once = {}
+        for n, m in self.blocks.items():
+            for b in m:
+                once[b] = once.get(b, 0) + 1
+        n, b = next((n, b) for n, m in self.blocks.items() for b in sorted(m) if once[b] == 1)
+        blocks = {k: dict(m) for k, m in self.blocks.items()}
+        del blocks[n][b]
+        final = dict(self.final)
+        del final[b]
+        ok, detail = self.judge(blocks=blocks, final=final)[:2]
+        self.assertFalse(ok)
+        self.assertIn(f'block {b}: ', detail)
+
+    def test_a_block_never_written_held_in_a_map(self):
+        """Content the daemon put, inside a map, in a block no write
+        touched (the review of #103, S2)."""
+        mid = self.written[len(self.written) // 2]['number']
+        blocks = {k: dict(m) for k, m in self.blocks.items()}
+        blocks[mid][10 ** 5] = 'f' * 16
+        final = dict(self.final)
+        final[10 ** 5] = 'f' * 16
+        ok, detail = self.judge(blocks=blocks, final=final)[:2]
+        self.assertFalse(ok)
+        self.assertIn(f'block {10 ** 5}: {cdc.ZERO} wanted', detail)
 
     def test_the_last_cut_not_written(self):
         ok, detail = self.judge(self.written[:-1])[:2]
@@ -431,6 +496,71 @@ class HeldContent(HeldFixture):
         cdc.apply(model, {'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096, 'bytes': 8192 + 512})
         self.assertEqual(model, {1: cdc.ZERO, 2: cdc.ZERO, 3: None})
 
+    def test_a_block_discarded_in_part_is_not_known(self):
+        model = {1: 'a' * 16, 3: 'c' * 16}
+        cdc.apply(model, {'flags': ['trim'], 'offset': 4096, 'bytes': 8192 + 512})
+        self.assertEqual(model, {1: frozenset({'a' * 16, cdc.ZERO}), 2: frozenset({cdc.ZERO}), 3: None})
+
+    def zeroes_behind(self, order):
+        """A write of block 10 (a) applied; a write of block 30 (b)
+        received; then ORDER's requests received, of `flush` (tag 3, the
+        cut's), `flush2` (tag 5) and `zeroes` (block 10); then b applied,
+        the barriers in the order received, and cut 1 at flush 3's. The
+        review of #103's D1, from its reproducer -> (records, cuts)."""
+        a, b = 'a' * 16, 'b' * 16
+        out = [f'1\t{PID}\tstart\t0\t-\t-\t-\t64', f'2\t{PID}\tcuts\t-\t-\t-\t-\tbegun',
+               f'3\t{PID}\trecv\t1\twrite\t80\t8\t-', f'4\t{PID}\tapplied\t1\twrite\t-\t-\t-\t{a}',
+               f'5\t{PID}\trecv\t2\twrite\t240\t8\t-']
+        ns = 6
+        what = {'flush': ('3', 'flush', '18446744073709551615', '0'), 'flush2': ('5', 'flush', '0', '0'),
+                'zeroes': ('4', 'write_zeroes', '80', '8'), 'discard': ('6', 'discard', '80', '8')}
+        for x in order:
+            tag, op, sec, n = what[x]
+            out.append(f'{ns}\t{PID}\trecv\t{tag}\t{op}\t{sec}\t{n}\t-')
+            ns += 1
+        out.append(f'{ns}\t{PID}\tapplied\t2\twrite\t-\t-\t-\t{b}')
+        for x in order:
+            if x.startswith('flush'):
+                tag = what[x][0]
+                out.append(f'{ns + 1}\t{PID}\tbarrier\t{tag}\tflush\t-\t-\t-')
+                if tag == '3':
+                    out.append(f'{ns + 2}\t{PID}\tcut\t3\tflush\titself\t1\t5')
+                ns += 2
+        return cdc.records_of(cdc.parse_log('\n'.join(out) + '\n')[0]['lines'], [])
+
+    @staticmethod
+    def kinds(recs):
+        return [r.get('op') if r.get('op') == 'write_zeroes' else 'trim' if 'trim' in r['flags']
+                else f"barrier {r['tag']}" if 'flush' in r['flags'] else f"receipt {r['tag']}"
+                if 'receipt' in r['flags'] else f"write {r['tag']}" for r in recs]
+
+    def test_a_write_zeroes_received_while_a_flush_waits(self):
+        """A write-zeroes received after a flush takes effect after its
+        barrier (the store accepts in the order received): the cut holds
+        the block as it was (the review of #103, D1)."""
+        a, b = 'a' * 16, 'b' * 16
+        written = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2}]
+        recs, dcuts = self.zeroes_behind(['flush', 'zeroes'])
+        self.assertEqual(self.kinds(recs), ['write 1', 'receipt 3', 'write 2', 'barrier 3', 'write_zeroes'])
+        ok, detail, _, wrong = cdc.held_content(recs, dcuts, written, {1: {10: a, 30: b}}, {10: a, 30: b})
+        self.assertTrue(ok, detail)
+        # The same write-zeroes received before the flush is in the cut.
+        recs, dcuts = self.zeroes_behind(['zeroes', 'flush'])
+        self.assertEqual(self.kinds(recs), ['write 1', 'write_zeroes', 'receipt 3', 'write 2', 'barrier 3'])
+        ok, detail, _, wrong = cdc.held_content(recs, dcuts, written, {1: {10: a, 30: b}}, {10: a, 30: b})
+        self.assertFalse(ok)
+        self.assertEqual(wrong, {10})
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, written, {1: {10: cdc.ZERO, 30: b}}, {30: b})
+        self.assertTrue(ok, detail)
+
+    def test_behind_the_last_flush_received_before_it(self):
+        recs, _ = self.zeroes_behind(['flush', 'zeroes', 'flush2'])
+        self.assertEqual(self.kinds(recs), ['write 1', 'receipt 3', 'receipt 5', 'write 2', 'barrier 3',
+                                            'write_zeroes', 'barrier 5'])
+        recs, _ = self.zeroes_behind(['flush', 'flush2', 'zeroes', 'discard'])
+        self.assertEqual(self.kinds(recs), ['write 1', 'receipt 3', 'receipt 5', 'write 2', 'barrier 3',
+                                            'barrier 5', 'write_zeroes', 'trim'])
+
     def test_hashes_must_cover_the_write(self):
         text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\trecv\t3\twrite\t16\t16\t-\n'
                 f'3\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{"a" * 16}\n')
@@ -442,25 +572,21 @@ class HeldLines(HeldFixture):
     """held_lines on a recording's directory written from the fixture: the
     holder's files, the status, what it was given."""
 
-    def lines(self, name='life', status=None, final=None, log='', status_held=None, cuts_line='begun'):
+    def lines(self, name='life', status=None, final=None, log='', status_held=None, cuts_line='begun',
+              recs=None, dcuts=None, written=None, blocks=None, image=None):
         import shutil
         import tempfile
         d = tempfile.mkdtemp(prefix='cdc-held-')
         try:
-            def w(fn, text):
-                with open(os.path.join(d, fn), 'w') as f:
-                    f.write(text)
-            w('holder.log', log or '1\t> t1 held\n')
-            w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t1\t2\n"
-                                  for x in self.written))
-            w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in self.blocks.items() for b, h in m.items()))
-            w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(self.final.items())))
-            w('held-final.txt', final if final is not None else '9 9 uploading itself 3\n')
-            w('status-held.txt', status_held if status_held is not None else 'cuts_held 1\n')
+            holder_files(d, written or self.written, blocks or self.blocks, self.final if image is None else image,
+                         log=log or '1\t> t1 held\n',
+                         held_final=final if final is not None else '9 9 uploading itself 3\n',
+                         status_held=status_held if status_held is not None else 'cuts_held 1\n')
             inst = {'lines': [{'event': 'cuts', 'result': cuts_line}]}
             got = []
-            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, inst, self.recs, self.dcuts,
-                                status or {'cut_state': 'begun', 'cuts_abandoned': '0'}, 512 << 20, name)
+            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, inst, recs or self.recs,
+                                dcuts or self.dcuts, status or {'cut_state': 'begun', 'cuts_abandoned': '0'},
+                                512 << 20, name)
             return rc, {k: (v, t) for k, v, t in got}
         finally:
             shutil.rmtree(d)
@@ -494,6 +620,86 @@ class HeldLines(HeldFixture):
     def test_the_holders_error(self):
         with self.assertRaises(RigError):
             self.lines(log='1\tERROR HolderError: no reply to `held` in 300 s\n')
+
+    def test_a_refused_held_at_the_stop(self):
+        with self.assertRaises(RigError):
+            self.lines(final='refused: busy\n')
+
+    def test_a_wrong_block_is_a_verdict(self):
+        """The review of #103, S1: a failed held_content fails the check."""
+        blocks, _ = self.wrong_in_mid()
+        rc, lines = self.lines(blocks=blocks)
+        self.assertEqual((rc, lines['held_content'][0]), ((1, False), 'FAIL'))
+
+    def unplaced_zeroes(self, at):
+        """The records with a write-zeroes after every cut whose blocks
+        are not placed for certain: {at}."""
+        return self.recs + [{'flags': ['discard'], 'op': 'write_zeroes', 'offset': at * 4096, 'bytes': 4096,
+                             'ambiguous': {at}, 'i': len(self.recs)}]
+
+    def test_a_wrong_block_under_an_unplaced_write_zeroes(self):
+        """The rig's error, not a verdict, wherever the block is among the
+        wrong ones; a wrong block elsewhere is a verdict."""
+        blocks, bad = self.wrong_in_mid(7)
+        rc, lines = self.lines(blocks=blocks, recs=self.unplaced_zeroes(bad[-1]))
+        self.assertEqual((rc, lines['held_content'][0]), ((0, True), 'ERROR'))
+        self.assertIn(f'blocks [{bad[-1]}] were under a write-zeroes', lines['held_content'][1])
+        rc, lines = self.lines(blocks=blocks, recs=self.unplaced_zeroes(10 ** 5))
+        self.assertEqual((rc, lines['held_content'][0]), ((1, False), 'FAIL'))
+
+    def test_edges_must_send_both(self):
+        """And hold a cut across its write-zeroes: a block of a cut after
+        the first, zeroed after the cut's instant and before its write."""
+        mid = self.written[len(self.written) // 2]
+        b = sorted(self.blocks[mid['number']])[0]
+        written = [dict(w, asked=10 ** 12) for w in self.written]
+        zeroes = {'flags': ['discard'], 'op': 'write_zeroes', 'offset': b * 4096, 'bytes': 4096, 'ambiguous': set(),
+                  'done_ns': 10 ** 12 - 1}
+        trim = {'flags': ['trim'], 'offset': 10 ** 8, 'bytes': 4096}
+        for extra in ([zeroes], [trim], [dict(zeroes, done_ns=10 ** 12), trim]):
+            with self.assertRaises(RigError):
+                self.lines(name='edges', recs=self.recs + extra, written=written)
+        rc, lines = self.lines(name='edges', recs=self.recs + [zeroes, trim], written=written)
+        self.assertEqual((rc, lines['edges'][0]), ((0, False), 'INFO'))
+        self.assertIn('1 write-zeroes and 1 discards', lines['edges'][1])
+        self.assertIn(f"cut {mid['number']} (1 blocks)", lines['edges'][1])
+
+    def test_copied_blocks(self):
+        """A block counts where a write after the cut's instant, applied
+        before the holder asked for the cut's write, changed it."""
+        first, mid = self.written[0], self.written[len(self.written) // 2]
+        recs_after = [r for r in self.recs if 'ns' in r and r['i'] > self.dcuts[mid['number'] - 1]['prefix']]
+        asked = recs_after[0]['ns'] + 1
+        written = [dict(w, asked=asked if w is mid else 0) for w in self.written]
+        got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, self.blocks))
+        r = recs_after[0]
+        touched = set(range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1))
+        self.assertEqual(got[mid['number']], (len(touched & set(self.blocks[mid['number']])), 0))
+        self.assertEqual(got[first['number']], (0, 0))
+
+    def test_a_control_missed_is_a_verdict(self):
+        """Cuts 1 to 3 with no write after the first: the middle cut's
+        image is the cut before's, and is what it was before its write,
+        so neither control has anything to catch (the review of #103,
+        S1)."""
+        a = 'a' * 16
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+                f'2\t{PID}\trecv\t3\twrite\t8\t8\t-\n3\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{a}\n'
+                + ''.join(f'{4 + 3 * k}\t{PID}\trecv\t1\tflush\t0\t0\t-\n'
+                          f'{5 + 3 * k}\t{PID}\tbarrier\t1\tflush\t-\t-\t-\n'
+                          f'{6 + 3 * k}\t{PID}\tcut\t1\tflush\titself\t{k + 1}\t{5 + k}\n' for k in range(3)))
+        recs, dcuts = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+        written = [{'number': k + 1, 'group': 5 + k, 'opens': 'itself', 'blocks': 1} for k in range(3)]
+        blocks = {k + 1: {1: a} for k in range(3)}
+        ok, _, controls, _ = cdc.held_content(recs, dcuts, written, blocks, {1: a})
+        self.assertTrue(ok)
+        self.assertEqual({c: v for c, (v, _) in controls.items()}, {c: 'missed' for c in cdc.CONTENT_CONTROLS})
+        rc, lines = self.lines(recs=recs, dcuts=dcuts, written=written, blocks=blocks, image={1: a})
+        self.assertEqual(lines['held_content'][0], 'PASS')
+        self.assertEqual(rc, (1, False))
+        for c in cdc.CONTENT_CONTROLS:
+            self.assertEqual(lines[f'ctl_{c}'][0], 'MISSED')
+            self.assertIn('DIFFERS', lines[f'ctl_{c}'][1])
 
 
 class Parse(unittest.TestCase):

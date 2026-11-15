@@ -22,12 +22,16 @@ import cut_hold as ch  # noqa: E402
 # being uploaded and the next waiting; `write` puts each block of the
 # map (4096 copies of its byte) into PATH and lists them in PATH.blocks;
 # `release` lets the uploading cut go. A cut in REFUSE is refused at the
-# end of its write, as one abandoned under it.
+# end of its write, as one abandoned under it; one in FAIL is refused as
+# for a full disk and stays held; one in STUCK has its release refused
+# and stays held.
 FAKE = r'''
 import os, signal, sys, time, json
 vrun = sys.argv[1]
 cuts = {int(k): v for k, v in json.loads(sys.argv[2]).items()}
 refuse = set(json.loads(sys.argv[3]))
+fail = set(json.loads(sys.argv[4]))
+stuck = set(json.loads(sys.argv[5]))
 asked = []
 signal.signal(signal.SIGUSR2, lambda *a: asked.append(1))
 open(os.path.join(vrun, 'ready'), 'w').close()
@@ -54,6 +58,9 @@ while not os.path.exists(os.path.join(vrun, 'stop')):
         if n not in cuts:
             reply(f'{token} refused: no cut {n} is held\n')
             continue
+        if n in fail:
+            reply(f'{token} refused: {path}: write block 0: No space left on device (os error 28)\n')
+            continue
         blocks = sorted(int(b) for b in cuts[n][2])
         with open(path, 'r+b') as f:
             for b in blocks:
@@ -68,7 +75,7 @@ while not os.path.exists(os.path.join(vrun, 'stop')):
             reply(f'{token} ok {len(blocks)} blocks\n')
     elif w[0] == 'release':
         n = int(w[1])
-        if order and order[0] == n:
+        if order and order[0] == n and n not in stuck:
             del cuts[n]
             reply(f'{token} ok\n')
         else:
@@ -136,10 +143,10 @@ class AgainstAFake(unittest.TestCase):
             self.proc.wait(timeout=10)
         shutil.rmtree(self.d)
 
-    def fake(self, cuts, refuse=()):
+    def fake(self, cuts, refuse=(), fail=(), stuck=()):
         import json
         self.proc = subprocess.Popen([sys.executable, '-I', '-c', FAKE, self.vrun, json.dumps(cuts),
-                                      json.dumps(list(refuse))])
+                                      json.dumps(list(refuse)), json.dumps(list(fail)), json.dumps(list(stuck))])
         end = time.monotonic() + 10
         while not os.path.exists(os.path.join(self.vrun, 'ready')):
             self.assertLess(time.monotonic(), end, 'the fake did not start')
@@ -167,6 +174,33 @@ class AgainstAFake(unittest.TestCase):
             pass
         self.assertEqual([ln.split('\t')[0] for ln in self.read('held.tsv')], ['2'])
         self.assertEqual(holder.written, [2])
+
+    def test_a_write_refused_while_the_cut_is_held(self):
+        """Refused for the rig's own reason (a full disk): the cut is not
+        released unwritten, and the holder ends with its error (the review
+        of #103, D2)."""
+        holder = self.fake({'1': [5, 'itself', {'0': 1}], '2': [6, 'itself', {'1': 3}]}, fail=[1])
+        with self.assertRaisesRegex(ch.HolderError, 'cut 1 is still being uploaded after its write was refused'):
+            holder.step()
+        self.assertEqual([c['number'] for c in holder.held()], [1, 2])
+        self.assertEqual(holder.written, [])
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'held.tsv')))
+
+    def test_a_release_refused_while_the_cut_is_held(self):
+        holder = self.fake({'1': [5, 'itself', {'0': 1}]}, stuck=[1])
+        with self.assertRaisesRegex(ch.HolderError, 'cut 1 is still being uploaded after its release was refused'):
+            holder.step()
+
+    def test_one_signal_for_each_command(self):
+        """A second signal during a write would be answered busy under the
+        command's token."""
+        from unittest import mock
+        holder = self.fake({'1': [5, 'itself', {'0': 1}], '2': [6, 'itself', {'1': 3}]})
+        with mock.patch.object(ch.os, 'kill', wraps=os.kill) as kill:
+            while holder.step():
+                pass
+        self.assertEqual(kill.call_count, holder.d.n)
+        self.assertEqual({c.args for c in kill.call_args_list}, {(self.proc.pid, ch.signal.SIGUSR2)})
 
     def test_a_daemon_gone(self):
         holder = self.fake({})

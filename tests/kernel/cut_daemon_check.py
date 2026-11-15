@@ -23,11 +23,16 @@ the daemon's own order, the order design §5.2 counts in:
   instant. The daemon's added flush after a write with FUA
   (`fua_flush`) has no `recv` line, as it is received once the write
   completed, and is one record at its barrier;
-- a write-zeroes at its `recv` line, where the store places it relative
-  to a flush, as a range that reads as zeros after it (cut_ref's
+- a write-zeroes, which has no line for when it ran, by its `recv`
+  line: the store accepts requests in the order received, so one
+  received after a flush takes effect after that flush's barrier. It
+  is placed at its receipt, or, when a flush received before it has
+  not reached its barrier yet, right after that barrier (the last such
+  flush's). It is a range that reads as zeros after it (cut_ref's
   `discard`: no uberblock left in the slots it covers);
-- a discard not at all: the store keeps a discarded block's content
-  (rule R6), so the slots it covers still hold what they held;
+- a discard placed as a write-zeroes is, as a `trim` that cut_ref does
+  not read: the store keeps a discarded block's content (rule R6), so
+  the slots it covers still hold what they held;
 - the recording's marks (DIR/marks.tsv, CLOCK_MONOTONIC as the log's)
   by their time.
 
@@ -95,11 +100,23 @@ The second stage, where DIR/holder.log says the holder ran
   upload onto the image before it does. Also: each written cut's group
   and answer are its cut line's, the last cut counted was written, and
   the image after the drain holds nothing the maps did not write
-  (DIR/held-image.tsv). A failed `held_content` in a log with a
-  write-zeroes is the rig's error (placed at its receipt, run later).
+  (DIR/held-image.tsv). A failed `held_content` whose wrong blocks
+  include one under a write-zeroes received while an overlapping write
+  was in the store is the rig's error: the store ran the write first,
+  the log does not say when the write-zeroes ran.
 - controls: the middle written cut's image against the reference at the
   cut before it (`content_early`), and the image before its write
   against the reference at its instant (`content_stale`): both caught.
+- `obs_copied_blocks`: how many blocks of each written cut's map had
+  changed in the home (a write applied, a write-zeroes answered) after
+  the cut's instant and before the holder asked for its write
+  (held.tsv's times, the request log's clock): those the daemon wrote
+  from copies, so that held_content is shown to have read some. The
+  first written cut maps the whole volume and holds nearly all of them.
+- `cuts_abandoned`: at least one in `bound`; `edges`: at least one
+  write-zeroes and one discard, and a cut written after the first that
+  had a block a write-zeroes changed before its write (the rig's
+  error otherwise: the recording did not hold a cut across it).
 
 Not judged here: a daemon that is started again on the volume (the
 count is per instance, and the rings it starts from are the volume's),
@@ -209,7 +226,23 @@ def records_of(lines, marks):
             mk += 1
 
     last_barrier = None
-    received = set()            # flushes received whose barrier has not come
+    # Flushes received whose barrier has not come, in the order received,
+    # each with the requests that have no line of their own for when they
+    # took effect (a write-zeroes, a discard) received after it.
+    received = {}
+    zeroing = {}                # write-zeroes not answered yet, by tag
+
+    def behind(r):
+        """A request placed by its receipt: the store accepts requests in
+        the order received (`InPlace::accept`), and one received after a
+        flush takes effect after that flush's barrier, whether the flush
+        waits (a request received while one waits is put behind it) or
+        ran at once. It is placed right after the barrier of the last
+        flush received before it, or at its receipt when none waits."""
+        if received:
+            received[next(reversed(received))].append(r)
+        else:
+            add(r)
     for ln in lines:
         marks_until(ln['ns'])
         ev = ln['event']
@@ -221,23 +254,29 @@ def records_of(lines, marks):
                 pending[ln['tag']] = (off, n)
                 data.pop(ln['tag'], None)
             elif ln['op'] == 'write_zeroes':
-                # Placed at its receipt. A write received before it that
-                # overlaps it and is not applied yet is applied first by
-                # the store (both in the order received) and after it
-                # here: their shared blocks are not placed for certain.
+                # Placed at its receipt, or behind a flush (below). A write
+                # received before it that overlaps it and is not applied
+                # yet is applied first by the store (both in the order
+                # received) and after it here: their shared blocks are not
+                # placed for certain.
                 lo, hi = off // BLOCK, (off + n - 1) // BLOCK
                 amb = {b for (o, m) in pending.values() for b in range(max(lo, o // BLOCK),
                                                                        min(hi, (o + m - 1) // BLOCK) + 1)}
-                add({'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op'], 'ambiguous': amb})
+                z = {'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op'], 'ambiguous': amb}
+                zeroing[ln['tag']] = z
+                behind(z)
             elif ln['op'] == 'flush':
                 # The receipt takes the mark; the barrier counts the cut.
                 add({'flags': ['receipt'], 'offset': 0, 'bytes': 0, 'tag': ln['tag']})
-                received.add(ln['tag'])
+                received[ln['tag']] = []
             elif ln['op'] == 'discard':
                 # A discard changes no content in the store (R6), and
                 # nothing of cut_ref's reads a `trim`: only the content of
                 # held cuts does, which accepts either for it.
-                add({'flags': ['trim'], 'offset': off, 'bytes': n})
+                behind({'flags': ['trim'], 'offset': off, 'bytes': n})
+        elif ev == 'commit' and ln['op'] == 'write_zeroes' and ln['tag'] in zeroing:
+            # When it was answered: it had taken effect by then.
+            zeroing.pop(ln['tag'])['done_ns'] = ln['ns']
         elif ev == 'label':
             try:
                 data[ln['tag']] = bytes.fromhex(ln['result'])
@@ -247,7 +286,7 @@ def records_of(lines, marks):
             if ln['tag'] not in pending:
                 raise RigError(f"request log line {ln['line']}: write {ln['tag']} applied with no recv before it")
             off, n = pending.pop(ln['tag'])
-            r = {'flags': [], 'offset': off, 'bytes': n, 'pos': None, 'tag': ln['tag']}
+            r = {'flags': [], 'offset': off, 'bytes': n, 'pos': None, 'tag': ln['tag'], 'ns': ln['ns']}
             if ln['extra']:
                 # Since M2.2b: each 4 KiB block the write touches, from its
                 # first, as the write leaves it; `-` where it covers part.
@@ -268,12 +307,16 @@ def records_of(lines, marks):
             if ln['op'] == 'flush':
                 if ln['tag'] not in received:
                     raise RigError(f"request log line {ln['line']}: the barrier of flush {ln['tag']} with no recv before it")
-                received.discard(ln['tag'])
+                after = received.pop(ln['tag'])
                 r['received'] = True
+            else:
+                after = []
             # The daemon's own flush after a write with FUA has no recv
             # line: it is received after the write completed, and is
             # placed here at its barrier, as dm-log-writes places a flush.
             last_barrier = add(r)
+            for x in after:
+                add(x)
         elif ev == 'cut':
             if not ln['result'].isdigit() or ln['sector'] not in ('itself', 'rewind'):
                 raise RigError(f"request log line {ln['line']}: a cut line that is not a group and itself or rewind")
@@ -283,6 +326,9 @@ def records_of(lines, marks):
                           'prefix': last_barrier['i'], 'line': ln['line'], 'ns': ln['ns'],
                           'number': ln['sectors']})
     marks_until(float('inf'))
+    for waiting in received.values():
+        for x in waiting:       # a flush whose barrier the log does not have
+            add(x)
     return records, dcuts
 
 
@@ -395,13 +441,41 @@ def held_compare(model, image, limit=5):
 
 
 def read_held(text):
-    """held.tsv -> [{'number', 'group', 'opens', 'blocks'}]."""
+    """held.tsv -> [{'number', 'group', 'opens', 'blocks', 'asked'}], asked
+    the monotonic time the write was asked for."""
     out = []
     for k, ln in enumerate(text.splitlines()):
         f = ln.split('\t')
-        if len(f) != 6 or not all(x.isdigit() for x in (f[0], f[1], f[3])) or f[2] not in ('itself', 'rewind'):
+        if len(f) != 6 or not all(x.isdigit() for x in (f[0], f[1], f[3], f[4], f[5])) \
+                or f[2] not in ('itself', 'rewind'):
             raise RigError(f'held.tsv line {k + 1}: not `number group opens blocks ns ns`: {ln!r}')
-        out.append({'number': int(f[0]), 'group': int(f[1]), 'opens': f[2], 'blocks': int(f[3])})
+        out.append({'number': int(f[0]), 'group': int(f[1]), 'opens': f[2], 'blocks': int(f[3]), 'asked': int(f[4])})
+    return out
+
+
+def copied(records, dcuts, written, blocks):
+    """The blocks each written cut's write read from copies -> [(number,
+    blocks, of them under a write-zeroes)]: the blocks of its map that a
+    write applied, or a write-zeroes answered, after the cut's instant
+    and before its write was asked for had changed in the home. The
+    review of #103 (S4): a daemon that makes no copy passes held_content
+    where there are none."""
+    by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
+    out = []
+    for w in written:
+        n = w['number']
+        m = set(blocks.get(n, ()))
+        d = by_number.get(n)
+        if d is None:
+            continue
+        hit, zeroed = set(), set()
+        for r in records[d['prefix'] + 1:]:
+            if r.get('op') == 'write_zeroes':
+                if r.get('done_ns', w['asked']) < w['asked']:
+                    zeroed |= m & set(full_blocks(r['offset'], r['bytes'])[0])
+            elif cut_ref.is_write(r) and 'ns' in r and r['ns'] < w['asked']:
+                hit |= m & set(range(r['offset'] // BLOCK, (r['offset'] + r['bytes'] - 1) // BLOCK + 1))
+        out.append((n, len(hit | zeroed), len(zeroed)))
     return out
 
 
@@ -635,12 +709,23 @@ def held_lines(put, rdir, inst, records, dcuts, status, dev, name=''):
         rc = rc if ok else 1
     else:
         put('cuts_abandoned', 'INFO', f'{ab!r}')
+    cp = copied(records, dcuts, written, blocks)
+    first, later = cp[:1], cp[1:]
+    put('obs_copied_blocks', 'INFO', f'{sum(c for _, c, _ in first)} blocks of the first written cut and '
+        f'{sum(c for _, c, _ in later)} of the {len(later)} written after it (in cuts '
+        f"{', '.join(str(n) for n, c, _ in later if c) or 'none'}; {sum(z for _, _, z in cp)} under a write-zeroes) "
+        'had changed in the home between the cut\'s instant and its write: the daemon wrote them from copies')
     if name == 'edges':
         nz = sum(1 for r in records if r.get('op') == 'write_zeroes')
         nt = sum(1 for r in records if 'trim' in r['flags'])
         if not nz or not nt:
             raise RigError(f'edges sent {nz} write-zeroes and {nt} discards; it is there to send both')
-        put('edges', 'INFO', f'{nz} write-zeroes and {nt} discards in the log, none of them from ZFS')
+        held_over = [(n, z) for n, _, z in later if z]
+        if not held_over:
+            raise RigError('edges holds a cut across its write-zeroes, and no cut written after the first had a '
+                           'block a write-zeroes changed before its write')
+        put('edges', 'INFO', f'{nz} write-zeroes and {nt} discards in the log, none of them from ZFS; held across '
+            f"the write-zeroes: {', '.join(f'cut {n} ({z} blocks)' for n, z in held_over)}")
     for c in CONTENT_CONTROLS:
         verdict, d = controls[c]
         good = verdict == CONTENT_EXPECTED[c]

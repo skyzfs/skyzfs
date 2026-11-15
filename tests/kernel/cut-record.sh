@@ -582,23 +582,53 @@ rec_bound() {
     export_pool
 }
 
+# The holder paused with no cut held: a cut taken from here on is the
+# one being uploaded, and stays held until hold_go. The pool is synced
+# and left idle; the holder writes what it holds, and is paused again
+# until it says it holds nothing (cut_hold.py writes hold.pause.held).
+hold_idle() {
+    local k t
+    z 60 zpool sync "$POOL"
+    for k in $(seq 1 20); do
+        rm -f "$WORK/hold.pause" "$WORK/hold.pause.held"
+        sleep 5
+        touch "$WORK/hold.pause"
+        for t in $(seq 1 600); do
+            [ -e "$WORK/hold.pause.held" ] && break
+            sleep 0.2
+        done
+        [ -e "$WORK/hold.pause.held" ] || rig_error "the holder did not say it had paused in 120 s"
+        [ -s "$WORK/hold.pause.held" ] || return 0
+    done
+    rig_error "the holder still held cuts after 20 pauses on an idle pool: $(cat "$WORK/hold.pause.held")"
+}
+hold_go() { rm -f "$WORK/hold.pause" "$WORK/hold.pause.held"; }
+
 # edges (held cuts only): requests ZFS does not send, into the area
 # between the front labels and the first metaslab (512 KiB to 4 MiB,
-# which ZFS leaves alone), each between loads so that cuts fall
-# between: a write, write-zeroes over half of it, a discard over a
-# quarter, a write of one block. The device's logical block is 4 KiB
-# (skyzfs-ublk-sys's parameters), so no request covers part of a block.
+# which ZFS leaves alone): a write, write-zeroes over half of it, a
+# discard over a quarter, a write of one block. The device's logical
+# block is 4 KiB (skyzfs-ublk-sys's parameters), so no request covers
+# part of a block. The holder is paused with nothing held before the
+# write, and the sync after it takes a cut that stays held, as the one
+# being uploaded, across the write-zeroes, the discard and the last
+# write: written after them, it must hold the first write's data where
+# the home now has zeros (the review of #103, S5). Loads between the
+# others make cuts that wait and are replaced.
 rec_edges() {
     local base=$((1 << 20))
     create_pool
     load 1
+    hold_idle
     dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
+    z 60 zpool sync "$POOL"
     load 1
     z 60 blkdiscard -f -z -o "$base" -l $((128 << 10)) "$DEV"
     load 1
     z 60 blkdiscard -f -o $((base + (128 << 10))) -l $((64 << 10)) "$DEV"
     load 1
     dd if=/dev/urandom of="$DEV" bs=4K count=1 seek=$(( (base + (192 << 10)) >> 12 )) oflag=direct conv=notrunc status=none
+    hold_go
     load 1
     export_pool
 }

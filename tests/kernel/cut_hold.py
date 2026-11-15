@@ -18,11 +18,19 @@ STOP exists it loops:
 - `release N`, as an upload's commit would.
 
 While the file named by CUT_HOLD_PAUSE exists, it does nothing: the
-cut being uploaded stays held (the recording `bound`).
+cut being uploaded stays held (the recordings `bound` and `edges`).
+When it has paused, between two steps, it writes what is held then
+(`held`'s lines) to that file's name with `.held` added, by rename, so
+that a recording can wait for a pause with nothing held.
 
-A write the daemon refuses at its end (the cut was let go or abandoned
-under it) is logged and not recorded: the cut that takes its map writes
-those blocks again.
+A write the daemon refuses is not recorded, and the cut is not released.
+The holder asks `held` again: where the cut is no longer the one being
+uploaded (it was abandoned under the write, and the cut that takes its
+map writes those blocks again), it goes on; where it still is, the
+refusal was the rig's (the image or its .blocks file could not be
+written), and the holder ends with its error rather than let the cut go
+unwritten. A release refused while the cut is still being uploaded is
+the holder's error too.
 
 At STOP it records what the daemon holds (`held`, OUT/held-final.txt)
 and, a second and a half later, the daemon's status beside it
@@ -196,18 +204,30 @@ class Holder:
         t0 = time.monotonic_ns()
         ok, _, last = self.d.send(f"write {c['number']} {self.image}")
         t1 = time.monotonic_ns()
-        if ok:
-            blocks = read_blocks(self.image + '.blocks')
-            hashes = hash_listed(self.image, blocks)
-            with open(os.path.join(self.out, 'held-blocks.tsv'), 'a') as f:
-                f.write(''.join(f"{c['number']}\t{b}\t{hashes[b]}\n" for b in blocks))
-            with open(os.path.join(self.out, 'held.tsv'), 'a') as f:
-                f.write(f"{c['number']}\t{c['group']}\t{c['opens']}\t{len(blocks)}\t{t0}\t{t1}\n")
-            self.written.append(c['number'])
-        # A write refused at its end (let go or abandoned under it) is
-        # not recorded; the release says whether it is still held.
+        if not ok:
+            # Not recorded, and not released: a cut abandoned under its
+            # write is gone, and one still being uploaded was refused for
+            # the rig's own reason.
+            self.must_be_gone(c['number'], f'its write was refused ({last})')
+            return True
+        blocks = read_blocks(self.image + '.blocks')
+        hashes = hash_listed(self.image, blocks)
+        with open(os.path.join(self.out, 'held-blocks.tsv'), 'a') as f:
+            f.write(''.join(f"{c['number']}\t{b}\t{hashes[b]}\n" for b in blocks))
+        with open(os.path.join(self.out, 'held.tsv'), 'a') as f:
+            f.write(f"{c['number']}\t{c['group']}\t{c['opens']}\t{len(blocks)}\t{t0}\t{t1}\n")
+        self.written.append(c['number'])
         ok, _, last = self.d.send(f"release {c['number']}")
+        if not ok:
+            self.must_be_gone(c['number'], f'its release was refused ({last})')
         return True
+
+    def must_be_gone(self, number, why):
+        """After a refusal: go on if cut NUMBER is no longer the one being
+        uploaded, else the holder's error."""
+        if any(c['number'] == number and c['phase'] == 'uploading' for c in self.held()):
+            raise HolderError(f'cut {number} is still being uploaded after {why}')
+        self.d.log.write(f'{time.monotonic_ns()}\tcut {number} gone after {why}\n')
 
 
 def main():
@@ -224,8 +244,20 @@ def main():
             d = Daemon(pid, run_dir_of(vdir, rdir), log)
             h = Holder(d, image, out)
             pause = os.environ.get('CUT_HOLD_PAUSE', '')
+            paused = False
             while not os.path.exists(stop):
-                if (pause and os.path.exists(pause)) or not h.step():
+                if pause and os.path.exists(pause):
+                    if not paused:
+                        held = h.held()
+                        with open(pause + '.held.tmp', 'w') as f:
+                            f.write(''.join(f"{c['number']} {c['group']} {c['phase']} {c['opens']} {c['blocks']}\n"
+                                            for c in held))
+                        os.rename(pause + '.held.tmp', pause + '.held')
+                        paused = True
+                    time.sleep(0.2)
+                    continue
+                paused = False
+                if not h.step():
                     time.sleep(0.2)
             # What is held at the stop, and the status a second and a
             # half after (the daemon writes its status at most every
