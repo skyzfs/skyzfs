@@ -53,6 +53,36 @@ class Embedded(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
         return json.loads(p.stdout)
 
+    def test_a_row_says_what_its_releaser_did(self):
+        """TB_SKZ_RELEASE (M2.T4): the row's serve arguments give the
+        releases in the window, or that the releaser ended, from its
+        line in the two readings; a row without one has neither."""
+        def rel(d, before, after, every='1'):
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write(f'serve_args --hold-cuts\nrelease_every {every}\nbuild abc+hooks\n')
+            looks = {'.before': f'skz writes 1\n{before}', '.after': f'skz writes 2\n{after}', '.pgbench': ''}
+            return self.row(d, looks)['skyzfsd']
+        with tempfile.TemporaryDirectory() as d:
+            k = rel(d, 'skzrel 36 1 1\t36\t37\n', 'skzrel 59 1 1\t59\t59\n')
+            self.assertEqual(k['release']['in_window'], 23)
+            self.assertNotIn('ended', k['release'])
+            self.assertEqual(k['serve_args'], '--hold-cuts (cuts released every 1: 23 in the window)')
+            # ended in the window: its last line says why
+            k = rel(d, 'skzrel 36 1 1\t36\t37\n', 'skzrel 40 0 # ERROR HolderError: release 41 refused\n')
+            self.assertEqual(k['release']['ended'], '# ERROR HolderError: release 41 refused')
+            self.assertIn('THE RELEASER ENDED, # ERROR HolderError: release 41 refused', k['serve_args'])
+            # ended before it: no releases at all
+            k = rel(d, 'skzrel 0 0 # ERROR HolderError: no reply\n', 'skzrel 0 0 # ERROR HolderError: no reply\n')
+            self.assertEqual(k['release']['in_window'], 0)
+            self.assertIn('THE RELEASER ENDED', k['serve_args'])
+            # no line from it at all
+            k = rel(d, '', '')
+            self.assertEqual(k['release']['ended'], 'no line from the releaser')
+            # no releaser
+            k = rel(d, '', '', every='0')
+            self.assertNotIn('release', k)
+            self.assertEqual(k['serve_args'], '--hold-cuts')
+
     def test_a_row_after_a_failed_row_says_so(self):
         # The workflow sets TB_EARLIER_FAILED on the rows of a sequence
         # after one that failed (M1.T24).

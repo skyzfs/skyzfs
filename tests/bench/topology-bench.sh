@@ -213,7 +213,8 @@
 #                           workflow builds)
 #   TB_SKYZFSD_REF=         what TB_SKYZFSD was built from (a commit or
 #                           ref; the workflow sets it, and builds that ref
-#                           when a sequence entry names it): written down
+#                           when a sequence entry names it; <ref>+hooks
+#                           is that ref with its test hooks): written down
 #                           and printed beside the row, with the name and
 #                           hash of the binary that read the row's status
 #                           (always the row's own)
@@ -244,6 +245,25 @@
 #                           refuses it). With any, the create may take up
 #                           to 1800 s instead of 120, and what it said on
 #                           stderr is kept in the row's .skzinfo
+#   TB_SKZ_RELEASE=N        zfs-skyzfsd with --hold-cuts in TB_SKYZFSD_ARGS
+#                           and a build with the test hooks
+#                           (TB_SKYZFSD_REF=<ref>+hooks): a releaser
+#                           (tests/bench/cut_release.py) runs beside the
+#                           daemon from its start and lets its held cuts
+#                           go as an upload's commit would, so that the
+#                           intent map clears its bits (M2.T4, round 2).
+#                           1 releases each cut as soon as it is being
+#                           uploaded; N holds each until N-1 newer cuts
+#                           have been taken. It writes nothing out.
+#                           A row without either of the two ends with
+#                           64 before anything runs. Its releases are in
+#                           skz-releases.tsv of the row's output, and the
+#                           row's serve arguments say how many fell in
+#                           the window, or that the releaser ended before
+#                           the window did (it said why on its last
+#                           line), and such a row gets no verdict.
+#                           Unset: cuts are held and never let go, as a
+#                           release build does before M2.4
 #   TB_SKYZFSD_COPY_LIMIT_S=600
 #                           seconds for each of the two steps that put the
 #                           pool image on the daemon's device: the copy
@@ -909,6 +929,8 @@ SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
 SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 SKYZFSD_CREATE_ARGS=${TB_SKYZFSD_CREATE_ARGS:-}
 SKZ_COPY_LIMIT_S=${TB_SKYZFSD_COPY_LIMIT_S:-600}
+SKZ_RELEASE=${TB_SKZ_RELEASE:-}
+[ -z "$SKZ_RELEASE" ] || [[ $SKZ_RELEASE =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKZ_RELEASE must be a count of cuts from 1: $SKZ_RELEASE" >&2; exit 64; }
 [[ $SKZ_COPY_LIMIT_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_LIMIT_S must be a number of seconds: $SKZ_COPY_LIMIT_S" >&2; exit 64; }
 SKZ_COPY_REPEAT=${TB_SKYZFSD_COPY_REPEAT:-}
 [[ -z $SKZ_COPY_REPEAT || $SKZ_COPY_REPEAT =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_REPEAT must be a count: $SKZ_COPY_REPEAT" >&2; exit 64; }
@@ -967,6 +989,14 @@ for t in $TOPOLOGIES; do
             # ends the row here, before anything is built (M1.T34).
             read -r -a SKZ_CHECK_ARGS <<< "${SKYZFSD_ARGS//,/ }"
             skz_store_args "$SKYZFSD" "${SKZ_CHECK_ARGS[@]}" || { echo "TB_SKYZFSD_ARGS ($SKYZFSD_ARGS): $SKZ_STORE_WHY" >&2; exit 64; }
+            # A releaser with nothing to release would leave a row
+            # measured without releases under a label that says it had
+            # them: refused before anything runs.
+            if [ -n "$SKZ_RELEASE" ]; then
+                _hold=""; for a in "${SKZ_CHECK_ARGS[@]}"; do [ "$a" != --hold-cuts ] || _hold=1; done
+                [ -n "$_hold" ] || { echo "TB_SKZ_RELEASE needs --hold-cuts in TB_SKYZFSD_ARGS ('$SKYZFSD_ARGS'): without it the daemon holds no cut" >&2; exit 64; }
+                [[ ${TB_SKYZFSD_REF:-} == *+hooks ]] || { echo "TB_SKZ_RELEASE needs a build with the test hooks, TB_SKYZFSD_REF=<ref>+hooks, not '${TB_SKYZFSD_REF:-}': a release build has no commands about held cuts" >&2; exit 64; }
+            fi
             ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
@@ -1124,7 +1154,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""; PR_PID=""
-SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -1603,7 +1633,7 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     SKZ_PID=$!
     for i in $(seq 1 240); do
         SKZ_DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$WORK/skyzfsd.ready" | head -n 1)
-        if [ -n "$SKZ_DEV" ] && [ -b "$SKZ_DEV" ]; then return 0; fi
+        if [ -n "$SKZ_DEV" ] && [ -b "$SKZ_DEV" ]; then skz_release_start; return 0; fi
         if ! kill -0 "$SKZ_PID" 2>/dev/null; then
             echo "skyzfsd serve ended before it was ready: $(tail -n 3 "$OUT/skyzfsd-serve.log" | tr '\n' ';')" >&2
             SKZ_PID=""
@@ -1614,8 +1644,34 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     echo "skyzfsd serve was not ready after 60 s: $(tail -n 3 "$OUT/skyzfsd-serve.log" | tr '\n' ';')" >&2
     return 1
 }
+# The releaser of held cuts (TB_SKZ_RELEASE), from the daemon's start to
+# its stop. One that ended before its stop has said why on the last line
+# of skz-releases.tsv; each reading (`snapshot`) says whether it still
+# runs, and the row's serve arguments say what it did in the window.
+skz_release_start() {
+    [ -n "$SKZ_RELEASE" ] || return 0
+    rm -f "$WORK/skz-release.stop"
+    echo "# $(date +%s%N) daemon $SKZ_PID, release every $SKZ_RELEASE" >> "$OUT/skz-releases.tsv"
+    python3 -I "$HERE/cut_release.py" "$OUT/skz-releases.tsv" "$SKZ_PID" "$SKZ_DIR" "$SKZ_RUN" "$SKZ_RELEASE" \
+        "$WORK/skz-release.stop" 2>> "$OUT/skyzfsd-serve.log" &
+    SKZ_RELEASER=$!
+}
+skz_release_stop() {
+    local i
+    [ -n "$SKZ_RELEASER" ] || return 0
+    touch "$WORK/skz-release.stop"
+    for i in $(seq 1 120); do kill -0 "$SKZ_RELEASER" 2>/dev/null || break; sleep 0.25; done
+    if kill -0 "$SKZ_RELEASER" 2>/dev/null; then
+        log "WARNING: the releaser of held cuts did not end within 30 s of its stop; killed"
+        kill -9 "$SKZ_RELEASER" 2>/dev/null
+    fi
+    wait "$SKZ_RELEASER" 2>/dev/null; i=$?
+    [ "$i" = 0 ] || log "WARNING: the releaser of held cuts ended with $i: $(tail -n 1 "$OUT/skz-releases.tsv" 2>/dev/null)"
+    SKZ_RELEASER=""
+}
 skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the volume removed
     local i
+    skz_release_stop
     if [ -n "$SKZ_PID" ]; then
         kill -TERM "$SKZ_PID" 2>/dev/null
         for i in $(seq 1 240); do kill -0 "$SKZ_PID" 2>/dev/null || break; sleep 0.25; done
@@ -1896,6 +1952,7 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             log "skyzfsd: the pool image ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated of $(( $(stat -c %s "$WORK/zfs-origin.img") >> 20 )) MiB) was copied onto $dev in $t0 ms, direct I/O, conv=sparse; the daemon counted $(skz_stat writes) writes, checkpoint_steps $(skz_stat checkpoint_steps), log_live $(skz_stat log_live)"
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKZ_SERVE_ARGS:-}" >> "$OUT/$TOPO.skzinfo"
+            echo "release_every ${SKZ_RELEASE:-0}" >> "$OUT/$TOPO.skzinfo"
             echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
             # Every status of this row is read by skz_status, with this
             # row's own binary: a newer `status` prints an older status
@@ -2380,6 +2437,12 @@ snapshot() { # file
         # has. `zpool status -x` says "pool 'NAME' is healthy" or what
         # is wrong.
         [ -z "$SKZ_UP" ] || echo "skzpool $(lim 60 zpool status -x "$ZFS_POOL" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300)"
+        # The releaser of held cuts (TB_SKZ_RELEASE): its releases so
+        # far, whether it is still running, and its last line, so that
+        # the row says what it did in the window.
+        if [ -n "$SKZ_UP" ] && [ -n "$SKZ_RELEASE" ]; then
+            echo "skzrel $(cat "$OUT/skz-releases.tsv" 2>/dev/null | awk '/^[0-9]/ { n++ } END { print n + 0 }') $( { [ -n "$SKZ_RELEASER" ] && kill -0 "$SKZ_RELEASER" 2>/dev/null; } && echo 1 || echo 0) $(tail -n 1 "$OUT/skz-releases.tsv" 2>/dev/null | tr -s ' \t' ' ' | cut -c1-300)"
+        fi
     } > "$1"
 }
 
@@ -2578,6 +2641,22 @@ if skz[base + '.after']:
     k['build'] = k['info'].get('build', 'not said')
     if k['info'].get('status_reader'):
         k['build'] += f" (status read by {k['info']['status_reader']})"
+    # The releaser of held cuts (TB_SKZ_RELEASE): what it did in the
+    # window, from its line in the two readings ("count running last").
+    every = k['info'].get('release_every', '0')
+    if every.isdigit() and int(every) > 0:
+        rel = lambda o: (o.get('skzrel') or [''])[0].split(None, 3)
+        rb, ra = rel(bo), rel(ao)
+        ok = len(rb) >= 3 and len(ra) >= 3 and rb[1].isdigit() and ra[1].isdigit()
+        k['release'] = {'every': int(every), 'in_window': int(ra[1]) - int(rb[1]) if ok else None,
+                        'running': ok and rb[2] == '1' and ra[2] == '1', 'last': ra[3] if len(ra) > 3 else ''}
+        if k['release']['running']:
+            k['serve_args'] += f" (cuts released every {every}: {k['release']['in_window']} in the window)"
+        else:
+            # Released for part of the window or none of it: not the row
+            # its label would say. bracket.py gives it no verdict.
+            k['release']['ended'] = k['release']['last'] or 'no line from the releaser'
+            k['serve_args'] += f" (cuts released every {every}: THE RELEASER ENDED, {k['release']['ended']})"
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k

@@ -248,7 +248,10 @@ jobs:
           # A sequence entry may name another build with
           # TB_SKYZFSD_REF=<commit, short commit or branch>: each one
           # named is built here, from its own worktree, into a binary of
-          # its own, so that one machine runs them all.
+          # its own, so that one machine runs them all. <ref>+hooks is
+          # that ref built with the test hooks (--features test-hooks),
+          # which have the commands about held cuts that TB_SKZ_RELEASE's
+          # releaser uses (M2.T4, round 2).
           # An entry with an empty ref would run the branch's own build
           # under a row that says otherwise: refused before anything runs.
           if grep -qE 'TB_(SKYZFSD|SKZ_TIME)_REF=($|[ ;])' <<< "$TB_SEQUENCE"; then
@@ -266,12 +269,15 @@ jobs:
             if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --unshallow --no-tags --quiet origin; fi
           fi
           for ref in $refs; do
-            sha=$(git rev-parse --verify --quiet "origin/$ref^{commit}" || git rev-parse --verify --quiet "$ref^{commit}") \
+            base=${ref%+hooks}
+            features=()
+            [ "$base" = "$ref" ] || features=(--features test-hooks)
+            sha=$(git rev-parse --verify --quiet "origin/$base^{commit}" || git rev-parse --verify --quiet "$base^{commit}") \
               || { echo "::error::sequence names TB_SKYZFSD_REF=$ref, which is no branch or commit here"; exit 64; }
             git worktree add --detach "$RUNNER_TEMP/wt-$ref" "$sha"
-            (cd "$RUNNER_TEMP/wt-$ref" && CARGO_TARGET_DIR="$RUNNER_TEMP/target-refs" cargo build --release --locked -p skyzfsd)
+            (cd "$RUNNER_TEMP/wt-$ref" && CARGO_TARGET_DIR="$RUNNER_TEMP/target-refs" cargo build --release --locked -p skyzfsd "${features[@]}")
             cp "$RUNNER_TEMP/target-refs/release/skyzfsd" "$RUNNER_TEMP/skyzfsd-$ref"
-            echo "| $ref | $sha |" >> "$RUNNER_TEMP/refs.md"
+            echo "| $ref | $sha${features[*]:+ (${features[*]})} |" >> "$RUNNER_TEMP/refs.md"
           done
           if [ -n "$skzref" ]; then
             sha=$(git rev-parse --verify --quiet "origin/$skzref^{commit}" || git rev-parse --verify --quiet "$skzref^{commit}") \
