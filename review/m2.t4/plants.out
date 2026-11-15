@@ -1,0 +1,13 @@
+P1 a cut is due one cut later than asked: KILLED by 6: test_a_refused_release, test_every_cut, test_every_fourth, test_holds_until_enough_cuts_are_taken, test_main_to_the_stop
+P2 a cut is due whatever EVERY says: KILLED by 2: test_every_fourth, test_holds_until_enough_cuts_are_taken
+P3 the newest cut is taken among those being uploaded only: KILLED by 2: test_every_fourth, test_holds_until_enough_cuts_are_taken
+P4 a cut whose flush is under way is released too: KILLED by 1: test_every_cut
+P5 a refused release is counted as a release: KILLED by 1: test_a_refused_release
+P6 a refused held is taken as nothing held: SURVIVED
+P7 an error ends the releaser with exit 0: KILLED by 1: test_main_with_no_daemon_answering
+P8 an error leaves no line in the output: KILLED by 1: test_main_with_no_daemon_answering
+P9 the end leaves no line in the output: KILLED by 1: test_main_to_the_stop
+P10 a release is not written to the output: KILLED by 2: test_main_to_the_stop, test_releases_each_cut_in_turn
+P11 the stop file is not looked at: KILLED by 1: test_main_to_the_stop
+P12 the reply limit is not taken from CUT_RELEASE_REPLY_S: KILLED by 1: test_main_with_no_daemon_answering
+finished
