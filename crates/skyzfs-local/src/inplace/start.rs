@@ -553,8 +553,12 @@ impl<D: Dir> Opened<D> {
             .map(|hold| super::state::Taken::open(hold, volume.size, volume.identity, found, start))
             .transpose()
             .map_err(OpenError::CutRegion)?;
-        crate::volume::write_start_token(dir, start)
-            .map_err(io_error("writing the start token"))?;
+        let advance = options.hold_cuts.is_some() || !mutants.has(Mutants::START_KEPT_WITHOUT_CUTS);
+        let after = mutants.has(Mutants::START_AFTER_ACKNOWLEDGING);
+        if advance && !after {
+            crate::volume::write_start_token(dir, start)
+                .map_err(io_error("writing the start token"))?;
+        }
         if marked {
             // Acknowledged: the marker goes, durably, before anything
             // is served. Where that fails the volume stays marked, and
@@ -562,6 +566,10 @@ impl<D: Dir> Opened<D> {
             dir.remove(MARKER_NAME)
                 .and_then(|()| dir.sync())
                 .map_err(io_error("removing the failure marker"))?;
+        }
+        if advance && after {
+            crate::volume::write_start_token(dir, start)
+                .map_err(io_error("writing the start token"))?;
         }
         Ok((home, volume, geometry, marked, cuts))
     }

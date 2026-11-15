@@ -2030,7 +2030,20 @@ fn opened_between(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, Option<u8>) {
     assert_eq!(cut_block(&mut store, 1, 5), vec![0x55; BLOCK_USIZE]);
     drop(store);
     disk.kill();
-    let mut store = start_io(&disk, mutants, false, ON_CALLER).expect("opens");
+    let options = OpenOptions {
+        io: ON_CALLER,
+        ..OpenOptions::default()
+    };
+    let mut store = Opened::open_with(
+        disk.clone(),
+        lock(&disk).expect("the lock"),
+        options,
+        Mutants(mutants),
+    )
+    .map_err(|(e, _)| e)
+    .expect("opens")
+    .start_with(None, Mutants(mutants))
+    .expect("the in-place store");
     assert_eq!(store.cuts_at_start(), None);
     write(&mut store, 5, 0x66).unwrap();
     assert!(run(&mut store, 300, Op::Flush).result.is_ok());
@@ -2047,7 +2060,9 @@ fn opened_between(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, Option<u8>) {
 /// made, and its open changed the start token (the review of #100, D1,
 /// and Codex's thread). With the token's rule planted away, the third
 /// start takes cut 1 up, and it reads 0x66 for block 5, which held 0x55
-/// at its instant.
+/// at its instant. So it does where the open that holds no cuts leaves
+/// the token as it found it (design §5.2: every start changes it,
+/// whatever its options).
 #[test]
 fn a_start_that_holds_no_cuts_between_two_that_do() {
     let (taken, held, _) = opened_between(0);
@@ -2056,12 +2071,23 @@ fn a_start_that_holds_no_cuts_between_two_that_do() {
         "{taken:?}, held {held:?}"
     );
     assert!(held.is_empty(), "{held:?}");
-    let (taken, held, five) = opened_between(Mutants::START_UNCHECKED);
-    assert_eq!(
-        (taken, held, five),
-        (Some(CutsTakenUp::TakenUp), vec![1], Some(0x66)),
-        "the start token's rule planted away is not noticed"
-    );
+    for (mutant, what) in [
+        (
+            Mutants::START_UNCHECKED,
+            "the start token's rule planted away",
+        ),
+        (
+            Mutants::START_KEPT_WITHOUT_CUTS,
+            "a token not changed by an open that holds no cuts",
+        ),
+    ] {
+        let (taken, held, five) = opened_between(mutant);
+        assert_eq!(
+            (taken, held, five),
+            (Some(CutsTakenUp::TakenUp), vec![1], Some(0x66)),
+            "{what} is not noticed"
+        );
+    }
 }
 
 /// Cut 1 is held and the volume fails. A start that acknowledges the
@@ -2126,6 +2152,86 @@ fn an_acknowledged_failure_whose_start_is_lost_before_its_second_phase() {
         acknowledged_and_lost(Mutants::START_UNCHECKED),
         (Some(CutsTakenUp::TakenUp), vec![1]),
         "the start token's rule planted away is not noticed"
+    );
+}
+
+/// Cut 1 is held and the volume fails. A start that acknowledges the
+/// failure is lost after the first `after` writes and syncs of its open:
+/// the disk takes nothing after them, and the daemon dies. Whether that
+/// open came to its end, and what the next start, which acknowledges
+/// nothing, makes of the volume under `mutants`: refused for the marker,
+/// or opened, with what it took up.
+fn acknowledging_open_lost_at(
+    after: u64,
+    mutants: u64,
+) -> (bool, Result<(Option<CutsTakenUp>, Vec<u64>), OpenError>) {
+    let disk = created(43, 0);
+    let region = region();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    disk.fail_write_of(HOME_NAME);
+    assert_eq!(write(&mut store, 6, 0x66), Err(BlkError::Failed));
+    drop(store);
+    disk.kill();
+    disk.clear_faults();
+    let open = |acknowledge: bool| {
+        Opened::open_with(
+            disk.clone(),
+            lock(&disk).expect("the lock"),
+            holding(&region, acknowledge),
+            Mutants(mutants),
+        )
+        .map_err(|(e, _)| e)
+    };
+    disk.halt_after(after);
+    let opened = open(true).is_ok();
+    disk.kill();
+    disk.clear_faults();
+    let next = open(false).map(|opened| {
+        let store = opened
+            .start_with(None, Mutants(mutants))
+            .expect("the in-place store");
+        after_start(&store)
+    });
+    (opened, next)
+}
+
+/// An open that acknowledges a failure changes the start token before
+/// the marker goes (design §5.2: before the start acknowledges
+/// anything). Lost at any of its writes and syncs, it leaves either the
+/// marker, which refuses the next start, or a new token, under which the
+/// next start does not take up the failed volume's state. Where the
+/// token is written after the marker goes, a loss between the two
+/// leaves neither, and the next start takes cut 1 up.
+#[test]
+fn an_acknowledging_open_lost_at_any_write_leaves_the_marker_or_a_new_token() {
+    let mut lost = 0;
+    for after in 0u64.. {
+        let (opened, next) = acknowledging_open_lost_at(after, 0);
+        match next {
+            Err(OpenError::MarkedFailed) => {}
+            Ok((taken, held)) => assert!(
+                begun_for_an_open_between(&taken) && held.is_empty(),
+                "the open lost after {after} writes and syncs: {taken:?}, held {held:?}"
+            ),
+            Err(e) => panic!("the open lost after {after} writes and syncs: {e:?}"),
+        }
+        if opened {
+            break;
+        }
+        lost += 1;
+    }
+    assert!(lost > 0);
+    let taken = (0u64..=lost).any(|after| {
+        matches!(
+            acknowledging_open_lost_at(after, Mutants::START_AFTER_ACKNOWLEDGING).1,
+            Ok((Some(CutsTakenUp::TakenUp), ref held)) if held == &[1]
+        )
+    });
+    assert!(
+        taken,
+        "the token written after the marker goes is not noticed"
     );
 }
 
