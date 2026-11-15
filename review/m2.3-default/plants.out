@@ -1,0 +1,14 @@
+as the head has it:
+    skyzfs-local: 254 passed, 0 failed
+    skyzfsd: 99 passed, 0 failed
+  ([], [])
+    skyzfs-local: 254 passed, 0 failed
+    skyzfsd: 99 passed, 0 failed
+P1 a store given no region takes 64 MiB, whatever the constant says: SURVIVED
+    skyzfs-local: 254 passed, 0 failed
+    skyzfsd: 98 passed, 1 failed
+P2 the constant is 64 MiB again: KILLED by 1: the_intent_region_is_a_power_of_two_of_mib_with_held_cuts
+    skyzfs-local: 254 passed, 0 failed
+    skyzfsd: 98 passed, 1 failed
+P3 the help says 64 unless given: KILLED by 1: the_intent_region_is_a_power_of_two_of_mib_with_held_cuts
+finished
