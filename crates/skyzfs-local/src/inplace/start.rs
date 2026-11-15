@@ -78,6 +78,14 @@ pub struct OpenOptions {
     pub on_failure: Option<FailureObserver>,
     /// How the store reads and writes the home image ([`IoMode`]).
     pub io: IoMode,
+    /// Where the cut state lives (`state.rs`): a region that a death of
+    /// the daemon leaves as it was, taken up by the next start. `None`:
+    /// the store holds no cut, as the daemon's does until M2.2b maps a
+    /// file (nothing lets a held cut go before the uploader).
+    pub cut_region: Option<super::state::MemRegion>,
+    /// The bound on the cut state's copies, in bytes; `None`: the
+    /// provisional default (`state::default_bound`).
+    pub cut_bound: Option<u64>,
 }
 
 impl Default for OpenOptions {
@@ -88,6 +96,8 @@ impl Default for OpenOptions {
             acknowledge_failure: false,
             on_failure: None,
             io: IoMode::default(),
+            cut_region: None,
+            cut_bound: None,
         }
     }
 }
@@ -551,6 +561,8 @@ impl<D: Dir> Opened<D> {
                 marker,
                 observer: self.options.on_failure,
                 io: self.options.io,
+                cut_region: self.options.cut_region,
+                cut_bound: self.options.cut_bound,
             },
             waker.map(Waker::into_call),
             mutants,

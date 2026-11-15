@@ -159,9 +159,28 @@
 use std::collections::BTreeMap;
 
 use skyzfs_blk::{Op, RequestId};
-use skyzfs_uberblock::{is_repeat, Labels, State, Uberblock, View, RING_SIZE, SLOT_MIN};
+use skyzfs_uberblock::{
+    is_repeat, ByteOrder, Labels, Rank, State, Uberblock, View, RING_SIZE, SLOT_MIN,
+};
 
 use super::Mutants;
+
+/// An applied uberblock naming `state` with no place in a ring: a mark
+/// taken up from the cut state, or one the conformance harness makes.
+fn mark_of(state: State) -> Uberblock {
+    Uberblock {
+        at: 0,
+        label: 0,
+        order: ByteOrder::Little,
+        state,
+        rank: Rank {
+            txg: state.txg,
+            timestamp: 0,
+            seq: 0,
+        },
+        slot: None,
+    }
+}
 
 /// A cut, as the store counts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +246,16 @@ impl std::fmt::Debug for Watching {
     }
 }
 
+/// What the rule did that the cut state records (`state.rs`), in order:
+/// taken by the store before anything the rule saw is completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Event {
+    /// Write `id` marked: the state of its uberblock is the mark.
+    Mark(RequestId, State),
+    /// A cut at flush `id`'s barrier, marked by that state.
+    Cut(RequestId, Cut, State),
+}
+
 /// What a write or a write-zeroes that reaches a ring changes there,
 /// from its receipt until it is applied or ends.
 #[derive(Debug)]
@@ -262,6 +291,8 @@ pub(crate) struct CutRule {
     carrying: BTreeMap<RequestId, Uberblock>,
     cuts: Cuts,
     watching: Watching,
+    /// What the cut state is to record, not yet taken.
+    events: Vec<Event>,
 }
 
 impl CutRule {
@@ -287,7 +318,44 @@ impl CutRule {
             carrying: BTreeMap::new(),
             cuts: Cuts::default(),
             watching: Watching::default(),
+            events: Vec::new(),
         }
+    }
+
+    /// Take up what the cut state recorded of an instance before this
+    /// one: the count, the newest cut's state and whether it opens as
+    /// itself, and the mark.
+    pub(crate) fn restore(
+        &mut self,
+        count: u64,
+        newest: Option<(State, bool)>,
+        mark: Option<State>,
+    ) {
+        self.cuts.count = count;
+        self.cuts.newest = newest.map(|(state, itself)| Cut {
+            number: count,
+            group: state.txg,
+            itself,
+        });
+        self.newest = newest.map(|(state, _)| state);
+        self.mark = mark.map(mark_of);
+    }
+
+    /// As if an uberblock write naming `state` had been applied whole,
+    /// with no place in a ring: the conformance harness's marks, which
+    /// must not write into the blocks the suite reads (`harness.rs`).
+    #[cfg(test)]
+    pub(crate) fn applied_state(&mut self, id: RequestId, state: State) {
+        if self.marks(&state) {
+            self.mark = Some(mark_of(state));
+            self.events.push(Event::Mark(id, state));
+        }
+        self.previous = Some(state);
+    }
+
+    /// What the cut state is to record, in order.
+    pub(crate) fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
     }
 
     /// Tell `watcher` of the rule's moments from now on.
@@ -343,6 +411,13 @@ impl CutRule {
                     return;
                 }
                 let found = self.found(*offset, data);
+                if self.mutants.has(Mutants::MARK_BEFORE_WHOLE) {
+                    // The defect: the cut state records the mark as the
+                    // write is received, before it is whole.
+                    for uberblock in found.iter().filter(|u| u.verified() && u.counts()) {
+                        self.events.push(Event::Mark(id, uberblock.state));
+                    }
+                }
                 (*offset, data.len() as u64, found)
             }
             Op::WriteZeroes { offset, len } => {
@@ -368,7 +443,7 @@ impl CutRule {
         let change = Change { offset, len, found };
         if self.mutants.has(Mutants::MARK_AT_RECEIPT) {
             // The defect: marked as received, not as applied.
-            return self.apply(change);
+            return self.apply(id, change);
         }
         self.changes.insert(id, change);
     }
@@ -377,14 +452,14 @@ impl CutRule {
     pub(crate) fn applied(&mut self, id: RequestId) {
         self.watching.tell(Seen::Applied(id));
         if let Some(change) = self.changes.remove(&id) {
-            self.apply(change);
+            self.apply(id, change);
         }
     }
 
     /// Write-zeroes `id` has been applied whole.
     pub(crate) fn zeroed(&mut self, id: RequestId) {
         if let Some(change) = self.changes.remove(&id) {
-            self.apply(change);
+            self.apply(id, change);
         }
     }
 
@@ -403,7 +478,7 @@ impl CutRule {
         self.carrying.remove(&id);
     }
 
-    fn apply(&mut self, change: Change) {
+    fn apply(&mut self, id: RequestId, change: Change) {
         self.view.changed(change.offset, change.len, &change.found);
         for uberblock in change.found {
             if !uberblock.verified() {
@@ -415,6 +490,9 @@ impl CutRule {
             let state = uberblock.state;
             if self.marks(&state) {
                 self.mark = Some(uberblock);
+                if !self.mutants.has(Mutants::MARK_BEFORE_WHOLE) {
+                    self.events.push(Event::Mark(id, state));
+                }
             }
             self.previous = Some(state);
         }
@@ -466,6 +544,7 @@ impl CutRule {
             itself,
         };
         self.cuts.newest = Some(cut);
+        self.events.push(Event::Cut(id, cut, state));
         self.watching.tell(Seen::Cut(id, cut));
     }
 }

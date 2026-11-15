@@ -179,6 +179,28 @@
 //! [`BlockTarget::submit`], or through the kernel's cache, where a
 //! write-zeroes deallocates the range (`IoMode::for_tests`). Neither is
 //! a mode the store is served in.
+//!
+//! # Held cuts (M2.2)
+//!
+//! A store started with a region for the cut state
+//! ([`OpenOptions::cut_region`]) keeps it (`inplace/state.rs`), taken
+//! up once the start's sync has succeeded, which counts as the flush of
+//! every cut whose flush a death left under way. The count of cuts
+//! (`inplace/cuts.rs`) tells it what happened: the mark of an uberblock
+//! write is recorded once the write is whole, before anything it saw is
+//! completed, so before its completion goes to the transport; a cut is
+//! frozen at its flush's barrier, and its flush's completion or failure
+//! is the cut's. Before a write or a write-zeroes is begun, on the
+//! queue's thread, its blocks pass through the cut state: a block a
+//! held cut reads is read from the home image and copied into
+//! `copies.img` there and then, and the write begins only after the
+//! copy is written. A copy that cannot be made fails the volume, as a
+//! failed write does, and the write is not begun. A discard is not
+//! noted: it changes no content here. In M2.2a the region is in memory
+//! (`MemRegion`), which outlives a death only in the tests; the mapped
+//! file locked in memory, and the rules for trusting it, are M2.2b's. A
+//! store started with no region holds no cut, as the daemon's does
+//! until then: nothing would let a held cut go.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -194,8 +216,11 @@ use crate::io::{Dir, File, NotBegun};
 use crate::store::{FailureObserver, Zeroes};
 use cuts::CutRule;
 use pool::{Done, Job, Pool};
+use skyzfs_uberblock::State;
+use state::CutState;
 
 pub use cuts::{Cut, Cuts, Seen, Watcher};
+pub use state::{Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase};
 
 pub use start::{
     create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
@@ -330,6 +355,48 @@ impl Mutants {
     /// carry the magic and a group but that ZFS would pass over mark, and
     /// are held in the view (work package M2.1c).
     pub(crate) const CHECKSUM_UNCHECKED: u64 = 1 << 40;
+    /// The cut state's records of copies are kept in memory only: a
+    /// copy is made and read, but a later instance does not know of it
+    /// (M2.2, "no record of a copy").
+    pub(crate) const COPY_UNRECORDED: u64 = 1 << 41;
+    /// A block is copied after the write that changes it, not before.
+    pub(crate) const COPY_AFTER_OVERWRITE: u64 = 1 << 42;
+    /// At the bound, the abandoned cut's map is dropped, not given on.
+    pub(crate) const ABANDONED_MAP_DROPPED: u64 = 1 << 43;
+    /// A cut that replaces the one that waits does not take its map.
+    pub(crate) const REPLACED_MAP_DROPPED: u64 = 1 << 44;
+    /// At the bound, every copy the abandoned cut needed is freed, those
+    /// the cut that waits needs too.
+    pub(crate) const ABANDONED_COPIES_FREED: u64 = 1 << 45;
+    /// Every copy a replaced cut needed is freed, those the cut that
+    /// replaced it needs too.
+    pub(crate) const REPLACED_COPIES_FREED: u64 = 1 << 46;
+    /// At the bound, the abandoned map goes to a cut whose flush is
+    /// under way, though another waits.
+    pub(crate) const ABANDONED_TO_FLUSHING: u64 = 1 << 47;
+    /// At the bound, with none waiting, the abandoned map goes to the
+    /// open map though a cut's flush is under way.
+    pub(crate) const ABANDONED_TO_OPEN: u64 = 1 << 48;
+    /// The cut that waits is replaced at the newer cut's instant, not
+    /// when the newer cut's flush completes.
+    pub(crate) const REPLACED_AT_INSTANT: u64 = 1 << 49;
+    /// A freeze that a death can split: the count moves on before the
+    /// cut is recorded.
+    pub(crate) const FREEZE_SPLIT: u64 = 1 << 50;
+    /// The mark is recorded in the cut state when the uberblock write is
+    /// received, before it is whole.
+    pub(crate) const MARK_BEFORE_WHOLE: u64 = 1 << 51;
+    /// The mark is recorded in the cut state only after the write's
+    /// completion went to the transport.
+    pub(crate) const MARK_AFTER_COMPLETION: u64 = 1 << 52;
+    /// A map's summary is noted after the block's bit, so that a death
+    /// between leaves a word that a pass misses.
+    pub(crate) const SUMMARY_AFTER_BIT: u64 = 1 << 53;
+    /// A map being taken is moved with each word cleared in the smaller
+    /// part before it is set in the larger.
+    pub(crate) const MOVE_CLEARS_FIRST: u64 = 1 << 54;
+    /// A map let go is not cleared, at a release or at a start.
+    pub(crate) const MAP_NOT_CLEARED: u64 = 1 << 55;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -489,6 +556,17 @@ pub struct InPlace<D: Dir> {
     marker: Marker,
     /// The count of cuts (`cuts.rs`).
     cuts: CutRule,
+    /// The cut state (`state.rs`): taken up or begun once the start's
+    /// sync has succeeded.
+    state: Option<CutState<state::MemRegion>>,
+    /// The copies file, once opened.
+    copies: Option<D::File>,
+    /// The flushes that carry a cut to its flush's completion, with the
+    /// cut's number.
+    flushing: BTreeMap<RequestId, u64>,
+    /// Under [`Mutants::MARK_AFTER_COMPLETION`]: marks recorded only once
+    /// the write's completion is handed out.
+    marks_after: Vec<(RequestId, State)>,
     /// The rings the start could not read: each one's offset on the
     /// volume and the error ([`InPlace::rings_unread`]).
     rings_unread: Vec<(u64, String)>,
@@ -733,6 +811,10 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) observer: Option<FailureObserver>,
     /// How reads and writes are done.
     pub(crate) io: IoMode,
+    /// Where the cut state lives ([`OpenOptions::cut_region`]).
+    pub(crate) cut_region: Option<state::MemRegion>,
+    /// The bound on its copies ([`OpenOptions::cut_bound`]).
+    pub(crate) cut_bound: Option<u64>,
 }
 
 impl<D: Dir> InPlace<D> {
@@ -778,6 +860,10 @@ impl<D: Dir> InPlace<D> {
             held_early: Vec::new(),
             marker: Marker::new(parts.marker, mutants),
             cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
+            state: None,
+            copies: None,
+            flushing: BTreeMap::new(),
+            marks_after: Vec::new(),
             rings_unread: Vec::new(),
         };
         // What the instance before this one wrote by direct I/O may be
@@ -797,6 +883,7 @@ impl<D: Dir> InPlace<D> {
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
+        store.take_up_cut_state(parts.cut_region, parts.cut_bound);
         store.empty_cache().map_err(StartError::CacheKept)?;
         store.read_rings();
         store.set_up_io().map_err(StartError::Io)?;
@@ -1091,6 +1178,15 @@ impl<D: Dir> InPlace<D> {
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {
         self.cuts.ended(id);
+        if let Some(number) = self.flushing.remove(&id) {
+            if let Some(state) = &mut self.state {
+                if result.is_ok() {
+                    state.flushed(number);
+                } else {
+                    state.flush_failed(number);
+                }
+            }
+        }
         self.ready.push(Completion { id, result, buf });
     }
 
@@ -1141,30 +1237,48 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Err(BlkError::ReadOnly), buf);
             }
             Op::Write { offset, data } => {
+                let len = data.len() as u64;
+                let after = self.mutants.has(Mutants::COPY_AFTER_OVERWRITE);
+                if !after {
+                    if let Err(e) = self.note_change(offset, len) {
+                        let result = self.mutated(Err(e));
+                        return self.complete(id, result, Some(data));
+                    }
+                }
                 if self.pool.is_some() {
-                    let end = offset + data.len() as u64;
-                    return self.on_thread(
-                        id,
-                        (offset, end, true),
-                        Job::Write { id, offset, data },
-                    );
+                    let end = offset + len;
+                    self.on_thread(id, (offset, end, true), Job::Write { id, offset, data });
+                    if after {
+                        // The defect: the copy races the write.
+                        let _ = self.note_change(offset, len);
+                    }
+                    return;
                 }
                 let written = if self.io.direct {
                     self.home.write_direct_at(offset, &data)
                 } else {
                     self.home.write_at(offset, &data)
                 };
+                if after {
+                    let _ = self.note_change(offset, len);
+                }
                 let result = self.mutated(written);
                 if result.is_ok() {
                     self.cuts.applied(id);
+                    self.record_cuts();
                 }
                 self.complete(id, result, Some(data));
             }
             Op::WriteZeroes { offset, len } => {
+                if let Err(e) = self.note_change(offset, len) {
+                    let result = self.mutated(Err(e));
+                    return self.complete(id, result, None);
+                }
                 let zeroed = self.zero(offset, len);
                 let result = self.mutated(zeroed);
                 if result.is_ok() {
                     self.cuts.zeroed(id);
+                    self.record_cuts();
                 }
                 self.complete(id, result, None);
             }
@@ -1176,6 +1290,8 @@ impl<D: Dir> InPlace<D> {
                 if !self.mutants.has(Mutants::DISCARD_UNCHANGED) {
                     self.unsynced = true;
                 }
+                // A discard changes no content, and the cut state does
+                // not note it (`state.rs`): a cut holds the content.
                 self.complete(id, Ok(()), None)
             }
         }
@@ -1285,6 +1401,7 @@ impl<D: Dir> InPlace<D> {
     /// carries is counted here (`cuts.rs`).
     fn flush(&mut self, id: RequestId) {
         self.cuts.barrier(id);
+        self.record_cuts();
         match &mut self.syncing {
             Some(covered) => {
                 // A sync under way covers what was written before it
@@ -1398,6 +1515,7 @@ impl<D: Dir> InPlace<D> {
     /// or behind a request on the threads it must not run beside.
     fn accept(&mut self, request: Request) {
         self.cuts.received(request.id, &request.op);
+        self.record_cuts();
         let mut behind = !self.deferred.is_empty();
         if self.mutants.has(Mutants::PASSES_WAITING_FLUSH) {
             // The defect: only flushes wait ahead, and they are passed.
@@ -1482,6 +1600,7 @@ impl<D: Dir> InPlace<D> {
             };
             if write && result.is_ok() {
                 self.cuts.applied(id);
+                self.record_cuts();
             }
             self.complete(id, result, Some(buf));
         }
@@ -1509,10 +1628,23 @@ impl<D: Dir> InPlace<D> {
 
     fn hand_out(&mut self, out: &mut Vec<Completion>) -> usize {
         let n = self.ready.len();
+        let handed: BTreeSet<RequestId> = self.ready.iter().map(|c| c.id).collect();
         for completion in &self.ready {
             self.ids.remove(&completion.id);
         }
         out.append(&mut self.ready);
+        if !self.marks_after.is_empty() {
+            // Under the defect: the mark only now.
+            for (id, mark) in std::mem::take(&mut self.marks_after) {
+                if handed.contains(&id) {
+                    if let Some(state) = &mut self.state {
+                        state.set_mark(Some(&mark));
+                    }
+                } else {
+                    self.marks_after.push((id, mark));
+                }
+            }
+        }
         n
     }
 }
@@ -1663,5 +1795,224 @@ mod cuts;
 pub(crate) mod harness;
 mod pool;
 mod start;
+pub(crate) mod state;
+/// The copies file: what the cut state keeps of a block a held cut
+/// reads before a write changes it (`state.rs`).
+const COPIES_NAME: &str = "copies.img";
+
+/// The copies file, opened or created at its first use.
+fn open_copies<'a, D: Dir>(
+    dir: &D,
+    copies: &'a mut Option<D::File>,
+) -> io::Result<&'a mut D::File> {
+    if copies.is_none() {
+        let file = match dir.open(COPIES_NAME) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => dir.create(COPIES_NAME)?,
+            Err(e) => return Err(e),
+        };
+        *copies = Some(file);
+    }
+    copies
+        .as_mut()
+        .ok_or_else(|| io::Error::other("the copies file is not open"))
+}
+
+/// The cut state's I/O: the home image read as the store reads it, and
+/// the copies file written through the kernel's cache, which a death of
+/// the daemon leaves to the next instance (the state is trusted in no
+/// other boot, M2.2b).
+struct Copies<'a, D: Dir> {
+    dir: &'a D,
+    home: &'a D::File,
+    copies: &'a mut Option<D::File>,
+    direct: bool,
+}
+
+impl<D: Dir> state::Copier for Copies<'_, D> {
+    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
+        let at = block * skyzfs_blk::BLOCK_SIZE;
+        if self.direct {
+            self.home.read_direct_at(at, buf)
+        } else {
+            self.home.read_at(at, buf)
+        }
+    }
+
+    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
+        open_copies(self.dir, self.copies)?.write_at(u64::from(slot) * skyzfs_blk::BLOCK_SIZE, buf)
+    }
+}
+
+impl<D: Dir> InPlace<D> {
+    /// Take up the cut state the region holds, or begin one where it
+    /// holds none this daemon reads: once the start's sync has
+    /// succeeded, which counts as the flush of every cut whose flush a
+    /// death left under way (design §5.2). With no region, no cut is
+    /// held: nothing lets a held cut go before the uploader (M2.4) or
+    /// the test-hooks build's commands (M2.2b), and a cut held for ever
+    /// would have every first write to a block after it copied, until
+    /// the bound (coding's reading, M2.2a).
+    fn take_up_cut_state(&mut self, region: Option<state::MemRegion>, bound: Option<u64>) {
+        let Some(region) = region else {
+            return;
+        };
+        let size = self.geometry.size_bytes();
+        let bound = bound.unwrap_or_else(|| state::default_bound(size));
+        let words = state::words_for(size / skyzfs_blk::BLOCK_SIZE, state::records_for(bound));
+        let region = if state::Region::words(&region) >= words {
+            region
+        } else {
+            state::MemRegion::new(words)
+        };
+        let cut_state = match CutState::restore(region.clone(), size, bound, self.mutants) {
+            Ok(cut_state) => cut_state,
+            // No state, or one this daemon does not read: a new one,
+            // which counts the whole volume as changed.
+            Err(_) => CutState::begin(region, size, bound, self.mutants),
+        };
+        self.cuts
+            .restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());
+        self.state = Some(cut_state);
+    }
+
+    /// The conformance harness's mark: as if an uberblock write naming
+    /// `state` had just been applied, so that the next flush received
+    /// cuts it. Recorded in the cut state at once (`harness.rs`).
+    #[cfg(test)]
+    pub(crate) fn mark_as_applied(&mut self, state: State) {
+        self.cuts.applied_state(RequestId(u64::MAX), state);
+        self.record_cuts();
+    }
+
+    /// Record in the cut state what the rule has just done: a mark, or a
+    /// cut at its flush's barrier. Called before anything the rule saw
+    /// is completed.
+    fn record_cuts(&mut self) {
+        for event in self.cuts.take_events() {
+            let Some(state) = &mut self.state else {
+                continue;
+            };
+            match event {
+                cuts::Event::Mark(id, mark) => {
+                    if self.mutants.has(Mutants::MARK_AFTER_COMPLETION) {
+                        self.marks_after.push((id, mark));
+                    } else {
+                        state.set_mark(Some(&mark));
+                    }
+                }
+                cuts::Event::Cut(id, cut, marked) => {
+                    let number = state.freeze(&marked, cut.itself);
+                    self.flushing.insert(id, number);
+                }
+            }
+        }
+    }
+
+    /// The bytes `offset` to `offset + len` are about to be written or
+    /// zeroed: the cut state keeps what a held cut reads of them first.
+    /// The change begins only after this returns.
+    fn note_change(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        let InPlace {
+            state,
+            dir,
+            home,
+            copies,
+            io,
+            ..
+        } = self;
+        let Some(state) = state else {
+            return Ok(());
+        };
+        let first = offset / skyzfs_blk::BLOCK_SIZE;
+        let end = (offset + len).div_ceil(skyzfs_blk::BLOCK_SIZE);
+        let mut files = Copies {
+            dir: &*dir,
+            home: &*home,
+            copies,
+            direct: io.direct,
+        };
+        state.change(first, end - first, &mut files)
+    }
+
+    /// The held cuts, oldest first.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn held_cuts(&self) -> Vec<HeldCut> {
+        self.state.as_ref().map(CutState::held).unwrap_or_default()
+    }
+
+    /// The cut state's figures.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn cut_figures(&self) -> CutFigures {
+        self.state
+            .as_ref()
+            .map(CutState::figures)
+            .unwrap_or_default()
+    }
+
+    /// The blocks in held cut `number`'s map.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn cut_map(&self, number: u64) -> Vec<u64> {
+        self.state
+            .as_ref()
+            .map(|state| state.map(number))
+            .unwrap_or_default()
+    }
+
+    /// Read block `block` of held cut `number` as it was at the cut's
+    /// instant into `buf`, one block: whether it is in the cut's map
+    /// (with `false`, `buf` is untouched and the image the cut is
+    /// uploaded onto holds the block). Beside the write path: a block a
+    /// write has changed since the instant is read from its copy, which
+    /// was whole before the write began. A block past the volume's end,
+    /// or a buffer of another size than a block, is refused.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn read_cut(&mut self, number: u64, block: u64, buf: &mut [u8]) -> io::Result<bool> {
+        if block >= self.geometry.size_bytes() / skyzfs_blk::BLOCK_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the block lies past the volume's end",
+            ));
+        }
+        if buf.len() != skyzfs_blk::BLOCK_USIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a cut is read one block at a time",
+            ));
+        }
+        let read = self
+            .state
+            .as_ref()
+            .and_then(|state| state.read(number, block))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such held cut"))?;
+        match read {
+            state::Read::Unchanged => Ok(false),
+            state::Read::Image => {
+                let at = block * skyzfs_blk::BLOCK_SIZE;
+                if self.io.direct {
+                    self.home.read_direct_at(at, buf)?;
+                } else {
+                    self.home.read_at(at, buf)?;
+                }
+                Ok(true)
+            }
+            state::Read::Copy(slot) => {
+                let file = open_copies(&self.dir, &mut self.copies)?;
+                file.read_at(u64::from(slot) * skyzfs_blk::BLOCK_SIZE, buf)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Held cut `number`, the one being uploaded, is uploaded: let it
+    /// go. Whether it was that cut.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn release_cut(&mut self, number: u64) -> bool {
+        self.state
+            .as_mut()
+            .is_some_and(|state| state.release(number))
+    }
+}
+
 #[cfg(test)]
 mod tests;

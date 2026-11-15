@@ -105,6 +105,7 @@ fn harnesses_io(mutants: u64, io: IoMode) -> Vec<InPlaceHarness> {
             mutants,
             io,
             page: 4096,
+            held_cuts: false,
         })
         .collect()
 }
@@ -152,6 +153,39 @@ fn the_in_place_store_passes_the_conformance_suite_with_each_io() {
                 );
             }
             assert!(report.weaker().is_empty(), "{harness:?}:\n{report}");
+        }
+    }
+}
+
+/// The suite passes on the in-place store while it holds cuts, with the
+/// default I/O and on the caller's thread: every flush makes a cut
+/// (`harness.rs`), and the copies made before writes, the cuts abandoned
+/// at the bound and the cuts a start takes up after a kill change
+/// nothing a client sees. Each of the four happens in each run. At
+/// e905c2e none did but the marking of blocks in the open map: no flush
+/// cut, and each start had a cut state of its own (the review of #98,
+/// S1).
+#[test]
+fn the_in_place_store_passes_the_conformance_suite_while_it_holds_cuts() {
+    let config = Config {
+        cases: 32,
+        ..Config::default()
+    };
+    for io in [IoMode::default(), OTHER_IO[1]] {
+        for harness in harnesses_io(0, io) {
+            let mut harness = InPlaceHarness {
+                held_cuts: true,
+                ..harness
+            };
+            harness::seen();
+            let report = run_all(&mut harness, &config);
+            assert!(report.passed(), "in {harness:?}:\n{report}");
+            assert!(report.weaker().is_empty(), "{harness:?}:\n{report}");
+            let seen = harness::seen();
+            assert!(
+                seen.cuts > 0 && seen.copied > 0 && seen.abandoned > 0 && seen.taken_up > 0,
+                "{harness:?}: {seen:?}"
+            );
         }
     }
 }
