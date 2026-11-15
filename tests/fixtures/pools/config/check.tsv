@@ -1,0 +1,12 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1463, of which 26 uberblock writes mark, of 104
+cuts	PASS	26 of 26 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	26 of 26 cuts open as themselves (expected: all)
+obs_stale_cuts	0	no cut carries the state of an older cut
+sessions	PASS	1 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_early	CAUGHT	cut 14 (group 25) at record 693 and not 698: opens: zdb selects group 22 (timestamp 1794695904), the rings' best is 25 (1794695904); the cut is 25 (expected: caught)
+ctl_withheld	CAUGHT	cut 14 without record 689 (20480 bytes at 24014848): copies: 5 of 346 copies do not pass their block's checksum, in 5 blocks, of which 0 have no copy that passes; the first is copy 0 of 3 at byte 24031232: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:12eb000:1000> DVA[1]=<0:20eb000:1000> DVA[2]=<0:40a0000:1000> [L0 DMU objset] fletcher4 lz4 unencrypted LE contiguous unique triple size=1000L/200P birth=25L/25P fill=58 cksum=00000008f72e3485:0000039a3d70d6fa:00 (expected: caught)
+ctl_later	CAUGHT	cut 7 (group 13) with record 1143 (write, 16384 bytes at 37842944, 732 records after the instant): copies: 1 of 258 copies do not pass their block's checksum, in 1 blocks, of which 0 have no copy that passes; the first is copy 1 of 3 at byte 37855232: objset 0 object 0 level 0 offset 0x8000 DVA[0]=<0:1a000:1000> DVA[1]=<0:201a000:1000> DVA[2]=<0:400d000:1000> [L0 DMU dnode] fletcher4 lz4 unencrypted LE contiguous unique triple size=4000L/1000P birth=4L/4P fill=1 cksum=00000016380ad3ef:00005645cbde2792:00a7a (expected: not built; DIFFERS)
+ctl_txg-alone	SAME	26 cuts, as the design rule (expected: same)
+ctl_count-repeats	SAME	26 cuts, as the design rule (expected: same)

@@ -1,0 +1,12 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1536, of which 29 uberblock writes mark, of 116
+cuts	PASS	29 of 29 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	29 of 29 cuts open as themselves (expected: all or not all)
+obs_stale_cuts	0	no cut carries the state of an older cut
+sessions	PASS	2 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 3 cuts complete before the command returned (groups 43..46)
+ctl_early	CAUGHT	cut 15 (group 29) at record 845 and not 850: opens: zdb selects group 26 (timestamp 1794695321), the rings' best is 29 (1794695321); the cut is 29 (expected: caught)
+ctl_withheld	CAUGHT	cut 15 without record 844 (8192 bytes at 105119744): copies: 2 of 598 copies do not pass their block's checksum, in 2 blocks, of which 0 have no copy that passes; the first is copy 2 of 3 at byte 105123840: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:4c9c000:1000> DVA[1]=<0:2138000:1000> DVA[2]=<0:6041000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=29L/29P fill=66 cksum=0000000315d979e2:00000bda3 (expected: caught)
+ctl_later	NOT_BUILT	nothing after the instant overlaps a block that cuts [15, 8, 4, 2, 1] reach (expected: not built or caught)
+ctl_txg-alone	CAUGHT	28 cuts against 29: at cut 19's instant (record 1034) the volume opens as cut 19 (group 43), and the rule's newest cut is group 43 at record 962, another root block pointer (expected: same or caught)
+ctl_count-repeats	SAME	29 cuts, as the design rule (expected: same)
