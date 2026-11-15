@@ -1,0 +1,12 @@
+test inplace::tests::cuts::review_the_new_maps_name_survives_a_power_cut ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 234 filtered out; finished in 0.12s
+the start after the power cut: Some(Begun("there is no intent map"))
+thread 'inplace::tests::cuts::review_the_new_maps_name_survives_a_power_cut' (14657) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:3241:5:
+  left: Some(Begun("there is no intent map"))
+ right: Some(TakenUp { named: 1, regions: 4 })
+error: test failed, to rerun pass `-p skyzfs-local --lib`
+as the head has it - exit 101
+test inplace::tests::cuts::review_the_new_maps_name_survives_a_power_cut ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 234 filtered out; finished in 0.00s
+the start after the power cut: Some(TakenUp { named: 1, regions: 4 })
+with the directory synced after the creation - exit 0

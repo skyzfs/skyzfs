@@ -1,0 +1,8 @@
+test inplace::tests::cuts::review_a_store_dropped_while_a_write_waits_for_the_map ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 234 filtered out; finished in 15.30s
+a read behind the write: false; the drop ended in 15 s: true; writes of the image: 0
+a read behind the write: true; the drop ended in 15 s: false; writes of the image: 0
+thread 'inplace::tests::cuts::review_a_store_dropped_while_a_write_waits_for_the_map' (11851) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:3242:9:
+the store's drop did not end in 15 s
+error: test failed, to rerun pass `-p skyzfs-local --lib`
+exit 101

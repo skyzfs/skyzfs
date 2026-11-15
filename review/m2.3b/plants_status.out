@@ -1,0 +1,9 @@
+as the head has it: ([], [])
+T1 the waits are written where the named-at-start is, and the reverse: KILLED by 4: before_the_first_cut_the_file_has_no_group, status_prints_the_intent_map, the_file_has_the_documented_layout, the_file_is_replaced_whole_and_a_part_of_one_is_an_error
+T2 the waits are read from the longest sync's place: KILLED by 4: before_the_first_cut_the_file_has_no_group, status_prints_the_intent_map, the_file_has_the_documented_layout, the_file_is_replaced_whole_and_a_part_of_one_is_an_error
+T3 the key intent_waits is not printed: KILLED by 2: status_prints_the_intent_map, the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are
+T4 a start that began a new map shows no region named at the start: SURVIVED
+T5 the region given is not handed to the store: SURVIVED
+T6 --intent-region-mib is taken without --hold-cuts: KILLED by 1: the_intent_region_is_a_power_of_two_of_mib_with_held_cuts
+T7 --intent-region-mib takes a size that is not a power of two: KILLED by 1: the_intent_region_is_a_power_of_two_of_mib_with_held_cuts
+finished
