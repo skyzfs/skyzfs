@@ -145,8 +145,8 @@ create_pool() {
 }
 # K: K rounds of FILES files of 1 MiB each, a snapshot and a sync.
 # Each snapshot's group and session go to snaps.tsv, and the SHA-256 of
-# every file it holds to snap-NAME.sha256: what node B (M2.T2) compares
-# a published snapshot with.
+# every file it holds, read through .zfs/snapshot, to snap-NAME.sha256:
+# what node B (M2.T2) compares a published snapshot with.
 LOADED=0
 load() {
     local k s
@@ -157,7 +157,9 @@ load() {
         done
         s=s$LOADED
         z 60 zfs snapshot "$POOL@$s"
-        (cd "$MNT" && find . -maxdepth 1 -type f -printf '%P\n' | LC_ALL=C sort | xargs -r sha256sum --) > "$RDIR/snap-$s.sha256"
+        # From the snapshot itself: a file a writer goes on appending to
+        # (slog's synced) differs in the live directory by then.
+        (cd "$MNT/.zfs/snapshot/$s" && find . -maxdepth 1 -type f -printf '%P\n' | LC_ALL=C sort | xargs -r sha256sum --) > "$RDIR/snap-$s.sha256"
         printf '%s\t%s\t%s\n' "$s" "$(zfs get -Hp -o value createtxg "$POOL@$s")" "$SESSION" >> "$RDIR/snaps.tsv"
         z 60 zpool sync "$POOL"
     done
