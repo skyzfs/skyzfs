@@ -69,7 +69,8 @@
 # each write, the bytes of every write to the labels, each flush's
 # barrier and each cut the daemon counted). The marks go to
 # DIR/marks.tsv with CLOCK_MONOTONIC, the request log's clock. Its
-# status is read into DIR/status.txt before it is detached, and the
+# status is read into DIR/status.txt before it is stopped (SIGTERM) and
+# its device deleted (detach), and the
 # check is called with the request log in place of LOG and `-` for
 # BASE. stray's 20 ms delay of the back labels has no place below the
 # daemon and is left out.
@@ -199,8 +200,9 @@ cleanup() {
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
-        timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
+        kill -TERM "$SERVE_PID" 2>/dev/null
         serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
+        timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
     fi
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
@@ -263,10 +265,12 @@ begin_daemon() {
 end_daemon() {
     timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status.txt" 2>&1 \
         || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/status.txt")"
+    # serve ends on SIGTERM, with 0; detach then deletes the device.
+    kill -TERM "$SERVE_PID" 2>/dev/null || true
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
+    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve.log")"
     timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach.log" 2>&1 \
         || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach.log")"
-    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after the detach"
-    echo "serve's exit after the detach: $SERVE_RC" >> "$RDIR/detach.log"
     rm -rf "${VOL:?}" "$VOL.ready"
 }
 begin() {
