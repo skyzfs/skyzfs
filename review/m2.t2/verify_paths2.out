@@ -1,0 +1,6 @@
+1. zfs timed out: refs ok: snap/t among 1 refs; content ok: read snap/t c0 1; import ok: read-only; snapshot FAILED: no snapshot s24: it has 3 (TIMEOUT, after, 60s); copies ok: 1 blocks, 2 copies
+   early: ('caught at snapshot', True, [])
+2. mount timed out: refs ok: snap/t among 1 refs; content ok: read snap/t c0 1; import ok: read-only; snapshot ok: skzcut@s24 is listed; mount FAILED: mount of skzcut@s24: TIMEOUT after 60s; copies ok: 1 blocks, 2 copies
+   lacks: ('caught at mount', True, [])
+   later: ('caught at mount', True, [])
+   hole: ('caught at mount', True, [])

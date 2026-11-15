@@ -1,0 +1,19 @@
+P1 verify: any error of the rig on a control is a catch (N1, as at 75bf72b): KILLED by test_a_timeout_on_a_control_is_the_rigs
+P2 verify: a failed published cut on which zdb errs is the rig's error (N2, as at 75bf72b): KILLED by test_a_published_cut_that_failed_keeps_its_verdict
+P3 verify: zdb's abort on the published cut is a failed stage: KILLED by test_a_published_cut_that_failed_keeps_its_verdict, test_an_abort_on_the_published_cut_is_the_rigs
+P4 verify: on a control that failed a stage, another error of the rig is not judged: SURVIVED
+P5 control_verdict: the stages that must pass are not looked at: KILLED by test_early_must_be_otherwise_clean
+P6 control_verdict: nothing is ever not clean: KILLED by test_early_must_be_otherwise_clean
+P7 CLEAN: early need not pass its copies: KILLED by test_early_must_be_otherwise_clean, test_every_control_has_its_stages
+P8 main: no control is given the stages that must pass: SURVIVED
+P9 snapshot_files: a mount that fails is the snapshot stage: SURVIVED
+P10 EXPECTED: lacks may be caught at the snapshot: KILLED by test_every_control_has_its_stages
+P11 snapshot_files: the import's message is cut to its end: SURVIVED
+Q1 get: a range that cannot be read is the rig's error: KILLED by a_ref_whose_segments_are_gone_is_unreadable
+Q2 about_content: an object that is not there is not about content: KILLED by a_ref_whose_objects_are_gone_is_unreadable, a_ref_whose_segments_are_gone_is_unreadable, a_store_that_does_not_answer_is_not_about_content
+Q3 about_content: every error is about content: KILLED by a_store_that_does_not_answer_is_not_about_content
+Q4 exit_code: a ref that cannot be read is 2: KILLED by a_ref_whose_objects_are_gone_is_unreadable, a_ref_whose_segments_are_gone_is_unreadable, exit_codes
+Q5 exit_code: a ref that is not there is 2: KILLED by exit_codes
+Q6 about_content: corrupt state is not about content: KILLED by a_store_that_does_not_answer_is_not_about_content
+Q7 about_content: an object that does not decode is not about content: SURVIVED
+Q8 about_content: a range past an object's end is not about content: SURVIVED
