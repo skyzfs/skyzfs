@@ -1,0 +1,5 @@
+R1 a block rewritten with the content the cut holds counts as copied: KILLED by 1: test_copied_blocks
+R2 a block the cut holds as zeros counts under a write-zeroes: KILLED by 1: test_copied_blocks_under_a_write_zeroes
+R3 a write with no hash for a block does not count: SURVIVED
+R4 the hash is taken from the write's first block for every block: SURVIVED
+Z1 a later write-zeroes does not place the block again: KILLED by 1: test_the_unplaced_blocks_of_each_cut
