@@ -728,3 +728,94 @@ fn whole_slots_leave_every_place_known() {
     view.saw(at, &s);
     assert!(view.is_known() && view.chosen(&state(10, 2), false));
 }
+
+/// A header the volume already holds, known not to verify, is completed
+/// by a later write that does not touch the header: the volume then
+/// holds a valid slot, and the view must not call its place known and
+/// empty. (a) The damaged slot is in a ring read at the start. (b) It
+/// comes in a write that holds the whole slot. In both, the write that
+/// restores the slot's second half is the one that makes it valid.
+/// From the next look of the review of #96, whose test this is, and
+/// Codex's second finding there; both fail at 110d2b6.
+#[test]
+fn a_header_known_not_to_verify_can_be_completed_by_its_tail() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let size = 8 * KIB;
+    let at = rings[0].start + size;
+    let mut s = slot(ByteOrder::Little, 99, 9, size);
+    seal(&mut s, at, ByteOrder::Little);
+    assert!(label_checksum_holds(&s, at));
+    let mut damaged = s.clone();
+    damaged[4 * KIB as usize..].fill(0);
+    let tail = &s[4 * KIB as usize..];
+    // (a)
+    let mut view = View::unknown(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        if ring.label == 0 {
+            whole[size as usize..2 * size as usize].copy_from_slice(&damaged);
+        }
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+    // (b)
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    view.saw(at, &damaged);
+    assert!(view.is_known() && !view.chosen(&state(99, 9), false));
+    view.saw(at + 4 * KIB, tail);
+    assert!(!view.is_known() || view.chosen(&state(99, 9), false));
+}
+
+/// A new label's ring, written whole by `vdev_label_init` with an
+/// uberblock of group 0 at its start that no slot verifies, as a volume
+/// attached to, replacing a device of, or added to a pool that has
+/// synced gets it, and then ZFS's write of the slot after it: every
+/// place stays known, and the next group is chosen. Group 0 ranks below
+/// every cut's state, so its fields are not followed past the write
+/// that brought them. Fails where they are, as for a greater group:
+/// ZFS's first uberblock writes to such a volume would leave the ring's
+/// first place unknown until its own slot is written again.
+#[test]
+fn a_labelled_rings_group_zero_is_not_followed_into_the_next_slot() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::empty(labels);
+    for ring in &rings {
+        let mut whole = vec![0; RING_SIZE as usize];
+        whole[..SLOT_MIN as usize].copy_from_slice(&slot(ByteOrder::Little, 0, 0, SLOT_MIN));
+        view.saw(ring.start, &whole);
+    }
+    assert!(view.is_known());
+    for ring in &rings {
+        let at = ring.start + 4 * KIB;
+        view.saw(at, &sealed(&slot_at(5, 1, 100, 0), at));
+    }
+    assert!(view.is_known() && view.chosen(&state(5, 1), false));
+}
+
+/// An uberblock found in a write shorter than a slot that could begin
+/// at its place is left unknown, whatever that slot's size: a 1 KiB
+/// write puts the fields of group 9 at 2 KiB into a ring, where a slot
+/// of 2 KiB could begin and one of 4 or 8 KiB could not. Nothing there
+/// verifies, and the rest of a 2 KiB slot may lie past the write. Fails
+/// where the second rule asks one size alone, such as 8 KiB (the next
+/// look of the review of #96, which offered this test).
+#[test]
+fn a_header_in_a_write_shorter_than_its_slot_leaves_its_place_unknown() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let mut view = View::empty(labels);
+    for ring in labels.rings() {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    let at = ring.start + 2 * KIB;
+    let s = slot(ByteOrder::Little, 9, 1, 2 * KIB);
+    view.saw(at, &s[..KIB as usize]);
+    assert!(!view.is_known());
+}
