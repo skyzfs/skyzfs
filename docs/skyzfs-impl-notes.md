@@ -1187,10 +1187,24 @@ On the pull request's last head (a8349da, cut rig run 43659159452, one runner fo
 
 **The daemon's cuts against the reference (M2.T3, first stage, skyzfs/skyzfs#99).** `skyzfs-cut-daemon.yml` records the ten pools through `skyzfsd` and holds the daemon's own cut lines, from its request log, against the reference: the count, the flush each cut falls on, its group, and whether it opens as itself. In the first run on the merged daemon with M2.1c (dispatch 43675946002, one Ubuntu 26.04 runner) they were equal in all ten recordings: life 26 cuts, the log-device layout 36, rewind 32 (26 that open as themselves), rewind with syncs 32 (27), `-FX` 29, multihost 87, configuration 26, stray flushes 18, autotrim 40, the full pool 219; the status, the sessions and the import's syncs passed and the four controls were caught. On the pull request's last head (073873b, run 43681839616) all ten passed on 26.04 and 26.04-arm. One failure on the way was the check's and not the daemon's: a stray flush received before a group's uberblock writes were applied, with its barrier after them, marks no cut by design §5.2, as the daemon had it; the reference had placed a flush only at its barrier, and now takes a flush as a receipt and a barrier.
 
+### The intent map's region size, first figures (M2.3, 2026-11-15)
+
+Coding replayed M2.T1's nine recorded pools (512 MiB each, 13,946 writes in all) through the intent map's rules. "Named" is the bytes the map names at a flush; "changed" is the 4 KiB blocks written since the newest committed cut, where the commit comes one cut after the cut (lag 1) or four (lag 4). Medians over the pools; the mean changed at lag 1 was 2.54 MiB.
+
+| Region | Writes that sync the map, lag 1 | Named / changed, lag 1 (range) | Mean named, lag 1 | Writes that sync, lag 4 | Named / changed, lag 4 |
+|---|---|---|---|---|---|
+| 256 KiB | 15.6% | 1.6 (1.5 to 2.2) | 4.2 MiB | 13.8% | 1.2 |
+| 1 MiB | 4.4% | 2.9 (2.5 to 4.4) | 7.3 MiB | 3.6% | 1.6 |
+| 4 MiB | 1.7% | 8.9 (7.0 to 15.2) | 22.3 MiB | 1.2% | 3.5 |
+| 16 MiB | 1.0% | 31.8 (23.6 to 53.8) | 78.9 MiB | 0.6% | 10.7 |
+| 64 MiB | 0.4% | 88 (63 to 170) | 224.9 MiB | 0.2% | 26.6 |
+
+At 64 MiB the map names about 44% of these small pools at every flush; 1 to 4 MiB names a few times what changed, where counting the named regions whole is good enough and a comparison with the uploaded cut would buy little. The pools are small and their workloads short, so the shares are not a large volume's. The provisional default stays 64 MiB until M2.T4 has the cost of the map's sync on the write path at 1, 4 and 64 MiB; the default is set from the two together.
+
 ### What is open in M2
 
 - **The bound's default.** D7 gives the rule and no number. M2.2 is built with a provisional default so that the rigs run (below); the default is set from M2.T4's figures.
-- **Compare or re-upload after a power cut.** The design says the intent map's regions are compared with the newest uploaded cut. Counting them as changed whole is a superset and needs no read from object storage; M2.3 measures both.
+- **Compare or re-upload after a power cut.** The design says the intent map's regions are compared with the newest uploaded cut. Counting them as changed whole is a superset and needs no read from object storage; M2.3 measures both. Decided 2026-11-15: M2.3 counts the named regions whole (it has no engine to read the uploaded cut with); the first figures (above) say that is enough at regions of 1 to 4 MiB, and the comparison is M2.4's only if the default ends up large.
 - **The store through M2 is `complete`** (design §5.1, "Where this stands"): the whole volume on local flash, a sparse image, no eviction and no fetch. The owner's goal 9 (2026-11-14), volumes larger than the local store behind a cache of a set size, is M3's `cache` policy and is planned first in M3 (the owner agreed to M3 for it on 2026-11-15). What it asks of M2 already: M2.2's state is locked memory in proportion to the volume (130 MiB a TiB), which a very large volume cannot have; coding is asked how the layout extends to state in proportion to the cache.
 - **How the agent reaches the daemon.** M2.5 proposes it. It is the first interface of the daemon that is not a file.
 - **Whether the daemon uploads for a pool nobody vouched for.** A cut is a complete pool only if the volume has held the whole pool since its creation (design §5.2, the premise; from the review of M2.1). The agent checks the layout before a publish, but the daemon uploads recovery points on its own. Whether an upload waits for the agent's word that the pool is one plain data device on this volume is decided with M2.5's channel.
