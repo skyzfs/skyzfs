@@ -1244,7 +1244,7 @@ Run 43726791081: one sequence on one machine (AWS, Ubuntu 26.04, x86_64, work di
 
 p99 was 3.9 to 4.4 ms in every daemon row (models 3.5 to 3.8) and p99.9 8 ms throughout. Against the no-map build at the same release rate: 64 MiB costs nothing that one run shows; 4 MiB costs 2 to 3% on tpcb and about 2% on select, too little to separate from one run; 1 MiB costs 7.6 to 8.6% on tpcb and 12 to 16% on select, more than its summed sync time explains, so the queue's thread is held by the map's page writes too. The release rate barely matters. **Every daemon row is below 0.90 of the model, the no-map rows included**: the test-hooks build with held cuts is itself at 0.82 to 0.90 here, where M1's criterion had the release build without held cuts at the model's level. What part of that is the test-hooks build and what part the held cuts is not separated yet.
 
-**The default region is 4 MiB** (lead, 2026-11-15): at 64 MiB the map names about 88 times what changed on the recorded pools, at 4 MiB about 9 times for a cost one run cannot separate from none, and 1 MiB costs too much. 256 pages of map for a TiB.
+**The default region is 4 MiB** (lead, 2026-11-15): at 64 MiB the map names about 88 times what changed on the recorded pools, at 4 MiB about 9 times for a cost one run cannot separate from none, and 1 MiB costs too much. Nine 4 KiB pages of map for a TiB (a page covers 32,672 regions).
 
 ### What is open in M2
 
