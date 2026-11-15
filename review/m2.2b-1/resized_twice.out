@@ -1,0 +1,10 @@
+exit 101
+review: before: cut 1 reads blocks 5, 6, 7 as [55, 55, 55]; copied 12288 bytes
+review: the region's file: 1051840 bytes, then 3280, then 1051840
+review: the next start: Some(TakenUp), held [(1, 7)]
+review: cut 1 reads blocks 5, 6, 7 as [(55, true), (66, true), (66, true)]; at its instant each held 0x55; copied 4096 bytes
+test review_a_region_shrunk_and_regrown_by_two_refused_opens ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.11s
+thread 'review_a_region_shrunk_and_regrown_by_two_refused_opens' (25662) panicked at crates/skyzfs-local/tests/inplace_real.rs:971:9:
+cut 1 reads what was written after its instant
+error: test failed, to rerun pass `-p skyzfs-local --test inplace_real`

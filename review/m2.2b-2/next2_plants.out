@@ -1,0 +1,8 @@
+C7 a command is read again at each later turn: KILLED by 1: a_turn_with_no_signal_reads_no_command
+C12 a block not in the cut's map is written all the same: SURVIVED
+R7 a write's hashes are kept only where the log writes its label line: KILLED by 1: a_write_away_from_the_labels_has_its_hashes_and_its_bytes
+F3 a held cut is not read once the volume has failed: KILLED by 1: after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go
+F4 no cut is listed as held once the volume has failed: KILLED by 1: after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go
+F5 no cut is let go once the volume has failed: KILLED by 1: after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go
+F6 a cut has no map once the volume has failed: KILLED by 1: after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go
+finished
