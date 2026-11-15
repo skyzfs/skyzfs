@@ -262,8 +262,9 @@ EXPECTED = {
                                  'on ext4 mounted data=journal, whose statx reports no direct-I/O alignment for a '
                                  'journalled file, serve exits 1 with the reason ("no direct I/O") and "the volume has '
                                  'not failed", no ready line; home.img and volume byte-identical, no failure marker '
-                                 'appears or goes, and no other file changes but the status file (every changed file '
-                                 'named); the same file system '
+                                 'appears or goes, and no other file changes but the status file and the start token '
+                                 'volume.start, which every open writes and which may not go (M2.2b-1; every changed '
+                                 'file named); the same file system '
                                  'mounted data=ordered serves the volume before and after (M1.3y, g.4)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
