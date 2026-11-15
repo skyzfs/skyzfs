@@ -1672,3 +1672,59 @@ fn a_slot_is_followed_by_all_its_bytes() {
         "a slot written in two halves was taken for an empty place"
     );
 }
+
+/// A slot whose fields are known not to verify is followed by the rest
+/// of its bytes too (the next look of the review of #96, and Codex's
+/// second finding there). Group 11 is written whole to labels 1 to 3.
+/// Label 0 gets an 8 KiB slot of group 12 whose second half is damaged,
+/// in one write that holds it whole: its place is known and holds no
+/// uberblock. Then a write of the second half alone restores the slot:
+/// on the volume label 0 now holds a valid 12, greater than the cut's
+/// 11, so cut 11 does not open as itself. Fails where the view forgets
+/// fields that did not verify, as at 110d2b6: it says `itself`.
+#[test]
+fn a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes() {
+    const BIG: u64 = 8 * KIB;
+    let at =
+        |label: usize, txg: u64| ring(label) + (txg % (skyzfs_uberblock::RING_SIZE / BIG)) * BIG;
+    let whole = |label: usize, txg: u64| {
+        let mut data = Buf::filled(2, 0);
+        data[..BLOCK_USIZE].copy_from_slice(&uberblock(txg, txg));
+        slot_write(at(label, txg), data)
+    };
+    let mut id = 0;
+    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+        id += 1;
+        assert!(run(store, id, op).result.is_ok());
+    };
+    let disk = created(31, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    for label in 1..LABELS {
+        step(&mut store, whole(label, 11));
+    }
+    let Op::Write { offset, data } = whole(0, 12) else {
+        unreachable!("a write")
+    };
+    let mut damaged = data.clone();
+    damaged[BLOCK_USIZE..].fill(0);
+    step(
+        &mut store,
+        Op::Write {
+            offset,
+            data: damaged,
+        },
+    );
+    step(
+        &mut store,
+        Op::Write {
+            offset: offset + BLOCK,
+            data: Buf::from_blocks(&data[BLOCK_USIZE..]).expect("one block"),
+        },
+    );
+    step(&mut store, Op::Flush);
+    assert_eq!(
+        newest(&store),
+        Some((11, false)),
+        "a slot completed by its second half was taken for an empty place"
+    );
+}

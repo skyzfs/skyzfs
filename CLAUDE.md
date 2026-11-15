@@ -305,6 +305,34 @@ there, and the user decides when it merges.
   `EXPECTED` in `tests/kernel/control_check.py`, in either direction. A
   kernel test that hangs or panics is a verdict on the binding (exit
   1), not an error of the rig.
+- **The cut rig.** `skyzfs-cut-rig.yml` (M2.T1) runs on a pull request
+  that touches `tests/kernel/cut*`, `tests/kernel/test_cut*`,
+  `tests/kernel/logwrites.py`, `tests/kernel/replay_check.py`,
+  `tests/lib/` or the workflow, on the four images, about thirty to
+  forty minutes a job; a push of those files to a `skyzfs-testing*`
+  branch runs Ubuntu 26.04 alone; by dispatch, `images` (a JSON list)
+  and `recordings` (names separated by spaces; empty means all ten:
+  life, slog, rewind, rewindsync, rewindf, multihost, config, stray,
+  autotrim, full). It needs no daemon: each recording records a real
+  pool with dm-log-writes under its device, `cut_ref.py` finds the cuts
+  by design §5.2, and `cut_check.py` holds every cut against ZFS: zdb
+  selects the uberblock the rings hold as the best, root block pointer
+  included; every copy of every reachable block passes; the pool
+  imports (with a rewind to its own group for a cut that does not open
+  as itself); each session's cuts are the groups the `txgs` kstat
+  committed with something written, in order. Exit 1 is a verdict (a
+  cut that is not a whole pool, a control that differs from `EXPECTED`,
+  a second cut of one state outside multihost), exit 2 the rig's own
+  error, 64 a missing kernel feature. Read the summary's table for each
+  recording and not the colour: `cuts`, `opens_as_itself` (rewind and
+  rewindsync must be NOT_ALL, and the line says whether the abandoned
+  state was whole), `sessions`, `import_syncs_before_return`, and the
+  five wrong rules `ctl_*`, which are CAUGHT, or SAME where `EXPECTED`
+  says so. Ubuntu 24.04 has ZFS 2.2.2's userland beside a 2.4.1 module,
+  so its zdb is 2.2. A multihost pool that was not exported cannot be
+  imported read-only on ZFS 2.4.1; the check imports it writable from a
+  copy. The recorded pools in `tests/fixtures/pools` are what the
+  daemon's parser and cut rule are tested against.
 - **A pool whose device was deleted goes on reading ONLINE while it
   only writes**, and posts tens of thousands of events a second. A tool
   that reads `zpool events` from it does not come to an end: cut such a

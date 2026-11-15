@@ -36,8 +36,14 @@
 //!   last synced uberblock, its timestamp and multihost fields changed,
 //!   into the last slot of a label chosen at random.
 //! - **A new label** (`vdev_label_init`, `module/zfs/vdev_label.c`
-//!   lines 1213 to 1218 and 1245) writes the whole ring at once: one
-//!   uberblock at its start whose group is 0, and zeros.
+//!   lines 1213 to 1218 and 1245) writes the whole ring at once: the
+//!   pool's uberblock template at its start with its group set to 0,
+//!   and zeros. At `zpool create` the template has no magic yet, so no
+//!   uberblock is found there (`spa_create` sets only `ub_txg` and
+//!   `ub_version`; `ub_magic` is set in `uberblock_update`, at the first
+//!   sync; as the review of #96 read them). A volume labelled into a
+//!   pool that has synced, by attach, replace or add, gets the magic
+//!   with group 0.
 //! - **The uberblock** (`struct uberblock`,
 //!   `include/sys/uberblock_impl.h` line 122): `ub_magic`,
 //!   `ub_version`, `ub_txg`, `ub_guid_sum`, `ub_timestamp`, each 8
@@ -496,12 +502,23 @@ fn read_at(bytes: &[u8], at: u64, label: usize) -> Option<Uberblock> {
 /// - an uberblock found in a change that does not hold whole every slot
 ///   that could begin at its position, none of whose held slots
 ///   verifies, leaves its position unknown, since the rest of a slot
-///   that verifies may lie outside the change.
+///   that verifies may lie outside the change;
+/// - an uberblock of a group above zero found where every slot that
+///   could begin is held whole and none verifies is remembered, and a
+///   later change that reaches the largest of those slots past its
+///   fields, without covering them, leaves its position unknown, since
+///   that change may complete a slot that verifies (the next look of
+///   the same review, and Codex's second finding there). A group of 0
+///   is not remembered: it ranks below every cut's state, so one
+///   completed later cannot change what an import opens, and a new
+///   label of a volume attached to, or replacing a device of, or added
+///   to a pool that has synced holds one at the start of its ring,
+///   whose next slot ZFS then writes.
 ///
-/// Both err toward "not chosen" until the slot is written whole again.
-/// ZFS writes a slot as one I/O and a ring is read whole, so neither
-/// happens to ZFS's own writes: only to a writer that writes part of a
-/// slot, such as `zpool labelclear` or `dd`.
+/// All three err toward "not chosen" until the slot is written whole
+/// again. ZFS writes a slot as one I/O and a ring is read whole, so
+/// none happens to ZFS's own writes: only to a writer that writes part
+/// of a slot, such as `zpool labelclear` or `dd`.
 ///
 /// What it does not see: only this volume's labels are in it, so a pool
 /// whose other vdevs hold a greater uberblock is not seen.
@@ -512,6 +529,11 @@ pub struct View {
     held: std::collections::BTreeMap<u64, Uberblock>,
     /// The positions whose content is not known.
     unknown: std::collections::BTreeSet<u64>,
+    /// The known positions that hold an uberblock's fields with a group
+    /// above zero but no slot that verifies, each with the end of the
+    /// largest slot that could begin there: a later change to the rest
+    /// of that slot could make it verify.
+    rejected: std::collections::BTreeMap<u64, u64>,
 }
 
 impl View {
@@ -525,6 +547,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown,
+            rejected: Default::default(),
         }
     }
 
@@ -534,6 +557,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown: Default::default(),
+            rejected: Default::default(),
         }
     }
 
@@ -571,6 +595,7 @@ impl View {
                 let whole = offset <= at && at + READ_LEN as u64 <= end;
                 if at + READ_LEN as u64 > offset {
                     self.held.remove(&at);
+                    self.rejected.remove(&at);
                     if whole {
                         self.unknown.remove(&at);
                     } else {
@@ -596,13 +621,45 @@ impl View {
             self.held.remove(&at);
             self.unknown.insert(at);
         }
+        // A place whose fields are known not to verify, whose largest
+        // slot the change reaches past them: the rest may now complete
+        // it (the next look of the review of #96, and Codex's second
+        // finding there).
+        let completed: Vec<u64> = self
+            .rejected
+            .iter()
+            .filter(|&(&at, &slot_end)| at < end && offset < slot_end)
+            .map(|(&at, _)| at)
+            .collect();
+        for at in completed {
+            self.rejected.remove(&at);
+            self.unknown.insert(at);
+        }
         for uberblock in found {
             if uberblock.verified() {
                 self.held.insert(uberblock.at, *uberblock);
             } else if self.may_go_on(uberblock.at, end) {
                 self.unknown.insert(uberblock.at);
+            } else if uberblock.counts() {
+                if let Some(slot_end) = self.largest_slot_end(uberblock.at) {
+                    self.rejected.insert(uberblock.at, slot_end);
+                }
             }
         }
+    }
+
+    /// The end of the largest slot that could begin at `at`, in a ring of
+    /// these labels.
+    fn largest_slot_end(&self, at: u64) -> Option<u64> {
+        let ring = self
+            .labels
+            .rings()
+            .find(|ring| ring.start <= at && at < ring.end())?;
+        SLOT_SIZES
+            .into_iter()
+            .filter(|&size| (at - ring.start).is_multiple_of(size))
+            .max()
+            .map(|size| at + size)
     }
 
     /// Whether a slot that could begin at `at`, in a ring of these
