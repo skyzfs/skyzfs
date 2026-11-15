@@ -17,14 +17,18 @@ FIXTURES = os.path.join(HERE, '..', 'fixtures', 'pools')
 PID = '4242'
 
 
-def request_log(records, read, dev, cuts_at=None, start=True):
+def request_log(records, read, dev, cuts_at=None, start=True, stray_before=()):
     """A fixture's records as the daemon's request log, and the marks.
 
     A write: recv, label (where it touches a label), applied. A flush:
     recv, barrier, and a cut line where cuts_at {record: (txg, itself)}
     has one. A flush with data flushes before its data; a write with FUA
     is followed by the daemon's fua_flush. -> (log text, marks text,
-    {record index of the fixture: barrier's tag and op})."""
+    {record index of the fixture: barrier's tag and op}).
+
+    stray_before: writes of the fixture that a stray flush is received
+    after and reaches its barrier between their apply and their commit,
+    as run 43676360281's stray recording had it."""
     labels = cut_ref.label_offsets(dev)
     out, marks = [], []
     ns = 1000
@@ -59,9 +63,14 @@ def request_log(records, read, dev, cuts_at=None, start=True):
         elif cut_ref.is_write(r):
             sec, n = str(r['offset'] // 512), str(r['bytes'] // 512)
             line('recv', '3', 'write', sec, n)
+            stray = r['i'] in stray_before
+            if stray:
+                line('recv', '63', 'flush', '0', '0')
             if cut_ref.touches_label(r['offset'], r['bytes'], labels):
                 line('label', '3', 'write', sec, n, read(r).hex())
             line('applied', '3', 'write')
+            if stray:
+                line('barrier', '63', 'flush')
             line('commit', '3', 'write', sec, n, str(r['bytes']))
             if 'fua' in flags:
                 barrier(r, 'fua_flush')
@@ -132,6 +141,36 @@ class RoundTrip(unittest.TestCase):
         ok, detail = cdc.compare(dcuts, eref)
         self.assertFalse(ok, 'early')
 
+    def test_a_flush_received_before_the_uberblock_was_applied(self):
+        """Design §5.2 cuts at the first flush *received* after the mark.
+        A stray flush received while an uberblock write was in the store
+        and whose barrier comes after the write's apply carries no cut:
+        the next flush does (run 43676360281, stray, both images). The
+        flush placed at its barrier alone, as the check had it, cuts at
+        the stray flush."""
+        records, read, dev = fixture('life')
+        cs, at = daemon_cuts_of(records, read, dev)
+        first = cs[0]['ub_record']
+        text, marks = request_log(records, read, dev, at, stray_before={first})
+        recs, dcuts = cdc.records_of(cdc.parse_log(text)[0]['lines'], cdc.read_marks(marks))
+        rread = cdc.read_of(recs, dev)
+        ubs = cut_ref.scan(recs, rread, dev)
+        rcs, _ = cut_ref.cuts(recs, ubs)
+        ref = cdc.reference(rcs, cut_ref.opens(recs, rread, dev, rcs))
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(ref), len(cs))
+        stray = [r['i'] for r in recs if 'flush' in r['flags'] and r.get('tag') == '63']
+        self.assertEqual(len(stray), 1)
+        self.assertNotEqual(ref[0]['prefix'], stray[0])
+        # The negative: each flush one point, at its barrier.
+        flat = [dict(r, received=False) for r in recs if 'receipt' not in r['flags']]
+        for k, r in enumerate(flat):
+            r['i'] = k
+        fubs = cut_ref.scan(flat, cdc.read_of(flat, dev), dev)
+        fcs, _ = cut_ref.cuts(flat, fubs)
+        self.assertEqual(fcs[0]['flush_record'], [r['i'] for r in flat if r.get('tag') == '63' and 'flush' in r['flags']][0])
+
     def test_a_cut_line_with_no_barrier_before_it(self):
         text = f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcut\t1\tflush\titself\t-\t9\n'
         with self.assertRaises(RigError):
@@ -145,6 +184,17 @@ class Parse(unittest.TestCase):
         inst = cdc.parse_log(text)
         self.assertEqual([i['pid'] for i in inst], ['7', '8'])
         self.assertEqual([ln['event'] for ln in inst[0]['lines']], ['recv', 'applied'])
+
+    def test_the_columns_of_an_applied_line_since_m2_2b_2(self):
+        text = (f'1\t7\tstart\t0\t-\t-\t-\t64\n2\t7\tcuts\t-\t-\t-\t-\toff\n'
+                f'3\t7\trecv\t3\twrite\t8\t8\t-\n4\t7\tapplied\t3\twrite\t-\t-\t-\t0123456789abcdef\n'
+                f'5\t7\trecv\t4\twrite\t16\t8\t-\n6\t7\tapplied\t4\twrite\t-\t-\t-\t0123456789abcdef\tdata=4096\n')
+        recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+        self.assertEqual([r['offset'] for r in recs], [4096, 8192])
+        for bad in (f'1\t7\tstart\t0\t-\t-\t-\t64\t9\n',
+                    f'1\t7\tstart\t0\t-\t-\t-\t64\n2\t7\tapplied\t3\twrite\t-\t-\t-\ta\tb\tc\n'):
+            with self.assertRaises(RigError):
+                cdc.parse_log(bad)
 
     def test_bad_lines(self):
         for text in ('1\t7\tstart\n', f'x\t7\tstart\t0\t-\t-\t-\t64\n', '1\t9\trecv\t3\twrite\t0\t8\t-\n'):
@@ -216,6 +266,18 @@ class Status(unittest.TestCase):
                          ('age_ms 3\n', '6\t5\n')):
             with self.assertRaises(RigError):
                 cdc.status_window(cdc.read_status(st), text)
+
+
+class Numbers(unittest.TestCase):
+    def cuts(self, *nums):
+        return [{'number': n, 'line': k + 10} for k, n in enumerate(nums)]
+
+    def test_numbers(self):
+        self.assertEqual(cdc.numbers_verdict(self.cuts('1', '2', '3'))[0], 'PASS')
+        self.assertEqual(cdc.numbers_verdict(self.cuts('-', '-'))[0], 'INFO')
+        self.assertEqual(cdc.numbers_verdict([])[0], 'INFO')
+        for wrong in (('1', '3'), ('2', '3'), ('1', '1'), ('1', '-')):
+            self.assertEqual(cdc.numbers_verdict(self.cuts(*wrong))[0], 'FAIL', wrong)
 
 
 class Expected(unittest.TestCase):

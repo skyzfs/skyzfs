@@ -16,8 +16,12 @@ the daemon's own order, the order design §5.2 counts in:
 - a write is placed at its `applied` line, when the store had applied it
   whole, with its bytes from its `label` line where it touches a label
   (the log writes those out whole);
-- a flush is placed at its `barrier` line: the daemon's added flush
-  after a write with FUA (`fua_flush`) is a flush of its own;
+- a flush is two records: its receipt at its `recv` line, which takes
+  the mark (design §5.2: the first flush *received* after an applied
+  uberblock write), and its barrier at its `barrier` line, the cut's
+  instant. The daemon's added flush after a write with FUA
+  (`fua_flush`) has no `recv` line, as it is received once the write
+  completed, and is one record at its barrier;
 - a write-zeroes at its `recv` line, where the store places it relative
   to a flush, as a range that reads as zeros after it (cut_ref's
   `discard`: no uberblock left in the slots it covers);
@@ -33,6 +37,8 @@ cut_ref.opens for whether each opens as itself) are then held to:
   the same instant (the barrier its line follows), with the same group
   and the same answer to whether it opens as itself (`itself` or
   `rewind`);
+- `cut_numbers`: the number each `cut` line carries (since M2.2b-2):
+  1 to N in order, as one instance counts; INFO on a log without them;
 - `status`: `skyzfsd status` read before the detach (DIR/status.txt):
   `cuts`, `cut_group` and `cut_opens` of the last cut. The daemon
   rewrites its status file at most every 100 ms, when a counter has
@@ -82,10 +88,14 @@ def parse_log(text):
     instances, by_pid = [], {}
     for k, ln in enumerate(text.splitlines()):
         f = ln.split('\t')
-        if len(f) != 8 or not f[0].isdigit():
-            raise RigError(f'request log line {k + 1}: not eight columns: {ln[:120]!r}')
+        # Eight columns; since M2.2b-2 an `applied` line has a ninth (the
+        # blocks' hashes) and, with --request-log-content whole, a tenth.
+        if not 8 <= len(f) <= 10 or not f[0].isdigit():
+            raise RigError(f'request log line {k + 1}: not eight to ten columns: {ln[:120]!r}')
+        if len(f) > 8 and f[2] != 'applied':
+            raise RigError(f'request log line {k + 1}: a {f[2]} line with more than eight columns: {ln[:120]!r}')
         rec = {'ns': int(f[0]), 'pid': f[1], 'event': f[2], 'tag': f[3], 'op': f[4], 'sector': f[5],
-               'sectors': f[6], 'result': f[7], 'line': k + 1}
+               'sectors': f[6], 'result': f[7], 'extra': f[8:], 'line': k + 1}
         if rec['event'] == 'start':
             inst = {'pid': rec['pid'], 'device': rec['tag'], 'lines': []}
             instances.append(inst)
@@ -132,6 +142,7 @@ def records_of(lines, marks):
             mk += 1
 
     last_barrier = None
+    received = set()            # flushes received whose barrier has not come
     for ln in lines:
         marks_until(ln['ns'])
         ev = ln['event']
@@ -144,6 +155,10 @@ def records_of(lines, marks):
                 data.pop(ln['tag'], None)
             elif ln['op'] == 'write_zeroes':
                 add({'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op']})
+            elif ln['op'] == 'flush':
+                # The receipt takes the mark; the barrier counts the cut.
+                add({'flags': ['receipt'], 'offset': 0, 'bytes': 0, 'tag': ln['tag']})
+                received.add(ln['tag'])
             # A discard changes no content on the daemon's volume (R6).
         elif ev == 'label':
             try:
@@ -162,14 +177,24 @@ def records_of(lines, marks):
                 r['data'] = b
             add(r)
         elif ev == 'barrier':
-            last_barrier = add({'flags': ['flush'], 'offset': 0, 'bytes': 0, 'tag': ln['tag'], 'op': ln['op']})
+            r = {'flags': ['flush'], 'offset': 0, 'bytes': 0, 'tag': ln['tag'], 'op': ln['op']}
+            if ln['op'] == 'flush':
+                if ln['tag'] not in received:
+                    raise RigError(f"request log line {ln['line']}: the barrier of flush {ln['tag']} with no recv before it")
+                received.discard(ln['tag'])
+                r['received'] = True
+            # The daemon's own flush after a write with FUA has no recv
+            # line: it is received after the write completed, and is
+            # placed here at its barrier, as dm-log-writes places a flush.
+            last_barrier = add(r)
         elif ev == 'cut':
             if not ln['result'].isdigit() or ln['sector'] not in ('itself', 'rewind'):
                 raise RigError(f"request log line {ln['line']}: a cut line that is not a group and itself or rewind")
             if last_barrier is None or last_barrier['tag'] != ln['tag'] or last_barrier['op'] != ln['op']:
                 raise RigError(f"request log line {ln['line']}: a cut that does not follow its own barrier")
             dcuts.append({'txg': int(ln['result']), 'itself': ln['sector'] == 'itself',
-                          'prefix': last_barrier['i'], 'line': ln['line'], 'ns': ln['ns']})
+                          'prefix': last_barrier['i'], 'line': ln['line'], 'ns': ln['ns'],
+                          'number': ln['sectors']})
     marks_until(float('inf'))
     return records, dcuts
 
@@ -200,6 +225,19 @@ def compare(dcuts, ref):
     if len(dcuts) != len(ref):
         return False, f'the daemon counted {len(dcuts)} cuts, the reference {len(ref)}'
     return True, f'{len(ref)} cuts, each at the same barrier with the same group and the same answer to itself'
+
+
+def numbers_verdict(dcuts):
+    """The `cut` lines' numbers (M2.2b-2's sectors column; `-` in a log
+    from before it) -> (verdict, detail). One instance that held no cuts
+    before counts from 1: the k-th line carries k."""
+    nums = [d['number'] for d in dcuts]
+    if all(n == '-' for n in nums):
+        return 'INFO', 'the cut lines carry no numbers (a daemon from before M2.2b-2)'
+    for k, n in enumerate(nums):
+        if n != str(k + 1):
+            return 'FAIL', f"cut line {k + 1} (request log line {dcuts[k]['line']}) carries the number {n!r}"
+    return 'PASS', f'the {len(nums)} cut lines are numbered 1 to {len(nums)}'
 
 
 def reference(cs, op):
@@ -303,6 +341,10 @@ def main():
         ok, detail = compare(dcuts, ref)
         put('cuts', 'PASS' if ok else 'FAIL', detail)
         if not ok:
+            rc = 1
+        verdict, detail = numbers_verdict(dcuts)
+        put('cut_numbers', verdict, detail)
+        if verdict == 'FAIL':
             rc = 1
         n_self = sum(1 for r in ref if r['itself'])
         put('obs_opens_as_itself', 'INFO', f'{n_self} of {len(ref)} cuts open as themselves, by the reference')
