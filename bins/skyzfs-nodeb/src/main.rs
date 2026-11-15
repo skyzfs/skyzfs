@@ -23,17 +23,17 @@
 //! - `get`: reads the ref's content into FILE, sparse where it is zeros.
 //!
 //! Exit 0: done. Exit 3: `get` found no such ref. Exit 4: `get` found
-//! the ref and could not read its content (the engine could not open
-//! its commit or read a range): for the rig a verdict against what put
-//! the volume there, not its own error. Exit 2: anything else (a usage
-//! error, the store before the ref was found, the local file), the
-//! rig's own error.
+//! the ref and the bucket does not hold its content: an object it needs
+//! is not there, does not decode, or is corrupt. For the rig that is a
+//! verdict against what put the volume there, not its own error. Exit
+//! 2: anything else (a usage error, a store that does not answer, the
+//! local file), the rig's own error.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use skynbd_engine::{Engine, EngineConfig};
+use skynbd_engine::{Engine, EngineConfig, EngineError};
 use skynbd_format::CommitKind;
 use skynbd_refs::{ObjectRefStore, RefStore};
 use skynbd_store::{ObjectStore, S3Store};
@@ -261,9 +261,30 @@ enum Got {
     Unreadable(String),
 }
 
+/// Is the engine's error about what the bucket holds (an object not
+/// there, that does not decode, or is corrupt), and not about a store
+/// that does not answer?
+fn about_content(e: &EngineError) -> bool {
+    matches!(
+        e,
+        EngineError::Store(
+            skynbd_store::StoreError::NotFound(_) | skynbd_store::StoreError::BadRange { .. }
+        ) | EngineError::Format(_)
+            | EngineError::Corrupt(_)
+    )
+}
+
+/// The exit code for what `get` found.
+fn exit_code(g: &Got) -> u8 {
+    match g {
+        Got::Read(..) => 0,
+        Got::Absent => 3,
+        Got::Unreadable(_) => 4,
+    }
+}
+
 /// Node B's read, on any store: the ref's content into `out`. Err is
-/// the rig's own error: the store before the ref was found, or the
-/// local file.
+/// the rig's own error: a store that does not answer, or the local file.
 async fn get_ref<S: ObjectStore + Clone + 'static>(
     store: S,
     refs: Arc<ObjectRefStore<S>>,
@@ -280,7 +301,10 @@ async fn get_ref<S: ObjectStore + Clone + 'static>(
     };
     let eng = match Engine::open_ref(store, refs, vol, reference, EngineConfig::default()).await {
         Ok(e) => e,
-        Err(e) => return Ok(Got::Unreadable(format!("open {reference}: {e}"))),
+        Err(e) if about_content(&e) => {
+            return Ok(Got::Unreadable(format!("open {reference}: {e}")))
+        }
+        Err(e) => return Err(format!("open {reference}: {e}")),
     };
     let size = eng.size();
     let mut out = std::fs::File::create(out_path).map_err(|e| format!("{out_path}: {e}"))?;
@@ -290,7 +314,10 @@ async fn get_ref<S: ObjectStore + Clone + 'static>(
         let n = (size - at).min(READ_CHUNK);
         let b = match eng.read(at, n).await {
             Ok(b) => b,
-            Err(e) => return Ok(Got::Unreadable(format!("read at {at}: {e}"))),
+            Err(e) if about_content(&e) => {
+                return Ok(Got::Unreadable(format!("read at {at}: {e}")))
+            }
+            Err(e) => return Err(format!("read at {at}: {e}")),
         };
         if b.len() as u64 != n {
             return Ok(Got::Unreadable(format!(
@@ -312,23 +339,18 @@ async fn get_ref<S: ObjectStore + Clone + 'static>(
 /// -> the exit code.
 async fn get(a: &Args) -> Result<u8, String> {
     let (store, refs) = open(a).await?;
-    match get_ref(store, refs, volume_id(&a.volume), &a.reference, &a.out).await? {
-        Got::Absent => {
-            eprintln!(
-                "skyzfs-nodeb: volume {} has no ref {}",
-                a.volume, a.reference
-            );
-            Ok(3)
-        }
+    let g = get_ref(store, refs, volume_id(&a.volume), &a.reference, &a.out).await?;
+    match &g {
+        Got::Absent => eprintln!(
+            "skyzfs-nodeb: volume {} has no ref {}",
+            a.volume, a.reference
+        ),
         Got::Unreadable(e) => {
-            eprintln!("skyzfs-nodeb: {} of volume {}: {e}", a.reference, a.volume);
-            Ok(4)
+            eprintln!("skyzfs-nodeb: {} of volume {}: {e}", a.reference, a.volume)
         }
-        Got::Read(c, size) => {
-            println!("read\t{}\t{}\t{size}", a.reference, hex(&c));
-            Ok(0)
-        }
+        Got::Read(c, size) => println!("read\t{}\t{}\t{size}", a.reference, hex(c)),
     }
+    Ok(exit_code(&g))
 }
 
 #[tokio::main]
@@ -515,17 +537,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A listed ref whose objects are gone reads as unreadable (exit 4),
-    /// not as the rig's own error.
-    #[tokio::test]
-    async fn a_ref_whose_objects_are_gone_is_unreadable() {
-        let dir = std::env::temp_dir().join(format!("skyzfs-nodeb-gone-{}", std::process::id()));
+    /// The volume put with an image of 1 MiB, its keys, and the ref
+    /// store: for the tests that take objects away.
+    async fn put_small(
+        name: &str,
+    ) -> (
+        skynbd_store::MemoryStore,
+        Arc<ObjectRefStore<skynbd_store::MemoryStore>>,
+        VolumeId,
+        Vec<String>,
+    ) {
+        let dir = std::env::temp_dir().join(format!("skyzfs-nodeb-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("tmp dir");
         let image = dir.join("in.img");
         std::fs::write(&image, vec![7u8; 1 << 20]).expect("write image");
         let store = skynbd_store::MemoryStore::new();
         let refs = Arc::new(ObjectRefStore::new(store.clone()));
-        let vol = volume_id("vol-gone");
+        let vol = volume_id(name);
         put_image(
             store.clone(),
             Arc::clone(&refs),
@@ -536,22 +564,71 @@ mod tests {
         )
         .await
         .expect("put");
+        let _ = std::fs::remove_dir_all(&dir);
         let keys = store.list("").await.expect("list");
-        let mut gone = 0;
-        for k in keys
-            .iter()
-            .filter(|k| !k.ends_with("/refs") && !k.contains("/sb/"))
-        {
+        (store, refs, vol, keys)
+    }
+
+    async fn get_after_removing(name: &str, gone: impl Fn(&str) -> bool) -> Got {
+        let (store, refs, vol, keys) = put_small(name).await;
+        let mut n = 0;
+        for k in keys.iter().filter(|k| gone(k)) {
             store.delete(k).await.expect("delete");
-            gone += 1;
+            n += 1;
         }
-        assert!(gone > 0, "no object to delete among {keys:?}");
-        let out = dir.join("out.img");
+        assert!(n > 0, "nothing removed among {keys:?}");
+        let out =
+            std::env::temp_dir().join(format!("skyzfs-nodeb-{name}-{}.out", std::process::id()));
         let got = get_ref(store, refs, vol, "snap/t", out.to_str().expect("path"))
             .await
             .expect("get");
-        assert!(matches!(got, Got::Unreadable(_)), "{got:?}");
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&out);
+        got
+    }
+
+    /// A listed ref whose commit is gone: the open fails (exit 4).
+    #[tokio::test]
+    async fn a_ref_whose_objects_are_gone_is_unreadable() {
+        let got =
+            get_after_removing("gone", |k| !k.ends_with("/refs") && !k.contains("/sb/")).await;
+        assert!(
+            matches!(got, Got::Unreadable(ref e) if e.starts_with("open ")),
+            "{got:?}"
+        );
+        assert_eq!(exit_code(&got), 4);
+    }
+
+    /// A listed ref whose commit opens and whose data is not there, as
+    /// a ref swapped before its segments were put would be (review of
+    /// #97, N4): the read fails (exit 4), not the rig.
+    #[tokio::test]
+    async fn a_ref_whose_segments_are_gone_is_unreadable() {
+        let got = get_after_removing("noseg", |k| k.contains("/seg/")).await;
+        assert!(
+            matches!(got, Got::Unreadable(ref e) if e.starts_with("read at ")),
+            "{got:?}"
+        );
+        assert_eq!(exit_code(&got), 4);
+    }
+
+    #[test]
+    fn exit_codes() {
+        assert_eq!(exit_code(&Got::Read([0; 32], 512)), 0);
+        assert_eq!(exit_code(&Got::Absent), 3);
+        assert_eq!(exit_code(&Got::Unreadable(String::new())), 4);
+    }
+
+    #[test]
+    fn a_store_that_does_not_answer_is_not_about_content() {
+        use skynbd_store::StoreError;
+        assert!(about_content(&EngineError::Store(StoreError::NotFound(
+            "k".into()
+        ))));
+        assert!(about_content(&EngineError::Corrupt("x".into())));
+        assert!(!about_content(&EngineError::Store(StoreError::Backend(
+            "timeout".into()
+        ))));
+        assert!(!about_content(&EngineError::Conflict));
     }
 
     #[test]

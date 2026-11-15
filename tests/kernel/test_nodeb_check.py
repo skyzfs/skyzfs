@@ -145,8 +145,8 @@ class Verdicts(unittest.TestCase):
     def test_the_first_stage_that_failed(self):
         s = self.seen(('refs', True), ('content', True), ('import', True), ('snapshot', False), ('copies', True))
         self.assertEqual(s.failed(), 'snapshot')
-        self.assertEqual(nodeb_check.control_verdict(s, ('snapshot',)), ('caught at snapshot', True))
-        self.assertEqual(nodeb_check.control_verdict(s, ('files',)), ('caught at snapshot', False))
+        self.assertEqual(nodeb_check.control_verdict(s, ('snapshot',)), ('caught at snapshot', True, []))
+        self.assertEqual(nodeb_check.control_verdict(s, ('files',)), ('caught at snapshot', False, []))
         self.assertNotIn('\n', s.text())
         self.assertNotIn('\t', s.text())
         self.assertTrue(s.ok('copies'))
@@ -158,10 +158,77 @@ class Verdicts(unittest.TestCase):
 
     def test_missed(self):
         s = self.seen(('refs', True), ('import', True), ('copies', True))
-        self.assertEqual(nodeb_check.control_verdict(s, ('import',)), ('missed', False))
+        self.assertEqual(nodeb_check.control_verdict(s, ('import',)), ('missed', False, []))
+
+    def test_early_must_be_otherwise_clean(self):
+        """Caught at the snapshot, with the copies failed: not what early
+        is for (review of #97, N3)."""
+        clean = nodeb_check.CLEAN['early']
+        want = nodeb_check.EXPECTED['early']
+        s = self.seen(('refs', True), ('content', True), ('import', True), ('snapshot', False), ('copies', True))
+        self.assertEqual(nodeb_check.control_verdict(s, want, clean), ('caught at snapshot', True, []))
+        s = self.seen(('refs', True), ('content', True), ('import', True), ('snapshot', False), ('copies', False))
+        self.assertEqual(nodeb_check.control_verdict(s, want, clean), ('caught at snapshot', False, ['copies']))
+        # a stage that never ran is not clean either
+        s = self.seen(('refs', True), ('content', True), ('import', True), ('snapshot', False))
+        self.assertEqual(nodeb_check.control_verdict(s, want, clean), ('caught at snapshot', False, ['copies']))
 
     def test_flat(self):
         self.assertEqual(nodeb_check.flat("cannot import 'p':\n\tI/O error\n"), "cannot import 'p': I/O error")
+
+
+class VerifyPaths(unittest.TestCase):
+    """verify's every-copy branch, with run, the tool and the import
+    stubbed: which errors of the rig are catches (review of #97, N1, N2)."""
+
+    def node(self, import_ok, zdb_failed):
+        nb = nodeb_check.NodeB.__new__(nodeb_check.NodeB)
+        nb.img = nb.image = '/nonexistent/nodeb-test'
+        nb.tool_run = lambda args, timeout=600: (0, 'snap/t\tc0\t0\nhead\tc1\t1\n' if args[0] == 'refs'
+                                                 else 'read\tsnap/t\tc0\t512\n')
+
+        def files(snap, want, seen):
+            seen.put('import', import_ok, 'stub')
+            if import_ok:
+                seen.put('snapshot', True, 'stub')
+                seen.put('mount', True, 'stub')
+                seen.put('files', True, 'stub')
+        nb.snapshot_files = files
+        self._saved = (nodeb_check.run, nodeb_check.replay_check.every_copy_verdict)
+        nodeb_check.run = lambda cmd, timeout=None: (0, '', '')
+        nodeb_check.replay_check.every_copy_verdict = lambda rc, text, image: (
+            (zdb_failed, 'said', {}) if zdb_failed else (None, '', {'blocks': 1, 'copies': 2}))
+        return nb
+
+    def tearDown(self):
+        if hasattr(self, '_saved'):
+            nodeb_check.run, nodeb_check.replay_check.every_copy_verdict = self._saved
+
+    def test_an_abort_on_a_control_is_a_catch(self):
+        seen = self.node(True, nodeb_check.ZDB_ABORT).verify('v', 'snap/t', 's', {}, damaged=True)
+        self.assertEqual(seen.failed(), 'copies')
+
+    def test_a_timeout_on_a_control_is_the_rigs(self):
+        for failed in ('rig: zdb timed out', 'rig: the list is not complete'):
+            with self.assertRaises(RigError):
+                self.node(True, failed).verify('v', 'snap/t', 's', {}, damaged=True)
+            self.tearDown()
+
+    def test_an_abort_on_the_published_cut_is_the_rigs(self):
+        with self.assertRaises(RigError):
+            self.node(True, nodeb_check.ZDB_ABORT).verify('v', 'snap/t', 's', {}, damaged=False)
+
+    def test_a_published_cut_that_failed_keeps_its_verdict(self):
+        """It failed its import, and zdb then aborts: the cut's FAIL, at
+        the import, not the rig's error (N2)."""
+        seen = self.node(False, nodeb_check.ZDB_ABORT).verify('v', 'snap/t', 's', {}, damaged=False)
+        self.assertEqual(seen.failed(), 'import')
+        self.assertIn('not judged', seen.text())
+
+    def test_a_clean_pass(self):
+        seen = self.node(True, None).verify('v', 'snap/t', 's', {}, damaged=False)
+        self.assertIsNone(seen.failed())
+        self.assertEqual(list(seen.stages), ['refs', 'content', 'import', 'snapshot', 'mount', 'files', 'copies'])
 
 
 class Expected(unittest.TestCase):
@@ -171,8 +238,12 @@ class Expected(unittest.TestCase):
             self.assertTrue(stages and set(stages) <= set(nodeb_check.STAGES), ctl)
             # A store or a ref that fails is never a control's catch.
             self.assertFalse({'refs', 'content'} & set(stages), ctl)
-        self.assertEqual(nodeb_check.EXPECTED['early'], ('snapshot',))
-        self.assertEqual(nodeb_check.EXPECTED['digest'], ('files',))
+        # Every row, exactly (review of #97, N5).
+        damage = ('import', 'mount', 'files', 'copies')
+        self.assertEqual(nodeb_check.EXPECTED, {'digest': ('files',), 'early': ('snapshot',), 'lacks': damage,
+                                                'later': damage, 'hole': damage})
+        self.assertEqual(nodeb_check.CLEAN, {'early': ('import', 'copies')})
+        self.assertEqual(nodeb_check.ZDB_ABORT, 'rig: zdb died with signal 6')
 
 
 if __name__ == '__main__':

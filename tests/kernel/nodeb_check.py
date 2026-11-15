@@ -32,7 +32,7 @@ the image, or its walk aborts on the intent log's first block (B1 of
 the review of #97). Every block judged is on the image from the bucket.
 
 Node B's stages, in order (STAGES): refs, content, import, snapshot,
-files, copies. Each control is a volume of its own, and node B must
+mount, files, copies. Each control is a volume of its own, and node B must
 catch it at a stage `EXPECTED` allows; a control that is missed, or
 caught at another stage, fails the run:
 
@@ -76,18 +76,25 @@ from replay_check import run  # noqa: E402
 
 CONTROLS = ('digest', 'early', 'lacks', 'later', 'hole')
 # Node B's stages, in order: the ref is listed and found, its content
-# read, the pool imported, the snapshot found and mounted, its files
+# read, the pool imported, the snapshot listed, then mounted, its files
 # compared, every copy checked.
-STAGES = ('refs', 'content', 'import', 'snapshot', 'files', 'copies')
-# Where node B must catch each control (review of #97, S1). early must
-# also be otherwise clean: it imports and every copy passes.
+STAGES = ('refs', 'content', 'import', 'snapshot', 'mount', 'files', 'copies')
+# Where node B must catch each control (review of #97, S1), and the
+# stages that must pass all the same: early is a clean pool that lacks
+# only the snapshot.
 EXPECTED = {
     'digest': ('files',),
     'early': ('snapshot',),
-    'lacks': ('import', 'files', 'copies'),
-    'later': ('import', 'files', 'copies'),
-    'hole': ('import', 'files', 'copies'),
+    'lacks': ('import', 'mount', 'files', 'copies'),
+    'later': ('import', 'mount', 'files', 'copies'),
+    'hole': ('import', 'mount', 'files', 'copies'),
 }
+CLEAN = {'early': ('import', 'copies')}
+# zdb's abort on an assertion: on a control's image, damaged on purpose,
+# a catch, as in the replay rig (replay_check.tally_control). Any other
+# error of the rig in the every-copy check stays the rig's error, on a
+# control too (review of #97, N1).
+ZDB_ABORT = 'rig: zdb died with signal 6'
 
 
 def read_snaps(rdir):
@@ -202,15 +209,16 @@ class Seen:
                          for ok, d in [self.stages[st]])
 
 
-def control_verdict(seen, want):
-    """A control's line -> (verdict, as expected?). Caught at a stage in
-    want; early must also be otherwise clean: the pool imports and every
-    copy passes (review of #97, S1), which is the criterion's point."""
+def control_verdict(seen, want, clean=()):
+    """A control's line -> (verdict, as expected?, what is not clean).
+    Caught at a stage in want, with every stage in clean passed: early
+    must be a pool that imports and whose every copy passes (review of
+    #97, S1 and N3), which is the criterion's point."""
     st = seen.failed()
     if st is None:
-        return 'missed', False
-    verdict = f'caught at {st}'
-    return verdict, st in want
+        return 'missed', False, []
+    dirty = [c for c in clean if not seen.ok(c)]
+    return f'caught at {st}', st in want and not dirty, dirty
 
 
 class NodeB:
@@ -289,10 +297,18 @@ class NodeB:
         self.snapshot_files(snap, want, seen)
         rc, text, _ = run(['zdb', '-e', '-p', self.img, '-bbbbb', POOL], 600)
         failed, d2, counts = replay_check.every_copy_verdict(rc, text, self.image)
-        if failed and failed.startswith('rig:') and not damaged:
-            raise RigError(f'{failed}: {d2}')
-        seen.put('copies', not failed, f'{failed}: {d2}' if failed else
-                 f"{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies")
+        if failed and failed.startswith('rig:'):
+            if damaged and failed == ZDB_ABORT:
+                seen.put('copies', False, f'zdb aborted on the damaged image: {d2}')
+            elif not damaged and seen.failed():
+                # The published cut has failed a stage already: that is
+                # its verdict, and the copies are not judged (N2).
+                seen.put('copies', False, f'not judged, {failed}: {d2}')
+            else:
+                raise RigError(f'{failed}: {d2}')
+        else:
+            seen.put('copies', not failed, f'{failed}: {d2}' if failed else
+                     f"{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies")
         return seen
 
     def snapshot_files(self, snap, want, seen):
@@ -310,7 +326,7 @@ class NodeB:
                               '-R', self.alt] + (['-m'] if self.logdev else []) + [POOL], 180)
             if rc in replay_check.RIG_RC:
                 raise RigError(f'zpool import: {replay_check.stage("import", rc)}')
-            seen.put('import', rc == 0, out.strip()[-300:] if rc else
+            seen.put('import', rc == 0, flat(out)[:300] if rc else
                      'read-only' + (', without its log device (-m)' if self.logdev else ''))
             if rc:
                 return
@@ -321,12 +337,13 @@ class NodeB:
                 seen.put('snapshot', False, f'no snapshot {snap}: it has {len(have)} '
                          f'({", ".join(h.split("@")[-1] for h in have[-4:])}{", ..." if len(have) > 4 else ""})')
                 return
+            seen.put('snapshot', True, f'{POOL}@{snap} is listed')
             rc, out, _ = run(['mount', '-t', 'zfs', '-o', 'ro', f'{POOL}@{snap}', self.mnt], 60)
             if rc:
-                seen.put('snapshot', False, f'mount of {POOL}@{snap}: {out.strip()[-200:]}')
+                seen.put('mount', False, f'mount of {POOL}@{snap}: {flat(out)[:200]}')
                 return
             mounted = True
-            seen.put('snapshot', True, f'{POOL}@{snap}')
+            seen.put('mount', True, 'read-only')
             got = {}
             for fn in sorted(os.listdir(self.mnt)):
                 p = os.path.join(self.mnt, fn)
@@ -468,17 +485,15 @@ def main():
         for ctl in CONTROLS:
             cseen, what = got[ctl]
             want_st = EXPECTED[ctl]
+            clean = CLEAN.get(ctl, ())
             if cseen is None:
                 verdict, ok, said = 'not built', False, ''
             else:
-                verdict, ok = control_verdict(cseen, want_st)
-                said = cseen.text()
-                if ctl == 'early' and not (cseen.ok('import') and cseen.ok('copies')):
-                    ok = False
-                    said += '; the pool is not otherwise clean'
+                verdict, ok, dirty = control_verdict(cseen, want_st, clean)
+                said = cseen.text() + (f"; not otherwise clean: {', '.join(dirty)} failed" if dirty else '')
             put(f'ctl_{ctl}', verdict.upper().replace(' ', '_'),
                 f"{what}: {said} (expected: caught at {' or '.join(want_st)}"
-                + ('; the import and every copy pass' if ctl == 'early' else '') + f"{'' if ok else '; DIFFERS'})")
+                + (f"; {' and '.join(clean)} pass" if clean else '') + f"{'' if ok else '; DIFFERS'})")
             if not ok:
                 rc = 1
     except RigError as e:
