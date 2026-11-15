@@ -1,0 +1,11 @@
+T1 put: the holes are not written: KILLED by a_put_image_reads_back_through_a_second_ref_store
+T3 put: no commit before the snapshot: SURVIVED
+T4 get: a chunk is written only if its first byte is not zero: KILLED by a_put_image_reads_back_through_a_second_ref_store
+T5 get: the file is not set to the volume's size: SURVIVED
+T6 get: reads the head whatever ref is asked for: SURVIVED
+T7 get: a ref that is not there reads as the head: KILLED by a_put_image_reads_back_through_a_second_ref_store
+T8 runs: a zero block inside a run is written (runs never split): KILLED by runs_join_adjacent_blocks_and_skip_zeros
+T9 runs: the last short block is dropped: KILLED by runs_join_adjacent_blocks_and_skip_zeros
+T10 volume_id: the last 16 bytes of the hash: KILLED by the_id_is_the_provisioners
+T11 parse_hole: any offset: KILLED by holes_must_be_sector_aligned
+T12 put: the snapshot is taken under another name: KILLED by a_put_image_reads_back_through_a_second_ref_store
