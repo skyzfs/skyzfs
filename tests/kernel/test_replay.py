@@ -922,13 +922,19 @@ class Log(unittest.TestCase):
             self.assertEqual(failed, 'copies: differ', hex(at))
             self.assertIn(failed, replay_check.JUDGING)
             self.assertIn('1 of 6 copies', detail)
+            # a bad copy of a block with three or two (the short block)
+            # leaves it a good one; the single copy of a file's block not
+            lost = 1 if at == self.A + 0x2000 + 0x1fff else 0
+            self.assertIn(f'in 1 blocks, of which {lost} have no copy that passes', detail, hex(at))
         # a copy that is stale in the same way in all three places is still caught: each is checked against the checksum
         self.good_image()
         with open(self.img, 'r+b') as f:
             for at in (self.A, self.B, self.B + 0x1000):
                 f.seek(off + at)
                 f.write(b'\x01')
-        self.assertIn('3 of 6 copies', replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[1])
+        detail = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[1]
+        self.assertIn('3 of 6 copies', detail)
+        self.assertIn('in 1 blocks, of which 1 have no copy that passes', detail)
         # bytes after the end of a short block are not the block; an intent-log block is not judged
         self.good_image()
         with open(self.img, 'r+b') as f:

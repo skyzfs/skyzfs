@@ -589,7 +589,14 @@ def every_copy_verdict(rc, text, image):
     counts.update(c)
     if bad:
         x = bad[0]
-        return ('copies: differ', f"{len(bad)} of {c['copies']} copies do not pass their block's checksum; the first is "
+        # A block with one good copy left is one ZFS can still read and
+        # repair; one with none is lost.
+        per = {}
+        for y in bad:
+            per.setdefault(y['line'], []).append(y)
+        lost = sum(1 for ys in per.values() if len(ys) >= ys[0]['of'])
+        return ('copies: differ', f"{len(bad)} of {c['copies']} copies do not pass their block's checksum, in "
+                f"{len(per)} blocks, of which {lost} have no copy that passes; the first is "
                 f"copy {x['copy']} of {x['of']} at byte {x['at']}: {x['line']}", counts)
     return None, '', counts
 
