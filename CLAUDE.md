@@ -333,6 +333,12 @@ there, and the user decides when it merges.
   imported read-only on ZFS 2.4.1; the check imports it writable from a
   copy. The recorded pools in `tests/fixtures/pools` are what the
   daemon's parser and cut rule are tested against.
+- **The cut rig on the daemon.** `skyzfs-cut-daemon.yml` (M2.T3) records
+  the same ten pools through `skyzfsd` and holds the daemon's own cut
+  lines, from its request log, against the reference: the count, the
+  flush each cut falls on, its group and whether it opens as itself
+  (`tests/kernel/cut_daemon_check.py`). Ubuntu 26.04 and 26.04-arm on a
+  pull request. Exit codes and `recordings.tsv` as the cut rig's.
 - **The node B rig.** `skyzfs-nodeb-rig.yml` (M2.T2) runs MinIO on the
   runner and, for the `life` and `slog` recordings, puts a reference
   cut into object storage through the engine (`bins/skyzfs-nodeb`, the
