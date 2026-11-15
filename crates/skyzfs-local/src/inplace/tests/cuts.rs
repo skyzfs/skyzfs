@@ -104,7 +104,7 @@ fn counted(store: &InPlace<SimDisk>) -> (u64, Option<u64>) {
 /// many flushes follow; the stray flush is the cut of group 6 and the
 /// labels after it are repeats. What the store counts after each step,
 /// for `mutants` and `io`.
-fn groups_counted(mutants: u64, io: IoMode) -> Vec<(u64, Option<u64>)> {
+fn groups_counted(mutants: u128, io: IoMode) -> Vec<(u64, Option<u64>)> {
     let disk = created(5, 0);
     let mut store = start_io(&disk, mutants, false, io).unwrap();
     let mut seen = Vec::new();
@@ -157,7 +157,7 @@ fn each_group_makes_one_cut_at_the_first_flush_after_its_uberblock() {
 /// alone is noticed.
 #[test]
 fn a_new_root_under_a_group_already_used_makes_a_cut() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(6, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut seen = Vec::new();
@@ -191,7 +191,7 @@ fn a_new_root_under_a_group_already_used_makes_a_cut() {
 /// noticed: it cuts group 5 again, and then group 6 twice.
 #[test]
 fn a_stale_multihost_write_does_not_move_the_mark_back() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(11, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mmp = |label: usize, txg: u64, root: u64| {
@@ -233,7 +233,7 @@ fn a_stale_multihost_write_does_not_move_the_mark_back() {
 /// slot written alone. Counting it is noticed.
 #[test]
 fn a_group_of_zero_makes_no_cut() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(7, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut whole = Buf::filled(RING_SLOTS as usize, 0);
@@ -263,7 +263,7 @@ fn a_group_of_zero_makes_no_cut() {
 /// it, then the write let go. Marking as received is noticed.
 #[test]
 fn a_flush_received_before_the_uberblock_write_was_applied_makes_no_cut() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(8, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         disk.hold_direct_io(1);
@@ -299,7 +299,7 @@ fn a_flush_received_before_the_uberblock_write_was_applied_makes_no_cut() {
 /// receipt is noticed.
 #[test]
 fn a_cut_is_counted_at_its_flushs_barrier() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(9, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         assert!(run(&mut store, 1, uberblock_write(3, 33, 7)).result.is_ok());
@@ -407,7 +407,7 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
 /// the rings is noticed: it takes group 8 to open as itself.
 #[test]
 fn a_store_begun_on_a_pool_reads_its_rings_first() {
-    let opens = |mutants: u64, io: IoMode| {
+    let opens = |mutants: u128, io: IoMode| {
         let disk = created(12, 0);
         let mut id = 0;
         let mut group = |store: &mut InPlace<SimDisk>, txg: u64, root: u64| {
@@ -450,7 +450,7 @@ fn a_store_begun_on_a_pool_reads_its_rings_first() {
 /// the two states of group 10 a tie, and so a rewind.
 #[test]
 fn a_group_written_twice_opens_as_its_later_state() {
-    let opens = |mutants: u64| {
+    let opens = |mutants: u128| {
         let disk = created(13, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut id = 0;
@@ -537,7 +537,7 @@ fn a_ring_zeroed_holds_no_uberblock() {
 /// Codex's).
 #[test]
 fn a_label_write_applied_while_a_flush_carries_its_state_is_a_repeat() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(12, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         assert!(run(&mut store, 1, uberblock_write(0, 5, 50)).result.is_ok());
@@ -677,7 +677,7 @@ fn a_flush_that_joins_a_sync_has_its_barrier_and_its_cut() {
 /// rewind (the lead's reading of M2.1b, point 4).
 #[test]
 fn a_multihost_copy_of_the_cuts_own_state_leaves_it_itself() {
-    let opens = |mutants: u64| {
+    let opens = |mutants: u128| {
         let disk = created(15, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut id = 0;
@@ -717,7 +717,7 @@ fn a_multihost_copy_of_the_cuts_own_state_leaves_it_itself() {
 /// noticed: it calls the two states of group 12 a tie, and so a rewind.
 #[test]
 fn a_rewind_by_f_opens_as_its_first_group_at_once() {
-    let opens = |mutants: u64| {
+    let opens = |mutants: u128| {
         let disk = created(16, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut id = 0;
@@ -779,7 +779,7 @@ fn a_rewind_by_f_opens_as_its_first_group_at_once() {
 /// the new state makes no cut (the review of M2.1, its C2).
 #[test]
 fn another_state_under_the_carried_group_marks() {
-    let counts = |mutants: u64| {
+    let counts = |mutants: u128| {
         let disk = created(18, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let write = |label: usize, root: u64, at: u64| {
@@ -823,7 +823,7 @@ fn another_state_under_the_carried_group_marks() {
 /// view and its own state; a publish could take it.
 #[test]
 fn bytes_zfs_would_pass_over_make_no_cut() {
-    let opens = |mutants: u64, forged: &dyn Fn(u64) -> Buf| {
+    let opens = |mutants: u128, forged: &dyn Fn(u64) -> Buf| {
         let disk = created(17, 0);
         let mut store = start(&disk, mutants, false).unwrap();
         let mut id = 0;
@@ -913,7 +913,7 @@ const TAKING_OVER: Coming = Coming {
 /// over.
 fn start_on(
     disk: &SimDisk,
-    mutants: u64,
+    mutants: u128,
     region: &state::MemRegion,
     io: IoMode,
 ) -> InPlace<SimDisk> {
@@ -923,7 +923,7 @@ fn start_on(
 /// Start on `disk` with the cut state in `region`, as `coming` says.
 fn start_as(
     disk: &SimDisk,
-    mutants: u64,
+    mutants: u128,
     region: &state::MemRegion,
     io: IoMode,
     coming: Coming,
@@ -992,7 +992,7 @@ fn group_in_cut(store: &mut InPlace<SimDisk>, number: u64, txg: u64) -> u64 {
 /// go. A copy made after the overwrite is noticed.
 #[test]
 fn a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite() {
-    let read_back = |mutants: u64, io: IoMode| -> Vec<u8> {
+    let read_back = |mutants: u128, io: IoMode| -> Vec<u8> {
         let disk = created(30, 0);
         let region = region();
         let mut store = start_on(&disk, mutants, &region, io);
@@ -1038,7 +1038,7 @@ type AfterDeath = (bool, Vec<(u64, u64, u64)>);
 /// a next instance what was in flight in any order), then the write
 /// again unless its completion had gone to the transport, then ZFS's
 /// flush after it.
-fn lost_in_a_mark(mutants: u64, io: IoMode, death: u64) -> AfterDeath {
+fn lost_in_a_mark(mutants: u128, io: IoMode, death: u64) -> AfterDeath {
     state::tests::quiet_deaths();
     let disk = created(31, 0);
     let region = region();
@@ -1097,7 +1097,7 @@ fn lost_in_a_mark(mutants: u64, io: IoMode, death: u64) -> AfterDeath {
 /// must be cut (a mark recorded after the completion went to the
 /// transport is lost with the daemon, and the kernel does not issue the
 /// write again).
-fn marks_survive_a_death(mutants: u64, io: IoMode) -> Result<u64, String> {
+fn marks_survive_a_death(mutants: u128, io: IoMode) -> Result<u64, String> {
     let mut death = 0;
     loop {
         let (died, groups) = lost_in_a_mark(mutants, io, death);
@@ -1152,7 +1152,7 @@ fn a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole() {
 /// two daemons. What the start did, the held cuts' numbers, and block 5
 /// of cut 1 if it is held.
 fn after_a_loss(
-    mutants: u64,
+    mutants: u128,
     coming: Coming,
     between: &dyn Fn(&SimDisk),
 ) -> (CutsTakenUp, Vec<u64>, Option<Vec<u8>>) {
@@ -1306,7 +1306,7 @@ fn a_held_cut_is_taken_up_only_where_its_state_is_trusted() {
     let removed = |disk: &SimDisk| disk.remove(COPIES_NAME).expect("the copies file goes");
     /// A case: its name, the mutant that plants its rule away, how the
     /// start comes, what happened before it, and what the start says.
-    type Case<'a> = (&'a str, u64, Coming, &'a dyn Fn(&SimDisk), &'a str);
+    type Case<'a> = (&'a str, u128, Coming, &'a dyn Fn(&SimDisk), &'a str);
     let cases: [Case; 4] = [
         (
             "another boot",
@@ -1360,7 +1360,7 @@ fn a_held_cut_is_taken_up_only_where_its_state_is_trusted() {
 /// noticed.
 #[test]
 fn a_start_on_a_created_device_keeps_no_mark() {
-    let after_the_next_flush = |mutants: u64, taken_over: bool| -> Vec<u64> {
+    let after_the_next_flush = |mutants: u128, taken_over: bool| -> Vec<u64> {
         let disk = created(33, 0);
         let region = region();
         let mut store = start_on(&disk, 0, &region, ON_CALLER);
@@ -1433,7 +1433,7 @@ fn a_region_that_cannot_be_had_refuses_the_open() {
 /// in a directory that kept the old token's file.
 #[test]
 fn a_volume_made_again_does_not_take_up_the_cuts_of_the_one_before() {
-    let next_volume = |mutants: u64| -> (CutsTakenUp, Vec<u64>) {
+    let next_volume = |mutants: u128| -> (CutsTakenUp, Vec<u64>) {
         let region = region();
         let old = created(35, 0);
         let mut store = start_on(&old, 0, &region, ON_CALLER);
@@ -2024,7 +2024,7 @@ fn begun_for_an_open_between(taken: &Option<CutsTakenUp>) -> bool {
 /// writes 0x66 to block 5, with no copy made. What the next start that
 /// holds cuts does, under `mutants`, and what cut 1 reads for block 5
 /// if it is held.
-fn opened_between(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, Option<u8>) {
+fn opened_between(mutants: u128) -> (Option<CutsTakenUp>, Vec<u64>, Option<u8>) {
     let disk = created(40, 0);
     let region = region();
     let mut store = start_on(&disk, mutants, &region, ON_CALLER);
@@ -2096,7 +2096,7 @@ fn a_start_that_holds_no_cuts_between_two_that_do() {
 /// Cut 1 is held and the volume fails. A start that acknowledges the
 /// failure opens the volume, which takes the marker away, and is lost
 /// before its second phase. What the next start does under `mutants`.
-fn acknowledged_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
+fn acknowledged_and_lost(mutants: u128) -> (Option<CutsTakenUp>, Vec<u64>) {
     let disk = created(41, 0);
     let region = region();
     let mut store = start_on(&disk, mutants, &region, ON_CALLER);
@@ -2164,7 +2164,7 @@ fn an_acknowledged_failure_whose_start_is_lost_before_its_second_phase() {
 /// open came to its end, and what the next start, which acknowledges
 /// nothing, makes of the volume under `mutants`: refused for the marker,
 /// or opened, with what it took up.
-fn acknowledging_open_lost_at(after: u64, mutants: u64) -> (bool, Result<AfterStart, OpenError>) {
+fn acknowledging_open_lost_at(after: u64, mutants: u128) -> (bool, Result<AfterStart, OpenError>) {
     let disk = created(43, 0);
     let region = region();
     let mut store = start_on(&disk, mutants, &region, ON_CALLER);
@@ -2239,7 +2239,7 @@ fn an_acknowledging_open_lost_at_any_write_leaves_the_marker_or_a_new_token() {
 /// fails; the next start's sync hears it, and that start is lost at its
 /// first store into the region. What the start after it does under
 /// `mutants`, the kernel having reported the failure once.
-fn heard_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
+fn heard_and_lost(mutants: u128) -> (Option<CutsTakenUp>, Vec<u64>) {
     let (taken, held, died) = heard_and_lost_at(0, mutants);
     assert!(died, "the start made no store into the region");
     (taken, held)
@@ -2248,7 +2248,7 @@ fn heard_and_lost(mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>) {
 /// The same with the start that hears the failure lost at store `death`
 /// into the region: the next start's outcome and held cuts, and whether
 /// the lost start died at all.
-fn heard_and_lost_at(death: u64, mutants: u64) -> (Option<CutsTakenUp>, Vec<u64>, bool) {
+fn heard_and_lost_at(death: u64, mutants: u128) -> (Option<CutsTakenUp>, Vec<u64>, bool) {
     state::tests::quiet_deaths();
     let disk = created(42, 0);
     let region = region();

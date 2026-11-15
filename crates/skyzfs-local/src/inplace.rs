@@ -242,200 +242,200 @@ pub use start::{
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u64);
+pub(crate) struct Mutants(pub(crate) u128);
 
 impl Mutants {
     /// A flush that arrives while a sync is under way joins it even
     /// when something was written since the sync began.
-    pub(crate) const FLUSH_JOINS_ANY_SYNC: u64 = 1 << 0;
+    pub(crate) const FLUSH_JOINS_ANY_SYNC: u128 = 1 << 0;
     /// After a failed sync the volume is not failed: the next flush
     /// tries again.
-    pub(crate) const SYNC_RETRIED: u64 = 1 << 2;
+    pub(crate) const SYNC_RETRIED: u128 = 1 << 2;
     /// A flush with no sync under way completes at once whatever was
     /// written since the last sync.
-    pub(crate) const FLUSH_WITHOUT_SYNC: u64 = 1 << 3;
+    pub(crate) const FLUSH_WITHOUT_SYNC: u128 = 1 << 3;
     /// A failed write does not fail the volume.
-    pub(crate) const WRITE_ERROR_PASSES: u64 = 1 << 4;
+    pub(crate) const WRITE_ERROR_PASSES: u128 = 1 << 4;
     /// A discard is not counted as a change: a flush behind it alone
     /// does not sync.
-    pub(crate) const DISCARD_UNCHANGED: u64 = 1 << 5;
+    pub(crate) const DISCARD_UNCHANGED: u128 = 1 << 5;
     /// No thread is started for the failure marker: it is written on
     /// the caller's thread when the volume fails.
-    pub(crate) const MARKER_INLINE: u64 = 1 << 6;
+    pub(crate) const MARKER_INLINE: u128 = 1 << 6;
     /// The start does not drop the home image's cache.
-    pub(crate) const CACHE_NOT_DROPPED: u64 = 1 << 7;
+    pub(crate) const CACHE_NOT_DROPPED: u128 = 1 << 7;
     /// The start does not check that the cache is gone.
-    pub(crate) const CACHE_NOT_CHECKED: u64 = 1 << 8;
+    pub(crate) const CACHE_NOT_CHECKED: u128 = 1 << 8;
     /// The start does not show that the count sees the file.
-    pub(crate) const CACHE_SIGHT_UNCHECKED: u64 = 1 << 9;
+    pub(crate) const CACHE_SIGHT_UNCHECKED: u128 = 1 << 9;
     /// The start shows that the count sees the file before the drop,
     /// not after it.
-    pub(crate) const LOOK_BEFORE_DROP: u64 = 1 << 10;
+    pub(crate) const LOOK_BEFORE_DROP: u128 = 1 << 10;
     /// A thread's death is taken for an I/O error of the job it held:
     /// the volume goes on, and the jobs that wait for the threads are
     /// left to them.
-    pub(crate) const DEATH_IGNORED: u64 = 1 << 11;
+    pub(crate) const DEATH_IGNORED: u128 = 1 << 11;
     /// A flush does not wait for the writes on the threads.
-    pub(crate) const FLUSH_PASSES_WRITES: u64 = 1 << 12;
+    pub(crate) const FLUSH_PASSES_WRITES: u128 = 1 << 12;
     /// A request does not wait for an overlapping one on the threads.
-    pub(crate) const OVERLAP_UNORDERED: u64 = 1 << 13;
+    pub(crate) const OVERLAP_UNORDERED: u128 = 1 << 13;
     /// The start does not sync the home image.
-    pub(crate) const START_UNSYNCED: u64 = 1 << 14;
+    pub(crate) const START_UNSYNCED: u128 = 1 << 14;
     /// The failure observer is told after the marker is begun, not
     /// before.
-    pub(crate) const OBSERVE_AFTER_MARKER: u64 = 1 << 15;
+    pub(crate) const OBSERVE_AFTER_MARKER: u128 = 1 << 15;
     /// The failure marker is made without the directory's sync, so a
     /// power cut can take it back.
-    pub(crate) const MARKER_UNSYNCED: u64 = 1 << 16;
+    pub(crate) const MARKER_UNSYNCED: u128 = 1 << 16;
     /// A failed read fails the volume (the log store's rule, which the
     /// in-place store does not have).
-    pub(crate) const READ_ERROR_FAILS: u64 = 1 << 17;
+    pub(crate) const READ_ERROR_FAILS: u128 = 1 << 17;
     /// Create and open do not hold the file systems' blocks to the
     /// write unit.
-    pub(crate) const ANY_BLOCKS: u64 = 1 << 18;
+    pub(crate) const ANY_BLOCKS: u128 = 1 << 18;
     /// Create and open do not hold the system's page to the write unit.
-    pub(crate) const ANY_PAGES: u64 = 1 << 19;
+    pub(crate) const ANY_PAGES: u128 = 1 << 19;
     /// A job pushed to the I/O threads wakes every waiting thread, not
     /// one.
-    pub(crate) const POOL_WAKES_ALL: u64 = 1 << 20;
+    pub(crate) const POOL_WAKES_ALL: u128 = 1 << 20;
     /// An I/O thread looks at the queue and waits under two holds of
     /// its lock: a job pushed between them wakes nobody.
-    pub(crate) const POOL_WAKE_LOST: u64 = 1 << 21;
+    pub(crate) const POOL_WAKE_LOST: u128 = 1 << 21;
     /// At the end the I/O threads end without doing the jobs queued.
-    pub(crate) const POOL_ENDS_QUEUED: u64 = 1 << 22;
+    pub(crate) const POOL_ENDS_QUEUED: u128 = 1 << 22;
     /// An I/O thread that ends a job waits to be woken before it looks
     /// at the queue again.
-    pub(crate) const POOL_WAITS_FIRST: u64 = 1 << 23;
+    pub(crate) const POOL_WAITS_FIRST: u128 = 1 << 23;
     /// Where a thread cannot be started, the threads started before it
     /// are left waiting.
-    pub(crate) const POOL_LEAVES_STARTED: u64 = 1 << 24;
+    pub(crate) const POOL_LEAVES_STARTED: u128 = 1 << 24;
     /// A write handed to the threads is acknowledged at once, before a
     /// thread has written it: a kill can lose it.
-    pub(crate) const ACK_BEFORE_WRITE: u64 = 1 << 25;
+    pub(crate) const ACK_BEFORE_WRITE: u128 = 1 << 25;
     /// A failure writes no marker: the next start serves the volume.
-    pub(crate) const FAIL_UNMARKED: u64 = 1 << 26;
+    pub(crate) const FAIL_UNMARKED: u128 = 1 << 26;
     /// The start's look reads with the kernel's read-ahead, which the
     /// next start's drop cannot take while it is under I/O.
-    pub(crate) const LOOK_READS_AHEAD: u64 = 1 << 27;
+    pub(crate) const LOOK_READS_AHEAD: u128 = 1 << 27;
     /// The open holds the directory's file system to the write unit and
     /// not the home image's: an image on a file system of its own (a
     /// mount point, a link elsewhere) goes unchecked.
-    pub(crate) const HOME_ANY_BLOCKS: u64 = 1 << 28;
+    pub(crate) const HOME_ANY_BLOCKS: u128 = 1 << 28;
     /// An uberblock write marks when the store receives it, not once
     /// it is applied: a flush received while it is being written
     /// carries a cut (design §5.2).
-    pub(crate) const MARK_AT_RECEIPT: u64 = 1 << 29;
+    pub(crate) const MARK_AT_RECEIPT: u128 = 1 << 29;
     /// A repeat marks: every applied uberblock is followed by a cut.
-    pub(crate) const REPEAT_COUNTED: u64 = 1 << 30;
+    pub(crate) const REPEAT_COUNTED: u128 = 1 << 30;
     /// An uberblock whose group is 0 (a new label's) marks.
-    pub(crate) const GROUP_ZERO_COUNTED: u64 = 1 << 31;
+    pub(crate) const GROUP_ZERO_COUNTED: u128 = 1 << 31;
     /// A cut is counted as its flush is received, not at the flush's
     /// barrier.
-    pub(crate) const CUT_AT_RECEIPT: u64 = 1 << 32;
+    pub(crate) const CUT_AT_RECEIPT: u128 = 1 << 32;
     /// A repeat is told by its group alone, not by its group and root
     /// block pointer, against the mark, a cut a flush carries and the
     /// newest cut: after a rewind import a new state under a group
     /// already used makes no cut.
-    pub(crate) const REPEAT_BY_GROUP: u64 = 1 << 33;
+    pub(crate) const REPEAT_BY_GROUP: u128 = 1 << 33;
     /// A repeat is compared with the uberblock applied before it alone,
     /// not with the mark and the newest cut: under multihost a stale
     /// copy of the group before, applied after the group's own
     /// uberblocks, moves the mark back (design §5.2).
-    pub(crate) const STALE_MOVES_MARK: u64 = 1 << 34;
+    pub(crate) const STALE_MOVES_MARK: u128 = 1 << 34;
     /// A request received after a flush that waits begins before it
     /// when nothing on the threads holds the request back itself: the
     /// half of a flush's barrier that M1 left untested (design §5.2).
-    pub(crate) const PASSES_WAITING_FLUSH: u64 = 1 << 35;
+    pub(crate) const PASSES_WAITING_FLUSH: u128 = 1 << 35;
     /// A repeat is not compared with the state a flush carries to its
     /// barrier: another label's copy of the same uberblock, applied
     /// between that flush's receipt and its barrier, marks it again, and
     /// the next flush cuts the same state twice (the review of M2.1).
-    pub(crate) const REPEAT_WHILE_CARRIED: u64 = 1 << 36;
+    pub(crate) const REPEAT_WHILE_CARRIED: u128 = 1 << 36;
     /// Whether a cut opens as itself is judged by the group alone, not
     /// by ZFS's order (the group, then the timestamp, then the
     /// multihost sequence).
-    pub(crate) const ORDER_BY_GROUP: u64 = 1 << 37;
+    pub(crate) const ORDER_BY_GROUP: u128 = 1 << 37;
     /// The start does not read the rings: they are taken to hold no
     /// uberblock, and what was written before the store began is not
     /// seen.
-    pub(crate) const RINGS_UNREAD: u64 = 1 << 38;
+    pub(crate) const RINGS_UNREAD: u128 = 1 << 38;
     /// A cut opens as itself only if no uberblock in view ranks above
     /// the one that marks it: uberblocks are compared, not states, so a
     /// multihost copy of the cut's own state with a later timestamp
     /// makes it a rewind (the lead's reading of M2.1b, point 4).
-    pub(crate) const ITSELF_BY_RANK: u64 = 1 << 39;
+    pub(crate) const ITSELF_BY_RANK: u128 = 1 << 39;
     /// An uberblock's label checksum is not checked: bytes in a ring that
     /// carry the magic and a group but that ZFS would pass over mark, and
     /// are held in the view (work package M2.1c).
-    pub(crate) const CHECKSUM_UNCHECKED: u64 = 1 << 40;
+    pub(crate) const CHECKSUM_UNCHECKED: u128 = 1 << 40;
     /// The cut state's records of copies are kept in memory only: a
     /// copy is made and read, but a later instance does not know of it
     /// (M2.2, "no record of a copy").
-    pub(crate) const COPY_UNRECORDED: u64 = 1 << 41;
+    pub(crate) const COPY_UNRECORDED: u128 = 1 << 41;
     /// A block is copied after the write that changes it, not before.
-    pub(crate) const COPY_AFTER_OVERWRITE: u64 = 1 << 42;
+    pub(crate) const COPY_AFTER_OVERWRITE: u128 = 1 << 42;
     /// At the bound, the abandoned cut's map is dropped, not given on.
-    pub(crate) const ABANDONED_MAP_DROPPED: u64 = 1 << 43;
+    pub(crate) const ABANDONED_MAP_DROPPED: u128 = 1 << 43;
     /// A cut that replaces the one that waits does not take its map.
-    pub(crate) const REPLACED_MAP_DROPPED: u64 = 1 << 44;
+    pub(crate) const REPLACED_MAP_DROPPED: u128 = 1 << 44;
     /// At the bound, every copy the abandoned cut needed is freed, those
     /// the cut that waits needs too.
-    pub(crate) const ABANDONED_COPIES_FREED: u64 = 1 << 45;
+    pub(crate) const ABANDONED_COPIES_FREED: u128 = 1 << 45;
     /// Every copy a replaced cut needed is freed, those the cut that
     /// replaced it needs too.
-    pub(crate) const REPLACED_COPIES_FREED: u64 = 1 << 46;
+    pub(crate) const REPLACED_COPIES_FREED: u128 = 1 << 46;
     /// At the bound, the abandoned map goes to a cut whose flush is
     /// under way, though another waits.
-    pub(crate) const ABANDONED_TO_FLUSHING: u64 = 1 << 47;
+    pub(crate) const ABANDONED_TO_FLUSHING: u128 = 1 << 47;
     /// At the bound, with none waiting, the abandoned map goes to the
     /// open map though a cut's flush is under way.
-    pub(crate) const ABANDONED_TO_OPEN: u64 = 1 << 48;
+    pub(crate) const ABANDONED_TO_OPEN: u128 = 1 << 48;
     /// The cut that waits is replaced at the newer cut's instant, not
     /// when the newer cut's flush completes.
-    pub(crate) const REPLACED_AT_INSTANT: u64 = 1 << 49;
+    pub(crate) const REPLACED_AT_INSTANT: u128 = 1 << 49;
     /// A freeze that a death can split: the count moves on before the
     /// cut is recorded.
-    pub(crate) const FREEZE_SPLIT: u64 = 1 << 50;
+    pub(crate) const FREEZE_SPLIT: u128 = 1 << 50;
     /// The mark is recorded in the cut state when the uberblock write is
     /// received, before it is whole.
-    pub(crate) const MARK_BEFORE_WHOLE: u64 = 1 << 51;
+    pub(crate) const MARK_BEFORE_WHOLE: u128 = 1 << 51;
     /// The mark is recorded in the cut state only after the write's
     /// completion went to the transport.
-    pub(crate) const MARK_AFTER_COMPLETION: u64 = 1 << 52;
+    pub(crate) const MARK_AFTER_COMPLETION: u128 = 1 << 52;
     /// A map's summary is noted after the block's bit, so that a death
     /// between leaves a word that a pass misses.
-    pub(crate) const SUMMARY_AFTER_BIT: u64 = 1 << 53;
+    pub(crate) const SUMMARY_AFTER_BIT: u128 = 1 << 53;
     /// A map being taken is moved with each word cleared in the smaller
     /// part before it is set in the larger.
-    pub(crate) const MOVE_CLEARS_FIRST: u64 = 1 << 54;
+    pub(crate) const MOVE_CLEARS_FIRST: u128 = 1 << 54;
     /// A map let go is not cleared, at a release or at a start.
-    pub(crate) const MAP_NOT_CLEARED: u64 = 1 << 55;
+    pub(crate) const MAP_NOT_CLEARED: u128 = 1 << 55;
     /// A cut state begun in another boot is taken up.
-    pub(crate) const BOOT_UNCHECKED: u64 = 1 << 56;
+    pub(crate) const BOOT_UNCHECKED: u128 = 1 << 56;
     /// A cut state kept under another start token is taken up: the
     /// volume was opened after the instance that kept it. A token has
     /// no order, so this is also the state trusted on the token of a
     /// start older than the last: every state of this volume names one.
-    pub(crate) const START_UNCHECKED: u64 = 1 << 62;
+    pub(crate) const START_UNCHECKED: u128 = 1 << 62;
     /// An open that holds no cuts leaves the start token as it found it.
-    pub(crate) const START_KEPT_WITHOUT_CUTS: u64 = 1 << 1;
+    pub(crate) const START_KEPT_WITHOUT_CUTS: u128 = 1 << 1;
     /// An open writes its start token after it removes an acknowledged
     /// failure marker, where it is written before.
-    pub(crate) const START_AFTER_ACKNOWLEDGING: u64 = 1 << 63;
+    pub(crate) const START_AFTER_ACKNOWLEDGING: u128 = 1 << 63;
     /// A cut state of a volume with another identity is taken up.
-    pub(crate) const IDENTITY_UNCHECKED: u64 = 1 << 60;
+    pub(crate) const IDENTITY_UNCHECKED: u128 = 1 << 60;
     /// The start does not sync the copies file before it trusts the
     /// state, or trusts it though the sync failed.
-    pub(crate) const COPIES_SYNC_UNCHECKED: u64 = 1 << 57;
+    pub(crate) const COPIES_SYNC_UNCHECKED: u128 = 1 << 57;
     /// A start that acknowledges a failure trusts the cut state.
-    pub(crate) const ACKNOWLEDGED_TRUSTED: u64 = 1 << 58;
+    pub(crate) const ACKNOWLEDGED_TRUSTED: u128 = 1 << 58;
     /// A start on a created device keeps the mark the state holds.
-    pub(crate) const MARK_KEPT_ON_CREATED: u64 = 1 << 59;
+    pub(crate) const MARK_KEPT_ON_CREATED: u128 = 1 << 59;
     /// A copy that cannot be made fails the change, and so the volume,
     /// instead of letting go the cuts that need it.
-    pub(crate) const COPY_FAILURE_FAILS: u64 = 1 << 61;
+    pub(crate) const COPY_FAILURE_FAILS: u128 = 1 << 61;
 
-    pub(crate) fn has(self, flag: u64) -> bool {
+    pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0
     }
 }

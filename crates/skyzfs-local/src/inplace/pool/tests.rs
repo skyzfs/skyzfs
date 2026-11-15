@@ -47,7 +47,7 @@ fn until(holds: impl Fn() -> bool, what: &str) {
 /// How many jobs are done once the pool, dropped with `mutants`, has
 /// ended: two threads held in their jobs, thirty more queued, and the
 /// drop under way before the held threads go on.
-fn done_at_the_end(mutants: u64) -> usize {
+fn done_at_the_end(mutants: u128) -> usize {
     let disk = SimDisk::new(1);
     let pool = Pool::start(files(&disk, 2), true, None, Mutants(mutants)).unwrap();
     let shared = pool.shared.clone();
@@ -79,7 +79,7 @@ fn at_the_end_the_threads_do_what_is_queued_and_end() {
 
 /// Whether a job pushed while both threads are held in theirs is done
 /// within `timeout` of their release, with `mutants`.
-fn taken_by_the_first_free(mutants: u64, timeout: Duration) -> bool {
+fn taken_by_the_first_free(mutants: u128, timeout: Duration) -> bool {
     let disk = SimDisk::new(2);
     let pool = Pool::start(files(&disk, 2), true, None, Mutants(mutants)).unwrap();
     disk.hold_direct_io(2);
@@ -113,7 +113,7 @@ fn a_job_pushed_while_every_thread_is_busy_is_taken_by_the_first_free() {
 
 /// Whether each of `rounds` jobs, pushed one at a time to one thread,
 /// is done within `timeout`, with `mutants`.
-fn every_push_reaches_the_thread(mutants: u64, rounds: usize, timeout: Duration) -> bool {
+fn every_push_reaches_the_thread(mutants: u128, rounds: usize, timeout: Duration) -> bool {
     let disk = SimDisk::new(3);
     let pool = Pool::start(files(&disk, 1), false, None, Mutants(mutants)).unwrap();
     let mut done = Vec::new();
@@ -157,7 +157,7 @@ fn no_wake_is_lost_between_a_threads_look_and_its_wait() {
 /// The 20 ms is a margin, not a proof: a thread held up for longer than
 /// that between being counted and being asleep would still be woken
 /// for nothing, and the test would fail.
-fn futile_wakes(mutants: u64) -> u64 {
+fn futile_wakes(mutants: u128) -> u64 {
     let disk = SimDisk::new(4);
     let pool = Pool::start(files(&disk, 4), false, None, Mutants(mutants)).unwrap();
     let shared = pool.shared.clone();
@@ -193,7 +193,7 @@ fn a_job_wakes_one_waiting_thread() {
 /// How many of the threads started before the third, which cannot be
 /// started, are left once the start has failed, with `mutants`: each
 /// holds a share of the waker until it ends.
-fn left_after_a_refused_start(mutants: u64) -> usize {
+fn left_after_a_refused_start(mutants: u128) -> usize {
     let disk = SimDisk::new(5);
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     SPAWN_REFUSED_AT.with(|at| at.set(Some(2)));

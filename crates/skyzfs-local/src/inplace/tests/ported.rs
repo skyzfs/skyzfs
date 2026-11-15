@@ -17,7 +17,7 @@ use crate::volume::{Volume, VolumeError, LEGACY_NAME, VOLUME_NAME};
 fn started(
     disk: &SimDisk,
     options: OpenOptions,
-    mutants: u64,
+    mutants: u128,
 ) -> Result<InPlace<SimDisk>, OpenError> {
     let opened = Opened::open_with(disk.clone(), lock(disk)?, options, Mutants(mutants))
         .map_err(|(e, _)| e)?;
@@ -64,7 +64,7 @@ fn bare(seed: u64, unit: u64) -> SimDisk {
 /// `io` and the defects `mutants`: the volume serves on, reads, writes
 /// and flushes, and the next start finds no marker. `Err` says what
 /// broke the rule.
-fn a_read_error_stays_with_its_read(io: IoMode, mutants: u64) -> Result<(), String> {
+fn a_read_error_stays_with_its_read(io: IoMode, mutants: u128) -> Result<(), String> {
     let disk = created(20, 0);
     let mut store = start_io(&disk, mutants, false, io).unwrap();
     write(&mut store, 4, 0x44).unwrap();
@@ -150,7 +150,7 @@ enum Failing {
 
 /// What the failure observer saw: how often it was called, and whether
 /// the marker was in the directory at any call.
-fn observed(how: Option<Failing>, mutants: u64) -> (u64, bool) {
+fn observed(how: Option<Failing>, mutants: u128) -> (u64, bool) {
     let disk = created(22, 0);
     let calls = Arc::new(AtomicU64::new(0));
     let saw_marker = Arc::new(AtomicBool::new(false));
@@ -296,7 +296,7 @@ fn a_start_that_fails_tells_the_observer_before_the_marker() {
 
 /// Whether the marker of a volume that failed is there after a power
 /// cut right after the failure, with the defects `mutants`.
-fn marked_after_a_cut(mutants: u64) -> bool {
+fn marked_after_a_cut(mutants: u128) -> bool {
     let disk = created(24, 0);
     let mut store = start(&disk, mutants, false).unwrap();
     write(&mut store, 4, 0x44).unwrap();
@@ -552,7 +552,7 @@ fn create_and_open_hold_the_system_to_the_write_unit() {
     // in which a write rewrites a neighbour.
     type Shape = Box<dyn Fn(&SimDisk)>;
     type Says = Box<dyn Fn(&OpenError) -> bool>;
-    let mut shapes: Vec<(String, Shape, u64, Says)> = Vec::new();
+    let mut shapes: Vec<(String, Shape, u128, Says)> = Vec::new();
     for block in [2 * u, 4 * u, 1 << 20] {
         shapes.push((
             format!("blocks of {block}"),
@@ -626,7 +626,7 @@ fn create_and_open_hold_the_system_to_the_write_unit() {
 /// after a power cut that makes garbage of what it was rewriting, when
 /// an unflushed write went to a neighbour in the same block. The volume
 /// is made and opened with `mutants`.
-fn a_flushed_neighbour_survives(seed: u64, block: u64, mutants: u64) -> bool {
+fn a_flushed_neighbour_survives(seed: u64, block: u64, mutants: u128) -> bool {
     let unit = 4096;
     let disk = SimDisk::new(seed);
     disk.set_write_unit(unit);
