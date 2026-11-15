@@ -212,6 +212,25 @@ mod tests {
         assert!(kept.is_empty(), "words that survived: {kept:?}");
     }
 
+    /// A region cut short by an open is all zeros as well: the words
+    /// within its new length that it held do not survive. Fails where
+    /// the file is emptied only when it grows (the review of #100's
+    /// third look): words 0 to 3 survive.
+    #[test]
+    fn a_region_only_cut_short_keeps_nothing() {
+        let dir = temp_dir();
+        let path = dir.path().join("r");
+        let (mut region, _) = open_or_panic(&path, 600);
+        for word in 0..600 {
+            region.store(word, word as u64 + 1);
+        }
+        drop(region);
+        let (region, opened) = open_or_panic(&path, 4);
+        assert_eq!(opened, Opened::Resized);
+        let kept: Vec<usize> = (0..4).filter(|&w| region.load(w) != 0).collect();
+        assert!(kept.is_empty(), "words that survived: {kept:?}");
+    }
+
     /// A new region of several pages is allocated in full by its open,
     /// before any store: the file's blocks cover its length (the review
     /// of #100, S3). An open that allocated only what it touched would
