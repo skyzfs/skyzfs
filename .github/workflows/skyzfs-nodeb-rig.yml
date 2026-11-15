@@ -1,0 +1,135 @@
+name: skyzfs-nodeb-rig
+
+# Object storage and node B (M2.T2, design §9). Each job runs an object
+# store (MinIO) and records real pools as the cut rig does
+# (tests/kernel/cut-record.sh), with node B as the check of each
+# recording (tests/kernel/nodeb_check.py): a stand-in for the uploader
+# puts the reference cut that holds a snapshot into the object store
+# through the engine (bins/skyzfs-nodeb), and node B, a process that has
+# the bucket and nothing else, lists the refs, reads the snapshot's ref
+# into a file, imports the pool read-only without its log device,
+# compares the snapshot's files with the source's, and checks every copy
+# of every block the pool reaches. Four wrong cuts (one group early, a
+# block missing, a later block, a hole where a live block was) must be
+# caught (`EXPECTED` in nodeb_check.py). Exit 1 is a verdict, exit 2 the
+# rig's own error. Read the summary's table, not the colour.
+#
+# Runs on a pull request that touches its files (ubuntu-26.04 and
+# ubuntu-26.04-arm), on a push of them to a testing branch
+# (ubuntu-26.04 alone), and by dispatch (all four images by default).
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
+      recordings:
+        description: "recordings, separated by spaces (those of cut-record.sh whose first session takes snapshots: life slog rewind rewindsync rewindf multihost config stray autotrim)"
+        default: "life slog"
+  pull_request:
+    paths:
+      - tests/kernel/nodeb*
+      - tests/kernel/test_nodeb*
+      - tests/kernel/cut*
+      - tests/kernel/logwrites.py
+      - tests/kernel/replay_check.py
+      - tests/lib/**
+      - bins/skyzfs-nodeb/**
+      - crates/skynbd-engine/**
+      - crates/skynbd-refs/**
+      - crates/skynbd-store/**
+      - crates/skynbd-format/**
+      - Cargo.lock
+      - .github/workflows/skyzfs-nodeb-rig.yml
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/nodeb*
+      - bins/skyzfs-nodeb/**
+      - .github/workflows/skyzfs-nodeb-rig.yml
+
+concurrency:
+  group: nodeb-rig-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: node B's logic (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_nodeb_check.py -v
+
+  record:
+    name: record and check on node B, ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images || (github.event_name == 'push' && '["ubuntu-26.04"]') || '["ubuntu-26.04","ubuntu-26.04-arm"]') }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p nodeb-out
+          if ! net_try sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy' > nodeb-out/setup-apt.log 2>&1; then
+            tail -n 40 nodeb-out/setup-apt.log
+            { echo "## Node B rig: the rig's own error, not a verdict"; echo
+              echo "Installing ZFS failed in $NET_TRIES tries: $(net_why nodeb-out/setup-apt.log)"; } > nodeb-out/summary.md
+            exit 2
+          fi
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          sudo modprobe dm_log_writes
+          uname -r; sudo zfs version
+      # minio/minio was removed from Docker Hub (Sept 2026) and the
+      # project is archived; pgsty/minio is the community fork with the
+      # same entrypoint and API, pinned as in e2e.yml.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && exit 0 || sleep 1
+          done
+          { echo "## Node B rig: the rig's own error, not a verdict"; echo
+            echo "MinIO did not answer in 60 s."; docker logs minio 2>&1 | tail -n 20; } > nodeb-out/summary.md
+          exit 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nodeb-${{ matrix.image }}
+      - name: Build skyzfs-nodeb
+        run: cargo build --locked -p skyzfs-nodeb
+      - name: Record and check on node B
+        env:
+          RECORDINGS: ${{ inputs.recordings || 'life slog' }}
+        run: |
+          read -r -a recs <<< "$RECORDINGS"
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          sudo env SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
+            SKZ_S3_BUCKET="skyzfs-nodeb-${{ github.run_id }}-${{ github.run_attempt }}" \
+            AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            CUT_CHECK="python3 $PWD/tests/kernel/nodeb_check.py" \
+            bash tests/kernel/cut-record.sh "$PWD/nodeb-out" /mnt/skz-cut "${recs[@]}"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX nodeb-out 2>/dev/null || true
+          if [ -s nodeb-out/summary.md ]; then cat nodeb-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 tests/kernel/cut_summary.py nodeb-out "${{ matrix.image }}" "Node B rig (M2.T2)" >> "$GITHUB_STEP_SUMMARY" \
+            || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: nodeb-rig-${{ matrix.image }}
+          path: nodeb-out/
+          retention-days: 90
