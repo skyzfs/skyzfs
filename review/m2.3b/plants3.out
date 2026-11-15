@@ -1,0 +1,4 @@
+as the head has it: ([], [])
+F1 collect does not run what is deferred when there are no threads: KILLED by 1: a_request_deferred_behind_a_write_that_waits_for_the_map_is_answered_at_a_failure
+D2c the drop does not run what was deferred itself: SURVIVED
+finished
