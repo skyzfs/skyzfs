@@ -443,6 +443,16 @@ rec_full() {
     export_pool
 }
 
+# NAME, in its own subshell: exits with this recording's status alone,
+# not the worst so far.
+record() {
+    WORST=0
+    if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
+    "rec_$1"
+    end
+    exit "$WORST"
+}
+
 WORST=0
 : > "$OUT/recordings.tsv"
 zfs version > "$OUT/zfs-version.txt" 2>&1 || true
@@ -456,10 +466,7 @@ for r in $RECS; do
     (
         set -e
         trap cleanup EXIT
-        if [ "$r" = stray ]; then begin "$r" delay-end; else begin "$r"; fi
-        "rec_$r"
-        end
-        exit "$WORST"
+        record "$r"
     )
     rc=$?
     set -e
