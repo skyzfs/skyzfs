@@ -1,0 +1,7 @@
+K3 verifier: always little endian: KILLED by U: the_label_checksum_gives_the_answers_zfs_gives
+K9 holds: the first word alone compared: KILLED by U: the_label_checksum_gives_the_answers_zfs_gives
+K12 holds: a slot without the checksum magic is refused: KILLED by U: a_checksum_without_its_magic_is_read_as_a_little_endian_host_reads_it
+Z3 size: no alignment in the ring: KILLED by U: a_slot_out_of_step_with_the_ring_is_not_verified
+R1 changed: a held slot reached past its first bytes stays held: KILLED by U: a_change_to_any_part_of_a_slot_counts, a_position_covered_in_part_is_not_known; L: a_slot_is_followed_by_all_its_bytes
+R2 changed: an uberblock whose slot may go on leaves its place known: KILLED by U: a_change_to_any_part_of_a_slot_counts; L: a_slot_is_followed_by_all_its_bytes
+R3 may_go_on: always (every unverified uberblock leaves its place unknown): KILLED by U: the_view_holds_no_uberblock_whose_checksum_fails; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut
