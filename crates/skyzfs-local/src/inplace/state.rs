@@ -56,7 +56,9 @@
 //!   open map. Writes are never held.
 //! - **The mark** of an applied uberblock write that no cut has taken
 //!   yet, and the newest cut's group and root block pointer: the repeat
-//!   rule compares with them (`cuts.rs`).
+//!   rule compares with them (`cuts.rs`). Beside the newest cut's state,
+//!   in the word that chooses its slot, is whether that cut opens as
+//!   itself, which the status shows after the cut is let go.
 //!
 //! # Taking a map
 //!
@@ -257,6 +259,15 @@ const OPEN_SHIFT: u32 = 56;
 const CUT_WORDS: usize = 4 + STATE_WORDS;
 /// Where a cut's `lo` lies in its map word.
 const LO_SHIFT: u32 = 16;
+/// The bit of the newest state's selector that says the newest cut
+/// opens as itself. The status reads it after that cut is let go, when
+/// no held cut has the flag any more.
+const NEWEST_ITSELF: u64 = 1 << 8;
+/// The bits of a selector that choose a slot.
+const SEL_SLOT: u64 = 0xff;
+/// Where the entry of a cut being abandoned lies in the word of the
+/// abandoned cuts.
+const ABANDONING_SHIFT: u32 = 56;
 /// A record's words: the block plus one (0: free), then its epochs
 /// (`lo` in the low half, `hi` in the high). Its copy lies in the slot
 /// of the copies file with the record's index.
@@ -277,14 +288,18 @@ mod at {
     pub(super) const OPEN_LO: usize = 5;
     /// The epoch in which the whole volume counts as changed; 0: none.
     pub(super) const WHOLE: usize = 6;
-    /// The cuts abandoned at the bound.
+    /// The cuts abandoned at the bound, and in the top byte the entry
+    /// plus one of a cut being abandoned (0: none): one store counts
+    /// that cut and ends its abandoning.
     pub(super) const ABANDONED: usize = 7;
     /// The second part of the open map while it takes a cut's map.
     pub(super) const OPEN_ALSO: usize = 8;
     /// Which of the two mark slots holds the mark: 0 none, 1 or 2.
     pub(super) const MARK_SEL: usize = 9;
     pub(super) const MARK: usize = 10;
-    /// Which of the two slots holds the newest cut's state: 0 none.
+    /// Which of the two slots holds the newest cut's state: 0 none;
+    /// and, at `NEWEST_ITSELF`, whether that cut opens as itself, so
+    /// that one store chooses both.
     pub(super) const NEWEST_SEL: usize = MARK + 2 * STATE_WORDS;
     pub(super) const NEWEST: usize = NEWEST_SEL + 1;
     pub(super) const CUTS: usize = NEWEST + 2 * STATE_WORDS;
@@ -641,19 +656,20 @@ impl<R: Region> CutState<R> {
 
     /// A state held in one of two slots, chosen by `sel`: written into
     /// the other slot, then chosen by one store.
-    fn put_double(&mut self, sel: usize, slots: usize, state: Option<&State>) {
+    /// `flags` go into the selector beside the slot's number.
+    fn put_double(&mut self, sel: usize, slots: usize, state: Option<&State>, flags: u64) {
         let Some(state) = state else {
             self.store(sel, 0);
             return;
         };
-        let next = if self.load(sel) == 1 { 2 } else { 1 };
+        let next = if self.load(sel) & SEL_SLOT == 1 { 2 } else { 1 };
         let base = slots + (next as usize - 1) * STATE_WORDS;
         self.put_state(base, state);
-        self.store(sel, next);
+        self.store(sel, next | flags);
     }
 
     fn double(&self, sel: usize, slots: usize) -> Option<State> {
-        match self.load(sel) {
+        match self.load(sel) & SEL_SLOT {
             n @ (1 | 2) => Some(self.state_at(slots + (n as usize - 1) * STATE_WORDS)),
             _ => None,
         }
@@ -668,12 +684,24 @@ impl<R: Region> CutState<R> {
     /// Record the mark, before the write's completion goes to the
     /// transport; `None` clears it.
     pub fn set_mark(&mut self, state: Option<&State>) {
-        self.put_double(at::MARK_SEL, at::MARK, state);
+        self.put_double(at::MARK_SEL, at::MARK, state, 0);
     }
 
     /// The newest cut's state, which a repeat may equal.
     pub fn newest(&self) -> Option<State> {
         self.double(at::NEWEST_SEL, at::NEWEST)
+    }
+
+    /// The newest cut's state and whether that cut opens as itself,
+    /// which stays known after the cut is let go or abandoned.
+    pub fn newest_cut(&self) -> Option<(State, bool)> {
+        let itself = self.load(at::NEWEST_SEL) & NEWEST_ITSELF != 0;
+        self.newest().map(|state| (state, itself))
+    }
+
+    fn put_newest(&mut self, state: &State, itself: bool) {
+        let flags = if itself { NEWEST_ITSELF } else { 0 };
+        self.put_double(at::NEWEST_SEL, at::NEWEST, Some(state), flags);
     }
 
     // ---- held cuts ----
@@ -942,7 +970,7 @@ impl<R: Region> CutState<R> {
         if !self.mutants.has(Mutants::FREEZE_SPLIT) {
             self.store(at::COUNT, next);
         }
-        self.put_double(at::NEWEST_SEL, at::NEWEST, Some(state));
+        self.put_newest(state, itself);
         if self.mark().as_ref() == Some(state) {
             self.set_mark(None);
         }
@@ -1041,11 +1069,21 @@ impl<R: Region> CutState<R> {
     /// to the one whose flush is under way; with neither, to the open
     /// map. A cut whose flush is under way, the last held, gives it to
     /// the open map.
+    ///
+    /// The cut's entry is recorded first, and the count moves with the
+    /// store that clears it, after the cut is gone: a start that finds
+    /// the entry counts the cut if it is gone, which is exact whatever
+    /// store a death came at (the review of #98).
     fn abandon(&mut self) -> bool {
         let holds = self.holds();
         let Some(oldest) = holds.first().copied() else {
             return false;
         };
+        let abandoned = self.abandoned();
+        self.store(
+            at::ABANDONED,
+            abandoned | ((oldest.entry as u64 + 1) << ABANDONING_SHIFT),
+        );
         let waiting = holds
             .iter()
             .find(|h| h.cut.phase == Phase::Waiting)
@@ -1082,8 +1120,7 @@ impl<R: Region> CutState<R> {
                 self.set_phase(waiting.cut.number, Phase::Uploading);
             }
         }
-        let abandoned = self.load(at::ABANDONED) + 1;
-        self.store(at::ABANDONED, abandoned);
+        self.store(at::ABANDONED, abandoned + 1);
         self.free_unneeded(
             self.mutants
                 .has(Mutants::ABANDONED_COPIES_FREED)
@@ -1094,7 +1131,8 @@ impl<R: Region> CutState<R> {
 
     /// Finish what a death interrupted, at a start whose sync has
     /// succeeded: a cut recorded but not counted is none; a taking is
-    /// finished; every cut whose flush was under way takes that sync as
+    /// finished; a cut whose abandoning a death interrupted is counted
+    /// if it is gone; every cut whose flush was under way takes that sync as
     /// its flush; the oldest whose flush completed is the one being
     /// uploaded if none is; every map nothing names is cleared; and the
     /// records no held cut needs are freed.
@@ -1106,11 +1144,11 @@ impl<R: Region> CutState<R> {
                 self.store(base, 0);
             }
         }
-        // The newest cut's state, if a death came between the count and
-        // its record.
+        // The newest cut's state and flag, if a death came between the
+        // count and their record.
         if let Some(newest) = self.held().last().copied() {
-            if newest.number == count && self.newest() != Some(newest.state) {
-                self.put_double(at::NEWEST_SEL, at::NEWEST, Some(&newest.state));
+            if newest.number == count && self.newest_cut() != Some((newest.state, newest.itself)) {
+                self.put_newest(&newest.state, newest.itself);
             }
         }
         // A taking under way: the heir names the donor's map, and the
@@ -1129,6 +1167,15 @@ impl<R: Region> CutState<R> {
             });
             let Some((donor, heir)) = taken else { break };
             self.give(donor, heir);
+        }
+        // An abandoning under way, now that every taking is finished:
+        // its cut is counted if it is gone; if it is still held, the
+        // death came before its heir named its map, and it is not
+        // abandoned.
+        let entry = (self.load(at::ABANDONED) >> ABANDONING_SHIFT) as usize;
+        if entry != 0 {
+            let gone = self.held_at(entry - 1).is_none();
+            self.store(at::ABANDONED, self.abandoned() + u64::from(gone));
         }
         for held in self.holds() {
             self.finish(Heir::Cut(held.cut.number));
@@ -1255,13 +1302,18 @@ impl<R: Region> CutState<R> {
         self.bound.min(self.capacity as u64 * BLOCK_SIZE)
     }
 
+    /// The cuts abandoned at the bound.
+    fn abandoned(&self) -> u64 {
+        self.load(at::ABANDONED) & ((1 << ABANDONING_SHIFT) - 1)
+    }
+
     /// The figures for the status.
     pub fn figures(&self) -> Figures {
         Figures {
             held: self.held().len() as u64,
             copied: self.copied(),
             bound: self.bound(),
-            abandoned: self.load(at::ABANDONED),
+            abandoned: self.abandoned(),
         }
     }
 
@@ -1363,9 +1415,14 @@ impl<R: Region> CutState<R> {
         if !changed {
             return Some(Read::Image);
         }
-        // The copy whose epochs hold the cut's number. With none, a
-        // defect lost it: the cut reads what the block holds now, which
-        // the tests see.
+        // The copy whose epochs hold the cut's number. With none, the
+        // cut reads what the block holds now. That is right while a
+        // later cut takes this cut's map, between the heir naming it and
+        // this cut going: the heir's part that makes the block look
+        // changed is this cut's own map, and the block did not change
+        // after this cut's instant. A reader beside the daemon (M2.4)
+        // must not take that for an error. Otherwise a defect lost the
+        // copy, which the tests see.
         Some(
             self.records_of(block)
                 .into_iter()

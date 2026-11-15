@@ -165,6 +165,23 @@ use skyzfs_uberblock::{
 
 use super::Mutants;
 
+/// An applied uberblock naming `state` with no place in a ring: a mark
+/// taken up from the cut state, or one the conformance harness makes.
+fn mark_of(state: State) -> Uberblock {
+    Uberblock {
+        at: 0,
+        label: 0,
+        order: ByteOrder::Little,
+        state,
+        rank: Rank {
+            txg: state.txg,
+            timestamp: 0,
+            seq: 0,
+        },
+        slot: None,
+    }
+}
+
 /// A cut, as the store counts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cut {
@@ -321,18 +338,19 @@ impl CutRule {
             itself,
         });
         self.newest = newest.map(|(state, _)| state);
-        self.mark = mark.map(|state| Uberblock {
-            at: 0,
-            label: 0,
-            order: ByteOrder::Little,
-            state,
-            rank: Rank {
-                txg: state.txg,
-                timestamp: 0,
-                seq: 0,
-            },
-            slot: None,
-        });
+        self.mark = mark.map(mark_of);
+    }
+
+    /// As if an uberblock write naming `state` had been applied whole,
+    /// with no place in a ring: the conformance harness's marks, which
+    /// must not write into the blocks the suite reads (`harness.rs`).
+    #[cfg(test)]
+    pub(crate) fn applied_state(&mut self, id: RequestId, state: State) {
+        if self.marks(&state) {
+            self.mark = Some(mark_of(state));
+            self.events.push(Event::Mark(id, state));
+        }
+        self.previous = Some(state);
     }
 
     /// What the cut state is to record, in order.

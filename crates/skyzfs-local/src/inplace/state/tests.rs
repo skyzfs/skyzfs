@@ -234,6 +234,7 @@ impl World {
         // What the step is to do, to tell after a death whether it did.
         let cut = self.state.count() + 1;
         let uploading = self.rules.uploading();
+        let held = self.state.held();
         let done = catch_unwind(AssertUnwindSafe(|| self.apply(step, value)));
         match done {
             Ok(result) => {
@@ -254,7 +255,7 @@ impl World {
                     .map_err(|e| e.to_string())?;
                 self.check_cuts(&view)
                     .map_err(|e| format!("read at the death in {step:?}: {e}"))?;
-                self.restart(step)?;
+                self.restart(step, &held)?;
                 self.adopt();
                 // The kernel issues the request again: a change is done
                 // again whole, a cut's flush makes the cut if its freeze
@@ -414,8 +415,9 @@ impl World {
         Ok(())
     }
 
-    /// A new instance takes up the state after a death at a store.
-    fn restart(&mut self, step: Step) -> Result<(), String> {
+    /// A new instance takes up the state after a death at a store in
+    /// `step`, before which `held` were held.
+    fn restart(&mut self, step: Step, held: &[HeldCut]) -> Result<(), String> {
         self.region.revive();
         let before = self.state.held();
         self.state = CutState::restore(self.region.clone(), SIZE, self.bound, self.mutants)
@@ -423,6 +425,14 @@ impl World {
         // Flushes under way are done by the start's sync.
         self.flushing.clear();
         let after = self.state.held();
+        if after.iter().any(|c| c.phase == Phase::Flushing) {
+            return Err(format!(
+                "after a start a cut's flush is still under way: {after:?}"
+            ));
+        }
+        if !after.is_empty() && !after.iter().any(|c| c.phase == Phase::Uploading) {
+            return Err(format!("after a start no cut is being uploaded: {after:?}"));
+        }
         // No cut is lost by a death but the one being uploaded, whose
         // abandoning or release the death interrupted; one that a newer
         // cut replaced, taking its map, when the start's sync completed
@@ -450,6 +460,24 @@ impl World {
                     cut.number, cut.phase
                 ));
             }
+        }
+        // The cuts abandoned: in a change, the oldest cuts held before
+        // it that are lost, each once; in any other step, none.
+        let lost_oldest = held
+            .iter()
+            .take_while(|cut| !after.iter().any(|c| c.number == cut.number))
+            .count() as u64;
+        let abandoned = if matches!(step, Step::Write(..) | Step::Zero(..)) {
+            lost_oldest
+        } else {
+            0
+        };
+        let counted = self.state.figures().abandoned;
+        if counted != self.abandoned + abandoned {
+            return Err(format!(
+                "a death at {step:?} left {counted} cuts abandoned, not {}: held before the step {held:?}, after {after:?}",
+                self.abandoned + abandoned
+            ));
         }
         let count = self.state.count();
         if count > self.snaps.keys().last().copied().unwrap_or(0) {
@@ -1080,4 +1108,82 @@ fn the_state_of_a_tebibyte_takes_146_mib() {
     assert_eq!(maps / MIB, 130, "maps: {maps} bytes");
     assert_eq!((all - maps) / MIB, 16, "records: {} bytes", all - maps);
     assert!(all - 146 * MIB < 4096, "header: {} bytes", all - 146 * MIB);
+}
+
+/// A copy record's epochs are stored before its block. A free slot
+/// keeps the epochs of its last use, here [2,4), which hold cut 3; the
+/// slot is taken again for block 1, of which cut 3 has its own copy in
+/// a lower slot. With the block stored first, a death between the two
+/// words leaves a record of block 1 for [2,4), and cut 3 reads the newer
+/// copy. A death at each store of the 17 steps (the review of #98, S4).
+#[test]
+fn a_death_between_a_records_two_words() {
+    let mut steps = UPLOADED_FIRST.to_vec();
+    steps.extend([
+        // Cut 2 (being uploaded) changes blocks 0 and 1.
+        Step::Write(0, 1),
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        // Cut 3 (waits) changes block 1 alone: slot 0 = (1, [2,3)).
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        // Epoch 4: slot 1 = (1, [3,4)), cut 3's own copy; slot 2 = (0, [2,4)), cut 2's.
+        Step::Write(1, 1),
+        Step::Write(0, 1),
+        // Cut 2 goes: slots 2 and 0 are freed, slot 2 with epochs that hold cut 3.
+        Step::Release,
+        // Cut 4 (waits) holds blocks 0 and 1.
+        Step::Cut,
+        Step::Flushed,
+        // Epoch 5: block 0's copy takes slot 0, block 1's takes slot 2.
+        Step::Write(0, 1),
+        Step::Write(1, 1),
+    ]);
+    let stores = stores_of(&steps, 0, 64);
+    assert!(stores > 0);
+    for death in 0..stores {
+        if let Err(e) = run(&steps, 0, 64, Some(death)) {
+            panic!("death at store {death} of {stores}: {e}");
+        }
+    }
+}
+
+/// A cut recorded and not counted is none, whatever comes before the
+/// freeze is done again: here a death in cut 3's freeze after the first
+/// word of its record, then cut 1 let go before the flush comes again,
+/// which frees a lower slot. Where the start leaves the stale record in
+/// its slot, the freeze done again takes the lower slot and the count's
+/// store makes both records held cuts (the review of #98, S3).
+#[test]
+fn a_cut_recorded_and_not_counted_is_none() {
+    quiet_deaths();
+    let bound = 64 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let mut state = CutState::begin(region.clone(), SIZE, bound, Mutants(0));
+    let mut disk = Disk {
+        image: vec![0; BLOCKS as usize],
+        copies: BTreeMap::new(),
+    };
+    state.change(0, 1, &mut disk).unwrap();
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    state.change(1, 1, &mut disk).unwrap();
+    assert_eq!(state.freeze(&marked(2), true), 2);
+    state.flushed(2);
+    state.change(2, 1, &mut disk).unwrap();
+    // Lost in cut 3's freeze, after the first word of its record.
+    region.die_at(1);
+    let lost = catch_unwind(AssertUnwindSafe(|| state.freeze(&marked(3), true)));
+    assert!(lost.is_err());
+    region.revive();
+    let mut state = CutState::restore(region.clone(), SIZE, bound, Mutants(0)).unwrap();
+    // Cut 1 is uploaded before the flush comes again.
+    assert!(state.release(1));
+    state.change(3, 1, &mut disk).unwrap();
+    assert_eq!(state.freeze(&marked(3), true), 3);
+    let held: Vec<(u64, Phase)> = state.held().iter().map(|c| (c.number, c.phase)).collect();
+    assert_eq!(held, [(2, Phase::Uploading), (3, Phase::Flushing)]);
+    assert_eq!(state.map(3), [2, 3]);
 }
