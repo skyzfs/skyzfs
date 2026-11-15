@@ -1,0 +1,7 @@
+A1 changed: a place known not to verify is not followed (as at 110d2b6): KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes
+A2 largest_slot_end: the smallest slot that could begin there: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes
+A3 changed: group 0 is remembered too: KILLED by U: a_labelled_rings_group_zero_is_not_followed_into_the_next_slot
+A4 changed: a remembered place whose fields are written again stays remembered: KILLED by U: the_view_holds_no_uberblock_whose_checksum_fails
+A5 changed: any change that begins before the slot's end reaches it: KILLED by L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view
+A6 changed: any change that ends after the place reaches it: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view
+A7 changed: a place reached is forgotten and left known: KILLED by U: a_header_known_not_to_verify_can_be_completed_by_its_tail; L: a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes
