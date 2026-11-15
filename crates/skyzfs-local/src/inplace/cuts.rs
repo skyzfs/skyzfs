@@ -8,8 +8,19 @@
 //!   slot of one of the four labels of a vdev on the whole volume, the
 //!   uberblock magic and a group above zero
 //!   ([`skyzfs_uberblock::Labels::uberblocks_in`],
-//!   [`skyzfs_uberblock::Uberblock::counts`]). The store looks for one
-//!   when it receives a write, and only in a write that reaches a ring.
+//!   [`skyzfs_uberblock::Uberblock::counts`]), in a slot whose label
+//!   checksum holds ([`skyzfs_uberblock::Uberblock::verified`], work
+//!   package M2.1c): what ZFS takes for an uberblock. Without the
+//!   checksum, bytes in a ring that carry the magic and a high group but
+//!   that ZFS would pass over would mark, the cut after them would take
+//!   their group, which errs high, and in the view they would be the
+//!   greatest and the cut's own state, so the cut would say it opens as
+//!   itself: a publish could take that group. The store looks for one
+//!   when it receives a write, and only in a write that reaches a ring;
+//!   the cost is one SHA-256 of each slot size tried, 1 to 8 KiB, for
+//!   each uberblock found. A valid uberblock that something other than
+//!   ZFS writes, such as a label restored with `dd`, is beyond the
+//!   check: it marks as ZFS's own does.
 //! - **It marks once the store has applied it**: when its direct write
 //!   has returned whole and the store has taken that result, which is
 //!   before the store's completion is handed out and so before the
@@ -122,16 +133,19 @@
 //!   it publishes one (M2.6).
 //! - **Whether a cut opens as itself errs only toward "no"** (the
 //!   conservative readings of M2.1b, where the design is silent). The
-//!   view holds every slot with the magic and a group above zero and
-//!   checks no checksum, while an import passes over a slot whose
-//!   checksum fails: such a slot above the cut makes it a rewind that
-//!   would have opened as itself. A position the start could not read
-//!   is unknown, and so is one a write covered only in part; while any
-//!   is, no cut opens as itself. Two different states that tie at the
-//!   greatest rank are taken as a rewind, though an import opens one of
-//!   them. And the view says which state an import chooses, not that
-//!   the state opens: that rests on its blocks, which the rings do not
-//!   show.
+//!   view holds only slots whose label checksum holds (M2.1c), and it
+//!   follows a slot by all its bytes: a change to part of a held slot,
+//!   an uberblock found in a write that holds only part of a slot that
+//!   could begin there, or a change to the rest of a slot whose fields
+//!   are known not to verify, leaves that position unknown until the
+//!   slot is written whole again (the review of #96 and its next look;
+//!   ZFS writes a slot as one I/O, so only another writer does that). A
+//!   position the start could not read is unknown, and so is one a
+//!   write covered only in part; while any is, no cut opens as itself.
+//!   Two different states that tie at the greatest rank are taken as a
+//!   rewind, though an import opens one of them. And the view says
+//!   which state an import chooses, not that the state opens: that
+//!   rests on its blocks, which the rings do not show.
 //! - **"Itself" is defined on the volume alone, on purpose.** The
 //!   product's pool has one more top-level vdev, the node's log device
 //!   (design §6.1), and ZFS writes uberblocks to its labels too; the
@@ -145,7 +159,7 @@
 use std::collections::BTreeMap;
 
 use skyzfs_blk::{Op, RequestId};
-use skyzfs_uberblock::{is_repeat, Labels, State, Uberblock, View, RING_SIZE};
+use skyzfs_uberblock::{is_repeat, Labels, State, Uberblock, View, RING_SIZE, SLOT_MIN};
 
 use super::Mutants;
 
@@ -299,8 +313,25 @@ impl CutRule {
     /// before the first request.
     pub(crate) fn read_at_start(&mut self, offset: u64, data: &[u8]) {
         if !self.mutants.has(Mutants::RINGS_UNREAD) {
-            self.view.saw(offset, data);
+            let found = self.found(offset, data);
+            self.view.changed(offset, data.len() as u64, &found);
         }
+    }
+
+    /// The uberblocks in `data` at `offset`, verified or not: the view
+    /// holds those ZFS would take for one ([`Uberblock::verified`]) and
+    /// follows the others' places ([`View::changed`]), and only the
+    /// verified mark.
+    fn found(&self, offset: u64, data: &[u8]) -> Vec<Uberblock> {
+        let mut found = self.labels.uberblocks_in(offset, data);
+        if self.mutants.has(Mutants::CHECKSUM_UNCHECKED) {
+            // The defect: each is taken for an uberblock, as if a slot of
+            // the smallest size verified.
+            for uberblock in &mut found {
+                uberblock.slot.get_or_insert(SLOT_MIN);
+            }
+        }
+        found
     }
 
     /// The store has received request `id`, in the order it receives
@@ -311,7 +342,7 @@ impl CutRule {
                 if !self.labels.reaches_a_ring(*offset, data.len() as u64) {
                     return;
                 }
-                let found = self.labels.uberblocks_in(*offset, data);
+                let found = self.found(*offset, data);
                 (*offset, data.len() as u64, found)
             }
             Op::WriteZeroes { offset, len } => {
@@ -375,6 +406,9 @@ impl CutRule {
     fn apply(&mut self, change: Change) {
         self.view.changed(change.offset, change.len, &change.found);
         for uberblock in change.found {
+            if !uberblock.verified() {
+                continue;
+            }
             if !uberblock.counts() && !self.mutants.has(Mutants::GROUP_ZERO_COUNTED) {
                 continue;
             }

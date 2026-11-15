@@ -36,8 +36,14 @@
 //!   last synced uberblock, its timestamp and multihost fields changed,
 //!   into the last slot of a label chosen at random.
 //! - **A new label** (`vdev_label_init`, `module/zfs/vdev_label.c`
-//!   lines 1213 to 1218 and 1245) writes the whole ring at once: one
-//!   uberblock at its start whose group is 0, and zeros.
+//!   lines 1213 to 1218 and 1245) writes the whole ring at once: the
+//!   pool's uberblock template at its start with its group set to 0,
+//!   and zeros. At `zpool create` the template has no magic yet, so no
+//!   uberblock is found there (`spa_create` sets only `ub_txg` and
+//!   `ub_version`; `ub_magic` is set in `uberblock_update`, at the first
+//!   sync; as the review of #96 read them). A volume labelled into a
+//!   pool that has synced, by attach, replace or add, gets the magic
+//!   with group 0.
 //! - **The uberblock** (`struct uberblock`,
 //!   `include/sys/uberblock_impl.h` line 122): `ub_magic`,
 //!   `ub_version`, `ub_txg`, `ub_guid_sum`, `ub_timestamp`, each 8
@@ -48,13 +54,31 @@
 //!   host that wrote it, and read in either: `uberblock_verify`
 //!   (`module/zfs/uberblock.c` lines 33 to 42) swaps one whose magic
 //!   reads swapped.
+//! - **The label's checksum.** A slot is written and read as one I/O
+//!   whose checksum is `ZIO_CHECKSUM_LABEL`: SHA-256, embedded at the
+//!   slot's end as a `zio_eck_t` of 40 bytes, the magic `ZEC_MAGIC`
+//!   and four checksum words (`include/sys/zio.h` lines 53 to 58). It
+//!   is computed over the whole slot with the checksum's place holding
+//!   the verifier, the four words (offset, 0, 0, 0), where the offset
+//!   is the slot's on the vdev (`zio_checksum_compute` and
+//!   `zio_checksum_label_verifier`, `module/zfs/zio_checksum.c` lines
+//!   295 and 347). Each word is the digest's next eight bytes read big
+//!   endian (`abd_checksum_sha256`, `module/zfs/sha2_zfs.c` lines 44
+//!   to 78), and the words and the magic are written in the writer's
+//!   byte order. A reader swaps the verifier and the words when the
+//!   magic reads swapped (`zio_checksum_error_impl`, line 422). An
+//!   import reads each slot so and passes over one whose checksum fails
+//!   (`vdev_uberblock_load_impl`, `module/zfs/vdev_label.c` line 1568).
 //!
 //! # The rules, as design §5.2 gives them
 //!
-//! - **What counts as an uberblock write** ([`Uberblock::counts`]): a
-//!   write to an uberblock slot that carries the magic, in either byte
-//!   order, and a transaction group above zero. A new label's group is
-//!   0.
+//! - **What counts as an uberblock write** ([`Uberblock::counts`] and
+//!   [`Uberblock::verified`]): a write to an uberblock slot that carries
+//!   the magic, in either byte order, and a transaction group above
+//!   zero, and whose label checksum holds for a slot of one of the
+//!   sizes ZFS uses: what ZFS takes for an uberblock (work package
+//!   M2.1c). A new label's group is 0, and its ring is written as one
+//!   I/O, so its slots carry no checksum of their own.
 //! - **What counts as a repeat** ([`is_repeat`]): an uberblock whose
 //!   group and root block pointer both equal those of the uberblock
 //!   that marks the cut to come, or those of the newest cut (§5.2 as of
@@ -84,10 +108,21 @@
 //!   A slot holds its uberblock at its start and zeros after it, up to
 //!   the checksum in its last 40 bytes, which never begins at a whole
 //!   KiB; so a larger slot shows nothing at its other KiB boundaries.
-//! - **The label's checksum is not checked.** §5.2's rule is the magic
-//!   and the group, and only ZFS's label writes reach a ring. A write
-//!   that holds fewer than [`READ_LEN`] bytes of a slot from its start
-//!   is not read: ZFS writes a slot whole.
+//! - **The checksum is held against the slot sizes ZFS uses**, 1, 2, 4
+//!   and 8 KiB, since the `ashift` is not known: an uberblock is
+//!   verified when its slot of one of those sizes, aligned to that size
+//!   in the ring and held whole by the write, carries a checksum that
+//!   holds ([`Uberblock::slot`]). A write that holds less of a slot
+//!   verifies nothing: ZFS writes a slot whole.
+//! - **The checksum shows what ZFS wrote, not who.** A valid uberblock
+//!   that something other than ZFS writes, such as a label restored with
+//!   `dd`, is verified like ZFS's own; only bytes that ZFS would pass
+//!   over are kept out.
+//! - **The magic of the checksum is read as a little-endian host reads
+//!   it**, as the product's hosts are (amd64 and arm64): the verifier
+//!   and the words are swapped only when the magic reads swapped, and a
+//!   slot whose magic reads neither way is held against its words as
+//!   they read little endian, as ZFS on such a host does.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -108,6 +143,17 @@ pub const RING_SIZE: u64 = 128 << 10;
 /// The smallest slot, `1 << UBERBLOCK_SHIFT`: every slot begins at a
 /// whole number of these into the ring.
 pub const SLOT_MIN: u64 = 1 << 10;
+/// The sizes of slot ZFS uses, from `1 << UBERBLOCK_SHIFT` to
+/// `1 << MAX_UBERBLOCK_SHIFT`, smallest first.
+pub const SLOT_SIZES: [u64; 4] = [1 << 10, 2 << 10, 4 << 10, 8 << 10];
+/// `ZEC_MAGIC` (`include/sys/zio.h` line 53): the magic of the checksum
+/// at a slot's end.
+pub const ZEC_MAGIC: u64 = 0x0210_da7a_b10c_7a11;
+/// `sizeof (zio_eck_t)`: the magic and four checksum words at the end
+/// of a slot.
+pub const ECK_LEN: usize = 40;
+/// The checksum's four words, the last bytes of a slot.
+const CKSUM_LEN: usize = 32;
 /// The largest slot, `1 << MAX_UBERBLOCK_SHIFT`.
 pub const SLOT_MAX: u64 = 1 << 13;
 /// `UBERBLOCK_MAGIC`.
@@ -227,7 +273,14 @@ impl Labels {
             let mut at = from.div_ceil(SLOT_MIN) * SLOT_MIN;
             while at + READ_LEN as u64 <= to {
                 let i = (at - offset) as usize;
-                if let Some(uberblock) = read_at(&data[i..i + READ_LEN], at, ring.label) {
+                if let Some(mut uberblock) = read_at(&data[i..i + READ_LEN], at, ring.label) {
+                    // The slot sizes this place can begin, whose slot the
+                    // write holds whole: the first whose checksum holds.
+                    uberblock.slot = SLOT_SIZES.into_iter().find(|&size| {
+                        (at - ring.start).is_multiple_of(size)
+                            && at + size <= to
+                            && label_checksum_holds(&data[i..i + size as usize], at)
+                    });
                     found.push(uberblock);
                 }
                 at += SLOT_MIN;
@@ -253,6 +306,14 @@ impl ByteOrder {
         match self {
             ByteOrder::Little => u64::from_le_bytes(word),
             ByteOrder::Big => u64::from_be_bytes(word),
+        }
+    }
+
+    /// `word`'s eight bytes in this order.
+    pub fn bytes(self, word: u64) -> [u8; 8] {
+        match self {
+            ByteOrder::Little => word.to_le_bytes(),
+            ByteOrder::Big => word.to_be_bytes(),
         }
     }
 }
@@ -298,6 +359,10 @@ pub struct Uberblock {
     pub state: State,
     /// Its place in ZFS's order among uberblocks.
     pub rank: Rank,
+    /// The size of its slot whose label checksum holds, if one does
+    /// ([`label_checksum_holds`]); `None` if no slot of a size ZFS uses
+    /// holds, or the write did not hold one whole.
+    pub slot: Option<u64>,
 }
 
 impl Uberblock {
@@ -305,6 +370,69 @@ impl Uberblock {
     /// zero. ZFS writes 0 into a new label's ring.
     pub fn counts(&self) -> bool {
         self.state.txg > 0
+    }
+
+    /// Whether ZFS takes it for an uberblock: its label checksum holds
+    /// for a slot of a size ZFS uses. An import passes over one that
+    /// does not.
+    pub fn verified(&self) -> bool {
+        self.slot.is_some()
+    }
+}
+
+/// The label checksum of `slot`, a whole slot at `offset` on the vdev,
+/// as a host of byte order `order` computes it (`zio_checksum_compute`
+/// with `ZIO_CHECKSUM_LABEL`): SHA-256 of the slot with its last 32
+/// bytes replaced by the verifier, the words (offset, 0, 0, 0) in
+/// `order`; each word of the result is the digest's next eight bytes
+/// read big endian. `slot` must be longer than [`ECK_LEN`].
+pub fn label_checksum(slot: &[u8], offset: u64, order: ByteOrder) -> [u64; 4] {
+    use sha2::{Digest as _, Sha256};
+    let mut verifier = [0u8; CKSUM_LEN];
+    verifier[..8].copy_from_slice(&order.bytes(offset));
+    let mut hasher = Sha256::new();
+    hasher.update(&slot[..slot.len() - CKSUM_LEN]);
+    hasher.update(verifier);
+    let digest = hasher.finalize();
+    let mut words = [0u64; 4];
+    for (n, word) in words.iter_mut().enumerate() {
+        *word = ByteOrder::Big.word(&digest[8 * n..]);
+    }
+    words
+}
+
+/// Whether the label checksum at the end of `slot`, a whole slot at
+/// `offset` on the vdev, holds, as an import on a little-endian host
+/// checks it (`zio_checksum_error_impl`): the checksum's words, read in
+/// the byte order its magic shows, equal [`label_checksum`].
+pub fn label_checksum_holds(slot: &[u8], offset: u64) -> bool {
+    if slot.len() <= ECK_LEN {
+        return false;
+    }
+    let eck = slot.len() - ECK_LEN;
+    let order = if ByteOrder::Big.word(&slot[eck..]) == ZEC_MAGIC {
+        ByteOrder::Big
+    } else {
+        ByteOrder::Little
+    };
+    let mut stored = [0u64; 4];
+    for (n, word) in stored.iter_mut().enumerate() {
+        *word = order.word(&slot[eck + 8 + 8 * n..]);
+    }
+    stored == label_checksum(slot, offset, order)
+}
+
+/// Write the checksum's magic and words at the end of `slot`, a whole
+/// slot at `offset` on the vdev, as a host of byte order `order` writes
+/// them: what ZFS's write of a slot does. For tests and tools that make
+/// slots as ZFS would.
+pub fn seal(slot: &mut [u8], offset: u64, order: ByteOrder) {
+    let eck = slot.len() - ECK_LEN;
+    slot[eck..eck + 8].copy_from_slice(&order.bytes(ZEC_MAGIC));
+    let words = label_checksum(slot, offset, order);
+    for (n, word) in words.into_iter().enumerate() {
+        let at = eck + 8 + 8 * n;
+        slot[at..at + 8].copy_from_slice(&order.bytes(word));
     }
 }
 
@@ -344,6 +472,7 @@ fn read_at(bytes: &[u8], at: u64, label: usize) -> Option<Uberblock> {
             timestamp: order.word(&bytes[TIMESTAMP_AT..]),
             seq,
         },
+        slot: None,
     })
 }
 
@@ -361,11 +490,38 @@ fn read_at(bytes: &[u8], at: u64, label: usize) -> Option<Uberblock> {
 /// blocks, and no position's bytes cross a block, so that does not
 /// happen through it.)
 ///
-/// What it does not see: the label's checksum is not checked, so a slot
-/// that ZFS rejects for its checksum is still in the view. That can only
-/// make [`View::chosen`] say no where ZFS would open the state, not the
-/// other way. And only this volume's labels are in it: a pool whose
-/// other vdevs hold a greater uberblock is not seen.
+/// It holds only what ZFS takes for an uberblock: one whose label
+/// checksum holds ([`Uberblock::verified`], work package M2.1c). That
+/// checksum is over the whole slot, so a slot is followed by all its
+/// bytes, not by its first [`READ_LEN`] alone (the review of #96, its
+/// S1):
+///
+/// - a change that reaches a held uberblock's slot without holding the
+///   slot whole leaves its position unknown, since its checksum may no
+///   longer hold;
+/// - an uberblock found in a change that does not hold whole every slot
+///   that could begin at its position, none of whose held slots
+///   verifies, leaves its position unknown, since the rest of a slot
+///   that verifies may lie outside the change;
+/// - an uberblock of a group above zero found where every slot that
+///   could begin is held whole and none verifies is remembered, and a
+///   later change that reaches the largest of those slots past its
+///   fields, without covering them, leaves its position unknown, since
+///   that change may complete a slot that verifies (the next look of
+///   the same review, and Codex's second finding there). A group of 0
+///   is not remembered: it ranks below every cut's state, so one
+///   completed later cannot change what an import opens, and a new
+///   label of a volume attached to, or replacing a device of, or added
+///   to a pool that has synced holds one at the start of its ring,
+///   whose next slot ZFS then writes.
+///
+/// All three err toward "not chosen" until the slot is written whole
+/// again. ZFS writes a slot as one I/O and a ring is read whole, so
+/// none happens to ZFS's own writes: only to a writer that writes part
+/// of a slot, such as `zpool labelclear` or `dd`.
+///
+/// What it does not see: only this volume's labels are in it, so a pool
+/// whose other vdevs hold a greater uberblock is not seen.
 #[derive(Debug, Clone)]
 pub struct View {
     labels: Labels,
@@ -373,6 +529,11 @@ pub struct View {
     held: std::collections::BTreeMap<u64, Uberblock>,
     /// The positions whose content is not known.
     unknown: std::collections::BTreeSet<u64>,
+    /// The known positions that hold an uberblock's fields with a group
+    /// above zero but no slot that verifies, each with the end of the
+    /// largest slot that could begin there: a later change to the rest
+    /// of that slot could make it verify.
+    rejected: std::collections::BTreeMap<u64, u64>,
 }
 
 impl View {
@@ -386,6 +547,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown,
+            rejected: Default::default(),
         }
     }
 
@@ -395,6 +557,7 @@ impl View {
             labels,
             held: Default::default(),
             unknown: Default::default(),
+            rejected: Default::default(),
         }
     }
 
@@ -421,7 +584,9 @@ impl View {
 
     /// `len` bytes at `offset` were written, and `found` is what
     /// [`Labels::uberblocks_in`] found in them: for a caller that parsed
-    /// the write already.
+    /// the write already. Only the uberblocks ZFS takes for one
+    /// ([`Uberblock::verified`]) are held: an import passes over the
+    /// others. This is the one place that filter is applied.
     pub fn changed(&mut self, offset: u64, len: u64, found: &[Uberblock]) {
         let end = offset.saturating_add(len);
         for ring in self.labels.rings() {
@@ -430,6 +595,7 @@ impl View {
                 let whole = offset <= at && at + READ_LEN as u64 <= end;
                 if at + READ_LEN as u64 > offset {
                     self.held.remove(&at);
+                    self.rejected.remove(&at);
                     if whole {
                         self.unknown.remove(&at);
                     } else {
@@ -439,9 +605,76 @@ impl View {
                 at += SLOT_MIN;
             }
         }
-        for uberblock in found {
-            self.held.insert(uberblock.at, *uberblock);
+        // A held uberblock whose slot the change reaches past its first
+        // READ_LEN bytes, without holding the slot whole: what is there
+        // now may not verify.
+        let torn: Vec<u64> = self
+            .held
+            .values()
+            .filter(|uberblock| {
+                let slot_end = uberblock.at + uberblock.slot.unwrap_or(SLOT_MIN);
+                uberblock.at < end && offset < slot_end
+            })
+            .map(|uberblock| uberblock.at)
+            .collect();
+        for at in torn {
+            self.held.remove(&at);
+            self.unknown.insert(at);
         }
+        // A place whose fields are known not to verify, whose largest
+        // slot the change reaches past them: the rest may now complete
+        // it (the next look of the review of #96, and Codex's second
+        // finding there).
+        let completed: Vec<u64> = self
+            .rejected
+            .iter()
+            .filter(|&(&at, &slot_end)| at < end && offset < slot_end)
+            .map(|(&at, _)| at)
+            .collect();
+        for at in completed {
+            self.rejected.remove(&at);
+            self.unknown.insert(at);
+        }
+        for uberblock in found {
+            if uberblock.verified() {
+                self.held.insert(uberblock.at, *uberblock);
+            } else if self.may_go_on(uberblock.at, end) {
+                self.unknown.insert(uberblock.at);
+            } else if uberblock.counts() {
+                if let Some(slot_end) = self.largest_slot_end(uberblock.at) {
+                    self.rejected.insert(uberblock.at, slot_end);
+                }
+            }
+        }
+    }
+
+    /// The end of the largest slot that could begin at `at`, in a ring of
+    /// these labels.
+    fn largest_slot_end(&self, at: u64) -> Option<u64> {
+        let ring = self
+            .labels
+            .rings()
+            .find(|ring| ring.start <= at && at < ring.end())?;
+        SLOT_SIZES
+            .into_iter()
+            .filter(|&size| (at - ring.start).is_multiple_of(size))
+            .max()
+            .map(|size| at + size)
+    }
+
+    /// Whether a slot that could begin at `at`, in a ring of these
+    /// labels, ends after `end`: an uberblock found at `at` in a change
+    /// that ends at `end` could then belong to a slot that verifies with
+    /// bytes the change did not write.
+    fn may_go_on(&self, at: u64, end: u64) -> bool {
+        self.labels
+            .rings()
+            .filter(|ring| ring.start <= at && at < ring.end())
+            .any(|ring| {
+                SLOT_SIZES
+                    .into_iter()
+                    .any(|size| (at - ring.start).is_multiple_of(size) && at + size > end)
+            })
     }
 
     /// Whether an import of the volume as the view has it would open the
