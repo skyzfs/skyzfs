@@ -766,13 +766,20 @@ class HeldLines(HeldFixture):
         early = [dict(w, asked=r['ns'] if w is mid else 0) for w in self.written]
         got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, early, self.blocks))
         self.assertEqual(got[mid['number']], (0, 0))
-        # the cut holds what the write left in one of those blocks: that
-        # block reads the same from the home
+        # the cut holds what the write left in one of those blocks (its
+        # last, so that its own hash is the one compared): that block
+        # reads the same from the home
         blocks = {k: dict(m) for k, m in self.blocks.items()}
-        b = hit[0]
+        b = hit[-1]
+        self.assertGreater(touched(r).index(b), 0, 'a write of more than one block, the last of them in the map')
         blocks[mid['number']][b] = r['hashes'][touched(r).index(b)]
         got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, blocks))
         self.assertEqual(got[mid['number']], (len(hit) - 1, 0))
+        # a log with no hashes: every block a write touched counts, as
+        # far as is known
+        bare = [{k: v for k, v in x.items() if k != 'hashes'} for x in self.recs]
+        got = dict((n, (c, z)) for n, c, z in cdc.copied(bare, self.dcuts, written, blocks))
+        self.assertEqual(got[mid['number']], (len(hit), 0))
 
     def test_copied_blocks_under_a_write_zeroes(self):
         """A block a write-zeroes answered before the write was asked for
