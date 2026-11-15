@@ -1,0 +1,11 @@
+N1 a wrong block under an unplaced write-zeroes is a verdict: SURVIVED
+N2 a wrong block is the rig's error wherever it is: SURVIVED
+N3 no block of a write-zeroes is unplaced: KILLED by 1: test_a_write_zeroes_with_an_overlapping_write_in_the_store
+N4 every block of a write-zeroes is unplaced: KILLED by 1: test_a_write_zeroes_with_an_overlapping_write_in_the_store
+N5 bound need not abandon a cut: KILLED by 1: test_bound_must_abandon
+N6 a missing cuts_abandoned in bound is no verdict: KILLED by 1: test_bound_must_abandon
+N7 edges without a write-zeroes is no error: SURVIVED
+N8 edges without a discard is no error: SURVIVED
+N9 only five of the wrong blocks are known for the unplaced ones: SURVIVED
+N10 the recording's name is not given to the second stage: SURVIVED
+finished

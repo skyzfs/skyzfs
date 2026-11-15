@@ -1,0 +1,20 @@
+part 1: the fake holds cuts 1 and 2; the write of cut 1 is refused for a full disk, and cut 1 stays held
+    the holder wrote cuts [2]; left held: []; the holder's error: None
+    > t3890x1 held
+    < t3890x1 ok (2 lines)
+    > t3890x2 write 1 /tmp/tmpgadbcwlq/image
+    < t3890x2 refused: /tmp/tmpgadbcwlq/image: write block 0: No space left on device (os error 28) (0 lines)
+    > t3890x3 release 1
+    < t3890x3 ok (0 lines)
+    > t3890x4 held
+    < t3890x4 ok (1 lines)
+    > t3890x5 write 2 /tmp/tmpgadbcwlq/image
+    < t3890x5 ok 1 blocks (0 lines)
+    > t3890x6 release 2
+    < t3890x6 ok (0 lines)
+    > t3890x7 held
+    < t3890x7 ok (0 lines)
+    > t3890x8 held
+    < t3890x8 ok (0 lines)
+part 2: config with cut 18 released unwritten: the judge exits 1 (1 is a verdict against the daemon, 2 the rig's error)
+    config: held_content: FAIL: cut 21 (group 36): 7013 blocks differ from the reference at its instant, for example block 37: 4902224ddfed2405 wanted, ad7facb2586fc6e9 held, block 38: 5cbee13ebc9fbf06 wanted, ad7facb2586fc6e9 held, block 39: af7023c4566371ed wanted, ad7facb2586fc6e9 held, block 41: d4488bff424807f3 wanted, ad7facb2

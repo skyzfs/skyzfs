@@ -1,0 +1,52 @@
+J1 a write sets the block after the one it touches: KILLED by 3: test_a_discarded_block_reads_either, test_a_right_daemon, test_some_cuts_written
+J2 a discard reads as zeros alone: KILLED by 1: test_a_discarded_block_reads_either
+J3 a discard changes nothing in the model: KILLED by 1: test_a_discarded_block_reads_either
+J4 a write-zeroes changes nothing in the model: KILLED by 1: test_write_zeroes_read_as_zeros
+J5 a block a write covers in part is taken as the block before the write: KILLED by 1: test_a_discarded_block_reads_either
+J6 a block discarded in part stays known: SURVIVED
+J7 a block zeroed in part stays known: KILLED by 1: test_write_zeroes_read_as_zeros
+J8 a block of either content is always right: KILLED by 1: test_a_discarded_block_reads_either
+J9 only the blocks the image holds are compared: SURVIVED
+J10 only the blocks the reference wrote are compared: SURVIVED
+J11 a block the reference does not know counts as right and compared: KILLED by 1: test_a_discarded_block_reads_either
+J12 the reference is played one record past the barrier: KILLED by 3: test_a_discarded_block_reads_either, test_a_right_daemon, test_some_cuts_written
+J13 the reference is played to the cut before: KILLED by 3: test_a_discarded_block_reads_either, test_a_right_daemon, test_some_cuts_written
+J14 the image does not accumulate: each cut is its own map alone: KILLED by 2: test_a_right_daemon, test_some_cuts_written
+J15 a wrong block is not a verdict: KILLED by 3: test_a_block_held_wrong, test_a_block_left_out_of_a_map, test_a_discarded_block_reads_either
+J16 the held group and answer are not compared with the cut line: KILLED by 1: test_the_held_group_differs_from_the_cut_line
+J17 the held answer (itself or rewind) is not compared: SURVIVED
+J18 the last cut need not be written: KILLED by 1: test_the_last_cut_not_written
+J19 the image after the drain is not looked at: KILLED by 1: test_a_block_outside_every_map
+J20 no cut written is no error: KILLED by 1: test_no_cut_written
+J21 a control with nothing wrong counts as caught: SURVIVED
+J22 content_stale compares the image after the write: KILLED by 1: test_a_right_daemon
+J23 content_early compares with the reference at the instant: KILLED by 1: test_a_right_daemon
+J24 an ERROR in the holder's log is not looked for: SURVIVED
+J25 the state need not be begun: SURVIVED
+J26 the state is judged by the status alone: SURVIVED
+J27 the state is judged by the log alone: SURVIVED
+J28 cuts_held is not compared with the list: SURVIVED
+J29 a refused held at the stop is not the rig's error: SURVIVED
+J30 a wrong content with a write-zeroes in the log is a verdict: SURVIVED
+J31 a wrong content is the rig's error whatever the log holds: SURVIVED
+J32 a control that differs from its expectation is no verdict: SURVIVED
+J33 a failed held_content is no verdict: SURVIVED
+J34 the holder's lines are not judged though it ran: SURVIVED
+J35 a discard is not put among the records: KILLED by 2: test_a_discarded_block_reads_either, test_write_zeroes_at_its_recv_and_a_discard_changes_nothing
+J36 the hashes of a write are not checked against its length: KILLED by 1: test_hashes_must_cover_the_write
+H1 a reply is taken for the token by its beginning alone: KILLED by 1: test_a_reply_is_its_tokens
+H2 a reply is read by its first line: SURVIVED
+H3 two signals for each command: SURVIVED
+H4 a refused write is recorded all the same: KILLED by 1: test_a_write_refused_at_its_end_is_not_recorded
+H5 the cut that waits is written when none is being uploaded: SURVIVED
+H6 a written cut is not released: KILLED by 1: test_cut_hold.py did not end in 180 s
+H7 a block is hashed at the next block's place: KILLED by 2: test_hashes, test_write_hash_release
+H8 the image's zero blocks are listed too: KILLED by 2: test_hashes, test_write_hash_release
+H9 a reply that never comes is waited for without end: KILLED by 1: test_no_reply
+H10 the volume's run directory is named in decimal: KILLED by 1: test_the_volumes_run_directory
+H11 a held line with a phase the daemon does not have is taken: KILLED by 1: test_held
+H12 the command is written in place, not renamed: SURVIVED
+H13 a daemon that is gone is not noticed: KILLED by 1: test_cut_hold.py did not end in 180 s
+H14 the hash is of the whole SHA-256: KILLED by 2: test_hashes, test_write_hash_release
+H15 a block past the image's end is hashed as what was read: KILLED by 1: test_hashes
+finished

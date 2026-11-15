@@ -1,0 +1,15 @@
+config: 8 blocks given their later content, in cuts [18]: {18: 8}
+exit 1
+    config: held_content: FAIL: cut 18 (group 31): 8 blocks differ from the reference at its instant, for example block 4: 8f4fdea62d522f9c wanted, 9262af89ce28d785 held, block 31: 988695794f2a5665 wanted, 3df5a514a9d5b652 held, block 68: 8f4fdea62d522f9c wanted, 9262af89ce28d785 held, block 95: a96ad7abebb7ea65 wanted, 6b9065866a542f79 held, block 130948: 8f4fdea62d522f9c wanted, 9262af89ce28d785 held; 6 of 26 cuts writ
+    config: ctl_content_early: CAUGHT: cut 23: 1622 blocks differ (expected: caught)
+    config: ctl_content_stale: CAUGHT: cut 23: 1653 blocks differ (expected: caught)
+multihost: 25 blocks given their later content, in cuts [13, 14, 18, 22, 30, 34, 38, 42, 45, 46, 50, 53, 54, 58, 61, 62, 65, 70, 73, 74]: {13: 1, 14: 1, 18: 2, 22: 1, 30: 2, 34: 2, 38: 2, 42: 1, 45: 1, 46: 1, 50: 1, 53: 1, 54: 1, 58: 2, 61: 1, 62: 1, 65: 1, 70: 1, 73: 1, 74: 1}
+exit 1
+    multihost: held_content: FAIL: cut 13 (group 16): 1 blocks differ from the reference at its instant, for example block 63: 7700173441af7f71 wanted, ad83d4b2f2ae727e held; cut 14 (group 17): 1 blocks differ from the reference at its instant, for example block 127: afa2b4097282c929 wanted, cf0e6bd0e85eecb7 held; cut 17 (group 20): 1 blocks differ from the reference at its instant, for example block 127: afa2b4097282c92
+    multihost: ctl_content_early: CAUGHT: cut 45: 5 blocks differ (expected: caught)
+    multihost: ctl_content_stale: CAUGHT: cut 45: 45 blocks differ (expected: caught)
+life: 1751 blocks given their later content, in cuts [1]: {1: 1751}
+exit 1
+    life: held_content: FAIL: cut 1 (group 4): 1751 blocks differ from the reference at its instant, for example block 37: ad7facb2586fc6e9 wanted, 4ce3b45315a34b2f held, block 38: ad7facb2586fc6e9 wanted, 9c924df6eeaf6f60 held, block 39: ad7facb2586fc6e9 wanted, 7e439d68d9c667ff held, block 41: ad7facb2586fc6e9 wanted, dd9db9acc618f00c held, block 68: 7960cab8a02a8596 wanted, ef7db5a7031f5869 held; 5 of 26 cuts written 
+    life: ctl_content_early: CAUGHT: cut 18: 37 blocks differ (expected: caught)
+    life: ctl_content_stale: CAUGHT: cut 18: 37 blocks differ (expected: caught)

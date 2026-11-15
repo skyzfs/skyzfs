@@ -1,0 +1,7 @@
+bound: 3 cuts written; blocks changed after the instant and before the write was sent: 21145; while it ran: 1610
+    cut 37: 131072 blocks in its map; changed after its instant and before the write was sent 21145, while it ran 1598; of those, not as at the instant: 0; the write was sent 940 ms after the instant and took 14974 ms
+    cut 94: 25354 blocks in its map; changed after its instant and before the write was sent 0, while it ran 12; of those, not as at the instant: 0; the write was sent 242 ms after the instant and took 4579 ms
+    cut 97: 212 blocks in its map; changed after its instant and before the write was sent 0, while it ran 0; of those, not as at the instant: 0; the write was sent 1671 ms after the instant and took 41 ms
+edges: 2 cuts written; blocks changed after the instant and before the write was sent: 1760; while it ran: 3404
+    cut 1: 131072 blocks in its map; changed after its instant and before the write was sent 1756, while it ran 3404; of those, not as at the instant: 0; the write was sent 132 ms after the instant and took 747 ms
+    cut 16: 8665 blocks in its map; changed after its instant and before the write was sent 4, while it ran 0; of those, not as at the instant: 0; the write was sent 1761 ms after the instant and took 1214 ms

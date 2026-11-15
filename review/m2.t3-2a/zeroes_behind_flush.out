@@ -1,0 +1,4 @@
+the records, in the judge's order: ['write', 'flush received', 'write-zeroes', 'write', 'barrier']
+held_content for a right daemon: not PASS: cut 1 (group 5): 1 blocks differ from the reference at its instant, for example block 10: ad7facb2586fc6e9 wanted, aaaaaaaaaaaaaaaa held; 1 of 1 cuts written and released; 2 blocks compared over them, 0 of them discarded (either content), 0 not known to the re
+blocks held wrong, by the judge: [10]; blocks it calls not placed for certain: []
+the line would read: FAIL (a verdict against the daemon)
