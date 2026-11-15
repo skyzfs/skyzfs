@@ -1,0 +1,20 @@
+R6 the marks all come after the last line: NOTICED by test_a_right_daemon, test_cut_numbers
+R8 a cut line need not follow its own barrier: not noticed
+R9 a mark at a line's own time comes after it: not noticed
+R11 a label line of another length is taken: not noticed
+R12 a barrier of a flush that was never received is taken: not noticed
+C1 the count is not compared: NOTICED by test_a_cut_the_daemon_did_not_count
+C2 the instant is not compared: NOTICED by test_a_cut_counted_at_the_flush_after_its_own
+T2 no slack: not noticed
+M1 a failed cuts line does not fail the check: NOTICED by test_a_cut_counted_at_the_flush_after_its_own, test_a_cut_the_daemon_did_not_count
+M2 a failed status line does not fail the check: NOTICED by test_a_status_one_cut_behind
+M3 a control that was missed does not fail the check: not noticed
+M4 more than one instance is read as the first: NOTICED by test_a_second_instance_is_the_rigs_error
+M5 the rig's own error ends as a verdict: NOTICED by test_a_second_instance_is_the_rigs_error
+M6 failed sessions do not fail the check: NOTICED by test_a_session_whose_kstat_has_a_group_the_daemon_did_not_cut
+M7 wrong cut numbers do not fail the check: NOTICED by test_cut_numbers
+M8 the early control compares the daemon with the design's reference: NOTICED by test_a_right_daemon, test_cut_numbers
+F2 a received flush's barrier loses the mark made since its receipt: not noticed
+F3 an uberblock that repeats a carried mark marks again: not noticed
+F5 a flush received twice before its barrier is taken: not noticed
+10 of 19 noticed by test_main.py
