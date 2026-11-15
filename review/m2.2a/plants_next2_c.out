@@ -1,0 +1,4 @@
+N19 settle: the newest cut's state and flag are not made good (S20 of the first look): KILLED by a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once
+N20 store: the next instance is not given the count (I5 of the first look): KILLED by a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once, a_repeat_of_the_newest_cut_marks_nothing_after_a_lost_daemon, the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+N21 store: the next instance is not given the newest cut (I6 of the first look): KILLED by a_repeat_of_the_newest_cut_marks_nothing_after_a_lost_daemon, the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+finished

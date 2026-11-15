@@ -1,0 +1,9 @@
+S19 settle: a mark the newest cut took is kept: KILLED by a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once
+S20 settle: the newest cut's state is not made good: NOT APPLIED (found 0 times)
+S21 settle: a cut recorded and not counted is left in its slot: KILLED by a_cut_recorded_and_not_counted_is_none
+I1 store: a write-zeroes does not pass through the cut state: KILLED by a_held_cut_reads_as_the_volume_at_its_instant_after_a_write_zeroes
+I5 store: the next instance is not given the count: NOT APPLIED (found 0 times)
+I6 store: the next instance is not given the newest cut: NOT APPLIED (found 0 times)
+I7 store: the change is noted for the write's first block alone: KILLED by a_held_cut_reads_as_the_volume_at_its_instant_after_a_write_zeroes, the_in_place_store_passes_the_conformance_suite_while_it_holds_cuts
+I8 store: a copy that cannot be made does not fail the write: SURVIVED
+finished

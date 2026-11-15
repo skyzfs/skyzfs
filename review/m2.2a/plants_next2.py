@@ -69,6 +69,16 @@ PLANTS = [
      "                        root: [group; ROOT_WORDS],\n                    });",
      "                    let _ = State {\n                        txg: group,\n"
      "                        root: [group; ROOT_WORDS],\n                    };"),
+    # Three plants of the first look whose lines the answer changed, as the code has them now.
+    ("N19 settle: the newest cut's state and flag are not made good (S20 of the first look)", ST,
+     "            if newest.number == count && self.newest_cut() != Some((newest.state, newest.itself)) {",
+     "            if false && newest.number == count {"),
+    ('N20 store: the next instance is not given the count (I5 of the first look)', INP,
+     ".restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());",
+     ".restore(0, cut_state.newest_cut(), cut_state.mark());"),
+    ('N21 store: the next instance is not given the newest cut (I6 of the first look)', INP,
+     ".restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());",
+     ".restore(cut_state.count(), None, cut_state.mark());"),
 ]
 
 

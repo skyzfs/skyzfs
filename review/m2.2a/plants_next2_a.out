@@ -1,0 +1,9 @@
+N1 newest_cut: the flag is never read as set: KILLED by the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+N2 put_newest: the flag is never stored: KILLED by the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+N3 settle: the newest cut is made good by its state alone, not its flag: SURVIVED
+N4 put_double: the slot in use is read with its flag: SURVIVED
+N5 double: the slot is read with its flag: KILLED by a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once, a_repeat_of_the_newest_cut_marks_nothing_after_a_lost_daemon, the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+N15 the start reads the flag from the held cuts, as at e905c2e: KILLED by the_newest_cut_says_it_opens_as_itself_after_it_is_let_go
+N6 abandon: the entry of the cut being abandoned is not recorded: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+N7 abandon: the count moves first: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+finished

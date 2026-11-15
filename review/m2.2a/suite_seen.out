@@ -1,0 +1,9 @@
+exit 0
+review: InPlaceHarness { queue_depth: 1, sync_delay: 0, mutants: 0, io: IoMode { direct: true, threads: 8 }, page: 4096, held_cuts: true }: Seen { cuts: 8, copied: 196, abandoned: 3, taken_up: 11 }
+review: InPlaceHarness { queue_depth: 16, sync_delay: 0, mutants: 0, io: IoMode { direct: true, threads: 8 }, page: 4096, held_cuts: true }: Seen { cuts: 7, copied: 225, abandoned: 4, taken_up: 10 }
+review: InPlaceHarness { queue_depth: 16, sync_delay: 3, mutants: 0, io: IoMode { direct: true, threads: 8 }, page: 4096, held_cuts: true }: Seen { cuts: 7, copied: 226, abandoned: 4, taken_up: 10 }
+review: InPlaceHarness { queue_depth: 1, sync_delay: 0, mutants: 0, io: IoMode { direct: true, threads: 0 }, page: 4096, held_cuts: true }: Seen { cuts: 8, copied: 196, abandoned: 3, taken_up: 11 }
+review: InPlaceHarness { queue_depth: 16, sync_delay: 0, mutants: 0, io: IoMode { direct: true, threads: 0 }, page: 4096, held_cuts: true }: Seen { cuts: 9, copied: 238, abandoned: 4, taken_up: 28 }
+review: InPlaceHarness { queue_depth: 16, sync_delay: 3, mutants: 0, io: IoMode { direct: true, threads: 0 }, page: 4096, held_cuts: true }: Seen { cuts: 9, copied: 232, abandoned: 4, taken_up: 28 }
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 29.69s
+finished

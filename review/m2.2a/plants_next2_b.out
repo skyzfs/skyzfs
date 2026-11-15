@@ -1,1 +1,10 @@
 N8 settle: an abandoning under way is counted whether or not its cut is gone: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+N9 settle: an abandoning under way is never counted: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+N10 settle: the entry is left when its cut is counted: SURVIVED
+N12 figures: the abandoned count is read with the entry: SURVIVED
+N13 read_cut: the block after the last is taken: KILLED by a_cut_is_read_only_within_the_volume
+N14 read_cut: a buffer of any size is taken: KILLED by a_cut_is_read_only_within_the_volume
+N16 a copy is written over the image: KILLED by (build) error[E0596]: cannot borrow `*self.home` as mutable, as it is behind a `&` reference
+N17 harness: a kill starts with a cut state of its own: KILLED by the_in_place_store_passes_the_conformance_suite_while_it_holds_cuts
+N18 harness: no mark before a flush: KILLED by the_in_place_store_passes_the_conformance_suite_while_it_holds_cuts
+finished

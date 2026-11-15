@@ -1,0 +1,12 @@
+as the head has it:
+    exit 0
+    review: 12 deaths; (held, abandoned) after them: {(0, 1), (1, 0)}
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.00s
+N10 settle: the entry is left when its cut is counted:
+    exit 101
+    test inplace::state::tests::review_a_second_start_after_a_death_in_an_abandoning_counts_the_cut_once ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.11s
+    left: 1
+    right: 2
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+finished
