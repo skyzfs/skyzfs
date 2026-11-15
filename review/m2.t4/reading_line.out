@@ -1,0 +1,3 @@
+running:        skzrel 2 1 # 1035947573132 cut 4 gone after its release was refused (refused: cut 4 is not the one being uploaded)
+ended, unwaited: skzrel 2 0 # ERROR HolderError: no reply to `held` in 30.0 s (released 2, gone 1, polls 9)
+never started:  skzrel 2 0 # ERROR HolderError: no reply to `held` in 30.0 s (released 2, gone 1, polls 9)

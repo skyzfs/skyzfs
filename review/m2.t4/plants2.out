@@ -1,0 +1,19 @@
+Q1 a refused release always counts as a cut gone: KILLED by 2: test_a_refused_release; test_a_release_refused_while_the_cut_is_still_uploaded
+Q2 a refused release always ends the releaser: KILLED by 3: test_a_cut_abandoned_before_its_release; test_a_cut_gone_and_another_uploading; test_a_refused_held_after_a_refused_release
+Q3 a cut gone is written as a release is, with no # before it: KILLED by 1: test_a_cut_abandoned_before_its_release
+Q4 a cut gone is not counted: KILLED by 2: test_a_cut_abandoned_before_its_release; test_a_cut_gone_and_another_uploading
+Q5 a refused held is taken as nothing held: KILLED by 2: test_a_refused_held_after_a_refused_release; test_a_refused_held_is_its_error
+Q6 after a cut gone the step says a cut was released: KILLED by 2: test_a_cut_abandoned_before_its_release; test_a_cut_gone_and_another_uploading
+B1 a row whose releaser ended gets a verdict: KILLED by 1: test_a_row_whose_releaser_ended_has_no_verdict
+S1 TB_SKZ_RELEASE without --hold-cuts is not refused: KILLED by 1: test_skz_store.sh
+S2 TB_SKZ_RELEASE with a build without +hooks is not refused: KILLED by 1: test_skz_store.sh
+S3 --hold-cuts is looked for as a part of a word: KILLED by 1: test_skz_store.sh
+E1 the releases in the window are the count at the second reading: KILLED by 1: test_a_row_says_what_its_releaser_did
+E2 a releaser that ended in the window counts as running: KILLED by 1: test_a_row_says_what_its_releaser_did
+E3 a releaser that ended before the window counts as running: SURVIVED
+E4 a row with no line from the releaser counts as running: KILLED by 1: test_a_row_says_what_its_releaser_did
+E5 the row of an ended releaser does not say so in its serve arguments: KILLED by 1: test_a_row_says_what_its_releaser_did
+E6 the row of an ended releaser carries no reason for the verdict: KILLED by 1: test_a_row_says_what_its_releaser_did
+H1 the reading counts every line of the releases file as a release: SURVIVED
+H2 the reading says the releaser runs whatever became of it: SURVIVED
+finished
