@@ -35,6 +35,13 @@ n/a for the rest, and a row that names an older build of the daemon
 (`TB_SKYZFSD_REF`) still gives all its tables. The pump's store of
 what was acknowledged was the log store's too, and is n/a from 11.
 
+Since status version 12 (M2.1b) the four `pump_taken_*` keys are gone:
+the in-place store completes a request on the pump's own thread, so its
+completion being ready and the pump taking it are one instant, and they
+read 0 for a daemon's whole life from M1.3t on. `PUMP_KEYS_V12` are the
+nine left. A version 12 row's "of it taken" is n/a, and its commit time
+is the whole of the time after the store.
+
 A reading is a dict of the status's lines, key -> text.
 """
 
@@ -82,6 +89,11 @@ PUMP_KEYS = ('pump_submit_count', 'pump_submit_ns', 'pump_submit_max_ns',
              'pump_commit_read_count', 'pump_commit_read_ns', 'pump_commit_read_max_ns',
              'pump_commit_other_count', 'pump_commit_other_ns', 'pump_commit_other_max_ns',
              'pump_taken_read_ns', 'pump_taken_read_max_ns', 'pump_taken_other_ns', 'pump_taken_other_max_ns')
+
+
+# The pump's times as status version 12 names them: without the four
+# `pump_taken_*`, which the in-place store's pump never had apart.
+PUMP_KEYS_V12 = tuple(k for k in PUMP_KEYS if not k.startswith('pump_taken_'))
 
 
 def times_of(reading):
@@ -200,8 +212,10 @@ def life(d, kind):
         ('submitted to begun (wait)', _per(d.get(f'time_{kind}_wait_ns'), n)),
         ('begun to ready (call)', _per(d.get(f'time_{kind}_call_ns'), n)),
         (f"ready to taken (pump, {'reads' if kind == 'read' else 'all but reads'})", _per(taken, nc)),
+        # A status without the taken time (version 12) has the commit
+        # time alone after the store: all of it is taken to committed.
         (f"taken to committed (pump, {'reads' if kind == 'read' else 'all but reads'})",
-         None if commit is None or taken is None else _per(commit - taken, nc)),
+         None if commit is None else _per(commit - (taken or 0), nc)),
     ]
     return stages, n
 
