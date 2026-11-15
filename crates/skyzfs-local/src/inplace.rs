@@ -183,7 +183,7 @@
 //! # Held cuts (M2.2)
 //!
 //! A store started with a region for the cut state
-//! ([`OpenOptions::cut_region`]) keeps it (`inplace/state.rs`), taken
+//! ([`OpenOptions::hold_cuts`]) keeps it (`inplace/state.rs`), taken
 //! up once the start's sync has succeeded, which counts as the flush of
 //! every cut whose flush a death left under way. The count of cuts
 //! (`inplace/cuts.rs`) tells it what happened: the mark of an uberblock

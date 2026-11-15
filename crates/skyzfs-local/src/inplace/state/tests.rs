@@ -1381,3 +1381,171 @@ fn a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo() {
         );
     }
 }
+
+/// A refused copy in a write over several blocks gives back all the
+/// room of the cuts that went: their copies, and the slot of the copy
+/// that failed. Cut 3 has a copy (block 31 changes again after cut 4's
+/// instant); the write over blocks 30 to 33 is refused at block 30,
+/// which cut 3's map holds with no copy yet. Cuts 3 and 4 go, each
+/// counted once, no byte stays copied, the next cut holds every block
+/// the cuts that went had counted, and the copies made for it count
+/// from nothing. From the review of #100 (`refused_copy_figures.py`):
+/// with the copies of the cuts that went kept until a cut is next let
+/// go, or with the failed copy's slot not given back, the copied bytes
+/// stay above 0.
+#[test]
+fn a_refused_copy_gives_back_the_room_of_the_cuts_that_went() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let (mut state, mut io) = three_held(&region);
+    state.change(31, 1, &mut io).expect("the change");
+    let before = state.figures();
+    assert!(before.copied > 0, "cut 3 holds a copy of block 31");
+    io.refuse = true;
+    state.change(30, 4, &mut io).expect("the write goes on");
+    io.refuse = false;
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    let after = state.figures();
+    assert_eq!(held, [2]);
+    assert_eq!(
+        after.abandoned,
+        before.abandoned + 2,
+        "cuts 3 and 4 went, once each"
+    );
+    assert_eq!(
+        after.copied, 0,
+        "cut 2 has no copy, and the cuts that had one are gone"
+    );
+    let five = state.freeze(&marked(5), true);
+    let map = state.map(five);
+    for block in [30, 31, 32, 33, 40, 50, 100, 170] {
+        assert!(
+            map.contains(&block),
+            "cut {five} lacks block {block}: {map:?}"
+        );
+    }
+    state.flushed(five);
+    let mut made = 0;
+    for block in [30, 31, 32, 33, 40, 50, 100, 170] {
+        state.change(block, 1, &mut io).expect("the change");
+        made += 1;
+    }
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert_eq!(held, [2, five]);
+    assert_eq!(state.figures().copied, made * BLOCK_SIZE);
+}
+
+const BEGIN_BOUND: u64 = 64 * BLOCK_SIZE;
+
+/// A daemon lost at any store of [`CutState::begin`] leaves no state
+/// that the next start takes up with a block missing: either the state
+/// is not read, or its first cut counts the whole volume as changed, as
+/// a state begun does. Over an empty region, and over one that holds
+/// another boot's state with a cut held; the next start is the same
+/// owner, with the same token, which is the most a start can share
+/// with the one lost. From the review of #100 (`begin_death.py`): with
+/// the magic stored first, a death before the word that counts the
+/// whole volume leaves a state whose first cut counts no block.
+#[test]
+fn a_daemon_lost_inside_begin_leaves_no_state_half_begun() {
+    quiet_deaths();
+    let other = Owner {
+        boot: [0x77; 16],
+        ..OWNER
+    };
+    for held_before in [false, true] {
+        let mut deaths = 0;
+        for death in 0u64.. {
+            let region = MemRegion::new(words_for(BLOCKS, records_for(BEGIN_BOUND)));
+            if held_before {
+                let mut old = CutState::begin(region.clone(), SIZE, BEGIN_BOUND, other, Mutants(0));
+                let n = old.freeze(&marked(1), true);
+                old.flushed(n);
+            }
+            region.die_at(death);
+            let done = catch_unwind(AssertUnwindSafe(|| {
+                drop(CutState::begin(
+                    region.clone(),
+                    SIZE,
+                    BEGIN_BOUND,
+                    OWNER,
+                    Mutants(0),
+                ));
+            }));
+            region.revive();
+            match done {
+                Ok(()) => break,
+                Err(payload) => {
+                    if payload.downcast_ref::<Lost>().is_none() {
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+            }
+            deaths += 1;
+            let Ok(mut state) =
+                CutState::restore(region.clone(), SIZE, BEGIN_BOUND, OWNER, Mutants(0))
+            else {
+                continue;
+            };
+            let first = state.freeze(&marked(2), true);
+            let counted = state.map(first).len() as u64;
+            assert_eq!(
+                counted, BLOCKS,
+                "a death at store {death} of begin (a state held before: {held_before}): the next \
+                 start reads the state, and its first cut counts {counted} of {BLOCKS} blocks"
+            );
+        }
+        assert!(deaths > 0);
+    }
+}
+
+/// A disk that refuses the first copy asked of it, and makes the rest.
+struct RefusingFirst {
+    disk: Disk,
+    refused: bool,
+}
+
+impl Copier for RefusingFirst {
+    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.disk.read_image(block, buf)
+    }
+
+    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
+        if !self.refused {
+            self.refused = true;
+            return Err(io::Error::other("no space left"));
+        }
+        self.disk.write_copy(slot, buf)
+    }
+}
+
+/// Once a refused copy has let every cut go, the rest of the write
+/// copies nothing: the held cuts are read again after the cuts went.
+/// The first cut of a state counts the whole volume as changed, so it
+/// reads every block in no map, and a refused copy of such a block
+/// lets every cut go. From the review of #100 (its plant A9, which
+/// none of its tests noticed): with the held cuts not read again, the
+/// write's other blocks are copied for a cut that is gone.
+#[test]
+fn a_refused_copy_that_lets_every_cut_go_copies_nothing_more() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let mut state = CutState::begin(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0));
+    let mut io = RefusingFirst {
+        disk: Disk {
+            image: vec![0; BLOCKS as usize],
+            copies: BTreeMap::new(),
+        },
+        refused: false,
+    };
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    state.change(5, 3, &mut io).expect("the write goes on");
+    assert!(io.refused, "block 5's copy was asked and refused");
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert!(held.is_empty(), "{held:?}");
+    assert_eq!(
+        state.figures().copied,
+        0,
+        "blocks 6 and 7 were copied for a cut that is gone"
+    );
+    assert!(io.disk.copies.is_empty(), "{:?}", io.disk.copies.keys());
+}

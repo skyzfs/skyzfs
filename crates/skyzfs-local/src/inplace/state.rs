@@ -132,7 +132,7 @@
 //! ([`crate::volume::START_NAME`]), without which a start does not take
 //! it up. Every change is ordered
 //! so that a death after any store leaves a state that the next
-//! instance can take up ([`CutState::restore`]), finishing what a death
+//! instance can take up ([`CutState::view`], [`CutState::take_up`]), finishing what a death
 //! interrupted: a cut whose flush was under way takes the start's sync
 //! as its flush, a map being taken is moved whole, and a map no cut
 //! owns is cleared. What is
@@ -759,7 +759,10 @@ impl<R: Region> CutState<R> {
     /// Take up the state that `region` holds for a volume of `size`
     /// bytes, owned by `owner`, as a start after a lost daemon does,
     /// once the start's sync has succeeded: finish what a death
-    /// interrupted.
+    /// interrupted. The tests' start: it keeps the token it found,
+    /// where the store's start reads with [`CutState::view`] and takes
+    /// up with [`CutState::take_up`] under the token its open wrote.
+    #[cfg(test)]
     pub fn restore(
         region: R,
         size: u64,
