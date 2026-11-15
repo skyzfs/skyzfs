@@ -22,18 +22,36 @@ import cut_ref  # noqa: E402
 import test_cut_daemon_check as t  # noqa: E402
 
 
-def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None):
-    """A recording's directory -> (exit code, {line: (verdict, detail)})."""
+def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None):
+    """A recording's directory -> (exit code, {line: (verdict, detail)}).
+
+    holder: where given, the daemon held cuts and the holder ran: its
+    files as a right daemon leaves them, with holder(written, blocks,
+    final) changing them in place."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
-    text, marks = t.request_log(records, read, dev, at)
+    text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
     if tamper_log:
         text = tamper_log(text)
     d = tempfile.mkdtemp(prefix='cdc-')
     try:
+        if holder is not None:
+            text = text.replace(f'\t{t.PID}\tstart\t0\t-\t-\t-\t64\n',
+                                f'\t{t.PID}\tstart\t0\t-\t-\t-\t64\n1015\t{t.PID}\tcuts\t-\t-\t-\t-\tbegun\n', 1)
+            written, blocks, final = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
+            holder(written, blocks, final)
+            t.holder_files(d, written, blocks, final)
+            status = status or held_status(records, read, dev, cs)
         return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def held_status(records, read, dev, cs):
+    op = cut_ref.opens(records, read, dev, cs)
+    last = cs[-1]
+    return (f"cuts {len(cs)}\ncut_group {last['txg']}\ncut_opens {'itself' if op[last['n']]['itself'] else 'rewind'}"
+            f"\nage_ms 0\ncut_state begun\ncuts_abandoned 0\n")
 
 
 def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name):
@@ -174,6 +192,28 @@ class Main(unittest.TestCase):
         self.assertEqual(lines['cuts'][0], 'PASS', lines['cuts'])
         self.assertEqual(lines['ctl_txg-alone'][0], 'SAME', lines['ctl_txg-alone'])
         self.assertIn('DIFFERS', lines['ctl_txg-alone'][1])
+        self.assertEqual(rc, 1)
+
+    def test_the_second_stage(self):
+        """The holder's files make main judge the held cuts; a block held
+        wrong fails the check (the review of #103, S1)."""
+        rc, lines = recording(holder=lambda written, blocks, final: None)
+        self.assertEqual(rc, 0, lines)
+        for key in ('cut_state', 'cuts_held', 'held_content'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertEqual(lines['cuts_abandoned'][0], 'INFO')
+
+        def wrong(written, blocks, final):
+            m = blocks[written[len(written) // 2]['number']]
+            m[sorted(m)[0]] = '0' * 16
+        rc, lines = recording(holder=wrong)
+        self.assertEqual((rc, lines['held_content'][0]), (1, 'FAIL'), lines['held_content'])
+
+    def test_the_second_stage_knows_the_recording(self):
+        """bound must abandon a cut: life's directory judged as bound fails
+        that line, where life itself has it as information."""
+        rc, lines = recording(holder=lambda written, blocks, final: None, as_name='bound')
+        self.assertEqual(lines['cuts_abandoned'][0], 'FAIL', lines['cuts_abandoned'])
         self.assertEqual(rc, 1)
 
     def test_a_recording_with_no_row(self):

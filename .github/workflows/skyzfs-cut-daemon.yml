@@ -6,10 +6,17 @@ name: skyzfs-cut-daemon
 # tests/kernel/cut_daemon_check.py reads the log in the daemon's own
 # order and holds the daemon's cuts (count, each cut's instant and
 # group, whether it opens as itself), its status, and the groups ZFS
-# says it synced to the reference (tests/kernel/cut_ref.py). Four wrong
-# lists must fail the comparison (`EXPECTED`). Exit 1 is a verdict
-# against the daemon, exit 2 the rig's own error. Read the summary's
-# table, not the colour.
+# says it synced to the reference (tests/kernel/cut_ref.py). Wrong lists
+# must fail the comparison (`EXPECTED`). Exit 1 is a verdict against the
+# daemon, exit 2 the rig's own error. Read the summary's table, not the
+# colour.
+#
+# Its second stage (M2.2's held cuts): the daemon serves with
+# --hold-cuts, a holder beside the recording (tests/kernel/cut_hold.py)
+# writes each cut being uploaded onto an image of the rig's and releases
+# it, and the check holds every written cut's content to the reference's
+# at the cut's instant (`held_content`), from the request log's hashes of
+# each block. The input `hold` turns it off.
 #
 # Runs on a pull request that touches the rig's files or the daemon's
 # code (ubuntu-26.04 and ubuntu-26.04-arm), on a push of the rig's
@@ -22,8 +29,12 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full, and with hold: bound edges); empty: all"
         default: ""
+      hold:
+        description: "serve with --hold-cuts and check the held cuts' content (the second stage)"
+        type: boolean
+        default: true
   pull_request:
     paths:
       - tests/kernel/cut*
@@ -44,6 +55,7 @@ on:
     branches: ['skyzfs-testing*']
     paths:
       - tests/kernel/cut_daemon_check.py
+      - tests/kernel/cut_hold.py
       - tests/kernel/cut-record.sh
       - .github/workflows/skyzfs-cut-daemon.yml
 
@@ -62,6 +74,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_cut_daemon_check.py -v
       - run: python3 tests/kernel/test_cut_daemon_main.py -v
+      - run: python3 tests/kernel/test_cut_hold.py -v
 
   record:
     name: record through skyzfsd and check, ${{ matrix.image }}
@@ -102,10 +115,11 @@ jobs:
       - name: Record through skyzfsd and check
         env:
           RECORDINGS: ${{ inputs.recordings || '' }}
+          HOLD: ${{ (github.event_name != 'workflow_dispatch' || inputs.hold) && '1' || '0' }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
           for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
-          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$PWD/target/release/skyzfsd" \
+          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$PWD/target/release/skyzfsd" CUT_HOLD="$HOLD" \
             CUT_CHECK="python3 $PWD/tests/kernel/cut_daemon_check.py" \
             bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
       - name: Summary
@@ -113,7 +127,7 @@ jobs:
         run: |
           sudo chmod -R a+rX cut-out 2>/dev/null || true
           if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" "Cut rig on the daemon (M2.T3, first stage)" >> "$GITHUB_STEP_SUMMARY" \
+          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
             || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         if: always()
