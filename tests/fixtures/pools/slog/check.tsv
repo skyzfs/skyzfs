@@ -1,0 +1,15 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1579, of which 29 uberblock writes mark, of 116
+obs_zdb_data_device_alone	INFO	cut 15 (group 32): zdb -e -u on the data device alone: exit 0, group 32; it said: checkpoint_txg = 0 | raidz_reflow state=0 off=0
+obs_import_missing_log	INFO	cut 15: zpool import -m -o readonly=on of the data device alone said, and zpool status -v then showed: pool: skzcut | state: DEGRADED | status: One or more devices could not be used because the label is missing or | invalid.  Sufficient replicas exist for the pool to continue | functioning in a degraded state. | action: Replace the device using 'zpool replace'. | see: https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-4J | config: | NAME                   STATE     READ WRITE CKSUM | skzcut                 DEGRADED     0     0     0 | loop0                ONLINE       0     0     0 | logs | 6629974034286217431  UNAVAIL      0     0     0  was /dev/loop2 | errors: No known data errors
+cuts	PASS	29 of 29 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	29 of 29 cuts open as themselves (expected: all)
+obs_zdb_with_log_device_copy	21	zdb calls that did not open the data device alone and opened it with the log device's copy beside it
+obs_stale_cuts	0	no cut carries the state of an older cut
+sessions	PASS	2 sessions as committed
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 21..23)
+ctl_early	CAUGHT	cut 15 (group 32) at record 811 and not 816: opens: zdb selects group 31 (timestamp 1794695057), the rings' best is 32 (1794695057); the cut is 32 (expected: caught)
+ctl_withheld	CAUGHT	cut 15 without record 810 (8192 bytes at 205959168): copies: 2 of 332 copies do not pass their block's checksum, in 2 blocks, of which 0 have no copy that passes; the first is copy 2 of 3 at byte 205963264: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:8d1e000:1000> DVA[1]=<0:a0be000:1000> DVA[2]=<0:c06c000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=32L/32P fill=67 cksum=0000000240446064:000008a73 (expected: caught)
+ctl_later	CAUGHT	cut 8 (group 23) with record 993 (write, 131072 bytes at 104857600, 619 records after the instant): copies: 1 of 111 copies do not pass their block's checksum, in 1 blocks, of which 0 have no copy that passes; the first is copy 2 of 3 at byte 104865792: objset 0 object 51 level 0 offset 0x0 DVA[0]=<0:37000:1000> DVA[1]=<0:2037000:1000> DVA[2]=<0:6002000:1000> [L0 bswap metadata zap] fletcher4 uncompressed unencrypted LE contiguous unique triple size=800L/800P birth=6L/6P fill=1 cksum=000000423deeed3f:00004cfb (expected: not built or caught)
+ctl_txg-alone	SAME	29 cuts, as the design rule (expected: same)
+ctl_count-repeats	SAME	29 cuts, as the design rule (expected: same)

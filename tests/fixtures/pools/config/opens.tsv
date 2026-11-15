@@ -1,0 +1,31 @@
+# what real ZFS made of each reference cut (cut_check.py): zdb_txg the group zdb -e -u selected
+# at the cut's instant, ring_txg the best uberblock in the labels by the reference, itself 1 when
+# that is the cut's own state, whole 1 when the cut passed every copy and the read-only import at
+# its own group
+# n	txg	prefix	zdb_txg	ring_txg	itself	whole
+1	4	68	4	4	1	1
+2	5	100	5	5	1	1
+3	6	161	6	6	1	1
+4	7	190	7	7	1	1
+5	9	310	9	9	1	1
+6	10	346	10	10	1	1
+7	13	411	13	13	1	1
+8	14	444	14	14	1	1
+9	17	480	17	17	1	1
+10	18	522	18	18	1	1
+11	20	565	20	20	1	1
+12	21	633	21	21	1	1
+13	22	667	22	22	1	1
+14	25	698	25	25	1	1
+15	28	734	28	28	1	1
+16	29	818	29	29	1	1
+17	30	917	30	30	1	1
+18	31	1022	31	31	1	1
+19	32	1059	32	32	1	1
+20	35	1170	35	35	1	1
+21	36	1243	36	36	1	1
+22	37	1277	37	37	1	1
+23	40	1348	40	40	1	1
+24	41	1384	41	41	1	1
+25	45	1417	45	45	1	1
+26	54	1458	54	54	1	1
