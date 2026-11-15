@@ -12,7 +12,13 @@ repository.workspace = true
 # The request log (`serve --request-log`) reads CLOCK_MONOTONIC.
 # `serve --refuse-one-fetch` sends one first fetch with no buffer, through
 # the binding's own fetches (`refuse-fetch`).
-test-hooks = ["skyzfs-local/test-hooks", "rustix/time", "skyzfs-ublk-sys/refuse-fetch"]
+# The request log hashes each block a write covers whole (`sha2`).
+test-hooks = [
+    "skyzfs-local/test-hooks",
+    "rustix/time",
+    "skyzfs-ublk-sys/refuse-fetch",
+    "dep:sha2",
+]
 
 [dependencies]
 skyzfs-blk = { workspace = true }
@@ -21,6 +27,7 @@ skyzfs-ublk = { workspace = true }
 skyzfs-ublk-sys = { workspace = true }
 skyzfs-uberblock = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true, optional = true }
 
 # statfs, for the rule that the daemon's files are on no ZFS pool.
 [target.'cfg(target_os = "linux")'.dependencies]

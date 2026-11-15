@@ -44,7 +44,12 @@
 //!   the kernel N ms after the store completed it. Nothing else waits;
 //! - `serve --request-log PATH`: every request the kernel hands over
 //!   and every answer it is given is appended to `PATH`, one line each
-//!   (the format is in `record.rs`).
+//!   (the format is in `record.rs`). With
+//!   `--request-log-content whole`, every write's bytes are appended to
+//!   `PATH.data` as well; `hash`, the default, keeps only a hash of each
+//!   block a write covers;
+//! - `serve` takes `SIGUSR2` as a command about held cuts, read from the
+//!   volume's run directory (`cut_commands.rs`).
 
 use std::path::PathBuf;
 
@@ -105,7 +110,7 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
   skyzfsd create ... [--base-pattern SEED]
   skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
                  [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
-                 [--commit-delay-ms N] [--request-log PATH]
+                 [--commit-delay-ms N] [--request-log PATH] [--request-log-content hash|whole]
                  [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
                  [--refuse-one-fetch start|recovery]";
 
@@ -413,6 +418,10 @@ pub struct Hooks {
     pub commit_delay_ms: Option<u64>,
     /// Where the requests and their answers are written down.
     pub request_log: Option<PathBuf>,
+    /// `--request-log-content whole`: every write's bytes go to
+    /// `PATH.data` beside the request log, and its `applied` line names
+    /// where. `hash` (the default): only each block's hash.
+    pub request_log_whole: bool,
     /// The request whose commit is sent with no buffer, for the driver
     /// to refuse: the first of its kind ([`crate::refuse`]).
     pub refuse: Option<Held>,
@@ -551,6 +560,7 @@ const SERVE: &[Opt] = &[
     opt("--boot-id-file", true, true),
     opt("--commit-delay-ms", true, true),
     opt("--request-log", true, true),
+    opt("--request-log-content", true, true),
     opt("--refuse-one-commit", true, true),
     opt("--refuse-one-fetch", true, true),
 ];
@@ -678,6 +688,21 @@ fn refuse(text: &str) -> Result<Held, UsageError> {
 }
 
 /// `--refuse-one-fetch`: `start` or `recovery`.
+/// `--request-log-content hash|whole`: whether every write's bytes are
+/// kept. It needs `--request-log`.
+fn request_log_content(given: &Given) -> Result<bool, UsageError> {
+    let name = "--request-log-content";
+    let whole = match given.get(name) {
+        None | Some("hash") => false,
+        Some("whole") => true,
+        Some(_) => return Err(UsageError::Value(name.into(), "hash or whole")),
+    };
+    if given.get(name).is_some() && given.get("--request-log").is_none() {
+        return Err(UsageError::Value(name.into(), "needs --request-log"));
+    }
+    Ok(whole)
+}
+
 fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
     match text {
         "start" => Ok(FetchRefusal::Start),
@@ -762,6 +787,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                     request_log: given.get("--request-log").map(PathBuf::from),
+                    request_log_whole: request_log_content(&given)?,
                     refuse: given.get("--refuse-one-commit").map(refuse).transpose()?,
                     refuse_fetch: given
                         .get("--refuse-one-fetch")

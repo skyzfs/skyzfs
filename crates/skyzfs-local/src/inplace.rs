@@ -2121,8 +2121,8 @@ impl<D: Dir> InPlace<D> {
         self.state.as_ref().map(CutState::held).unwrap_or_default()
     }
 
-    /// The cut state's figures.
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// The cut state's figures, for the status: all 0 for a store that
+    /// holds no cut.
     pub fn cut_figures(&self) -> CutFigures {
         self.state
             .as_ref()

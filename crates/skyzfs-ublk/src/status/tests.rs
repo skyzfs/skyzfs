@@ -60,6 +60,13 @@ fn sample() -> Status {
                     itself: true,
                 }),
             }),
+            held: Some(HeldShown {
+                state: CutStateShown::TakenUp,
+                held: 2,
+                copied: 31,
+                bound: 32,
+                abandoned: 33,
+            }),
         },
     }
 }
@@ -69,8 +76,8 @@ fn sample() -> Status {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 312);
-    assert_eq!(&bytes[..8], b"SKYZST12");
+    assert_eq!(bytes.len(), 352);
+    assert_eq!(&bytes[..8], b"SKYZST13");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -103,6 +110,11 @@ fn the_file_has_the_documented_layout() {
         (288, 29),
         (296, 30),
         (304, 1),
+        (312, 1),
+        (320, 2),
+        (328, 31),
+        (336, 32),
+        (344, 33),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -189,6 +201,7 @@ fn as_of(version: u32) -> Status {
     let mut status = sample();
     status.version = version;
     status.shown.cuts = None;
+    status.shown.held = None;
     if version < 10 {
         status.counters.commands_aborted = 0;
         status.counters.commands_failed = 0;
@@ -275,7 +288,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 5] = [
+    let versions: [(&[u8; 8], usize); 6] = [
+        (b"SKYZST13", 352),
         (b"SKYZST12", 312),
         (b"SKYZST11", 336),
         (b"SKYZST10", 2032),
@@ -381,6 +395,83 @@ fn eleventh_file() -> Vec<u8> {
     bytes
 }
 
+/// A file of the twelfth version (312 bytes, `SKYZST12`): this
+/// version's fields up to the held cuts, at the same places.
+fn twelfth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..312].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST12");
+    bytes
+}
+
+/// A file of the twelfth version is still read, without the held cuts,
+/// whose keys `status` does not print for it.
+#[test]
+fn a_file_of_the_twelfth_version_is_read_without_held_cuts() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    fs::write(&path, twelfth_file()).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let mut expected = sample();
+    expected.version = 12;
+    expected.shown.held = None;
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cut_opens"), Some("itself"));
+    assert!(!lines.iter().any(|(key, _)| key.starts_with("cuts_held")
+        || key.starts_with("cut_state")
+        || key.starts_with("cut_copied")));
+}
+
+/// The held cuts are printed from a thirteenth file, every key whether
+/// or not the store holds cuts; a state this version does not know is
+/// printed as unsaid.
+#[test]
+fn status_prints_the_held_cuts() {
+    let lines_of = |held: HeldShown| {
+        let mut status = sample();
+        status.shown.held = Some(held);
+        let read = decode(&encode(&status)).expect("a status");
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(sample().shown.held.expect("held"));
+    for (key, said) in [
+        ("cut_state", "taken_up"),
+        ("cuts_held", "2"),
+        ("cut_copied_bytes", "31"),
+        ("cut_bound_bytes", "32"),
+        ("cuts_abandoned", "33"),
+    ] {
+        assert_eq!(value(&lines, key), Some(said), "{key}");
+    }
+    let off = lines_of(HeldShown::default());
+    assert_eq!(value(&off, "cut_state"), Some("off"));
+    assert_eq!(value(&off, "cuts_held"), Some("0"));
+    let begun = lines_of(HeldShown {
+        state: CutStateShown::Begun,
+        ..HeldShown::default()
+    });
+    assert_eq!(value(&begun, "cut_state"), Some("begun"));
+    let mut bytes = encode(&sample());
+    bytes[312..320].copy_from_slice(&7u64.to_le_bytes());
+    let read = decode(&bytes).expect("a status");
+    assert_eq!(
+        read.shown.held.map(|held| held.state),
+        Some(CutStateShown::Unsaid)
+    );
+}
+
 /// A file of the eleventh version is still read: everything from its
 /// own places, with the count and the newest cut's group, nothing of
 /// the time to the taking, and nothing of whether the newest cut opens
@@ -393,6 +484,7 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 11;
+    expected.shown.held = None;
     if let Some(Cuts {
         newest: Some(cut), ..
     }) = expected.shown.cuts.as_mut()
@@ -835,6 +927,11 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "io_waited",
             "io_in_flight_max",
             "io_waiting_max",
+            "cut_state",
+            "cuts_held",
+            "cut_copied_bytes",
+            "cut_bound_bytes",
+            "cuts_abandoned",
             "pid",
             "counters"
         ]
@@ -1245,20 +1342,22 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut twelfth = encode(&sample()).to_vec();
+    let mut thirteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
         ("10", b"SKYZST10"),
         ("11", b"SKYZST11"),
         ("12", b"SKYZST12"),
+        ("13", b"SKYZST13"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
             "9" => tenth_file()[..2008].to_vec(),
             "10" => tenth_file(),
             "11" => eleventh_file(),
-            _ => std::mem::take(&mut twelfth),
+            "12" => twelfth_file(),
+            _ => std::mem::take(&mut thirteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1273,7 +1372,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 12);
+    assert_eq!(VERSION, 13);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

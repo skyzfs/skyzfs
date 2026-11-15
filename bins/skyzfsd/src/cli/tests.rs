@@ -302,6 +302,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             boot_id_file: Some("/tmp/boot".into()),
             commit_delay_ms: Some(20),
             request_log: Some("/tmp/requests.tsv".into()),
+            request_log_whole: false,
             refuse: Some(Held::Write(8192)),
             refuse_fetch: Some(FetchRefusal::Recovery),
         }
@@ -338,6 +339,37 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
     }
     let named = serve("serve --dir /v/a --request-log /tmp/r.tsv");
     assert_eq!(named.hooks.request_log, Some("/tmp/r.tsv".into()));
+    assert!(!named.hooks.request_log_whole);
+    let content = |spec: &str| {
+        hooked(&format!(
+            "serve --dir /v/a --request-log /tmp/r.tsv --request-log-content {spec}"
+        ))
+    };
+    assert!(matches!(
+        content("whole"),
+        Ok(Command::Serve(Serve {
+            hooks: Hooks {
+                request_log_whole: true,
+                ..
+            },
+            ..
+        }))
+    ));
+    assert!(matches!(
+        content("hash"),
+        Ok(Command::Serve(Serve {
+            hooks: Hooks {
+                request_log_whole: false,
+                ..
+            },
+            ..
+        }))
+    ));
+    assert!(matches!(content("all"), Err(UsageError::Value(..))));
+    assert!(matches!(
+        hooked("serve --dir /v/a --request-log-content whole"),
+        Err(UsageError::Value(..))
+    ));
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))
             .hooks

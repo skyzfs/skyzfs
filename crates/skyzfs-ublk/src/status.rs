@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 312
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 352
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,14 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's twelfth version (M2.1b). It adds whether the
+//! This is the file's thirteenth version (M2.2b). It adds the held
+//! cuts after the twelfth's fields: whether the store holds cuts and
+//! what its start did with their state, how many are held, the bytes
+//! their copies take, the bound, and the cuts abandoned at it. Nothing
+//! is dropped or moved. The twelfth (`SKYZST12`, 312 bytes) is still
+//! read, without the held cuts.
+//!
+//! The twelfth version (M2.1b) added whether the
 //! newest cut opens as itself (design §5.2), after the eleventh's
 //! fields (M2.1). It drops the eleventh's four fields of the pump's
 //! time from a completion being ready in the store to the pump taking
@@ -51,7 +58,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST12` |
+//! | 0 | 8 | magic `SKYZST13` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -74,9 +81,14 @@
 //! | 264 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
 //! | 272 | 8 | `commands_failed`: the queues' commands that ended with any other result than OK: a commit or a fetch the driver refused, or one io_uring could not hand to it. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
 //! | 280 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
-//! | 288 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start: each daemon counts from 0 |
+//! | 288 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start (each daemon counts from 0), unless the store holds cuts and its start took their state up: then it counts on from the state's count |
 //! | 296 | 8 | `cut_group`: the newest cut's transaction group; 0 before the first cut |
 //! | 304 | 8 | `cut_opens`: whether the newest cut opens as itself (design §5.2): 1 if an import of the volume at its instant, with no rewind, opens its uberblock's pool state; 2 if it opens only with a rewind to its group; 0 before the first cut |
+//! | 312 | 8 | `cut_state`: whether the store holds cuts, and what its start did with the state it found (`serve --hold-cuts`, M2.2b): 0 it holds none; 1 it took the state up; 2 it began a new one, which counts the whole volume as changed. Any other value is read as "not said" |
+//! | 320 | 8 | `cuts_held`: the cuts held now (at most three: the one being uploaded, the one that waits, the one whose flush is under way) |
+//! | 328 | 8 | `cut_copied_bytes`: the bytes the copies of held cuts take now |
+//! | 336 | 8 | `cut_bound_bytes`: the bound on them |
+//! | 344 | 8 | `cuts_abandoned`: the cuts abandoned at the bound or let go at a copy that could not be made, since the state began (kept across a start that takes the state up) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -128,10 +140,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST12";
+const MAGIC: &[u8; 8] = b"SKYZST13";
 /// The version this crate writes.
-pub const VERSION: u32 = 12;
-const LEN: usize = 312;
+pub const VERSION: u32 = 13;
+const LEN: usize = 352;
+
+/// The twelfth version: the thirteenth without its held cuts (offset
+/// 312), which are read as absent.
+const TWELFTH_MAGIC: &[u8; 8] = b"SKYZST12";
+const TWELFTH_LEN: usize = 312;
 
 /// The eleventh version: the twelfth without whether the newest cut
 /// opens as itself, and with four fields of the pump's time to the
@@ -204,6 +221,71 @@ pub struct StoreShown {
     /// The count of cuts and the newest cut. `None` in a file of a
     /// version before the eleventh.
     pub cuts: Option<Cuts>,
+    /// The held cuts. `None` in a file of a version before the
+    /// thirteenth.
+    pub held: Option<HeldShown>,
+}
+
+/// The held cuts, as the status file says them (`serve --hold-cuts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HeldShown {
+    /// Whether the store holds cuts, and what its start did.
+    pub state: CutStateShown,
+    /// The cuts held now.
+    pub held: u64,
+    /// The bytes their copies take now.
+    pub copied: u64,
+    /// The bound on the copies.
+    pub bound: u64,
+    /// The cuts abandoned at the bound or let go at a copy that could
+    /// not be made.
+    pub abandoned: u64,
+}
+
+/// Whether the store holds cuts, and what its start did with the state
+/// it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CutStateShown {
+    /// The store holds no cut.
+    #[default]
+    Off,
+    /// The start took the state up: the cuts it held are held still.
+    TakenUp,
+    /// The start began a new state, which counts the whole volume as
+    /// changed.
+    Begun,
+    /// The file holds a value this version does not know.
+    Unsaid,
+}
+
+impl CutStateShown {
+    fn code(self) -> u64 {
+        match self {
+            Self::Off => 0,
+            Self::TakenUp => 1,
+            Self::Begun => 2,
+            Self::Unsaid => u64::MAX,
+        }
+    }
+
+    fn of(code: u64) -> Self {
+        match code {
+            0 => Self::Off,
+            1 => Self::TakenUp,
+            2 => Self::Begun,
+            _ => Self::Unsaid,
+        }
+    }
+
+    /// What `status` prints of it.
+    pub fn said(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::TakenUp => "taken_up",
+            Self::Begun => "begun",
+            Self::Unsaid => "unsaid",
+        }
+    }
 }
 
 /// How write-zeroes reach the home image, as the status file says it.
@@ -333,6 +415,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     let shown = &status.shown;
     let q = shown.io_queue.unwrap_or_default();
     let cuts = shown.cuts.unwrap_or_default();
+    let held = shown.held.unwrap_or_default();
     let fields = [
         status.written_ms,
         c.reads,
@@ -361,6 +444,11 @@ fn encode(status: &Status) -> [u8; LEN] {
         cuts.count,
         cuts.newest.map_or(0, |cut| cut.group),
         cuts.newest.map_or(0, |cut| if cut.itself { 1 } else { 2 }),
+        held.state.code(),
+        held.held,
+        held.copied,
+        held.bound,
+        held.abandoned,
     ];
     let pump = pump_fields(&shown.pump);
     for (i, field) in fields.iter().chain(&pump).chain(&after).enumerate() {
@@ -400,6 +488,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        13
+    } else if is(TWELFTH_LEN, TWELFTH_MAGIC) {
         12
     } else if is(ELEVENTH_LEN, ELEVENTH_MAGIC) {
         11
@@ -455,11 +545,19 @@ fn decode(bytes: &[u8]) -> Option<Status> {
                 itself: version >= 12 && field(304) == 1,
             }),
         };
+        let held = (version >= 13).then(|| HeldShown {
+            state: CutStateShown::of(field(312)),
+            held: field(320),
+            copied: field(328),
+            bound: field(336),
+            abandoned: field(344),
+        });
         let shown = StoreShown {
             zeroes: ZeroesShown::of(field(136)),
             pump: pump_of(&pump),
             io_queue: Some(io_queue_at(bytes, after(216))),
             cuts: Some(cuts),
+            held,
         };
         (field(112), field(120), field(128), shown)
     } else {
@@ -474,6 +572,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             pump: pump_of(&pump),
             io_queue: (version >= 9).then(|| io_queue_at(bytes, tenth::IO_QUEUE)),
             cuts: None,
+            held: None,
         };
         (
             field(tenth::FAILURES),
@@ -947,8 +1046,10 @@ pub enum Noted {
 /// twelfth, says whether that cut opens as itself: `itself` if an import
 /// of the volume at its instant, with no rewind, opens its pool state,
 /// `rewind` if it opens only with a rewind to its group (after a rewind
-/// import, until the pool's groups pass the abandoned ones). The count is the daemon's own:
-/// it starts at 0 with each daemon. A pool made on a partition of the
+/// import, until the pool's groups pass the abandoned ones). The count
+/// is the daemon's own: it starts at 0 with each daemon, unless the
+/// store holds cuts and took their state up, when it counts on from the
+/// state's. A pool made on a partition of the
 /// volume, not on the whole device, makes no cuts: its uberblocks are
 /// not where the store looks for them.
 ///
@@ -1078,6 +1179,20 @@ pub fn report(
                 ("io_waited", q.waited),
                 ("io_in_flight_max", q.in_flight_max),
                 ("io_waiting_max", q.waiting_max),
+            ] {
+                lines.push((key, value.to_string()));
+            }
+        }
+        // The held cuts, from a file that has them, after the I/O
+        // threads: every key, so that a reader finds them whether or not
+        // the store holds cuts.
+        if let Some(held) = shown.held {
+            lines.push(("cut_state", held.state.said().to_string()));
+            for (key, value) in [
+                ("cuts_held", held.held),
+                ("cut_copied_bytes", held.copied),
+                ("cut_bound_bytes", held.bound),
+                ("cuts_abandoned", held.abandoned),
             ] {
                 lines.push((key, value.to_string()));
             }
