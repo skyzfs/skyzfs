@@ -1,0 +1,5 @@
+N1 a wrong block under an unplaced write-zeroes is a verdict: NOT APPLIED (found [0] times)
+N2 a wrong block is the rig's error wherever it is: NOT APPLIED (found [0] times)
+N3 no block of a write-zeroes is unplaced: NOT APPLIED (found [0] times)
+N4 every block of a write-zeroes is unplaced: NOT APPLIED (found [0] times)
+N5 bound need not abandon a cut: KILLED by 2: test_bound_must_abandon, test_the_second_stage_knows_the_recording

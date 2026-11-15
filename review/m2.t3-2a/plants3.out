@@ -1,0 +1,18 @@
+Q1 a write-zeroes is placed at its receipt though a flush waits: KILLED by 2: test_a_write_zeroes_received_while_a_flush_waits, test_behind_the_last_flush_received_before_it
+Q2 it is placed behind the first flush that waits, not the last: KILLED by 1: test_behind_the_last_flush_received_before_it
+Q3 what waits behind a flush is dropped at its barrier: KILLED by 2: test_a_write_zeroes_received_while_a_flush_waits, test_behind_the_last_flush_received_before_it
+Q4 what waits behind a flush is placed before its barrier: KILLED by 2: test_a_write_zeroes_received_while_a_flush_waits, test_behind_the_last_flush_received_before_it
+Q5 no block is left unplaced by a write-zeroes: KILLED by 2: test_a_wrong_block_under_an_unplaced_write_zeroes, test_the_unplaced_blocks_of_each_cut
+Q6 any later write places the block again, whenever it was received: KILLED by 2: test_a_wrong_block_under_an_unplaced_write_zeroes, test_the_unplaced_blocks_of_each_cut
+Q7 no later write places the block again: KILLED by 1: test_the_unplaced_blocks_of_each_cut
+Q8 a wrong block is the rig's error wherever it is: KILLED by 12: test_a_block_held_wrong, test_a_block_never_written_held_in_a_map, test_a_block_outside_every_map, test_a_block_written_and_in_no_map, test_a_discarded_block_reads_either, test_a_wrong_block_is_a_verdict
+Q9 a wrong block is a verdict wherever it is: KILLED by 2: test_a_wrong_block_under_an_unplaced_write_zeroes, test_the_unplaced_blocks_of_each_cut
+Q10 a wrong block that is placed does not make the failure definite: KILLED by 8: test_a_block_held_wrong, test_a_block_never_written_held_in_a_map, test_a_block_written_and_in_no_map, test_a_discarded_block_reads_either, test_a_wrong_block_is_a_verdict, test_a_wrong_block_is_a_verdict_whatever_the_log_holds_after
+Q11 a copied block is counted whenever the write was applied: KILLED by 1: test_copied_blocks
+Q12 a write-zeroes counts as copied though it was answered after the write was asked: KILLED by 1: test_edges_must_send_both
+Q13 the copied blocks are counted from the cut before: KILLED by 1: test_copied_blocks
+Q14 edges need not hold a cut across its write-zeroes: KILLED by 1: test_edges_must_send_both
+Q15 the first written cut counts for edges' floor: SURVIVED
+Q16 a cut still being uploaded after a refusal is no error: KILLED by 2: test_a_release_refused_while_the_cut_is_held, test_a_write_refused_while_the_cut_is_held
+Q17 a refused write is followed by a release: KILLED by 1: test_a_write_refused_while_the_cut_is_held
+Q18 a refused release is not looked at: KILLED by 1: test_a_release_refused_while_the_cut_is_held

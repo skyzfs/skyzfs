@@ -1,0 +1,9 @@
+test inplace::intent::tests::review_two_writes_of_a_page_during_one_sync ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.09s
+before S1 ends: covers region 2 = false
+after S1 ends:  covers region 2 = true
+the disk with W2 kept and W3 lost: trust Ok(()), names [0, 1]
+thread 'inplace::intent::tests::review_two_writes_of_a_page_during_one_sync' (10714) panicked at crates/skyzfs-local/src/inplace/intent/tests.rs:272:5:
+the map lets a write into region 2 begin, and no sync has covered the write that set its bit: the disk may hold W2, which names [0, 1]
+error: test failed, to rerun pass `-p skyzfs-local --lib`
+exit 101
