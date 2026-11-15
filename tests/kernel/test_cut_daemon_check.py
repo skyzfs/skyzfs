@@ -726,24 +726,35 @@ class HeldLines(HeldFixture):
 
     def test_copied_blocks(self):
         """A block counts where a write after the cut's instant, applied
-        before the holder asked for the cut's write, changed it."""
+        before the holder asked for the cut's write, changed it; not where
+        the write left what the cut holds (the review of #103's next look,
+        R1)."""
         first, mid = self.written[0], self.written[len(self.written) // 2]
-        recs_after = [r for r in self.recs if 'ns' in r and r['i'] > self.dcuts[mid['number'] - 1]['prefix']]
-        asked = recs_after[0]['ns'] + 1
-        written = [dict(w, asked=asked if w is mid else 0) for w in self.written]
+        held = self.blocks[mid['number']]
+
+        def touched(r):
+            return [b for b in range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1)]
+
+        # the first write after the cut's instant into a block of its map
+        r = next(r for r in self.recs if 'ns' in r and r['i'] > self.dcuts[mid['number'] - 1]['prefix']
+                 and any(b in held for b in touched(r)))
+        hit = [b for b in touched(r) if b in held]
+        self.assertTrue(hit)
+        written = [dict(w, asked=r['ns'] + 1 if w is mid else 0) for w in self.written]
         got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, self.blocks))
-        r = recs_after[0]
-        touched = set(range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1))
-        self.assertEqual(got[mid['number']], (len(touched & set(self.blocks[mid['number']])), 0))
+        self.assertEqual(got[mid['number']], (len(hit), 0))
         self.assertEqual(got[first['number']], (0, 0))
-        # Rewritten with what the cut holds: read the same from the home
-        # (the review of #103's next look, R1).
-        blocks = {k: dict(m) for k, m in self.blocks.items()}
-        for k, b in enumerate(range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1)):
-            if b in blocks[mid['number']]:
-                blocks[mid['number']][b] = r['hashes'][k]
-        got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, blocks))
+        # asked for before that write: nothing
+        early = [dict(w, asked=r['ns'] if w is mid else 0) for w in self.written]
+        got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, early, self.blocks))
         self.assertEqual(got[mid['number']], (0, 0))
+        # the cut holds what the write left in one of those blocks: that
+        # block reads the same from the home
+        blocks = {k: dict(m) for k, m in self.blocks.items()}
+        b = hit[0]
+        blocks[mid['number']][b] = r['hashes'][touched(r).index(b)]
+        got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, blocks))
+        self.assertEqual(got[mid['number']], (len(hit) - 1, 0))
 
     def test_copied_blocks_under_a_write_zeroes(self):
         """A block a write-zeroes answered before the write was asked for
