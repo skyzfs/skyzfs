@@ -1,0 +1,168 @@
+diff --git a/crates/skyzfs-local/src/inplace/tests/cuts.rs b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+index 29bd166..d8c70f9 100644
+--- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
++++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+@@ -873,3 +873,42 @@ fn bytes_zfs_would_pass_over_make_no_cut() {
+         );
+     }
+ }
++
++/// Bytes ZFS would pass over that lie in a ring when the store starts
++/// are not in view either: the check applies to the rings read at the
++/// start as it does to a write (work package M2.1c). The first
++/// attachment writes group 10 and then forged bytes of group 99 into
++/// label 1's slot, with no checksum; the next starts on that volume and
++/// group 11's cut opens as itself, as an import would open group 11. A
++/// start that takes the forged bytes for an uberblock holds group 99 as
++/// the greatest in view, and every cut says it opens only with a rewind
++/// until that slot is written again.
++#[test]
++fn bytes_zfs_would_pass_over_at_the_start_are_not_in_view() {
++    let disk = created(19, 0);
++    let mut id = 0;
++    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
++        id += 1;
++        assert!(run(store, id, op).result.is_ok());
++    };
++    let mut store = start(&disk, 0, false).unwrap();
++    for label in 0..LABELS {
++        step(&mut store, uberblock_write(label, 10, 1));
++    }
++    step(
++        &mut store,
++        Op::Write {
++            offset: ring(1) + (99 % RING_SLOTS) * SLOT,
++            data: uberblock(99, 9),
++        },
++    );
++    step(&mut store, Op::Flush);
++    assert_eq!(newest(&store), Some((10, true)));
++    drop(store);
++    let mut store = start(&disk, 0, false).unwrap();
++    for label in 0..LABELS {
++        step(&mut store, uberblock_write(label, 11, 2));
++    }
++    step(&mut store, Op::Flush);
++    assert_eq!(newest(&store), Some((11, true)));
++}
+diff --git a/crates/skyzfs-uberblock/src/tests.rs b/crates/skyzfs-uberblock/src/tests.rs
+index 2590c62..a4de93e 100644
+--- a/crates/skyzfs-uberblock/src/tests.rs
++++ b/crates/skyzfs-uberblock/src/tests.rs
+@@ -502,3 +502,116 @@ fn a_new_labels_ring_is_not_verified() {
+     assert_eq!(found.len(), 1);
+     assert!(!found[0].counts() && !found[0].verified());
+ }
++
++/// The label checksum of one slot as ZFS computes it, with answers that
++/// do not come from this crate: they were computed from the OpenZFS
++/// 2.4.1 sources (`zio_checksum_compute` with `ZIO_CHECKSUM_LABEL`,
++/// `abd_checksum_sha256`) with Python's hashlib. The slot is 1 KiB at
++/// 0x20400, the uberblock magic and group 7 with zeros after, as a
++/// little-endian and as a big-endian host writes it. `seal` and
++/// `label_checksum_holds` share `label_checksum`, so a slot the tests
++/// seal themselves cannot show an error both would make: for a
++/// big-endian writer, of which there is no recording, this is the one
++/// test that could.
++#[test]
++fn the_label_checksum_gives_the_answers_zfs_gives() {
++    const AT: u64 = 0x20400;
++    let cases = [
++        (
++            ByteOrder::Little,
++            "6e7c41876ec86b3c96c86ae658f2957456e6c4ad5cdd7c5670dab273fb616b2d",
++        ),
++        (
++            ByteOrder::Big,
++            "021d60e737324c57bd910abcd993623e8e838e506fe22bc488c8ac6dbca378f9",
++        ),
++    ];
++    for (order, last) in cases {
++        let mut s = vec![0u8; SLOT_MIN as usize];
++        s[..8].copy_from_slice(&order.bytes(MAGIC));
++        s[16..24].copy_from_slice(&order.bytes(7));
++        seal(&mut s, AT, order);
++        let words: String = s[s.len() - 32..]
++            .iter()
++            .map(|byte| format!("{byte:02x}"))
++            .collect();
++        assert_eq!(words, last, "{order:?}");
++        assert!(label_checksum_holds(&s, AT), "{order:?}");
++        // Each of the four words counts, and so does the checksum's
++        // magic, which is hashed.
++        for at in [8, 16, 24, 32, 40] {
++            let mut changed = s.clone();
++            let byte = changed.len() - at;
++            changed[byte] ^= 1;
++            assert!(!label_checksum_holds(&changed, AT), "{order:?}, {at}");
++        }
++    }
++}
++
++/// A slot whose checksum holds, at a place where no slot of its size
++/// begins, is not verified: ZFS reads a ring only at whole slots of the
++/// pool's size.
++#[test]
++fn a_slot_out_of_step_with_the_ring_is_not_verified() {
++    let labels = Labels::for_size(64 * MIB);
++    let ring = labels.rings().next().expect("label 0");
++    for (size, into) in [
++        (2 * KIB, KIB),
++        (4 * KIB, KIB),
++        (4 * KIB, 2 * KIB),
++        (8 * KIB, 4 * KIB),
++    ] {
++        let at = ring.start + size + into;
++        let mut s = slot(ByteOrder::Little, 9, 1, size);
++        seal(&mut s, at, ByteOrder::Little);
++        assert!(label_checksum_holds(&s, at));
++        let found = labels.uberblocks_in(at, &s);
++        assert_eq!(found.len(), 1);
++        assert_eq!(found[0].slot, None, "{size} bytes, {into} into a slot");
++    }
++}
++
++/// A slot whose checksum carries no magic is held against its words as
++/// a little-endian host reads them: `zio_checksum_error_impl` asks only
++/// whether the magic reads swapped, and takes any other for its own
++/// order. The magic is hashed, so the words are those of the slot with
++/// that magic in place.
++#[test]
++fn a_checksum_without_its_magic_is_read_as_a_little_endian_host_reads_it() {
++    let labels = Labels::for_size(64 * MIB);
++    let ring = labels.rings().next().expect("label 0");
++    let at = ring.start + 4 * KIB;
++    let mut s = slot(ByteOrder::Little, 9, 1, 4 * KIB);
++    seal(&mut s, at, ByteOrder::Little);
++    let eck = s.len() - ECK_LEN;
++    s[eck..eck + 8].copy_from_slice(&[0x55; 8]);
++    assert!(!label_checksum_holds(&s, at));
++    let words = label_checksum(&s, at, ByteOrder::Little);
++    for (n, word) in words.into_iter().enumerate() {
++        let to = eck + 8 + 8 * n;
++        s[to..to + 8].copy_from_slice(&word.to_le_bytes());
++    }
++    assert!(label_checksum_holds(&s, at));
++    assert_eq!(labels.uberblocks_in(at, &s)[0].slot, Some(4 * KIB));
++}
++
++/// The view holds only what ZFS takes for an uberblock: a slot with the
++/// magic and a group whose checksum does not hold leaves its place
++/// known and empty, and the same slot sealed is held.
++#[test]
++fn the_view_holds_no_uberblock_whose_checksum_fails() {
++    let labels = Labels::for_size(64 * MIB);
++    let mut view = View::empty(labels);
++    for ring in labels.rings() {
++        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
++    }
++    let ring = labels.rings().next().expect("label 0");
++    let at = ring.start + 4 * KIB;
++    let unsealed = slot_at(9, 1, 100, 0);
++    view.saw(at, &unsealed);
++    assert!(view.is_known());
++    assert_eq!(view.uberblocks().count(), 0);
++    assert!(!view.chosen(&state(9, 1), false));
++    view.saw(at, &sealed(&unsealed, at));
++    assert!(view.chosen(&state(9, 1), false));
++}
