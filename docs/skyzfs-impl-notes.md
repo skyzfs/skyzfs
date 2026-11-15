@@ -1260,6 +1260,27 @@ p99 was 3.9 to 4.4 ms in every daemon row (models 3.5 to 3.8) and p99.9 8 ms thr
 
 **The default region is 4 MiB** (lead, 2026-11-15): at 64 MiB the map names about 88 times what changed on the recorded pools, at 4 MiB about 9 times for a cost one run cannot separate from none, and 1 MiB costs too much. Nine 4 KiB pages of map for a TiB (a page covers 32,672 regions).
 
+### Copies in runs against copies by the block (M2.T4, M2.2d, 2026-11-15)
+
+Two sequences on two machines, each compared only within itself; one run a row; every daemon row a test-hooks build with `--hold-cuts`. S1 is run 43731184255 (AWS, fast syncs, tpcb models 7742 to 8047), S2 run 43731234507 (Azure, models 3571 to 3624). "d" is M2.2d at b6aaad8 (copies in runs), "c" M2.2c (one 4 KiB block a copy), "b" the build before M2.2c (buffered copies); 0 is no release (round 1's regime: copies up to the 256 MiB bound, then the cut is abandoned, 24 or 25 times in S1's window and 10 or 11 in S2's), 1 releases each cut, 4 the uploading cut once three newer are taken. Ratios are to the mean of the enclosing model rows.
+
+| Row | S1 tpcb tps | S1 ratio | S1 p99, ms | S2 tpcb tps | S2 ratio | S2 p99, ms | select ratio, S1 / S2 |
+|---|---|---|---|---|---|---|---|
+| c0 | 5854 | 0.750 | 10.1 | 2593 | 0.719 | 12.5 | 0.813 / 0.782 |
+| d0 | 6431 | 0.824 | 7.2 | 3275 | 0.907 | 6.7 | 0.826 / 0.836 |
+| b0 | 6790 | 0.870 | 4.7 | 3319 | 0.924 | 6.4 | 0.823 / 0.855 |
+| d1 | 6830 | 0.875 | 4.0 | 3407 | 0.945 | 6.1 | 0.824 / 0.863 |
+| c1 | 7067 | 0.899 | 3.9 | 3351 | 0.933 | 6.2 | 0.852 / 0.854 |
+| d4 | 6951 | 0.885 | 3.9 | 3370 | 0.941 | 6.3 | 0.835 / 0.852 |
+| c4 | 7096 | 0.893 | 3.8 | 3383 | 0.937 | 6.3 | 0.844 / 0.857 |
+| no held cuts | | | | 3378 | 0.943 | 6.2 | / 0.860 |
+
+Work-disk writes a transaction: S1 models 3.56 to 3.63, c0 5.15, d0 4.85, b0 3.94, rows with releases 3.60 to 3.75; S2 models 0.98 to 1.02, c0 2.60, d0 1.14, every other daemon row 0.87 to 0.88.
+
+**Reading.** Without releases, copies in runs recover most of what copies by the block lost: d0 is 9.9% (S1) and 26% (S2) above c0, with p99 of about 7 ms against 10 to 12. It stays below buffered copies by 4.6 (S1) and 1.7 (S2) ratio points, and below itself with releases by 5.1 and 3.8. With releases no cut is abandoned, nothing stays copied and the copy path does not matter: d and c are within 0.3 to 3.5% of each other in both directions, and on S2 they sit with no held cuts at 0.93 to 0.95. The head measured is b6aaad8, before M2.2d's last fix.
+
+**Decided (lead, 2026-11-15): the copy stays on the queue's thread for now.** M2.2e (the copy on the I/O thread that makes the write) is not built before M2.4. Its gain is bounded by the 2 to 5 points above, it is paid only while an upload lags far enough for writes to land on a held cut's blocks, and it reworks the copy rule's order under a freeze (the rules in M2.2d's row). It is judged again with the real uploader, where how often a write meets a held cut is measured and not staged.
+
 ### What is open in M2
 
 - **The bound's default.** D7 gives the rule and no number. M2.2 is built with a provisional default so that the rigs run (below); the default is set from M2.T4's figures.
