@@ -142,6 +142,7 @@ impl InPlaceHarness {
                 region: super::CutRegion::Memory(region),
                 boot: [0; 16],
                 bound: Some(HELD_BOUND),
+                intent_region: None,
             }),
             ..OpenOptions::default()
         }
