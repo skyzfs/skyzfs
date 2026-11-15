@@ -183,7 +183,7 @@
 //! # Held cuts (M2.2)
 //!
 //! A store started with a region for the cut state
-//! ([`OpenOptions::cut_region`]) keeps it (`inplace/state.rs`), taken
+//! ([`OpenOptions::hold_cuts`]) keeps it (`inplace/state.rs`), taken
 //! up once the start's sync has succeeded, which counts as the flush of
 //! every cut whose flush a death left under way. The count of cuts
 //! (`inplace/cuts.rs`) tells it what happened: the mark of an uberblock
@@ -194,13 +194,26 @@
 //! queue's thread, its blocks pass through the cut state: a block a
 //! held cut reads is read from the home image and copied into
 //! `copies.img` there and then, and the write begins only after the
-//! copy is written. A copy that cannot be made fails the volume, as a
-//! failed write does, and the write is not begun. A discard is not
-//! noted: it changes no content here. In M2.2a the region is in memory
-//! (`MemRegion`), which outlives a death only in the tests; the mapped
-//! file locked in memory, and the rules for trusting it, are M2.2b's. A
-//! store started with no region holds no cut, as the daemon's does
-//! until then: nothing would let a held cut go.
+//! copy is written. A copy that cannot be made (a full file system:
+//! `copies.img` grows a slot at a time and is not allocated up to the
+//! bound; or a failed write of it, or read of the image) lets go the
+//! held cuts that need it, and the write goes on: a recovery point is
+//! worth less than the volume (the owner's ruling, through the lead,
+//! M2.2b; `state.rs`). A discard is not noted: it changes no content
+//! here.
+//!
+//! The region ([`CutRegion`]) is a named one the kernel keeps while the
+//! machine is up, which the open maps, allocated in full and locked
+//! (`skyzfs-mapped`; the daemon's is a file in the volume's run
+//! directory, on tmpfs), or one in memory, which outlives a death only
+//! in the tests. An open that cannot have the region is refused
+//! ([`OpenError::CutRegion`]) before anything of the volume is written.
+//! The start takes the state up only where it can trust it, and
+//! otherwise begins a new one, which counts the whole volume as changed;
+//! it says which ([`InPlace::cuts_at_start`]), and the rules are at
+//! `take_up_cut_state`. A store started with no region holds no cut, as
+//! the daemon's does unless told to (`serve --hold-cuts`): before the
+//! uploader (M2.4) nothing lets a held cut go but the rigs' commands.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -223,8 +236,8 @@ pub use cuts::{Cut, Cuts, Seen, Watcher};
 pub use state::{Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase};
 
 pub use start::{
-    create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
-    VolumeConfig,
+    create, create_zero_filled, identity_of, lock, CutRegion, HoldCuts, OpenError, OpenOptions,
+    Opened, Under, VolumeConfig,
 };
 
 /// Defects, for the tests that show each rule is tested.
@@ -397,6 +410,30 @@ impl Mutants {
     pub(crate) const MOVE_CLEARS_FIRST: u64 = 1 << 54;
     /// A map let go is not cleared, at a release or at a start.
     pub(crate) const MAP_NOT_CLEARED: u64 = 1 << 55;
+    /// A cut state begun in another boot is taken up.
+    pub(crate) const BOOT_UNCHECKED: u64 = 1 << 56;
+    /// A cut state kept under another start token is taken up: the
+    /// volume was opened after the instance that kept it. A token has
+    /// no order, so this is also the state trusted on the token of a
+    /// start older than the last: every state of this volume names one.
+    pub(crate) const START_UNCHECKED: u64 = 1 << 62;
+    /// An open that holds no cuts leaves the start token as it found it.
+    pub(crate) const START_KEPT_WITHOUT_CUTS: u64 = 1 << 1;
+    /// An open writes its start token after it removes an acknowledged
+    /// failure marker, where it is written before.
+    pub(crate) const START_AFTER_ACKNOWLEDGING: u64 = 1 << 63;
+    /// A cut state of a volume with another identity is taken up.
+    pub(crate) const IDENTITY_UNCHECKED: u64 = 1 << 60;
+    /// The start does not sync the copies file before it trusts the
+    /// state, or trusts it though the sync failed.
+    pub(crate) const COPIES_SYNC_UNCHECKED: u64 = 1 << 57;
+    /// A start that acknowledges a failure trusts the cut state.
+    pub(crate) const ACKNOWLEDGED_TRUSTED: u64 = 1 << 58;
+    /// A start on a created device keeps the mark the state holds.
+    pub(crate) const MARK_KEPT_ON_CREATED: u64 = 1 << 59;
+    /// A copy that cannot be made fails the change, and so the volume,
+    /// instead of letting go the cuts that need it.
+    pub(crate) const COPY_FAILURE_FAILS: u64 = 1 << 61;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -558,7 +595,7 @@ pub struct InPlace<D: Dir> {
     cuts: CutRule,
     /// The cut state (`state.rs`): taken up or begun once the start's
     /// sync has succeeded.
-    state: Option<CutState<state::MemRegion>>,
+    state: Option<CutState<state::StoreRegion>>,
     /// The copies file, once opened.
     copies: Option<D::File>,
     /// The flushes that carry a cut to its flush's completion, with the
@@ -567,6 +604,8 @@ pub struct InPlace<D: Dir> {
     /// Under [`Mutants::MARK_AFTER_COMPLETION`]: marks recorded only once
     /// the write's completion is handed out.
     marks_after: Vec<(RequestId, State)>,
+    /// What the start did with the cut state the region held.
+    cuts_at_start: Option<CutsTakenUp>,
     /// The rings the start could not read: each one's offset on the
     /// volume and the error ([`InPlace::rings_unread`]).
     rings_unread: Vec<(u64, String)>,
@@ -811,10 +850,36 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) observer: Option<FailureObserver>,
     /// How reads and writes are done.
     pub(crate) io: IoMode,
-    /// Where the cut state lives ([`OpenOptions::cut_region`]).
-    pub(crate) cut_region: Option<state::MemRegion>,
-    /// The bound on its copies ([`OpenOptions::cut_bound`]).
-    pub(crate) cut_bound: Option<u64>,
+    /// The held cuts' region and what the start knows of trusting it.
+    pub(crate) cuts: Option<CutsAtStart>,
+}
+
+/// What a start did with the cut state its region held
+/// ([`InPlace::cuts_at_start`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CutsTakenUp {
+    /// The state was taken up: the cuts it held are held still.
+    TakenUp,
+    /// A new state was begun, with no cut held and the whole volume
+    /// counted as changed, for the reason given.
+    Begun(String),
+}
+
+/// The copies file as the start found it.
+enum CopiesAtStart {
+    Synced,
+    Missing,
+    Failed(io::Error),
+}
+
+/// What a start that holds cuts takes up ([`InPlace::take_up_cut_state`]).
+pub(crate) struct CutsAtStart {
+    /// The region as the open had it.
+    pub(crate) region: state::Taken,
+    /// Whether the start acknowledges a failure.
+    pub(crate) acknowledged: bool,
+    /// Whether the device was taken over rather than created.
+    pub(crate) taken_over: bool,
 }
 
 impl<D: Dir> InPlace<D> {
@@ -864,6 +929,7 @@ impl<D: Dir> InPlace<D> {
             copies: None,
             flushing: BTreeMap::new(),
             marks_after: Vec::new(),
+            cuts_at_start: None,
             rings_unread: Vec::new(),
         };
         // What the instance before this one wrote by direct I/O may be
@@ -883,7 +949,9 @@ impl<D: Dir> InPlace<D> {
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
-        store.take_up_cut_state(parts.cut_region, parts.cut_bound);
+        if let Some(cuts) = parts.cuts {
+            store.take_up_cut_state(cuts);
+        }
         store.empty_cache().map_err(StartError::CacheKept)?;
         store.read_rings();
         store.set_up_io().map_err(StartError::Io)?;
@@ -1846,34 +1914,146 @@ impl<D: Dir> state::Copier for Copies<'_, D> {
 
 impl<D: Dir> InPlace<D> {
     /// Take up the cut state the region holds, or begin one where it
-    /// holds none this daemon reads: once the start's sync has
+    /// holds none this start may trust: once the start's sync has
     /// succeeded, which counts as the flush of every cut whose flush a
-    /// death left under way (design §5.2). With no region, no cut is
-    /// held: nothing lets a held cut go before the uploader (M2.4) or
+    /// death left under way (design §5.2). A store with no region holds
+    /// no cut: nothing lets a held cut go before the uploader (M2.4) or
     /// the test-hooks build's commands (M2.2b), and a cut held for ever
     /// would have every first write to a block after it copied, until
     /// the bound (coding's reading, M2.2a).
-    fn take_up_cut_state(&mut self, region: Option<state::MemRegion>, bound: Option<u64>) {
-        let Some(region) = region else {
-            return;
-        };
+    ///
+    /// The state is trusted only where all of these hold, and otherwise
+    /// a new one begins, which counts the whole volume as changed (M2.2b,
+    /// as agreed with the lead):
+    ///
+    /// - the region was there with the volume's length, and holds a
+    ///   state of this format, of this volume (its identity: a volume
+    ///   made again in the same directory has the same run directory),
+    ///   begun in this boot: a reboot or a crash of the machine can lose
+    ///   copies the state names, which no daemon death can (the
+    ///   daemon's region is on tmpfs, which a reboot empties; the boot
+    ///   id guards a region kept elsewhere);
+    /// - the copies file was synced by this start, and the sync
+    ///   succeeded: a copy is written through the kernel's cache and not
+    ///   synced while the volume is served (the lead's decision 6), so a
+    ///   writeback that failed after the copy was written would have
+    ///   the next read of it return what the disk holds. The kernel
+    ///   reports such a failure to the first sync after it, this one. A
+    ///   copies file that is missing is as good as synced only if the
+    ///   state names no copy;
+    /// - the start does not acknowledge a failure: a failed volume's
+    ///   state is not one this start can vouch for;
+    /// - the volume was not opened since the instance that kept the
+    ///   state (the review of #100, D1 to D3). The state is kept under
+    ///   the start token of the open its instance served under, and
+    ///   every open writes a new token before it changes anything else
+    ///   ([`crate::volume::START_NAME`]). Without that rule a start that
+    ///   held no cuts, or held them in another run directory, could
+    ///   write blocks a held cut reads with no copy made; and a start
+    ///   lost after its open took the failure marker away, or after its
+    ///   sync heard of a failed writeback of the copies, would leave a
+    ///   state the next start trusts. The new token is recorded in the
+    ///   state only once it is trusted, before the start finishes what
+    ///   a death interrupted, or when a new state begins.
+    ///
+    /// A state taken up on a device this instance created, not took
+    /// over, keeps no mark (coding's reading, M2.2b, agreed with the
+    /// lead): a mark is cut at the flush that follows it, and the
+    /// client that wrote the marked uberblock was the old device's,
+    /// which can send no flush to this one; whatever writes the pool
+    /// next on a created device marks afresh.
+    fn take_up_cut_state(&mut self, cuts: CutsAtStart) {
+        let CutsAtStart {
+            region:
+                state::Taken {
+                    region,
+                    kept,
+                    owner,
+                    start,
+                    bound,
+                },
+            acknowledged,
+            taken_over,
+        } = cuts;
         let size = self.geometry.size_bytes();
-        let bound = bound.unwrap_or_else(|| state::default_bound(size));
-        let words = state::words_for(size / skyzfs_blk::BLOCK_SIZE, state::records_for(bound));
-        let region = if state::Region::words(&region) >= words {
-            region
+        let copies = self.sync_copies();
+        let trusted = if acknowledged && !self.mutants.has(Mutants::ACKNOWLEDGED_TRUSTED) {
+            Err(("the start acknowledges a failure".to_owned(), region))
+        } else if !kept {
+            Err((
+                "the region was not there with the volume's length".to_owned(),
+                region,
+            ))
         } else {
-            state::MemRegion::new(words)
+            // Read as it is: nothing is stored until it is trusted.
+            match CutState::view(region, size, bound, owner, self.mutants) {
+                Err((e, region)) => Err((e.to_string(), region)),
+                Ok(cut_state) => match copies {
+                    CopiesAtStart::Synced => Ok(cut_state),
+                    CopiesAtStart::Missing if cut_state.figures().copied == 0 => Ok(cut_state),
+                    CopiesAtStart::Missing => Err((
+                        "the copies file is missing, and the state names copies".to_owned(),
+                        cut_state.into_region(),
+                    )),
+                    CopiesAtStart::Failed(e) => Err((
+                        format!("the copies file could not be synced: {e}"),
+                        cut_state.into_region(),
+                    )),
+                },
+            }
         };
-        let cut_state = match CutState::restore(region.clone(), size, bound, self.mutants) {
-            Ok(cut_state) => cut_state,
-            // No state, or one this daemon does not read: a new one,
-            // which counts the whole volume as changed.
-            Err(_) => CutState::begin(region, size, bound, self.mutants),
+        let cut_state = match trusted {
+            Ok(cut_state) => {
+                let mut cut_state = cut_state.take_up(start);
+                if !taken_over
+                    && cut_state.mark().is_some()
+                    && !self.mutants.has(Mutants::MARK_KEPT_ON_CREATED)
+                {
+                    cut_state.set_mark(None);
+                }
+                self.cuts_at_start = Some(CutsTakenUp::TakenUp);
+                cut_state
+            }
+            Err((why, region)) => {
+                self.cuts_at_start = Some(CutsTakenUp::Begun(why));
+                CutState::begin(
+                    region,
+                    size,
+                    bound,
+                    state::Owner { start, ..owner },
+                    self.mutants,
+                )
+            }
         };
         self.cuts
             .restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());
         self.state = Some(cut_state);
+    }
+
+    /// Sync the copies file, if there is one, as the start does before
+    /// it trusts the cut state.
+    fn sync_copies(&mut self) -> CopiesAtStart {
+        if self.mutants.has(Mutants::COPIES_SYNC_UNCHECKED) {
+            return CopiesAtStart::Synced;
+        }
+        match self.dir.open(COPIES_NAME) {
+            Ok(mut file) => {
+                let synced = file.sync();
+                self.copies = Some(file);
+                match synced {
+                    Ok(()) => CopiesAtStart::Synced,
+                    Err(e) => CopiesAtStart::Failed(e),
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => CopiesAtStart::Missing,
+            Err(e) => CopiesAtStart::Failed(e),
+        }
+    }
+
+    /// What the start did with the cut state the region held, if the
+    /// store holds cuts.
+    pub fn cuts_at_start(&self) -> Option<&CutsTakenUp> {
+        self.cuts_at_start.as_ref()
     }
 
     /// The conformance harness's mark: as if an uberblock write naming

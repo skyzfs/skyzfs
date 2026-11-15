@@ -2086,23 +2086,31 @@ fn an_acknowledged_marker_is_gone_for_good_once_the_open_returns() {
 
 /// A marker the open cannot remove durably refuses the start, which has
 /// served nothing, and the volume stays marked: the remove is not on
-/// the disk until the directory's sync, and that sync failed.
+/// the disk until the directory's sync, and that sync failed. So does a
+/// start token the open cannot write durably, which comes before the
+/// marker: on this volume, served once, the token's file is synced, then
+/// the directory without the marker.
 #[test]
 fn a_marker_that_cannot_be_removed_refuses_the_start() {
     let io = IoMode::default();
-    let disk = created(6, 0);
-    mark(&disk);
-    disk.fail_sync(0, true);
-    match opened(&disk, true, io) {
-        Err(OpenError::Io { during, .. }) => assert_eq!(during, "removing the failure marker"),
-        other => panic!("{other:?}"),
+    for (syncs_before, during) in [
+        (0, "writing the start token"),
+        (1, "removing the failure marker"),
+    ] {
+        let disk = created(6, 0);
+        mark(&disk);
+        disk.fail_sync(syncs_before, true);
+        match opened(&disk, true, io) {
+            Err(OpenError::Io { during: what, .. }) => assert_eq!(what, during),
+            other => panic!("{during}: {other:?}"),
+        }
+        disk.clear_faults();
+        disk.power_cut(LoseAll);
+        assert!(
+            matches!(opened(&disk, false, io), Err(OpenError::MarkedFailed)),
+            "{during}"
+        );
     }
-    disk.clear_faults();
-    disk.power_cut(LoseAll);
-    assert!(matches!(
-        opened(&disk, false, io),
-        Err(OpenError::MarkedFailed)
-    ));
 }
 
 /// The open refuses, by reason, a volume whose home image is missing or

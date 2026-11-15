@@ -4221,10 +4221,19 @@ dependencies = [
  "proptest",
  "rustix 1.1.4",
  "skyzfs-blk",
+ "skyzfs-mapped",
  "skyzfs-uberblock",
  "skyzfs-ublk-sys",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "skyzfs-mapped"
+version = "0.0.1"
+dependencies = [
+ "rustix 1.1.4",
+ "tempfile",
 ]
 
 [[package]]

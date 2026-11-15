@@ -17,6 +17,8 @@ crc32c = { workspace = true }
 getrandom = { workspace = true }
 skyzfs-blk = { workspace = true }
 skyzfs-uberblock = { workspace = true }
+# The region the cut state lives in, mapped and locked (M2.2b).
+skyzfs-mapped = { workspace = true }
 
 [dev-dependencies]
 # For the recorded pools' records (`tests/fixtures/pools`), which are

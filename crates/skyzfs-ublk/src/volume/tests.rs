@@ -123,6 +123,10 @@ fn the_stores_errors_are_sorted_into_their_kinds() {
             "checksum",
         ),
         (E::Damaged("there is no home image"), "no home image"),
+        (
+            E::CutRegion("RLIMIT_MEMLOCK is 8388608 bytes".to_owned()),
+            "the region of the held cuts: RLIMIT_MEMLOCK",
+        ),
     ] {
         match classify(&refused) {
             OpenError::Other(why) => assert!(

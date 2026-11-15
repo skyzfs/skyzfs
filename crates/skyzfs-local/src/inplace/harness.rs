@@ -138,8 +138,11 @@ impl InPlaceHarness {
             read_only,
             acknowledge_failure,
             io: self.io,
-            cut_region: region,
-            cut_bound: self.held_cuts.then_some(HELD_BOUND),
+            hold_cuts: region.map(|region| super::HoldCuts {
+                region: super::CutRegion::Memory(region),
+                boot: [0; 16],
+                bound: Some(HELD_BOUND),
+            }),
             ..OpenOptions::default()
         }
     }
