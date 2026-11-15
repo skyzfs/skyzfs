@@ -283,7 +283,7 @@ type Counted = (u64, u64, u64, u64, bool);
 /// far. With `restart`, a store begins again at each session's start
 /// (the record's mark `session-N-begin`), as a daemon started for that
 /// attachment would, and its count is carried on in the numbers.
-fn replay(pool: &Pool, mutants: u64, restart: bool) -> Vec<Counted> {
+fn replay(pool: &Pool, mutants: u128, restart: bool) -> Vec<Counted> {
     let labels = Labels::for_size(pool.dev_bytes);
     let rings: Vec<_> = labels.rings().collect();
     // The rings as the record has left them so far.
@@ -531,7 +531,7 @@ fn a_store_begun_at_each_session_says_which_cuts_open_as_themselves() {
 #[test]
 fn the_recordings_notice_the_defects_of_a_repeat() {
     let pools = pools();
-    let cases: [(&str, u64, &[&str]); 3] = [
+    let cases: [(&str, u128, &[&str]); 3] = [
         (
             "every uberblock write counted",
             Mutants::REPEAT_COUNTED,

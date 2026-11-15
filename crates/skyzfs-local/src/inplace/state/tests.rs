@@ -207,7 +207,7 @@ struct World {
 }
 
 impl World {
-    fn new(mutants: u64, bound_blocks: u64) -> Self {
+    fn new(mutants: u128, bound_blocks: u64) -> Self {
         let bound = bound_blocks * BLOCK_SIZE;
         let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
         let state = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(mutants));
@@ -665,7 +665,7 @@ fn program(seed: u64, len: usize) -> Vec<Step> {
 /// program's first step), if one is given.
 fn run(
     steps: &[Step],
-    mutants: u64,
+    mutants: u128,
     bound_blocks: u64,
     death: Option<u64>,
 ) -> Result<World, String> {
@@ -684,7 +684,7 @@ fn run(
 }
 
 /// The stores a run of `steps` makes with no death.
-fn stores_of(steps: &[Step], mutants: u64, bound_blocks: u64) -> u64 {
+fn stores_of(steps: &[Step], mutants: u128, bound_blocks: u64) -> u64 {
     let world = World::new(mutants, bound_blocks);
     let base = world.region.stores();
     drop(world);
@@ -696,7 +696,7 @@ fn stores_of(steps: &[Step], mutants: u64, bound_blocks: u64) -> u64 {
 
 /// Whether some seed below `seeds`, with no death or with one at some
 /// store, fails under `mutants`.
-fn caught(mutants: u64, seeds: u64, bound_blocks: u64, deaths: bool) -> Option<String> {
+fn caught(mutants: u128, seeds: u64, bound_blocks: u64, deaths: bool) -> Option<String> {
     for seed in 0..seeds {
         let steps = program(seed, 60);
         if let Err(e) = run(&steps, mutants, bound_blocks, None) {
@@ -978,7 +978,7 @@ fn the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs() {
 /// a death at some store, or by the fixed programs.
 #[test]
 fn the_tests_notice_each_defect_of_the_cut_state() {
-    let fixed = |mutants: u64| -> Option<String> {
+    let fixed = |mutants: u128| -> Option<String> {
         for (name, steps, bound) in fixed_programs() {
             if let Err(e) = run(&steps, mutants, bound, None) {
                 return Some(format!("{name}: {e}"));
@@ -1064,7 +1064,7 @@ fn the_tests_notice_each_defect_of_the_cut_state() {
 fn a_region_of_another_version_volume_or_boot_is_refused() {
     let bound = 2 * BLOCK_SIZE;
     let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
-    let refused = |size: u64, owner: Owner, mutants: u64| {
+    let refused = |size: u64, owner: Owner, mutants: u128| {
         CutState::restore(region.clone(), size, bound, owner, Mutants(mutants))
             .err()
             .map(|(e, _)| e)

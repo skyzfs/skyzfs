@@ -153,6 +153,23 @@ impl Maps {
         }
     }
 
+    /// The words set in any of `maps`, in order: a word `w` holds blocks
+    /// `64 w .. 64 w + 64`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn set_words(&self, region: &impl Region, maps: &[usize]) -> Vec<usize> {
+        let mut words: Vec<usize> = maps
+            .iter()
+            .flat_map(|&map| self.noted_words(region, map))
+            .filter(|&word| {
+                maps.iter()
+                    .any(|&map| region.load(self.bits_base(map) + word) != 0)
+            })
+            .collect();
+        words.sort_unstable();
+        words.dedup();
+        words
+    }
+
     /// The words of map `map` that its summary says may be set.
     fn noted_words(&self, region: &impl Region, map: usize) -> Vec<usize> {
         let base = self.summary_base(map);
