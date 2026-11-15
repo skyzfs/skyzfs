@@ -687,6 +687,35 @@ impl<R: Region> CutState<R> {
         Self::new(region, blocks, capacity, bound, mutants)
     }
 
+    /// The words of the maps that hold changes after held cut
+    /// `number`'s instant (the open map's, and every newer held cut's):
+    /// a word `w` holds blocks `64 w .. 64 w + 64`. `None` where the
+    /// whole volume counts as changed after it. A superset is safe for
+    /// what asks (the intent map keeps a bit it might have cleared).
+    // The store clears the intent map from M2.3b on; until then only
+    // the map's model test asks.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn changed_after(&self, number: u64) -> Option<Vec<usize>> {
+        if self.whole() > number {
+            return None;
+        }
+        let mut maps = Vec::new();
+        let parts = std::iter::once(self.open()).chain(
+            self.holds()
+                .into_iter()
+                .filter(|h| h.cut.number > number)
+                .map(|h| h.parts),
+        );
+        for parts in parts {
+            maps.push(parts.first);
+            maps.extend(parts.also);
+        }
+        maps.retain(|&map| map < MAPS);
+        maps.sort_unstable();
+        maps.dedup();
+        Some(self.maps.set_words(&self.region, &maps))
+    }
+
     /// The state that `region` holds, read as it is, with nothing
     /// finished: what a reader beside the daemon sees at any store. The
     /// tests read it so at the instant of a death. A state that is not

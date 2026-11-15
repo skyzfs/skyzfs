@@ -434,6 +434,20 @@ impl Mutants {
     /// A copy that cannot be made fails the change, and so the volume,
     /// instead of letting go the cuts that need it.
     pub(crate) const COPY_FAILURE_FAILS: u128 = 1 << 61;
+    /// A write into a region whose bit the disk does not hold begins at
+    /// once (M2.3).
+    pub(crate) const INTENT_WRITE_UNCOVERED: u128 = 1 << 64;
+    /// A cut's bits are cleared before the cut is committed in object
+    /// storage.
+    #[cfg(test)]
+    pub(crate) const INTENT_CLEARED_BEFORE_COMMIT: u128 = 1 << 65;
+    /// A bit is cleared although its region changed after the
+    /// committed cut's instant.
+    pub(crate) const INTENT_CLEARED_CHANGED: u128 = 1 << 66;
+    /// A map is taken up whatever start token it names.
+    pub(crate) const INTENT_TOKEN_UNCHECKED: u128 = 1 << 68;
+    /// A bit page whose checksum fails is taken up as it reads.
+    pub(crate) const INTENT_TORN_TRUSTED: u128 = 1 << 69;
 
     pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0
@@ -1861,6 +1875,7 @@ impl<D: Dir> InPlace<D> {
 mod cuts;
 #[cfg(test)]
 pub(crate) mod harness;
+pub(crate) mod intent;
 mod pool;
 mod start;
 pub(crate) mod state;
