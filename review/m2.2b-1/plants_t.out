@@ -9,3 +9,7 @@ T8 the store is told no failure is acknowledged: KILLED by 1: a_held_cut_is_take
 T9 the boot is compared by its second word alone: KILLED by 2: a_held_cut_is_taken_up_only_where_its_state_is_trusted, a_held_cut_outlives_kill_9_in_its_mapped_region
 T10 the boot is compared by its first word alone: KILLED by 1: a_region_of_another_version_volume_or_boot_is_refused
 T11 the identity is compared by its first word alone: SURVIVED
+T12 the identity is compared by its second word alone: KILLED by 1: a_region_of_another_version_volume_or_boot_is_refused
+T13 a state not trusted is left in the region and a new one is not begun: KILLED by 1: a_held_cut_is_taken_up_only_where_its_state_is_trusted
+T14 a new state begins with the magic first: SURVIVED
+finished

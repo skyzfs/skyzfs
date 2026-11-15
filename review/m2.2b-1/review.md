@@ -5,22 +5,23 @@
 - **D1 (blocks):** a start without `--hold-cuts` between two with it. The held cut then reads a block the middle instance wrote.
 - **D2 (blocks):** a start that acknowledges a failure and is lost before its second phase.
 - **D3 (does not block):** the same family in a short window: a failed sync of the copies, heard by a start that dies before it begins the new state.
-- **S1 to S3** are test gaps. None blocks.
+- **S1 to S4** are test gaps. None blocks.
 
 Beyond those I found nothing. The unsafe module is sound, the cuts that go when a copy fails are the right ones, and a created device keeps no mark.
 
 CI is green at 59d09bf: 36 check runs, each success or skipped.
 
-The files named below are in `review/m2.2b-1/` on `skyzfs-review`. `reproducers.patch` adds six tests: three for D1 to D3, which fail at the head, and three for S1, which pass at the head and fail under its plants.
+The files named below are in `review/m2.2b-1/` on `skyzfs-review`. `reproducers.patch` adds six tests: three for D1 to D3, which fail at the head, and three for S1, which pass at the head and fail under its plants. The tests for S1's figures and for S4 are in `refused_copy_figures.py` and `begin_death.py`.
 
 ### How I checked
 
 - **The code first.** I read `skyzfs-mapped`, `state.rs`, `start.rs`, `inplace.rs` and `serve.rs` against design §5.2's rule on trust and M2.2's row, before the description and Codex's threads.
 - **The tests pass here** (rustc 1.100.0): `skyzfs-mapped` 6 with the child ignored, and `skyzfs-local` with its test hooks 184 and 13.
-- **Planted changes.** PLANTS_TOTAL, one at a time (`plants.py`; `plants_moa.out`, `plants_t.out`, `plants_a.out`). The tests caught PLANTS_CAUGHT. Of the PLANTS_PASSED that passed:
-  - three are S1;
-  - four are S3;
-  - PLANTS_NOTHING change nothing that matters (listed at the end).
+- **Planted changes.** 36, one at a time (`plants.py`; the `plants_*.out` files). The tests caught 19. Of the 17 that passed:
+  - seven are S1;
+  - three are S3;
+  - one is S4;
+  - six change nothing that matters (listed at the end).
 
 ### Defects
 
@@ -54,18 +55,25 @@ The files named below are in `review/m2.2b-1/` on `skyzfs-review`. `reproducers.
 
 ### Test gaps (none blocks)
 
-**S1. A copy that cannot be made: the tests hold two cuts, and the model never refuses a copy.** (`state.rs:1518`, `abandon_needing`; the tests at `inplace/tests/cuts.rs:1191` and `:1255`. Confidence: high, run here.)
+**S1. A copy that cannot be made: the tests hold two cuts and never look at the next one, and the model never refuses a copy.** (`state.rs:1518`, `abandon_needing`, and `:1546`; the tests at `inplace/tests/cuts.rs:1191` and `:1255`. Confidence: high, run here.)
 
-- In both tests the cut that reads the block is the newest held, so "and every newer one" and "newest first" are never exercised. The model test's copier never fails, so no death falls inside the rule either, which M2.2's row asks of the state's rules.
-- Three plants pass every test:
+- In both tests the cut that reads the block is the newest held, so "and every newer one" and "newest first" are never exercised. Neither looks at the next cut's map, or at the copies' bytes afterwards. The model test's copier never fails, so no death falls inside the rule either, which M2.2's row asks of the state's rules.
+- Seven plants pass every test. Four leave a cut that lacks blocks:
 
   | Plant | What goes wrong | What notices it |
   |---|---|---|
   | Only the cut that reads the block goes | The newer cut stays without the gone cut's blocks: held 2 and 4, and cut 4's map is block 40 alone | `a_refused_copy_lets_go_the_cut_that_reads_it_and_every_newer_one` |
   | The cuts go oldest first | A death between two leaves that same state. With every cut gone, the next cut's `lo` is 3 and not 1 | `a_death_while_a_refused_copy_lets_cuts_go`, and `a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo` |
+  | The cuts give their maps to nobody | The next cut's map is blocks 32, 33 and 50: it lacks every block the cuts that went had counted | all three |
   | The open map is not read again after the cuts went | A write over two blocks whose first copy is refused: the second block's bit goes into a map nothing names, and the next cut lacks block 33 | the first test |
 
-- The three tests drive the cut state with three cuts held (`refused_copy.py`, `refused_copy.out`). The second has a death at each store of the refused change.
+- Three cost room and not content:
+  - the copies of the cuts that went are not freed then, and stay until a cut is next let go;
+  - the slot of a copy that failed is not given back, so each refused copy takes a block of the room under the bound;
+  - the held cuts are not read again after the cuts went. By reading, this matters only while the cut that counts the whole volume is held: the rest of the write then asks a copy of each block for a cut that is gone.
+- The tests that notice:
+  - `refused_copy.py` drives the cut state with three cuts held. Its second test has a death at each store of the refused change.
+  - `refused_copy_figures.py` reads the copies' bytes after the refusal. It notices the first two of the three above, and not the third.
 
 **S2. The two lines by which the daemon says a device was taken over have no test.** (`serve.rs:776`. Confidence: high, by reading: nothing here runs `serve`'s `run`.)
 
@@ -76,6 +84,13 @@ The files named below are in `review/m2.2b-1/` on `skyzfs-review`. `reproducers.
 
 - **Allocated in full.** With `fallocate` taken out, and with only the first page allocated, every test passes. `another_length_is_resized_and_said` counts the file's blocks, but its region is smaller than a page and got its block from the store made before. A new region of several pages, counted right after the open, would hold it.
 - **Locked.** With `mlock` taken out every test passes. `VmLck` in `/proc/self/status` after the open would hold it.
+
+**S4. No test loses the daemon inside `begin`.** (`state.rs:617` to `:637`. Confidence: high, run here.)
+
+- `begin` stores the magic last, so that a state half begun is not read. With the magic stored first, every test passes.
+- What that would cost: a death after the owner's words, and before the word that counts the whole volume as changed, leaves a state the next start takes up. Its first cut counts no block as changed.
+- `begin_death.py` loses the daemon at each store of `begin`, over an empty region (10 deaths) and over another boot's state (60). At the head the state is never read afterwards. With the magic first it is read, and its first cut counts 0 of 200 blocks.
+- M2.2's row asks for the daemon lost "at every store into the state", and the stores of `begin` are stores into it.
 
 ### Your four questions
 
@@ -97,7 +112,10 @@ The files named below are in `review/m2.2b-1/` on `skyzfs-review`. `reproducers.
 
 ### Plants that pass and change nothing that matters
 
-PLANTS_LIST
+- **The region's file is readable by all** (mode 0644 for 0600). No test reads the mode. The region holds maps and group numbers, and no content of the volume.
+- **The rule that the region was there with the volume's length**, three ways: the rule dropped, a region of another length counted as kept, and a region counted as kept whatever the open said. In the daemon the state's own check gives the same answer. A new region is zeros and reads as empty. The region's length follows from the volume's blocks and the bound's records, so another length is another shape.
+- **A copies file that cannot be opened counts as missing**, where the head counts it as failed. The two differ only where the state names no copy, and then nothing is read from the file.
+- **The volume's identity compared by its first eight bytes alone.** The tests' identities differ there. The second eight alone is caught.
 
 ### Small remarks
 

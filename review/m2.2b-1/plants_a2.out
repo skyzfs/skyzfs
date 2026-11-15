@@ -1,0 +1,23 @@
+A8 the open map is not read again after the cuts went: SURVIVED
+A9 the held cuts are not read again after the cuts went: SURVIVED
+Traceback (most recent call last):
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 188, in <module>
+    main()
+    ~~~~^^
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 159, in main
+    failed, broken = tests(FULL, env)
+                     ~~~~~^^^^^^^^^^^
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 177, in tests
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
+  File "/usr/local/lib/python3.13/subprocess.py", line 557, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1223, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 2155, in _communicate
+    ready = selector.select(timeout)
+  File "/usr/local/lib/python3.13/selectors.py", line 398, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt
+finished

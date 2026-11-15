@@ -1,0 +1,23 @@
+as the head has it:
+    exit 0
+    review: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    review: 8 blocks of cut 5 changed, 64 slots: held [2, 5], copied 8 blocks
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.00s
+A7 the copies of the cuts let go are not freed then:
+    exit 101
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.08s
+    left: 4096
+    right: 0
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+A9 the held cuts are not read again after the cuts went:
+    exit 0
+    review: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    review: 8 blocks of cut 5 changed, 64 slots: held [2, 5], copied 8 blocks
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.00s
+A11 a record slot whose copy failed is not given back:
+    exit 101
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.08s
+    left: 4096
+    right: 0
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+finished

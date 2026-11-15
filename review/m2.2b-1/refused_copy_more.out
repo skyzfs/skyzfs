@@ -1,0 +1,22 @@
+A7 the copies of the cuts let go are not freed then:
+    exit 0
+    review: 1: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.01s
+A9 the held cuts are not read again after the cuts went:
+    exit 0
+    review: 1: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.00s
+A10 the cuts give their maps to nobody:
+    exit 101
+    test inplace::state::tests::review_a_death_while_a_refused_copy_lets_cuts_go ... FAILED
+    review: 1: cut 5's map: [32, 33, 50]
+    test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.08s
+    a death at store 0: block 30 is in no cut after cut 2 (the next is 5): {32, 33, 50}
+    cut 5 lacks block 30: [20, 50]
+    cut 5 lacks block 30: [32, 33, 50]
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+A11 a record slot whose copy failed is not given back:
+    exit 0
+    review: 1: cut 5's map: [30, 31, 32, 33, 40, 50, 100, 170]
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.00s
+finished

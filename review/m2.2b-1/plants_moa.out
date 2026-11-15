@@ -6,3 +6,26 @@ M4 the mapping is private: KILLED by 3: a_death_leaves_every_store_made_before_i
 M5 the file is emptied at each open: KILLED by 3: a_death_leaves_every_store_made_before_it, a_held_cut_outlives_kill_9_in_its_mapped_region, stores_are_there_for_the_next_open
 M6 the file is readable by all: SURVIVED
 M7 a new region is said to be kept: KILLED by 1: stores_are_there_for_the_next_open
+O1 a named region of another length counts as kept: SURVIVED
+O2 a named region counts as kept whatever the open said: SURVIVED
+Traceback (most recent call last):
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 188, in <module>
+    main()
+    ~~~~^^
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 156, in main
+    failed, broken = tests(FAST, env)
+                     ~~~~~^^^^^^^^^^^
+  File "/home/user/skyzfs/review/m2.2b-1/plants.py", line 177, in tests
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
+  File "/usr/local/lib/python3.13/subprocess.py", line 557, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1223, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 2155, in _communicate
+    ready = selector.select(timeout)
+  File "/usr/local/lib/python3.13/selectors.py", line 398, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt
+finished

@@ -1,0 +1,13 @@
+as the head has it:
+    exit 0
+    test inplace::state::tests::review_a_daemon_lost_inside_begin_leaves_no_state_with_nothing_whole ... review: a state held before: false: 10 deaths inside begin, the state read after 0
+    review: a state held before: true: 60 deaths inside begin, the state read after 0
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.00s
+T14 a new state begins with the magic first:
+    exit 101
+    test inplace::state::tests::review_a_daemon_lost_inside_begin_leaves_no_state_with_nothing_whole ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.10s
+    left: 0
+    right: 200
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+finished
