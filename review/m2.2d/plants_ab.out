@@ -1,0 +1,9 @@
+A1 a part's bits are set before its records: KILLED by 3: a_death_at_any_store_leaves_every_held_cut_whole, a_death_between_a_records_two_words, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+A2 after a failed run, the copies not made are recorded too: SURVIVED
+A3 after a failed run, the blocks before it get no bits: SURVIVED
+A4 after a failed run, its first block gets no bit: SURVIVED
+A5 after a failed run, the slots of the copies not made stay taken: KILLED by 4: a_copy_the_file_system_will_not_write_directly_is_not_written_through_the_cache, a_refused_copy_gives_back_the_room_of_the_cuts_that_went, a_refused_copy_that_lets_every_cut_go_copies_nothing_more, a_refused_run_stops_the_copies_after_it
+A6 after a failed run, the cuts that need its first block stay: KILLED by 10: a_copy_that_cannot_be_made_lets_its_cuts_go_and_the_write_goes_on, a_copy_the_file_system_will_not_write_directly_is_not_written_through_the_cache, a_cut_older_than_the_one_a_refused_copy_needs_reads_on, a_death_while_a_refused_copy_lets_a_cut_go_counts_it_once, a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo, a_refused_copy_gives_back_the_room_of_the_cuts_that_went, a_refused_copy_lets_go_the_cut_that_reads_it_and_every_newer_one, a_refused_copy_that_lets_every_cut_go_copies_nothing_more
+B1 a run takes consecutive blocks whatever their slots: KILLED by 2: a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+B2 a run takes consecutive slots whatever their blocks: KILLED by 2: a_change_copies_each_run_in_one_read_and_one_write, every_held_cut_reads_as_the_volume_at_its_instant
+finished

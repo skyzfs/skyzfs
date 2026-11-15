@@ -1,0 +1,6 @@
+C1 an abandon while planning drops every copy planned so far: KILLED by 2: a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+C2 after an abandon while planning, the held cuts are not read again: KILLED by 1: a_cut_abandoned_while_a_change_is_planned_takes_its_planned_copies
+C3 the bound is looked at only for a part's first copy: KILLED by 2: a_cut_abandoned_while_a_change_is_planned_takes_its_planned_copies, every_held_cut_reads_as_the_volume_at_its_instant
+D1 a record a dead instance made for this change is not looked for: SURVIVED
+D2 the second word of a record is stored after the first: KILLED by 1: a_death_between_a_records_two_words
+finished
