@@ -1,0 +1,4 @@
+A2 after a failed run, the copies not made are recorded too: KILLED by 1: a_failed_run_in_the_middle_of_a_change_keeps_what_an_older_cut_reads
+A3 after a failed run, the blocks before it get no bits: KILLED by 1: a_failed_run_in_the_middle_of_a_change_keeps_what_an_older_cut_reads
+A4 after a failed run, its first block gets no bit: SURVIVED
+finished
