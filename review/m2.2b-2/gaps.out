@@ -1,0 +1,24 @@
+as the head has it:
+    exit 0
+    review: after a turn with no signal the reply is "s ok\n"
+    review: ["9826\tapplied\t0\twrite\t-\t-\t-\td010f6d76d0eb4dc\tdata=0"]
+    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+C7 a command is read again at each later turn:
+    exit 101
+    review: after a turn with no signal the reply is "s refused: cut 3 is not the one being uploaded: no cut is being uploaded\n"
+    review: ["9883\tapplied\t0\twrite\t-\t-\t-\td010f6d76d0eb4dc\tdata=0"]
+    test cut_commands::tests::review_a_turn_with_no_signal_reads_no_command ... FAILED
+    test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.09s
+    left: "s refused: cut 3 is not the one being uploaded: no cut is being uploaded\n"
+    right: "s ok\n"
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+R7 a write's hashes are kept only where the log writes its label line:
+    exit 101
+    review: after a turn with no signal the reply is "s ok\n"
+    review: ["9940\tapplied\t0\twrite\t-\t-\t-\t-"]
+    test record::tests::review_a_write_away_from_the_labels_has_its_hashes_and_its_bytes ... FAILED
+    test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.08s
+    left: ["9940\tapplied\t0\twrite\t-\t-\t-\t-"]
+    right: ["9940\tapplied\t0\twrite\t-\t-\t-\td010f6d76d0eb4dc\tdata=0"]
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+finished

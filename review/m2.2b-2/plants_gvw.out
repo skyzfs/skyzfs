@@ -1,0 +1,11 @@
+G1 SIGUSR2 is not in the set: DID NOT BUILD OR RUN: error: test failed, to rerun pass `-p skyzfs-ublk-sys --lib` | error: 1 target failed:
+G2 SIGUSR2 is taken as SIGUSR1: KILLED by 1: each_signal_is_taken_as_what_it_means
+V1 cuts_held is read where the copied bytes are: KILLED by 4: before_the_first_cut_the_file_has_no_group, status_prints_the_held_cuts, the_file_has_the_documented_layout, the_file_is_replaced_whole_and_a_part_of_one_is_an_error
+V2 a file of the twelfth version is not read: KILLED by 2: a_file_of_the_twelfth_version_is_read_without_held_cuts, status_prints_the_version_of_the_file_it_read
+V3 begun is said as taken_up: KILLED by 1: status_prints_the_held_cuts
+V4 status does not print cut_state: KILLED by 2: status_prints_the_held_cuts, the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are
+W1 a state taken up is shown as begun: SURVIVED
+W2 cuts_held shows the copied bytes: SURVIVED
+W3 a signal is read as a command at every turn after it: SURVIVED
+W4 SIGUSR2 sets no flag: SURVIVED
+finished

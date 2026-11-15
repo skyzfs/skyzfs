@@ -1,0 +1,42 @@
+C1 a command while a write is under way is carried out: KILLED by 1: a_command_while_a_write_is_under_way_is_refused_as_busy
+C2 a map that grew under a write is not noticed: KILLED by 1: a_write_whose_map_grew_under_it_is_refused
+C3 a cut whose flush is under way can be written: KILLED by 1: write_refuses_a_cut_it_cannot_write
+C4 the map is written in the order the store gives it: KILLED by 1: write_puts_the_cut_s_map_into_the_file_a_slice_a_turn
+C5 the whole map is written in one turn: KILLED by 2: a_command_while_a_write_is_under_way_is_refused_as_busy, write_puts_the_cut_s_map_into_the_file_a_slice_a_turn
+C6 a block is written at the place of its turn in the map: KILLED by 2: the_in_place_store_s_cuts_are_written_as_they_were_at_their_instants, write_puts_the_cut_s_map_into_the_file_a_slice_a_turn
+C7 a command is read again at each later turn: SURVIVED
+C8 with held cuts off the commands are carried out: KILLED by 2: every_command_is_refused_while_held_cuts_are_off, the_in_place_store_without_held_cuts_refuses_the_commands
+C9 a path that is not absolute is taken: KILLED by 1: a_line_is_a_token_and_a_command
+C10 the list of blocks is not written: KILLED by 2: the_in_place_store_s_cuts_are_written_as_they_were_at_their_instants, write_puts_the_cut_s_map_into_the_file_a_slice_a_turn
+C11 the file is made if it is not there: KILLED by 1: write_refuses_a_cut_it_cannot_write
+C12 a block not in the cut's map is written all the same: SURVIVED
+C13 the write is of the cut before the one named: KILLED by 5: a_command_while_a_write_is_under_way_is_refused_as_busy, a_write_whose_cut_is_let_go_under_it_is_refused, a_write_whose_map_grew_under_it_is_refused, the_in_place_store_s_cuts_are_written_as_they_were_at_their_instants, write_puts_the_cut_s_map_into_the_file_a_slice_a_turn
+R1 a block's hash is its first 4 bytes: KILLED by 1: an_applied_line_has_the_hashes_of_the_blocks_the_write_covers
+R2 the block after an aligned write is named too: KILLED by 1: an_applied_line_has_the_hashes_of_the_blocks_the_write_covers
+R3 the cut line has no number: KILLED by 1: the_stores_lines_name_the_tag_and_fall_among_the_queues
+R4 there is no cuts line: KILLED by 8: a_command_the_driver_ended_otherwise_than_ok_has_its_line, a_failed_wait_or_flush_says_the_commits_may_not_have_gone, a_second_instance_appends_to_the_same_record, an_applied_line_has_the_hashes_of_the_blocks_the_write_covers, the_record_has_each_request_and_its_answer ...
+R5 the applied line does not say where the bytes lie: KILLED by 1: an_applied_line_has_the_hashes_of_the_blocks_the_write_covers
+R6 the bytes are not written to the data file: KILLED by 1: an_applied_line_has_the_hashes_of_the_blocks_the_write_covers
+R7 a write's hashes are kept only where the log writes its label line: SURVIVED
+G1 SIGUSR2 is not in the set: DID NOT BUILD OR RUN: error: test failed, to rerun pass `-p skyzfs-ublk-sys --lib` | error: 1 target failed:
+Traceback (most recent call last):
+  File "/home/user/skyzfs/review/m2.2b-2/plants.py", line 151, in <module>
+    main()
+    ~~~~^^
+  File "/home/user/skyzfs/review/m2.2b-2/plants.py", line 133, in main
+    failed, broken = tests(env)
+                     ~~~~~^^^^^
+  File "/home/user/skyzfs/review/m2.2b-2/plants.py", line 106, in tests
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
+  File "/usr/local/lib/python3.13/subprocess.py", line 557, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1223, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 2155, in _communicate
+    ready = selector.select(timeout)
+  File "/usr/local/lib/python3.13/selectors.py", line 398, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt
+finished

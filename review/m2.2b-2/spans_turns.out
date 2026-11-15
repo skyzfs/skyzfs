@@ -1,0 +1,11 @@
+as the head has it:
+    exit 0
+    review: 3 more turns; blocks [5, 300, 700, 1000] of cut 1 in the file: [11, 11, 11, 11]
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.01s
+with no copy made before a write changes a block a held cut reads:
+    exit 101
+    review: 3 more turns; blocks [5, 300, 700, 1000] of cut 1 in the file: [11, 22, 22, 22]
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.20s
+    block 300 of cut 1 is 0x22 in the file; the volume held 0x11 at its instant
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+finished
