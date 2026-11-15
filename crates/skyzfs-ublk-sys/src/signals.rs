@@ -13,6 +13,9 @@ pub enum Signal {
     Stop,
     /// `SIGUSR1`: for the test build, which fails the log on it.
     User,
+    /// `SIGUSR2`: for the test build, which reads a command about held
+    /// cuts on it. Taken by every build, so that it never ends one.
+    Command,
 }
 
 fn set() -> libc::sigset_t {
@@ -23,7 +26,7 @@ fn set() -> libc::sigset_t {
     // `sigemptyset` the set is initialised, so `assume_init` is sound.
     unsafe {
         libc::sigemptyset(set.as_mut_ptr());
-        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGUSR1] {
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGUSR1, libc::SIGUSR2] {
             libc::sigaddset(set.as_mut_ptr(), signal);
         }
         set.assume_init()
@@ -58,6 +61,43 @@ pub fn wait(timeout: Duration) -> Option<Signal> {
     match signal {
         libc::SIGTERM | libc::SIGINT => Some(Signal::Stop),
         libc::SIGUSR1 => Some(Signal::User),
+        libc::SIGUSR2 => Some(Signal::Command),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each of the daemon's signals is taken as what it means, and none
+    /// is left to its default action, which would end the process: a
+    /// `SIGUSR2` not in the set ends a daemon of the default build.
+    #[test]
+    fn each_signal_is_taken_as_what_it_means() {
+        block().expect("the signals blocked");
+        let cases = [
+            (libc::SIGTERM, Signal::Stop),
+            (libc::SIGINT, Signal::Stop),
+            (libc::SIGUSR1, Signal::User),
+            (libc::SIGUSR2, Signal::Command),
+        ];
+        for (signal, means) in cases {
+            // SAFETY: the signal goes to this thread alone, which has
+            // just blocked it, so it waits for `wait` and no handler or
+            // default action runs.
+            let sent = unsafe { libc::pthread_kill(libc::pthread_self(), signal) };
+            assert_eq!(sent, 0, "signal {signal}");
+            assert_eq!(
+                wait(Duration::from_secs(10)),
+                Some(means),
+                "signal {signal}"
+            );
+        }
+        assert_eq!(
+            wait(Duration::from_millis(1)),
+            None,
+            "nothing else is pending"
+        );
     }
 }

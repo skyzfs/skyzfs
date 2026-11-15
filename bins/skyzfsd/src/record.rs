@@ -62,12 +62,26 @@
 //!   at each end. The result column holds every byte of the write, the
 //!   part outside the ends too, in lowercase hex, two digits a byte;
 //!   the other columns are the `recv` line's.
+//! - `cuts`: once per instance, after its `start` line: whether the
+//!   store holds cuts (`serve --hold-cuts`) and what its start did with
+//!   their state, in the result column: `off`, `taken_up` (the cuts it
+//!   held are held still, and their numbers count on) or `begun` (a new
+//!   state, which counts the whole volume as changed and numbers its
+//!   cuts from 1 again).
 //! - `applied`: the store has applied write `tag` whole: its direct
 //!   write returned whole and the store took the result, before the
 //!   store completes it and so before its `commit`. Every write that
 //!   succeeds has one; a failed one has none. A write-zeroes has none:
 //!   the store applies it when it executes it, in the order it was
-//!   received relative to a flush, so its `recv` line places it.
+//!   received relative to a flush, so its `recv` line places it; its
+//!   blocks hold zeros. The line has a ninth column: for each 4 KiB
+//!   block of the volume the write touches, from its first, the first 8
+//!   bytes of SHA-256 of the block as the write leaves it, in hex,
+//!   comma-separated, or `-` for a block the write covers only in part
+//!   (the record does not read the block to hash it). With
+//!   `--request-log-content whole` it has a tenth, `data=OFFSET`: the
+//!   write's bytes lie at that offset of `PATH.data`, in the order of
+//!   the write (M2.2b, for the cut rig's reference, M2.T3).
 //! - `barrier`: flush `tag` reached its barrier in the store: every
 //!   write received before it has ended, and nothing received after it
 //!   has begun. The op column says `flush` for the kernel's flush, and
@@ -78,8 +92,12 @@
 //!   group, and the sector column says whether it opens as itself:
 //!   `itself` if an import of the volume at its instant, with no
 //!   rewind, opens its uberblock's pool state, `rewind` if it opens only
-//!   with a rewind to its group. The `cut` lines of an instance are its
-//!   cuts in order: their number is that instance's `cuts` in `status`.
+//!   with a rewind to its group. The sectors column holds the cut's
+//!   number: the store's count of cuts, which is that instance's `cuts`
+//!   in `status`. A store that holds cuts and took their state up counts
+//!   on from the number its state had, so that a held cut's number
+//!   (`held`, [`crate::cut_commands`]) names its `cut` line across a
+//!   take-over; otherwise each instance counts from 1.
 //!
 //! The store's three lines (`applied`, `barrier`, `cut`) are written on
 //! the queue's thread, which drives the store, through a second handle
@@ -140,9 +158,13 @@
 //! A record that cannot be written does not stop the daemon: the first
 //! error is said once on standard error, and the record ends there.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use sha2::{Digest as _, Sha256};
 
 use skyzfs_blk::{Buf, RequestId};
 use skyzfs_local::inplace::{Seen, Watcher};
@@ -244,20 +266,23 @@ impl Lines {
     }
 }
 
-/// The store's events as lines of the record, to `lines`: see the
-/// [module documentation](self).
-pub fn watcher(mut lines: Lines) -> Watcher {
-    Box::new(move |seen| lines.line(&store_columns(seen)))
+/// The store's events as lines of the record, to `lines`, with what
+/// `contents` kept of each write: see the [module documentation](self).
+pub fn watcher(mut lines: Lines, contents: Contents) -> Watcher {
+    Box::new(move |seen| lines.line(&store_columns(seen, &contents)))
 }
 
 /// One line of the store's events, without the time and the pid.
-fn store_columns(seen: Seen) -> String {
+fn store_columns(seen: Seen, contents: &Contents) -> String {
     let named = |id: RequestId| {
         let (tag, added) = tag_of(id);
         (tag, if added { "fua_flush" } else { "flush" })
     };
     match seen {
-        Seen::Applied(id) => format!("applied\t{}\twrite\t-\t-\t-", tag_of(id).0),
+        Seen::Applied(id) => {
+            let tag = tag_of(id).0;
+            format!("applied\t{tag}\twrite\t-\t-\t-\t{}", contents.applied(tag))
+        }
         Seen::Barrier(id) => {
             let (tag, op) = named(id);
             format!("barrier\t{tag}\t{op}\t-\t-\t-")
@@ -265,9 +290,93 @@ fn store_columns(seen: Seen) -> String {
         Seen::Cut(id, cut) => {
             let (tag, op) = named(id);
             let opens = if cut.itself { "itself" } else { "rewind" };
-            format!("cut\t{tag}\t{op}\t{opens}\t-\t{}", cut.group)
+            format!("cut\t{tag}\t{op}\t{opens}\t{}\t{}", cut.number, cut.group)
         }
     }
+}
+
+/// The volume's blocks, as the record hashes them.
+const BLOCK: u64 = 4096;
+
+/// What the record keeps of each write between the queue's handing over
+/// its buffer and the store's `applied` line: the line's last columns,
+/// by tag; and the file the writes' bytes go to with
+/// `--request-log-content whole`. Shared by the queue's record and the
+/// store's watcher, both on the queue's thread.
+#[derive(Clone, Default)]
+pub struct Contents(Arc<Mutex<Kept>>);
+
+#[derive(Default)]
+struct Kept {
+    by_tag: HashMap<u16, String>,
+    data: Option<File>,
+}
+
+impl Contents {
+    /// Contents whose writes' bytes go to `data`, if there is one.
+    pub fn new(data: Option<File>) -> Self {
+        Self(Arc::new(Mutex::new(Kept {
+            by_tag: HashMap::new(),
+            data,
+        })))
+    }
+
+    fn kept(&self) -> MutexGuard<'_, Kept> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Write `tag` of `bytes` at byte `offset` of the volume is handed
+    /// over: hash its blocks, and keep its bytes.
+    fn took(&self, tag: u16, offset: u64, bytes: &[u8]) {
+        let mut kept = self.kept();
+        let mut columns = block_hashes(offset, bytes);
+        if let Some(file) = &mut kept.data {
+            let at = file.metadata().map(|meta| meta.len());
+            match at.and_then(|at| file.write_all(bytes).map(|()| at)) {
+                Ok(at) => columns.push_str(&format!("\tdata={at}")),
+                Err(e) => {
+                    crate::to_stderr(&format!(
+                        "skyzfsd: the request log's data cannot be written ({e}); it ends here\n"
+                    ));
+                    kept.data = None;
+                }
+            }
+        }
+        kept.by_tag.insert(tag, columns);
+    }
+
+    /// The `applied` line's last columns for write `tag`.
+    fn applied(&self, tag: u16) -> String {
+        self.kept()
+            .by_tag
+            .remove(&tag)
+            .unwrap_or_else(|| "-".to_owned())
+    }
+}
+
+/// The hashes of the blocks that `bytes`, written at byte `offset` of
+/// the volume, touch: see the [module documentation](self).
+fn block_hashes(offset: u64, bytes: &[u8]) -> String {
+    let end = offset + bytes.len() as u64;
+    if bytes.is_empty() {
+        return "-".to_owned();
+    }
+    let first = offset / BLOCK;
+    let last = (end - 1) / BLOCK;
+    (first..=last)
+        .map(|block| {
+            let (start, stop) = (block * BLOCK, (block + 1) * BLOCK);
+            if start < offset || stop > end {
+                return "-".to_owned();
+            }
+            let at = (start - offset) as usize;
+            let digest = Sha256::digest(&bytes[at..at + BLOCK as usize]);
+            hex(&digest[..8])
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The ends of a volume whose writes the record writes out: see the
@@ -311,6 +420,7 @@ fn hex(bytes: &[u8]) -> String {
 pub struct Recorded<Q: Queue> {
     inner: Q,
     lines: Lines,
+    contents: Contents,
     ends: Ends,
     /// The request each tag holds, as the kernel handed it over.
     held: Vec<Option<Desc>>,
@@ -322,12 +432,21 @@ pub struct Recorded<Q: Queue> {
 impl<Q: Queue> Recorded<Q> {
     /// `inner`, with its requests and answers written to `file` if
     /// there is one; the `start` line names `device`, a volume of
-    /// `size` bytes.
-    pub fn new(inner: Q, file: Option<File>, device: u32, size: u64) -> Self {
+    /// `size` bytes, and the `cuts` line after it says `cuts`. What it
+    /// keeps of each write goes to `contents`.
+    pub fn new(
+        inner: Q,
+        file: Option<File>,
+        device: u32,
+        size: u64,
+        cuts: &str,
+        contents: Contents,
+    ) -> Self {
         let depth = inner.depth();
         let mut recorded = Recorded {
             inner,
             lines: Lines::new(file),
+            contents,
             ends: Ends::of(size),
             held: vec![None; usize::from(depth)],
             unsent: 0,
@@ -338,6 +457,7 @@ impl<Q: Queue> Recorded<Q> {
             None,
             &depth.to_string(),
         ));
+        recorded.line(&columns("cuts", "-", None, cuts));
         recorded
     }
 
@@ -411,9 +531,12 @@ impl<Q: Queue> Queue for Recorded<Q> {
         if let Some(desc) = held.filter(|desc| desc.op() == op::WRITE) {
             let offset = desc.start_sector.saturating_mul(512);
             let len = u64::from(desc.nr_sectors) * 512;
+            let written = usize::try_from(len).unwrap_or(usize::MAX).min(buf.len());
+            if self.lines.file.is_some() {
+                self.contents.took(tag, offset, &buf[..written]);
+            }
             if self.lines.file.is_some() && self.ends.touched(offset, len) {
-                let len = usize::try_from(len).unwrap_or(usize::MAX).min(buf.len());
-                let bytes = hex(&buf[..len]);
+                let bytes = hex(&buf[..written]);
                 self.line(&columns("label", &tag.to_string(), Some(&desc), &bytes));
             }
         }

@@ -125,7 +125,14 @@ fn the_record_has_each_request_and_its_answer() {
         fetched(2, op::FLUSH, 0, 0),
     ]));
     inner.waits.push_back(Ok(vec![fetched(0, op::READ, 8, 16)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        7,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got.len(), 3);
@@ -141,6 +148,7 @@ fn the_record_has_each_request_and_its_answer() {
         lines(&path),
         [
             format!("{p}\tstart\t7\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\trecv\t0\twrite\t131016\t24\t-"),
             format!("{p}\trecv\t1\twrite\t131040\t32\t-"),
             format!("{p}\trecv\t2\tflush\t0\t0\t-"),
@@ -175,7 +183,14 @@ fn the_send_line_is_written_before_the_commits_go() {
         ..Scripted::default()
     };
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        0,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(0, 4096, None);
@@ -187,7 +202,7 @@ fn the_send_line_is_written_before_the_commits_go() {
         queue.inner.last_before,
         [
             // Nothing pending at the first wait: no `send`.
-            format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
         ]
@@ -204,7 +219,14 @@ fn the_times_are_monotonic() {
     inner
         .waits
         .push_back(Ok(vec![fetched(3, op::DISCARD, 0, 8)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        0,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     let before = mono_ns();
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
@@ -221,10 +243,10 @@ fn the_times_are_monotonic() {
                 .expect("a time")
         })
         .collect();
-    // start, recv, commit, send, sent.
-    assert_eq!(times.len(), 5);
+    // start, cuts, recv, commit, send, sent.
+    assert_eq!(times.len(), 6);
     assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
-    assert!(times[1] >= before && times[4] <= after, "{times:?}");
+    assert!(times[2] >= before && times[5] <= after, "{times:?}");
 }
 
 /// Every operation code has a name, and one outside the five says its
@@ -251,7 +273,14 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
     let mut inner = Scripted::default();
     inner.waits.push_back(Err(QueueDown));
     inner.flush_fails = true;
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 1, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        1,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     queue.commit(2, -5, None);
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Err(QueueDown));
@@ -264,6 +293,7 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
         lines(&path),
         [
             format!("{p}\tstart\t1\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\tcommit\t2\t-\t-\t-\t-5"),
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tdown\t-\t-\t-\t-\t1"),
@@ -282,13 +312,27 @@ fn a_second_instance_appends_to_the_same_record() {
     let path = dir.path().join("requests.tsv");
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
-    let mut first = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut first = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        0,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     let mut got = Vec::new();
     let _ = first.wait(&mut got, &mut Vec::new());
     drop(first);
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(3, op::WRITE, 0, 8)]));
-    let mut second = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut second = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        0,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     got.clear();
     let _ = second.wait(&mut got, &mut Vec::new());
     second.commit(3, 4096, None);
@@ -298,8 +342,10 @@ fn a_second_instance_appends_to_the_same_record() {
         lines(&path),
         [
             format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\trecv\t0\twrite\t0\t8\t-"),
             format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\trecv\t3\twrite\t0\t8\t-"),
             format!("{p}\tcommit\t3\twrite\t0\t8\t4096"),
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
@@ -314,7 +360,7 @@ fn a_second_instance_appends_to_the_same_record() {
 fn without_a_file_every_call_passes_through() {
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(1, op::READ, 0, 8)]));
-    let mut queue = Recorded::new(inner, None, 0, SIZE);
+    let mut queue = Recorded::new(inner, None, 0, SIZE, "off", Contents::default());
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got, [fetched(1, op::READ, 0, 8)]);
@@ -367,7 +413,14 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
             result: 1,
         },
     ]);
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        7,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     queue.commit(1, 4096, None);
     let mut got = Vec::new();
     let mut ended = Vec::new();
@@ -397,6 +450,7 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
         lines(&path),
         [
             format!("{p}\tstart\t7\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\tcommit\t1\t-\t-\t-\t4096"),
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tsent\t-\t-\t-\t-\t1"),
@@ -439,7 +493,14 @@ fn a_write_at_either_end_of_the_volume_has_its_bytes() {
         fetched(0, op::WRITE, tail, 8),
         fetched(1, op::WRITE, tail - 8, 8),
     ]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut queue = Recorded::new(
+        inner,
+        Some(open(&path).expect("open")),
+        0,
+        SIZE,
+        "off",
+        Contents::default(),
+    );
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
     for (tag, blocks) in [(0, 1), (1, 1), (2, 2), (3, 1)] {
@@ -503,8 +564,9 @@ fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
         fetched(1, op::FLUSH, 0, 0),
     ]));
     let file = open(&path).expect("open");
-    let mut watcher = watcher(Lines::another(&file));
-    let mut queue = Recorded::new(inner, Some(file), 0, SIZE);
+    let contents = Contents::default();
+    let mut watcher = watcher(Lines::another(&file), contents.clone());
+    let mut queue = Recorded::new(inner, Some(file), 0, SIZE, "off", contents);
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
     watcher(Seen::Applied(RequestId(0)));
@@ -533,15 +595,67 @@ fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
         lines(&path),
         [
             format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\tcuts\t-\t-\t-\t-\toff"),
             format!("{p}\trecv\t0\twrite\t4096\t8\t-"),
             format!("{p}\trecv\t1\tflush\t0\t0\t-"),
-            format!("{p}\tapplied\t0\twrite\t-\t-\t-"),
+            format!("{p}\tapplied\t0\twrite\t-\t-\t-\t-"),
             format!("{p}\tcommit\t0\twrite\t4096\t8\t4096"),
             format!("{p}\tbarrier\t1\tflush\t-\t-\t-"),
-            format!("{p}\tcut\t1\tflush\titself\t-\t77"),
+            format!("{p}\tcut\t1\tflush\titself\t1\t77"),
             format!("{p}\tcommit\t1\tflush\t0\t0\t0"),
             format!("{p}\tbarrier\t3\tfua_flush\t-\t-\t-"),
-            format!("{p}\tcut\t3\tfua_flush\trewind\t-\t77"),
+            format!("{p}\tcut\t3\tfua_flush\trewind\t1\t77"),
         ]
     );
+}
+
+/// A write's `applied` line names, for each 4 KiB block it touches, the
+/// first 8 bytes of SHA-256 of the block as the write leaves it, or `-`
+/// for a block it covers in part; with the writes' bytes kept, where
+/// they lie in the data file. The `cuts` line after `start` says what
+/// it was given.
+#[test]
+fn an_applied_line_has_the_hashes_of_the_blocks_the_write_covers() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let data_path = dir.path().join("requests.tsv.data");
+    let mut inner = Scripted::default();
+    inner.waits.push_back(Ok(vec![
+        // Blocks 1 and 2, whole.
+        fetched(0, op::WRITE, 8, 16),
+        // 4 KiB from 4608: the end of block 1 and the start of block 2.
+        fetched(1, op::WRITE, 9, 8),
+    ]));
+    let file = open(&path).expect("open");
+    let contents = Contents::new(Some(open(&data_path).expect("the data")));
+    let mut watcher = watcher(Lines::another(&file), contents.clone());
+    let mut queue = Recorded::new(inner, Some(file), 0, SIZE, "taken_up", contents);
+    let _ = queue.wait(&mut Vec::new(), &mut Vec::new());
+    let first = queue.take_buf(0, 2).expect("a buffer");
+    let second = queue.take_buf(1, 1).expect("a buffer");
+    watcher(Seen::Applied(RequestId(0)));
+    watcher(Seen::Applied(RequestId(1)));
+    let hash = |block: &[u8]| hex(&Sha256::digest(block)[..8]);
+    let p = pid();
+    let applied: Vec<String> = lines(&path)
+        .into_iter()
+        .filter(|line| line.contains("\tapplied\t") || line.contains("\tcuts\t"))
+        .collect();
+    assert_eq!(
+        applied,
+        [
+            format!("{p}\tcuts\t-\t-\t-\t-\ttaken_up"),
+            format!(
+                "{p}\tapplied\t0\twrite\t-\t-\t-\t{},{}\tdata=0",
+                hash(&first[..4096]),
+                hash(&first[4096..])
+            ),
+            format!("{p}\tapplied\t1\twrite\t-\t-\t-\t-,-\tdata=8192"),
+        ]
+    );
+    let data = std::fs::read(&data_path).expect("the data");
+    assert_eq!(data, [&first[..], &second[..]].concat());
+    // A write the record never saw the bytes of has no hashes.
+    assert_eq!(block_hashes(0, &[]), "-");
+    assert_eq!(Contents::default().applied(9), "-");
 }

@@ -186,7 +186,9 @@ use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
-use skyzfs_ublk::status::{self, Board, Pace, Status, StoreShown, ZeroesShown};
+use skyzfs_ublk::status::{
+    self, Board, CutStateShown, HeldShown, Pace, Status, StoreShown, ZeroesShown,
+};
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
@@ -495,6 +497,9 @@ struct Flags {
     kept: AtomicU64,
     /// `SIGUSR1` arrived: the test build fails the log.
     user: AtomicBool,
+    /// `SIGUSR2` arrived: the test build reads a command about held cuts
+    /// (`cut_commands.rs`).
+    command: AtomicBool,
 }
 
 /// What the failure line says of the requests the daemon held, from
@@ -563,6 +568,24 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         pump,
         io_queue: Some(store.io_queue()),
         cuts: Some(store.cuts()),
+        held: Some(held_shown(store)),
+    }
+}
+
+/// The held cuts as the status file says them.
+fn held_shown(store: &Target) -> HeldShown {
+    let state = match store.cuts_at_start() {
+        None => CutStateShown::Off,
+        Some(CutsTakenUp::TakenUp) => CutStateShown::TakenUp,
+        Some(CutsTakenUp::Begun(_)) => CutStateShown::Begun,
+    };
+    let figures = store.cut_figures();
+    HeldShown {
+        state,
+        held: figures.held,
+        copied: figures.copied,
+        bound: figures.bound,
+        abandoned: figures.abandoned,
     }
 }
 
@@ -653,6 +676,23 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 .map_err(|e| format!("the request log {}: {e}", path.display()))?,
         ),
         None => None,
+    };
+    // Every write's bytes beside it (`--request-log-content whole`).
+    #[cfg(feature = "test-hooks")]
+    let contents = {
+        let data = match &serve.hooks.request_log {
+            Some(path) if serve.hooks.request_log_whole => {
+                let mut data = path.clone().into_os_string();
+                data.push(".data");
+                let data = std::path::PathBuf::from(data);
+                Some(
+                    crate::record::open(&data)
+                        .map_err(|e| format!("the request log's data {}: {e}", data.display()))?,
+                )
+            }
+            _ => None,
+        };
+        crate::record::Contents::new(data)
     };
     let mut records = Files::new(&serve.dir, &serve.run_dir, boot, LOCK_PAUSE)
         .map_err(|e| format!("{}: {e}", serve.dir.display()))?;
@@ -839,10 +879,17 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let served = {
         let mut served = served;
         if let Some(file) = &request_log {
-            served.watch(crate::record::watcher(crate::record::Lines::another(file)));
+            served.watch(crate::record::watcher(
+                crate::record::Lines::another(file),
+                contents.clone(),
+            ));
         }
         served
     };
+    // What the start did with the held cuts' state, for the request
+    // log's `cuts` line.
+    #[cfg(feature = "test-hooks")]
+    let cuts_said = held_shown(&served).state.said();
     let board = Arc::new(Board::new());
     // The store as the start left it, on the board before the status
     // thread's first write, which would otherwise show nothing of it
@@ -857,6 +904,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let locked = !serve.allow_unlocked_memory;
     #[cfg(feature = "test-hooks")]
     let size = shape.size;
+    // The test build's commands about held cuts, on `SIGUSR2`.
+    #[cfg(feature = "test-hooks")]
+    let mut commands = crate::cut_commands::Commands::new(records.volume_run_dir().to_owned());
     let body = {
         let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
         queue_body(move |queue| {
@@ -868,7 +918,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // Below the delays: the record says what the kernel
             // handed over and what it was given.
             #[cfg(feature = "test-hooks")]
-            let queue = crate::record::Recorded::new(queue, request_log, number, size);
+            let queue =
+                crate::record::Recorded::new(queue, request_log, number, size, cuts_said, contents);
             let queue = Delayed::new(queue, delay, hold, move || wake.wake());
             // The store goes back to the main thread with the
             // outcome: the volume's lock is held until the main
@@ -878,6 +929,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 post(&board, pump);
                 if !ended {
                     faults(pump, &flags, &mut fail_after);
+                    // A write of a held cut goes on at the next turn,
+                    // which an idle device would not give without the
+                    // wake.
+                    #[cfg(feature = "test-hooks")]
+                    if commands.turn(flags.command.swap(false, Ordering::SeqCst), pump.target()) {
+                        again.wake();
+                    }
                 }
             })
         })
@@ -1118,6 +1176,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 Some(Signal::Stop) => break Why::Stop,
                 Some(Signal::User) => {
                     flags.user.store(true, Ordering::SeqCst);
+                    wake.wake();
+                }
+                Some(Signal::Command) => {
+                    flags.command.store(true, Ordering::SeqCst);
                     wake.wake();
                 }
                 None => {}
