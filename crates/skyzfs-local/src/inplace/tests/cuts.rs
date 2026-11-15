@@ -1038,11 +1038,11 @@ type AfterDeath = (bool, Vec<(u64, u64, u64)>);
 /// a next instance what was in flight in any order), then the write
 /// again unless its completion had gone to the transport, then ZFS's
 /// flush after it.
-fn lost_in_a_mark(mutants: u64, death: u64) -> AfterDeath {
+fn lost_in_a_mark(mutants: u64, io: IoMode, death: u64) -> AfterDeath {
     state::tests::quiet_deaths();
     let disk = created(31, 0);
     let region = region();
-    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    let mut store = start_on(&disk, mutants, &region, io);
     group(&mut store, 100, 7, 70);
     let id = RequestId(200);
     let mut done = Vec::new();
@@ -1068,7 +1068,7 @@ fn lost_in_a_mark(mutants: u64, death: u64) -> AfterDeath {
     if died {
         drop(store);
         disk.kill();
-        store = start_on(&disk, mutants, &region, ON_CALLER);
+        store = start_on(&disk, mutants, &region, io);
     }
     assert!(run(&mut store, 201, Op::Flush).result.is_ok());
     if !handed {
@@ -1091,15 +1091,16 @@ fn lost_in_a_mark(mutants: u64, death: u64) -> AfterDeath {
 }
 
 /// The deaths at every store of a group's uberblock write, under
-/// `mutants`: the first wrong outcome, if any. Each held cut must hold
-/// the uberblock of its group (a mark recorded before the write is
-/// whole cuts a group the cut does not hold), and group 8 must be cut
-/// (a mark recorded after the completion went to the transport is lost
-/// with the daemon, and the kernel does not issue the write again).
-fn marks_survive_a_death(mutants: u64) -> Result<u64, String> {
+/// `mutants` and with I/O `io`: the first wrong outcome, if any. Each
+/// held cut must hold the uberblock of its group (a mark recorded before
+/// the write is whole cuts a group the cut does not hold), and group 8
+/// must be cut (a mark recorded after the completion went to the
+/// transport is lost with the daemon, and the kernel does not issue the
+/// write again).
+fn marks_survive_a_death(mutants: u64, io: IoMode) -> Result<u64, String> {
     let mut death = 0;
     loop {
-        let (died, groups) = lost_in_a_mark(mutants, death);
+        let (died, groups) = lost_in_a_mark(mutants, io, death);
         if let Some((number, txg, held)) = groups.iter().find(|(_, txg, held)| txg != held) {
             return Err(format!(
                 "death at store {death}: cut {number} of group {txg} holds group {held}"
@@ -1122,22 +1123,26 @@ fn marks_survive_a_death(mutants: u64) -> Result<u64, String> {
 /// at any store of the region while the write is under way leaves a
 /// next instance that cuts the group once, holding its uberblock. A mark
 /// recorded at receipt, and one recorded after the completion, are each
-/// noticed.
+/// noticed. Both on the caller's thread and with one I/O thread, where
+/// the mark is recorded when the pump takes the thread's result: without
+/// that, the mark waits for the next request (the review of #98, S2).
 #[test]
 fn a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole() {
-    let stores = marks_survive_a_death(0).expect("every death");
-    assert!(stores > 4, "{stores} stores");
-    for (name, mutant) in [
-        ("a mark recorded at receipt", Mutants::MARK_BEFORE_WHOLE),
-        (
-            "a mark recorded after the completion",
-            Mutants::MARK_AFTER_COMPLETION,
-        ),
-    ] {
-        assert!(
-            marks_survive_a_death(mutant).is_err(),
-            "{name}: not noticed"
-        );
+    for io in [ON_CALLER, OTHER_IO[0]] {
+        let stores = marks_survive_a_death(0, io).expect("every death");
+        assert!(stores > 4, "{stores} stores, {io:?}");
+        for (name, mutant) in [
+            ("a mark recorded at receipt", Mutants::MARK_BEFORE_WHOLE),
+            (
+                "a mark recorded after the completion",
+                Mutants::MARK_AFTER_COMPLETION,
+            ),
+        ] {
+            assert!(
+                marks_survive_a_death(mutant, io).is_err(),
+                "{name}: not noticed, {io:?}"
+            );
+        }
     }
 }
 
@@ -1727,4 +1732,257 @@ fn a_slot_known_not_to_verify_is_followed_by_the_rest_of_its_bytes() {
         Some((11, false)),
         "a slot completed by its second half was taken for an empty place"
     );
+}
+
+/// What a death at store `death` of group 8's flush leaves, after the
+/// next instance has had the flush again: whether the run died, the
+/// count, and the held cuts' numbers and groups.
+fn lost_in_a_cut(death: u64) -> (bool, u64, Vec<(u64, u64)>) {
+    state::tests::quiet_deaths();
+    let disk = created(33, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    for label in 0..LABELS {
+        let done = run(
+            &mut store,
+            200 + label as u64,
+            uberblock_write(label, 8, 80),
+        );
+        assert!(done.result.is_ok());
+    }
+    let id = RequestId(210);
+    let mut done = Vec::new();
+    region.die_at(death);
+    let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.submit(Request { id, op: Op::Flush }).unwrap();
+        while done.is_empty() {
+            store.wait(&mut done, WAIT);
+        }
+    }));
+    region.revive();
+    let died = match lived {
+        Ok(()) => false,
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    if died {
+        drop(store);
+        disk.kill();
+        store = start_on(&disk, 0, &region, ON_CALLER);
+        // The flush's completion never went out: the kernel issues it again.
+        assert!(run(&mut store, 211, Op::Flush).result.is_ok());
+    }
+    assert!(run(&mut store, 212, Op::Flush).result.is_ok());
+    let held = store
+        .held_cuts()
+        .iter()
+        .map(|c| (c.number, c.state.txg))
+        .collect();
+    (died, store.cuts().count, held)
+}
+
+/// A death at any store of a cut's flush, through the store: the
+/// kernel issues the flush again, and the group is cut once. Fails where
+/// the start keeps a mark the newest cut took, or leaves the newest
+/// cut's state unmade, or where the next instance is not given the
+/// count (the review of #98, S2).
+#[test]
+fn a_death_at_any_store_of_a_cuts_flush_cuts_the_group_once() {
+    let mut death = 0;
+    loop {
+        let (died, count, held) = lost_in_a_cut(death);
+        assert_eq!(
+            (count, held.clone()),
+            (2, vec![(1, 7), (2, 8)]),
+            "death at store {death}: count {count}, held {held:?}"
+        );
+        if !died {
+            break;
+        }
+        death += 1;
+    }
+    assert!(death > 20, "{death} stores");
+}
+
+/// ZFS writes labels 0 and 2 and flushes, which cuts the group; the
+/// daemon is lost; ZFS writes labels 1 and 3 and flushes. The repeat is
+/// not cut again. Fails where the next instance is not given the newest
+/// cut's state (the review of #98, S2).
+#[test]
+fn a_repeat_of_the_newest_cut_marks_nothing_after_a_lost_daemon() {
+    let disk = created(35, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    for (i, label) in [0usize, 2].into_iter().enumerate() {
+        let done = run(&mut store, 200 + i as u64, uberblock_write(label, 8, 80));
+        assert!(done.result.is_ok());
+    }
+    assert!(run(&mut store, 210, Op::Flush).result.is_ok());
+    assert_eq!(store.cuts().count, 2);
+    drop(store);
+    disk.kill();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    for (i, label) in [1usize, 3].into_iter().enumerate() {
+        let done = run(&mut store, 220 + i as u64, uberblock_write(label, 8, 80));
+        assert!(done.result.is_ok());
+    }
+    assert!(run(&mut store, 230, Op::Flush).result.is_ok());
+    let held: Vec<(u64, u64)> = store
+        .held_cuts()
+        .iter()
+        .map(|c| (c.number, c.state.txg))
+        .collect();
+    assert_eq!(
+        store.cuts().count,
+        2,
+        "a repeat of the newest cut's uberblock was cut: {held:?}"
+    );
+}
+
+/// A write-zeroes of two blocks after a cut, with every I/O the store
+/// has: the cut reads both blocks as they were. Fails where a
+/// write-zeroes does not pass through the cut state, and where only a
+/// change's first block is noted (the review of #98, S2).
+#[test]
+fn a_held_cut_reads_as_the_volume_at_its_instant_after_a_write_zeroes() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let disk = created(36, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, io);
+        write(&mut store, 5, 0x55).unwrap();
+        write(&mut store, 6, 0x66).unwrap();
+        group(&mut store, 100, 7, 70);
+        let zeroed = run(
+            &mut store,
+            300,
+            Op::WriteZeroes {
+                offset: 5 * BLOCK,
+                len: 2 * BLOCK,
+            },
+        );
+        assert!(zeroed.result.is_ok(), "{io:?}");
+        assert_eq!(read(&mut store, 5).unwrap(), vec![0; BLOCK_USIZE], "{io:?}");
+        assert_eq!(
+            cut_block(&mut store, 1, 5),
+            vec![0x55; BLOCK_USIZE],
+            "{io:?}"
+        );
+        assert_eq!(
+            cut_block(&mut store, 1, 6),
+            vec![0x66; BLOCK_USIZE],
+            "{io:?}"
+        );
+    }
+}
+
+/// After the newest cut is let go, released or abandoned at the bound,
+/// the next instance still says whether it opens as itself: the flag is
+/// kept beside the newest cut's state, not only in the held cut. Fails
+/// where the start reads the flag from the held cuts alone, as at
+/// e905c2e: the status then shows a cut that opens as itself as a
+/// rewind (the review of #98, D1).
+#[test]
+fn the_newest_cut_says_it_opens_as_itself_after_it_is_let_go() {
+    for abandon in [false, true] {
+        let disk = created(37, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, ON_CALLER);
+        group(&mut store, 100, 7, 70);
+        assert_eq!(newest(&store), Some((7, true)), "abandon {abandon}");
+        if abandon {
+            // Blocks outside the rings, each copied once for cut 1,
+            // until the copies pass the bound.
+            let outside = (0..VOLUME_BLOCKS).filter(|b| b % 64 < 32);
+            for block in outside.take((TEST_BOUND / BLOCK) as usize + 1) {
+                write(&mut store, block, 0x5A).unwrap();
+            }
+            assert_eq!(store.cut_figures().abandoned, 1);
+        } else {
+            assert!(store.release_cut(1));
+        }
+        assert!(store.held_cuts().is_empty(), "abandon {abandon}");
+        drop(store);
+        disk.kill();
+        let store = start_on(&disk, 0, &region, ON_CALLER);
+        assert_eq!(store.cuts().count, 1, "abandon {abandon}");
+        assert_eq!(newest(&store), Some((7, true)), "abandon {abandon}");
+    }
+}
+
+/// A held cut's block past the volume's end, or into a buffer of
+/// another size than a block, is refused, not read from some other
+/// map's bits (the review of #98).
+#[test]
+fn a_cut_is_read_only_within_the_volume() {
+    let disk = created(38, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    let mut buf = Buf::filled(1, 0xEE);
+    assert!(store.read_cut(1, VOLUME_BLOCKS - 1, &mut buf).is_ok());
+    for block in [VOLUME_BLOCKS, u64::MAX / BLOCK] {
+        let refused = store.read_cut(1, block, &mut buf);
+        assert_eq!(
+            refused.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::InvalidInput),
+            "block {block}"
+        );
+    }
+    let mut two = Buf::filled(2, 0xEE);
+    assert_eq!(
+        store.read_cut(1, 0, &mut two).map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::InvalidInput)
+    );
+}
+
+/// A death at any store of a write whose copy is refused, while it lets
+/// cut 2 go: the next instance counts cut 2 abandoned once if it is
+/// gone, and not at all if it is still held. Fails where the count is
+/// stored after the cut is gone with no record of the abandoning, as
+/// the bound's abandon did before the review of #98.
+#[test]
+fn a_death_while_a_refused_copy_lets_a_cut_go_counts_it_once() {
+    let mut death = 0;
+    loop {
+        state::tests::quiet_deaths();
+        let disk = created(39, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, ON_CALLER);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        write(&mut store, 5, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        disk.fail_write_of(COPIES_NAME);
+        region.die_at(death);
+        let lived =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write(&mut store, 5, 0x77)));
+        region.revive();
+        let died = match lived {
+            Ok(written) => {
+                assert_eq!(written, Ok(()), "death at {death}");
+                false
+            }
+            Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        if died {
+            drop(store);
+            disk.kill();
+            disk.clear_faults();
+            store = start_on(&disk, 0, &region, ON_CALLER);
+        }
+        let held: Vec<u64> = store.held_cuts().iter().map(|c| c.number).collect();
+        let abandoned = store.cut_figures().abandoned;
+        assert!(
+            (held == [1] && abandoned == 1) || (held == [1, 2] && abandoned == 0),
+            "death at store {death}: held {held:?}, {abandoned} abandoned"
+        );
+        if !died {
+            break;
+        }
+        death += 1;
+    }
+    assert!(death > 3, "{death} stores");
 }
