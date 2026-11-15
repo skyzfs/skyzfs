@@ -1,0 +1,7 @@
+exit 101
+review: the write: Err(Failed); the volume has failed: true
+review: the next start: Some(TakenUp), held [1]
+test inplace::tests::cuts::review_a_volume_that_failed_with_no_marker_written ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 204 filtered out; finished in 0.10s
+the volume failed, and the next start holds [1]: Some(TakenUp)
+error: test failed, to rerun pass `-p skyzfs-local --lib`

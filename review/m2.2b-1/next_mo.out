@@ -1,0 +1,5 @@
+M6 the file is readable by all: SURVIVED
+O1 a named region of another length counts as kept: SURVIVED
+O2 a named region counts as kept whatever the open said: SURVIVED
+O3 the region is opened after the marker goes: NOT APPLIED (found [0, 1] times)
+finished
