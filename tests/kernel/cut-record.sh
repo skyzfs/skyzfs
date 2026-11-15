@@ -61,6 +61,18 @@
 #
 # Knobs: CUT_VDEV_MB=512 (the pool's device), CUT_LOG_MB=8192 (the
 # record's device, sparse), CUT_FILES=6 (files per sync of the load).
+#
+# CUT_SERVER=daemon (M2.T3) records through the daemon instead: the
+# pool's device is a volume that skyzfsd serves (CUT_SKYZFSD, a build
+# with its test hooks), from a directory under WORK, and the record is
+# the daemon's own request log (DIR/requests.tsv: when the store applied
+# each write, the bytes of every write to the labels, each flush's
+# barrier and each cut the daemon counted). The marks go to
+# DIR/marks.tsv with CLOCK_MONOTONIC, the request log's clock. Its
+# status is read into DIR/status.txt before it is detached, and the
+# check is called with the request log in place of LOG and `-` for
+# BASE. stray's 20 ms delay of the back labels has no place below the
+# daemon and is left out.
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -107,18 +119,33 @@ VDEV_MB=${CUT_VDEV_MB:-512}
 LOG_MB=${CUT_LOG_MB:-8192}
 FILES=${CUT_FILES:-6}
 CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
+SERVER=${CUT_SERVER:-log-writes}
+SKYZFSD=${CUT_SKYZFSD:-}
+case $SERVER in
+    log-writes) ;;
+    daemon) [ -x "$SKYZFSD" ] || { echo "CUT_SERVER=daemon needs CUT_SKYZFSD, the daemon's binary" >&2; exit 64; }
+            DEV="" ;;
+    *) echo "CUT_SERVER is log-writes or daemon, not $SERVER" >&2; exit 64 ;;
+esac
 for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
-VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""
+VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
     local secs=$1; shift
     timeout "$secs" "$@" || rig_error "$* failed (status $?)"
 }
-mark() { dmsetup message "$LW" 0 mark "$1"; }
+mark() {
+    if [ "$SERVER" = daemon ]; then
+        printf '%s\t%s\n' "$(python3 -c 'import time; print(time.monotonic_ns())')" "$1" >> "$RDIR/marks.tsv"
+    else
+        dmsetup message "$LW" 0 mark "$1"
+    fi
+}
 # The pool's txgs kstat, then the end mark: what ZFS says it synced in
 # this session, up to the export (which syncs a few more).
 session_end() {
@@ -171,6 +198,10 @@ cleanup() {
     set +e
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
+    if [ -n "$SERVE_PID" ]; then
+        timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
+        serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
+    fi
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
     for l in "$VLOOP" "$LLOOP" "$MLOOP" "$SLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
@@ -181,7 +212,7 @@ trap cleanup EXIT
 
 for m in dm_log_writes dm_delay zfs; do modprobe "$m" 2>/dev/null || true; done
 [ -r /proc/spl/kstat/zfs/arcstats ] || { echo "the zfs kernel module is not loaded" >&2; exit 64; }
-dmsetup targets | grep -q '^log-writes' || { echo "no dm-log-writes target in this kernel" >&2; exit 64; }
+[ "$SERVER" = daemon ] || dmsetup targets | grep -q '^log-writes' || { echo "no dm-log-writes target in this kernel" >&2; exit 64; }
 command -v zdb > /dev/null || { echo "no zdb" >&2; exit 64; }
 timeout 60 zpool export -f "$POOL" 2>/dev/null || true
 dmsetup remove "$LW" 2>/dev/null || true
@@ -202,10 +233,51 @@ echo 0x5eed1234 > /sys/module/spl/parameters/spl_hostid
 # a flush can fall between them, which exercises the repeat rule (M2.1's
 # fixture test found that none did without it).
 LOWER=skz-cut-lower; LOWER_UP=""
+# SECONDS: wait for the daemon's serve to end; 1 if it has not.
+serve_end() {
+    local _i
+    for _i in $(seq 1 $(($1 * 4))); do
+        kill -0 "$SERVE_PID" 2>/dev/null || { SERVE_RC=0; wait "$SERVE_PID" 2>/dev/null || SERVE_RC=$?; SERVE_PID=""; return 0; }
+        sleep 0.25
+    done
+    return 1
+}
+# The volume, served by the daemon with its request log: DEV is its device.
+begin_daemon() {
+    local _i
+    rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
+    timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
+        || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
+    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
+    SERVE_PID=$!; DEV=""
+    for _i in $(seq 1 480); do
+        DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$VOL.ready" | head -n 1)
+        [ -z "$DEV" ] || [ ! -b "$DEV" ] || break
+        kill -0 "$SERVE_PID" 2>/dev/null || { SERVE_PID=""; rig_error "skyzfsd serve ended before it was ready: $(tail -n 3 "$RDIR/serve.log")"; }
+        sleep 0.25
+    done
+    [ -n "$DEV" ] && [ -b "$DEV" ] || rig_error "skyzfsd serve was not ready in 120 s"
+    : > "$RDIR/marks.tsv"
+    log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
+}
+end_daemon() {
+    timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status.txt" 2>&1 \
+        || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/status.txt")"
+    timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach.log" 2>&1 \
+        || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach.log")"
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after the detach"
+    echo "serve's exit after the detach: $SERVE_RC" >> "$RDIR/detach.log"
+    rm -rf "${VOL:?}" "$VOL.ready"
+}
 begin() {
     local sectors=$((VDEV_MB << 11)) under
     NAME=$1; RDIR=$OUT/$1; SESSION=0; LOADED=0
     rm -rf "${RDIR:?}"; mkdir -p "$RDIR"
+    if [ "$SERVER" = daemon ]; then
+        [ "${2:-}" != delay-end ] || log "$NAME: no delay of the back labels below the daemon"
+        begin_daemon
+        return 0
+    fi
     : > "$WORK/vdev.img"; truncate -s "${VDEV_MB}M" "$WORK/vdev.img"
     : > "$WORK/log.img"; truncate -s "${LOG_MB}M" "$WORK/log.img"
     VLOOP=$(losetup --find --show "$WORK/vdev.img")
@@ -220,19 +292,26 @@ begin() {
     log "$NAME: recording on $DEV ($VDEV_MB MiB)"
 }
 end() {
-    dmsetup remove "$LW"
-    [ -z "$LOWER_UP" ] || { dmsetup remove "$LOWER"; LOWER_UP=""; }
-    losetup -d "$VLOOP"; VLOOP=""
-    losetup -d "$LLOOP"; LLOOP=""
-    : > "$WORK/base.img"; truncate -s "${VDEV_MB}M" "$WORK/base.img"
-    log "$NAME: recorded, $(du -h "$WORK/log.img" | cut -f1) of record"
+    local record=$WORK/log.img base=$WORK/base.img
+    if [ "$SERVER" = daemon ]; then
+        end_daemon
+        record=$RDIR/requests.tsv; base=-
+        log "$NAME: recorded, $(du -h "$record" | cut -f1) of request log"
+    else
+        dmsetup remove "$LW"
+        [ -z "$LOWER_UP" ] || { dmsetup remove "$LOWER"; LOWER_UP=""; }
+        losetup -d "$VLOOP"; VLOOP=""
+        losetup -d "$LLOOP"; LLOOP=""
+        : > "$base"; truncate -s "${VDEV_MB}M" "$base"
+        log "$NAME: recorded, $(du -h "$record" | cut -f1) of record"
+    fi
     echo "$NAME	recorded	$SESSION sessions" >> "$OUT/recordings.tsv"
     [ "$CHECK" = none ] && return 0
     local rc=0
     # shellcheck disable=SC2086 # CHECK is a command line
     local logdev=()
     [ ! -e "$WORK/slog-base.img" ] || logdev=("$WORK/slog-base.img")
-    $CHECK "$NAME" "$RDIR" "$WORK/log.img" "$WORK/base.img" $((VDEV_MB << 20)) "${logdev[@]}" || rc=$?
+    $CHECK "$NAME" "$RDIR" "$record" "$base" $((VDEV_MB << 20)) "${logdev[@]}" || rc=$?
     rm -f "$WORK/slog-base.img"
     echo "$NAME	checked	exit $rc" >> "$OUT/recordings.tsv"
     WORST=$(( rc > WORST ? rc : WORST ))

@@ -1,0 +1,122 @@
+name: skyzfs-cut-daemon
+
+# The cut rig on the daemon (M2.T3, design §5.2), its first stage: the
+# recordings of the cut rig (tests/kernel/cut-record.sh) made on a pool
+# whose device skyzfsd serves (CUT_SERVER=daemon), with its request log.
+# tests/kernel/cut_daemon_check.py reads the log in the daemon's own
+# order and holds the daemon's cuts (count, each cut's instant and
+# group, whether it opens as itself), its status, and the groups ZFS
+# says it synced to the reference (tests/kernel/cut_ref.py). Four wrong
+# lists must fail the comparison (`EXPECTED`). Exit 1 is a verdict
+# against the daemon, exit 2 the rig's own error. Read the summary's
+# table, not the colour.
+#
+# Runs on a pull request that touches the rig's files or the daemon's
+# code (ubuntu-26.04 and ubuntu-26.04-arm), on a push of the rig's
+# files to a testing branch (ubuntu-26.04), and by dispatch (all four
+# images by default).
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
+      recordings:
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full); empty: all"
+        default: ""
+  pull_request:
+    paths:
+      - tests/kernel/cut*
+      - tests/kernel/test_cut*
+      - tests/kernel/replay_check.py
+      - tests/lib/**
+      - bins/skyzfsd/**
+      - crates/skyzfs-local/**
+      - crates/skyzfs-uberblock/**
+      - crates/skyzfs-ublk/**
+      - crates/skyzfs-ublk-sys/**
+      - crates/skyzfs-blk/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - .github/workflows/skyzfs-cut-daemon.yml
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/cut_daemon_check.py
+      - tests/kernel/cut-record.sh
+      - .github/workflows/skyzfs-cut-daemon.yml
+
+concurrency:
+  group: cut-daemon-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the check's logic (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_cut_daemon_check.py -v
+
+  record:
+    name: record through skyzfsd and check, ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images || (github.event_name == 'push' && '["ubuntu-26.04"]') || '["ubuntu-26.04","ubuntu-26.04-arm"]') }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS and the ublk driver
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p cut-out
+          if ! net_try sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy libdevmapper-dev libudev-dev libclang-dev' > cut-out/setup-apt.log 2>&1; then
+            tail -n 40 cut-out/setup-apt.log
+            { echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo
+              echo "Installing the packages failed in $NET_TRIES tries: $(net_why cut-out/setup-apt.log)"; } > cut-out/summary.md
+            exit 2
+          fi
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          if ! sudo modprobe ublk_drv; then
+            { echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo
+              echo "No ublk driver on this kernel ($(uname -r))."; } > cut-out/summary.md
+            exit 2
+          fi
+          uname -r; sudo zfs version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cut-daemon-${{ matrix.image }}
+      - name: Build skyzfsd with its test hooks
+        run: cargo build --release --locked -p skyzfsd --features test-hooks
+      - name: Record through skyzfsd and check
+        env:
+          RECORDINGS: ${{ inputs.recordings || '' }}
+        run: |
+          read -r -a recs <<< "$RECORDINGS"
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$PWD/target/release/skyzfsd" \
+            CUT_CHECK="python3 $PWD/tests/kernel/cut_daemon_check.py" \
+            bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX cut-out 2>/dev/null || true
+          if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" "Cut rig on the daemon (M2.T3, first stage)" >> "$GITHUB_STEP_SUMMARY" \
+            || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: cut-daemon-${{ matrix.image }}
+          path: cut-out/
+          retention-days: 90
