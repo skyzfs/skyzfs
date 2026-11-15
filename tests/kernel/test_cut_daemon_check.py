@@ -288,12 +288,10 @@ class RoundTrip(unittest.TestCase):
             cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
 
 
-class HeldContent(unittest.TestCase):
-    """The second stage: the content of each held cut the holder wrote,
-    against the reference's at the cut's instant. The images a right
-    daemon would leave are built here from the fixture's own records,
-    apart from the check's model: a write sets its blocks, a discard
-    keeps them (R6)."""
+class HeldFixture(unittest.TestCase):
+    """The images a right daemon would leave, built from the fixture
+    life's own records apart from the check's model: a write sets its
+    blocks, a discard keeps them (R6)."""
 
     def setUp(self):
         records, read, dev = fixture('life')
@@ -322,8 +320,13 @@ class HeldContent(unittest.TestCase):
         return cdc.held_content(self.recs, self.dcuts, written or self.written, blocks or self.blocks,
                                 self.final if final is None else final)
 
+
+class HeldContent(HeldFixture):
+    """The second stage: the content of each held cut the holder wrote,
+    against the reference's at the cut's instant."""
+
     def test_a_right_daemon(self):
-        ok, detail, controls = self.judge()
+        ok, detail, controls, _ = self.judge()
         self.assertTrue(ok, detail)
         self.assertIn(f'{len(self.written)} of {len(self.dcuts)} cuts written', detail)
         self.assertEqual({c: v for c, (v, _) in controls.items()}, cdc.CONTENT_EXPECTED)
@@ -337,7 +340,7 @@ class HeldContent(unittest.TestCase):
             acc.update(self.blocks[w['number']])
             if w in keep:
                 blocks[w['number']], acc = acc, {}
-        ok, detail, _ = self.judge(keep, blocks)
+        ok, detail, _, _ = self.judge(keep, blocks)
         self.assertTrue(ok, detail)
 
     def test_a_block_held_wrong(self):
@@ -345,7 +348,7 @@ class HeldContent(unittest.TestCase):
         blocks = {n: dict(m) for n, m in self.blocks.items()}
         b = sorted(blocks[mid])[0]
         blocks[mid][b] = '0' * 16
-        ok, detail, _ = self.judge(blocks=blocks)
+        ok, detail, _, _ = self.judge(blocks=blocks)
         self.assertFalse(ok)
         self.assertIn(f'cut {mid}', detail)
         self.assertIn(f'block {b}: ', detail)
@@ -397,11 +400,31 @@ class HeldContent(unittest.TestCase):
                    {'number': 2, 'group': 6, 'opens': 'itself', 'blocks': 1}]
         for held, want in ((a, True), (cdc.ZERO, True), ('b' * 16, False)):
             blocks = {1: {2: a, 10: 'c' * 16}, 2: {2: held}}
-            ok, detail, _ = cdc.held_content(recs, dcuts, written, blocks)
+            ok, detail, _, _ = cdc.held_content(recs, dcuts, written, blocks)
             self.assertEqual(ok, want, (held, detail))
-        ok, detail, _ = cdc.held_content(recs, dcuts, written, {1: {2: a, 10: 'c' * 16}, 2: {2: a}})
+        ok, detail, _, _ = cdc.held_content(recs, dcuts, written, {1: {2: a, 10: 'c' * 16}, 2: {2: a}})
         self.assertIn('1 of them discarded', detail)
         self.assertIn('not known to the reference', detail)
+
+    def test_the_blocks_held_wrong_are_named(self):
+        mid = self.written[len(self.written) // 2]['number']
+        blocks = {n: dict(m) for n, m in self.blocks.items()}
+        b = sorted(blocks[mid])[0]
+        blocks[mid][b] = '0' * 16
+        self.assertIn(b, self.judge(blocks=blocks)[3])
+        self.assertEqual(self.judge()[3], set())
+
+    def test_a_write_zeroes_with_an_overlapping_write_in_the_store(self):
+        """Only the blocks a write-zeroes shares with a write received
+        before it and not applied yet are not placed for certain."""
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+                f'2\t{PID}\trecv\t3\twrite\t8\t16\t-\n'
+                f'3\t{PID}\trecv\t4\twrite_zeroes\t16\t16\t-\n'
+                f'4\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{"a" * 16},{"b" * 16}\n'
+                f'5\t{PID}\trecv\t5\twrite_zeroes\t64\t8\t-\n')
+        recs, _ = cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+        wz = [r for r in recs if r.get('op') == 'write_zeroes']
+        self.assertEqual([r['ambiguous'] for r in wz], [{2}, set()])
 
     def test_write_zeroes_read_as_zeros(self):
         model = {}
@@ -413,6 +436,64 @@ class HeldContent(unittest.TestCase):
                 f'3\t{PID}\tapplied\t3\twrite\t-\t-\t-\t{"a" * 16}\n')
         with self.assertRaises(RigError):
             cdc.records_of(cdc.parse_log(text)[0]['lines'], [])
+
+
+class HeldLines(HeldFixture):
+    """held_lines on a recording's directory written from the fixture: the
+    holder's files, the status, what it was given."""
+
+    def lines(self, name='life', status=None, final=None, log='', status_held=None, cuts_line='begun'):
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix='cdc-held-')
+        try:
+            def w(fn, text):
+                with open(os.path.join(d, fn), 'w') as f:
+                    f.write(text)
+            w('holder.log', log or '1\t> t1 held\n')
+            w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t1\t2\n"
+                                  for x in self.written))
+            w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in self.blocks.items() for b, h in m.items()))
+            w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(self.final.items())))
+            w('held-final.txt', final if final is not None else '9 9 uploading itself 3\n')
+            w('status-held.txt', status_held if status_held is not None else 'cuts_held 1\n')
+            inst = {'lines': [{'event': 'cuts', 'result': cuts_line}]}
+            got = []
+            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, inst, self.recs, self.dcuts,
+                                status or {'cut_state': 'begun', 'cuts_abandoned': '0'}, 512 << 20, name)
+            return rc, {k: (v, t) for k, v, t in got}
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_right_daemon(self):
+        rc, lines = self.lines()
+        self.assertEqual(rc, (0, False), lines)
+        for k in ('cut_state', 'cuts_held', 'held_content'):
+            self.assertEqual(lines[k][0], 'PASS', (k, lines[k]))
+        self.assertEqual(lines['cuts_abandoned'][0], 'INFO')
+
+    def test_the_state_not_begun(self):
+        self.assertEqual(self.lines(cuts_line='taken_up')[1]['cut_state'][0], 'FAIL')
+        rc, lines = self.lines(status={'cut_state': 'off', 'cuts_abandoned': '0'})
+        self.assertEqual((rc[0], lines['cut_state'][0]), (1, 'FAIL'))
+
+    def test_cuts_held_not_the_list(self):
+        rc, lines = self.lines(status_held='cuts_held 2\n')
+        self.assertEqual((rc[0], lines['cuts_held'][0]), (1, 'FAIL'))
+
+    def test_bound_must_abandon(self):
+        rc, lines = self.lines(name='bound')
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='bound', status={'cut_state': 'begun', 'cuts_abandoned': '2'})
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
+
+    def test_edges_must_send_write_zeroes_and_a_discard(self):
+        with self.assertRaises(RigError):
+            self.lines(name='edges')
+
+    def test_the_holders_error(self):
+        with self.assertRaises(RigError):
+            self.lines(log='1\tERROR HolderError: no reply to `held` in 300 s\n')
 
 
 class Parse(unittest.TestCase):

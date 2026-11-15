@@ -17,6 +17,9 @@ STOP exists it loops:
   (IMAGE.blocks) is hashed as IMAGE then holds it;
 - `release N`, as an upload's commit would.
 
+While the file named by CUT_HOLD_PAUSE exists, it does nothing: the
+cut being uploaded stays held (the recording `bound`).
+
 A write the daemon refuses at its end (the cut was let go or abandoned
 under it) is logged and not recorded: the cut that takes its map writes
 those blocks again.
@@ -220,8 +223,9 @@ def main():
                 f.truncate(size)
             d = Daemon(pid, run_dir_of(vdir, rdir), log)
             h = Holder(d, image, out)
+            pause = os.environ.get('CUT_HOLD_PAUSE', '')
             while not os.path.exists(stop):
-                if not h.step():
+                if (pause and os.path.exists(pause)) or not h.step():
                     time.sleep(0.2)
             # What is held at the stop, and the status a second and a
             # half after (the daemon writes its status at most every

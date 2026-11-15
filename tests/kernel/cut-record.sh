@@ -115,7 +115,9 @@ OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
 ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
-RECS=${*:-$ALL}
+# Only where the daemon holds cuts (CUT_HOLD=1): what the ten above
+# never make the daemon do (M2.T3).
+HELD_ONLY="bound edges"
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
@@ -130,6 +132,8 @@ CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
 SERVER=${CUT_SERVER:-log-writes}
 SKYZFSD=${CUT_SKYZFSD:-}
 HOLD=${CUT_HOLD:-0}
+[ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
+RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
     daemon) [ -x "$SKYZFSD" ] || { echo "CUT_SERVER=daemon needs CUT_SKYZFSD, the daemon's binary" >&2; exit 64; }
@@ -273,8 +277,9 @@ begin_daemon() {
     : > "$RDIR/marks.tsv"
     if [ "$HOLD" = 1 ]; then
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
-        python3 -I "$HERE/cut_hold.py" "$RDIR" "$SERVE_PID" "$VOL" "$RUN" "$WORK/held.img" $((VDEV_MB << 20)) \
-            "$WORK/hold.stop" "$SKYZFSD" 2> "$RDIR/holder.err" &
+        rm -f "$WORK/hold.pause"
+        CUT_HOLD_PAUSE="$WORK/hold.pause" python3 -I "$HERE/cut_hold.py" "$RDIR" "$SERVE_PID" "$VOL" "$RUN" \
+            "$WORK/held.img" $((VDEV_MB << 20)) "$WORK/hold.stop" "$SKYZFSD" 2> "$RDIR/holder.err" &
         HOLD_PID=$!
     fi
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
@@ -559,6 +564,45 @@ rec_autotrim() {
     export_pool
     echo "$batch" > /sys/module/zfs/parameters/zfs_trim_txg_batch
 }
+# bound (held cuts only): the holder keeps the first cut, which maps the
+# whole volume of a new state, while the pool writes 320 MiB of new
+# data. Every block first written after the cut is copied, the copies
+# pass the bound (1/256 of the volume, at least 256 MiB), and the cut is
+# abandoned: its map passes to the cut that waits.
+rec_bound() {
+    local k
+    touch "$WORK/hold.pause"
+    create_pool
+    for k in $(seq 1 10); do
+        dd if=/dev/urandom of="$MNT/b$k" bs=1M count=32 status=none
+        z 60 zpool sync "$POOL"
+    done
+    rm -f "$WORK/hold.pause"
+    load 2
+    export_pool
+}
+
+# edges (held cuts only): requests ZFS does not send, into the area
+# between the front labels and the first metaslab (512 KiB to 4 MiB,
+# which ZFS leaves alone), each between loads so that cuts fall
+# between: a write, write-zeroes over half of it, a discard over a
+# quarter, a write of one block. The device's logical block is 4 KiB
+# (skyzfs-ublk-sys's parameters), so no request covers part of a block.
+rec_edges() {
+    local base=$((1 << 20))
+    create_pool
+    load 1
+    dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
+    load 1
+    z 60 blkdiscard -f -z -o "$base" -l $((128 << 10)) "$DEV"
+    load 1
+    z 60 blkdiscard -f -o $((base + (128 << 10))) -l $((64 << 10)) "$DEV"
+    load 1
+    dd if=/dev/urandom of="$DEV" bs=4K count=1 seek=$(( (base + (192 << 10)) >> 12 )) oflag=direct conv=notrunc status=none
+    load 1
+    export_pool
+}
+
 rec_full() {
     local k
     create_pool

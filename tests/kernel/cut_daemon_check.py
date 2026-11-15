@@ -120,7 +120,8 @@ import cut_check  # noqa: E402
 import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full')
+RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
+        'bound', 'edges')   # the last two only where the daemon holds cuts (cut-record.sh)
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
 RULES = ('early', 'txg-alone', 'count-repeats', 'previous')
 CONTROLS = LISTS + RULES
@@ -220,7 +221,14 @@ def records_of(lines, marks):
                 pending[ln['tag']] = (off, n)
                 data.pop(ln['tag'], None)
             elif ln['op'] == 'write_zeroes':
-                add({'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op']})
+                # Placed at its receipt. A write received before it that
+                # overlaps it and is not applied yet is applied first by
+                # the store (both in the order received) and after it
+                # here: their shared blocks are not placed for certain.
+                lo, hi = off // BLOCK, (off + n - 1) // BLOCK
+                amb = {b for (o, m) in pending.values() for b in range(max(lo, o // BLOCK),
+                                                                       min(hi, (o + m - 1) // BLOCK) + 1)}
+                add({'flags': ['discard'], 'offset': off, 'bytes': n, 'op': ln['op'], 'ambiguous': amb})
             elif ln['op'] == 'flush':
                 # The receipt takes the mark; the barrier counts the cut.
                 add({'flags': ['receipt'], 'offset': 0, 'bytes': 0, 'tag': ln['tag']})
@@ -414,7 +422,8 @@ def read_hashes(text, what, keyed=True):
 
 def held_content(records, dcuts, written, blocks, final=None):
     """The cuts the holder wrote, each against the reference's content at
-    its instant -> (ok, detail, controls {name: (verdict, detail)}).
+    its instant -> (ok, detail, controls {name: (verdict, detail)}, every
+    block held wrong).
 
     written: read_held; blocks: {number: {block: hash}} of each cut's map
     as the rig's image held it after the write; final: {block: hash} of
@@ -427,6 +436,7 @@ def held_content(records, dcuts, written, blocks, final=None):
         raise RigError('the holder wrote no cut')
     image, model, at = {}, {}, 0
     bad, notes, total = [], [], [0, 0, 0]
+    wrong_blocks = set()
     mid = written[len(written) // 2]['number']
     ctl = {}
     prev_image = None
@@ -452,7 +462,9 @@ def held_content(records, dcuts, written, blocks, final=None):
         while at < d['prefix']:
             apply(model, records[at])
             at += 1
-        compared, unknown, either, wrong = held_compare(model, image)
+        compared, unknown, either, wrong = held_compare(model, image, limit=10 ** 9)
+        wrong_blocks |= {x[0] for x in wrong}
+        wrong = wrong[:5] + [None] * (len(wrong) - 5) if len(wrong) > 5 else wrong
         total[0] += compared
         total[1] += unknown
         total[2] += either
@@ -480,7 +492,7 @@ def held_content(records, dcuts, written, blocks, final=None):
         wrong = ctl.get(c)
         controls[c] = ('caught', f'cut {mid}: {len(wrong)} blocks differ') if wrong \
             else ('missed', f'cut {mid}: as the reference')
-    return not bad, '; '.join(bad + notes), controls
+    return not bad, '; '.join(bad + notes), controls, wrong_blocks
 
 
 def reference(cs, op):
@@ -575,7 +587,7 @@ def read_file(rdir, name):
         raise RigError(f'no {name}: the holder did not get as far') from None
 
 
-def held_lines(put, rdir, inst, records, dcuts, status, dev):
+def held_lines(put, rdir, inst, records, dcuts, status, dev, name=''):
     """The second stage's lines, where the holder ran -> (1 when a line is a
     verdict against the daemon, else 0; whether a line is the rig's ERROR)."""
     rc, errored = 0, False
@@ -603,14 +615,32 @@ def held_lines(put, rdir, inst, records, dcuts, status, dev):
     written = read_held(read_file(rdir, 'held.tsv'))
     blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
     final_image = read_hashes(read_file(rdir, 'held-image.tsv'), 'held-image.tsv', keyed=False)
-    ok, detail, controls = held_content(records, dcuts, written, blocks, final_image)
-    if not ok and any(r.get('op') == 'write_zeroes' for r in records):
-        put('held_content', 'ERROR', f'{detail}; the log holds write-zeroes, which the check places at their '
-            'receipt and the store may run later')
+    ok, detail, controls, wrong = held_content(records, dcuts, written, blocks, final_image)
+    amb = set().union(*(r.get('ambiguous', set()) for r in records))
+    if not ok and wrong & amb:
+        put('held_content', 'ERROR', f'{detail}; blocks {sorted(wrong & amb)[:5]} were under a write-zeroes '
+            'received while an overlapping write was in the store, which the check cannot place')
         errored = True
     else:
         put('held_content', 'PASS' if ok else 'FAIL', detail)
         rc = rc if ok else 1
+    # The paths the ten recordings do not take (the lead, M2.T3): bound
+    # must abandon a cut, edges must send write-zeroes and a discard.
+    ab = status.get('cuts_abandoned')
+    if name == 'bound':
+        ok = ab is not None and ab.isdigit() and int(ab) >= 1
+        put('cuts_abandoned', 'PASS' if ok else 'FAIL', f'{ab!r} abandoned at the bound, with the copies '
+            f"{status.get('cut_copied_bytes')!r} bytes of {status.get('cut_bound_bytes')!r}; the holder kept the "
+            'first cut while the pool wrote 320 MiB of new data, so at least one must be')
+        rc = rc if ok else 1
+    else:
+        put('cuts_abandoned', 'INFO', f'{ab!r}')
+    if name == 'edges':
+        nz = sum(1 for r in records if r.get('op') == 'write_zeroes')
+        nt = sum(1 for r in records if 'trim' in r['flags'])
+        if not nz or not nt:
+            raise RigError(f'edges sent {nz} write-zeroes and {nt} discards; it is there to send both')
+        put('edges', 'INFO', f'{nz} write-zeroes and {nt} discards in the log, none of them from ZFS')
     for c in CONTENT_CONTROLS:
         verdict, d = controls[c]
         good = verdict == CONTENT_EXPECTED[c]
@@ -675,7 +705,7 @@ def main():
         if not ok:
             rc = 1
         if os.path.exists(os.path.join(rdir, 'holder.log')):
-            v, e = held_lines(put, rdir, instances[0], records, dcuts, status, dev)
+            v, e = held_lines(put, rdir, instances[0], records, dcuts, status, dev, name)
             rc, errored = max(rc, v), errored or e
         # What ZFS says it synced, as the cut rig holds the reference to it.
         kstats = {}
