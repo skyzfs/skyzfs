@@ -25,6 +25,7 @@ pub(crate) const BOOT: [u8; 16] = *b"the tests' boot.";
 const OWNER: Owner = Owner {
     volume: *b"the tests' disk.",
     boot: BOOT,
+    start: *b"the tests' start",
 };
 /// Where a program's changes begin: twelve blocks, some at the edges of
 /// a map's words, so that programs change the same blocks often.
@@ -1216,4 +1217,167 @@ fn a_cut_recorded_and_not_counted_is_none() {
     let held: Vec<(u64, Phase)> = state.held().iter().map(|c| (c.number, c.phase)).collect();
     assert_eq!(held, [(2, Phase::Uploading), (3, Phase::Flushing)]);
     assert_eq!(state.map(3), [2, 3]);
+}
+
+/// a disk that refuses copies while told to.
+struct Refusing {
+    disk: Disk,
+    refuse: bool,
+}
+
+impl Copier for Refusing {
+    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.disk.read_image(block, buf)
+    }
+
+    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
+        if self.refuse {
+            return Err(io::Error::other("no space left"));
+        }
+        self.disk.write_copy(slot, buf)
+    }
+}
+
+const REFUSING_BOUND: u64 = 64 * BLOCK_SIZE;
+
+/// cut 1 was let go as uploaded; cut 2 is being uploaded (block
+/// 20), cut 3 waits (blocks 30 to 32), cut 4's flush is under way
+/// (block 40), and block 50 is in the open map.
+fn three_held(region: &MemRegion) -> (CutState<MemRegion>, Refusing) {
+    let mut state = CutState::begin(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0));
+    let mut io = Refusing {
+        disk: Disk {
+            image: vec![0; BLOCKS as usize],
+            copies: BTreeMap::new(),
+        },
+        refuse: false,
+    };
+    state.change(10, 1, &mut io).expect("the change");
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    assert!(state.release(1));
+    state.change(20, 1, &mut io).expect("the change");
+    assert_eq!(state.freeze(&marked(2), true), 2);
+    state.flushed(2);
+    state.change(30, 3, &mut io).expect("the change");
+    // Two more blocks in other words of the map, so that cut 3's map
+    // weighs more than the open map that takes it.
+    state.change(100, 1, &mut io).expect("the change");
+    state.change(170, 1, &mut io).expect("the change");
+    assert_eq!(state.freeze(&marked(3), true), 3);
+    state.flushed(3);
+    state.change(40, 1, &mut io).expect("the change");
+    assert_eq!(state.freeze(&marked(4), true), 4);
+    state.change(50, 1, &mut io).expect("the change");
+    let held: Vec<(u64, Phase)> = state.held().iter().map(|c| (c.number, c.phase)).collect();
+    assert_eq!(
+        held,
+        [
+            (2, Phase::Uploading),
+            (3, Phase::Waiting),
+            (4, Phase::Flushing)
+        ]
+    );
+    (state, io)
+}
+
+#[test]
+fn a_refused_copy_lets_go_the_cut_that_reads_it_and_every_newer_one() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let (mut state, mut io) = three_held(&region);
+    io.refuse = true;
+    // Block 32 is in cut 3's map; block 33 has not changed before.
+    state.change(32, 2, &mut io).expect("the change goes on");
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert_eq!(
+        held,
+        [2],
+        "cut 3 read block 32, and cut 4 would once it took cut 3's map"
+    );
+    io.refuse = false;
+    let five = state.freeze(&marked(5), true);
+    let map = state.map(five);
+    for block in [30, 31, 32, 33, 40, 50, 100, 170] {
+        assert!(
+            map.contains(&block),
+            "cut {five} lacks block {block}: {map:?}"
+        );
+    }
+}
+
+#[test]
+fn a_death_while_a_refused_copy_lets_cuts_go() {
+    quiet_deaths();
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+        let (mut state, mut io) = three_held(&region);
+        io.refuse = true;
+        region.die_at(death);
+        let done = catch_unwind(AssertUnwindSafe(|| state.change(32, 2, &mut io)));
+        region.revive();
+        match done {
+            Ok(_) => break,
+            Err(payload) => {
+                if payload.downcast_ref::<Lost>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        deaths += 1;
+        drop(state);
+        let mut state = CutState::restore(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0))
+            .map_err(|(e, _)| e)
+            .expect("the state");
+        let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+        // The map never skips a cut.
+        if held.contains(&4) && !held.contains(&3) {
+            let map = state.map(4);
+            assert!(
+                map.contains(&30),
+                "a death at store {death}: cut 4 is held without cut 3 and lacks its blocks: held {held:?}, cut 4's map {map:?}"
+            );
+        }
+        // The write comes again, with copies still refused.
+        state.change(32, 2, &mut io).expect("the change goes on");
+        let next = state.freeze(&marked(9), true);
+        let mut all = BTreeSet::new();
+        for cut in state.held() {
+            if cut.number > 2 {
+                all.extend(state.map(cut.number));
+            }
+        }
+        for block in [30, 31, 32, 33, 40, 50, 100, 170] {
+            assert!(
+                all.contains(&block),
+                "a death at store {death}: block {block} is in no cut after cut 2 (the next is {next}): {all:?}"
+            );
+        }
+    }
+    assert!(deaths > 0);
+}
+
+#[test]
+fn a_refused_copy_for_the_oldest_cut_leaves_the_next_cut_its_lo() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let (mut state, mut io) = three_held(&region);
+    io.refuse = true;
+    // Block 20 is in cut 2's map alone: cut 2 reads it, and every cut goes.
+    state.change(20, 1, &mut io).expect("the change goes on");
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert!(held.is_empty(), "{held:?}");
+    io.refuse = false;
+    let five = state.freeze(&marked(5), true);
+    let cut = state.held()[0];
+    let map = state.map(five);
+    assert_eq!(
+        cut.lo, 1,
+        "cut {five} holds the changes since cut 1, the last let go as uploaded"
+    );
+    for block in [20, 30, 31, 32, 40, 50, 100, 170] {
+        assert!(
+            map.contains(&block),
+            "cut {five} lacks block {block}: {map:?}"
+        );
+    }
 }

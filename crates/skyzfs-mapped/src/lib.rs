@@ -186,6 +186,89 @@ mod tests {
         );
     }
 
+    /// A new region of several pages is allocated in full by its open,
+    /// before any store: the file's blocks cover its length (the review
+    /// of #100, S3). An open that allocated only what it touched would
+    /// leave a later store to fault for lack of room on tmpfs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_region_is_allocated_in_full_by_its_open() {
+        let dir = temp_dir();
+        let path = dir.path().join("r");
+        let words = 16 * 4096 / WORD;
+        let (region, opened) = open_or_panic(&path, words);
+        assert_eq!(opened, Opened::Created);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            panic!("the region's file is gone");
+        };
+        let blocks = std::os::unix::fs::MetadataExt::blocks(&meta);
+        assert!(
+            blocks * 512 >= (words * WORD) as u64,
+            "{blocks} blocks of 512 bytes for {} bytes",
+            words * WORD
+        );
+        drop(region);
+    }
+
+    /// What the child of the next test does: open a region of eight
+    /// pages of 4 KiB, and print the line of its status that says how
+    /// much memory it has locked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run by a_region_is_locked_in_memory_by_its_open, in a child"]
+    fn child_that_reports_what_it_locked() {
+        let Some(path) = std::env::var_os("SKYZFS_MAPPED_LOCKED") else {
+            return;
+        };
+        let (region, _) = open_or_panic(std::path::Path::new(&path), 8 * 4096 / WORD);
+        let status = match std::fs::read_to_string("/proc/self/status") {
+            Ok(status) => status,
+            Err(e) => panic!("the child's status: {e}"),
+        };
+        if let Some(line) = status.lines().find(|l| l.starts_with("VmLck:")) {
+            println!("{line}");
+        }
+        drop(region);
+    }
+
+    /// The region is locked in memory by its open (the review of #100,
+    /// S3): a process that opened a region of 32 KiB, and locked nothing
+    /// else, has at least that much locked, as the kernel counts it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_region_is_locked_in_memory_by_its_open() {
+        let dir = temp_dir();
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => panic!("the test's own program: {e}"),
+        };
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "tests::child_that_reports_what_it_locked",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("SKYZFS_MAPPED_LOCKED", dir.path().join("r"))
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(e) => panic!("the child did not start: {e}"),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let locked_kib = stdout
+            .lines()
+            .find_map(|l| l.split_once("VmLck:").map(|(_, rest)| rest))
+            .and_then(|rest| rest.trim().strip_suffix("kB"))
+            .and_then(|kib| kib.trim().parse::<u64>().ok());
+        assert!(
+            locked_kib.is_some_and(|kib| kib >= 32),
+            "the child locked {locked_kib:?} KiB: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// What the child of the next test does: open the region its parent
     /// names, store, and be killed, as `kill -9` kills the daemon.
     #[cfg(target_os = "linux")]
