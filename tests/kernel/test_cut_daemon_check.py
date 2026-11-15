@@ -736,6 +736,25 @@ class HeldLines(HeldFixture):
         touched = set(range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1))
         self.assertEqual(got[mid['number']], (len(touched & set(self.blocks[mid['number']])), 0))
         self.assertEqual(got[first['number']], (0, 0))
+        # Rewritten with what the cut holds: read the same from the home
+        # (the review of #103's next look, R1).
+        blocks = {k: dict(m) for k, m in self.blocks.items()}
+        for k, b in enumerate(range(r['offset'] // 4096, (r['offset'] + r['bytes'] - 1) // 4096 + 1)):
+            if b in blocks[mid['number']]:
+                blocks[mid['number']][b] = r['hashes'][k]
+        got = dict((n, (c, z)) for n, c, z in cdc.copied(self.recs, self.dcuts, written, blocks))
+        self.assertEqual(got[mid['number']], (0, 0))
+
+    def test_copied_blocks_under_a_write_zeroes(self):
+        """A block a write-zeroes answered before the write was asked for
+        counts where the cut holds other than zeros."""
+        a, c = 'a' * 16, 'c' * 16
+        recs, dcuts = unplaced_log()
+        written = [dict(w, asked=10 ** 6) for w in UNPLACED_WRITTEN]
+        zeroes = {'flags': ['discard'], 'op': 'write_zeroes', 'offset': 0, 'bytes': 4 * 4096, 'ambiguous': set(),
+                  'done_ns': 10 ** 6 - 1, 'seq': 99, 'i': len(recs)}
+        got = cdc.copied(recs + [zeroes], dcuts, written, {1: {1: a, 2: cdc.ZERO}, 2: {3: c}})
+        self.assertEqual([(n, x, z) for n, x, z in got], [(1, 1, 1), (2, 1, 1)])
 
     def test_a_control_missed_is_a_verdict(self):
         """Cuts 1 to 3 with no write after the first: the middle cut's

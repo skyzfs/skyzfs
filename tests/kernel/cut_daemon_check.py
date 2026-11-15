@@ -109,9 +109,10 @@ The second stage, where DIR/holder.log says the holder ran
 - controls: the middle written cut's image against the reference at the
   cut before it (`content_early`), and the image before its write
   against the reference at its instant (`content_stale`): both caught.
-- `obs_copied_blocks`: how many blocks of each written cut's map had
-  changed in the home (a write applied, a write-zeroes answered) after
-  the cut's instant and before the holder asked for its write
+- `obs_copied_blocks`: how many blocks of each written cut's map a
+  write applied, or a write-zeroes answered, after the cut's instant
+  and before the holder asked for its write had left with content other
+  than the cut's
   (held.tsv's times, the request log's clock): those the daemon wrote
   from copies, so that held_content is shown to have read some. The
   first written cut maps the whole volume and holds nearly all of them.
@@ -459,16 +460,17 @@ def read_held(text):
 
 def copied(records, dcuts, written, blocks):
     """The blocks each written cut's write read from copies -> [(number,
-    blocks, of them under a write-zeroes)]: the blocks of its map that a
-    write applied, or a write-zeroes answered, after the cut's instant
-    and before its write was asked for had changed in the home. The
-    review of #103 (S4): a daemon that makes no copy passes held_content
-    where there are none."""
+    blocks, of them under a write-zeroes)]: the blocks of its map whose
+    content in the home a write applied, or a write-zeroes answered,
+    after the cut's instant and before its write was asked for had made
+    differ from what the cut holds (a block rewritten with the same
+    content reads the same from either). The review of #103 (S4): a
+    daemon that makes no copy passes held_content where there are none."""
     by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
     out = []
     for w in written:
         n = w['number']
-        m = set(blocks.get(n, ()))
+        held = blocks.get(n, {})
         d = by_number.get(n)
         if d is None:
             continue
@@ -476,9 +478,15 @@ def copied(records, dcuts, written, blocks):
         for r in records[d['prefix'] + 1:]:
             if r.get('op') == 'write_zeroes':
                 if r.get('done_ns', w['asked']) < w['asked']:
-                    zeroed |= m & set(full_blocks(r['offset'], r['bytes'])[0])
+                    zeroed |= {b for b in full_blocks(r['offset'], r['bytes'])[0]
+                               if b in held and held[b] != ZERO}
             elif cut_ref.is_write(r) and 'ns' in r and r['ns'] < w['asked']:
-                hit |= m & set(range(r['offset'] // BLOCK, (r['offset'] + r['bytes'] - 1) // BLOCK + 1))
+                hs = r.get('hashes')
+                first = r['offset'] // BLOCK
+                for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+                    # a block covered in part, or a log with no hashes: changed, as far as is known
+                    if b in held and (hs is None or hs[k] is None or hs[k] != held[b]):
+                        hit.add(b)
         out.append((n, len(hit | zeroed), len(zeroed)))
     return out
 
