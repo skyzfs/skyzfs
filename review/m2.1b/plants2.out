@@ -1,0 +1,10 @@
+V1 chosen: unknown positions ignored: KILLED by U: a_ring_not_known_leaves_no_state_chosen; L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+V13 unknown: only the first ring: KILLED by U: a_ring_not_known_leaves_no_state_chosen; L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+C4 start: a ring that cannot be read is taken as read: KILLED by L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+C9 ended: a change not applied is applied: KILLED by L: a_write_ended_without_being_applied_changes_nothing
+T1 status: itself and rewind both written as 1: KILLED by S: a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one
+T2 status: any value but 0 reads as itself: KILLED by S: a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one
+T3 status: version 11 said to say itself: SURVIVED
+N1 start: a ring that cannot be read is not noted: KILLED by L: a_ring_the_start_could_not_read_leaves_no_cut_itself
+N2 serve: the start does not say which rings it could not read: SURVIVED
+N3 serve: the line names no ring when one could not be read: KILLED by S: the_start_says_when_it_could_not_read_a_ring
