@@ -224,6 +224,116 @@ fn a_bit_cleared_by_a_later_write_is_not_made_durable_by_an_earlier_sync() {
     assert!(map.covers(0, 64), "set in both writes");
     assert!(!map.covers(64, 1), "cleared in the later write");
     assert!(!map.covers(2 * 64, 1), "cleared in the later write");
+    // Set again, region 2 is not durable: its page is to be written and
+    // synced first. (Asking `covers` alone would not show it: the bit is
+    // clear in memory whatever the sync made durable.)
+    map.set(2 * 64, 1);
+    assert!(
+        !map.covers(2 * 64, 1),
+        "the sync covered only the first write"
+    );
+    assert!(map.has_dirty(), "the page is to be written");
+}
+
+/// The review's D1 of #105: a page written with region 2's bit set, a
+/// sync begun, then while it runs the page written with the bit
+/// cleared (a clear after a commit) and once more with it set (a write
+/// into region 2). The disk may keep the clearing write and lose the
+/// last, and the sync covered only the first: region 2 is not durable
+/// when the sync ends, and a write there must wait for the next one.
+/// The defect (`INTENT_SYNC_UNNARROWED`) calls it durable, and so did
+/// the first draft, which looked at the last write alone.
+#[test]
+fn a_bit_cleared_and_set_again_while_one_sync_runs_is_not_made_durable_by_it() {
+    for mutants in [0, Mutants::INTENT_SYNC_UNNARROWED] {
+        let durable = a_bit_cleared_and_set_again_while_one_sync_runs(Mutants(mutants));
+        assert_eq!(durable, mutants != 0, "mutants {mutants:#x}");
+    }
+}
+
+/// Whether region 2 is called durable in D1's case, under `mutants`.
+fn a_bit_cleared_and_set_again_while_one_sync_runs(mutants: Mutants) -> bool {
+    let mut map = IntentMap::new(shape(), T1, mutants);
+    let mut file = settled(&mut map);
+    map.commit(BASE);
+    map.clear(|first, _| first < 3 * 64);
+    // The page, with region 2 named, written and not yet synced; then
+    // a sync begins, which covers that write.
+    write_out(&mut map, &mut file);
+    map.sync_begin();
+    // While that sync runs: region 2 let go, its page written ...
+    map.clear(|first, _| first < 2 * 64);
+    write_out(&mut map, &mut file);
+    // ... then a write into region 2 sets it again, and the page is
+    // written again.
+    map.set(2 * 64, 1);
+    write_out(&mut map, &mut file);
+    map.synced(true);
+    assert!(map.covers(0, 2 * 64), "set in every write");
+    let durable = map.covers(2 * 64, 1);
+    // The next sync covers the last write, and makes it durable.
+    map.set(2 * 64, 1);
+    write_out(&mut map, &mut file);
+    map.sync_begin();
+    map.synced(true);
+    assert!(map.covers(2 * 64, 1));
+    durable
+}
+
+/// A sync covers only the writes issued before it began: a bit set in a
+/// write while it runs is not durable when it ends.
+#[test]
+fn a_sync_covers_only_the_writes_issued_before_it_began() {
+    let mut map = IntentMap::new(shape(), T1, Mutants::default());
+    let mut file = settled(&mut map);
+    map.commit(BASE);
+    map.clear(|_, _| false);
+    write_out(&mut map, &mut file);
+    map.sync_begin();
+    map.synced(true);
+    assert_eq!(map.named(), Vec::<u64>::new());
+    map.set(0, 1);
+    write_out(&mut map, &mut file);
+    map.sync_begin();
+    map.set(64, 1);
+    write_out(&mut map, &mut file);
+    map.synced(true);
+    assert!(map.covers(0, 1), "written before the sync began");
+    assert!(!map.covers(64, 1), "written while it ran");
+    map.sync_begin();
+    map.synced(true);
+    assert!(map.covers(64, 1), "covered by the next");
+}
+
+/// A start that keeps a map it took up writes its header with its own
+/// token, so that the start after it finds that token.
+#[test]
+fn a_map_kept_by_a_start_has_its_header_written_with_the_new_token() {
+    let mut map = IntentMap::new(shape(), T1, Mutants::default());
+    let mut file = settled(&mut map);
+    map.commit(BASE);
+    write_out(&mut map, &mut file);
+    let mut taken = IntentMap::read(&file, shape(), Mutants::default()).expect("whole");
+    assert_eq!(taken.trust(Some(T1)), Ok(()));
+    assert!(!taken.has_dirty());
+    taken.kept_by(T2);
+    write_out(&mut taken, &mut file);
+    let again = IntentMap::read(&file, shape(), Mutants::default()).expect("whole");
+    assert_eq!(again.trust(Some(T2)), Ok(()));
+    assert_eq!(again.trust(Some(T1)), Err(Distrust::Token));
+}
+
+/// A token is compared whole: one that differs in its last byte alone
+/// is another start's.
+#[test]
+fn a_token_that_differs_in_its_last_byte_is_another_starts() {
+    let mut map = IntentMap::new(shape(), T1, Mutants::default());
+    settled(&mut map);
+    map.commit(BASE);
+    let mut other = T1;
+    other[15] ^= 1;
+    assert_eq!(map.trust(Some(other)), Err(Distrust::Token));
+    assert_eq!(map.trust(Some(T1)), Ok(()));
 }
 
 /// A clear names the regions in which something changed after the

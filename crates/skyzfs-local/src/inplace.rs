@@ -448,6 +448,10 @@ impl Mutants {
     pub(crate) const INTENT_TOKEN_UNCHECKED: u128 = 1 << 68;
     /// A bit page whose checksum fails is taken up as it reads.
     pub(crate) const INTENT_TORN_TRUSTED: u128 = 1 << 69;
+    /// A page written while a sync of the map runs leaves that sync's
+    /// record as it was: a bit the write clears and a later one sets
+    /// again is made durable by the sync (D1 of the review of #105).
+    pub(crate) const INTENT_SYNC_UNNARROWED: u128 = 1 << 70;
 
     pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0

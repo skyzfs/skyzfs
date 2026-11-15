@@ -710,7 +710,11 @@ impl<R: Region> CutState<R> {
             maps.push(parts.first);
             maps.extend(parts.also);
         }
-        maps.retain(|&map| map < MAPS);
+        // A map out of range is a damaged state: the safe answer is
+        // that anything may have changed (the review of #105).
+        if maps.iter().any(|&map| map >= MAPS) {
+            return None;
+        }
         maps.sort_unstable();
         maps.dedup();
         Some(self.maps.set_words(&self.region, &maps))

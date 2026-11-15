@@ -36,7 +36,17 @@
 //! write has ended. A bit the disk holds for certain is **durable**
 //! here. A write of a page with a bit cleared takes that certainty away
 //! at once; a sync gives back, for each page, the bits that both the
-//! write it covered and every later write of the page have set.
+//! write it covered and every later write of the page have set. A page
+//! written while a sync runs takes out of that sync's record the bits
+//! it clears, whatever a later write sets again: the disk may keep the
+//! write that cleared it and lose the one that set it again.
+//!
+//! The caller keeps two rules this map cannot see. A sync covers only
+//! the writes that have ended when it begins
+//! ([`IntentMap::sync_begin`]): the store writes the pages by direct
+//! I/O on its own thread, so a page's write has ended when the sync
+//! begins. And two writes of one page are never in flight together,
+//! so that the later one is the one the disk keeps.
 //!
 //! # The file
 //!
@@ -207,14 +217,13 @@ pub(crate) struct IntentMap {
     bits: Vec<u64>,
     /// The bits the disk holds set for certain.
     durable: Vec<u64>,
-    /// For each bit page, the bits of its latest write issued.
-    written: Vec<u64>,
     /// Pages to write: the header (0) or a bit page (≥ 1).
     dirty: std::collections::BTreeSet<u64>,
     /// The bit pages written since the last sync began, with the bits
     /// each was written with last.
     unsynced: BTreeMap<u64, Vec<u64>>,
-    /// The bit pages the sync under way covers, with their bits.
+    /// The bit pages the sync under way covers, with the bits that
+    /// every write of each since the covered one has set.
     syncing: Option<BTreeMap<u64, Vec<u64>>>,
     mutants: Mutants,
 }
@@ -246,7 +255,6 @@ impl IntentMap {
             base: None,
             bits: vec![0; words],
             durable: vec![0; words],
-            written: vec![0; words],
             dirty: std::collections::BTreeSet::new(),
             unsynced: BTreeMap::new(),
             syncing: None,
@@ -313,7 +321,6 @@ impl IntentMap {
             }
         }
         map.durable.clone_from(&map.bits);
-        map.written.clone_from(&map.bits);
         Ok(map)
     }
 
@@ -418,8 +425,9 @@ impl IntentMap {
 
     /// The pages to write now, as `(offset, image)`, the header first.
     /// A bit cleared in a page written is no longer durable from here
-    /// on; a bit set becomes durable when a sync that began after this
-    /// write ends ([`IntentMap::sync_begin`], [`IntentMap::synced`]).
+    /// on, and the sync under way, if any, will not make it so; a bit
+    /// set becomes durable when a sync that began after this write
+    /// ends ([`IntentMap::sync_begin`], [`IntentMap::synced`]).
     pub(crate) fn write_begin(&mut self) -> Vec<(u64, Buf)> {
         let mut out = Vec::new();
         for page in std::mem::take(&mut self.dirty) {
@@ -437,7 +445,21 @@ impl IntentMap {
                 let from = (page as usize - 1) * WORDS_PER_PAGE;
                 for (i, word) in words.iter().enumerate() {
                     self.durable[from + i] &= word;
-                    self.written[from + i] = *word;
+                }
+                // The sync under way covers an earlier write of this
+                // page: what this write clears, it does not make
+                // durable, though a later write may set it again (D1 of
+                // the review of #105).
+                let narrowed = !self.mutants.has(Mutants::INTENT_SYNC_UNNARROWED);
+                if let Some(covered) = self
+                    .syncing
+                    .as_mut()
+                    .and_then(|syncing| syncing.get_mut(&page))
+                    .filter(|_| narrowed)
+                {
+                    for (bits, word) in covered.iter_mut().zip(&words) {
+                        *bits &= word;
+                    }
                 }
                 self.unsynced.insert(page, words);
             }
@@ -461,7 +483,8 @@ impl IntentMap {
         }
     }
 
-    /// A sync of the file begins: it covers every write issued so far.
+    /// A sync of the file begins: it covers every write issued so far,
+    /// each of which the caller has seen end, and no later one.
     pub(crate) fn sync_begin(&mut self) {
         let covered = std::mem::take(&mut self.unsynced);
         match &mut self.syncing {
@@ -473,7 +496,8 @@ impl IntentMap {
 
     /// The sync under way has ended, well or not. Where it succeeded,
     /// each bit page it covered holds for certain the bits set both in
-    /// the write it covered and in every later write of the page.
+    /// the write it covered and in every later write of the page
+    /// ([`IntentMap::write_begin`] takes the others out of its record).
     pub(crate) fn synced(&mut self, ok: bool) {
         let Some(covered) = self.syncing.take() else {
             return;
@@ -484,7 +508,7 @@ impl IntentMap {
         for (page, words) in covered {
             let from = (page as usize - 1) * WORDS_PER_PAGE;
             for (i, word) in words.iter().enumerate() {
-                self.durable[from + i] |= word & self.written[from + i];
+                self.durable[from + i] |= word;
             }
         }
     }

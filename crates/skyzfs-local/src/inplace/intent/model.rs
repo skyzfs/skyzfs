@@ -11,6 +11,15 @@
 //! The test also counts the restarts that took a map up and named fewer
 //! than every region, so that it shows the map narrowing something.
 //!
+//! The map's sync runs beside the store's work, as M2.3b's store runs
+//! it on the file's helper: it begins when a write into a region whose
+//! bit is not durable comes, and ends at a later step of its own. Until
+//! it ends, writes into such regions wait (and set their bits, to be
+//! written for the next sync), and a release may clear bits and write
+//! the map's pages, so a page can be written more than once while one
+//! sync runs (D1 of the review of #105). A cut lets the waiting writes
+//! go first, as a flush waits for them.
+//!
 //! Two volumes: a small one written anywhere, and one of 4200 regions,
 //! written in a few regions at each end, whose bits lie in more than
 //! the first sector of their page (a page torn in its first sector
@@ -110,10 +119,23 @@ impl MapFile {
         self.issued.push((at, image.to_vec()));
     }
 
-    fn sync(&mut self) {
-        for (at, image) in std::mem::take(&mut self.issued) {
+    /// A sync begins: it covers the writes issued so far, which this
+    /// returns the count of.
+    fn sync_begin(&self) -> usize {
+        self.issued.len()
+    }
+
+    /// The sync that covered the first `covered` writes ends: they are
+    /// on the disk. Those issued while it ran are not certain yet.
+    fn sync_end(&mut self, covered: usize) {
+        for (at, image) in self.issued.drain(..covered) {
             put(&mut self.durable, at, &image);
         }
+    }
+
+    /// A whole sync.
+    fn sync(&mut self) {
+        self.sync_end(self.issued.len());
     }
 
     /// What a power cut leaves.
@@ -151,12 +173,14 @@ enum Step {
     Cut,
     /// The cut being uploaded is committed and let go.
     Release,
+    /// The map's sync under way, if any, ends.
+    SyncEnd,
 }
 
 fn program(volume: Volume, rng: &mut Rng, len: usize) -> Vec<Step> {
     let blocks = volume.blocks();
     (0..len)
-        .map(|_| match rng.below(10) {
+        .map(|_| match rng.below(12) {
             0..=5 => {
                 let from = match volume.hot {
                     None => rng.below(blocks),
@@ -170,7 +194,8 @@ fn program(volume: Volume, rng: &mut Rng, len: usize) -> Vec<Step> {
                 Step::Write(from, n)
             }
             6 | 7 => Step::Cut,
-            _ => Step::Release,
+            8 | 9 => Step::Release,
+            _ => Step::SyncEnd,
         })
         .collect()
 }
@@ -195,6 +220,11 @@ struct Run {
     written: BTreeMap<u64, BTreeSet<u64>>,
     /// The newest cut committed in object storage: its number.
     released: Option<u64>,
+    /// The map's sync under way: how many of the file's writes it
+    /// covers.
+    syncing: Option<usize>,
+    /// The writes that wait for that sync: blocks `from .. from + n`.
+    waiting: Vec<(u64, u64)>,
 }
 
 impl Run {
@@ -217,6 +247,8 @@ impl Run {
             cut_after,
             written: BTreeMap::new(),
             released: None,
+            syncing: None,
+            waiting: Vec::new(),
         }
     }
 
@@ -237,18 +269,56 @@ impl Run {
         Ok(())
     }
 
-    fn sync(&mut self) -> Result<(), PowerCut> {
+    /// Write the pages to be written and begin a sync of the map.
+    fn begin_sync(&mut self) -> Result<(), PowerCut> {
+        self.write_pages()?;
         self.map.sync_begin();
+        self.syncing = Some(self.file.sync_begin());
+        Ok(())
+    }
+
+    /// The sync under way ends. The writes that waited for it go on
+    /// where their bits are durable now; the others set them again (a
+    /// clear may have taken them) and wait for the next sync, which
+    /// begins here (M2.3b's store does the same).
+    fn end_sync(&mut self) -> Result<(), PowerCut> {
+        let Some(covered) = self.syncing else {
+            return Ok(());
+        };
         self.event()?;
-        self.file.sync();
+        self.syncing = None;
+        self.file.sync_end(covered);
         self.map.synced(true);
+        for (from, n) in std::mem::take(&mut self.waiting) {
+            if self.map.covers(from, n) {
+                self.apply(from, n)?;
+            } else {
+                self.map.set(from, n);
+                self.waiting.push((from, n));
+            }
+        }
+        if !self.waiting.is_empty() {
+            self.begin_sync()?;
+        }
         Ok(())
     }
 
     /// The start: the new map written whole and synced before it serves.
     fn start(&mut self) -> Result<(), PowerCut> {
-        self.write_pages()?;
-        self.sync()
+        self.begin_sync()?;
+        self.end_sync()
+    }
+
+    /// A write whose regions' bits are durable: the cut state notes it
+    /// and it is handed to the disk.
+    fn apply(&mut self, from: u64, n: u64) -> Result<(), PowerCut> {
+        let _ = self.state.change(from, n, &mut NoCopies);
+        self.event()?;
+        let epoch = self.state.count() + 1;
+        for block in from..from + n {
+            self.written.entry(block).or_default().insert(epoch);
+        }
+        Ok(())
     }
 
     fn step(&mut self, step: Step) -> Result<(), PowerCut> {
@@ -257,20 +327,24 @@ impl Run {
                 let n = n.min(self.volume.blocks() - from);
                 if !self.map.covers(from, n) {
                     self.map.set(from, n);
-                    if !self.map.covers(from, n) {
-                        self.write_pages()?;
-                        self.sync()?;
-                    }
                 }
-                let _ = self.state.change(from, n, &mut NoCopies);
-                // The write is handed to the disk.
-                self.event()?;
-                let epoch = self.state.count() + 1;
-                for block in from..from + n {
-                    self.written.entry(block).or_default().insert(epoch);
+                if self.map.covers(from, n) {
+                    return self.apply(from, n);
+                }
+                self.waiting.push((from, n));
+                if self.syncing.is_none() {
+                    self.begin_sync()?;
                 }
             }
+            Step::SyncEnd => self.end_sync()?,
             Step::Cut => {
+                // The flush waits for the writes that wait for the map.
+                while !self.waiting.is_empty() {
+                    if self.syncing.is_none() {
+                        self.begin_sync()?;
+                    }
+                    self.end_sync()?;
+                }
                 let number = self.state.count() + 1;
                 let state = State {
                     txg: 100 + number,
@@ -455,6 +529,7 @@ fn the_model_test_notices_each_defect_of_the_map() {
         Mutants::INTENT_CLEARED_CHANGED,
         Mutants::INTENT_CLEARED_BEFORE_COMMIT,
         Mutants::INTENT_TORN_TRUSTED,
+        Mutants::INTENT_SYNC_UNNARROWED,
     ] {
         assert!(
             programs(0..60, mutant).is_err(),
