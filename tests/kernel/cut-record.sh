@@ -144,15 +144,23 @@ create_pool() {
     mark "session-$SESSION-ready"
 }
 # K: K rounds of FILES files of 1 MiB each, a snapshot and a sync.
+# Each snapshot's group and session go to snaps.tsv, and the SHA-256 of
+# every file it holds, read through .zfs/snapshot, to snap-NAME.sha256:
+# what node B (M2.T2) compares a published snapshot with.
 LOADED=0
 load() {
-    local k
+    local k s
     for k in $(seq 1 "$1"); do
         for _ in $(seq 1 "$FILES"); do
             LOADED=$((LOADED + 1))
             dd if=/dev/urandom of="$MNT/f$LOADED" bs=64K count=16 status=none
         done
-        z 60 zfs snapshot "$POOL@s$LOADED"
+        s=s$LOADED
+        z 60 zfs snapshot "$POOL@$s"
+        # From the snapshot itself: a file a writer goes on appending to
+        # (slog's synced) differs in the live directory by then.
+        (cd "$MNT/.zfs/snapshot/$s" && find . -maxdepth 1 -type f -printf '%P\n' | LC_ALL=C sort | xargs -r sha256sum --) > "$RDIR/snap-$s.sha256"
+        printf '%s\t%s\t%s\n' "$s" "$(zfs get -Hp -o value createtxg "$POOL@$s")" "$SESSION" >> "$RDIR/snaps.tsv"
         z 60 zpool sync "$POOL"
     done
 }

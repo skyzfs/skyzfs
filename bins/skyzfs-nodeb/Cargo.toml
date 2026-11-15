@@ -1,0 +1,20 @@
+[package]
+name = "skyzfs-nodeb"
+description = "Node B for the rigs (M2.T2): a stand-in for the uploader, and a node that knows only the object store"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-engine = { workspace = true }
+skynbd-format = { workspace = true }
+# The rigs run MinIO; the s3 graph is in the workspace build already
+# (skynbd-refs's tests enable it).
+skynbd-store = { workspace = true, features = ["s3"] }
+skynbd-refs = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+ulid = { workspace = true }
+blake3 = { workspace = true }

@@ -135,3 +135,29 @@ against the table now: `later` was caught in `life`, `config` and
 `rewindsync` (a write a few hundred records after an early cut), which
 the table now allows, and `txg-alone` in `multihost` dropped only the
 two stale cuts, which the check now counts as the same list.
+
+## Refreshing the fixtures
+
+A new recording run gives new fixtures, and some of what the old ones
+showed rests on races in one run. `multihost` holds a stale write only
+where MMP rewrote a state after a newer cut: run 43647779663 has two,
+and other runs have one or none. A stray flush lands between the
+uberblock writes and ZFS's flush only in some runs of `stray`.
+
+So tests that pin which recording notices what can fail after a
+refresh with nothing wrong in the rule. One such test is
+`the_recordings_notice_the_defects_of_a_repeat` in
+`crates/skyzfs-local` (`recorded.rs`), which pins which recordings
+notice three defects of the count:
+- every uberblock write counted: `multihost` and `stray`;
+- a stale write that moves the mark: `multihost`;
+- a repeat told by its group alone: `rewindf`.
+
+When that happens, set the test's table to what the new recordings
+notice, as its failure message says, and say in the pull request which
+defect a recording stopped noticing and why. A defect that no recording
+notices any more needs a recording that shows it again, not a table
+without it.
+
+The fixture test reads `itself` from `opens.tsv`. `check.tsv`'s FAIL
+lines are only a consistency check there.
