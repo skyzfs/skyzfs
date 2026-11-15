@@ -536,7 +536,7 @@ class DataJournalFiles(unittest.TestCase):
     def judged(self, new, gone):
         import subprocess
         rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
-        script = (f'eval "$(sed -n \'/^GJ_MAY_CHANGE=/p\' {rig!r})"; '
+        script = (f'eval "$(sed -n \'/^GJ_MAY_CHANGE=/p; /^GJ_START_TOKEN=/p\' {rig!r})"; '
                   f'eval "$(sed -n \'/^gj_files_judged() {{$/,/^}}$/p\' {rig!r})"; gj_files_judged "$1" "$2"')
         return subprocess.run(['bash', '-c', script, '_', new, gone], capture_output=True, text=True, check=True).stdout
 
@@ -549,6 +549,22 @@ class DataJournalFiles(unittest.TestCase):
 
     def test_the_status_file_may_change(self):
         self.assertEqual(self.judged('status ', 'status '), '')
+
+    def test_the_start_token_may_appear_or_be_rewritten(self):
+        # Every open writes a new one, a refused start included (the
+        # lead's decision on #100, B1).
+        self.assertEqual(self.judged('volume.start ', 'volume.start '), '')
+        self.assertEqual(self.judged('volume.start ', ''), '')
+        self.assertEqual(self.judged('status volume.start ', 'status volume.start '), '')
+
+    def test_the_start_token_may_not_go(self):
+        self.assertEqual(self.judged('', 'volume.start '), 'the start token volume.start removed; ')
+
+    def test_only_the_start_token_is_allowed_by_its_name(self):
+        for name in ('volume.start.tmp', 'xvolume.start', 'volume.starts', 'volumeXstart'):
+            self.assertEqual(self.judged(f'{name} ', f'{name} '), f'{name} rewritten; ', name)
+        self.assertEqual(self.judged('volume.start home.img lock ', 'volume.start home.img lock '),
+                         'home.img changed; lock rewritten; ')
 
     def test_the_image_and_the_identity_file_may_not(self):
         self.assertEqual(self.judged('home.img ', 'home.img '), 'home.img changed; ')
