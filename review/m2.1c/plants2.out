@@ -5,3 +5,18 @@ Z3 size: no alignment in the ring: KILLED by U: a_slot_out_of_step_with_the_ring
 R1 changed: a held slot reached past its first bytes stays held: KILLED by U: a_change_to_any_part_of_a_slot_counts, a_position_covered_in_part_is_not_known; L: a_slot_is_followed_by_all_its_bytes
 R2 changed: an uberblock whose slot may go on leaves its place known: KILLED by U: a_change_to_any_part_of_a_slot_counts; L: a_slot_is_followed_by_all_its_bytes
 R3 may_go_on: always (every unverified uberblock leaves its place unknown): KILLED by U: the_view_holds_no_uberblock_whose_checksum_fails; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut
+R4 changed: a held slot is taken to be 1 KiB: KILLED by U: a_change_to_any_part_of_a_slot_counts; L: a_slot_is_followed_by_all_its_bytes
+R5 changed: a held slot is taken to be 8 KiB: KILLED by U: a_position_covered_in_part_is_not_known; L: a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_write_ended_without_being_applied_changes_nothing, bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut (+3)
+R6 changed: a torn slot is dropped and its place left known: KILLED by U: a_position_covered_in_part_is_not_known
+R7 may_go_on: a slot of any size is taken to begin anywhere: KILLED by U: the_view_holds_no_uberblock_whose_checksum_fails; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut
+R8 apply: an unverified uberblock marks: KILLED by L: a_slot_is_followed_by_all_its_bytes, bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut
+R9 changed: an unverified uberblock is held: KILLED by U: the_view_holds_no_uberblock_whose_checksum_fails; L: bytes_zfs_would_pass_over_at_the_start_are_not_in_view, bytes_zfs_would_pass_over_make_no_cut
+R10 changed: every held slot after the change's start is torn: KILLED by U: the_view_chooses_the_state_an_import_opens; L: a_group_written_twice_opens_as_its_later_state, a_multihost_copy_of_the_cuts_own_state_leaves_it_itself, a_rewind_by_f_opens_as_its_first_group_at_once, a_slot_is_followed_by_all_its_bytes, a_store_begun_on_a_pool_reads_its_rings_first (+6)
+R11 changed: a slot is torn only by a change that begins inside it: SURVIVED
+R12 may_go_on: 8 KiB alone is asked: SURVIVED
+R13 start: the rings read at the start go unparsed: KILLED by L: a_store_begun_on_a_pool_reads_its_rings_first, a_store_begun_at_each_session_says_which_cuts_open_as_themselves
+
+# R11 changes nothing: a change that begins at or before a held slot and reaches it covers its
+# first bytes, and the loop before this one has already dropped it.
+# R12 is a gap only writes smaller than 4 KiB reach: with 4 KiB blocks, a write that holds an
+# uberblock's first bytes holds whole every slot of 1, 2 and 4 KiB that could begin there.
