@@ -269,7 +269,8 @@ there, and the user decides when it merges.
   a stop), or with status 9, a first fetch the driver refused or a start
   with no answer (M1.3ah, M1.T37; check e drives one at a start and at a
   take-over, and a serve that hangs there is a FAIL); a refused start may change
-  only the status file. Check f was removed with the log store. The summary
+  only the status file and the start token `volume.start`, which every
+  open writes (M2.2b-1). Check f was removed with the log store. The summary
   says for each line whether it rests on the kernel, on the server, or
   only shows that the check works. Exit 2 is an error of the rig and
   not a verdict on the server. Read the summary's table and not the
