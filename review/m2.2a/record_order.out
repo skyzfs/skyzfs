@@ -1,0 +1,8 @@
+as the head has it (epochs, then block):
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.11s
+    exit 0
+with the order swapped (block, then epochs):
+    death at store 191 of 193: step 16 (Write(1, 1)): read at the death in Write(1, 1): cut 3 (Uploading, lo 2), block 1: reads Some(11), the volume held 8 at its instant; held [HeldCut { number: 3, lo: 2, phase: Uploading, state: State { txg: 103, root: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3] }, itself: true }, HeldCut { number: 4, lo: 3, phase: Waiting, state: State { txg: 104, root: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4] }, itself: true }]
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.16s
+    error: test failed, to rerun pass `-p skyzfs-local --lib`
+    exit 101

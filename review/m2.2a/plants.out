@@ -1,0 +1,29 @@
+S1 wanted: a record begins one epoch early: KILLED by a_death_at_any_store_leaves_every_held_cut_whole
+S2 read: a record also serves the cut of its last epoch: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+S3 needed: a cut that holds the whole volume needs no record: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+S16 change: a record a lost instance made for this change is not looked for: SURVIVED
+S17 copy: the record names its block before its epochs: SURVIVED
+S18 free_unneeded: nothing is freed: KILLED by a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs, the_tests_notice_each_defect_of_the_cut_state
+S36 change: the block's bit before its copy: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S4 release: the last cut released does not leave its number as the next lo: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, a_new_states_first_cut_holds_the_whole_volume, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S5 give: the open map takes the donor's lo whoever else is held: SURVIVED
+S10 freeze: the lo is read before the flushing cut is let go: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S14 is_whole: a cut whose lo is the whole epoch holds the whole volume too: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, a_new_states_first_cut_holds_the_whole_volume, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S34 begin: the whole volume does not count as changed: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole, a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite, a_new_states_first_cut_holds_the_whole_volume, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S6 settle: a taking whose donor is still held is not finished: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S7 settle: a cut whose flush was under way does not take the start's sync as its flush: SURVIVED
+S8 finish: the larger part is named alone before the move: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S9 finish: the open map is not named twice on the way (thought to change nothing): SURVIVED
+S11 flushed: a waiting cut is replaced whatever its number (thought to change nothing): SURVIVED
+S12 abandon: an oldest cut not being uploaded gives its map to the open map: SURVIVED
+S13 settle: two waiting cuts are left as they are (thought not to be reached): SURVIVED
+S15 change: after the bound let cuts go, the held cuts and the open map are not read again: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+S19 settle: a mark the newest cut took is kept: SURVIVED
+S20 settle: the newest cut's state is not made good: SURVIVED
+S21 settle: a cut recorded and not counted is left in its slot: SURVIVED
+S22 settle: the maps nothing names are not cleared: KILLED by a_death_at_any_store_leaves_every_held_cut_whole
+S23 let_go: a map is cleared though something names it: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S24 give: the donor is let go before its heir names its map: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S35 flush_failed: the failed cut's map is dropped: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S37 release: the cut that waits is not the next to be uploaded: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+S38 freeze: the mark the cut took is kept: SURVIVED

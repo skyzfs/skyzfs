@@ -1,0 +1,27 @@
+as the head has it: exit 0
+    review: 42 stores in the flush, each with a death
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.49s
+S19 settle: a mark the newest cut took is kept: NOTICED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.34s
+    assertion `left == right` failed: death at store 22: count 3, held [(1, 7), (3, 8)]
+S20 settle: the newest cut's state is not made good: NOTICED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.13s
+    assertion `left == right` failed: death at store 22: count 3, held [(1, 7), (3, 8)]
+S38 freeze: the mark the cut took is kept: not noticed
+    review: 41 stores in the flush, each with a death
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.48s
+S7 settle: a cut whose flush was under way does not take the start's sync as its flush: not noticed
+    review: 42 stores in the flush, each with a death
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.48s
+P8 settle: the start clears the mark whatever it is: NOTICED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.10s
+    assertion `left == right` failed: death at store 0: count 1, held [(1, 7)]
+I4 store: the next instance is not given the mark: NOTICED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.16s
+    assertion `left == right` failed: death at store 0: count 1, held [(1, 7)]
+I5 store: the next instance is not given the count: NOTICED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.09s
+    assertion `left == right` failed: death at store 0: count 1, held [(1, 7), (2, 8)]
+I6 store: the next instance is not given the newest cut: not noticed
+    review: 42 stores in the flush, each with a death
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.06s

@@ -1,0 +1,10 @@
+P2 change: the bound is reached one copy early: KILLED by the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs, the_tests_notice_each_defect_of_the_cut_state
+P3 change: at the bound only the oldest cut goes: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant
+P4 abandon: the abandoned cut is not counted: KILLED by every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+P1 settle: with no cut being uploaded, the oldest that waits is left waiting: SURVIVED
+P5 flushed: with no cut being uploaded, the cut whose flush completed waits: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite, a_new_states_first_cut_holds_the_whole_volume, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+P8 settle: the start clears the mark whatever it is: KILLED by a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole
+P9 freeze: a cut clears the mark whatever it is: SURVIVED
+P11 give: a cut that takes a map keeps its own lo: KILLED by a_death_at_any_store_leaves_every_held_cut_whole, every_held_cut_reads_as_the_volume_at_its_instant, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+P14 needed: a record is needed by any held cut whose map holds its block: KILLED by the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs, the_tests_notice_each_defect_of_the_cut_state
+P15 wanted: the oldest held cut whose map holds the block dates the record: KILLED by a_death_at_any_store_leaves_every_held_cut_whole
