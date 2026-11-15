@@ -1,2 +1,3 @@
 a mark is recorded in the cut state: NEVER REACHED (the suite passes)
 a cut is frozen: NEVER REACHED (the suite passes)
+a block is copied for a held cut: NEVER REACHED (the suite passes)
