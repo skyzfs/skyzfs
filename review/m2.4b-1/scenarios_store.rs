@@ -202,3 +202,90 @@ fn review_t4_runs_where_blocks_and_slots_do_not_go_together() {
         assert_eq!(copies, 7, "{case}: the reads of the copies");
     }
 }
+
+/// T5. The bound abandons the cut being uploaded after its commit landed
+/// in object storage and before the release (no death: the commit is a
+/// round trip, and writes go on meanwhile). What the store then offers
+/// the uploader. Printed; the two facts the note rests on are judged.
+#[test]
+fn review_t5_the_bound_abandons_the_cut_between_its_commit_and_its_release() {
+    let disk = created(74, 0);
+    let mut store = start_on(&disk, 0, &region(), IoMode::default());
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert!(store.release_cut(1));
+    let base = store.committed_cut();
+    // Cut 2 holds more blocks than the bound has room for copies of.
+    let own: Vec<u64> = (64..96).chain(128..160).chain(192..200).collect();
+    assert!(own.len() as u64 > TEST_BOUND / BLOCK);
+    for &block in &own {
+        write(&mut store, block, 0x22).unwrap();
+    }
+    group(&mut store, 200, 8, 80);
+    assert_eq!(phases(&store), [(2, CutPhase::Uploading)]);
+    assert!(!store.cut_is_whole(2));
+    // "The commit of cut 2 lands here." Before the release, the pool
+    // writes over cut 2's blocks.
+    let abandoned = store.cut_figures().abandoned;
+    for &block in &own {
+        write(&mut store, block, 0x33).unwrap();
+    }
+    assert_eq!(store.cut_figures().abandoned, abandoned + 1, "the bound took cut 2");
+    assert!(phases(&store).is_empty());
+    let released = store.release_cut(2);
+    assert!(!released, "the cut is not held: nothing to release");
+    assert_eq!(store.committed_cut(), base, "the map still names cut 1");
+    group(&mut store, 300, 9, 90);
+    let next = store.held_cuts().first().map(|c| (c.number, c.phase, c.lo));
+    println!(
+        "T5: cut 2 was committed and then abandoned at the bound; release_cut(2) says {released}; \
+         the intent map names {:?}; the next cut is {next:?}, whole: {}",
+        store.committed_cut().map(|c| (c.number, c.group)),
+        store.cut_is_whole(3)
+    );
+    assert_eq!(next, Some((3, CutPhase::Uploading, 1)));
+}
+
+/// T6. A block read from the image whose next block is read from the
+/// copy in the slot of the next number, and the other way round: the
+/// two are not one read, though their numbers follow.
+#[test]
+fn review_t6_a_copy_whose_slot_follows_a_blocks_number() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(75, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        for block in [0u64, 1, 2, 200, 201] {
+            write(&mut store, block, 0x10 + block as u8).unwrap();
+        }
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1));
+        let own = [0u64, 1, 2, 200, 201];
+        for block in own {
+            write(&mut store, block, 0x40 + block as u8).unwrap();
+        }
+        group(&mut store, 200, 8, 80);
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        // Copies: block 0 in slot 0, block 200 in slot 1, block 2 in
+        // slot 2. Blocks 1 and 201 stay in the image. In the order of
+        // the map: copy 0, image 1, copy 2, ..., copy 1, image 201.
+        for block in [0u64, 200, 2] {
+            write(&mut store, block, 0xEE).unwrap();
+        }
+        let map = store.cut_map(2);
+        for size in [1, 2, 3, 64] {
+            let (blocks, _) = sliced(&mut store, 2, size);
+            assert_eq!(blocks.len(), map.len(), "{case}");
+            for (block, content) in blocks {
+                if own.contains(&block) {
+                    assert!(
+                        content == vec![0x40 + block as u8; BLOCK_USIZE],
+                        "{case}: block {block} of cut 2 in slices of {size} holds {:#x}",
+                        content[0]
+                    );
+                }
+            }
+        }
+        println!("T6 ({case}): cut 2 holds {map:?}, each block as at its instant");
+    }
+}

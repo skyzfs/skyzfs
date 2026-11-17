@@ -53,7 +53,7 @@ def run(env):
         print('  (did not end in 15 minutes)', flush=True)
         return
     out = (p.stdout + p.stderr).splitlines()
-    keep = ('S1', 'S2', 'S3', 'T1', 'T3', 'T4', 'R1', 'test review_', 'test inplace::', 'test result',
+    keep = ('S1', 'S2', 'S3', 'T1', 'T3', 'T4', 'T5', 'T6', 'R1', 'test review_', 'test inplace::', 'test result',
             'error', 'thread ')
     shown = False
     for i, line in enumerate(out):
