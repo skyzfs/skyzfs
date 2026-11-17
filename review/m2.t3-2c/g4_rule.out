@@ -1,0 +1,9 @@
+the token rewritten (as today's daemon)                    cut_state begun     -> accepted
+the token rewritten                                        cut_state taken_up  -> the serve after took up a state (taken_up) though the refused start wrote a new start token; 
+the token rewritten, nothing else                          cut_state taken_up  -> the serve after took up a state (taken_up) though the refused start wrote a new start token; 
+the token left as it was                                   cut_state taken_up  -> accepted
+the token left as it was                                   cut_state begun     -> accepted
+the token left as it was                                   cut_state off       -> the serve after has cut_state off; 
+the token left as it was, no cut_state in the status       cut_state none      -> the serve after has cut_state none; 
+the token removed                                          cut_state taken_up  -> the serve after took up a state (taken_up) though the refused start wrote a new start token; 
+the token rewritten, the serve after did not serve         cut_state (not served) -> accepted

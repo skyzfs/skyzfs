@@ -1,0 +1,4 @@
+end_daemon, the holder ended with 1: the recording's subshell ended with 1, before any check
+end_daemon, the holder ended with 2: the recording's subshell ended with 2, before any check
+  holder_leave returned 0
+holder_leave, the holder ended with 1 and a VERDICT in its log: the subshell ended with 0
