@@ -11,3 +11,7 @@ M1 a new state may count on, as before the commit (from 1 again or on, the line 
 M2 a new state must count on (from 1 again is refused): KILLED by 3: test_a_count_that_goes_on_or_is_wrong, test_the_count_starts_again, test_an_acknowledged_failure
 M3 the new state's own refusal is gone (the line then fails by the rule for every line, in its words): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
 M4 the count is not begun again at a new state (its first line must be 1, its later lines go on): KILLED by 2: test_the_count_starts_again, test_an_acknowledged_failure
+M5 a new state whose first line is not 1 passes: KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M6 a new state is not seen (every line is of the first state): KILLED by 3: test_a_count_that_goes_on_or_is_wrong, test_the_count_starts_again, test_an_acknowledged_failure
+Q1 the status is held to the whole log's count: KILLED by 1: test_an_acknowledged_failure
+Q2 the status is held to the cuts since the first new state, not the last: SURVIVED

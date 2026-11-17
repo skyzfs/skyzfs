@@ -1,0 +1,5 @@
+3438 page boundaries inside lines of the two killed instances (pids 9937, 10976)
+  taken: 2858 (83.1%)  by the line's event: label 2618, applied 184, commit 37, recv 16, send 3
+  not taken: 388 (11.3%)  by the line's event: applied 201, commit 47, recv 45, label 37, send 31, sent 26, cut 1
+  the time: 141 (4.1%)  by the line's event: sent 32, applied 28, recv 26, send 25, commit 25, label 3, barrier 1, cut 1
+  the pid: 51 (1.5%)  by the line's event: commit 17, recv 12, send 12, sent 5, applied 4, label 1

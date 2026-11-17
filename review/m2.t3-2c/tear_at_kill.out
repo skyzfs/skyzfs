@@ -1,0 +1,27 @@
+== one thread writes (as skyzfsd's request log is written: the queue's thread)
+kernel 6.18.44-fc-v595, page size 4096, the file is on ext4
+300 kills: the file ended with a whole line and had no other broken line 198 times;
+  the last line was cut short 102 times; where it ended, as the file's offset modulo 4096: 0: 102 times
+  a line cut short stood before other lines of the same process 0 times
+
+== three threads write
+kernel 6.18.44-fc-v595, page size 4096, the file is on ext4
+300 kills: the file ended with a whole line and had no other broken line 242 times;
+  the last line was cut short 45 times; where it ended, as the file's offset modulo 4096: 0: 45 times
+  a line cut short stood before other lines of the same process 16 times; where the cut line ended, modulo 4096: 0: 16
+    line 240 of 241 whole or fused lines (the last of the file whole): thread 1's line of 6464 bytes, then thread 2's line of 40 bytes; 1 lines after it, of threads ['2']; 1 such lines in the file
+    line 256 of 256 whole or fused lines (the last of the file whole): thread 1's line of 5800 bytes, then thread 2's line of 40 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 366 of 366 whole or fused lines (the last of the file cut short): thread 1's line of 5331 bytes, then thread 2's line of 40 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 147 of 147 whole or fused lines (the last of the file whole): thread 1's line of 6226 bytes, then thread 2's line of 40 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 166 of 168 whole or fused lines (the last of the file whole): thread 0's line of 5439 bytes, then thread 1's line of 40 bytes; 2 lines after it, of threads ['1', '2']; 1 such lines in the file
+    line 45 of 46 whole or fused lines (the last of the file cut short): thread 0's line of 6363 bytes, then thread 2's line of 40 bytes; 1 lines after it, of threads ['1']; 1 such lines in the file
+    line 94 of 94 whole or fused lines (the last of the file whole): thread 0's line of 4331 bytes, then thread 1's line of 40 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 56 of 57 whole or fused lines (the last of the file whole): thread 1's line of 1812 bytes, then thread 2's line of 8235 bytes; 1 lines after it, of threads ['2']; 1 such lines in the file
+    line 138 of 138 whole or fused lines (the last of the file whole): thread 0's line of 6601 bytes, then thread 1's line of 8235 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 170 of 172 whole or fused lines (the last of the file whole): thread 0's line of 5273 bytes, then thread 2's line of 8235 bytes; 2 lines after it, of threads ['2']; 1 such lines in the file
+    line 74 of 75 whole or fused lines (the last of the file cut short): thread 0's line of 5161 bytes, then thread 2's line of 8235 bytes; 1 lines after it, of threads ['2']; 1 such lines in the file
+    line 217 of 220 whole or fused lines (the last of the file whole): thread 1's line of 7417 bytes, then thread 2's line of 40 bytes; 3 lines after it, of threads ['2']; 1 such lines in the file
+    line 296 of 299 whole or fused lines (the last of the file whole): thread 0's line of 44 bytes, then thread 1's line of 8235 bytes; 3 lines after it, of threads ['1']; 1 such lines in the file
+    line 331 of 331 whole or fused lines (the last of the file whole): thread 1's line of 2686 bytes, then thread 2's line of 40 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 144 of 144 whole or fused lines (the last of the file whole): thread 1's line of 6352 bytes, then thread 2's line of 8235 bytes; 0 lines after it, of threads []; 1 such lines in the file
+    line 219 of 220 whole or fused lines (the last of the file whole): thread 0's line of 7334 bytes, then thread 1's line of 40 bytes; 1 lines after it, of threads ['1']; 1 such lines in the file

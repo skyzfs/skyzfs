@@ -30,13 +30,16 @@ for art in arts:
                 after = [ln.rstrip('\n').split('\t') for ln in f if not ln.startswith('time\t')]
             same = before == after
             order = not same and sorted(before) == sorted(after)
-            print(f'{os.path.basename(art)} {name}: exit {p.returncode} here, {len(after)} lines, '
+            print(f'{os.path.basename(os.path.dirname(os.path.abspath(art)))}/{os.path.basename(art)} {name}: exit {p.returncode} here, {len(after)} lines, '
                   + ('the same as the run' if same else "the run's lines in another order" if order
                      else 'NOT the run lines'), flush=True)
             if not same and not order:
-                for b, a in zip(before, after):
-                    if b != a:
-                        print(f'    run:  {b}\n    here: {a}')
+                for b in before:
+                    if b not in after:
+                        print(f'    only in the run: {b[0]}\t{b[1]}\t{b[2][:200]}')
+                for a in after:
+                    if a not in before:
+                        print(f'    only here:       {a[0]}\t{a[1]}\t{a[2][:200]}')
             if name == 'failed':
                 for f in after:
                     print(f'    {f[0]}\t{f[1]}\t{f[2][:230]}')

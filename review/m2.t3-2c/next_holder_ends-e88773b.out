@@ -1,0 +1,13 @@
+1. where a holder's end is taken
+end_daemon, the holder ended with 1: the recording's subshell ended with 0, having gone on to the status read and the check
+    holder_leave returned 0
+holder_leave, the holder ended with 1: the recording's subshell ended with 0
+    rig_error: the holder ended with 1 at the stop: 1	left
+end_daemon, the holder ended with 1: the recording's subshell ended with 2
+    rig_error: the holder ended with 2 at the stop: 1	ERROR HolderError: x
+end_daemon, the holder ended with 2: the recording's subshell ended with 2
+2. where the recording waits for a sign of the holder
+    rig_error: the holder wrote no cut in 300 s: 1	VERDICT cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+holder_wrote_one, the holder ended with 1: the recording's subshell ended with 2
+    rig_error: the holder did not say it had paused in 120 s
+hold_idle, the holder ended with 1: the recording's subshell ended with 2

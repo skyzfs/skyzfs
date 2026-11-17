@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""#113 at ae36c2f, the next look: the plants of plants.py again on the
-new head (those whose text is gone say NOT APPLIED), and new ones in what
-the three commits since 98024d5 changed, one at a time, against the four
-unit test files and the new shell test (tests/kernel/test_cut_record.sh):
+"""#113, the next look (at ae36c2f, then at e88773b): the plants of
+plants.py again on the new head (those whose text is gone say NOT
+APPLIED), and new ones in what the commits since 98024d5 changed, one at
+a time, against the four unit test files and the new shell test
+(tests/kernel/test_cut_record.sh):
 
   M1-M6  numbers_verdict: a new state counts from 1 again (f5afb60)
   Q1-Q3  the status's count, held to the last state's cuts (f5afb60)
   W1-W8  cut-record.sh: the holder's end goes through holder_ended (e805d10)
   X1-X6  an old state's cut written after the failure is a verdict, and
          the instances' lines come first (ae36c2f)
+  L1-L15 a request log line cut short by a kill -9 (e88773b)
 
 The file is restored after each, and each result is written to OUT as it
 comes.
@@ -106,6 +108,38 @@ NEW = [
     ('X6 a cut of this state with a line counts as an old state\'s where an earlier state has the number too', J,
      "        if n is None and any((b, str(w['number'])) in place for b in range(e)):\n",
      "        if any((b, str(w['number'])) in place for b in range(e)):\n"),
+    # ---- cut_daemon_check.py at e88773b: a request log line cut short by a kill ----
+    ('L1 a cut line of any pid counts, not the last instance\'s only', J,
+     "    if not head or head.group(2) != pid:\n", "    if not head:\n"),
+    ('L2 the start after a cut line may be of a pid already started', J,
+     "        if m.end() != len(ln) or m.group(2) in by_pid:\n", "        if m.end() != len(ln):\n"),
+    ('L3 the start need not end the line', J,
+     "        if m.end() != len(ln) or m.group(2) in by_pid:\n", "        if m.group(2) in by_pid:\n"),
+    ('L4 the start may be earlier than the cut line', J,
+     "        if not int(head.group(1)) <= int(ns) <= int(nxt):\n", "        if not int(ns) <= int(nxt):\n"),
+    ('L5 the start may be later than the line after it', J,
+     "        if not int(head.group(1)) <= int(ns) <= int(nxt):\n", "        if not int(head.group(1)) <= int(ns):\n"),
+    ('L6 a cut line that ends in no digit counts too (<= to <)', J,
+     "        if len(digits) <= len(nxt):\n", "        if len(digits) < len(nxt):\n"),
+    ('L7 the start is taken with all the digits before it', J,
+     "        ns = digits[-len(nxt):]\n", "        ns = digits\n"),
+    ('L8 a cut line counts before any start (the next instance need not have taken the device over)', J,
+     "        if not (kinds or {}).get(c['next']):\n", "        if False:\n"),
+    ('L9 a cut line counts where there is no instances.tsv', J,
+     "        if not (kinds or {}).get(c['next']):\n", "        if kinds is not None and not kinds.get(c['next']):\n"),
+    ('L10 a cut line counts where instances.tsv does not name the next pid', J,
+     "        if not (kinds or {}).get(c['next']):\n", "        if (kinds or {}).get(c['next']) is False:\n"),
+    ('L11 a cut line counts only before an instance that created the device', J,
+     "        if not (kinds or {}).get(c['next']):\n", "        if (kinds or {}).get(c['next']) is not False:\n"),
+    ('L12 the program takes no cut line (parse_log without the list)', J,
+     "            instances = parse_log(f.read(), torn)\n", "            instances = parse_log(f.read())\n"),
+    ('L13 the program does not hold a cut line to the take-over', J,
+     "        put('obs_torn_at_kill', 'INFO', torn_detail(torn, kinds))\n",
+     "        put('obs_torn_at_kill', 'INFO', torn_detail(torn, {c['next']: True for c in torn}))\n"),
+    ('L14 the program says nothing of a cut line', J,
+     "        put('obs_torn_at_kill', 'INFO', torn_detail(torn, kinds))\n", "        torn_detail(torn, kinds)\n"),
+    ('L15 the line after the start need not begin with a time', J,
+     "    if not nxt.isdigit():\n        return None\n", "    if not nxt.isdigit():\n        nxt = '9' * 12\n"),
 ]
 
 

@@ -1,0 +1,27 @@
+C whole: the first instance's last line '16546\t4242\tcut\t1\tflush\titself\t13\t26' whole: exit 1
+   obs_torn_at_kill: INFO: 0 lines of the request log cut short by a kill -9 and lost with it
+   cuts: FAIL: cut 14: the daemon's is group 26 (itself) at record 734, the reference's group 35 (itself) at record 774
+   cut_numbers: FAIL: cut line 14 (request log line 2163) carries the number '13'
+   instance_2: FAIL: pid 4343 (took the device over): cuts '12' at the start, with 13 counted before it; wanted cut_state taken_up, intent_state taken_up
+   ctl_drop: MISSED: 26 cuts, each at the same barrier with the same group and the same answer to itself (expected: caught; DIFFERS)
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+C cut: the first instance's last line '16546\t4242\tcut\t1\tflush\titself\t13\t26' cut to '16546\t4242\tcut\t1\tflush\titself\t13\t2': exit 1
+   obs_torn_at_kill: INFO: 1 lines of the request log cut short by a kill -9 and lost with it; line 2158: pid 4242's `16546 4242 cut 1 flush itself 13` line after 34 bytes, then pid 4343's start
+   cuts: FAIL: cut 13: the daemon's is group 26 (itself) at record 734, the reference's group 26 (itself) at record 731
+   cut_numbers: PASS: the 26 cut lines are numbered 1 to 26
+   instance_2: PASS: pid 4343 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 12 at the start, 12 counted before it; the intent map named None of None regions at the start
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+B before: the first instance's log ends before its barrier line '16536\t4242\tbarrier\t1\tflush\t-\t-\t-', nothing cut short: exit 1
+   obs_torn_at_kill: INFO: 0 lines of the request log cut short by a kill -9 and lost with it
+   cuts: PASS: 26 cuts, each at the same barrier with the same group and the same answer to itself
+   cut_numbers: PASS: the 26 cut lines are numbered 1 to 26
+   instance_2: PASS: pid 4343 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 12 at the start, 12 counted before it; the intent map named None of None regions at the start
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+B cut: the first instance's last line '16536\t4242\tbarrier\t1\tflush\t-\t-\t-' cut to '16536\t4242\tbarrier\t1': exit 1
+   obs_torn_at_kill: INFO: 1 lines of the request log cut short by a kill -9 and lost with it; line 2157: pid 4242's `16536 4242 barrier 1` line after 20 bytes, then pid 4343's start
+   cuts: PASS: 26 cuts, each at the same barrier with the same group and the same answer to itself
+   cut_numbers: PASS: the 26 cut lines are numbered 1 to 26
+   instance_2: PASS: pid 4343 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 12 at the start, 12 counted before it; the intent map named None of None regions at the start
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
