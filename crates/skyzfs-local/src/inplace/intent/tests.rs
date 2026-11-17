@@ -37,6 +37,7 @@ fn settled(map: &mut IntentMap) -> Vec<u8> {
 }
 
 const BASE: Base = Base {
+    state: [5; 16],
     number: 3,
     group: 30,
 };
@@ -132,6 +133,10 @@ fn a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up() {
     assert_eq!(read(&magic, shape()), Err(Distrust::Format));
     let mut version = file.clone();
     version[8] = 9;
+    seal(&mut version[..PAGE]);
+    assert_eq!(read(&version, shape()), Err(Distrust::Format));
+    // Version 1's base named no cut state (M2.4): it is read no more.
+    version[8] = 1;
     seal(&mut version[..PAGE]);
     assert_eq!(read(&version, shape()), Err(Distrust::Format));
     let other = |change: &dyn Fn(&mut Shape)| {

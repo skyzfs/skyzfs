@@ -2867,10 +2867,11 @@ impl<D: Dir> InPlace<D> {
     /// see [`InPlace::release_cut`].
     #[cfg(any(test, feature = "test-hooks"))]
     fn intent_committed(&mut self, number: u64, group: u64) {
-        let changed = self
-            .state
-            .as_ref()
-            .and_then(|state| state.changed_after(number));
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let changed = state.changed_after(number);
+        let id = state.id();
         let Some(intent) = &mut self.intent else {
             return;
         };
@@ -2881,7 +2882,11 @@ impl<D: Dir> InPlace<D> {
                 .map(|&word| word as u64 * 64 / region_blocks)
                 .collect()
         });
-        intent.map.commit(intent::Base { number, group });
+        intent.map.commit(intent::Base {
+            state: id,
+            number,
+            group,
+        });
         intent.commits += 1;
         intent.map.clear(|first, _| {
             changed

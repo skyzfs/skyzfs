@@ -396,7 +396,10 @@ impl Taken {
 /// The region's magic: `SKYZCUT1`.
 const MAGIC: u64 = u64::from_le_bytes(*b"SKYZCUT1");
 /// The version of the region's format this code reads and writes.
-pub const VERSION: u64 = 1;
+/// Version 2 (M2.4) added the state's name, [`CutState::id`]. A state
+/// of version 1 is not read: its volume counts as changed once, as for
+/// any state that is not taken up.
+pub const VERSION: u64 = 2;
 
 /// The words of a pool state: its group, then its root block pointer.
 const STATE_WORDS: usize = 1 + ROOT_WORDS;
@@ -469,7 +472,11 @@ mod at {
     pub(super) const NEWEST_SEL: usize = MARK + 2 * STATE_WORDS;
     pub(super) const NEWEST: usize = NEWEST_SEL + 1;
     pub(super) const CUTS: usize = NEWEST + 2 * STATE_WORDS;
-    pub(super) const HEADER: usize = CUTS + HELD * CUT_WORDS;
+    /// The state's name ([`super::CutState::id`]): the start token of
+    /// the open that began it, two words likewise. Unlike `START` it is
+    /// never stored again.
+    pub(super) const STATE_ID: usize = CUTS + HELD * CUT_WORDS;
+    pub(super) const HEADER: usize = STATE_ID + 2;
 }
 
 /// The words a state needs for a volume of `blocks` blocks with room
@@ -819,6 +826,7 @@ impl<R: Region> CutState<R> {
         }
         for (i, word) in id_words(owner.start).into_iter().enumerate() {
             region.store(at::START + i, word);
+            region.store(at::STATE_ID + i, word);
         }
         region.store(at::OPEN_ALSO, NO_MAP);
         match changed {
@@ -1011,6 +1019,19 @@ impl<R: Region> CutState<R> {
     }
 
     // ---- the count, the open map and the epochs ----
+
+    /// The state's name: the start token of the open that began it. A
+    /// later start that takes the state up keeps it. The numbers of
+    /// cuts begin again with each state, so a cut is named across
+    /// states by this and its number: what an upload records, and
+    /// what the intent map's base holds (M2.4).
+    pub fn id(&self) -> [u8; 16] {
+        let mut id = [0; 16];
+        for (i, eight) in id.chunks_exact_mut(8).enumerate() {
+            eight.copy_from_slice(&self.load(at::STATE_ID + i).to_le_bytes());
+        }
+        id
+    }
 
     /// The count of cuts.
     pub fn count(&self) -> u64 {

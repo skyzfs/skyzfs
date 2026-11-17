@@ -1096,6 +1096,10 @@ fn a_region_of_another_version_volume_or_boot_is_refused() {
         None
     );
     let mut other = region.clone();
+    // Version 1 kept no state id (M2.4): it is read no more, and its
+    // volume counts as changed once.
+    other.store(at::VERSION, 1);
+    assert_eq!(refused(SIZE, OWNER, 0), Some(RegionError::Version(1)));
     other.store(at::VERSION, VERSION + 1);
     assert_eq!(
         refused(SIZE, OWNER, 0),
@@ -1105,6 +1109,34 @@ fn a_region_of_another_version_volume_or_boot_is_refused() {
         panic!("a region of another version was taken up");
     };
     assert_eq!(back.load(at::VERSION), VERSION + 1);
+}
+
+/// A state is named by the start that began it, and keeps that name
+/// when a later start takes it up under its own token; a state begun
+/// anew takes its own start's. Numbers of cuts begin again with every
+/// state, so the name and a number say which cut an upload holds
+/// (M2.4).
+#[test]
+fn a_state_keeps_the_name_of_the_start_that_began_it() {
+    let bound = 2 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let state = CutState::begin(region, SIZE, bound, OWNER, Mutants(0));
+    assert_eq!(state.id(), OWNER.start);
+    let later = Owner {
+        start: *b"a later start...",
+        ..OWNER
+    };
+    let Ok(state) = CutState::view(state.into_region(), SIZE, bound, OWNER, Mutants(0)) else {
+        panic!("the begun state was not read");
+    };
+    let state = state.take_up(later.start);
+    assert_eq!(state.id(), OWNER.start, "taken up under a later token");
+    let Ok(state) = CutState::view(state.into_region(), SIZE, bound, later, Mutants(0)) else {
+        panic!("the state was not read under the token that took it up");
+    };
+    assert_eq!(state.id(), OWNER.start, "read under the later token");
+    let state = CutState::begin(state.into_region(), SIZE, bound, later, Mutants(0));
+    assert_eq!(state.id(), later.start, "begun anew");
 }
 
 /// A new state counts the whole volume as changed: its first cut's map

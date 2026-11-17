@@ -405,6 +405,7 @@ impl Run {
                 self.released = Some(oldest.number);
                 self.state.release(oldest.number);
                 self.map.commit(Base {
+                    state: self.state.id(),
                     number: oldest.number,
                     group: oldest.state.txg,
                 });
