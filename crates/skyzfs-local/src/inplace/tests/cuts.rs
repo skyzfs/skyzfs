@@ -1370,6 +1370,197 @@ fn a_write_over_a_held_cut_copies_its_blocks_in_one_read_and_one_write() {
     }
 }
 
+/// Held cut `number` read in slices of `size` blocks from block 0 on:
+/// each block with its content, and each slice's blocks with whether
+/// it said it read a copy.
+fn sliced(
+    store: &mut InPlace<SimDisk>,
+    number: u64,
+    size: usize,
+) -> (Vec<(u64, Vec<u8>)>, Vec<(Vec<u64>, bool)>) {
+    let mut blocks = Vec::new();
+    let mut slices = Vec::new();
+    let mut buf = Buf::filled(size, 0xEE);
+    let mut from = Some(0);
+    while let Some(at) = from {
+        let slice = store.read_cut_from(number, at, &mut buf).expect("reads");
+        assert!(
+            !slice.blocks.is_empty() && slice.blocks.len() <= size,
+            "a slice of {} blocks in a buffer of {size}",
+            slice.blocks.len()
+        );
+        assert!(slice.blocks.iter().all(|&block| block >= at));
+        for (i, &block) in slice.blocks.iter().enumerate() {
+            let content = buf[i * BLOCK_USIZE..(i + 1) * BLOCK_USIZE].to_vec();
+            blocks.push((block, content));
+        }
+        slices.push((slice.blocks, slice.copied));
+        from = slice.next;
+    }
+    (blocks, slices)
+}
+
+/// A held cut read in slices, as the upload reads it (M2.4), holds each
+/// block as the cut reads it a block at a time: the whole volume of a
+/// new state's first cut after writes over it that made copies, and the
+/// second cut's few blocks, in slices of 1, 7 and 64 blocks. A slice
+/// says where the map goes on, and whether it read a copy: exactly when
+/// one of its blocks changed after the cut's instant.
+#[test]
+fn a_cut_read_in_slices_holds_each_block_as_it_reads_alone() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(61, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        for block in 64..96 {
+            write(&mut store, block, block as u8).unwrap();
+        }
+        // Cut 1, the whole volume (the state is new).
+        group(&mut store, 100, 7, 70);
+        // Copies for cut 1: a run, and two blocks alone.
+        let mut changed: std::collections::BTreeSet<u64> = (70..80).chain([90, 5]).collect();
+        for &block in &changed {
+            write(&mut store, block, 0xC0).unwrap();
+        }
+        // Cut 2: those blocks and group 8's uberblocks, whose slots
+        // cut 1 reads from copies too.
+        group(&mut store, 200, 8, 80);
+        changed.extend((0..LABELS).map(|label| (ring(label) + (8 % RING_SLOTS) * SLOT) / BLOCK));
+        let phases: Vec<(u64, CutPhase)> = store
+            .held_cuts()
+            .iter()
+            .map(|c| (c.number, c.phase))
+            .collect();
+        assert_eq!(
+            phases,
+            [(1, CutPhase::Uploading), (2, CutPhase::Waiting)],
+            "{case}"
+        );
+        for number in [1, 2] {
+            let alone: Vec<(u64, Vec<u8>)> = store
+                .cut_map(number)
+                .into_iter()
+                .map(|block| {
+                    let mut buf = Buf::filled(1, 0xEE);
+                    assert_eq!(store.read_cut(number, block, &mut buf).ok(), Some(true));
+                    (block, buf.to_vec())
+                })
+                .collect();
+            assert_eq!(alone.len() == VOLUME_BLOCKS as usize, number == 1, "{case}");
+            for size in [1, 7, 64] {
+                let (blocks, slices) = sliced(&mut store, number, size);
+                assert!(blocks == alone, "{case}: cut {number} in slices of {size}");
+                for (blocks, copied) in slices {
+                    let read_a_copy =
+                        number == 1 && blocks.iter().any(|block| changed.contains(block));
+                    assert_eq!(
+                        copied, read_a_copy,
+                        "{case}: cut {number}, the slice of {blocks:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            store
+                .read_cut_from(1, 70, &mut Buf::filled(1, 0))
+                .map(|s| s.blocks)
+                .ok(),
+            Some(vec![70]),
+            "{case}: a slice from a block on"
+        );
+    }
+}
+
+/// A slice of a held cut reads each run of the image, and each run of
+/// copies in adjacent slots, in one read (M2.4, as M2.2d writes them):
+/// 16 blocks unchanged since the cut and 16 written over it in one
+/// write, in a slice of 32. The defect, planted by hand: a read a
+/// block.
+#[test]
+fn a_slice_of_a_cut_reads_each_run_in_one_read() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(62, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        for block in 64..96 {
+            write(&mut store, block, block as u8).unwrap();
+        }
+        // Cut 1, the whole volume (the state is new).
+        group(&mut store, 100, 7, 70);
+        let done = run(
+            &mut store,
+            1,
+            Op::Write {
+                offset: 80 * BLOCK,
+                data: Buf::filled(16, 0xAB),
+            },
+        );
+        assert_eq!(done.result, Ok(()), "{case}");
+        let image = disk.reads_of(crate::store::HOME_NAME);
+        let copies = disk.reads_of(COPIES_NAME);
+        let mut buf = Buf::filled(32, 0xEE);
+        let slice = store.read_cut_from(1, 64, &mut buf).expect("reads");
+        assert_eq!(slice.blocks, (64..96).collect::<Vec<u64>>(), "{case}");
+        assert_eq!(slice.next, Some(96), "{case}");
+        assert!(slice.copied, "{case}");
+        for (i, block) in (64..96).enumerate() {
+            assert_eq!(
+                buf[i * BLOCK_USIZE..(i + 1) * BLOCK_USIZE],
+                vec![block as u8; BLOCK_USIZE],
+                "{case}: block {block}"
+            );
+        }
+        assert_eq!(
+            disk.reads_of(crate::store::HOME_NAME),
+            image + 1,
+            "{case}: one read of the image"
+        );
+        assert_eq!(
+            disk.reads_of(COPIES_NAME),
+            copies + 1,
+            "{case}: one read of the copies"
+        );
+    }
+}
+
+/// A slice is refused for a cut that is not held, and for a buffer of
+/// no block or of part of one; a slice from the volume's end on reads
+/// nothing and says the map is read.
+#[test]
+fn a_slice_of_a_cut_not_held_or_into_a_short_buffer_is_refused() {
+    let disk = created(63, 0);
+    let mut store = start_on(&disk, 0, &region(), ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    let refused = |store: &mut InPlace<SimDisk>, number: u64, buf: &mut [u8]| {
+        store
+            .read_cut_from(number, 0, buf)
+            .err()
+            .map(|e| e.kind())
+    };
+    assert_eq!(
+        refused(&mut store, 2, &mut Buf::filled(1, 0)),
+        Some(io::ErrorKind::NotFound)
+    );
+    assert_eq!(
+        refused(&mut store, 1, &mut []),
+        Some(io::ErrorKind::InvalidInput)
+    );
+    let mut part = Buf::filled(2, 0);
+    assert_eq!(
+        refused(&mut store, 1, &mut part[..BLOCK_USIZE + 512]),
+        Some(io::ErrorKind::InvalidInput)
+    );
+    let end = store
+        .read_cut_from(1, VOLUME_BLOCKS, &mut Buf::filled(1, 0))
+        .expect("reads");
+    assert!(end.blocks.is_empty() && end.next.is_none() && !end.copied);
+    assert!(store.release_cut(1));
+    assert_eq!(
+        refused(&mut store, 1, &mut Buf::filled(1, 0)),
+        Some(io::ErrorKind::NotFound)
+    );
+}
+
 /// Where the copies file takes no direct I/O, a copy is never written
 /// through the cache instead (M2.2c's reading 2, the review of #104,
 /// S1): the copy fails, the cut that needs it goes, and the client's

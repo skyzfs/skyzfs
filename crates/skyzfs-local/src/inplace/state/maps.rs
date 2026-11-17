@@ -7,7 +7,8 @@
 //! ([`Maps::insert`]), to move all of one map into another
 //! ([`Maps::move_into`]), to clear one ([`Maps::clear`]), what a pass
 //! over one costs ([`Maps::weight`]), and the blocks in some maps, in
-//! order ([`Maps::blocks`]). A freeze and a taking only rename maps (the
+//! order ([`Maps::blocks`]), or some of them from a block on
+//! ([`Maps::blocks_from`]). A freeze and a taking only rename maps (the
 //! word of the count names the open map, a cut's map word its parts),
 //! so they do not reach in here. What the protocol relies on, at every
 //! store a death can follow, is all a layout has to keep:
@@ -268,6 +269,51 @@ impl Maps {
         (0..self.summary)
             .map(|i| u64::from(region.load(base + i).count_ones()))
             .sum()
+    }
+
+    /// The blocks in any of `maps` from block `from` on, in order, at
+    /// most `limit` of them (at least one); and the block after them in
+    /// the maps, or `None` where there is none. A pass visits only the
+    /// summary from `from` on and the words it names, until the limit.
+    pub(super) fn blocks_from(
+        &self,
+        region: &impl Region,
+        maps: &[usize],
+        from: u64,
+        limit: usize,
+    ) -> (Vec<u64>, Option<u64>) {
+        let mut blocks = Vec::new();
+        let first_word = (from / 64) as usize;
+        for i in first_word / 64..self.summary {
+            let mut summary = maps
+                .iter()
+                .fold(0, |acc, &map| acc | region.load(self.summary_base(map) + i));
+            if i == first_word / 64 {
+                summary &= u64::MAX << (first_word % 64);
+            }
+            while summary != 0 {
+                let word = i * 64 + summary.trailing_zeros() as usize;
+                summary &= summary - 1;
+                let mut bits = maps
+                    .iter()
+                    .fold(0, |acc, &map| acc | region.load(self.bits_base(map) + word));
+                if word == first_word {
+                    bits &= u64::MAX << (from % 64);
+                }
+                while bits != 0 {
+                    let block = word as u64 * 64 + u64::from(bits.trailing_zeros());
+                    bits &= bits - 1;
+                    if block >= self.blocks {
+                        return (blocks, None);
+                    }
+                    if blocks.len() >= limit.max(1) {
+                        return (blocks, Some(block));
+                    }
+                    blocks.push(block);
+                }
+            }
+        }
+        (blocks, None)
     }
 
     /// The blocks in any of `maps`, in order.

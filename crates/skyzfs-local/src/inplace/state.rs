@@ -2017,6 +2017,25 @@ impl<R: Region> CutState<R> {
         )
     }
 
+    /// The blocks in held cut `number`'s map from block `from` on, in
+    /// order, at most `limit` of them (at least one), and the block of
+    /// the map after them (`None`: the map ends with them); `None` if no
+    /// such cut is held. The map of the cut being uploaded does not
+    /// change while it is held, since it is the oldest: no cut gives it
+    /// a map (M2.4 reads it so, a slice at a time).
+    pub fn map_from(&self, number: u64, from: u64, limit: usize) -> Option<(Vec<u64>, Option<u64>)> {
+        let cut = self.hold(number)?;
+        if self.is_whole(&cut.cut) {
+            let from = from.min(self.blocks);
+            let end = from.saturating_add(limit.max(1) as u64).min(self.blocks);
+            return Some(((from..end).collect(), (end < self.blocks).then_some(end)));
+        }
+        let maps: Vec<usize> = std::iter::once(cut.parts.first)
+            .chain(cut.parts.also)
+            .collect();
+        Some(self.maps.blocks_from(&self.region, &maps, from, limit))
+    }
+
     /// The blocks in held cut `number`'s map, in order.
     pub fn map(&self, number: u64) -> Vec<u64> {
         let Some(cut) = self.hold(number) else {

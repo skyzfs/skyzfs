@@ -1055,6 +1055,21 @@ pub struct IntentFigures {
     pub waits: u64,
 }
 
+/// What [`InPlace::read_cut_from`] read of a held cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutSlice {
+    /// The blocks read, in order: the `i`-th is in the buffer's `i`-th
+    /// block. Empty only where the map has no block from the slice's
+    /// first on.
+    pub blocks: Vec<u64>,
+    /// The block of the cut's map to read from next; `None` once the map
+    /// is read to its end.
+    pub next: Option<u64>,
+    /// Whether a block was read from a copy: the upload syncs the copies
+    /// file before it commits a cut it read copies for (M2.4).
+    pub copied: bool,
+}
+
 /// The copies file as the start found it.
 enum CopiesAtStart {
     Synced,
@@ -2154,6 +2169,25 @@ fn open_copies<'a, D: Dir>(
         .ok_or_else(|| io::Error::other("the copies file is not open"))
 }
 
+/// Where a block of a held cut is read: a block of the image, or a slot
+/// of the copies file.
+#[derive(Debug, Clone, Copy)]
+enum Place {
+    Image(u64),
+    Copy(u64),
+}
+
+impl Place {
+    /// Whether this place is the one after `before` in the same file, so
+    /// that one read takes both.
+    fn follows(self, before: Place) -> bool {
+        match (before, self) {
+            (Place::Image(a), Place::Image(b)) | (Place::Copy(a), Place::Copy(b)) => b == a + 1,
+            _ => false,
+        }
+    }
+}
+
 /// The cut state's I/O: the home image read as the store reads it, and
 /// the copies file written the same way, by direct I/O in the daemon
 /// (M2.2c; `read_cut` reads the copies so too).
@@ -2836,6 +2870,77 @@ impl<D: Dir> InPlace<D> {
                 Ok(true)
             }
         }
+    }
+
+    /// Read the blocks of held cut `number`'s map from block `from` on,
+    /// as they were at the cut's instant, as many as `buf` has whole
+    /// blocks: what the upload reads, a slice a turn of the queue's
+    /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
+    /// and each run of blocks the image holds, or of copies in adjacent
+    /// slots, in one read. A cut that is not held, and a buffer of no
+    /// block or of part of one, are refused.
+    ///
+    /// Slices of the cut being uploaded hold the cut whatever the queue
+    /// does between them: that cut is the oldest held, so its map does
+    /// not change while it is held, and each block is read from its copy
+    /// once a write has changed it. A cut that goes between two slices
+    /// (abandoned at the bound, or let go at a copy that could not be
+    /// made) is refused at the next.
+    pub fn read_cut_from(
+        &mut self,
+        number: u64,
+        from: u64,
+        buf: &mut [u8],
+    ) -> io::Result<CutSlice> {
+        let block_bytes = skyzfs_blk::BLOCK_USIZE;
+        if buf.is_empty() || !buf.len().is_multiple_of(block_bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a cut is read in whole blocks",
+            ));
+        }
+        let not_held = || io::Error::new(io::ErrorKind::NotFound, "no such held cut");
+        let state = self.state.as_ref().ok_or_else(not_held)?;
+        let (blocks, next) = state
+            .map_from(number, from, buf.len() / block_bytes)
+            .ok_or_else(not_held)?;
+        let reads = blocks
+            .iter()
+            .map(|&block| match state.read(number, block) {
+                Some(state::Read::Image) => Ok(Place::Image(block)),
+                Some(state::Read::Copy(slot)) => Ok(Place::Copy(u64::from(slot))),
+                // Not reached: the block is in the cut's map. An upload
+                // that read the image the cut lies on would be wrong.
+                Some(state::Read::Unchanged) | None => Err(io::Error::other(
+                    "a block of the cut's map reads as not in it",
+                )),
+            })
+            .collect::<io::Result<Vec<Place>>>()?;
+        let copied = reads.iter().any(|read| matches!(read, Place::Copy(_)));
+        let mut i = 0;
+        while i < reads.len() {
+            let mut end = i + 1;
+            while end < reads.len() && reads[end].follows(reads[end - 1]) {
+                end += 1;
+            }
+            let into = &mut buf[i * block_bytes..end * block_bytes];
+            let (file, at) = match reads[i] {
+                Place::Image(block) => (&mut self.home, block),
+                Place::Copy(slot) => (open_copies(&self.dir, &mut self.copies)?, slot),
+            };
+            let at = at * skyzfs_blk::BLOCK_SIZE;
+            if self.io.direct {
+                file.read_direct_at(at, into)?;
+            } else {
+                file.read_at(at, into)?;
+            }
+            i = end;
+        }
+        Ok(CutSlice {
+            blocks,
+            next,
+            copied,
+        })
     }
 
     /// Held cut `number`, the one being uploaded, is uploaded: let it
