@@ -889,6 +889,70 @@ class Parse(unittest.TestCase):
         self.assertFalse(cut_ref.is_write(recs[1]))
 
 
+    # A label line of eight sectors as the daemon writes it (some 8 KB),
+    # cut by a kill -9 after 8012 bytes, the next instance's start line
+    # following it with no newline: run 44183715455, takeover, request log
+    # line 43866, with its times.
+    LABEL = ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t'
+             + ('0cb1ba00000000008813000000000000' * 128) + ('0' * 4096))
+    HEAD = '263932000000\t9937\tstart\t0\t-\t-\t-\t64\n263932700000\t9937\trecv\t25\twrite\t1047960\t8\t-\n'
+    START = '264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+    NEXT = '264075546749\t10976\tcuts\t-\t-\t-\t-\ttaken_up\n'
+
+    def test_a_label_line_torn_by_a_kill(self):
+        self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
+        text = self.HEAD + self.LABEL[:8012] + self.START + '\n' + self.NEXT
+        torn = []
+        inst = cdc.parse_log(text, torn)
+        self.assertEqual([i['pid'] for i in inst], ['9937', '10976'])
+        self.assertEqual((inst[1]['ns'], inst[1]['line'], inst[1]['device']), (264075526204, 3, '1'))
+        self.assertEqual([ln['event'] for ln in inst[0]['lines']], ['recv'])
+        self.assertEqual([ln['event'] for ln in inst[1]['lines']], ['cuts'])
+        self.assertEqual(torn, [{'line': 3, 'pid': '9937', 'next': '10976', 'bytes': 8012,
+                                 'head': '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'}])
+        # Where the caller takes no torn line, it is the rig's error.
+        with self.assertRaisesRegex(RigError, 'line 3: not eight to ten columns'):
+            cdc.parse_log(text)
+
+    def test_a_torn_line_only_before_a_take_over(self):
+        torn = []
+        cdc.parse_log(self.HEAD + self.LABEL[:8012] + self.START + '\n' + self.NEXT, torn)
+        self.assertEqual(cdc.torn_detail(torn, {'10976': True}),
+                         "1 lines of the request log cut short by a kill -9 and lost with it; line 3: pid 9937's "
+                         "`263932738825\t9937\tlabel\t25\twrite\t1047960\t8` line after 8012 bytes, then pid 10976's "
+                         'start')
+        self.assertTrue(cdc.torn_detail([], None).startswith('0 lines'))
+        for kinds in ({'10976': False}, {}, None):
+            with self.assertRaisesRegex(RigError, 'did not take the device over'):
+                cdc.torn_detail(torn, kinds)
+
+    def test_a_torn_line_not_followed_by_a_start(self):
+        """Only the next instance's start may follow a torn line."""
+        cut = self.LABEL[:8012]
+        bad = {
+            'the same instance goes on': self.HEAD + cut + '264075526204\t9937\trecv\t26\twrite\t0\t8\t-\n',
+            'a start of a pid already started': self.HEAD + cut + self.START.replace('10976', '9937') + '\n',
+            'the start before the torn line': self.HEAD + cut + self.START.replace('264075526204', '263932000001')
+            + '\n' + self.NEXT,
+            'the start at the end of the log': self.HEAD + cut + self.START + '\n',
+            'another pid torn': self.HEAD + cut.replace('\t9937\t', '\t9999\t', 1) + self.START + '\n' + self.NEXT,
+        }
+        for why, text in bad.items():
+            with self.subTest(why):
+                with self.assertRaises(RigError):
+                    cdc.parse_log(text, [])
+        # A tear that left eight columns and a newline parses as a line,
+        # and its label is short of its sectors.
+        text = self.HEAD + cut + '\n' + self.START + '\n' + self.NEXT
+        torn = []
+        inst = cdc.parse_log(text, torn)
+        self.assertEqual(torn, [])
+        with self.assertRaisesRegex(RigError, 'label line'):
+            cdc.records_of(inst[0]['lines'] + [{'ns': 263932738900, 'pid': '9937', 'event': 'applied', 'tag': '25',
+                                               'op': 'write', 'sector': '-', 'sectors': '-', 'result': '-',
+                                               'extra': [], 'line': 4}], [])
+
+
 PID2 = '4343'
 
 

@@ -234,11 +234,80 @@ def flat(text):
     return ' '.join(str(text).split())
 
 
-def parse_log(text):
-    """The request log -> [instance], each {'pid', 'device', 'lines': [dict]} in the file's order."""
+# The next instance's start line, after a torn line (torn_line).
+START_AFTER = re.compile(r'(\d+)\t(\d+)\tstart\t(\d+)\t-\t-\t-\t(\d+)')
+
+
+def torn_line(ln, k, lines, instances, by_pid):
+    """Line ln (index k of lines) that does not parse: where it is the
+    last instance's line cut short by a kill and the next instance's
+    start line follows it with no newline between them, -> (the start
+    line, what was lost); else None. A line is one write(2) of the daemon
+    (record.rs), but a kill -9 can cut a write of a long line (a label
+    line is some 8 KB) short: the rest of that line never reaches the
+    file, and the next instance appends its start line to it. The start
+    line's ns runs on from the cut line's last digits, so its digits are
+    taken as many as the next line's ns has, and it must lie between the
+    two lines' ns."""
+    if not instances:
+        return None
+    pid = instances[-1]['pid']
+    head = re.match(r'(\d+)\t(\d+)\t', ln)
+    if not head or head.group(2) != pid:
+        return None
+    nxt = lines[k + 1].split('\t', 1)[0] if k + 1 < len(lines) else ''
+    if not nxt.isdigit():
+        return None
+    for m in START_AFTER.finditer(ln):
+        if m.end() != len(ln) or m.group(2) in by_pid:
+            continue
+        digits = m.group(1)
+        if len(digits) <= len(nxt):
+            continue
+        ns = digits[-len(nxt):]
+        if not int(head.group(1)) <= int(ns) <= int(nxt):
+            continue
+        start = f"{ns}\t{m.group(2)}\tstart\t{m.group(3)}\t-\t-\t-\t{m.group(4)}"
+        lost = ln[:m.start(1) + len(digits) - len(nxt)]
+        return start, lost
+    return None
+
+
+def torn_detail(torn, kinds):
+    """The lines parse_log found cut short, and instances.tsv's kinds ->
+    the line obs_torn_at_kill's detail. A line cut short is lost at a kill
+    only: the instance after it took the device over from a daemon the rig
+    killed; anywhere else it is the rig's error."""
+    for c in torn:
+        if not (kinds or {}).get(c['next']):
+            raise RigError(f"request log line {c['line']}: pid {c['pid']}'s line is cut short and pid "
+                           f"{c['next']}'s start follows it, but pid {c['next']} did not take the device over "
+                           'from a killed daemon (instances.tsv)')
+    return (f'{len(torn)} lines of the request log cut short by a kill -9 and lost with it'
+            + ''.join(f"; line {c['line']}: pid {c['pid']}'s `{c['head']}` line after {c['bytes']} bytes, then "
+                      f"pid {c['next']}'s start" for c in torn))
+
+
+def parse_log(text, torn=None):
+    """The request log -> [instance], each {'pid', 'device', 'lines': [dict]} in the file's order.
+
+    torn: where given, a list to which each line cut short by a kill is
+    added ({'line', 'pid', 'next', 'bytes', 'head'}: torn_line); the line
+    is lost at the kill, as the lines the daemon had not written. main
+    holds that the next instance took the device over (instances.tsv).
+    Where not given, or anywhere else, a line that does not parse is the
+    rig's error."""
     instances, by_pid = [], {}
-    for k, ln in enumerate(text.splitlines()):
+    lines = text.splitlines()
+    for k, ln in enumerate(lines):
         f = ln.split('\t')
+        if torn is not None and (not 8 <= len(f) <= 10 or not f[0].isdigit()):
+            cut = torn_line(ln, k, lines, instances, by_pid)
+            if cut is not None:
+                start, lost = cut
+                torn.append({'line': k + 1, 'pid': instances[-1]['pid'], 'next': start.split('\t')[1],
+                             'bytes': len(lost), 'head': '\t'.join(lost.split('\t')[:7])})
+                f = start.split('\t')
         # Eight columns; since M2.2b-2 an `applied` line has a ninth (the
         # blocks' hashes) and, with --request-log-content whole, a tenth.
         if not 8 <= len(f) <= 10 or not f[0].isdigit():
@@ -1165,13 +1234,15 @@ def main():
         if name not in RECS:
             raise RigError(f'no row of EXPECTED for the recording {name!r}')
         with open(log) as f:
-            instances = parse_log(f.read())
+            torn = []
+            instances = parse_log(f.read(), torn)
         if not instances:
             raise RigError('no instance of the daemon in the request log')
         kinds, acked = None, set()
         if os.path.exists(os.path.join(rdir, 'instances.tsv')):
             kinds = read_kinds(read_file(rdir, 'instances.tsv'))
             acked = read_acknowledged(read_file(rdir, 'instances.tsv'))
+        put('obs_torn_at_kill', 'INFO', torn_detail(torn, kinds))
         marks_path = os.path.join(rdir, 'marks.tsv')
         with open(marks_path) as f:
             marks = read_marks(f.read())
