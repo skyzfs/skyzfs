@@ -1599,11 +1599,17 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// cut's identity there, in the meta row `skyzfs/cut` (M2.4). The ops
     /// may not touch that ref ([`EngineError::InvalidIo`], before anything
     /// is written). A commit with ops is made even with nothing written
-    /// since the last one: the ops are what it records.
+    /// since the last one: the ops are what it records. So is one with an
+    /// empty list of ops: `commit_with(kind, vec![])` is never a no-op.
     ///
     /// When the ref moved, the error is [`EngineError::Conflict`]; when
-    /// one of `ops` did not hold, [`EngineError::OpConflict`]. In both
-    /// nothing landed, and the engine keeps its writes and its group.
+    /// one of `ops` did not hold, [`EngineError::OpConflict`]. After any
+    /// error the engine keeps its writes and its group for the commit
+    /// made again. No error proves that nothing landed: a reply lost
+    /// after the swap leaves this commit as the head, and so does an S3
+    /// retry of a conditional PUT that had landed, which answers 412 and
+    /// reads as `Conflict`. A caller that must know reads the ref or its
+    /// row again (the review of #110).
     pub async fn commit_with(&mut self, kind: CommitKind, ops: Vec<RefOp>) -> Result<CommitHash> {
         if let Some(own) = ops.iter().find_map(|op| match op {
             RefOp::CasRef { name, .. } if *name == self.target_ref => Some(name),
