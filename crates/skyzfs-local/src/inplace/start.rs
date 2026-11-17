@@ -103,7 +103,7 @@ pub struct HoldCuts {
     /// The size of a region of the intent map, in bytes: a power of two
     /// from [`super::MIN_INTENT_REGION`] (64 blocks) to
     /// [`super::MAX_INTENT_REGION`] (1 GiB), or the open is refused;
-    /// `None`: the provisional default, 64 MiB (M2.3). A start with
+    /// `None`: the default, 4 MiB ([`super::DEFAULT_INTENT_REGION`]). A start with
     /// another size than the map was kept with counts the whole volume
     /// once.
     pub intent_region: Option<u64>,

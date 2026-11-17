@@ -2594,6 +2594,35 @@ fn intent_of(store: &InPlace<SimDisk>) -> IntentFigures {
         .expect("the store keeps an intent map")
 }
 
+/// A store given no size of region keeps its map in regions of
+/// `DEFAULT_INTENT_REGION`, the size the daemon's help names (G1 of
+/// the review of #109: the help is held to the constant, and this
+/// holds the store to it).
+#[test]
+fn a_store_given_no_region_keeps_the_map_in_regions_of_the_default() {
+    let disk = created(53, 0);
+    let options = OpenOptions {
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Memory(region()),
+            boot: state::tests::BOOT,
+            bound: Some(TEST_BOUND),
+            intent_region: None,
+        }),
+        ..OpenOptions::default()
+    };
+    let store = Opened::open(disk.clone(), lock(&disk).expect("the lock"), options)
+        .map_err(|(e, _)| e)
+        .expect("opens")
+        .start_with(None, Mutants(0))
+        .expect("the in-place store");
+    let figures = intent_of(&store);
+    assert_eq!(figures.region_bytes, DEFAULT_INTENT_REGION);
+    assert_eq!(
+        figures.regions,
+        (VOLUME_BLOCKS * BLOCK).div_ceil(DEFAULT_INTENT_REGION)
+    );
+}
+
 /// A store whose cut 1 holds block 5 at 0x55 and is committed (the
 /// release stands in for it): nothing changed after its instant, so
 /// the map names no region.

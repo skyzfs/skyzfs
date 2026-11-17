@@ -1901,9 +1901,9 @@ mod tests {
         };
         let path = std::path::PathBuf::from("/run/v/cuts");
         let boot = [7; 16];
-        let given = parsed("serve --dir /v/a --hold-cuts --intent-region-mib 4");
+        let given = parsed("serve --dir /v/a --hold-cuts --intent-region-mib 64");
         let hold = hold_cuts_of(&given, path.clone(), boot).expect("cuts are held");
-        assert_eq!(hold.intent_region, Some(4 << 20));
+        assert_eq!(hold.intent_region, Some(64 << 20));
         assert_eq!(hold.boot, boot);
         assert!(matches!(&hold.region, CutRegion::Named(at) if *at == path));
         let default = parsed("serve --dir /v/a --hold-cuts");

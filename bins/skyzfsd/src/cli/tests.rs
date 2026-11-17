@@ -299,7 +299,7 @@ fn the_intent_region_is_a_power_of_two_of_mib_with_held_cuts() {
             "only with --hold-cuts"
         ))
     );
-    assert_eq!(DEFAULT_INTENT_REGION_MIB, 64);
+    assert_eq!(DEFAULT_INTENT_REGION_MIB, 4);
     assert_eq!(MAX_INTENT_REGION_MIB, 1024);
     let said = format!(
         "--intent-region-mib N (a power of two from {MIN_INTENT_REGION_MIB} to \
