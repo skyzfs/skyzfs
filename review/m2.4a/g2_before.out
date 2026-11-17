@@ -1,0 +1,2 @@
+at dcf2df3, G2 the commit PUTs its own segments after the head swap: failed = ['crash_point_matrix', 'the_swap_and_its_row_land_together_or_not_at_all'] 
+git status --short in the checkout: (clean)

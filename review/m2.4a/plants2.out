@@ -29,3 +29,7 @@ D7 the head is swapped before the commit object is PUT: KILLED by 5: a_death_at_
 E1 create takes any shard size: KILLED by 1: a_volume_is_not_created_with_a_shard_of_zero_or_of_part_of_a_sector
 F1 the after-mode fails the operation before the store: KILLED by 6: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once, an_after_fault_lets_the_operation_land_then_fails_it_and_poisons, an_after_fault_on_a_conditional_put_lands_it, an_after_fault_on_a_delete_removes_the_object, the_swap_and_its_row_land_together_or_not_at_all
 F2 the after-mode returns the operation's own result: KILLED by 6: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once, an_after_fault_lets_the_operation_land_then_fails_it_and_poisons, an_after_fault_on_a_conditional_put_lands_it, an_after_fault_on_a_delete_removes_the_object, the_swap_and_its_row_land_together_or_not_at_all
+F3 the after-mode does not poison: every later operation lands and fails: KILLED by 1: an_after_fault_lets_the_operation_land_then_fails_it_and_poisons
+git status --short in the checkout: (clean)
+G2 the commit PUTs its own segments after the head swap: KILLED by 4: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once, crash_point_matrix, the_swap_and_its_row_land_together_or_not_at_all
+git status --short in the checkout: (clean)

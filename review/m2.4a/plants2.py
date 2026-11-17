@@ -114,6 +114,17 @@ NEW = [
     # the ops and the swap, the shard size, FaultStore: as in plants.py
     OLD['D1'], OLD['D2'], OLD['D3'], OLD['D4'], OLD['D5'], OLD['D6'], OLD['D7'],
     OLD['E1'], OLD['F1'], OLD['F2'], OLD['F3'],
+    # G2: what only a kill at the commit's own PUT of a segment shows
+    ('G2 the commit PUTs its own segments after the head swap', E,
+     [("            self.store\n                .put(&keys::segment(self.vol_id, *id), bytes.clone())\n                .await?;\n            seg_metas.push(segment_meta(*id, bytes));\n",
+       "            seg_metas.push(segment_meta(*id, bytes));\n"),
+      (plants.ADOPT,
+       "        for id in &self.sealed_order {\n"
+       "            let bytes = &self.pending_segments[id];\n"
+       "            self.store\n"
+       "                .put(&keys::segment(self.vol_id, *id), bytes.clone())\n"
+       "                .await?;\n"
+       "        }\n" + plants.ADOPT)]),
 ]
 
 def main():
