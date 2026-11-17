@@ -848,9 +848,6 @@ impl<R: Region> CutState<R> {
     /// a word `w` holds blocks `64 w .. 64 w + 64`. `None` where the
     /// whole volume counts as changed after it. A superset is safe for
     /// what asks (the intent map keeps a bit it might have cleared).
-    // The store clears the intent map from M2.3b on; until then only
-    // the map's model test asks.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn changed_after(&self, number: u64) -> Option<Vec<usize>> {
         if self.whole() > number {
             return None;
@@ -1027,8 +1024,9 @@ impl<R: Region> CutState<R> {
     /// what the intent map's base holds (M2.4).
     pub fn id(&self) -> [u8; 16] {
         let mut id = [0; 16];
-        for (i, eight) in id.chunks_exact_mut(8).enumerate() {
-            eight.copy_from_slice(&self.load(at::STATE_ID + i).to_le_bytes());
+        let (eights, _) = id.as_chunks_mut::<8>();
+        for (i, eight) in eights.iter_mut().enumerate() {
+            *eight = self.load(at::STATE_ID + i).to_le_bytes();
         }
         id
     }
@@ -1489,6 +1487,18 @@ impl<R: Region> CutState<R> {
         }
         self.free_unneeded(None);
         true
+    }
+
+    /// Cut `number`, the one being uploaded, cannot be uploaded: a read
+    /// for it, or the sync of the copies it was read from, failed (M2.4).
+    /// It is abandoned as at the bound, its map going to the cut that
+    /// waits, and counted. Whether it was that cut.
+    pub fn abandon_uploading(&mut self, number: u64) -> bool {
+        let uploading = self
+            .held()
+            .first()
+            .is_some_and(|cut| cut.number == number && cut.phase == Phase::Uploading);
+        uploading && self.abandon() == Some(number)
     }
 
     /// The oldest held cut is abandoned at the bound. The one being
@@ -2023,7 +2033,12 @@ impl<R: Region> CutState<R> {
     /// such cut is held. The map of the cut being uploaded does not
     /// change while it is held, since it is the oldest: no cut gives it
     /// a map (M2.4 reads it so, a slice at a time).
-    pub fn map_from(&self, number: u64, from: u64, limit: usize) -> Option<(Vec<u64>, Option<u64>)> {
+    pub fn map_from(
+        &self,
+        number: u64,
+        from: u64,
+        limit: usize,
+    ) -> Option<(Vec<u64>, Option<u64>)> {
         let cut = self.hold(number)?;
         if self.is_whole(&cut.cut) {
             let from = from.min(self.blocks);

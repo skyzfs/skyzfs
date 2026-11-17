@@ -187,7 +187,6 @@ impl Maps {
 
     /// The words set in any of `maps`, in order: a word `w` holds blocks
     /// `64 w .. 64 w + 64`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn set_words(&self, region: &impl Region, maps: &[usize]) -> Vec<usize> {
         let mut words: Vec<usize> = maps
             .iter()

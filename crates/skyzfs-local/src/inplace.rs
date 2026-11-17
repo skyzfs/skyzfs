@@ -667,6 +667,9 @@ pub struct InPlace<D: Dir> {
     state: Option<CutState<state::StoreRegion>>,
     /// The copies file, once opened.
     copies: Option<D::File>,
+    /// The sync of the copies file for an upload, under way or ended
+    /// ([`InPlace::sync_cut_copies`]).
+    copies_sync: Option<CopiesSync>,
     /// The intent map and its file, kept beside the cut state (M2.3,
     /// `intent.rs`).
     intent: Option<Intent<D::File>>,
@@ -1070,6 +1073,16 @@ pub struct CutSlice {
     pub copied: bool,
 }
 
+/// A sync of the copies file for the upload of a cut, by its number.
+#[derive(Debug)]
+enum CopiesSync {
+    /// Under way on the file's helper.
+    UnderWay(u64),
+    /// Ended where it began: the file could not begin it on a helper,
+    /// or failed at once.
+    Ended(u64, io::Result<()>),
+}
+
 /// The copies file as the start found it.
 enum CopiesAtStart {
     Synced,
@@ -1132,6 +1145,7 @@ impl<D: Dir> InPlace<D> {
             cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
             state: None,
             copies: None,
+            copies_sync: None,
             intent: None,
             intent_at_start: None,
             flushing: BTreeMap::new(),
@@ -2796,7 +2810,6 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// The held cuts, oldest first.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn held_cuts(&self) -> Vec<HeldCut> {
         self.state.as_ref().map(CutState::held).unwrap_or_default()
     }
@@ -2885,7 +2898,9 @@ impl<D: Dir> InPlace<D> {
     /// not change while it is held, and each block is read from its copy
     /// once a write has changed it. A cut that goes between two slices
     /// (abandoned at the bound, or let go at a copy that could not be
-    /// made) is refused at the next.
+    /// made) is refused at the next. A read that fails abandons the cut
+    /// if it is the one being uploaded (M2.4): its map goes to the cut
+    /// that waits, which reads those blocks again.
     pub fn read_cut_from(
         &mut self,
         number: u64,
@@ -2917,14 +2932,34 @@ impl<D: Dir> InPlace<D> {
             })
             .collect::<io::Result<Vec<Place>>>()?;
         let copied = reads.iter().any(|read| matches!(read, Place::Copy(_)));
+        if let Err(e) = self.read_places(&reads, buf) {
+            if self.uploading(number) {
+                if let Some(state) = self.state.as_mut() {
+                    state.abandon_uploading(number);
+                }
+            }
+            return Err(e);
+        }
+        Ok(CutSlice {
+            blocks,
+            next,
+            copied,
+        })
+    }
+
+    /// Read the blocks at `places` into `buf`, a block each, in order:
+    /// each run of the image, or of adjacent slots of the copies file,
+    /// in one read.
+    fn read_places(&mut self, places: &[Place], buf: &mut [u8]) -> io::Result<()> {
+        let block_bytes = skyzfs_blk::BLOCK_USIZE;
         let mut i = 0;
-        while i < reads.len() {
+        while i < places.len() {
             let mut end = i + 1;
-            while end < reads.len() && reads[end].follows(reads[end - 1]) {
+            while end < places.len() && places[end].follows(places[end - 1]) {
                 end += 1;
             }
             let into = &mut buf[i * block_bytes..end * block_bytes];
-            let (file, at) = match reads[i] {
+            let (file, at) = match places[i] {
                 Place::Image(block) => (&mut self.home, block),
                 Place::Copy(slot) => (open_copies(&self.dir, &mut self.copies)?, slot),
             };
@@ -2936,22 +2971,99 @@ impl<D: Dir> InPlace<D> {
             }
             i = end;
         }
-        Ok(CutSlice {
-            blocks,
-            next,
-            copied,
+        Ok(())
+    }
+
+    /// Whether held cut `number` is the one being uploaded.
+    fn uploading(&self, number: u64) -> bool {
+        self.state.as_ref().is_some_and(|state| {
+            state
+                .held()
+                .first()
+                .is_some_and(|cut| cut.number == number && cut.phase == state::Phase::Uploading)
         })
     }
 
-    /// Held cut `number`, the one being uploaded, is uploaded: let it
-    /// go. Whether it was that cut.
+    /// Begin a sync of the copies file before held cut `number`, the one
+    /// being uploaded, is committed in object storage, where the upload
+    /// read a copy for it ([`CutSlice::copied`]): the upload commits a
+    /// cut it read copies for only once they are durable, and abandons
+    /// it if the sync fails (M2.4, the review of M2.2b-1). A copy read
+    /// through the kernel's cache, as test builds can, is the page in
+    /// the cache, and a writeback that failed can leave a disk that does
+    /// not hold it; the sync says so. On the file's helper, as the
+    /// image's syncs are, so that the queue goes on meanwhile;
+    /// [`InPlace::cut_copies_synced`] is its end. Refused where a sync
+    /// for an upload is under way or has not been asked for its end,
+    /// and where cut `number` is not the one being uploaded.
+    pub fn sync_cut_copies(&mut self, number: u64) -> io::Result<()> {
+        if self.copies_sync.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a sync of the copies for an upload is under way",
+            ));
+        }
+        if !self.uploading(number) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the cut is not the one being uploaded",
+            ));
+        }
+        let wake = self.wake.clone();
+        let file = open_copies(&self.dir, &mut self.copies)?;
+        let begun = file.sync_begin(Box::new(move || {
+            if let Some(wake) = wake {
+                wake();
+            }
+        }));
+        self.copies_sync = Some(match begun {
+            Ok(()) => CopiesSync::UnderWay(number),
+            Err(e) if NotBegun::is(&e) => CopiesSync::Ended(number, file.sync()),
+            Err(e) => CopiesSync::Ended(number, Err(e)),
+        });
+        Ok(())
+    }
+
+    /// The end of the sync that [`InPlace::sync_cut_copies`] began:
+    /// `None` while it is under way, which only a call with `wait` false
+    /// can answer, and where none was begun; else its outcome. Where it
+    /// failed, its cut is abandoned if it is still the one being
+    /// uploaded: its map goes to the cut that waits, which uploads its
+    /// blocks. The file's helper wakes the store's caller when the sync
+    /// ends, as for the image's syncs.
+    pub fn cut_copies_synced(&mut self, wait: bool) -> Option<io::Result<()>> {
+        let (number, result) = match self.copies_sync.take()? {
+            CopiesSync::Ended(number, result) => (number, result),
+            CopiesSync::UnderWay(number) => {
+                let ended = match self.copies.as_mut() {
+                    Some(file) => file.sync_end(wait),
+                    None => Some(Err(io::Error::other("the copies file is not open"))),
+                };
+                let Some(result) = ended else {
+                    self.copies_sync = Some(CopiesSync::UnderWay(number));
+                    return None;
+                };
+                (number, result)
+            }
+        };
+        if result.is_err() && self.uploading(number) {
+            if let Some(state) = self.state.as_mut() {
+                state.abandon_uploading(number);
+            }
+        }
+        Some(result)
+    }
+
+    /// Held cut `number`, the one being uploaded, is committed in object
+    /// storage: let it go. Whether it was that cut. Called only after
+    /// the commit (M2.4); the test-hooks build's `release` command calls
+    /// it without one.
     ///
-    /// The release stands in for the commit in object storage (M2.4):
-    /// after it the intent map names the cut as its base, and clears the
-    /// bits of the regions in which nothing changed after the cut's
-    /// instant (`intent.rs`). The pages are written without a sync; one
-    /// that cannot be written fails the volume, as on the write path.
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// After it the intent map names the cut as its base (the cut
+    /// state's id, the cut's number and its group), and clears the bits
+    /// of the regions in which nothing changed after the cut's instant
+    /// (`intent.rs`). The pages are written without a sync; one that
+    /// cannot be written fails the volume, as on the write path.
     pub fn release_cut(&mut self, number: u64) -> bool {
         let group = self
             .held_cuts()
@@ -2970,7 +3082,6 @@ impl<D: Dir> InPlace<D> {
 
     /// Cut `number` of group `group` is committed in object storage:
     /// see [`InPlace::release_cut`].
-    #[cfg(any(test, feature = "test-hooks"))]
     fn intent_committed(&mut self, number: u64, group: u64) {
         let Some(state) = self.state.as_ref() else {
             return;

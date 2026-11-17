@@ -1370,14 +1370,12 @@ fn a_write_over_a_held_cut_copies_its_blocks_in_one_read_and_one_write() {
     }
 }
 
-/// Held cut `number` read in slices of `size` blocks from block 0 on:
-/// each block with its content, and each slice's blocks with whether
-/// it said it read a copy.
-fn sliced(
-    store: &mut InPlace<SimDisk>,
-    number: u64,
-    size: usize,
-) -> (Vec<(u64, Vec<u8>)>, Vec<(Vec<u64>, bool)>) {
+/// What a cut read in slices gave: each block with its content, and
+/// each slice's blocks with whether it said it read a copy.
+type Sliced = (Vec<(u64, Vec<u8>)>, Vec<(Vec<u64>, bool)>);
+
+/// Held cut `number` read in slices of `size` blocks from block 0 on.
+fn sliced(store: &mut InPlace<SimDisk>, number: u64, size: usize) -> Sliced {
     let mut blocks = Vec::new();
     let mut slices = Vec::new();
     let mut buf = Buf::filled(size, 0xEE);
@@ -1532,10 +1530,7 @@ fn a_slice_of_a_cut_not_held_or_into_a_short_buffer_is_refused() {
     let mut store = start_on(&disk, 0, &region(), ON_CALLER);
     group(&mut store, 100, 7, 70);
     let refused = |store: &mut InPlace<SimDisk>, number: u64, buf: &mut [u8]| {
-        store
-            .read_cut_from(number, 0, buf)
-            .err()
-            .map(|e| e.kind())
+        store.read_cut_from(number, 0, buf).err().map(|e| e.kind())
     };
     assert_eq!(
         refused(&mut store, 2, &mut Buf::filled(1, 0)),
@@ -1559,6 +1554,167 @@ fn a_slice_of_a_cut_not_held_or_into_a_short_buffer_is_refused() {
         refused(&mut store, 1, &mut Buf::filled(1, 0)),
         Some(io::ErrorKind::NotFound)
     );
+}
+
+/// Cut 1, the whole volume, uploading, with a copy of block 70 made for
+/// it, and cut 2 waiting behind it with block 70's new content.
+fn two_cuts_with_a_copy(seed: u64, io: IoMode) -> (SimDisk, InPlace<SimDisk>) {
+    let disk = created(seed, 0);
+    let mut store = start_on(&disk, 0, &region(), io);
+    write(&mut store, 70, 0x70).unwrap();
+    group(&mut store, 100, 7, 70);
+    write(&mut store, 70, 0xC0).unwrap();
+    group(&mut store, 200, 8, 80);
+    let phases: Vec<(u64, CutPhase)> = store
+        .held_cuts()
+        .iter()
+        .map(|c| (c.number, c.phase))
+        .collect();
+    assert_eq!(phases, [(1, CutPhase::Uploading), (2, CutPhase::Waiting)]);
+    (disk, store)
+}
+
+/// The upload syncs the copies file before it commits a cut it read
+/// copies for (M2.4, the review of M2.2b-1), on the file's helper: the
+/// sync covers the copy, and a cut whose sync fails is abandoned. Its
+/// map goes to the cut that waits, which reads every block it read, as
+/// at its own instant.
+#[test]
+fn a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let (disk, mut store) = two_cuts_with_a_copy(64, io);
+        let slice = store
+            .read_cut_from(1, 70, &mut Buf::filled(1, 0))
+            .expect("reads");
+        assert!(slice.copied, "{case}");
+        let syncs = disk.syncs_of(COPIES_NAME);
+        assert_eq!(
+            store.sync_cut_copies(1).map_err(|e| e.kind()),
+            Ok(()),
+            "{case}"
+        );
+        assert_eq!(
+            store
+                .cut_copies_synced(true)
+                .map(|r| r.map_err(|e| e.kind())),
+            Some(Ok(())),
+            "{case}"
+        );
+        assert_eq!(disk.syncs_of(COPIES_NAME), syncs + 1, "{case}: one sync");
+        assert_eq!(
+            store.held_cuts().len(),
+            2,
+            "{case}: a sync that succeeds abandons nothing"
+        );
+        disk.fail_sync_of(COPIES_NAME);
+        assert_eq!(
+            store.sync_cut_copies(1).map_err(|e| e.kind()),
+            Ok(()),
+            "{case}"
+        );
+        assert!(
+            matches!(store.cut_copies_synced(true), Some(Err(_))),
+            "{case}"
+        );
+        disk.clear_faults();
+        let held: Vec<(u64, CutPhase)> = store
+            .held_cuts()
+            .iter()
+            .map(|c| (c.number, c.phase))
+            .collect();
+        assert_eq!(held, [(2, CutPhase::Uploading)], "{case}");
+        assert_eq!(store.cut_figures().abandoned, 1, "{case}");
+        assert_eq!(
+            store.cut_map(2).len() as u64,
+            VOLUME_BLOCKS,
+            "{case}: cut 2 took the whole volume"
+        );
+        assert_eq!(
+            cut_block(&mut store, 2, 70),
+            vec![0xC0; BLOCK_USIZE],
+            "{case}"
+        );
+        assert_eq!(
+            cut_block(&mut store, 2, 3),
+            vec![0x33; BLOCK_USIZE],
+            "{case}"
+        );
+    }
+}
+
+/// A sync of the copies is refused for a cut that is not the one being
+/// uploaded, and while one is under way; its end with none begun says
+/// so. A failed sync's end abandons nothing once its cut is gone.
+#[test]
+fn a_sync_of_the_copies_is_for_the_cut_being_uploaded_one_at_a_time() {
+    let (disk, mut store) = two_cuts_with_a_copy(65, ON_CALLER);
+    let kind = |r: io::Result<()>| r.map_err(|e| e.kind());
+    assert!(store.cut_copies_synced(true).is_none(), "none begun");
+    assert_eq!(
+        kind(store.sync_cut_copies(2)),
+        Err(io::ErrorKind::InvalidInput)
+    );
+    assert_eq!(
+        kind(store.sync_cut_copies(3)),
+        Err(io::ErrorKind::InvalidInput)
+    );
+    disk.hold_syncs_of(COPIES_NAME);
+    assert_eq!(kind(store.sync_cut_copies(1)), Ok(()));
+    assert_eq!(
+        kind(store.sync_cut_copies(1)),
+        Err(io::ErrorKind::InvalidInput)
+    );
+    assert!(store.cut_copies_synced(false).is_none(), "under way");
+    disk.fail_sync_of(COPIES_NAME);
+    // Cut 1 goes before the sync ends: released, as after its commit.
+    assert!(store.release_cut(1));
+    disk.release_syncs();
+    assert!(matches!(store.cut_copies_synced(true), Some(Err(_))));
+    disk.clear_faults();
+    let held: Vec<(u64, CutPhase)> = store
+        .held_cuts()
+        .iter()
+        .map(|c| (c.number, c.phase))
+        .collect();
+    assert_eq!(held, [(2, CutPhase::Uploading)]);
+    assert_eq!(store.cut_figures().abandoned, 0);
+}
+
+/// A read for the cut being uploaded that fails abandons it (M2.4), as
+/// a failed sync of its copies does; a read of a cut that waits fails
+/// and keeps it.
+#[test]
+fn a_failed_read_of_the_cut_being_uploaded_abandons_it() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let (disk, mut store) = two_cuts_with_a_copy(66, io);
+        disk.fail_read_of(crate::store::HOME_NAME);
+        let failed = store.read_cut_from(2, 70, &mut Buf::filled(1, 0));
+        assert!(
+            failed.is_err_and(|e| e.kind() != io::ErrorKind::NotFound),
+            "{case}"
+        );
+        assert_eq!(store.held_cuts().len(), 2, "{case}: cut 2 waits on");
+        let failed = store.read_cut_from(1, 0, &mut Buf::filled(8, 0));
+        assert!(
+            failed.is_err_and(|e| e.kind() != io::ErrorKind::NotFound),
+            "{case}"
+        );
+        disk.clear_faults();
+        let held: Vec<(u64, CutPhase)> = store
+            .held_cuts()
+            .iter()
+            .map(|c| (c.number, c.phase))
+            .collect();
+        assert_eq!(held, [(2, CutPhase::Uploading)], "{case}");
+        assert_eq!(store.cut_figures().abandoned, 1, "{case}");
+        assert_eq!(
+            cut_block(&mut store, 2, 3),
+            vec![0x33; BLOCK_USIZE],
+            "{case}"
+        );
+    }
 }
 
 /// Where the copies file takes no direct I/O, a copy is never written

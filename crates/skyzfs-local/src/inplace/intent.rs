@@ -97,10 +97,6 @@
 //! left it: in a region the map names if that write came after the
 //! base, and otherwise as the base holds it.
 
-// Clearing a bit follows a commit, which only the test-hooks build's
-// release stands in for until M2.4.
-#![cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
-
 use std::collections::BTreeMap;
 
 use skyzfs_blk::Buf;
