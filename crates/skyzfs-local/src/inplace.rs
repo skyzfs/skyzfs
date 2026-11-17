@@ -3134,6 +3134,70 @@ impl<D: Dir> InPlace<D> {
             .is_some_and(|state| state.release(number))
     }
 
+    /// Cut `number` of this cut state, of group `group`, is committed in
+    /// object storage, but the store no longer holds it: the bound, or a
+    /// failed read or sync of the copies, abandoned it after its commit
+    /// had landed and before [`InPlace::release_cut`] (P1 of the review
+    /// of M2.4b-1; the lead's choice over relaxing Q8). The intent map
+    /// names it as the committed cut, and no bit is cleared. Whether the
+    /// map names it now. False, with nothing changed, where the store
+    /// holds the cut (it is released instead), where `number` is not a
+    /// cut of this state, where the map names a newer cut of this state,
+    /// and where the map's pages cannot be written, which fails the
+    /// volume as at a release.
+    ///
+    /// Why the bits need no change. An abandoned cut hands its map on to
+    /// the cut that waits or to the open map and never drops it, so a
+    /// block changed after the cut's instant is in a newer map, as for a
+    /// cut released. The map's bits cover every region with a block
+    /// changed since the cut it names, or every region where it names
+    /// none. That cut is older than cut `number`: a cut of this state
+    /// with a lower number, or one committed before this state began.
+    /// What changed since cut `number` changed since it too, so the bits
+    /// as they are cover it. Clearing what nothing changed in since cut
+    /// `number` would be sound as well, by the same argument as at a
+    /// release; it is left to the next release.
+    ///
+    /// What it gives the uploader. The held cuts were made against the
+    /// cut released before (`lo`), so they hold every block changed
+    /// since cut `number`. With the map naming it, the uploader's check
+    /// finds head's row to be the base and uploads the next cut onto it
+    /// as a delta, not whole. The header is written without a sync, as
+    /// at a release: a death before this call, or a power cut that loses
+    /// the header, leaves the map naming the cut before, and the check
+    /// then finds a mismatch (Q8 stays strict): one whole upload.
+    pub fn name_committed_cut(&mut self, number: u64, group: u64) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let id = state.id();
+        let held = state.held().iter().any(|cut| cut.number == number);
+        if held || number == 0 || number > state.count() {
+            return false;
+        }
+        let Some(intent) = &mut self.intent else {
+            return false;
+        };
+        let named = intent::Base {
+            state: id,
+            number,
+            group,
+        };
+        match intent.map.base() {
+            Some(base) if base == named => return true,
+            Some(base) if base.state == id && base.number >= number => return false,
+            _ => {}
+        }
+        intent.map.commit(named);
+        intent.commits += 1;
+        if self.write_intent(false).is_err() {
+            self.fail();
+            self.settle_failed();
+            return false;
+        }
+        true
+    }
+
     /// Cut `number` of group `group` is committed in object storage:
     /// see [`InPlace::release_cut`]. False where the map's pages could
     /// not be written, and the volume has failed.

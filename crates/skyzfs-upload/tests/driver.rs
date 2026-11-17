@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use skynbd_store::{FaultOp, FaultWhen};
 use skyzfs_local::inplace::CommittedCut;
-use skyzfs_upload::{row, Checked, Doing, Mismatch, Rule, Step};
+use skyzfs_upload::{row, Checked, Doing, Driver, Mismatch, Rule, Step};
 
 /// The steps of a run that are not reads.
 fn told(steps: &[Step]) -> Vec<Step> {
@@ -569,6 +569,121 @@ async fn a_lost_cut_leaves_the_next_check_to_find_head_as_it_is() {
             }
         ),
         "{next:?}"
+    );
+}
+
+/// The bound takes a cut after its commit has landed and before it is
+/// let go: the driver names it in the intent map as the committed cut,
+/// and the cut that took its map goes up as a delta onto it, with no
+/// mismatch and no whole upload.
+#[tokio::test]
+async fn a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta() {
+    let mut fx = Fixture::new(16).await;
+    let mut up = committed_then_taken(&mut fx).await;
+    let state = up.local().cut_state_id().expect("a cut state");
+    assert_eq!(
+        up.step().await,
+        Ok(Step::UploadedNotHeld {
+            number: 2,
+            named: true
+        })
+    );
+    assert_eq!(
+        up.local().committed_cut(),
+        Some(CommittedCut {
+            state,
+            number: 2,
+            group: 8
+        })
+    );
+    fx.assert_uploaded(8, "cut 2").await;
+
+    let steps = up.run().await.expect("cut 3");
+    assert_eq!(
+        told(&steps),
+        [
+            Step::Began {
+                number: 3,
+                rule: Rule::Delta
+            },
+            Step::Uploaded {
+                number: 3,
+                rule: Rule::Delta,
+                blocks: OVER + 4
+            },
+        ],
+        "the blocks from 100, which hold the slots of groups 8 and 9 in two \
+         labels, and those slots in the other two"
+    );
+    fx.assert_uploaded(9, "cut 3").await;
+    let figures = up.figures();
+    assert_eq!(
+        (
+            figures.uploaded,
+            figures.uploaded_whole,
+            figures.not_held,
+            figures.named,
+            figures.mismatches
+        ),
+        (3, 1, 1, 1, 0)
+    );
+    assert_eq!(up.local().committed_cut().map(|cut| cut.number), Some(3));
+}
+
+/// The daemon's store answers the driver between turns of serving the
+/// pool, so the bound can take a cut between the check that found it
+/// committed and its release: here after a restart that followed a
+/// commit whose reply was lost. The cut is named as committed all the
+/// same, and the next cut goes up as a delta onto it.
+#[tokio::test]
+async fn a_cut_the_bound_takes_after_the_check_found_it_committed_is_named() {
+    let mut fx = Fixture::new(17).await;
+    let up = committed_unheard(&mut fx).await;
+    fx.died(up);
+    let at_release = (0..OVER).map(|block| (100 + block, 0x33)).collect();
+    let racing = Racing {
+        store: fx.start(),
+        at_release,
+    };
+    let mut up = Driver::with_slices(racing, fx.remote(), 64);
+    assert_eq!(
+        up.step().await,
+        Ok(Step::UploadedNotHeld {
+            number: 2,
+            named: true
+        })
+    );
+    for block in 0..OVER {
+        fx.wrote(100 + block, 0x33);
+    }
+    assert_eq!(
+        up.local()
+            .store
+            .committed_cut()
+            .map(|cut| (cut.number, cut.group)),
+        Some((2, 8))
+    );
+    fx.group(&mut up.local().store, 9);
+    let steps = up.run().await.expect("cut 3");
+    assert_eq!(
+        told(&steps),
+        [
+            Step::Began {
+                number: 3,
+                rule: Rule::Delta
+            },
+            Step::Uploaded {
+                number: 3,
+                rule: Rule::Delta,
+                blocks: OVER + 4
+            },
+        ]
+    );
+    fx.assert_uploaded(9, "cut 3").await;
+    let figures = up.figures();
+    assert_eq!(
+        (figures.found_committed, figures.not_held, figures.named),
+        (0, 1, 1)
     );
 }
 

@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
@@ -20,16 +21,18 @@ use bytes::Bytes;
 
 use skynbd_engine::{fsck, Engine, EngineConfig};
 use skynbd_refs::{ObjectRefStore, RefOp, RefStore};
-use skynbd_store::{FaultStore, MemoryStore, ObjectStore, Precondition, StoreError};
+use skynbd_store::{
+    FaultOp, FaultStore, FaultWhen, MemoryStore, ObjectStore, Precondition, StoreError,
+};
 use skynbd_types::VolumeId;
 use skyzfs_blk::{Base, BlockTarget, Buf, Op, Request, RequestId};
 use skyzfs_local::inplace::{
-    create, lock, records_for, words_for, CommittedCut, CutRegion, HoldCuts, InPlace, Lost,
-    MemRegion, OpenOptions, Opened, VolumeConfig,
+    create, lock, records_for, words_for, CommittedCut, CutRegion, CutSlice, HoldCuts, InPlace,
+    Lost, MemRegion, OpenOptions, Opened, VolumeConfig,
 };
 use skyzfs_local::sim::SimDisk;
 use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC};
-use skyzfs_upload::{row, Driver, EngineRemote, ROW_KEY};
+use skyzfs_upload::{row, Doing, Driver, EngineRemote, Local, Uploadable, ROW_KEY};
 
 pub const KIB: u64 = 1 << 10;
 pub const BLOCK: u64 = 4 * KIB;
@@ -164,27 +167,19 @@ impl Fixture {
     fn run(&mut self, store: &mut InPlace<SimDisk>, op: Op) {
         let id = RequestId(self.next_id);
         self.next_id += 1;
-        store.submit(Request { id, op }).expect("submitted");
-        let mut done = Vec::new();
-        while done.is_empty() {
-            store.wait(&mut done, WAIT);
-        }
-        let done = done.pop().expect("a completion");
-        assert_eq!(done.id, id);
-        done.result.expect("the request");
+        run(store, id, op);
     }
 
     /// Write block `block` full of `byte`.
     pub fn write(&mut self, store: &mut InPlace<SimDisk>, block: u64, byte: u8) {
+        self.wrote(block, byte);
+        self.run(store, write_op(block, byte));
+    }
+
+    /// Block `block` was written full of `byte` elsewhere ([`Racing`]).
+    pub fn wrote(&mut self, block: u64, byte: u8) {
         let at = (block * BLOCK) as usize;
         self.now[at..at + BLOCK as usize].fill(byte);
-        self.run(
-            store,
-            Op::Write {
-                offset: block * BLOCK,
-                data: Buf::filled(1, byte),
-            },
-        );
     }
 
     /// Group `txg`'s uberblock to the four labels, then the flush after
@@ -288,6 +283,126 @@ impl Fixture {
             .await
             .expect("another writer's commit");
     }
+}
+
+/// Run `op` on `store` as request `id`, and wait for it.
+fn run(store: &mut InPlace<SimDisk>, id: RequestId, op: Op) {
+    store.submit(Request { id, op }).expect("submitted");
+    let mut done = Vec::new();
+    while done.is_empty() {
+        store.wait(&mut done, WAIT);
+    }
+    let done = done.pop().expect("a completion");
+    assert_eq!(done.id, id);
+    done.result.expect("the request");
+}
+
+/// A write of block `block` full of `byte`.
+fn write_op(block: u64, byte: u8) -> Op {
+    Op::Write {
+        offset: block * BLOCK,
+        data: Buf::filled(1, byte),
+    }
+}
+
+/// The store as the daemon's queue's thread answers the driver (M2.4c):
+/// between its answers it serves the pool, so the bound can take a cut
+/// between the check that found it committed and its release. The
+/// writes in `at_release` are made just before the next release is
+/// answered; the test tells the fixture of them ([`Fixture::wrote`]).
+pub struct Racing {
+    pub store: InPlace<SimDisk>,
+    pub at_release: Vec<(u64, u8)>,
+}
+
+impl Local for Racing {
+    async fn uploadable(&mut self) -> Option<Uploadable> {
+        self.store.uploadable().await
+    }
+
+    async fn read(&mut self, number: u64, from: u64, buf: Buf) -> (Buf, io::Result<CutSlice>) {
+        Local::read(&mut self.store, number, from, buf).await
+    }
+
+    async fn sync_copies(&mut self, number: u64) -> io::Result<()> {
+        self.store.sync_copies(number).await
+    }
+
+    async fn release(&mut self, number: u64) -> bool {
+        for (i, (block, byte)) in std::mem::take(&mut self.at_release).into_iter().enumerate() {
+            run(
+                &mut self.store,
+                RequestId((1 << 40) | i as u64),
+                write_op(block, byte),
+            );
+        }
+        self.store.release(number).await
+    }
+
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        self.store.name_committed(number, group).await
+    }
+
+    async fn abandon_all(&mut self) -> Vec<u64> {
+        self.store.abandon_all().await
+    }
+}
+
+/// The blocks of data cut 2 holds in [`committed_unheard`]: more than the
+/// bound has room for, so that overwriting them all abandons it.
+pub const OVER: u64 = BOUND / BLOCK + 8;
+
+/// Cut 1 (group 7) goes up whole. Cut 2 (group 8) holds [`OVER`] blocks
+/// from block 100; its head swap lands and its reply is lost, so that the
+/// driver stays at the commit.
+pub async fn committed_unheard(fx: &mut Fixture) -> Up {
+    let mut store = fx.start();
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 64);
+    up.run().await.expect("cut 1");
+    for block in 0..OVER {
+        fx.write(up.local(), 100 + block, 0x22);
+    }
+    fx.group(up.local(), 8);
+    for _ in 0..100 {
+        if up.doing() == Doing::Committing {
+            break;
+        }
+        up.step().await.expect("a step of cut 2");
+    }
+    assert_eq!(up.doing(), Doing::Committing, "cut 2 read");
+    // The refs object's PUT is the head swap.
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, FaultWhen::After)
+        .await;
+    assert!(
+        up.step().await.is_err(),
+        "the reply to cut 2's swap is lost"
+    );
+    fx.store.disarm().await;
+    assert_eq!(fx.uploaded().await.group, Some(8), "cut 2's swap landed");
+    up
+}
+
+/// The bound takes a cut after its commit has landed and before it is
+/// let go (P1 of the review of M2.4b-1): after [`committed_unheard`],
+/// cut 2's blocks are overwritten, which abandons it at the bound and
+/// hands its map on, and group 9 makes cut 3 with it. The driver's next
+/// step reads the row and head again and finds cut 2 committed.
+pub async fn committed_then_taken(fx: &mut Fixture) -> Up {
+    let mut up = committed_unheard(fx).await;
+    for block in 0..OVER {
+        fx.write(up.local(), 100 + block, 0x33);
+    }
+    fx.group(up.local(), 9);
+    let held: Vec<u64> = up
+        .local()
+        .held_cuts()
+        .iter()
+        .map(|cut| cut.number)
+        .collect();
+    assert_eq!(held, [3], "the bound took cut 2, and cut 3 took its map");
+    up
 }
 
 /// What object storage holds.

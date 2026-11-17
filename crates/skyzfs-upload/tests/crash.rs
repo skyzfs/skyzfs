@@ -20,7 +20,7 @@ use futures_util::FutureExt;
 use skynbd_store::{FaultOp, FaultWhen};
 use skyzfs_local::inplace::{InPlace, Lost};
 use skyzfs_local::sim::SimDisk;
-use skyzfs_upload::{Rule, Step};
+use skyzfs_upload::{Mismatch, Rule, Step};
 
 /// Where the daemon dies.
 #[derive(Debug, Clone, Copy)]
@@ -223,4 +223,92 @@ async fn a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_misma
         landed_unheard >= 1,
         "a death in a release leaves the cut held for the row to name"
     );
+}
+
+/// The bound takes a cut after its commit has landed and before it is
+/// let go, and the daemon dies there. Died once the driver had named it,
+/// the restart finds the intent map naming it and uploads its heir as a
+/// delta. Died before, the map names the cut before it, the check finds
+/// a mismatch (Q8 stays strict), and the cut after it goes up whole:
+/// one whole upload, and never a cut uploaded onto a base it was not
+/// made against.
+#[tokio::test]
+async fn a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most() {
+    let told = |steps: &[Step]| -> Vec<Step> {
+        steps
+            .iter()
+            .filter(|step| !matches!(step, Step::Read { .. }))
+            .cloned()
+            .collect()
+    };
+    for named in [true, false] {
+        let case = if named {
+            "died once named"
+        } else {
+            "died before"
+        };
+        let mut fx = Fixture::new(22).await;
+        let mut up = committed_then_taken(&mut fx).await;
+        if named {
+            assert_eq!(
+                up.step().await,
+                Ok(Step::UploadedNotHeld { number: 2, named }),
+                "{case}"
+            );
+        }
+        fx.died(up);
+        let mut up = fx.driver(fx.start(), 64);
+        let base = up
+            .local()
+            .committed_cut()
+            .map(|cut| (cut.number, cut.group));
+        assert_eq!(base, Some(if named { (2, 8) } else { (1, 7) }), "{case}");
+        let steps = up.run().await.expect("the run after the restart");
+        if named {
+            assert_eq!(
+                told(&steps),
+                [
+                    Step::Began {
+                        number: 3,
+                        rule: Rule::Delta
+                    },
+                    Step::Uploaded {
+                        number: 3,
+                        rule: Rule::Delta,
+                        blocks: OVER + 4
+                    },
+                ],
+                "{case}"
+            );
+            fx.assert_uploaded(9, case).await;
+            continue;
+        }
+        assert_eq!(
+            told(&steps),
+            [Step::Mismatch {
+                why: Mismatch::NotTheBase,
+                abandoned: vec![3]
+            }],
+            "{case}"
+        );
+        fx.assert_uploaded(8, case).await;
+        fx.group(up.local(), 10);
+        let steps = up.run().await.expect("the cut after the mismatch");
+        assert_eq!(
+            told(&steps),
+            [
+                Step::Began {
+                    number: 4,
+                    rule: Rule::Whole
+                },
+                Step::Uploaded {
+                    number: 4,
+                    rule: Rule::Whole,
+                    blocks: BLOCKS
+                },
+            ],
+            "{case}"
+        );
+        fx.assert_uploaded(10, case).await;
+    }
 }

@@ -3590,6 +3590,137 @@ fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
     }
 }
 
+/// The bound abandons the cut being uploaded after its commit has
+/// landed and before its release (P1 of the review of M2.4b-1, the
+/// review's scenario T5): the release finds it gone, and
+/// `name_committed_cut` names it in the intent map as committed all the
+/// same, clearing no bit. After a restart of the machine the map taken
+/// up names it, and the next cut holds every block that differs from
+/// the volume at its instant. That start begins a new state, so the map
+/// then names a cut of the state before; when the bound takes the new
+/// state's first cut after its commit, it is named over that one. The
+/// defects, planted by hand: the call that names nothing, the header
+/// not written, and a base of another state never replaced.
+#[test]
+fn a_committed_cut_the_bound_took_is_named_as_committed() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(77, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1), "{case}");
+        let id = store.cut_state_id().expect("a cut state");
+        let committed = |number, group| {
+            Some(CommittedCut {
+                state: id,
+                number,
+                group,
+            })
+        };
+        // Cut 2 holds more blocks than the bound, so that overwriting
+        // them all abandons it.
+        let over = TEST_BOUND / BLOCK + 8;
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x22).unwrap();
+        }
+        group(&mut store, 200, 8, 80);
+        let at_cut_2 = volume_now(&mut store);
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        // Cut 2's commit lands here, and the pool writes over it.
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x33).unwrap();
+        }
+        assert_eq!(phases(&store), [], "{case}: the bound took cut 2");
+        assert!(!store.release_cut(2), "{case}: not held");
+        assert_eq!(store.committed_cut(), committed(1, 7), "{case}");
+        let named = intent_of(&store).named;
+        assert!(store.name_committed_cut(2, 8), "{case}");
+        assert_eq!(store.committed_cut(), committed(2, 8), "{case}");
+        assert_eq!(intent_of(&store).named, named, "{case}: no bit cleared");
+        assert!(store.name_committed_cut(2, 8), "{case}: named already");
+        write(&mut store, 230, 0x44).unwrap();
+        drop(store);
+        disk.power_cut(crate::sim::KeepAll);
+        let mut store = start_as(&disk, 0, &region(), io, AFTER_A_REBOOT);
+        assert!(
+            matches!(store.intent_at_start(), Some(IntentAtStart::TakenUp { .. })),
+            "{case}: {:?}",
+            store.intent_at_start()
+        );
+        assert_eq!(store.committed_cut(), committed(2, 8), "{case}");
+        let now = volume_now(&mut store);
+        group(&mut store, 400, 10, 100);
+        let map: std::collections::BTreeSet<u64> = store.cut_map(1).into_iter().collect();
+        for block in 0..VOLUME_BLOCKS {
+            if now[block as usize] != at_cut_2[block as usize] {
+                assert!(
+                    map.contains(&block),
+                    "{case}: block {block} differs from cut 2 and the next cut lacks it"
+                );
+            }
+        }
+        let new_id = store.cut_state_id().expect("the new state");
+        assert_ne!(new_id, id, "{case}: a new state after the reboot");
+        assert_eq!(phases(&store), [(1, CutPhase::Uploading)], "{case}");
+        // The new state's cut 1 commits, and the pool writes over it.
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x55).unwrap();
+        }
+        assert_eq!(phases(&store), [], "{case}: the bound took cut 1");
+        assert!(!store.release_cut(1), "{case}: not held");
+        assert!(
+            store.name_committed_cut(1, 10),
+            "{case}: over another state's"
+        );
+        assert_eq!(
+            store.committed_cut(),
+            Some(CommittedCut {
+                state: new_id,
+                number: 1,
+                group: 10,
+            }),
+            "{case}"
+        );
+    }
+}
+
+/// A cut is named as committed only where the store no longer holds it,
+/// it is a cut of this state, and the map names no newer cut of this
+/// state; anything else changes nothing. A map that cannot be written
+/// fails the volume, as at a release. The defects, planted by hand: each
+/// of the three refusals taken out.
+#[test]
+fn a_cut_is_named_as_committed_only_when_it_is_gone_and_newer() {
+    let disk = created(78, 0);
+    let mut store = start_on(&disk, 0, &region(), ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert!(!store.name_committed_cut(1, 7), "held: released instead");
+    assert!(!store.name_committed_cut(0, 7), "no cut 0");
+    assert!(!store.name_committed_cut(2, 8), "no cut 2 yet");
+    assert_eq!(store.committed_cut(), None);
+    assert!(store.release_cut(1));
+    write(&mut store, 6, 0x66).unwrap();
+    group(&mut store, 200, 8, 80);
+    write(&mut store, 7, 0x77).unwrap();
+    group(&mut store, 300, 9, 90);
+    assert!(store.release_cut(2));
+    let id = store.cut_state_id().expect("a cut state");
+    let base = Some(CommittedCut {
+        state: id,
+        number: 2,
+        group: 8,
+    });
+    assert_eq!(store.committed_cut(), base);
+    assert!(!store.name_committed_cut(1, 7), "older than the base");
+    assert_eq!(store.committed_cut(), base);
+    assert_eq!(store.abandon_all_cuts(), [3]);
+    disk.fail_write_of(intent::INTENT_NAME);
+    assert!(!store.name_committed_cut(3, 9), "the map's write failed");
+    assert!(store.is_failed());
+}
+
 /// A start refused for want of direct I/O touches neither the cut state
 /// nor the intent map: it creates no map (the review of #106).
 #[test]

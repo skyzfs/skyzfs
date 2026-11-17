@@ -1,6 +1,7 @@
 //! What the uploader asks of the in-place store: the cut being uploaded,
 //! its blocks in slices, the copies synced before its commit, its
-//! release, and the step of a mismatch.
+//! release (or its naming, where it went after its commit), and the step
+//! of a mismatch.
 //!
 //! The store lives on the queue's thread and the uploader off it. The
 //! daemon (M2.4c) answers these calls on the queue's thread between its
@@ -68,6 +69,14 @@ pub trait Local {
     /// (`InPlace::release_cut`). Whether it was the cut being uploaded.
     async fn release(&mut self, number: u64) -> bool;
 
+    /// Cut `number`, of transaction group `group`, is committed in object
+    /// storage, but [`Local::release`] found it gone: the bound took it
+    /// after its commit had landed. Name it in the intent map as the
+    /// committed cut (`InPlace::name_committed_cut`), so that the next
+    /// check finds head's row to be the base and the next cut goes up as
+    /// a delta onto it, not whole. Whether the map names it now.
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool;
+
     /// A mismatch: abandon every held cut, so that the next holds the
     /// whole volume (`InPlace::abandon_all_cuts`). The cuts abandoned.
     async fn abandon_all(&mut self) -> Vec<u64>;
@@ -101,6 +110,10 @@ impl<D: Dir> Local for InPlace<D> {
 
     async fn release(&mut self, number: u64) -> bool {
         self.release_cut(number)
+    }
+
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        self.name_committed_cut(number, group)
     }
 
     async fn abandon_all(&mut self) -> Vec<u64> {

@@ -23,7 +23,10 @@
 //! a row or head that moved gives the cut up for a new check. A cut that
 //! goes before its commit (abandoned at the bound, or its read or its
 //! sync failed) drops its writes, and the cut that took its map is
-//! checked and uploaded next.
+//! checked and uploaded next. A cut that goes after its commit has
+//! landed and before it is let go is named in the intent map as the
+//! committed cut instead, so that the cut that took its map goes up as a
+//! delta onto it.
 //!
 //! A death at any point leaves the cut held, with head and the row as
 //! they were or as the commit made them: the next instance's check finds
@@ -82,11 +85,17 @@ pub enum Step {
         blocks: u64,
     },
     /// The cut was committed, but it had gone from the store (abandoned
-    /// at the bound) before it could be let go: the next check finds a row
-    /// the intent map does not name, a mismatch.
+    /// at the bound) before it could be let go. The driver names it in
+    /// the intent map as the committed cut ([`Local::name_committed`]).
     UploadedNotHeld {
         /// The cut.
         number: u64,
+        /// Whether the map names it now, so that the next check finds the
+        /// row to be the base and the next cut goes up as a delta onto it.
+        /// Where not (the volume failed, or the store refused), or where a
+        /// death or a lost header undoes the naming, the next check finds
+        /// a row the map does not name: a mismatch, and one whole upload.
+        named: bool,
     },
     /// The row or head did not hold what the held cuts were made
     /// against: every held cut is abandoned, and the next cut holds the
@@ -152,6 +161,11 @@ pub struct Figures {
     /// The cuts the check found committed already, let go with nothing
     /// uploaded.
     pub found_committed: u64,
+    /// The cuts committed (by this driver or found so) that had gone from
+    /// the store before they could be let go.
+    pub not_held: u64,
+    /// Among them, those the intent map names now as the committed cut.
+    pub named: u64,
     /// The mismatches.
     pub mismatches: u64,
     /// The cuts they abandoned.
@@ -303,7 +317,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
         match judge(&cut, &row, seen.head_group) {
             Verdict::Committed => {
                 self.figures.checked = Checked::Matched;
-                (Stage::Check, Ok(self.found_committed(cut.number).await))
+                (Stage::Check, Ok(self.found_committed(&cut).await))
             }
             Verdict::Mismatch(why) => {
                 let abandoned = self.local.abandon_all().await;
@@ -331,13 +345,28 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// The row names cut `number`: let it go.
-    async fn found_committed(&mut self, number: u64) -> Step {
+    /// The row names `cut`: let it go.
+    async fn found_committed(&mut self, cut: &Uploadable) -> Step {
+        let number = cut.number;
         if self.local.release(number).await {
             self.figures.found_committed += 1;
             Step::FoundCommitted { number }
         } else {
-            Step::UploadedNotHeld { number }
+            self.not_held(cut).await
+        }
+    }
+
+    /// `cut` is committed, but it had gone from the store before it could
+    /// be let go: name it as the committed cut.
+    async fn not_held(&mut self, cut: &Uploadable) -> Step {
+        let named = self.local.name_committed(cut.number, cut.group).await;
+        self.figures.not_held += 1;
+        if named {
+            self.figures.named += 1;
+        }
+        Step::UploadedNotHeld {
+            number: cut.number,
+            named,
         }
     }
 
@@ -463,7 +492,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
                 blocks: upload.blocks,
             }
         } else {
-            Step::UploadedNotHeld { number }
+            self.not_held(&upload.cut).await
         }
     }
 
