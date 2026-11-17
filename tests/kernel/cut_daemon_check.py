@@ -668,10 +668,15 @@ def held_by_epoch(written, text, dcuts, starts):
     the holder's numbers repeat: each written cut's state is the one whose
     instance had started when its write was asked for, and its blocks are
     the next `blocks` lines of held-blocks.tsv, which the holder writes
-    just before each line of held.tsv -> (written, blocks) keyed by the
-    lines' place in the whole log, as `number` after epochs."""
+    just before each line of held.tsv -> (written, blocks, stale): written
+    and blocks keyed by the lines' place in the whole log, as `number`
+    after epochs; stale, the writes of a cut that has no line in its state
+    and a line of that number in a state before (number, state): a cut of
+    a state the daemon should have trusted none of, still held after a
+    start that acknowledged a failure (the review of #113, D2), which is a
+    verdict and not the rig's error. Their blocks are not kept."""
     rows = text.splitlines()
-    at, blocks, out = 0, {}, []
+    at, blocks, out, stale = 0, {}, [], []
     place = {(d['epoch'], d['local']): int(d['number']) for d in dcuts if d['number'] != '-'}
     for w in written:
         part = read_hashes('\n'.join(rows[at:at + w['blocks']]), 'held-blocks.tsv')
@@ -681,6 +686,9 @@ def held_by_epoch(written, text, dcuts, starts):
                            'held.tsv puts them')
         e = sum(1 for r in starts if r['ns'] < w['asked'])
         n = place.get((e, str(w['number'])))
+        if n is None and any((b, str(w['number'])) in place for b in range(e)):
+            stale.append((w['number'], e + 1))
+            continue
         if n is None:
             raise RigError(f"the holder wrote cut {w['number']} of state {e + 1}, which has no cut line in the "
                            'request log')
@@ -688,7 +696,7 @@ def held_by_epoch(written, text, dcuts, starts):
         blocks[n] = part.get(w['number'], {})
     if at != len(rows):
         raise RigError(f'held-blocks.tsv has {len(rows) - at} lines after the last cut held.tsv names')
-    return out, blocks
+    return out, blocks, stale
 
 
 def held_content(records, dcuts, written, blocks, final=None):
@@ -1085,7 +1093,15 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
     written = read_held(read_file(rdir, 'held.tsv'))
     starts = [r for r in records if 'instance' in r['flags'] and r.get('begun')]
     if starts:
-        written, blocks = held_by_epoch(written, read_file(rdir, 'held-blocks.tsv'), dcuts, starts)
+        written, blocks, stale = held_by_epoch(written, read_file(rdir, 'held-blocks.tsv'), dcuts, starts)
+        if stale:
+            # The content after such a write cannot be held to the
+            # reference: the holder's image has a cut of the old state.
+            put('held_content', 'FAIL', 'the holder wrote ' + ', '.join(
+                f'cut {n} in state {e}' for n, e in stale) + ', which has no cut line in that state and has '
+                'one in the state before: a cut of the state before the start that acknowledged the failure was '
+                'still held after it, though that start trusts none of the cut state')
+            return 1, errored
     else:
         blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
     final_image = read_hashes(read_file(rdir, 'held-image.tsv'), 'held-image.tsv', keyed=False)
@@ -1199,11 +1215,13 @@ def main():
         if not ok:
             rc = 1
         if os.path.exists(os.path.join(rdir, 'holder.log')):
-            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
-            rc, errored = max(rc, v), errored or e
+            # The instances' lines first: they name a start that took up
+            # a state it should have begun, whatever the held cuts show.
             rc = max(rc, instance_lines(put, rdir, instances, dcuts, records, begun))
             if name == 'failed':
                 rc = max(rc, failure_line(put, rdir))
+            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
+            rc, errored = max(rc, v), errored or e
         elif len(instances) > 1:
             raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
                            'cuts starts the daemon again')

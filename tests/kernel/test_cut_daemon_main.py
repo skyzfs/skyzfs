@@ -23,7 +23,7 @@ import test_cut_daemon_check as t  # noqa: E402
 
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
-              split=None, tamper_split=None):
+              split=None, tamper_split=None, tamper_written=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -33,7 +33,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     `taken-over` or `added` the device, or `acknowledged` a failure after
     the k-th cut's line (t.split_begun: a new state, which counts from 1
     again; the holder's numbers then repeat, and failure.tsv is the
-    rig's as the recording `failed` leaves it)."""
+    rig's as the recording `failed` leaves it). tamper_written(written,
+    ns) changes the holder's writes after that renumbering."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
@@ -59,6 +60,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                 starts += ('cuts 0\ncut_state begun\nintent_state taken_up\n',)
                 blocks = [blocks[w['number']] for w in written]
                 written = [dict(w, number=w['number'] - k, asked=ns + 1) if w['number'] > k else w for w in written]
+                if tamper_written:
+                    written = tamper_written(written, ns)
             elif split:
                 text = t.split_log(text, split[0])
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
@@ -267,6 +270,23 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed',
                               tamper_split=took)
         self.assertEqual((rc, lines['cut_state'][0], lines['instance_2'][0]), (1, 'FAIL', 'FAIL'))
+        # ... and still held the old state's last cut, which its holder
+        # wrote after the start: a verdict, not the rig's error (the
+        # review of #113, D2), with instance_2 judged before it
+        k2 = len(cs) // 2 + 1    # a number state 2 does not reach
+        late = lambda written, ns: [dict(w, asked=ns + 1) if w['number'] == k2 else w  # noqa: E731
+                                    for w in written]
+        st2 = held_status(records, read, dev, cs).replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - k2}\n')
+        rc, lines = recording(holder=none, split=(k2, 'acknowledged'), status=st2, as_name='failed',
+                              tamper_split=took, tamper_written=late)
+        self.assertEqual((rc, lines['cut_state'][0], lines['instance_2'][0], lines['held_content'][0]),
+                         (1, 'FAIL', 'FAIL', 'FAIL'), lines.get('rig_error'))
+        self.assertIn(f'cut {k2} in state 2', lines['held_content'][1])
+        # the same write with no defect in the start's lines is still one
+        rc, lines = recording(holder=none, split=(k2, 'acknowledged'), status=st2, as_name='failed',
+                              tamper_written=late)
+        self.assertEqual((rc, lines['instance_2'][0], lines['held_content'][0]), (1, 'PASS', 'FAIL'),
+                         lines.get('rig_error'))
 
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the

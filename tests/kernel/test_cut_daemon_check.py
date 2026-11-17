@@ -1005,7 +1005,8 @@ class AcknowledgedFailure(unittest.TestCase):
                    {'number': 1, 'group': 6, 'opens': 'itself', 'blocks': 1, 'asked': ns + 5}]
         h = '0123456789abcdef'
         blocks = f'1\t3\t{h}\n1\t4\t{h}\n1\t9\t{h}\n'
-        out, b = cdc.held_by_epoch(written, blocks, dcuts, starts)
+        out, b, stale = cdc.held_by_epoch(written, blocks, dcuts, starts)
+        self.assertEqual(stale, [])
         self.assertEqual([w['number'] for w in out], [1, self.k + 1])
         self.assertEqual(b, {1: {3: h, 4: h}, self.k + 1: {9: h}})
         with self.assertRaisesRegex(RigError, 'does not hold the 1 blocks'):
