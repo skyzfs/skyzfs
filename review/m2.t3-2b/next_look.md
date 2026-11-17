@@ -70,7 +70,7 @@ The judge's code is right in each of these places; the tests would not notice if
 
 - Codex: completed, no findings.
 - Green: the cut rig on the daemon on ubuntu-26.04 and ubuntu-26.04-arm (run 44169532248), node B's rig on both images, lint, test, unit-arm64, e2e-tier-a, coverage, s3-backends. I ran this head's judge here on both takeover recordings of 44169532248: exit 0 and the run's lines.
-- The cut rig on dm-log-writes (run 44169532258, four images) was still running when I wrote this: its no-kernel job is green. It runs `cut-record.sh`, which this commit changes, but not the takeover recording.
+- Green as well: the cut rig on dm-log-writes on its four images (run 44169532258). It runs `cut-record.sh`, which this commit changes, but not the takeover recording.
 - The daemon rig, the replay rig, the control rig and the kernel probe were cancelled by the author again, with the push's duplicate runs. As before, none of those four runs a file this pull request changes.
 
 ### What I could only read
