@@ -1,0 +1,44 @@
+amd:
+  early, judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  early, judged as takeover: exit 1
+      lines: records cuts cut_numbers status instance_1 held_reads sessions import_syncs_before_return time
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+      ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 12 cuts here (expected: caught; DIFFERS)
+      ctl_mark-kept	SAME	the rule mark-kept gives the design's 12 cuts here (expected: caught; DIFFERS)
+  early with no verdict in the log (what the script does not leave), judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  both, judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  whole, judged as failed: exit 1
+      lines: records cuts cut_numbers status instance_1 instance_2 failure held_reads sessions import_syncs_before_return time
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+  wrong, judged as failed: exit 1
+      lines: records cuts cut_numbers status instance_1 instance_2 failure held_reads sessions import_syncs_before_return time
+      instance_2	FAIL	pid 13018 (created the device, acknowledging a failure): its cuts line says ['taken_up']; wanted cut_state begun, intent_state taken_up
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+arm:
+  early, judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  early, judged as takeover: exit 1
+      lines: records cuts cut_numbers status instance_1 held_reads sessions import_syncs_before_return time
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+      ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 12 cuts here (expected: caught; DIFFERS)
+      ctl_mark-kept	SAME	the rule mark-kept gives the design's 12 cuts here (expected: caught; DIFFERS)
+  early with no verdict in the log (what the script does not leave), judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  both, judged as failed: exit 2
+      lines: records cuts cut_numbers status instance_1 rig_error time
+      rig_error	ERROR	no failure.tsv: the holder did not get as far
+  whole, judged as failed: exit 1
+      lines: records cuts cut_numbers status instance_1 instance_2 failure held_reads sessions import_syncs_before_return time
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+  wrong, judged as failed: exit 1
+      lines: records cuts cut_numbers status instance_1 instance_2 failure held_reads sessions import_syncs_before_return time
+      instance_2	FAIL	pid 12762 (created the device, acknowledging a failure): its cuts line says ['taken_up']; wanted cut_state begun, intent_state taken_up
+      held_reads	FAIL	cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
