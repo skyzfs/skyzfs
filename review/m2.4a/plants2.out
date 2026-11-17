@@ -1,0 +1,2 @@
+A6 of plants.py (after a failed PUT, the segments PUT in that call are forgotten): NOT APPLIED (put_sealed no longer counts a call's PUTs; A4 and A7 are the failure path now)
+as the head has it: ([], [])

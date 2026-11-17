@@ -4,7 +4,7 @@ checkout of the head, and print what its scenarios say. The file is copied in as
 tests/zz_review_scenarios.rs and removed afterwards; a run that does not end in 15
 minutes is stopped and reported so.
 
-    scenarios.py CHECKOUT TARGET_DIR
+    scenarios.py CHECKOUT TARGET_DIR [FILE, scenarios.rs if none]
 """
 import os
 import re
@@ -19,7 +19,7 @@ PLACE = os.path.join(ROOT, 'crates/skynbd-engine/tests/zz_review_scenarios.rs')
 
 def main():
     env = dict(os.environ, CARGO_INCREMENTAL='0', CARGO_TARGET_DIR=TARGET)
-    shutil.copyfile(os.path.join(HERE, 'scenarios.rs'), PLACE)
+    shutil.copyfile(os.path.join(HERE, sys.argv[3] if len(sys.argv) > 3 else 'scenarios.rs'), PLACE)
     try:
         cmd = ['cargo', 'test', '-p', 'skynbd-engine', '--test', 'zz_review_scenarios', '--',
                '--nocapture', '--test-threads=1']
@@ -31,7 +31,7 @@ def main():
         out = (p.stdout + p.stderr).splitlines()
         for ln in out:
             # With --nocapture a test's first line follows "test NAME ... " on one line.
-            at = re.search(r'\bS[1-7] ', ln)
+            at = re.search(r'\bS[1-9] ', ln)
             if at:
                 print(ln[at.start():])
             elif ln.startswith(('test result', 'error', 'thread ')) or 'panicked' in ln \

@@ -266,7 +266,8 @@ fn after_all(w: &mut World, s: &mut St, case: &str) {
     assert!(s.release(next), "{case}");
     w.write(s, 61, 1);
     let after = w.cut(s, 21);
-    assert_eq!(s.map(after), [61], "{case}");
+    assert!(!s.is_whole_cut(after), "{case}: the cut after is not whole");
+    assert_eq!(s.map(after), [0, 20, 61, 63, 64, 65, 199], "{case}");
     w.check(s, Some(next), &format!("{case}, the cut after"));
 }
 
