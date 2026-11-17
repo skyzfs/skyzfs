@@ -13,5 +13,6 @@ S4 After: the commit failed at each of 9 operations and was made again on the sa
 S5 ObjectRefStore: three commits with ops and one without follow each other; the head's generation is 4
 S5 RedbRefStore: the same; the head's generation is 4
 S6 commit_with(kind, vec![]) with nothing written makes a commit: true
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+S7 the first commit lists 2 segments, the one after it 1
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 git status --short in the checkout: (clean)

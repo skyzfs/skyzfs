@@ -1,0 +1,10 @@
+the scenarios as the head has it: failed = []
+B2 a commit that lands keeps its list of segments PUT early: the scenarios that fail = ['s7_the_commit_after_one_with_segments_put_early']
+    assertion `left == right` failed
+    left: (2, 3)
+    right: (2, 1)
+B3 a commit that fails forgets the segments PUT early: the scenarios that fail = ['s4_a_failed_commit_made_again_on_the_same_engine']
+    assertion `left == right` failed: Before at op 0: segments listed
+    left: 2
+    right: 4
+git status --short in the checkout: (clean)
