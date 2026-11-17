@@ -1,0 +1,2 @@
+R1 release_cut lets the cut go before the intent map names it (the order before this pull request): KILLED by 1: a_death_after_the_commit_leaves_the_cut_to_release_or_named_as_committed
+git status --short: clean
