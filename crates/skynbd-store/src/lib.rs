@@ -16,7 +16,7 @@ use bytes::Bytes;
 use tokio::sync::RwLock;
 
 mod fault;
-pub use fault::{FaultOp, FaultStore};
+pub use fault::{FaultOp, FaultStore, FaultWhen};
 
 #[cfg(feature = "s3")]
 mod s3;

@@ -127,7 +127,11 @@ pub struct Commit {
     pub flush_seq: u64,
     pub created_at_ms: u64,
     pub kind: CommitKind,
-    /// Reserved for consistency groups (design D5). Always `None` in MVP.
+    /// Reserved in SkyNBD for consistency groups (its design D5), and
+    /// written `None` there. SkyZFS records here the ZFS transaction group
+    /// of the cut this commit uploads (SkyZFS M2.4); the engine writes the
+    /// group set before the commit (`Engine::set_group`), `None` when none
+    /// was. The format does not change.
     pub group: Option<u64>,
     /// The writer's fence epoch (design D-M5): the volume's lease epoch
     /// at the time the writing engine acquired ownership. 0 = written
