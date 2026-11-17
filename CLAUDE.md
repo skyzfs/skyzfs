@@ -40,6 +40,12 @@ request.
 | skyzfs testing | CI, test rigs and benchmarks, and running them | `skyzfs-testing` |
 | skyzfs review | Reviews pull requests and posts its findings on them. Does not change product code | none |
 
+- The sessions may run on different models, and the user may change a
+  session's model at any time (the lead runs on a mid-size model and
+  consults a larger one only for tricky design items and decisions).
+  Do not assume a peer words or judges as you do: a digest says what
+  state something is in and links the evidence, and a claim is checked
+  against the code or the run, whoever made it.
 - The user may join any session and redirect it. The user's instructions
   take precedence over a work package. Tell the lead what changed.
 
