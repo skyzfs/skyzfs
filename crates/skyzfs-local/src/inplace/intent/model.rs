@@ -85,11 +85,11 @@ const LARGE: Volume = Volume {
 struct NoCopies;
 
 impl Copier for NoCopies {
-    fn read_image(&mut self, _block: u64, _buf: &mut [u8]) -> io::Result<()> {
+    fn read_image(&mut self, _first: u64, _buf: &mut [u8]) -> io::Result<()> {
         Ok(())
     }
 
-    fn write_copy(&mut self, _slot: u32, _buf: &[u8]) -> io::Result<()> {
+    fn write_copies(&mut self, _first: u32, _buf: &[u8]) -> io::Result<()> {
         Ok(())
     }
 }

@@ -194,7 +194,11 @@
 //! queue's thread, its blocks pass through the cut state: a block a
 //! held cut reads is read from the home image and copied into
 //! `copies.img` there and then, by direct I/O as the image is written
-//! (M2.2c), and the write begins only after the copy is written. A copy
+//! (M2.2c), and the write begins only after the copy is written. The
+//! copies of a write's blocks are made in runs: one read of the image
+//! and one write of `copies.img` for each run of blocks that are
+//! consecutive and go to consecutive slots, at most 1 MiB (M2.2d;
+//! `state.rs`, `CutState::change`). A copy
 //! that cannot be made (a full file system:
 //! `copies.img` grows a slot at a time and is not allocated up to the
 //! bound; or a failed write of it, or read of the image) lets go the
@@ -2178,8 +2182,8 @@ struct Copies<'a, D: Dir> {
 }
 
 impl<D: Dir> state::Copier for Copies<'_, D> {
-    fn read_image(&mut self, block: u64, buf: &mut [u8]) -> io::Result<()> {
-        let at = block * skyzfs_blk::BLOCK_SIZE;
+    fn read_image(&mut self, first: u64, buf: &mut [u8]) -> io::Result<()> {
+        let at = first * skyzfs_blk::BLOCK_SIZE;
         if self.direct {
             self.home.read_direct_at(at, buf)
         } else {
@@ -2187,8 +2191,8 @@ impl<D: Dir> state::Copier for Copies<'_, D> {
         }
     }
 
-    fn write_copy(&mut self, slot: u32, buf: &[u8]) -> io::Result<()> {
-        let at = u64::from(slot) * skyzfs_blk::BLOCK_SIZE;
+    fn write_copies(&mut self, first: u32, buf: &[u8]) -> io::Result<()> {
+        let at = u64::from(first) * skyzfs_blk::BLOCK_SIZE;
         let file = open_copies(self.dir, self.copies)?;
         if self.direct {
             file.write_direct_at(at, buf)
