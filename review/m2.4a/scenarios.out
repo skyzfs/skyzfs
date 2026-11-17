@@ -1,0 +1,17 @@
+S1 after the discard: is_clean() = true
+S1 a commit after the discard, no group set for it: a new commit = true, its group = Some(41), head_group() = Some(41), block 0 is the old content = true
+S1 a snapshot after a discard: its commit's group = Some(42)
+S1 a commit after a rollback: its group = Some(43)
+S2 put_sealed dropped at its second PUT: it had ended = false
+S2 held bytes after it: 12288 (three segments of 4096 were sealed, one was PUT)
+S2 the commit lists 4 segments, 3 of them distinct
+S2 the content reads right and fsck passes
+S3 the upload's 11 operations: put /seg/, put /seg/, put /seg/, put /seg/, get /node/, put /node/, put /node/, put /node/, put /commit/, get_versioned /refs, put_if /refs
+S3 PUTs of a segment made by the commit itself: 0
+S4 Before: the commit failed at each of 9 operations and was made again on the same engine; it lists its four segments once each and reads right. The swap had landed unheard at 0 (the commit again is then a Conflict)
+S4 After: the commit failed at each of 9 operations and was made again on the same engine; it lists its four segments once each and reads right. The swap had landed unheard at 1 (the commit again is then a Conflict)
+S5 ObjectRefStore: three commits with ops and one without follow each other; the head's generation is 4
+S5 RedbRefStore: the same; the head's generation is 4
+S6 commit_with(kind, vec![]) with nothing written makes a commit: true
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+git status --short in the checkout: (clean)

@@ -1,0 +1,26 @@
+as the head has it: ([], [])
+A1 put_sealed counts a segment as stored without a PUT: KILLED by 3: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call, sealed_segments_are_put_before_the_commit_and_leave_memory
+A2 put_sealed does not record what it PUT, so the commit does not list it: KILLED by 2: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call, sealed_segments_are_put_before_the_commit_and_leave_memory
+A3 put_sealed keeps the bytes of what it PUT: KILLED by 2: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call, sealed_segments_are_put_before_the_commit_and_leave_memory
+A4 put_sealed drops the bytes of the segment whose PUT failed: KILLED by 1: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
+A5 put_sealed seals and PUTs the open segment too: KILLED by 1: sealed_segments_are_put_before_the_commit_and_leave_memory
+A6 after a failed PUT, put_sealed forgets the segments it had PUT in that call: KILLED by 1: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
+B1 the commit lists the segments PUT early after those it PUTs itself: KILLED by 1: sealed_segments_are_put_before_the_commit_and_leave_memory
+B2 a commit that lands keeps its list of segments PUT early: SURVIVED (every test passes)
+B3 a commit that fails forgets the segments PUT early: SURVIVED (every test passes)
+B4 a discard keeps the list of segments PUT early: KILLED by 1: discarded_writes_take_their_put_segments_out_of_the_next_commit
+C1 the group goes into no commit: KILLED by 6: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again, a_commit_with_ops_lands_them_with_the_head_swap, a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_group_goes_into_the_next_commit_only, a_group_or_ops_without_writes_still_make_a_commit, the_swap_and_its_row_land_together_or_not_at_all
+C2 a commit that lands keeps the group for the next: KILLED by 1: a_group_goes_into_the_next_commit_only
+C3 a commit that fails loses the group: KILLED by 2: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again, a_group_goes_into_the_next_commit_only
+C4 a group with nothing written makes no commit: KILLED by 1: a_group_or_ops_without_writes_still_make_a_commit
+C5 ops with nothing written make no commit: KILLED by 1: a_group_or_ops_without_writes_still_make_a_commit
+D1 the head an engine holds after a commit with ops keeps the old generation: KILLED by 1: a_commit_with_ops_lands_them_with_the_head_swap
+D2 the index of an op that did not hold counts the swap: KILLED by 1: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again
+D3 with ops, a moved ref is reported as an op that did not hold: KILLED by 1: a_commit_with_ops_after_the_head_moved_lands_nothing
+D4 the ops may swap the ref the engine commits to: KILLED by 1: ops_that_swap_the_engines_own_ref_are_refused
+D5 the swap, then the ops in a transaction of their own: KILLED by 3: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again, a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, the_swap_and_its_row_land_together_or_not_at_all
+D6 the ops in a transaction of their own, then the swap: KILLED by 3: a_commit_with_ops_after_the_head_moved_lands_nothing, a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, the_swap_and_its_row_land_together_or_not_at_all
+D7 the head is swapped before the commit object is PUT: KILLED by 4: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_group_goes_into_the_next_commit_only, crash_point_matrix, the_swap_and_its_row_land_together_or_not_at_all
+E1 create takes any shard size: KILLED by 1: a_volume_is_not_created_with_a_shard_of_zero_or_of_part_of_a_sector
+F1 the after-mode fails the operation before the store: KILLED by 5: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, an_after_fault_lets_the_operation_land_then_fails_it_and_poisons, an_after_fault_on_a_conditional_put_lands_it, an_after_fault_on_a_delete_removes_the_object, the_swap_and_its_row_land_together_or_not_at_all
+F2 the after-mode returns the operation's own result: KILLED by 5: a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, an_after_fault_lets_the_operation_land_then_fails_it_and_poisons, an_after_fault_on_a_conditional_put_lands_it, an_after_fault_on_a_delete_removes_the_object, the_swap_and_its_row_land_together_or_not_at_all
