@@ -296,6 +296,68 @@ class Cuts(Fixture):
             cut_ref.cuts([], [], 'nope')
 
 
+class Instances(unittest.TestCase):
+    """A daemon that holds cuts started again on the volume (M2.T3, stage
+    2b): a record `instance`, on records and uberblocks built by hand."""
+
+    @staticmethod
+    def run_on(steps, rule='design'):
+        """steps: ('ub', txg), ('recv', tag), ('barrier', tag), ('over',),
+        ('created',) -> the cuts' groups and their flush records."""
+        records, ubs = [], []
+        for k, st in enumerate(steps):
+            r = {'i': k, 'offset': 0, 'bytes': 0, 'flags': []}
+            if st[0] == 'ub':
+                r.update(flags=[], pos=None, bytes=4096)
+                ubs.append({'record': k, 'txg': st[1], 'rootbp': f'root{st[1]}', 'timestamp': st[1]})
+            elif st[0] == 'recv':
+                r.update(flags=['receipt'], tag=st[1])
+            elif st[0] == 'barrier':
+                r.update(flags=['flush'], tag=st[1], received=True)
+            else:
+                r.update(flags=['instance'], taken_over=st[0] == 'over')
+            records.append(r)
+        cs, _ = cut_ref.cuts(records, ubs, rule)
+        return [(c['txg'], c['flush_record']) for c in cs]
+
+    def test_a_take_over_keeps_the_mark(self):
+        steps = [('ub', 5), ('over',), ('recv', 'a'), ('barrier', 'a')]
+        self.assertEqual(self.run_on(steps), [(5, 3)])
+        self.assertEqual(self.run_on(steps, 'mark-dropped'), [])
+        self.assertEqual(self.run_on(steps, 'mark-kept'), [(5, 3)])
+
+    def test_a_created_device_drops_it(self):
+        steps = [('ub', 5), ('created',), ('recv', 'a'), ('barrier', 'a')]
+        self.assertEqual(self.run_on(steps), [])
+        self.assertEqual(self.run_on(steps, 'mark-kept'), [(5, 3)])
+        self.assertEqual(self.run_on(steps, 'mark-dropped'), [])
+
+    def test_a_flush_received_before_the_end_carries_nothing_on(self):
+        """Its receipt took the mark from the instance and not from the
+        state: the kernel hands the flush and the unacknowledged
+        uberblock write to the next instance, where the write is a repeat
+        of the mark it finds and the flush cuts it, once."""
+        steps = [('ub', 5), ('recv', 'a'), ('over',), ('ub', 5), ('recv', 'a'), ('barrier', 'a')]
+        self.assertEqual(self.run_on(steps), [(5, 5)])
+
+    def test_a_cut_clears_the_stored_mark(self):
+        steps = [('ub', 5), ('recv', 'a'), ('barrier', 'a'), ('over',), ('recv', 'b'), ('barrier', 'b')]
+        self.assertEqual(self.run_on(steps), [(5, 2)])
+
+    def test_the_stored_mark_is_the_newest(self):
+        """A mark made after a flush took the one before it: the state
+        holds the newer, which the next instance cuts; the older is lost
+        with its flush (the kernel's reissue takes the newer)."""
+        steps = [('ub', 5), ('recv', 'a'), ('ub', 6), ('over',), ('recv', 'a'), ('barrier', 'a')]
+        self.assertEqual(self.run_on(steps), [(6, 5)])
+
+    def test_the_newest_cut_is_kept_across(self):
+        """The newest cut's state is the state's too: a copy of it applied
+        after the start is a repeat."""
+        steps = [('ub', 5), ('recv', 'a'), ('barrier', 'a'), ('over',), ('ub', 5), ('recv', 'b'), ('barrier', 'b')]
+        self.assertEqual(self.run_on(steps), [(5, 2)])
+
+
 class WriteFixture(Fixture):
     def test_the_fixture_holds_label_data_and_the_cuts(self):
         entries = group(10, 1) + [('mark', 'sync-1'), ('discard', 2 << 20, 8 * SS)] + group(11, 2)

@@ -163,8 +163,24 @@ def cuts(records, ubs, rule='design'):
     and the barrier counts the cut, so an uberblock applied between
     the two (a write received before the flush) is not that flush's to
     cut, and one that repeats the state the flush carries marks
-    nothing."""
-    if rule not in ('design', 'txg-alone', 'count-repeats', 'early', 'previous'):
+    nothing.
+
+    A record flagged `instance` (M2.T3, stage 2b) is where a daemon
+    that holds cuts started again on the volume, `taken_over` saying
+    whether it took over the kernel's device or created one. Design
+    §5.2: the mark is recorded in the cut state when the uberblock is
+    applied and is cleared there only when a cut of its state freezes,
+    so a flush's receipt takes it from the instance and not from the
+    state. A flush received and not at its barrier when its instance
+    ended carries nothing on: the kernel hands it to the next instance
+    again. The next instance's mark is the state's when it took the
+    device over ("a daemon that dies between applying and acknowledging
+    leaves the mark to the next instance"), and none when it created
+    the device ("a mark does not outlive the attachment"). The rules
+    `mark-dropped` and `mark-kept` turn those two over, as the
+    defects of a daemon that drops the mark at a take-over or keeps it
+    on a created device."""
+    if rule not in ('design', 'txg-alone', 'count-repeats', 'early', 'previous', 'mark-dropped', 'mark-kept'):
         raise ValueError(f'no rule {rule}')
     by_record = {}
     for u in ubs:
@@ -174,11 +190,12 @@ def cuts(records, ubs, rule='design'):
     newest = None               # (txg, rootbp) of the newest cut
     seen = set()                # groups seen, for txg-alone
     mark = None
+    stored = None               # the mark as the cut state holds it, across instances
     carried = {}                # tag -> the mark a received flush carries to its barrier
     last_flush = None           # the prefix of the last flush's barrier, for `early`
 
     def barrier(r, prefix):
-        nonlocal mark, newest, last_flush
+        nonlocal mark, newest, last_flush, stored
         if r.get('received'):
             mark, kept = carried.pop(r['tag'], None), mark
         if mark is not None:
@@ -186,6 +203,8 @@ def cuts(records, ubs, rule='design'):
                         'ub_record': mark['record'], 'flush_record': r['i'],
                         'prefix': prefix if rule != 'early' else mark['early']})
             newest = (mark['txg'], mark['rootbp'])
+            if stored is not None and (stored['txg'], stored['rootbp']) == newest:
+                stored = None
             mark = None
         if r.get('received'):
             mark = kept
@@ -193,6 +212,15 @@ def cuts(records, ubs, rule='design'):
 
     for r in records:
         flags = set(r['flags'])
+        if 'instance' in flags:
+            carried = {}
+            # mark-dropped: none is kept, a take-over's either;
+            # mark-kept: a created device's is kept as well.
+            keep = {'mark-dropped': False, 'mark-kept': True}.get(rule, r['taken_over'])
+            if not keep:
+                stored = None
+            mark = stored
+            continue
         if 'receipt' in flags:
             if r['tag'] in carried:
                 raise ValueError(f"record {r['i']}: flush {r['tag']} received twice before its barrier")
@@ -224,6 +252,7 @@ def cuts(records, ubs, rule='design'):
             if u['taken'] == 'marks':
                 mark = {'txg': u['txg'], 'rootbp': u['rootbp'], 'record': u['record'], 'timestamp': u['timestamp'],
                         'early': last_flush if last_flush is not None else 0}
+                stored = mark
             taken.append(u)
         if 'fua' in flags and is_write(r):
             # The daemon adds a flush after a write with FUA (its pump),

@@ -23,6 +23,12 @@ When it has paused, between two steps, it writes what is held then
 (`held`'s lines) to that file's name with `.held` added, by rename, so
 that a recording can wait for a pause with nothing held.
 
+While the file named by CUT_HOLD_LEAVE exists, it ends between two
+steps with 0, writes `left` in its log, and drains nothing: the
+recording `takeover` (stage 2b) kills or stops the daemon then, and
+starts a holder beside the next instance, which writes onto the same
+IMAGE and adds to the same files.
+
 A write the daemon refuses is not recorded, and the cut is not released.
 The holder asks `held` again: where the cut is no longer the one being
 uploaded (it was abandoned under the write, and the cut that takes its
@@ -230,6 +236,29 @@ class Holder:
         self.d.log.write(f'{time.monotonic_ns()}\tcut {number} gone after {why}\n')
 
 
+def loop(h, stop, pause='', leave='', sleep=time.sleep):
+    """Step until STOP exists -> True where it ended because LEAVE exists."""
+    paused = False
+    while not os.path.exists(stop):
+        if leave and os.path.exists(leave):
+            h.d.log.write(f'{time.monotonic_ns()}\tleft\n')
+            return True
+        if pause and os.path.exists(pause):
+            if not paused:
+                held = h.held()
+                with open(pause + '.held.tmp', 'w') as f:
+                    f.write(''.join(f"{c['number']} {c['group']} {c['phase']} {c['opens']} {c['blocks']}\n"
+                                    for c in held))
+                os.rename(pause + '.held.tmp', pause + '.held')
+                paused = True
+            sleep(0.2)
+            continue
+        paused = False
+        if not h.step():
+            sleep(0.2)
+    return False
+
+
 def main():
     if len(sys.argv) != 9:
         sys.exit(__doc__)
@@ -243,22 +272,8 @@ def main():
                 f.truncate(size)
             d = Daemon(pid, run_dir_of(vdir, rdir), log)
             h = Holder(d, image, out)
-            pause = os.environ.get('CUT_HOLD_PAUSE', '')
-            paused = False
-            while not os.path.exists(stop):
-                if pause and os.path.exists(pause):
-                    if not paused:
-                        held = h.held()
-                        with open(pause + '.held.tmp', 'w') as f:
-                            f.write(''.join(f"{c['number']} {c['group']} {c['phase']} {c['opens']} {c['blocks']}\n"
-                                            for c in held))
-                        os.rename(pause + '.held.tmp', pause + '.held')
-                        paused = True
-                    time.sleep(0.2)
-                    continue
-                paused = False
-                if not h.step():
-                    time.sleep(0.2)
+            if loop(h, stop, os.environ.get('CUT_HOLD_PAUSE', ''), os.environ.get('CUT_HOLD_LEAVE', '')):
+                sys.exit(0)
             # What is held at the stop, and the status a second and a
             # half after (the daemon writes its status at most every
             # 100 ms, when a counter changed).
