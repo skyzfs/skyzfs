@@ -84,7 +84,8 @@ no line of its own. ZFS issues neither; no recording has had one.
 The second stage, where DIR/holder.log says the holder ran
 (cut_hold.py; the daemon served with --hold-cuts):
 - `cut_state`: the request log's `cuts` line and the status both say
-  `begun`, as a new volume's first start with --hold-cuts does;
+  `begun`, as a new volume's first start with --hold-cuts does, and
+  `taken_up` for each start after it (stage 2b);
 - `cuts_held`: the status's count of held cuts is the number of lines
   `held` listed, both read after the export (DIR/held-final.txt,
   DIR/status-held.txt);
@@ -122,10 +123,34 @@ The second stage, where DIR/holder.log says the holder ran
   had a block a write-zeroes changed before its write (the rig's
   error otherwise: the recording did not hold a cut across it).
 
-Not judged here: a daemon that is started again on the volume (the
-count is per instance, and the rings it starts from are the volume's),
-and a held cut written after the volume failed. A request log with more
-than one instance is the rig's error.
+Stage 2b, a daemon started again on the volume (the recording
+`takeover`): the request log holds one instance after another, and
+DIR/instances.tsv says for each pid whether it took the kernel's device
+over or created it (from serve's line "serving device N (taken over)"
+or "(added)"). They are read as one record, with a record `instance`
+where each later one starts (cut_ref.cuts says what it does to the
+mark: kept from the cut state at a take-over, dropped on a created
+device; a flush received and not at its barrier carries nothing on, as
+the kernel hands it to the next instance again, and what waited behind
+it is placed when that one runs it). Then:
+- `cuts`, `cut_numbers`, `status` and `held_content` across the
+  instances: the numbers count on, and a cut held across a start is
+  written by the holder the rig starts beside the next instance (onto
+  the same image, the same files);
+- `instance_K`: the K-th start's `cuts` line, and its status read once
+  it was ready (DIR/status-start-K.txt): `begun` for the first, then
+  `taken_up` for the cut state and the intent map, and `cuts` no lower
+  than the cuts counted before it; the intent map's regions named at
+  the start, as information;
+- the controls `mark-dropped` (no mark kept at a take-over) and
+  `mark-kept` (the mark kept on a created device), caught in takeover,
+  which makes a mark wait across each (zfs_nocacheflush, between the
+  marks `noflush-begin` and `noflush-end`; the groups synced there that
+  the reference cuts not are left out of `sessions`, obs_noflush_groups).
+A cut counted and killed before its line was written is the rig's
+error (the next instance's number says so); a log with more than one
+instance and no holder is the rig's error too. Not judged here: a held
+cut written after the volume failed (stage 2c).
 
 Exit 0: everything as the reference; 1: a verdict; 2: the rig's error.
 """
@@ -142,9 +167,9 @@ import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
-        'bound', 'edges')   # the last two only where the daemon holds cuts (cut-record.sh)
+        'bound', 'edges', 'takeover')   # the last three only where the daemon holds cuts (cut-record.sh)
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
-RULES = ('early', 'txg-alone', 'count-repeats', 'previous')
+RULES = ('early', 'txg-alone', 'count-repeats', 'previous', 'mark-dropped', 'mark-kept')
 CONTROLS = LISTS + RULES
 # By recording. The rules' columns are the runs on 192427b and 2c67c42's
 # first run (43675946002, 43676360281 on both images): txg-alone tells
@@ -153,11 +178,18 @@ CONTROLS = LISTS + RULES
 # repeats tells a flush between copies of an uberblock (multihost
 # always; stray in two of three, its flushes being the rig's, every
 # 2 ms); previous tells a stale multihost write (one of three).
+# takeover's columns for the three rules are not known before its first
+# run, and say so. mark-dropped and mark-kept tell a recording with more
+# than one instance of the daemon (stage 2b), and takeover is made to
+# hold a mark across a take-over and one across a created device.
 EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
-                      rewindsync=('same', 'caught'), multihost=('same', 'caught')),
-    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught')),
-    'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught')),
+                      rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught')),
+    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught'),
+                          takeover=('same', 'caught')),
+    'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught'), takeover=('same', 'caught')),
+    'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught'),
+    'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught'),
 })
 CLOCK_NS = 10_000_000       # the tick of /proc/uptime, which age_ms is a difference of
 SECTOR = 512
@@ -185,7 +217,9 @@ def parse_log(text):
         rec = {'ns': int(f[0]), 'pid': f[1], 'event': f[2], 'tag': f[3], 'op': f[4], 'sector': f[5],
                'sectors': f[6], 'result': f[7], 'extra': f[8:], 'line': k + 1}
         if rec['event'] == 'start':
-            inst = {'pid': rec['pid'], 'device': rec['tag'], 'lines': []}
+            if rec['pid'] in by_pid:
+                raise RigError(f'request log line {k + 1}: a second start line of pid {rec["pid"]}')
+            inst = {'pid': rec['pid'], 'device': rec['tag'], 'lines': [], 'ns': rec['ns'], 'line': k + 1}
             instances.append(inst)
             by_pid[rec['pid']] = inst
             continue
@@ -194,6 +228,41 @@ def parse_log(text):
             raise RigError(f'request log line {k + 1}: pid {rec["pid"]} has no start line')
         inst['lines'].append(rec)
     return instances
+
+
+def read_kinds(text):
+    """instances.tsv (the rig's: `PID taken-over|added` for each serve, from
+    its line "serving device N (...)") -> {pid: whether it took the device over}."""
+    out = {}
+    for ln in text.splitlines():
+        f = ln.split('\t')
+        if len(f) != 2 or not f[0].isdigit() or f[1] not in ('taken-over', 'added'):
+            raise RigError(f'instances.tsv: not a pid and taken-over or added: {ln!r}')
+        out[f[0]] = f[1] == 'taken-over'
+    return out
+
+
+def log_lines(instances, kinds=None):
+    """The instances' lines in the file's order, each instance after the
+    first behind a line `instance` that says whether it took the device
+    over (kinds, read_kinds). Instances follow one another in the file:
+    a serve begins once the one before has ended (killed or stopped)."""
+    if len(instances) > 1 and kinds is None:
+        raise RigError(f'{len(instances)} instances of the daemon in the request log and no instances.tsv '
+                       'to say which took the device over')
+    out = []
+    for k, inst in enumerate(instances):
+        if k:
+            if inst['pid'] not in kinds:
+                raise RigError(f"instances.tsv does not say whether pid {inst['pid']} took the device over")
+            prev = instances[k - 1]['lines']
+            if prev and prev[-1]['line'] > inst['line']:
+                raise RigError(f"request log line {inst['line']}: pid {inst['pid']} started before pid "
+                               f"{instances[k - 1]['pid']}'s last line (line {prev[-1]['line']})")
+            out.append({'event': 'instance', 'ns': inst['ns'], 'pid': inst['pid'], 'line': inst['line'],
+                        'taken_over': kinds[inst['pid']]})
+        out.extend(inst['lines'])
+    return out
 
 
 def read_marks(text):
@@ -250,6 +319,20 @@ def records_of(lines, marks):
     for ln in lines:
         marks_until(ln['ns'])
         ev = ln['event']
+        if ev == 'instance':
+            # The daemon before this one ended (log_lines). What it had
+            # received and not finished, the kernel hands to this one
+            # again: a flush with no barrier carries nothing on, and what
+            # waited behind it did not run; a write with no `applied`
+            # line is placed when this one applies it.
+            received.clear()
+            pending.clear()
+            data.clear()
+            zeroing.clear()
+            last_barrier = None
+            add({'flags': ['instance'], 'offset': 0, 'bytes': 0, 'taken_over': ln['taken_over'], 'pid': ln['pid'],
+                 'ns': ln['ns']})
+            continue
         if ev == 'recv':
             if not (ln['sector'].isdigit() and ln['sectors'].isdigit()):
                 raise RigError(f"request log line {ln['line']}: a recv without its sectors")
@@ -369,7 +452,9 @@ def compare(dcuts, ref):
 def numbers_verdict(dcuts):
     """The `cut` lines' numbers (M2.2b-2's sectors column; `-` in a log
     from before it) -> (verdict, detail). One instance that held no cuts
-    before counts from 1: the k-th line carries k."""
+    before counts from 1: the k-th line carries k. An instance that took
+    the state up counts on (record.rs), so across the instances of one
+    volume the k-th line carries k too."""
     nums = [d['number'] for d in dcuts]
     if all(n == '-' for n in nums):
         return 'INFO', 'the cut lines carry no numbers (a daemon from before M2.2b-2)'
@@ -589,7 +674,7 @@ def held_content(records, dcuts, written, blocks, final=None):
         if n == mid:
             ctl['content_early'] = held_compare(early, image)[3]
             ctl['content_stale'] = held_compare(model, prev_image)[3]
-    last = len(dcuts)
+    last = int(dcuts[-1]['number']) if dcuts and dcuts[-1]['number'] != '-' else len(dcuts)
     if written[-1]['number'] != last:
         bad.append(f"the last cut written is {written[-1]['number']}, the last counted {last}")
         definite = True
@@ -614,6 +699,81 @@ def held_content(records, dcuts, written, blocks, final=None):
             else ('missed', f'cut {mid}: as the reference')
     ok = True if not bad else (False if definite else None)
     return ok, '; '.join(bad + notes), controls, wrong_blocks
+
+
+def lost_at_kill(dcuts, ref, records):
+    """A cut the daemon counted and was killed before it wrote its line ->
+    a message, or None. Its count is in the state, so the next instance
+    counts on past it and the reference has one cut more than the lines
+    at the old instance's last barrier: the log cannot show that cut,
+    which is the rig's error and not the daemon's."""
+    bounds = [r['i'] for r in records if 'instance' in r['flags']]
+    for b in bounds:
+        before = sum(1 for d in dcuts if d['prefix'] < b)
+        rbefore = [c for c in ref if c['prefix'] < b]
+        after = [d for d in dcuts if d['prefix'] > b]
+        last = max((r['i'] for r in records[:b] if 'flush' in r['flags']), default=None)
+        if len(rbefore) == before + 1 and rbefore[-1]['prefix'] == last and after \
+                and after[0]['number'] == str(before + 2):
+            return (f'the daemon was killed between counting cut {before + 1} (group {rbefore[-1]["txg"]}) and '
+                    f'writing its line: the next instance counts on from {before + 2}')
+    return None
+
+
+def instance_lines(put, rdir, instances, dcuts, records):
+    """Each instance's start with --hold-cuts (stage 2b): its `cuts` line,
+    and its status read once it was ready (DIR/status-start-K.txt) ->
+    1 when a line is a verdict against the daemon, else 0.
+
+    The first start of a new volume begins a cut state and an intent
+    map; each later one takes both up, whether it took the device over
+    or created it, and its count goes on from the cuts counted before it
+    (the status was read after the start, so it may have counted more)."""
+    rc = 0
+    bounds = [r for r in records if 'instance' in r['flags']]
+    for k, inst in enumerate(instances):
+        said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
+        st = read_status(read_file(rdir, f'status-start-{k + 1}.txt'))
+        want = 'begun' if k == 0 else 'taken_up'
+        before = 0 if k == 0 else sum(1 for d in dcuts if d['prefix'] < bounds[k - 1]['i'])
+        bad = []
+        if said != [want]:
+            bad.append(f"its cuts line says {said or 'nothing'}")
+        for key in ('cut_state', 'intent_state'):
+            if st.get(key) != want:
+                bad.append(f'{key} {st.get(key)!r}')
+        n = st.get('cuts', '')
+        if not n.isdigit() or int(n) < before:
+            bad.append(f'cuts {n!r} at the start, with {before} counted before it')
+        how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
+        put(f'instance_{k + 1}', 'FAIL' if bad else 'PASS',
+            (f"pid {inst['pid']} ({how}): " + '; '.join(bad) + f'; wanted {want}') if bad else
+            f"pid {inst['pid']} ({how}): {want} by its cuts line and the status's cut_state and intent_state; "
+            f"cuts {n} at the start, {before} counted before it; the intent map named "
+            f"{st.get('intent_named_at_start')!r} of {st.get('intent_regions')!r} regions at the start")
+        rc = 1 if bad else rc
+    return rc
+
+
+def noflush_kstats(kstats, records, taken, cs):
+    """The groups ZFS synced with no flush (zfs_nocacheflush, between the
+    marks `noflush-begin` and `noflush-end`) that the reference cuts not
+    -> kstats without them, and the groups left out. Such a group is
+    committed with no flush after its uberblock, and only the last mark
+    before a flush is cut (design §5.2): the reference, which `cuts`
+    holds the daemon to, says which."""
+    spans, lo = [], None
+    for r in records:
+        if 'mark' in r['flags'] and r.get('mark') == 'noflush-begin':
+            lo = r['i']
+        elif 'mark' in r['flags'] and r.get('mark') == 'noflush-end' and lo is not None:
+            spans.append((lo, r['i']))
+            lo = None
+    if lo is not None:
+        raise RigError('a noflush-begin mark with no noflush-end after it')
+    cut = {c['txg'] for c in cs}
+    left = {u['txg'] for u in taken if any(a < u['record'] < b for a, b in spans)} - cut
+    return {k: [g for g in v if g not in left] for k, v in kstats.items()}, sorted(left)
 
 
 def reference(cs, op):
@@ -708,7 +868,7 @@ def read_file(rdir, name):
         raise RigError(f'no {name}: the holder did not get as far') from None
 
 
-def held_lines(put, rdir, inst, records, dcuts, status, dev, name=''):
+def held_lines(put, rdir, instances, records, dcuts, status, dev, name=''):
     """The second stage's lines, where the holder ran -> (1 when a line is a
     verdict against the daemon, else 0; whether a line is the rig's ERROR)."""
     rc, errored = 0, False
@@ -716,13 +876,21 @@ def held_lines(put, rdir, inst, records, dcuts, status, dev, name=''):
     err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
     if err:
         raise RigError(f"the holder: {err[0].split(chr(9), 1)[1]}")
+    # The content of held cuts is held to the applied lines' hashes: a
+    # log without them (a daemon from before M2.2b-2) cannot be judged.
+    bare = [r for r in records if cut_ref.is_write(r) and r.get('hashes') is None]
+    if bare:
+        raise RigError(f'{len(bare)} writes applied with no hashes in the request log (a daemon from before M2.2b-2): '
+                       'the content of held cuts cannot be judged')
     # The state: a new volume's first start begins one, by the log's
-    # `cuts` line and by the status.
-    said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
+    # `cuts` line and by the status; each later start takes it up.
+    said = [ln['result'] for inst in instances for ln in inst['lines'] if ln['event'] == 'cuts']
+    want = ['begun'] + ['taken_up'] * (len(instances) - 1)
     st = status.get('cut_state')
-    ok = said == ['begun'] and st == 'begun'
-    put('cut_state', 'PASS' if ok else 'FAIL', f"the request log's cuts line says {said or 'nothing'}, the status "
-        f"{st!r}; a new volume's first start with --hold-cuts begins a state")
+    ok = said == want and st == want[-1]
+    put('cut_state', 'PASS' if ok else 'FAIL', f"the request log's cuts lines say {said or 'nothing'}, the last "
+        f"status {st!r}; a new volume's first start with --hold-cuts begins a state, and each start after it "
+        f"takes it up ({len(instances)} instances)")
     rc = rc if ok else 1
     # cuts_held against the list, both read after the export
     final = read_file(rdir, 'held-final.txt').splitlines()
@@ -797,12 +965,15 @@ def main():
             raise RigError(f'no row of EXPECTED for the recording {name!r}')
         with open(log) as f:
             instances = parse_log(f.read())
-        if len(instances) != 1:
-            raise RigError(f'{len(instances)} instances of the daemon in the request log; this stage reads one')
+        if not instances:
+            raise RigError('no instance of the daemon in the request log')
+        kinds = None
+        if os.path.exists(os.path.join(rdir, 'instances.tsv')):
+            kinds = read_kinds(read_file(rdir, 'instances.tsv'))
         marks_path = os.path.join(rdir, 'marks.tsv')
         with open(marks_path) as f:
             marks = read_marks(f.read())
-        records, dcuts = records_of(instances[0]['lines'], marks)
+        records, dcuts = records_of(log_lines(instances, kinds), marks)
         read = read_of(records, dev)
         ubs = cut_ref.scan(records, read, dev)
         cs, taken = cut_ref.cuts(records, ubs)
@@ -812,6 +983,10 @@ def main():
             f"with their bytes), {sum(1 for u in taken if u['taken'] == 'marks')} uberblock writes that mark, of "
             f"{len(taken)}; {sum(1 for r in records if 'mark' in r['flags'])} marks")
         ok, detail = compare(dcuts, ref)
+        if not ok:
+            lost = lost_at_kill(dcuts, ref, records)
+            if lost:
+                raise RigError(lost)
         cannot = [] if ok else unplaced(records, dev)
         if cannot:
             put('cuts', 'ERROR', f"{detail}; the log holds what the check cannot place ({', '.join(cannot)})")
@@ -835,8 +1010,12 @@ def main():
         if not ok:
             rc = 1
         if os.path.exists(os.path.join(rdir, 'holder.log')):
-            v, e = held_lines(put, rdir, instances[0], records, dcuts, status, dev, name)
+            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name)
             rc, errored = max(rc, v), errored or e
+            rc = max(rc, instance_lines(put, rdir, instances, dcuts, records))
+        elif len(instances) > 1:
+            raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
+                           'cuts starts the daemon again')
         # What ZFS says it synced, as the cut rig holds the reference to it.
         kstats = {}
         for fn in os.listdir(rdir):
@@ -844,6 +1023,10 @@ def main():
             if m:
                 with open(os.path.join(rdir, fn)) as f:
                     kstats[int(m.group(1))] = cut_check.committed_txgs(f.read())
+        kstats, left = noflush_kstats(kstats, records, taken, cs)
+        if left:
+            put('obs_noflush_groups', 'INFO', f'groups {left} were synced with no flush and are not cut, by the '
+                'reference: left out of the sessions\' committed groups')
         sv = cut_check.session_verdicts(cs, records, kstats)
         if any(v is None for _, v, _ in sv):
             raise RigError('; '.join(d for _, v, d in sv if v is None))

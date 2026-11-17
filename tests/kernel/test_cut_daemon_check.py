@@ -310,12 +310,18 @@ def held_images(records, cs, op):
     return written, blocks, dict(image)
 
 
+START_STATUS = 'cuts 0\ncut_state begun\nintent_state begun\nintent_regions 128\nintent_named_at_start 128\n'
+
+
 def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 9 uploading itself 3\n',
-                 status_held='cuts_held 1\n'):
-    """The holder's files in recording directory d."""
+                 status_held='cuts_held 1\n', starts=(START_STATUS,)):
+    """The holder's files in recording directory d, and the status the rig
+    read at each start (status-start-K.txt)."""
     def w(fn, text):
         with open(os.path.join(d, fn), 'w') as f:
             f.write(text)
+    for k, st in enumerate(starts):
+        w(f'status-start-{k + 1}.txt', st)
     w('holder.log', log)
     w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t{x.get('asked', 1)}\t"
                           f"{x.get('asked', 1) + 1}\n" for x in written))
@@ -658,7 +664,7 @@ class HeldLines(HeldFixture):
                          status_held=status_held if status_held is not None else 'cuts_held 1\n')
             inst = {'lines': [{'event': 'cuts', 'result': cuts_line}]}
             got = []
-            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, inst, recs or self.recs,
+            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, [inst], recs or self.recs,
                                 dcuts or self.dcuts, status or {'cut_state': 'begun', 'cuts_abandoned': '0'},
                                 512 << 20, name)
             return rc, {k: (v, t) for k, v, t in got}
@@ -863,6 +869,153 @@ class Parse(unittest.TestCase):
         # A trim is for the held cuts' content alone: no write to cut_ref,
         # and nothing it zeroes.
         self.assertFalse(cut_ref.is_write(recs[1]))
+
+
+PID2 = '4343'
+
+
+def split_log(text, k, lose_line=False):
+    """The log of one instance as two: the daemon killed after its k-th cut's
+    flush was received (the next instance is handed the flush again), or,
+    with lose_line, after that flush's barrier and before its cut line was
+    written. The next instance takes the state up and counts on."""
+    lines = text.splitlines()
+    ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
+    assert [lines[ci - 2].split('\t')[2], lines[ci - 1].split('\t')[2]] == ['recv', 'barrier']
+    first = lines[:ci] if lose_line else lines[:ci - 1]
+    rest = lines[ci + 1:] if lose_line else lines[ci - 2:]
+    ns = int(first[-1].split('\t')[0])
+
+    def moved(ln, at=None):
+        f = ln.split('\t')
+        f[1] = PID2
+        if at is not None:
+            f[0] = str(at)
+        return '\t'.join(f)
+    second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up']
+    second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
+    return '\n'.join(first + second) + '\n'
+
+
+class TwoInstances(unittest.TestCase):
+    """A request log of two instances of the daemon (stage 2b), from the
+    fixture life's log split at a cut."""
+
+    def setUp(self):
+        self.records, self.read, self.dev = fixture('life')
+        self.cs, at = daemon_cuts_of(self.records, self.read, self.dev)
+        self.text, self.marks = request_log(self.records, self.read, self.dev, at, hashes=True)
+        self.k = len(self.cs) // 2
+
+    def judge(self, text, taken_over=True):
+        inst = cdc.parse_log(text)
+        lines = cdc.log_lines(inst, {PID2: taken_over})
+        recs, dcuts = cdc.records_of(lines, cdc.read_marks(self.marks))
+        rread = cdc.read_of(recs, self.dev)
+        rcs, taken = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+        ref = cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev, rcs))
+        return inst, recs, dcuts, ref
+
+    def test_a_take_over_between_a_flushs_receipt_and_its_barrier(self):
+        inst, recs, dcuts, ref = self.judge(split_log(self.text, self.k))
+        self.assertEqual(len(inst), 2)
+        self.assertEqual([r['taken_over'] for r in recs if 'instance' in r['flags']], [True])
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(ref), len(self.cs))
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        # The flush received before the kill is void: one receipt of its
+        # tag carries the cut, the one in the second instance.
+        b = next(r['i'] for r in recs if 'instance' in r['flags'])
+        self.assertGreater(ref[self.k - 1]['prefix'], b)
+
+    def test_the_rules_tell_a_kept_mark(self):
+        inst, recs, dcuts, ref = self.judge(split_log(self.text, self.k))
+        rread = cdc.read_of(recs, self.dev)
+        ubs = cut_ref.scan(recs, rread, self.dev)
+        dropped, _ = cut_ref.cuts(recs, ubs, 'mark-dropped')
+        self.assertEqual(len(dropped), len(ref) - 1)
+        kept, _ = cut_ref.cuts(recs, ubs, 'mark-kept')
+        self.assertEqual(len(kept), len(ref))
+
+    def test_a_created_device_drops_the_mark(self):
+        """The same log, the second instance having created the device:
+        the reference has no cut at the flush, and the daemon's line
+        there is a verdict."""
+        _, _, dcuts, ref = self.judge(split_log(self.text, self.k), taken_over=False)
+        self.assertEqual(len(ref), len(self.cs) - 1)
+        self.assertFalse(cdc.compare(dcuts, ref)[0])
+
+    def test_a_cut_counted_and_its_line_lost_at_the_kill(self):
+        _, recs, dcuts, ref = self.judge(split_log(self.text, self.k, lose_line=True))
+        self.assertFalse(cdc.compare(dcuts, ref)[0])
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'FAIL')
+        self.assertIn(f'counting cut {self.k}', cdc.lost_at_kill(dcuts, ref, recs))
+        # a daemon that skips a number with no cut lost is not excused
+        _, recs, dcuts, ref = self.judge(split_log(self.text, self.k))
+        self.assertIsNone(cdc.lost_at_kill(dcuts[:self.k - 1] + dcuts[self.k:], ref, recs))
+
+    def test_what_the_first_instance_did_not_finish(self):
+        """A write received and not applied, and a write-zeroes behind a
+        flush with no barrier, when the instance ended: the kernel hands
+        both to the next, which places them."""
+        z = cdc.ZERO
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n'
+                f'3\t{PID}\trecv\t1\twrite\t8\t8\t-\n'
+                f'4\t{PID}\trecv\t2\tflush\t0\t0\t-\n5\t{PID}\trecv\t3\twrite_zeroes\t16\t8\t-\n'
+                f'6\t{PID2}\tstart\t0\t-\t-\t-\t64\n7\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up\n'
+                f'8\t{PID2}\trecv\t1\twrite\t8\t8\t-\n9\t{PID2}\tapplied\t1\twrite\t-\t-\t-\t{z}\n'
+                f'10\t{PID2}\trecv\t2\tflush\t0\t0\t-\n11\t{PID2}\trecv\t3\twrite_zeroes\t16\t8\t-\n'
+                f'12\t{PID2}\tbarrier\t2\tflush\t-\t-\t-\n')
+        recs, _ = cdc.records_of(cdc.log_lines(cdc.parse_log(text), {PID2: True}), [])
+        kinds = [('instance' if 'instance' in r['flags'] else r['flags'][0] if r['flags'] else 'write') for r in recs]
+        self.assertEqual(kinds, ['receipt', 'instance', 'write', 'receipt', 'flush', 'discard'])
+
+    def test_the_log_must_say_which_took_over(self):
+        text = split_log(self.text, self.k)
+        with self.assertRaises(RigError):
+            cdc.log_lines(cdc.parse_log(text), None)
+        with self.assertRaises(RigError):
+            cdc.log_lines(cdc.parse_log(text), {'1': True})
+        with self.assertRaises(RigError):
+            cdc.parse_log(text + f'99999999\t{PID2}\tstart\t0\t-\t-\t-\t64\n')
+        with self.assertRaises(RigError):
+            cdc.read_kinds('4343\ttaken over\n')
+        self.assertEqual(cdc.read_kinds('4343\ttaken-over\n7\tadded\n'), {'4343': True, '7': False})
+
+    def test_instance_lines(self):
+        import shutil
+        import tempfile
+        inst, recs, dcuts, _ = self.judge(split_log(self.text, self.k))
+        inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
+        second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
+                  'intent_named_at_start 3\n')
+        for starts, want in (((START_STATUS, second), 0),
+                             ((START_STATUS, second.replace('intent_state taken_up', 'intent_state begun')), 1),
+                             ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1),
+                             ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1)):
+            d = tempfile.mkdtemp(prefix='cdc-inst-')
+            try:
+                for k, st in enumerate(starts):
+                    with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                        f.write(st)
+                got = []
+                rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs)
+                self.assertEqual(rc, want, got)
+                self.assertEqual([k for k, _, _ in got], ['instance_1', 'instance_2'])
+            finally:
+                shutil.rmtree(d)
+
+
+class NoFlush(unittest.TestCase):
+    def test_groups_synced_with_no_flush_and_not_cut(self):
+        recs = [{'i': 0, 'flags': ['mark'], 'mark': 'noflush-begin'}, {'i': 1, 'flags': []},
+                {'i': 2, 'flags': []}, {'i': 3, 'flags': ['mark'], 'mark': 'noflush-end'}, {'i': 4, 'flags': []}]
+        taken = [{'record': 1, 'txg': 7}, {'record': 2, 'txg': 8}, {'record': 4, 'txg': 9}]
+        ks, left = cdc.noflush_kstats({1: [6, 7, 8, 9]}, recs, taken, [{'txg': 8}, {'txg': 9}])
+        self.assertEqual((ks, left), ({1: [6, 8, 9]}, [7]))
+        with self.assertRaises(RigError):
+            cdc.noflush_kstats({}, recs[:2], taken, [])
 
 
 class Status(unittest.TestCase):

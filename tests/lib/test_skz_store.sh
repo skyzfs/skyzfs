@@ -117,6 +117,19 @@ has "TB_SKZ_RELEASE with both: past the check" "$r" "unknown topology: no-such-t
 has "  --hold-cuts may come anywhere, and with spaces" "$(bench_release abc+hooks "--hold-cuts --queues 1")" "unknown topology: no-such-topology"
 is "  --hold-cutsx is not --hold-cuts" "$(bench_release abc+hooks "--hold-cutsx" | head -c 2)" 64
 has "    and it is refused for it" "$(bench_release abc+hooks "--hold-cutsx")" "needs --hold-cuts"
+# The releaser's line in each snapshot (the review of #108): the count
+# of its releases, whether it runs, its last line.
+eval "$(sed -n '/^skz_release_line() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")"
+is "skzrel with no file and no releaser" "$(skz_release_line "$T/none.tsv" "")" "skzrel 0 0 "
+printf '# released every 4\n123\t1\t7\n124\t2\t8\n# 125 cut 3 gone after its release was refused (busy)\n' > "$T/rel.tsv"
+sleep 30 & live=$!
+is "skzrel counts the releases and says it runs" "$(skz_release_line "$T/rel.tsv" "$live")" \
+    "skzrel 2 1 # 125 cut 3 gone after its release was refused (busy)"
+kill "$live"; wait "$live" 2>/dev/null || true
+is "  and that it ended" "$(skz_release_line "$T/rel.tsv" "$live" | cut -d' ' -f1-3)" "skzrel 2 0"
+printf '1\t%s\n' "$(head -c 400 /dev/zero | tr '\0' x)" > "$T/long.tsv"
+# "skzrel 1 0 ", 300 characters and the newline
+is "  the last line is cut at 300 characters" "$(skz_release_line "$T/long.tsv" "" | wc -c)" 312
 # skz_start, which serves each row, uses the same check and adds
 # --store in-place for a build from before M1.3t-d.
 start=$(sed -n '/^skz_start() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")
