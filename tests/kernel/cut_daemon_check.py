@@ -44,7 +44,9 @@ cut_ref.opens for whether each opens as itself) are then held to:
   and the same answer to whether it opens as itself (`itself` or
   `rewind`);
 - `cut_numbers`: the number each `cut` line carries (since M2.2b-2):
-  1 to N in order, as one instance counts; INFO on a log without them;
+  1 to N in order, as one instance counts, and from 1 again in each
+  state a start that acknowledges a failure begins; INFO on a log
+  without them;
 - `status`: `skyzfsd status` read before the detach (DIR/status.txt):
   `cuts`, `cut_group` and `cut_opens` of the last cut. The daemon
   rewrites its status file at most every 100 ms, when a counter has
@@ -511,8 +513,9 @@ def numbers_verdict(dcuts):
     before counts from 1: the k-th line carries k. An instance that took
     the state up counts on (record.rs), so across the instances of one
     volume the k-th line carries k too. A state begun by a later instance
-    (epochs) may count from 1 again or go on: the design does not say,
-    and the line says which."""
+    (epochs) counts from 1 again: a cut is named by its state, its number
+    and its group, so a number means something only within its state
+    (the lead's decision on #113). A state that counts on fails."""
     nums = [d.get('local', d['number']) for d in dcuts]
     if all(n == '-' for n in nums):
         return 'INFO', 'the cut lines carry no numbers (a daemon from before M2.2b-2)'
@@ -521,11 +524,11 @@ def numbers_verdict(dcuts):
         e = dcuts[k].get('epoch', 0)
         if e != epoch:
             epoch = e
-            if n == '1':
-                k0 = k
-                said.append(f'state {e + 1} counts from 1 again')
-            else:
-                said.append(f'state {e + 1} counts on')
+            if n != '1':
+                return 'FAIL', (f"state {e + 1}'s first cut line (request log line {dcuts[k]['line']}) "
+                                f"carries the number {n!r}, not 1: a new state counts from 1 again")
+            k0 = k
+            said.append(f'state {e + 1} counts from 1 again')
         if n != str(k - k0 + 1):
             return 'FAIL', f"cut line {k + 1} (request log line {dcuts[k]['line']}) carries the number {n!r}"
     return 'PASS', f'the {len(nums)} cut lines are numbered 1 to {len(nums)}' + (
@@ -1008,9 +1011,9 @@ def status_verdict(status, ref, times=None, latest=None, since=None):
     The values are held to the last cut. Where they differ, times (of the
     daemon's cut lines) and latest (status_window) say whether the status
     was written before the last cut line. since: the record where the
-    last state began, where the daemon's lines count from 1 again in it
-    (epochs, numbers_verdict): the count is then the reference's cuts
-    after it."""
+    last state began, if one began after the first (epochs): the daemon
+    counts from 1 again in it (numbers_verdict), so the count is the
+    reference's cuts after it."""
     want = {'cuts': str(len(ref) if since is None else sum(1 for c in ref if c['prefix'] > since))}
     if ref:
         want['cut_group'] = str(ref[-1]['txg'])
@@ -1190,11 +1193,7 @@ def main():
             status = read_status(f.read())
         with open(os.path.join(rdir, 'status-time.tsv')) as f:
             latest = status_window(status, f.read())
-        since = None
-        if starts:
-            first = [d for d in dcuts if d['epoch'] == len(starts)]
-            if first and first[0]['local'] == '1':
-                since = starts[-1]['i']
+        since = starts[-1]['i'] if starts else None
         ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], latest, since)
         put('status', 'PASS' if ok else 'FAIL', detail)
         if not ok:

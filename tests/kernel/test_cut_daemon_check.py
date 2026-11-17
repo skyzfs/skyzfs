@@ -977,17 +977,19 @@ class AcknowledgedFailure(unittest.TestCase):
         self.assertFalse(cdc.status_verdict(st, ref)[0])
 
     def test_a_count_that_goes_on_or_is_wrong(self):
+        # pinned on #113: a new state counts from 1 again
         text, _ = split_begun(self.text, self.k)
-        on = text.replace('\tbegun\n', '\tbegun\n')
-        lines = on.splitlines()
+        lines = text.splitlines()
         for i, ln in enumerate(lines):
             f = ln.split('\t')
             if f[1] == PID2 and f[2] == 'cut':
                 f[6] = str(int(f[6]) + self.k)
                 lines[i] = '\t'.join(f)
         dcuts = self.judge('\n'.join(lines) + '\n')[2]
-        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
-        self.assertIn('state 2 counts on', cdc.numbers_verdict(dcuts)[1])
+        verdict, detail = cdc.numbers_verdict(dcuts)
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn(f"carries the number '{self.k + 1}', not 1", detail)
+        lines = text.splitlines()
         for i, ln in enumerate(lines):
             f = ln.split('\t')
             if f[1] == PID2 and f[2] == 'cut':
