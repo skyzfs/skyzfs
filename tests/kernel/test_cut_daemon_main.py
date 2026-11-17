@@ -33,7 +33,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     `taken-over` or `added` the device, or `acknowledged` a failure after
     the k-th cut's line (t.split_begun: a new state, which counts from 1
     again; the holder's numbers then repeat, and failure.tsv is the
-    rig's as the recording `failed` leaves it). tamper_written(written,
+    rig's as the recording `failed` leaves it); tamper_split(text)
+    changes the split log. tamper_written(written,
     ns) changes the holder's writes after that renumbering. holder_log:
     the holder's log in place of a right one's; holder_left: where given,
     only these of the holder's files are left."""
@@ -66,6 +67,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     written = tamper_written(written, ns)
             elif split:
                 text = t.split_log(text, split[0])
+                if tamper_split:
+                    text = tamper_split(text)
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
                 starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
@@ -347,6 +350,48 @@ class Main(unittest.TestCase):
         # and the first status's state must be begun
         rc, lines = recording(holder=none, split=(k, 'taken-over'), as_name='takeover')
         self.assertEqual(lines['cut_state'][0], 'FAIL', lines['cut_state'])
+
+    def test_a_line_torn_at_the_take_over(self):
+        """The first instance's last line cut short by its kill, on a page
+        of the file, and the next instance's start line after it with no
+        newline: the line is lost with the kill, and the check judges the
+        rest as it judges a kill a moment earlier, where the next instance
+        took the device over (the review of #113, L12 to L14)."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
+        seen = {}
+
+        def tear(text):
+            # The daemon writes no leading zero; they stand here for the
+            # bytes before the page boundary that a longer line would have.
+            lines = text.split('\n')
+            j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [t.PID2, 'start'])
+            at = sum(len(ln) + 1 for ln in lines[:j - 1])
+            zeros = (-(at + 20)) % cdc.PAGE
+            seen['lost'] = ('0' * zeros + lines[j - 1])[:zeros + 20]
+            seen['line'] = j
+            lines[j - 1:j + 1] = [seen['lost'] + lines[j]]
+            return '\n'.join(lines)
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover',
+                              tamper_split=tear)
+        self.assertEqual(lines['obs_torn_at_kill'][0], 'INFO')
+        self.assertIn(f"1 lines of the request log cut short by a kill -9 and lost with it; line {seen['line']}: "
+                      f"pid {t.PID}'s", lines['obs_torn_at_kill'][1])
+        self.assertIn(f"line after {len(seen['lost'])} bytes, then pid {t.PID2}'s start",
+                      lines['obs_torn_at_kill'][1])
+        for key in ('cuts', 'cut_numbers', 'status', 'cut_state', 'held_content', 'instance_1', 'instance_2'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertEqual(rc, 1)    # ctl_mark-kept, as test_two_instances
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover')
+        self.assertIn('0 lines', lines['obs_torn_at_kill'][1])
+        # Before an instance that created the device, the rig's error.
+        rc, lines = recording(holder=none, split=(k, 'added'), status=status, as_name='takeover',
+                              tamper_split=tear)
+        self.assertEqual(rc, 2, lines)
+        self.assertIn('did not take the device over', lines['rig_error'][1])
 
     def test_a_recording_with_no_row(self):
         rc, lines = recording(as_name='nosuch')

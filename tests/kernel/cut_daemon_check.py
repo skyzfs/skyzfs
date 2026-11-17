@@ -235,41 +235,63 @@ def flat(text):
 
 
 # The next instance's start line, after a torn line (torn_line).
-START_AFTER = re.compile(r'(\d+)\t(\d+)\tstart\t(\d+)\t-\t-\t-\t(\d+)')
+# The daemon writes its numbers with no leading zero.
+START_LINE = re.compile(r'([1-9]\d*)\t([1-9]\d*)\tstart\t(\d+)\t-\t-\t-\t(\d+)')
+# A kill -9 stops a write(2) of the page cache between two pages: what was
+# written of a line ends at a multiple of this in the file. The hosted
+# images have 4 KiB pages; a larger page is a multiple of it.
+PAGE = 4096
+# What is left of a torn line: its time, then perhaps its pid, whole or not,
+# then perhaps more of its columns.
+TORN_HEAD = re.compile(r'(\d+)(?:\t(\d*)(\t.*)?)?', re.S)
 
 
-def torn_line(ln, k, lines, instances, by_pid):
-    """Line ln (index k of lines) that does not parse: where it is the
-    last instance's line cut short by a kill and the next instance's
-    start line follows it with no newline between them, -> (the start
-    line, what was lost); else None. A line is one write(2) of the daemon
-    (record.rs), but a kill -9 can cut a write of a long line (a label
-    line is some 8 KB) short: the rest of that line never reaches the
-    file, and the next instance appends its start line to it. The start
-    line's ns runs on from the cut line's last digits, so its digits are
-    taken as many as the next line's ns has, and it must lie between the
-    two lines' ns."""
-    if not instances:
+def torn_line(ln, k, lines, offset, instances, by_pid):
+    """Line ln (index k of lines, at byte offset of the file): where it is the last instance's line
+    cut short by a kill and the next instance's start line follows it with
+    no newline between them, -> (the start line, what was lost); else None.
+
+    A line is one write(2) of the daemon (record.rs), but a kill -9 can stop
+    a write of a long line (a label line is some 8 KB) between two pages of
+    the file: the rest of that line never reaches the file, and the next
+    instance appends its start line to it. So the start line must begin at
+    a multiple of PAGE in the file and end the line, be of a pid not yet
+    started, and lie in time between the last instance's last whole line
+    and the line after it; what is left before it must be the beginning of
+    a line of the last instance (its time, or a time and that pid, whole or
+    cut, or more), and where its time is whole, lie between the two as
+    well. A tear inside the time column leaves digits that, with the start
+    line, parse as a start line with a longer time: the page bound tells
+    the two apart.
+
+    The rule holds while the daemon writes its request log from one thread,
+    as the test build does: the torn line is then its last. With more
+    writers a torn line can be followed by whole lines of the same daemon
+    (the review of #113 saw it with three writer threads), which parse_log
+    takes as the rig's error."""
+    if not instances or k + 1 >= len(lines):
         return None
-    pid = instances[-1]['pid']
-    head = re.match(r'(\d+)\t(\d+)\t', ln)
-    if not head or head.group(2) != pid:
-        return None
-    nxt = lines[k + 1].split('\t', 1)[0] if k + 1 < len(lines) else ''
+    last = instances[-1]
+    nxt = lines[k + 1].split('\t', 1)[0]
     if not nxt.isdigit():
         return None
-    for m in START_AFTER.finditer(ln):
-        if m.end() != len(ln) or m.group(2) in by_pid:
+    before = last['lines'][-1]['ns'] if last['lines'] else last['ns']
+    for p in range(-offset % PAGE or PAGE, len(ln), PAGE):
+        lost, rest = ln[:p], ln[p:]
+        m = START_LINE.fullmatch(rest)
+        h = TORN_HEAD.fullmatch(lost)
+        if not m or m.group(2) in by_pid or not h:
             continue
-        digits = m.group(1)
-        if len(digits) <= len(nxt):
+        if h.group(3) is not None and h.group(2) != last['pid']:
             continue
-        ns = digits[-len(nxt):]
-        if not int(head.group(1)) <= int(ns) <= int(nxt):
+        if h.group(2) is not None and not last['pid'].startswith(h.group(2)):
             continue
-        start = f"{ns}\t{m.group(2)}\tstart\t{m.group(3)}\t-\t-\t-\t{m.group(4)}"
-        lost = ln[:m.start(1) + len(digits) - len(nxt)]
-        return start, lost
+        ns = int(m.group(1))
+        if not before <= ns <= int(nxt):
+            continue
+        if h.group(2) is not None and not before <= int(h.group(1)) <= ns:
+            continue
+        return rest, lost
     return None
 
 
@@ -297,16 +319,21 @@ def parse_log(text, torn=None):
     holds that the next instance took the device over (instances.tsv).
     Where not given, or anywhere else, a line that does not parse is the
     rig's error."""
-    instances, by_pid = [], {}
-    lines = text.splitlines()
+    instances, by_pid, cut_short = [], {}, set()
+    lines = text.split('\n')
+    if lines and lines[-1] == '':
+        lines.pop()
+    offset = 0
     for k, ln in enumerate(lines):
+        at, offset = offset, offset + len(ln.encode()) + 1
         f = ln.split('\t')
-        if torn is not None and (not 8 <= len(f) <= 10 or not f[0].isdigit()):
-            cut = torn_line(ln, k, lines, instances, by_pid)
+        if torn is not None:
+            cut = torn_line(ln, k, lines, at, instances, by_pid)
             if cut is not None:
                 start, lost = cut
                 torn.append({'line': k + 1, 'pid': instances[-1]['pid'], 'next': start.split('\t')[1],
                              'bytes': len(lost), 'head': '\t'.join(lost.split('\t')[:7])})
+                cut_short.add(instances[-1]['pid'])
                 f = start.split('\t')
         # Eight columns; since M2.2b-2 an `applied` line has a ninth (the
         # blocks' hashes) and, with --request-log-content whole, a tenth.
@@ -316,7 +343,14 @@ def parse_log(text, torn=None):
             raise RigError(f'request log line {k + 1}: a {f[2]} line with more than eight columns: {ln[:120]!r}')
         rec = {'ns': int(f[0]), 'pid': f[1], 'event': f[2], 'tag': f[3], 'op': f[4], 'sector': f[5],
                'sectors': f[6], 'result': f[7], 'extra': f[8:], 'line': k + 1}
+        if rec['pid'] in cut_short:
+            raise RigError(f'request log line {k + 1}: pid {rec["pid"]} writes after its line cut short by a '
+                           'kill (torn_line): the rule holds while the daemon writes its log from one thread')
         if rec['event'] == 'start':
+            nxt = lines[k + 1].split('\t', 1)[0] if k + 1 < len(lines) else ''
+            if nxt.isdigit() and rec['ns'] > int(nxt):
+                raise RigError(f'request log line {k + 1}: a start line later than the line after it, as of a '
+                               f'line cut short in its time: {ln[:120]!r}')
             if rec['pid'] in by_pid:
                 raise RigError(f'request log line {k + 1}: a second start line of pid {rec["pid"]}')
             inst = {'pid': rec['pid'], 'device': rec['tag'], 'lines': [], 'ns': rec['ns'], 'line': k + 1}

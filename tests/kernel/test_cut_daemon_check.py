@@ -892,33 +892,91 @@ class Parse(unittest.TestCase):
     # A label line of eight sectors as the daemon writes it (some 8 KB),
     # cut by a kill -9 after 8012 bytes, the next instance's start line
     # following it with no newline: run 44183715455, takeover, request log
-    # line 43866, with its times.
+    # line 43866, with its times. There the line began 180 bytes into a
+    # page of the file, so that the cut fell on the next page's start.
     LABEL = ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t'
              + ('0cb1ba00000000008813000000000000' * 128) + ('0' * 4096))
-    HEAD = '263932000000\t9937\tstart\t0\t-\t-\t-\t64\n263932700000\t9937\trecv\t25\twrite\t1047960\t8\t-\n'
+    BEGIN = '263932000000\t9937\tstart\t0\t-\t-\t-\t64\n'
+    RECV = '263932700000\t9937\trecv\t25\twrite\t1047960\t8\t-\n'
     START = '264075526204\t10976\tstart\t1\t-\t-\t-\t64'
     NEXT = '264075546749\t10976\tcuts\t-\t-\t-\t-\ttaken_up\n'
 
+    @staticmethod
+    def filler(n):
+        """recv lines of the first instance, n bytes in all (n >= 40), between BEGIN and RECV."""
+        out, i = [], 0
+        while n:
+            size = n if n <= 80 else min(44, n - 40)
+            out.append(f'2639321{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * (size - 34 - len(str(i))) + '\t8\t-\n')
+            n, i = n - size, i + 1
+        return ''.join(out)
+
+    def torn(self, lost, start=None, after=None, off=0):
+        """The log with the first instance's line `lost` cut short by a kill
+        and the next instance's start line after it, where the cut falls
+        on a page of the file (off bytes after it, where given) -> (text,
+        the torn line's number)."""
+        fill = (-(len(self.BEGIN) + len(self.RECV) + len(lost))) % cdc.PAGE
+        head = self.BEGIN + self.filler(fill + (cdc.PAGE if fill < 40 else 0) + off) + self.RECV
+        return (head + lost + (self.START if start is None else start) + '\n'
+                + (self.NEXT if after is None else after)), head.count('\n') + 1
+
     def test_a_label_line_torn_by_a_kill(self):
         self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
-        text = self.HEAD + self.LABEL[:8012] + self.START + '\n' + self.NEXT
+        text, n = self.torn(self.LABEL[:8012])
+        self.assertEqual((len(text.split('\n')[n - 1]) - len(self.START)) % cdc.PAGE, 8012 % cdc.PAGE)
         torn = []
         inst = cdc.parse_log(text, torn)
         self.assertEqual([i['pid'] for i in inst], ['9937', '10976'])
-        self.assertEqual((inst[1]['ns'], inst[1]['line'], inst[1]['device']), (264075526204, 3, '1'))
-        self.assertEqual([ln['event'] for ln in inst[0]['lines']], ['recv'])
+        self.assertEqual((inst[1]['ns'], inst[1]['line'], inst[1]['device']), (264075526204, n, '1'))
+        self.assertEqual({ln['event'] for ln in inst[0]['lines']}, {'recv'})
+        self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
         self.assertEqual([ln['event'] for ln in inst[1]['lines']], ['cuts'])
-        self.assertEqual(torn, [{'line': 3, 'pid': '9937', 'next': '10976', 'bytes': 8012,
+        self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': 8012,
                                  'head': '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'}])
         # Where the caller takes no torn line, it is the rig's error.
-        with self.assertRaisesRegex(RigError, 'line 3: not eight to ten columns'):
+        with self.assertRaisesRegex(RigError, f'line {n}: not eight to ten columns'):
+            cdc.parse_log(text)
+
+    def test_a_line_torn_anywhere_on_a_page(self):
+        """What is left of the torn line may end in anything: a hex digit a
+        to f, a tab, inside its pid, inside its time (the review of #113,
+        T1 and T2)."""
+        barrier = '263932738825\t9937\tbarrier\t26\tflush\t-\t-\t0'
+        cases = {
+            'a hex digit': (self.LABEL[:48], '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1b'),
+            'the tab before the label': (self.LABEL[:43], '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t'),
+            'a barrier line before its last column': (barrier[:-1], barrier[:-1]),
+            'inside the pid': ('263932738825\t99', '263932738825\t99'),
+            'after the time': ('263932738825\t', '263932738825\t'),
+            'inside the time': ('2639', '2639'),
+        }
+        for why, (lost, head) in cases.items():
+            with self.subTest(why):
+                text, n = self.torn(lost)
+                torn = []
+                inst = cdc.parse_log(text, torn)
+                self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': len(lost),
+                                         'head': '\t'.join(head.split('\t')[:7])}])
+                self.assertEqual((inst[1]['ns'], inst[1]['line']), (264075526204, n))
+                self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
+        # Off the page, a tear inside the time is a start line with a time
+        # some digits too long, later than the line after it: the rig's error.
+        for off in (1, -1):
+            with self.subTest('inside the time, off the page', off=off):
+                text, n = self.torn('2639', off=off)
+                with self.assertRaisesRegex(RigError, f'line {n}: a start line later than the line after it'):
+                    cdc.parse_log(text, [])
+        text, n = self.torn('2639')
+        with self.assertRaisesRegex(RigError, f'line {n}: a start line later than the line after it'):
             cdc.parse_log(text)
 
     def test_a_torn_line_only_before_a_take_over(self):
         torn = []
-        cdc.parse_log(self.HEAD + self.LABEL[:8012] + self.START + '\n' + self.NEXT, torn)
+        text, n = self.torn(self.LABEL[:8012])
+        cdc.parse_log(text, torn)
         self.assertEqual(cdc.torn_detail(torn, {'10976': True}),
-                         "1 lines of the request log cut short by a kill -9 and lost with it; line 3: pid 9937's "
+                         f"1 lines of the request log cut short by a kill -9 and lost with it; line {n}: pid 9937's "
                          "`263932738825\t9937\tlabel\t25\twrite\t1047960\t8` line after 8012 bytes, then pid 10976's "
                          'start')
         self.assertTrue(cdc.torn_detail([], None).startswith('0 lines'))
@@ -927,23 +985,35 @@ class Parse(unittest.TestCase):
                 cdc.torn_detail(torn, kinds)
 
     def test_a_torn_line_not_followed_by_a_start(self):
-        """Only the next instance's start may follow a torn line."""
+        """Only the next instance's start may follow a torn line, on a page
+        of the file and in time between the lines around it, and the torn
+        line's daemon writes nothing after it."""
         cut = self.LABEL[:8012]
         bad = {
-            'the same instance goes on': self.HEAD + cut + '264075526204\t9937\trecv\t26\twrite\t0\t8\t-\n',
-            'a start of a pid already started': self.HEAD + cut + self.START.replace('10976', '9937') + '\n',
-            'the start before the torn line': self.HEAD + cut + self.START.replace('264075526204', '263932000001')
-            + '\n' + self.NEXT,
-            'the start at the end of the log': self.HEAD + cut + self.START + '\n',
-            'another pid torn': self.HEAD + cut.replace('\t9937\t', '\t9999\t', 1) + self.START + '\n' + self.NEXT,
+            'the same instance goes on': self.torn(cut, '264075526204\t9937\trecv\t26\twrite\t0\t8\t-'),
+            'a start of a pid already started': self.torn(cut, self.START.replace('10976', '9937')),
+            'the start before the last whole line': self.torn(cut, self.START.replace('264075526204',
+                                                                                      '263932600000')),
+            'the start after the line after it': self.torn(cut, self.START.replace('264075526204',
+                                                                                   '264075546750')),
+            'the torn line after the start': self.torn(cut.replace('263932738825', '264075526205', 1)),
+            'the torn line before the last whole line': self.torn(cut.replace('263932738825', '263932600000', 1)),
+            'the start at the end of the log': self.torn(cut, after=''),
+            'the start not on a page': self.torn(cut, off=1),
+            'the start a page late': self.torn(cut[:-1] + 'x', off=-1),
+            'another pid torn': self.torn(cut.replace('\t9937\t', '\t9999\t', 1)),
+            'a pid that is not the last instance\'s, cut': self.torn('263932738825\t98'),
+            'a whole pid that begins the last instance\'s': self.torn('263932738825\t99\tlabel\t25\twrite\t1047960\t8\t'),
+            'the torn line\'s daemon writes after it': self.torn(cut, after=self.NEXT
+                                                                 + '264075546750\t9937\trecv\t26\twrite\t0\t8\t-\n'),
         }
-        for why, text in bad.items():
+        for why, (text, n) in bad.items():
             with self.subTest(why):
-                with self.assertRaises(RigError):
+                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 2}: pid 9937 writes after'):
                     cdc.parse_log(text, [])
         # A tear that left eight columns and a newline parses as a line,
         # and its label is short of its sectors.
-        text = self.HEAD + cut + '\n' + self.START + '\n' + self.NEXT
+        text = self.BEGIN + self.RECV + cut + '\n' + self.START + '\n' + self.NEXT
         torn = []
         inst = cdc.parse_log(text, torn)
         self.assertEqual(torn, [])

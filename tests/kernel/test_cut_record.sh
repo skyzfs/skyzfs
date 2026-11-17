@@ -20,6 +20,10 @@ fn=$(sed -n '/^holder_ended() {$/,/^}$/p' "$SCRIPT")
 is "holder_ended is in the script" "$([ -n "$fn" ] && echo yes)" yes
 wrote=$(sed -n '/^holder_wrote_one() {$/,/^}$/p' "$SCRIPT")
 is "holder_wrote_one is in the script" "$([ -n "$wrote" ] && echo yes)" yes
+gone=$(sed -n '/^holder_gone() {$/,/^}$/p' "$SCRIPT")
+is "holder_gone is in the script" "$([ -n "$gone" ] && echo yes)" yes
+idle=$(sed -n '/^hold_idle() {$/,/^}$/p' "$SCRIPT")
+is "hold_idle is in the script" "$([ -n "$idle" ] && echo yes)" yes
 
 # One recording's end: a stand-in holder that writes LOG and ends with
 # STATUS, then holder_ended under set -e as the recording calls it.
@@ -60,6 +64,7 @@ first_cut() { # holder-script
         log() { :; }
         rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
         eval "$fn"
+        eval "$gone"
         eval "$wrote"
         RDIR=$RDIR bash -c "$1" & HOLD_PID=$!
         if holder_wrote_one; then echo "wrote one" > "$T/why"; else echo "ended early" > "$T/why"; fi
@@ -78,6 +83,43 @@ is "a holder that ended with its error before a cut is the rig's error" \
     "2 rig error: the holder ended with 2 before it wrote a cut: 1	ERROR HolderError: x"
 is "the recordings end at a verdict before the first cut" \
     "$(grep -c '^    holder_wrote_one || { export_pool; return 0; }$' "$SCRIPT")" 2
+
+# The wait for the holder to pause with nothing held, as rec_edges calls
+# it: a stand-in holder that runs SCRIPT, with WORK/hold.pause the rig's
+# ask. -> "idle", "ended early" (the recording ends there and goes to the
+# check), or what ended it.
+paused() { # holder-script
+    # shellcheck disable=SC2034,SC2329
+    (
+        set -euo pipefail
+        RDIR=$T/p; WORK=$T/pw; NAME=rec; POOL=p; rm -rf "$RDIR" "$WORK"; mkdir -p "$RDIR" "$WORK"
+        : > "$RDIR/holder.log"
+        log() { :; }
+        z() { :; }
+        rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
+        eval "$fn"
+        eval "$gone"
+        eval "$idle"
+        RDIR=$RDIR WORK=$WORK bash -c "$1" & HOLD_PID=$!
+        if hold_idle; then echo "idle" > "$T/why"; else echo "ended early" > "$T/why"; fi
+        [ -z "$HOLD_PID" ] || kill "$HOLD_PID" 2>/dev/null || true
+    )
+    echo "$? $(cat "$T/why" 2>/dev/null)"
+    rm -f "$T/why"
+}
+is "a holder that paused with nothing held" \
+    "$(paused 'until [ -e "$WORK/hold.pause" ]; do sleep 0.1; done; : > "$WORK/hold.pause.held"; sleep 30')" "0 idle"
+is "a verdict while the holder is asked to pause ends the recording for the check" \
+    "$(paused 'printf "1\tVERDICT cut 1 is still being uploaded\n" >> "$RDIR/holder.log"; exit 1')" "0 ended early"
+is "a holder that ended with 0 while asked to pause is the rig's error" "$(paused 'exit 0')" \
+    "2 rig error: the holder ended with 0 while it was asked to pause: "
+is "a holder that ended with its error while asked to pause is the rig's error" \
+    "$(paused 'printf "1\tERROR HolderError: x\n" >> "$RDIR/holder.log"; exit 2')" \
+    "2 rig error: the holder ended with 2 while it was asked to pause: 1	ERROR HolderError: x"
+is "edges ends at a verdict while the holder is asked to pause" \
+    "$(grep -c '^    hold_idle || { export_pool; return 0; }$' "$SCRIPT")" 1
+is "no wait for the holder without a look at whether it lives" \
+    "$(grep -c 'kill -0 "$HOLD_PID" 2>/dev/null || { holder_gone "' "$SCRIPT")" 2
 
 # Every wait for the holder takes its status with ||, outside cleanup
 # (which runs with set +e): a bare one ends the recording at its status.

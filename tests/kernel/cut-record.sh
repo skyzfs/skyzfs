@@ -314,12 +314,7 @@ holder_wrote_one() {
     local _i
     for _i in $(seq 1 300); do
         [ -s "$RDIR/held.tsv" ] && return 0
-        if ! kill -0 "$HOLD_PID" 2>/dev/null; then
-            holder_ended "before it wrote a cut"
-            grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" \
-                || rig_error "the holder ended with 0 before it wrote a cut: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
-            return 1
-        fi
+        kill -0 "$HOLD_PID" 2>/dev/null || { holder_gone "before it wrote a cut"; return 1; }
         sleep 1
     done
     rig_error "the holder wrote no cut in 300 s: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
@@ -343,6 +338,15 @@ holder_leave() {
 # other status but 0 is the rig's error. Wherever a holder ends, its
 # status goes through here: a bare wait under set -e would end the
 # recording at a verdict as the rig's error.
+# The holder has ended while the recording waits on it (WHEN): with its
+# verdict (1 and a VERDICT line) the recording ends there and goes to the
+# check; any other end is the rig's error, 0 as well, since it was not
+# asked to leave.
+holder_gone() {
+    holder_ended "$1"
+    grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" \
+        || rig_error "the holder ended with 0 $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+}
 holder_ended() {
     local rc=0
     wait "$HOLD_PID" 2>/dev/null || rc=$?
@@ -668,6 +672,7 @@ rec_bound() {
 # one being uploaded, and stays held until hold_go. The pool is synced
 # and left idle; the holder writes what it holds, and is paused again
 # until it says it holds nothing (cut_hold.py writes hold.pause.held).
+# Returns 1 where the holder ended with its verdict (holder_gone).
 hold_idle() {
     local k t
     z 60 zpool sync "$POOL"
@@ -677,6 +682,7 @@ hold_idle() {
         touch "$WORK/hold.pause"
         for t in $(seq 1 600); do
             [ -e "$WORK/hold.pause.held" ] && break
+            kill -0 "$HOLD_PID" 2>/dev/null || { holder_gone "while it was asked to pause"; return 1; }
             sleep 0.2
         done
         [ -e "$WORK/hold.pause.held" ] || rig_error "the holder did not say it had paused in 120 s"
@@ -701,7 +707,7 @@ rec_edges() {
     local base=$((1 << 20))
     create_pool
     load 1
-    hold_idle
+    hold_idle || { export_pool; return 0; }
     dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
     z 60 zpool sync "$POOL"
     load 1
