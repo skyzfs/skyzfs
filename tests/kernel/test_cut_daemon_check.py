@@ -678,6 +678,18 @@ class HeldLines(HeldFixture):
             self.assertEqual(lines[k][0], 'PASS', (k, lines[k]))
         self.assertEqual(lines['cuts_abandoned'][0], 'INFO')
 
+    def test_a_held_cut_the_daemon_could_not_read(self):
+        """The holder's VERDICT (cut_hold.py: a refused read of a cut still
+        being uploaded) is a FAIL line, not the rig's error, and nothing
+        after it is judged (the holder ended there)."""
+        rc, lines = self.lines(log='1\t> t1 held\n2\tVERDICT cut 9 is still being uploaded after its write was '
+                               'refused (refused: read block 7 of cut 9: Input/output error (os error 5))\n')
+        self.assertEqual(rc, (1, False))
+        self.assertEqual(lines['held_reads'][0], 'FAIL')
+        self.assertIn('read block 7 of cut 9', lines['held_reads'][1])
+        self.assertNotIn('held_content', lines)
+        self.assertEqual(self.lines()[1]['held_reads'][0], 'PASS')
+
     def test_the_state_not_begun(self):
         self.assertEqual(self.lines(cuts_line='taken_up')[1]['cut_state'][0], 'FAIL')
         rc, lines = self.lines(status={'cut_state': 'off', 'cuts_abandoned': '0'})

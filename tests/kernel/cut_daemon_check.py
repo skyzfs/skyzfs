@@ -83,6 +83,11 @@ no line of its own. ZFS issues neither; no recording has had one.
 
 The second stage, where DIR/holder.log says the holder ran
 (cut_hold.py; the daemon served with --hold-cuts):
+- `held_reads`: the daemon read each cut it held when the holder asked
+  for its write. A write it refused with `read block B of cut N` while
+  the cut was still being uploaded is a verdict against it (the
+  holder's log says VERDICT), and the lines below are not written; a
+  refusal for the rig's image is the rig's error;
 - `cut_state`: the request log's `cuts` line and the status both say
   `begun`, as a new volume's first start with --hold-cuts does, and
   `taken_up` for each start after it (stage 2b);
@@ -876,6 +881,14 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name=''):
     err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
     if err:
         raise RigError(f"the holder: {err[0].split(chr(9), 1)[1]}")
+    # The daemon refused to read a block of a cut it held (cut_hold.py's
+    # VERDICT): its own failure, and the holder ended there, so nothing
+    # after it was recorded.
+    bad = [ln.split('\tVERDICT ', 1)[1] for ln in log.splitlines() if '\tVERDICT ' in ln]
+    put('held_reads', 'FAIL' if bad else 'PASS', '; '.join(bad) if bad else
+        'the daemon read every block of each cut the holder asked it to write')
+    if bad:
+        return 1, False
     # The content of held cuts is held to the applied lines' hashes: a
     # log without them (a daemon from before M2.2b-2) cannot be judged.
     bare = [r for r in records if cut_ref.is_write(r) and r.get('hashes') is None]

@@ -313,6 +313,9 @@ holder_leave() {
     wait "$HOLD_PID" 2>/dev/null || rc=$?
     HOLD_PID=""
     rm -f "$WORK/hold.leave"
+    # 1: the daemon refused to read a cut it held; the holder's log says
+    # VERDICT and the check fails it (held_reads).
+    [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" && return 0
     [ "$rc" = 0 ] || rig_error "the holder ended with $rc when asked to leave: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
 # The volume, served by the daemon with its request log.

@@ -32,11 +32,17 @@ IMAGE and adds to the same files.
 A write the daemon refuses is not recorded, and the cut is not released.
 The holder asks `held` again: where the cut is no longer the one being
 uploaded (it was abandoned under the write, and the cut that takes its
-map writes those blocks again), it goes on; where it still is, the
-refusal was the rig's (the image or its .blocks file could not be
-written), and the holder ends with its error rather than let the cut go
-unwritten. A release refused while the cut is still being uploaded is
-the holder's error too.
+map writes those blocks again), it goes on. Where it still is, the
+reason tells whose the refusal was (M2.T3 stage 2c, the review of
+#103, R2):
+- the daemon could not read a block of the cut it holds (`read block B
+  of cut N: ...`): the daemon's failure. The holder writes a line
+  `VERDICT` in its log and ends with 1;
+- anything else (the image or its .blocks file could not be written,
+  or a reason the holder does not know): the rig's, and the holder ends
+  with its error (2) rather than let the cut go unwritten.
+A release refused while the cut is still being uploaded is the holder's
+error too.
 
 At STOP it records what the daemon holds (`held`, OUT/held-final.txt)
 and, a second and a half later, the daemon's status beside it
@@ -54,10 +60,12 @@ Out:
   log's `applied` lines give them;
 - OUT/holder.log: every command and reply.
 
-Exit 0 when the drain ended with nothing held, 2 for the rig's own error
-(a reply that never came, a daemon gone)."""
+Exit 0 when the drain ended with nothing held (or it left), 1 when the
+daemon could not read a cut it holds, 2 for the rig's own error (a reply
+that never came, a daemon gone)."""
 import hashlib
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -71,6 +79,13 @@ DRAIN_S = 600
 
 class HolderError(Exception):
     pass
+
+
+class HolderVerdict(Exception):
+    """The daemon failed at what it holds cuts for: it could not read one."""
+
+
+READ_REFUSED = re.compile(r'refused: read block \d+ of cut \d+: ')
 
 
 def block_hash(data):
@@ -212,9 +227,10 @@ class Holder:
         t1 = time.monotonic_ns()
         if not ok:
             # Not recorded, and not released: a cut abandoned under its
-            # write is gone, and one still being uploaded was refused for
-            # the rig's own reason.
-            self.must_be_gone(c['number'], f'its write was refused ({last})')
+            # write is gone; one still being uploaded was refused for the
+            # daemon's own read of it, or for the rig's reason.
+            self.must_be_gone(c['number'], f'its write was refused ({last})',
+                              verdict=bool(READ_REFUSED.match(last)))
             return True
         blocks = read_blocks(self.image + '.blocks')
         hashes = hash_listed(self.image, blocks)
@@ -228,11 +244,11 @@ class Holder:
             self.must_be_gone(c['number'], f'its release was refused ({last})')
         return True
 
-    def must_be_gone(self, number, why):
+    def must_be_gone(self, number, why, verdict=False):
         """After a refusal: go on if cut NUMBER is no longer the one being
-        uploaded, else the holder's error."""
+        uploaded, else the daemon's failure (verdict) or the holder's error."""
         if any(c['number'] == number and c['phase'] == 'uploading' for c in self.held()):
-            raise HolderError(f'cut {number} is still being uploaded after {why}')
+            raise (HolderVerdict if verdict else HolderError)(f'cut {number} is still being uploaded after {why}')
         self.d.log.write(f'{time.monotonic_ns()}\tcut {number} gone after {why}\n')
 
 
@@ -294,6 +310,10 @@ def main():
             with open(os.path.join(out, 'held-image.tsv'), 'w') as f:
                 f.write(''.join(f'{b}\t{v}\n' for b, v in sorted(hash_all(image).items())))
             log.write(f'{time.monotonic_ns()}\tdrained: {len(h.written)} cuts written\n')
+        except HolderVerdict as e:
+            log.write(f'{time.monotonic_ns()}\tVERDICT {e}\n')
+            print(f'cut_hold: the daemon: {e}', file=sys.stderr)
+            rc = 1
         except (HolderError, OSError, subprocess.SubprocessError) as e:
             log.write(f'{time.monotonic_ns()}\tERROR {type(e).__name__}: {e}\n')
             print(f'cut_hold: {e}', file=sys.stderr)
