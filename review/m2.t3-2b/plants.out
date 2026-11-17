@@ -1,0 +1,62 @@
+R1 a flush received before the instance ended still carries its mark to a barrier: KILLED by 8: test_a_flush_received_before_the_end_carries_nothing_on, test_the_stored_mark_is_the_newest, test_a_created_device_drops_the_mark, test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_instance_lines
+R2 a take-over drops the mark (the design rule is mark-dropped): KILLED by 5: test_a_take_over_keeps_the_mark, test_the_stored_mark_is_the_newest, test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_the_rules_tell_a_kept_mark, test_two_instances
+R3 a created device keeps the mark (the design rule is mark-kept): KILLED by 3: test_a_created_device_drops_it, test_a_created_device_drops_the_mark, test_two_instances
+R4 the rule mark-dropped is the design: KILLED by 3: test_a_take_over_keeps_the_mark, test_the_rules_tell_a_kept_mark, test_two_instances
+R5 the rule mark-kept is the design: KILLED by 1: test_a_created_device_drops_it
+R6 a cut does not clear the stored mark: KILLED by 2: test_a_cut_clears_the_stored_mark, test_the_newest_cut_is_kept_across
+R7 any cut clears the stored mark, whatever state it holds: SURVIVED
+R8 a mark is not stored: KILLED by 6: test_a_created_device_drops_it, test_a_take_over_keeps_the_mark, test_the_stored_mark_is_the_newest, test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_the_rules_tell_a_kept_mark, test_two_instances
+R9 at a take-over the instance keeps the mark it had in memory, not the state's: KILLED by 3: test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_the_rules_tell_a_kept_mark, test_two_instances
+R10 a created device forgets the newest cut as well: SURVIVED
+R11 the stored mark is the first made, not the newest: KILLED by 1: test_the_stored_mark_is_the_newest
+C1 no record `instance` where an instance starts: KILLED by 7: test_a_created_device_drops_the_mark, test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_instance_lines, test_the_rules_tell_a_kept_mark, test_what_the_first_instance_did_not_finish
+C2 a flush received and not at its barrier is kept across the boundary, with what waits behind it: SURVIVED
+C3 a write received and not applied is kept across the boundary: SURVIVED
+C4 the last barrier is kept across the boundary: SURVIVED
+C5 every later instance is read as a take-over: KILLED by 2: test_a_created_device_drops_the_mark, test_two_instances
+C6 every later instance is read as a created device: KILLED by 3: test_a_take_over_between_a_flushs_receipt_and_its_barrier, test_the_rules_tell_a_kept_mark, test_two_instances
+C7 two instances with no instances.tsv are read as take-overs: KILLED by 1: test_the_log_must_say_which_took_over
+C8 a pid instances.tsv does not name took the device over: KILLED by 1: test_the_log_must_say_which_took_over
+C9 an instance that starts before the one before it wrote its last line is no error: SURVIVED
+C10 a second start line of one pid begins another instance: KILLED by 1: test_the_log_must_say_which_took_over
+C11 instances.tsv may say anything: what is not `taken-over` is a created device: KILLED by 1: test_the_log_must_say_which_took_over
+C12 a write-zeroes behind a flush with no barrier is placed at the boundary: KILLED by 1: test_what_the_first_instance_did_not_finish
+K1 lost_at_kill never finds a lost line: KILLED by 1: test_a_cut_counted_and_its_line_lost_at_the_kill
+K2 lost_at_kill: the next instance's number is not looked at: SURVIVED
+K3 lost_at_kill: the reference's extra cut may be at any barrier before the kill: SURVIVED
+K4 lost_at_kill: any number of cuts may be missing before the kill: SURVIVED
+K5 main does not ask lost_at_kill: a lost line is a verdict: SURVIVED
+K6 main asks lost_at_kill and goes on: the line is no error: SURVIVED
+I1 every start is to say begun: KILLED by 2: test_instance_lines, test_two_instances
+I2 every start is to say taken_up: KILLED by 3: test_instance_lines, test_the_second_stage, test_two_instances
+I3 an instance's cuts line in the log is not looked at by instance_K: SURVIVED
+I4 the status's cut_state at a start is not looked at: KILLED by 1: test_instance_lines
+I5 the status's intent_state at a start is not looked at: KILLED by 1: test_instance_lines
+I6 a count at a start below the cuts counted before it is no finding: KILLED by 1: test_instance_lines
+I7 a failed instance line is no verdict (main drops instance_lines' result): SURVIVED
+I8 cut_state: only the first start's cuts line is looked at: SURVIVED
+I9 cut_state: the last status may say begun after a take-up: KILLED by 1: test_two_instances
+I10 several instances with no holder are no error: SURVIVED
+I11 a held stage on a log with no hashes is judged: SURVIVED
+I12 the last cut written is held to the count of cut lines, not the last line's number: SURVIVED
+N1 every group written in a noflush span is left out, cut or not: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N2 every group the reference does not cut is left out, in a noflush span or not: SURVIVED
+N3 a noflush span reaches to the end of the record: SURVIVED
+N4 a noflush-begin with no end is no error: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N5 main does not take the groups out of the kstats: SURVIVED
+N6 nothing is left out of the kstats: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+E1 takeover expects mark-dropped the same: KILLED by 1: test_two_instances
+E2 takeover expects mark-kept same or caught: KILLED by 1: test_two_instances
+E3 life expects mark-dropped same or caught: KILLED by 1: test_two_instances
+H1 the leave file is not looked at: KILLED by 1: test_cut_hold.py did not end in 40 s
+H2 the holder leaves and says nothing in its log: KILLED by 1: test_pause_then_leave
+H3 the loop says it was stopped when it left: main goes on to record and drain: KILLED by 1: test_pause_then_leave
+H4 main drains after a leave (it does not exit there): SURVIVED
+H5 the holder steps while paused: KILLED by 1: test_pause_then_leave
+H6 the holder leaves only when it is not paused: KILLED by 1: test_cut_hold.py did not end in 40 s
+B1 skz_release_line counts every line, comments too: KILLED by 3: FAIL skzrel counts the releases and says it runs: got 'skzrel 4 1 # 12, FAIL   and that it ended: got 'skzrel 4 0', want 'skzrel 2 0', test_skz_store.sh exit 1
+B2 skz_release_line says the releaser runs whenever it was given a pid: KILLED by 2: FAIL   and that it ended: got 'skzrel 2 1', want 'skzrel 2 0', test_skz_store.sh exit 1
+B3 skz_release_line does not cut the last line: KILLED by 2: FAIL   the last line is cut at 300 characters: got '414', want '312', test_skz_store.sh exit 1
+B4 skz_release_line does not squeeze the last line's blanks: SURVIVED
+B5 the snapshot does not call skz_release_line: SURVIVED
+H7 a pause does not write what is held: KILLED by 1: test_pause_then_leave
