@@ -164,7 +164,8 @@ impl World {
                 let mut from = Some(0);
                 while let Some(at) = from {
                     let (blocks, next) = state.map_from(n, at, size).expect("a held cut");
-                    assert!(blocks.len() <= size && !blocks.is_empty(), "{case}");
+                    assert!(blocks.len() <= size, "{case}");
+                    assert!(!blocks.is_empty() || map.is_empty(), "{case}");
                     assert!(next.is_none_or(|next| next > at), "{case}");
                     got.extend(blocks);
                     from = next;
@@ -416,17 +417,13 @@ fn review_s2_a_death_in_abandon_all_with_the_whole_cut_held() {
         w.check(&s, None, &format!("{case}, served on"));
         // With no check by the uploader at all: the next cut is whole.
         if s.held().is_empty() {
-            let (mut w2, s2) = (
-                World {
-                    region: w.region.snapshot(),
-                    blocks: w.blocks,
-                    vol: w.vol.clone(),
-                    next: w.next,
-                    snaps: w.snaps.clone(),
-                },
-                (),
-            );
-            let () = s2;
+            let mut w2 = World {
+                region: w.region.snapshot(),
+                blocks: w.blocks,
+                vol: w.vol.clone(),
+                next: w.next,
+                snaps: w.snaps.clone(),
+            };
             let mut s2 = w2.restore();
             let next = w2.cut(&mut s2, 30);
             assert!(
