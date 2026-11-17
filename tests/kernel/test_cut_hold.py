@@ -125,6 +125,53 @@ class Parsing(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class Loop(unittest.TestCase):
+    """The holder's loop: a pause writes what is held and steps no more;
+    the leave file ends it between two steps, before any stop's drain."""
+
+    class Fake:
+        def __init__(self, files):
+            self.files, self.steps = files, 0
+            self.d = type('D', (), {'log': io.StringIO()})()
+
+        def held(self):
+            return [{'number': 3, 'group': 9, 'phase': 'uploading', 'opens': 'itself', 'blocks': 2}]
+
+        def step(self):
+            self.steps += 1
+            return True
+
+    def test_pause_then_leave(self):
+        d = tempfile.mkdtemp()
+        try:
+            stop, pause, leave = (os.path.join(d, n) for n in ('stop', 'pause', 'leave'))
+            h = self.Fake(d)
+            naps = []
+
+            def sleep(_):
+                naps.append(h.steps)
+                if len(naps) == 1:
+                    with open(os.path.join(d, 'pause.held')) as f:
+                        self.assertEqual(f.read(), '3 9 uploading itself 2\n')
+                if len(naps) == 3:
+                    open(leave, 'w').close()
+
+            def step():
+                h.steps += 1
+                if h.steps == 2:
+                    open(pause, 'w').close()
+                return True
+            h.step = step
+            self.assertTrue(ch.loop(h, stop, pause, leave, sleep))
+            self.assertEqual(h.steps, 2, 'no step while paused')
+            self.assertIn('\tleft\n', h.d.log.getvalue())
+            os.remove(leave)
+            open(stop, 'w').close()
+            self.assertFalse(ch.loop(h, stop, pause, leave, sleep))
+        finally:
+            shutil.rmtree(d)
+
+
 class AgainstAFake(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

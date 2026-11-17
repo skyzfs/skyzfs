@@ -117,7 +117,7 @@ shift $(( $# >= 2 ? 2 : 1 ))
 ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
 # Only where the daemon holds cuts (CUT_HOLD=1): what the ten above
 # never make the daemon do (M2.T3).
-HELD_ONLY="bound edges"
+HELD_ONLY="bound edges takeover"
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
@@ -146,6 +146,7 @@ for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
 VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
+NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
@@ -221,6 +222,7 @@ cleanup() {
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
     for l in "$VLOOP" "$LLOOP" "$MLOOP" "$SLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
     [ -z "$MH_SAVED" ] || mmp_restore
+    [ ! -w "$NOFLUSH" ] || echo 0 > "$NOFLUSH"
     exit "$rc"
 }
 trap cleanup EXIT
@@ -257,30 +259,81 @@ serve_end() {
     done
     return 1
 }
-# The volume, served by the daemon with its request log: DEV is its device.
-begin_daemon() {
-    local _i
-    rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
-    timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
-        || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
+# K: serve the volume with its request log, the K-th instance on it (1:
+# the volume's first); DEV is its device. The instance takes the
+# kernel's device over where there is one, else creates it:
+# DIR/instances.tsv says which for each pid, from serve's line "serving
+# device N (taken over)" or "(added)". With held cuts, its status once it
+# is ready goes to DIR/status-start-K.txt (stage 2b).
+serve_start() {
+    local k=$1 slog=$RDIR/serve.log _i kind=""
+    [ "$k" = 1 ] || slog=$RDIR/serve-$k.log
     local hold=()
     [ "$HOLD" != 1 ] || hold=(--hold-cuts)
-    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$RDIR/serve.log" &
+    "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$slog" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do
         DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$VOL.ready" | head -n 1)
-        [ -z "$DEV" ] || [ ! -b "$DEV" ] || break
-        kill -0 "$SERVE_PID" 2>/dev/null || { SERVE_PID=""; rig_error "skyzfsd serve ended before it was ready: $(tail -n 3 "$RDIR/serve.log")"; }
+        kind=$(sed -n 's/.*serving device [0-9]* (\(taken over\|added\)).*/\1/p' "$slog" | head -n 1)
+        [ -z "$DEV" ] || [ ! -b "$DEV" ] || [ -z "$kind" ] || break
+        kill -0 "$SERVE_PID" 2>/dev/null || { SERVE_PID=""; rig_error "skyzfsd serve $k ended before it was ready: $(tail -n 3 "$slog")"; }
         sleep 0.25
     done
-    [ -n "$DEV" ] && [ -b "$DEV" ] || rig_error "skyzfsd serve was not ready in 120 s"
+    [ -n "$DEV" ] && [ -b "$DEV" ] && [ -n "$kind" ] || rig_error "skyzfsd serve $k was not ready, or did not say how, in 120 s"
+    printf '%s\t%s\n' "$SERVE_PID" "${kind/ /-}" >> "$RDIR/instances.tsv"
+    if [ "$HOLD" = 1 ]; then
+        for _i in $(seq 1 40); do
+            timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status-start-$k.txt" 2>&1 \
+                && grep -q '^cut_state ' "$RDIR/status-start-$k.txt" && break
+            sleep 0.25
+        done
+        grep -q '^cut_state ' "$RDIR/status-start-$k.txt" \
+            || rig_error "no status with cut_state 10 s after serve $k was ready: $(tail -n 2 "$RDIR/status-start-$k.txt")"
+    fi
+    log "$NAME: skyzfsd serve $k on $DEV, the device $kind"
+}
+# The holder beside the daemon SERVE_PID. Each holder adds to the same
+# files and writes onto the same image (cut_hold.py).
+holder_start() {
+    rm -f "${WORK:?}/hold.pause" "$WORK/hold.pause.held" "$WORK/hold.leave"
+    CUT_HOLD_PAUSE="$WORK/hold.pause" CUT_HOLD_LEAVE="$WORK/hold.leave" python3 -I "$HERE/cut_hold.py" "$RDIR" \
+        "$SERVE_PID" "$VOL" "$RUN" "$WORK/held.img" $((VDEV_MB << 20)) "$WORK/hold.stop" "$SKYZFSD" 2>> "$RDIR/holder.err" &
+    HOLD_PID=$!
+}
+# Wait for the holder's first written cut: its step ends with the
+# release, so a holder asked to leave after this has committed one, and
+# the intent map is taken up at the next start (with no committed cut the
+# daemon begins it anew, which the check then allows).
+holder_wrote_one() {
+    local _i
+    for _i in $(seq 1 300); do [ -s "$RDIR/held.tsv" ] && return 0; sleep 1; done
+    rig_error "the holder wrote no cut in 300 s: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+}
+# The holder ends between two steps and drains nothing: what the daemon
+# holds stays held for the next instance's holder.
+holder_leave() {
+    local _i rc=0
+    touch "$WORK/hold.leave"
+    for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$HOLD_PID" 2>/dev/null; then
+        kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        rig_error "the holder did not leave 720 s after it was asked: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+    fi
+    wait "$HOLD_PID" 2>/dev/null || rc=$?
+    HOLD_PID=""
+    rm -f "$WORK/hold.leave"
+    [ "$rc" = 0 ] || rig_error "the holder ended with $rc when asked to leave: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+}
+# The volume, served by the daemon with its request log.
+begin_daemon() {
+    rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
+    timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
+        || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
+    serve_start 1
     : > "$RDIR/marks.tsv"
     if [ "$HOLD" = 1 ]; then
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
-        rm -f "$WORK/hold.pause"
-        CUT_HOLD_PAUSE="$WORK/hold.pause" python3 -I "$HERE/cut_hold.py" "$RDIR" "$SERVE_PID" "$VOL" "$RUN" \
-            "$WORK/held.img" $((VDEV_MB << 20)) "$WORK/hold.stop" "$SKYZFSD" 2> "$RDIR/holder.err" &
-        HOLD_PID=$!
+        holder_start
     fi
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
@@ -631,6 +684,91 @@ rec_edges() {
     hold_go
     load 1
     export_pool
+}
+
+# takeover (held cuts only; stage 2b): the daemon started again on the
+# volume three times, its holder handed on each time (it leaves, and a
+# new one starts beside the next instance):
+# (a) killed with -9 while the pool writes and syncs, and taken over;
+# (b) killed with -9 on an idle pool with a mark waiting (a group synced
+#     with zfs_nocacheflush: its uberblocks applied, no flush after
+#     them), and taken over: the first flush after carries the mark's
+#     cut (design §5.2, "leaves the mark to the next instance");
+# (c) a mark waiting again, the pool exported, the daemon stopped and
+#     its device deleted, then served again: a created device, where
+#     the mark is gone ("a mark does not outlive the attachment").
+# The marks noflush-begin and noflush-end bound the groups synced with
+# no flush, which the check leaves out of the sessions where the
+# reference does not cut them.
+noflush() { mark noflush-begin; echo 1 > "$NOFLUSH"; }
+flushing() { echo 0 > "$NOFLUSH"; mark noflush-end; }
+kill_serve() {
+    kill -9 "$SERVE_PID" 2>/dev/null || rig_error "kill -9 $SERVE_PID failed: the daemon had ended ($(tail -n 2 "$RDIR"/serve*.log | tr '\n' ' '))"
+    wait "$SERVE_PID" 2>/dev/null || true
+    SERVE_PID=""
+}
+rec_takeover() {
+    local w k
+    [ -w "$NOFLUSH" ] || rig_error "no $NOFLUSH to write"
+    create_pool
+    load 2
+    # (a)
+    holder_wrote_one
+    holder_leave
+    # Files of 1 MiB, each synced, until the stop file (at most 2000).
+    rm -f "$WORK/writer.stop"
+    ( k=0
+      while [ ! -e "$WORK/writer.stop" ] && [ "$k" -lt 2000 ]; do
+          k=$((k + 1))
+          dd if=/dev/urandom of="$MNT/t$((k % 40))" bs=64K count=16 status=none
+          zpool sync "$POOL"
+      done
+      echo "$k files" ) > "$RDIR/takeover-writer.log" 2>&1 &
+    w=$!
+    sleep 3
+    kill -0 "$w" 2>/dev/null || rig_error "the writer had ended before the kill: $(tail -n 2 "$RDIR/takeover-writer.log")"
+    kill_serve
+    serve_start 2
+    holder_start
+    sleep 3
+    touch "$WORK/writer.stop"
+    for k in $(seq 1 300); do kill -0 "$w" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$w" 2>/dev/null; then
+        kill -9 "$w" 2>/dev/null
+        rig_error "the writer did not end 300 s after the take-over"
+    fi
+    wait "$w" || rig_error "the writer failed across the take-over: $(tail -n 2 "$RDIR/takeover-writer.log")"
+    load 1
+    # (b)
+    holder_leave
+    z 60 zpool sync "$POOL"
+    noflush
+    dd if=/dev/urandom of="$MNT/nf1" bs=64K count=16 status=none
+    z 60 zpool sync "$POOL"
+    kill_serve
+    serve_start 3
+    flushing
+    holder_start
+    load 2
+    # (c)
+    holder_leave
+    noflush
+    dd if=/dev/urandom of="$MNT/nf2" bs=64K count=16 status=none
+    z 60 zpool sync "$POOL"
+    export_pool
+    kill -TERM "$SERVE_PID" 2>/dev/null || true
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
+    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve-3.log")"
+    timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach-3.log" 2>&1 \
+        || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach-3.log")"
+    serve_start 4
+    flushing
+    holder_start
+    import_pool
+    load 2
+    export_pool
+    awk -F '\t' '{ print $2 }' "$RDIR/instances.tsv" | tr '\n' ' ' | grep -qx 'added taken-over taken-over added ' \
+        || rig_error "the instances were $(cut -f 2 "$RDIR/instances.tsv" | tr '\n' ' '), not added, taken over twice, added"
 }
 
 rec_full() {

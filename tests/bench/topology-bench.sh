@@ -2397,6 +2397,17 @@ fsync_test() { # the commit path with nothing else running: pg_test_fsync on the
     rm -f "$d/test"; rmdir "$d" 2>/dev/null || true
     log "$TOPO: one 8 kB write + sync on the WAL filesystem: $(awk '/one 8kB write/ { on = 1; next } /^Compare/ { on = 0 } on && /usecs\/op/ { printf "%s=%sus ", $1, $(NF - 1) }' "$OUT/$TOPO.fsync")"
 }
+# The releaser's line in a snapshot: "skzrel COUNT RUNNING LAST", COUNT
+# the lines of FILE that begin with a digit (cut_release.py writes one
+# per release), RUNNING 1 while PID lives, LAST the file's last line
+# with its blanks squeezed, at most 300 characters (a row's JSON reads
+# it: `release`).
+skz_release_line() { # FILE PID
+    local n last
+    n=$(awk '/^[0-9]/ { n++ } END { print n + 0 }' "$1" 2>/dev/null) || n=0
+    last=$(tail -n 1 "$1" 2>/dev/null | tr -s ' \t' ' ' | cut -c1-300) || last=""
+    echo "skzrel ${n:-0} $( { [ -n "$2" ] && kill -0 "$2" 2>/dev/null; } && echo 1 || echo 0) $last"
+}
 snapshot() { # file
     {
         diag_stats
@@ -2441,7 +2452,7 @@ snapshot() { # file
         # far, whether it is still running, and its last line, so that
         # the row says what it did in the window.
         if [ -n "$SKZ_UP" ] && [ -n "$SKZ_RELEASE" ]; then
-            echo "skzrel $(cat "$OUT/skz-releases.tsv" 2>/dev/null | awk '/^[0-9]/ { n++ } END { print n + 0 }') $( { [ -n "$SKZ_RELEASER" ] && kill -0 "$SKZ_RELEASER" 2>/dev/null; } && echo 1 || echo 0) $(tail -n 1 "$OUT/skz-releases.tsv" 2>/dev/null | tr -s ' \t' ' ' | cut -c1-300)"
+            skz_release_line "$OUT/skz-releases.tsv" "$SKZ_RELEASER"
         fi
     } > "$1"
 }

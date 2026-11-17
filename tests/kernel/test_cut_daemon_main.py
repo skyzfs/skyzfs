@@ -22,12 +22,15 @@ import cut_ref  # noqa: E402
 import test_cut_daemon_check as t  # noqa: E402
 
 
-def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None):
+def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
+              split=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
     files as a right daemon leaves them, with holder(written, blocks,
-    final) changing them in place."""
+    final) changing them in place. split: (k, kind) splits the log in two
+    instances at the k-th cut (t.split_log), the second having
+    `taken-over` or `added` the device."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
@@ -40,7 +43,13 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                                 f'\t{t.PID}\tstart\t0\t-\t-\t-\t64\n1015\t{t.PID}\tcuts\t-\t-\t-\t-\tbegun\n', 1)
             written, blocks, final = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
             holder(written, blocks, final)
-            t.holder_files(d, written, blocks, final)
+            starts = (t.START_STATUS,)
+            if split:
+                text = t.split_log(text, split[0])
+                with open(os.path.join(d, 'instances.tsv'), 'w') as f:
+                    f.write(f'{t.PID2}\t{split[1]}\n')
+                starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
+            t.holder_files(d, written, blocks, final, starts=starts)
             status = status or held_status(records, read, dev, cs)
         return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name)
     finally:
@@ -215,6 +224,41 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=lambda written, blocks, final: None, as_name='bound')
         self.assertEqual(lines['cuts_abandoned'][0], 'FAIL', lines['cuts_abandoned'])
         self.assertEqual(rc, 1)
+
+    def test_two_instances(self):
+        """A take-over between a flush's receipt and its barrier: the
+        reference cuts at the flush the next instance is handed again,
+        the numbers count on, the held cuts are written across it, and
+        the rule mark-dropped is caught; the rule mark-kept is not, the
+        device not having been created, so as takeover the check fails
+        on that control's row alone. The same log with the device
+        created is a verdict: the mark is gone, and the daemon's cut
+        there is one the reference has not."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover')
+        for key in ('cuts', 'cut_numbers', 'status', 'cut_state', 'held_content', 'instance_1', 'instance_2'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertIn('took the device over', lines['instance_2'][1])
+        self.assertEqual(lines['ctl_mark-dropped'][0], 'CAUGHT', lines['ctl_mark-dropped'])
+        self.assertNotIn('DIFFERS', lines['ctl_mark-dropped'][1])
+        self.assertEqual(lines['ctl_mark-kept'][0], 'SAME', lines['ctl_mark-kept'])
+        self.assertIn('DIFFERS', lines['ctl_mark-kept'][1])
+        self.assertEqual(rc, 1)
+        # as life, whose table says same for both
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status)
+        self.assertIn('DIFFERS', lines['ctl_mark-dropped'][1])
+        self.assertEqual(rc, 1)
+        rc, lines = recording(holder=none, split=(k, 'added'), status=status, as_name='takeover')
+        self.assertEqual(lines['cuts'][0], 'FAIL', lines['cuts'])
+        self.assertIn('created the device', lines['instance_2'][1])
+        self.assertEqual(rc, 1)
+        # and the first status's state must be begun
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), as_name='takeover')
+        self.assertEqual(lines['cut_state'][0], 'FAIL', lines['cut_state'])
 
     def test_a_recording_with_no_row(self):
         rc, lines = recording(as_name='nosuch')
