@@ -1,0 +1,2 @@
+V5 the intent map's checksum is looked at before its version: KILLED by 1: a_map_that_is_not_whole_or_not_this_volumes_is_not_taken_up
+git status --short: clean

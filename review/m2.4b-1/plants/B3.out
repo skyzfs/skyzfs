@@ -1,0 +1,2 @@
+B3 a sync of the copies that succeeds abandons its cut too: KILLED by 1: a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded
+git status --short: clean

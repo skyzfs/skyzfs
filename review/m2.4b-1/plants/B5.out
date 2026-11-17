@@ -1,0 +1,2 @@
+B5 sync_cut_copies syncs nothing and says the sync succeeded: KILLED by 2: a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded, a_sync_of_the_copies_is_for_the_cut_being_uploaded_one_at_a_time
+git status --short: clean

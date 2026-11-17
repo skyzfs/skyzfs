@@ -1,0 +1,2 @@
+C12 blocks_from masks the summary's first word, not the word of the block asked: SURVIVED
+git status --short: clean

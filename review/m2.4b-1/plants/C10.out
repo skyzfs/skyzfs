@@ -1,0 +1,2 @@
+C10 blocks_from does not mask the summary below the first word: KILLED by 1: a_cut_read_in_slices_holds_each_block_as_it_reads_alone
+git status --short: clean

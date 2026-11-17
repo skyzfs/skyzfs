@@ -1,0 +1,2 @@
+V1 the start does not read the old header before the region is made again: KILLED by 1: a_cut_state_of_version_1_is_refused_for_its_version
+git status --short: clean

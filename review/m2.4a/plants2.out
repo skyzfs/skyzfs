@@ -8,3 +8,16 @@ A5 put_sealed seals and PUTs the open segment too: KILLED by 1: sealed_segments_
 A7 put_sealed goes on after a failed PUT and reports no error: KILLED by 1: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
 N1 put_sealed as it was at dcf2df3: the sealed list is emptied only after the loop: KILLED by 1: a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place
 N2 a segment is recorded as PUT before its PUT ends: KILLED by 2: a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place, a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
+B1 the commit lists the segments PUT early after those it PUTs itself: KILLED by 1: sealed_segments_are_put_before_the_commit_and_leave_memory
+B2 a commit that lands keeps its list of segments PUT early: KILLED by 1: the_commit_after_one_with_segments_put_early_lists_only_its_own
+B3 a commit that fails forgets the segments PUT early: KILLED by 1: a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once
+B4 a discard keeps the list of segments PUT early: KILLED by 1: discarded_writes_take_their_put_segments_out_of_the_next_commit
+C1 the group goes into no commit: KILLED by 7: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again, a_commit_with_ops_lands_them_with_the_head_swap, a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole, a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once, a_group_goes_into_the_next_commit_only, a_group_or_ops_without_writes_still_make_a_commit, the_swap_and_its_row_land_together_or_not_at_all
+C2 a commit that lands keeps the group for the next: KILLED by 1: a_group_goes_into_the_next_commit_only
+C3 a commit that fails loses the group: KILLED by 3: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again, a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once, a_group_goes_into_the_next_commit_only
+C4 a group with nothing written makes no commit: KILLED by 1: a_group_or_ops_without_writes_still_make_a_commit
+C5 ops with nothing written make no commit: KILLED by 1: a_group_or_ops_without_writes_still_make_a_commit
+L1 a discard keeps the group: KILLED by 1: a_discard_or_a_rollback_gives_up_the_group
+L2 a rollback keeps the group: KILLED by 1: a_discard_or_a_rollback_gives_up_the_group
+D1 the head an engine holds after a commit with ops keeps the old generation: KILLED by 1: a_commit_with_ops_lands_them_with_the_head_swap
+D2 the index of an op that did not hold counts the swap: KILLED by 1: a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again

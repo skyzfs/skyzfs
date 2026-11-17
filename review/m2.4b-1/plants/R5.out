@@ -1,0 +1,2 @@
+R5 a start that takes a state up names it anew: KILLED by 3: a_death_after_the_commit_leaves_the_cut_to_release_or_named_as_committed, a_start_lost_after_it_trusted_the_state_leaves_it_to_the_next, a_state_keeps_the_name_of_the_start_that_began_it
+git status --short: clean

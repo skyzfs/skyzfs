@@ -1,0 +1,2 @@
+V3 the header's version is read whatever its magic: SURVIVED
+git status --short: clean

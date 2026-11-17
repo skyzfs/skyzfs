@@ -1,0 +1,2 @@
+C13 blocks_from reads the summary from the word after the block asked's: KILLED by 2: a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_failed_read_of_the_cut_being_uploaded_abandons_it
+git status --short: clean

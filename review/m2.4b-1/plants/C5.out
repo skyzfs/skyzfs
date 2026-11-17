@@ -1,0 +1,2 @@
+C5 a copy is read from the image at its slot: KILLED by 2: a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_slice_of_a_cut_reads_each_run_in_one_read
+git status --short: clean

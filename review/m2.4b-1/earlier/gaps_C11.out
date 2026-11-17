@@ -1,0 +1,40 @@
+with the plant C11 blocks_from reads the summary from its first word on, whatever block is asked:
+  test inplace::state::review_m24b1::review_s1_a_death_at_each_store_of_abandon_all ... S1 flushing true: 35 deaths, all right; the start merged cut 3 into cut 4 at 7 of them; (counted, held) at the start: {(0, 2): 2, (1, 1): 5, (1, 2): 4, (2, 1): 11, (3, 0): 13}
+  S1 flushing false: 25 deaths, all right; the start merged cut 3 into cut 4 at 0 of them; (counted, held) at the start: {(0, 2): 2, (1, 1): 10, (2, 0): 13}
+  test inplace::state::review_m24b1::review_s2_a_death_in_abandon_all_with_the_whole_cut_held ... S2: 32 deaths, the oldest cut held whole at each
+  test inplace::state::review_m24b1::review_s3_map_from_over_several_words_of_summary ... FAILED
+  test inplace::tests::cuts::review_m24b1::review_t1_a_mismatch_while_a_cuts_flush_is_under_way ... T1 (the flush fails: false): two cuts abandoned and counted; cut 4 is the whole volume as at its instant
+  T1 (the flush fails: true): two cuts abandoned and counted, the failed flush changes nothing
+  test inplace::tests::cuts::review_m24b1::review_t3_a_slice_into_an_unaligned_buffer ... T3 (direct): a slice of cut 1 into a buffer one byte off a block's alignment: Err(InvalidInput); held before [(1, Uploading), (2, Waiting)], after [(2, Uploading)]; abandoned 1
+  T3 (direct): read_cut into the same buffer: Err(InvalidInput); held after [(1, Uploading), (2, Waiting)]; abandoned 0
+  T3 (through the cache): a slice of cut 1 into a buffer one byte off a block's alignment: Ok([0]); held before [(1, Uploading), (2, Waiting)], after [(1, Uploading), (2, Waiting)]; abandoned 0
+  T3 (through the cache): read_cut into the same buffer: Ok(true); held after [(1, Uploading), (2, Waiting)]; abandoned 0
+  test inplace::tests::cuts::review_m24b1::review_t4_runs_where_blocks_and_slots_do_not_go_together ... T4 (IoMode { direct: true, threads: 8 }): cut 2 holds [40, 104, 130, 132, 134, 135, 140, 141, 142, 150, 151, 168, 232]; one slice read the image 4 times and the copies 7 times
+  T4 (IoMode { direct: true, threads: 1 }): cut 2 holds [40, 104, 130, 132, 134, 135, 140, 141, 142, 150, 151, 168, 232]; one slice read the image 4 times and the copies 7 times
+  T4 (IoMode { direct: true, threads: 0 }): cut 2 holds [40, 104, 130, 132, 134, 135, 140, 141, 142, 150, 151, 168, 232]; one slice read the image 4 times and the copies 7 times
+  T4 (IoMode { direct: false, threads: 0 }): cut 2 holds [40, 104, 130, 132, 134, 135, 140, 141, 142, 150, 151, 168, 232]; one slice read the image 4 times and the copies 7 times
+  test inplace::tests::cuts::review_m24b1::review_t5_the_bound_abandons_the_cut_between_its_commit_and_its_release ... T5: cut 2 was committed and then abandoned at the bound; release_cut(2) says false; the intent map names Some((1, 7)); the next cut is Some((3, Uploading, 1)), whole: false
+  test inplace::tests::cuts::review_m24b1::review_t6_a_copy_whose_slot_follows_a_blocks_number ... T6 (IoMode { direct: true, threads: 8 }): cut 2 holds [0, 1, 2, 40, 104, 168, 200, 201, 232], each block as at its instant
+  T6 (IoMode { direct: true, threads: 1 }): cut 2 holds [0, 1, 2, 40, 104, 168, 200, 201, 232], each block as at its instant
+  T6 (IoMode { direct: true, threads: 0 }): cut 2 holds [0, 1, 2, 40, 104, 168, 200, 201, 232], each block as at its instant
+  T6 (IoMode { direct: false, threads: 0 }): cut 2 holds [0, 1, 2, 40, 104, 168, 200, 201, 232], each block as at its instant
+  test review_r1_old_short_and_odd_headers_of_the_cut_state ... R1: a state of this version is 1051856 bytes
+  R1: version 1, two words shorter (as version 1 left it) (1051840 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 1, the length of version 2 (1051856 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 1, one byte longer (1051857 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 1, cut to its 16 bytes of header (16 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 1, cut to 15 bytes (15 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: the magic alone, 8 bytes (8 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: empty (0 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 2, two words shorter (1051840 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 2, one byte shorter (1051855 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 0, two words shorter (1051840 bytes): Some(Begun("the cut state is of version 0, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version 3, two words shorter (1051840 bytes): Some(Begun("the cut state is of version 3, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: version u64::MAX, two words shorter (1051840 bytes): Some(Begun("the cut state is of version 18446744073709551615, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  R1: another magic, version 1, two words shorter (1051840 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
+  thread 'inplace::state::review_m24b1::review_s3_map_from_over_several_words_of_summary' (7946) panicked at crates/skyzfs-local/src/inplace/state/review_m24b1.rs:489:13:
+  assertion `left == right` failed: cut 2 from block 4096, 1 blocks
+  error: test failed, to rerun pass `-p skyzfs-local --lib`
+  error: 1 target failed:
+  in all: 8 passed, 1 failed
+git status --short: clean

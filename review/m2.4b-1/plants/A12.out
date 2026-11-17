@@ -1,0 +1,2 @@
+A12 is_whole_cut says yes for every held cut: KILLED by 2: a_mismatch_abandons_every_held_cut_and_the_next_cut_holds_the_whole_volume, a_mismatch_abandons_every_held_cut_and_the_next_cut_is_whole
+git status --short: clean

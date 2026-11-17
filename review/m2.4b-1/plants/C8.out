@@ -1,0 +1,2 @@
+C8 a whole cut's slice that ends at the volume's end says the map goes on: KILLED by 2: a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_slice_of_a_cut_not_held_or_into_a_short_buffer_is_refused
+git status --short: clean

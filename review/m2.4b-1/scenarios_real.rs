@@ -61,7 +61,7 @@ fn review_r1_old_short_and_odd_headers_of_the_cut_state() {
         if name.starts_with("version 1, two words") || name.starts_with("version 1, the length") {
             assert!(said.contains("version 1,"), "{name}: {said}");
         }
-        if name.starts_with("version 2") {
+        if name.starts_with("version 2") || name.starts_with("another magic") {
             assert!(!said.contains("version"), "{name}: {said}");
         }
     }

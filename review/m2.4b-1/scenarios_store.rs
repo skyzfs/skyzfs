@@ -289,3 +289,47 @@ fn review_t6_a_copy_whose_slot_follows_a_blocks_number() {
         println!("T6 ({case}): cut 2 holds {map:?}, each block as at its instant");
     }
 }
+
+/// T7. Blocks of the image two apart: a cut that holds blocks 10, 12,
+/// 14, 15 and 17, none changed since, reads each from its own place,
+/// and only 14 and 15 in one read.
+#[test]
+fn review_t7_blocks_of_the_image_two_apart() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(76, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        for block in 8u64..20 {
+            write(&mut store, block, 0x60 + block as u8).unwrap();
+        }
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1));
+        let own = [10u64, 12, 14, 15, 17];
+        for block in own {
+            write(&mut store, block, 0x20 + block as u8).unwrap();
+        }
+        group(&mut store, 200, 8, 80);
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        let map = store.cut_map(2);
+        for size in [1, 2, 3, 64] {
+            let (blocks, slices) = sliced(&mut store, 2, size);
+            assert_eq!(blocks.len(), map.len(), "{case}");
+            assert!(slices.iter().all(|(_, copied)| !copied), "{case}");
+            for (block, content) in blocks {
+                if own.contains(&block) {
+                    assert!(
+                        content == vec![0x20 + block as u8; BLOCK_USIZE],
+                        "{case}: block {block} of cut 2 in slices of {size} holds {:#x}",
+                        content[0]
+                    );
+                }
+            }
+        }
+        let image = disk.reads_of(crate::store::HOME_NAME);
+        let mut buf = Buf::filled(64, 0xEE);
+        store.read_cut_from(2, 0, &mut buf).expect("reads");
+        let image = disk.reads_of(crate::store::HOME_NAME) - image;
+        println!("T7 ({case}): cut 2 holds {map:?}; one slice read the image {image} times");
+        assert_eq!(image as usize, map.len() - 1, "{case}: only 14 and 15 are one read");
+    }
+}

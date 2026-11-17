@@ -1,0 +1,2 @@
+C11 blocks_from reads the summary from its first word on, whatever block is asked: SURVIVED
+git status --short: clean

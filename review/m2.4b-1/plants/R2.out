@@ -1,0 +1,2 @@
+R2 release_cut names a cut that waits as committed: KILLED by 1: a_mismatch_abandons_every_held_cut_and_the_next_cut_is_whole
+git status --short: clean
