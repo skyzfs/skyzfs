@@ -2937,7 +2937,9 @@ impl<D: Dir> InPlace<D> {
     /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
     /// and each run of blocks the image holds, or of copies in adjacent
     /// slots, in one read. A cut that is not held, and a buffer of no
-    /// block or of part of one, are refused.
+    /// block, are refused. The buffer is a [`Buf`], whole blocks aligned
+    /// for direct I/O, so that a caller's buffer cannot make a read fail
+    /// and abandon the cut being uploaded (review of M2.4b-1, N1).
     ///
     /// Slices of the cut being uploaded hold the cut whatever the queue
     /// does between them: that cut is the oldest held, so its map does
@@ -2947,17 +2949,12 @@ impl<D: Dir> InPlace<D> {
     /// made) is refused at the next. A read that fails abandons the cut
     /// if it is the one being uploaded (M2.4): its map goes to the cut
     /// that waits, which reads those blocks again.
-    pub fn read_cut_from(
-        &mut self,
-        number: u64,
-        from: u64,
-        buf: &mut [u8],
-    ) -> io::Result<CutSlice> {
+    pub fn read_cut_from(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice> {
         let block_bytes = skyzfs_blk::BLOCK_USIZE;
-        if buf.is_empty() || !buf.len().is_multiple_of(block_bytes) {
+        if buf.blocks() == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "a cut is read in whole blocks",
+                "a cut is read into a buffer of at least one block",
             ));
         }
         let not_held = || io::Error::new(io::ErrorKind::NotFound, "no such held cut");
@@ -3101,21 +3098,23 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// Held cut `number`, the one being uploaded, is committed in object
-    /// storage: let it go. Whether it was that cut. Called only after
-    /// the commit (M2.4); the test-hooks build's `release` command calls
-    /// it without one.
+    /// storage: let it go. Whether it was that cut; false changes
+    /// nothing. Called only after the commit (M2.4); the test-hooks
+    /// build's `release` command calls it without one.
     ///
     /// After it the intent map names the cut as its base (the cut
     /// state's id, the cut's number and its group), and clears the bits
     /// of the regions in which nothing changed after the cut's instant
     /// (`intent.rs`). The pages are written without a sync; one that
-    /// cannot be written fails the volume, as on the write path.
+    /// cannot be written fails the volume, as on the write path, and the
+    /// cut stays held (review of M2.4b-1).
     ///
     /// The intent map names the cut before the cut state lets it go, so
-    /// that a death between leaves the cut held for the uploader's check
-    /// to find in the row, and never a cut gone that the map does not
-    /// name: the regions it clears are those in which nothing changed
-    /// after the cut's instant, the same whether the cut is held or not.
+    /// that a death between, or a failed write of the map's pages, leaves
+    /// the cut held for the uploader's check to find in the row, and
+    /// never a cut gone that the map does not name: the regions it clears
+    /// are those in which nothing changed after the cut's instant, the
+    /// same whether the cut is held or not.
     pub fn release_cut(&mut self, number: u64) -> bool {
         let Some(group) = self
             .held_cuts()
@@ -3125,22 +3124,27 @@ impl<D: Dir> InPlace<D> {
         else {
             return false;
         };
-        self.intent_committed(number, group);
+        if !self.intent_committed(number, group) {
+            // The volume has failed, and the cut stays held for the next
+            // start's check, which finds it in the row.
+            return true;
+        }
         self.state
             .as_mut()
             .is_some_and(|state| state.release(number))
     }
 
     /// Cut `number` of group `group` is committed in object storage:
-    /// see [`InPlace::release_cut`].
-    fn intent_committed(&mut self, number: u64, group: u64) {
+    /// see [`InPlace::release_cut`]. False where the map's pages could
+    /// not be written, and the volume has failed.
+    fn intent_committed(&mut self, number: u64, group: u64) -> bool {
         let Some(state) = self.state.as_ref() else {
-            return;
+            return true;
         };
         let changed = state.changed_after(number);
         let id = state.id();
         let Some(intent) = &mut self.intent else {
-            return;
+            return true;
         };
         let region_blocks = intent.map.shape().region_blocks;
         let changed: Option<BTreeSet<u64>> = changed.map(|words| {
@@ -3163,7 +3167,9 @@ impl<D: Dir> InPlace<D> {
         if self.write_intent(false).is_err() {
             self.fail();
             self.settle_failed();
+            return false;
         }
+        true
     }
 }
 

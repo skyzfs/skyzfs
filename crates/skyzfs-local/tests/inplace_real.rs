@@ -855,6 +855,76 @@ fn a_cut_state_of_version_1_is_refused_for_its_version() {
     }
 }
 
+/// What the start says of a cut state's file whose length is not this
+/// version's, for each kind of header (review of M2.4b-1, G4): it names
+/// the version only where the file has the state's magic and a version
+/// other than this one, whatever the file's length; a file of this
+/// version, or of another magic, is "not there with the volume's
+/// length". In each case it begins a new state, the file has its full
+/// length again, and the start after takes that state up. The defects,
+/// planted by hand: the guard on this version taken out of the start's
+/// message, and the version read whatever the magic.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn the_start_names_the_version_of_a_cut_state_only_where_it_is_another() {
+    use skyzfs_local::inplace::CutsTakenUp;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let region = run_dir.path().join("cuts.state");
+    drop(start_holding(&dir, &region, BOOT, false));
+    let good = std::fs::read(&region).unwrap();
+    let full = good.len();
+    let with = |version: u64, len: usize| {
+        let mut bytes = good.clone();
+        bytes[8..16].copy_from_slice(&version.to_le_bytes());
+        bytes.resize(len, 0);
+        bytes
+    };
+    let mut other_magic = with(1, full - 16);
+    other_magic[0] ^= 1;
+    const ABSENT: &str = "the region was not there with the volume's length";
+    let cases: [(&str, Vec<u8>, &str); 10] = [
+        (
+            "version 1, of version 2's length",
+            with(1, full),
+            "of version 1,",
+        ),
+        (
+            "version 1, a byte longer",
+            with(1, full + 1),
+            "of version 1,",
+        ),
+        ("version 1, its header alone", with(1, 16), "of version 1,"),
+        ("version 0", with(0, full - 16), "of version 0,"),
+        ("version 3", with(3, full - 16), "of version 3,"),
+        ("version 2, two words shorter", with(2, full - 16), ABSENT),
+        ("version 2, a byte shorter", with(2, full - 1), ABSENT),
+        ("another magic", other_magic, ABSENT),
+        ("the magic alone", with(1, 8), ABSENT),
+        ("empty", Vec::new(), ABSENT),
+    ];
+    for (name, bytes, says) in cases {
+        std::fs::write(&region, &bytes).unwrap();
+        let store = start_holding(&dir, &region, BOOT, true);
+        match store.cuts_at_start() {
+            Some(CutsTakenUp::Begun(why)) => assert!(why.contains(says), "{name}: {why}"),
+            other => panic!("{name}: {other:?}"),
+        }
+        drop(store);
+        assert_eq!(
+            std::fs::metadata(&region).unwrap().len() as usize,
+            full,
+            "{name}"
+        );
+        let after = start_holding(&dir, &region, BOOT, true);
+        assert_eq!(after.cuts_at_start(), Some(&CutsTakenUp::TakenUp), "{name}");
+    }
+}
+
 /// Not a test of its own: the child of
 /// `a_held_cut_outlives_kill_9_in_its_mapped_region`. Writes block 5,
 /// cuts group 7, writes block 5 again, which copies it for the cut,
