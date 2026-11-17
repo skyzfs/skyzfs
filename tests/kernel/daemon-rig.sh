@@ -2370,6 +2370,16 @@ check_g() {
 # past the cache leaves none; one served through it leaves the 4096
 # pages), and what serve does when the image alone journals its data
 # (chattr +j on data=ordered).
+# With --hold-cuts (M2.T3 stage 2c, the review of #106), on a daemon
+# that has it: every serve of g.4 holds cuts. The refused start comes
+# before the cut state and the intent map are touched, so it leaves
+# intent.map and copies.img beside the image as they were (the rule
+# below names any file it rewrote) and every cuts.state under the run
+# directory too. The serve before it begins a state, the volume being
+# new; the serve after it begins one again where the refused start
+# wrote a new start token (design §5.2: a state is trusted only if it
+# names the generation of the start before this one), and may take it
+# up where the token is as it was.
 GJ_MIB=16
 # What a refused start may leave changed in the volume's directory (the
 # lead, M1.T30): nothing but the status file, and the start token. The
@@ -2411,7 +2421,23 @@ gj_files_judged() {
 }
 check_g_data_journal() {
     local img=$WORK/g-journal.img mnt=$WORK/g-journal loop="" link=$WORK/vol-gj a="" bad="" rc said before after mode
-    local cache="" attr j="" changed gone
+    local cache="" attr j="" changed="" gone="" hold=() st="" sb="" sa="" usage
+    # A daemon from before --hold-cuts (a negative control by daemon_ref)
+    # runs g.4 as it did.
+    usage=$(lim 30 "$SKYZFSD" help 2>&1)
+    [[ $usage == *--hold-cuts* ]] && hold=(--hold-cuts)
+    gj_state() { # -> the status's cut_state, a few seconds after ready
+        local i
+        for i in $(seq 1 40); do
+            st=$(lim 30 "$SKYZFSD" status --dir "$link" --run-dir "$RUN_DIR" 2>&1 | sed -n 's/^cut_state //p' | head -n 1)
+            [ -z "$st" ] || break
+            sleep 0.25
+        done
+        printf '%s' "${st:-none}"
+    }
+    gj_held() { # -> each cuts.state under the run directory, with its digest
+        find "$RUN_DIR" -name cuts.state -type f -exec sha256sum {} + 2>/dev/null | sort -k 2
+    }
     gj_mount() { # data mode -> 0 when mounted with it, as the mount table says
         lim 30 mount -o "data=$1" "$loop" "$mnt" >> "$OUT/gj-setup.log" 2>&1 || return 1
         mode=$(findmnt -n -o OPTIONS "$mnt" | tr ',' '\n' | sed -n 's/^data=//p')
@@ -2426,9 +2452,10 @@ check_g_data_journal() {
     }
     gj_serves() { # what: serve, measure, stop; 0 when it served
         local c
-        if serve_start "$SKYZFSD" "$link"; then
+        if serve_start "$SKYZFSD" "$link" "${hold[@]}"; then
+            [ ${#hold[@]} = 0 ] || st=$(gj_state)
             c=$(gj_cache)
-            a+="$1: served as $BDEV; "; cache+="$1: $c; "
+            a+="$1: served as $BDEV${hold[*]:+ with --hold-cuts, cut_state $st}; "; cache+="$1: $c; "
             kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
             return 0
         fi
@@ -2459,8 +2486,11 @@ check_g_data_journal() {
         pin data_journal_refused ERROR "the volume was not created on ext4 data=ordered: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
         gj_end; gj_obs; return
     fi
+    [ ${#hold[@]} != 0 ] || a+="this daemon has no --hold-cuts; "
     # 1: the control, before
+    st=""
     gj_serves "on data=ordered, before" || bad+="the serve before; "
+    [ ${#hold[@]} = 0 ] || [ "$st" = begun ] || bad+="the serve before, of a new volume, did not begin a cut state ($st); "
     lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
     if ! gj_mount journal; then
         pin data_journal_refused ERROR "the file system was not mounted again data=journal (the mount table says data=${mode:-nothing}): $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
@@ -2474,7 +2504,8 @@ check_g_data_journal() {
     # The digest read the whole image through the cache: evicted, so that
     # what the cache holds after the serve is the server's (Codex, #72).
     cache+="on data=journal, before the serve: $(lim 30 python3 -I "$HERE/cachestat.py" --drop "$mnt/vol/home.img" 2>&1 | head -n 1); "
-    serve_start "$SKYZFSD" "$link"; rc=$?
+    sb=$(gj_held)
+    serve_start "$SKYZFSD" "$link" "${hold[@]}"; rc=$?
     said=$(grep -m 1 'no direct I/O' "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)
     if [ $rc = 0 ]; then
         a+="on data=journal: SERVED as $BDEV; "; bad+="the volume was served on data=journal; "
@@ -2490,6 +2521,13 @@ check_g_data_journal() {
         gone=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^< [^ ]*  //p' | tr '\n' ' ')
         a+="files of the volume new or rewritten: ${changed:-none}; gone or rewritten: ${gone:-none}; "
         bad+=$(gj_files_judged "$changed" "$gone")
+        if [ ${#hold[@]} != 0 ]; then
+            sa=$(gj_held)
+            [ -n "$sb" ] || bad+="no cuts.state under the run directory after the serve before; "
+            if [ "$sb" = "$sa" ]; then a+="cuts.state as it was; "
+            else a+="cuts.state changed ($(diff <(echo "$sb") <(echo "$sa") | sed -n 's/^[<>] [^ ]*  //p' | sort -u | tr '\n' ' ')); "
+                bad+="the refused start changed a cuts.state; "; fi
+        fi
     fi
     lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
     # 3: not failed: the control, after
@@ -2497,7 +2535,15 @@ check_g_data_journal() {
         pin data_journal_refused ERROR "the file system was not mounted again data=ordered: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200) ($a)"
         gj_end; gj_obs; return
     fi
+    st=""
     gj_serves "on data=ordered again" || bad+="the serve after; "
+    if [ ${#hold[@]} != 0 ] && [ -n "$st" ]; then
+        if [[ " $changed $gone " == *" $GJ_START_TOKEN "* ]]; then
+            [ "$st" = begun ] || bad+="the serve after took up a state ($st) though the refused start wrote a new start token; "
+        else
+            [ "$st" = begun ] || [ "$st" = taken_up ] || bad+="the serve after has cut_state $st; "
+        fi
+    fi
     if [ -z "$bad" ]; then pin data_journal_refused PASS "$a"; else pin data_journal_refused FAIL "wrong: $bad$a"; fi
     # 4: the observation: the image alone journals its data.
     if ! lim 30 chattr +j "$mnt/vol/home.img" >> "$OUT/gj-setup.log" 2>&1; then
