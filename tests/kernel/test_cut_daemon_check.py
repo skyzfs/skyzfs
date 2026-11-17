@@ -313,7 +313,10 @@ def held_images(records, cs, op):
 START_STATUS = 'cuts 0\ncut_state begun\nintent_state begun\nintent_regions 128\nintent_named_at_start 128\n'
 
 
-def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 9 uploading itself 3\n',
+COMMITTED = '1\t> t1 held\n2\t> t2 release 1\n3\t< t2 ok (0 lines)\n'   # a release answered before every start
+
+
+def holder_files(d, written, blocks, final, log=COMMITTED, held_final='9 9 uploading itself 3\n',
                  status_held='cuts_held 1\n', starts=(START_STATUS,)):
     """The holder's files in recording directory d, and the status the rig
     read at each start (status-start-K.txt)."""
@@ -990,21 +993,42 @@ class TwoInstances(unittest.TestCase):
         inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
         second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
                   'intent_named_at_start 3\n')
-        for starts, want in (((START_STATUS, second), 0),
-                             ((START_STATUS, second.replace('intent_state taken_up', 'intent_state begun')), 1),
-                             ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1),
-                             ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1)):
+        # With no release answered before the second start, the daemon
+        # begins the intent map anew ("the intent map has no committed
+        # cut"), and may: either is taken.
+        late = f'1\t> t1 release 1\n{inst[1]["ns"] + 1}\t< t1 ok (0 lines)\n'
+        begun_map = second.replace('intent_state taken_up', 'intent_state begun')
+        for starts, want, log in (((START_STATUS, second), 0, COMMITTED),
+                                  ((START_STATUS, begun_map), 1, COMMITTED),
+                                  ((START_STATUS, begun_map), 0, late),
+                                  ((START_STATUS, second), 0, late),
+                                  ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1,
+                                   COMMITTED),
+                                  ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1,
+                                   COMMITTED)):
             d = tempfile.mkdtemp(prefix='cdc-inst-')
             try:
                 for k, st in enumerate(starts):
                     with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
                         f.write(st)
+                with open(os.path.join(d, 'holder.log'), 'w') as f:
+                    f.write(log)
                 got = []
                 rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs)
                 self.assertEqual(rc, want, got)
                 self.assertEqual([k for k, _, _ in got], ['instance_1', 'instance_2'])
+                self.assertEqual('no cut committed before it' in got[1][2], log is late)
             finally:
                 shutil.rmtree(d)
+
+
+class FirstCommit(unittest.TestCase):
+    def test_the_first_release_answered(self):
+        self.assertEqual(cdc.first_commit(COMMITTED), 3)
+        self.assertIsNone(cdc.first_commit('1\t> t1 held\n2\t< t1 ok (1 lines)\n3\t> t2 release 1\n'))
+        self.assertIsNone(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: not uploading\n'))
+        self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
+                                          '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
 
 
 class NoFlush(unittest.TestCase):

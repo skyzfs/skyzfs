@@ -720,6 +720,22 @@ def lost_at_kill(dcuts, ref, records):
     return None
 
 
+def first_commit(log):
+    """holder.log -> the time of the first release the daemon answered `ok`
+    (a commit, as an upload's will be), or None."""
+    asked = set()
+    for ln in log.splitlines():
+        f = ln.split('\t')
+        if len(f) != 2 or not f[0].isdigit():
+            continue
+        w = f[1].split()
+        if len(w) >= 3 and w[0] == '>' and w[2] == 'release':
+            asked.add(w[1])
+        elif len(w) >= 3 and w[0] == '<' and w[1] in asked and w[2] == 'ok':
+            return int(f[0])
+    return None
+
+
 def instance_lines(put, rdir, instances, dcuts, records):
     """Each instance's start with --hold-cuts (stage 2b): its `cuts` line,
     and its status read once it was ready (DIR/status-start-K.txt) ->
@@ -728,24 +744,37 @@ def instance_lines(put, rdir, instances, dcuts, records):
     The first start of a new volume begins a cut state and an intent
     map; each later one takes both up, whether it took the device over
     or created it, and its count goes on from the cuts counted before it
-    (the status was read after the start, so it may have counted more)."""
+    (the status was read after the start, so it may have counted more).
+    An intent map with no committed cut is begun anew at any start (the
+    daemon: "the intent map has no committed cut"), so a later start
+    wants it taken up only where the holder's log shows a release
+    answered before that start (the request log's clock), and takes
+    either otherwise."""
     rc = 0
     bounds = [r for r in records if 'instance' in r['flags']]
+    committed = first_commit(read_file(rdir, 'holder.log'))
     for k, inst in enumerate(instances):
         said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
         st = read_status(read_file(rdir, f'status-start-{k + 1}.txt'))
         want = 'begun' if k == 0 else 'taken_up'
+        want_intent = want
+        if k and (committed is None or committed > inst['ns']):
+            want_intent = ('begun', 'taken_up')
         before = 0 if k == 0 else sum(1 for d in dcuts if d['prefix'] < bounds[k - 1]['i'])
         bad = []
         if said != [want]:
             bad.append(f"its cuts line says {said or 'nothing'}")
-        for key in ('cut_state', 'intent_state'):
-            if st.get(key) != want:
+        for key, w in (('cut_state', want), ('intent_state', want_intent)):
+            if st.get(key) not in (w if isinstance(w, tuple) else (w,)):
                 bad.append(f'{key} {st.get(key)!r}')
         n = st.get('cuts', '')
         if not n.isdigit() or int(n) < before:
             bad.append(f'cuts {n!r} at the start, with {before} counted before it')
         how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
+        if isinstance(want_intent, tuple):
+            how += ', no cut committed before it'
+        want = (f"cut_state {want}, intent_state "
+                f"{' or '.join(want_intent) if isinstance(want_intent, tuple) else want_intent}")
         put(f'instance_{k + 1}', 'FAIL' if bad else 'PASS',
             (f"pid {inst['pid']} ({how}): " + '; '.join(bad) + f'; wanted {want}') if bad else
             f"pid {inst['pid']} ({how}): {want} by its cuts line and the status's cut_state and intent_state; "

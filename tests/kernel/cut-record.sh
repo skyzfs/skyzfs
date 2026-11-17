@@ -300,6 +300,15 @@ holder_start() {
         "$SERVE_PID" "$VOL" "$RUN" "$WORK/held.img" $((VDEV_MB << 20)) "$WORK/hold.stop" "$SKYZFSD" 2>> "$RDIR/holder.err" &
     HOLD_PID=$!
 }
+# Wait for the holder's first written cut: its step ends with the
+# release, so a holder asked to leave after this has committed one, and
+# the intent map is taken up at the next start (with no committed cut the
+# daemon begins it anew, which the check then allows).
+holder_wrote_one() {
+    local _i
+    for _i in $(seq 1 300); do [ -s "$RDIR/held.tsv" ] && return 0; sleep 1; done
+    rig_error "the holder wrote no cut in 300 s: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+}
 # The holder ends between two steps and drains nothing: what the daemon
 # holds stays held for the next instance's holder.
 holder_leave() {
@@ -704,6 +713,7 @@ rec_takeover() {
     create_pool
     load 2
     # (a)
+    holder_wrote_one
     holder_leave
     # Files of 1 MiB, each synced, until the stop file (at most 2000).
     rm -f "$WORK/writer.stop"
