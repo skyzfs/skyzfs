@@ -1911,3 +1911,179 @@ fn a_second_start_after_a_death_in_an_abandoning_counts_the_cut_once() {
     }
     assert!(deaths > 0);
 }
+
+/// The row in object storage is not what the held cuts were made
+/// against (M2.4, the uploader's check): every held cut is abandoned
+/// and counted once, their copies go with them, and the next cut holds
+/// the whole volume; the cut after it holds only its own changes.
+#[test]
+fn a_mismatch_abandons_every_held_cut_and_the_next_cut_holds_the_whole_volume() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let (mut state, mut io) = three_held(&region);
+    // Block 20 is in cut 2's map: cut 2 reads it from a copy now.
+    state.change(20, 1, &mut io).expect("the change");
+    let before = state.figures();
+    assert!(before.copied > 0);
+    assert!(!state.is_whole_cut(2), "cut 2 holds its own changes");
+    assert_eq!(state.abandon_all(), [2, 3, 4]);
+    assert!(state.held().is_empty());
+    let after = state.figures();
+    assert_eq!(after.abandoned, before.abandoned + 3, "each counted once");
+    assert_eq!(after.copied, 0, "the copies go with the cuts");
+    state.change(60, 1, &mut io).expect("the change");
+    let five = state.freeze(&marked(5), true);
+    assert!(state.is_whole_cut(five));
+    assert_eq!(state.map(five), (0..BLOCKS).collect::<Vec<_>>());
+    state.flushed(five);
+    assert!(state.release(five));
+    state.change(61, 1, &mut io).expect("the change");
+    let six = state.freeze(&marked(6), true);
+    assert!(!state.is_whole_cut(six));
+    assert_eq!(state.map(six), [61], "the cut after holds its own changes");
+}
+
+/// The same with no cut held: nothing is counted, and the next cut
+/// holds the whole volume.
+#[test]
+fn a_mismatch_with_no_cut_held_makes_the_next_cut_whole() {
+    let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+    let mut state = CutState::begin(region, SIZE, REFUSING_BOUND, OWNER, Mutants(0));
+    let mut disk = Disk {
+        image: vec![0; BLOCKS as usize],
+        copies: BTreeMap::new(),
+    };
+    state.change(3, 1, &mut disk).expect("the change");
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    assert!(state.release(1));
+    state.change(4, 1, &mut disk).expect("the change");
+    assert!(state.abandon_all().is_empty());
+    assert_eq!(state.figures().abandoned, 0);
+    let two = state.freeze(&marked(2), true);
+    assert!(state.is_whole_cut(two));
+    assert_eq!(state.map(two), (0..BLOCKS).collect::<Vec<_>>());
+}
+
+/// A death at any store while a mismatch abandons the held cuts, with
+/// `flushing` whether the newest's flush is under way: the start after
+/// it holds the newest of them, none skipped, the oldest being
+/// uploaded; the abandoning done again (the uploader checks again
+/// before any upload) leaves none held and the next cut whole. Each cut
+/// is counted once in all; with a flush under way the start may
+/// instead give the cut that waits to the newer one, as every start
+/// does (it takes the sync as the flush), and that cut is not counted.
+fn deaths_while_a_mismatch_abandons(flushing: bool) -> u64 {
+    quiet_deaths();
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+        let (mut state, _io) = three_held(&region);
+        if !flushing {
+            // Cut 4 takes cut 3's map and waits.
+            state.flushed(4);
+        }
+        let numbers: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+        let before = state.figures().abandoned;
+        region.die_at(death);
+        let done = catch_unwind(AssertUnwindSafe(|| state.abandon_all()));
+        region.revive();
+        match done {
+            Ok(abandoned) => {
+                assert_eq!(abandoned, numbers);
+                assert_eq!(state.figures().abandoned - before, numbers.len() as u64);
+                break;
+            }
+            Err(payload) => {
+                if payload.downcast_ref::<Lost>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        deaths += 1;
+        drop(state);
+        let mut state = CutState::restore(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0))
+            .map_err(|(e, _)| e)
+            .expect("the state");
+        let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+        let case = format!("flushing {flushing}, a death at store {death}: held {held:?}");
+        let merged = flushing && held.contains(&4) && !held.contains(&3) && held.len() < 3;
+        let suffix = numbers.ends_with(&held) || (merged && held == [2, 4]);
+        assert!(suffix, "{case}");
+        if let Some(oldest) = state.held().first() {
+            assert_eq!(oldest.phase, Phase::Uploading, "{case}");
+        }
+        let counted = state.figures().abandoned - before;
+        assert!(
+            counted + held.len() as u64 <= numbers.len() as u64,
+            "{case}"
+        );
+        assert_eq!(state.abandon_all(), held, "{case}");
+        let counted = state.figures().abandoned - before;
+        if flushing {
+            assert!(counted == 2 || counted == 3, "{case}: {counted} counted");
+        } else {
+            assert_eq!(counted, 2, "{case}: each cut counted once");
+        }
+        let next = state.freeze(&marked(9), true);
+        assert!(state.is_whole_cut(next), "{case}");
+        assert_eq!(state.map(next), (0..BLOCKS).collect::<Vec<_>>(), "{case}");
+    }
+    deaths
+}
+
+#[test]
+fn a_death_while_a_mismatch_abandons_the_held_cuts() {
+    for flushing in [false, true] {
+        let deaths = deaths_while_a_mismatch_abandons(flushing);
+        assert!(deaths > 3, "flushing {flushing}: {deaths} deaths");
+    }
+}
+
+/// A death at any store of a release (its commit in object storage has
+/// landed, M2.4): the start after it still holds the cut, as the one
+/// being uploaded and as it was marked, which the uploader's check
+/// finds in the row and releases; or the cut is gone. Either way the
+/// cut being uploaded next is made against it.
+#[test]
+fn a_death_in_a_release_leaves_the_cut_being_uploaded_or_gone() {
+    quiet_deaths();
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(REFUSING_BOUND)));
+        let (mut state, _io) = three_held(&region);
+        region.die_at(death);
+        let done = catch_unwind(AssertUnwindSafe(|| state.release(2)));
+        region.revive();
+        match done {
+            Ok(released) => {
+                assert!(released);
+                break;
+            }
+            Err(payload) => {
+                if payload.downcast_ref::<Lost>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        deaths += 1;
+        drop(state);
+        let mut state = CutState::restore(region.clone(), SIZE, REFUSING_BOUND, OWNER, Mutants(0))
+            .map_err(|(e, _)| e)
+            .expect("the state");
+        if let Some(two) = state.held().into_iter().find(|c| c.number == 2) {
+            assert_eq!(
+                (two.phase, two.state),
+                (Phase::Uploading, marked(2)),
+                "a death at store {death}"
+            );
+            assert!(state.release(2), "a death at store {death}");
+        }
+        let next = state.held().first().map(|c| (c.phase, c.lo));
+        assert_eq!(
+            next,
+            Some((Phase::Uploading, 2)),
+            "a death at store {death}: the next cut is made against cut 2"
+        );
+    }
+    assert!(deaths > 0);
+}

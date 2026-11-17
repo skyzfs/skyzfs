@@ -371,7 +371,7 @@ impl IntentMap {
         self.shape
     }
 
-    #[cfg(test)]
+    /// The newest cut committed, if the map names one.
     pub(crate) fn base(&self) -> Option<Base> {
         self.base
     }

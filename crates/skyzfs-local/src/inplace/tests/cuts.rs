@@ -3942,3 +3942,120 @@ fn the_store_level_test_notices_each_defect_of_the_intent_map() {
         assert!(caught, "the defect {mutant:#x} passed");
     }
 }
+
+/// The row in object storage is not what the held cuts were made
+/// against (M2.4, the uploader's check): the store abandons every held
+/// cut, counts each, and lets their copies go; its next cut holds the
+/// whole volume as at its instant. The committed cut that the intent
+/// map names stays as it was: nothing new was committed.
+#[test]
+fn a_mismatch_abandons_every_held_cut_and_the_next_cut_is_whole() {
+    let (_disk, mut store) = two_cuts_with_a_copy(66, ON_CALLER);
+    let id = store.cut_state_id().expect("the state's name");
+    assert!(store.cut_is_whole(1), "the first cut of a new state");
+    assert!(!store.release_cut(2), "cut 2 waits: it is not committed");
+    assert_eq!(store.committed_cut(), None, "a new map names no cut");
+    assert!(store.release_cut(1));
+    let committed = Some(CommittedCut {
+        state: id,
+        number: 1,
+        group: 7,
+    });
+    assert_eq!(store.committed_cut(), committed);
+    // Block 70 is in cut 2's map: cut 2 reads it from a copy now.
+    write(&mut store, 70, 0xD0).unwrap();
+    write(&mut store, 9, 0x99).unwrap();
+    group(&mut store, 300, 9, 90);
+    assert!(!store.cut_is_whole(2), "cut 2 holds its own changes");
+    assert!(store.cut_figures().copied > 0);
+    let abandoned = store.cut_figures().abandoned;
+    assert_eq!(store.abandon_all_cuts(), [2, 3]);
+    assert!(store.held_cuts().is_empty());
+    let figures = store.cut_figures();
+    assert_eq!(figures.abandoned, abandoned + 2, "each counted once");
+    assert_eq!(figures.copied, 0, "the copies go with the cuts");
+    assert_eq!(store.committed_cut(), committed);
+    write(&mut store, 11, 0xBB).unwrap();
+    group(&mut store, 400, 10, 100);
+    let four = store.held_cuts().last().map(|c| c.number);
+    assert_eq!(four, Some(4));
+    assert!(store.cut_is_whole(4));
+    assert_eq!(store.cut_map(4).len() as u64, VOLUME_BLOCKS);
+    write(&mut store, 70, 0xE0).unwrap();
+    assert_eq!(cut_block(&mut store, 4, 70), vec![0xD0; BLOCK_USIZE]);
+    assert_eq!(cut_block(&mut store, 4, 11), vec![0xBB; BLOCK_USIZE]);
+    assert_eq!(cut_block(&mut store, 4, 3), vec![0x33; BLOCK_USIZE]);
+}
+
+/// The commit in object storage landed and the daemon died before it
+/// let the cut go (M2.4, the lead's kill point for the uploader's check
+/// (a)): at every store of the release, the next daemon either holds
+/// the cut as the one being uploaded, under the same state's name, so
+/// that check (a) finds it in the row and releases it; or the cut is
+/// gone and the intent map already names it as the committed cut, so
+/// that the next cut's base is the row. The intent map names the cut
+/// before the cut state lets it go: the other order leaves a death in
+/// which the cut is gone and the intent map names the cut before it,
+/// and the uploader's check finds a mismatch.
+#[test]
+fn a_death_after_the_commit_leaves_the_cut_to_release_or_named_as_committed() {
+    state::tests::quiet_deaths();
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let disk = created(67, 0);
+        let region = region();
+        let mut store = start_on(&disk, 0, &region, ON_CALLER);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        write(&mut store, 6, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        let id = store.cut_state_id().expect("the state's name");
+        let committed = Some(CommittedCut {
+            state: id,
+            number: 1,
+            group: 7,
+        });
+        region.die_at(death);
+        let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.release_cut(1)));
+        region.revive();
+        let died = match lived {
+            Ok(released) => {
+                assert!(released);
+                false
+            }
+            Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        if died {
+            deaths += 1;
+            drop(store);
+            disk.kill();
+            store = start_on(&disk, 0, &region, ON_CALLER);
+            assert_eq!(
+                store.cut_state_id(),
+                Some(id),
+                "a death at store {death}: the state keeps its name"
+            );
+            let one = store.held_cuts().into_iter().find(|c| c.number == 1);
+            if let Some(one) = one {
+                assert_eq!(
+                    (one.phase, one.state.txg),
+                    (CutPhase::Uploading, 7),
+                    "a death at store {death}"
+                );
+                assert!(store.release_cut(1), "a death at store {death}");
+            }
+        }
+        assert_eq!(store.committed_cut(), committed, "a death at store {death}");
+        let next = store.held_cuts().first().map(|c| (c.number, c.phase, c.lo));
+        assert_eq!(
+            next,
+            Some((2, CutPhase::Uploading, 1)),
+            "a death at store {death}"
+        );
+        if !died {
+            break;
+        }
+    }
+    assert!(deaths > 0);
+}

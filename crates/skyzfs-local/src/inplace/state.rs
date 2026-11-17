@@ -1525,6 +1525,40 @@ impl<R: Region> CutState<R> {
         uploading && self.abandon() == Some(number)
     }
 
+    /// The row in object storage is not what the held cuts were made
+    /// against (M2.4, the uploader's check: no row, another cut, another
+    /// state, or a head another writer moved): every held cut is
+    /// abandoned, oldest first, each counted as at the bound, and the
+    /// whole volume counts as changed in the open epoch, so that the
+    /// next cut holds all of it. The numbers of the cuts abandoned.
+    ///
+    /// Each cut goes as [`CutState::abandon`] lets one go, so a death at
+    /// any store counts each once. The open epoch is marked only once
+    /// no cut is held: a held cut that counted the whole volume does so
+    /// until it is gone, since the mark moves the epoch that counts it.
+    /// After a death the uploader checks again before any upload and
+    /// does this again; with no cut held it only marks the open epoch.
+    pub fn abandon_all(&mut self) -> Vec<u64> {
+        let mut abandoned = Vec::new();
+        for _ in 0..HELD {
+            match self.abandon() {
+                Some(number) => abandoned.push(number),
+                None => break,
+            }
+        }
+        if self.held().is_empty() {
+            self.store(at::WHOLE, self.epoch());
+        }
+        abandoned
+    }
+
+    /// Whether held cut `number` holds the whole volume: the first cut
+    /// of a state begun with nothing known, the first after a mismatch,
+    /// or a cut that took such a cut's map. Its upload needs no base.
+    pub fn is_whole_cut(&self, number: u64) -> bool {
+        self.hold(number).is_some_and(|h| self.is_whole(&h.cut))
+    }
+
     /// The oldest held cut is abandoned at the bound. The one being
     /// uploaded gives its map to the cut that waits; with none waiting,
     /// to the one whose flush is under way; with neither, to the open

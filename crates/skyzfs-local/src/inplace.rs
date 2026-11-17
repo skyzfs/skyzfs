@@ -267,6 +267,7 @@ use skyzfs_uberblock::State;
 use state::CutState;
 
 pub use cuts::{Cut, Cuts, Seen, Watcher};
+pub use intent::Base as CommittedCut;
 pub use state::{
     Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase, DEFAULT_INTENT_REGION,
     MAX_INTENT_REGION, MIN_INTENT_REGION,
@@ -2818,6 +2819,47 @@ impl<D: Dir> InPlace<D> {
         self.state.as_ref().map(CutState::held).unwrap_or_default()
     }
 
+    /// The cut state's name (`CutState::id`), which the uploader puts in
+    /// a cut's row with its number and group: the numbers of cuts begin
+    /// again with each state. `None` for a store that holds no cut.
+    pub fn cut_state_id(&self) -> Option<[u8; 16]> {
+        self.state.as_ref().map(CutState::id)
+    }
+
+    /// The newest cut committed in object storage, as the intent map
+    /// names it: the base the held cuts were made against (M2.4: the
+    /// uploader's assumed base), which needs no object store to know.
+    /// `None` for a map that names none (one begun anew, before its
+    /// first commit) or a store that holds no cut.
+    pub fn committed_cut(&self) -> Option<CommittedCut> {
+        self.intent.as_ref().and_then(|intent| intent.map.base())
+    }
+
+    /// Whether held cut `number` holds the whole volume, so that its
+    /// upload needs no base: the first cut of a state begun with
+    /// nothing known, the first after [`InPlace::abandon_all_cuts`], or
+    /// a cut that took such a cut's map.
+    pub fn cut_is_whole(&self, number: u64) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.is_whole_cut(number))
+    }
+
+    /// The row in object storage is not what the held cuts were made
+    /// against (M2.4, the uploader's check): every held cut is
+    /// abandoned, each counted among the cuts abandoned, their copies
+    /// let go, and the next cut holds the whole volume. The numbers of
+    /// the cuts abandoned, oldest first. The intent map is left as it
+    /// is: nothing new was committed, and a start that does not take up
+    /// the cut state counts what the map names against a base the
+    /// uploader's check will find again that the row does not match.
+    pub fn abandon_all_cuts(&mut self) -> Vec<u64> {
+        self.state
+            .as_mut()
+            .map(CutState::abandon_all)
+            .unwrap_or_default()
+    }
+
     /// The cut state's figures, for the status: all 0 for a store that
     /// holds no cut.
     pub fn cut_figures(&self) -> CutFigures {
@@ -3068,20 +3110,25 @@ impl<D: Dir> InPlace<D> {
     /// of the regions in which nothing changed after the cut's instant
     /// (`intent.rs`). The pages are written without a sync; one that
     /// cannot be written fails the volume, as on the write path.
+    ///
+    /// The intent map names the cut before the cut state lets it go, so
+    /// that a death between leaves the cut held for the uploader's check
+    /// to find in the row, and never a cut gone that the map does not
+    /// name: the regions it clears are those in which nothing changed
+    /// after the cut's instant, the same whether the cut is held or not.
     pub fn release_cut(&mut self, number: u64) -> bool {
-        let group = self
+        let Some(group) = self
             .held_cuts()
             .into_iter()
-            .find(|cut| cut.number == number)
-            .map(|cut| cut.state.txg);
-        let released = self
-            .state
+            .find(|cut| cut.number == number && cut.phase == CutPhase::Uploading)
+            .map(|cut| cut.state.txg)
+        else {
+            return false;
+        };
+        self.intent_committed(number, group);
+        self.state
             .as_mut()
-            .is_some_and(|state| state.release(number));
-        if let (true, Some(group)) = (released, group) {
-            self.intent_committed(number, group);
-        }
-        released
+            .is_some_and(|state| state.release(number))
     }
 
     /// Cut `number` of group `group` is committed in object storage:
