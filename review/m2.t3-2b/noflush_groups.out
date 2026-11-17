@@ -1,0 +1,36 @@
+push-2604/takeover:
+  record 5036: instance 2 (took the device over)
+  record 5685: mark noflush-begin
+  record 5730: group 387 marks; cut 132 at the flush of record 5815
+  record 5734: instance 3 (took the device over) [inside the marks]
+  record 5735: mark noflush-end
+  record 5990: mark noflush-begin
+  record 6032: group 398 marks; not cut
+  record 6057: group 402 marks; not cut
+  record 6097: group 411 marks; not cut
+  record 6103: instance 4 (created the device) [inside the marks]
+  record 6104: mark noflush-end
+pr-2604/takeover:
+  record 1658: instance 2 (took the device over)
+  record 1915: mark noflush-begin
+  record 1953: group 128 marks; cut 45 at the flush of record 2051
+  record 1957: instance 3 (took the device over) [inside the marks]
+  record 1958: mark noflush-end
+  record 2214: mark noflush-begin
+  record 2254: group 139 marks; not cut
+  record 2281: group 143 marks; not cut
+  record 2319: group 152 marks; not cut
+  record 2325: instance 4 (created the device) [inside the marks]
+  record 2326: mark noflush-end
+pr-2604arm/takeover:
+  record 6904: instance 2 (took the device over)
+  record 7425: mark noflush-begin
+  record 7475: group 516 marks; cut 176 at the flush of record 7565
+  record 7479: instance 3 (took the device over) [inside the marks]
+  record 7480: mark noflush-end
+  record 7712: mark noflush-begin
+  record 7753: group 527 marks; not cut
+  record 7778: group 531 marks; not cut
+  record 7816: group 540 marks; not cut
+  record 7822: instance 4 (created the device) [inside the marks]
+  record 7823: mark noflush-end

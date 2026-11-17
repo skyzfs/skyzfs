@@ -1,0 +1,9 @@
+   Compiling quick-error v1.2.3
+   Compiling thiserror v2.0.19
+   Compiling thiserror-impl v2.0.19
+   Compiling thiserror v1.0.69
+   Compiling thiserror-impl v1.0.69
+test inplace::tests::cuts::zz_review_a_death_after_the_barrier_line ... REVIEW after the barrier line: heard before the death [Barrier(RequestId(300))]; the next instance starts at (1, Some(7)); handed the flush again it hears [Barrier(RequestId(300)), Cut(RequestId(300), Cut { number: 2, group: 8, itself: true })] and counts (2, Some(8))
+test inplace::tests::cuts::zz_review_a_death_after_the_cut_line ... REVIEW after the cut line: heard before the death [Barrier(RequestId(300)), Cut(RequestId(300), Cut { number: 2, group: 8, itself: true })]; the next instance starts at (1, Some(7)); handed the flush again it hears [Barrier(RequestId(300)), Cut(RequestId(300), Cut { number: 2, group: 8, itself: true })] and counts (2, Some(8))
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 249 filtered out; finished in 0.00s
+exit 0

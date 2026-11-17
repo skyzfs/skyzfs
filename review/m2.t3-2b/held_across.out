@@ -1,0 +1,47 @@
+pr-2604/takeover: instances 1=11372 (added; lines 319621442519..326400615880), 2=11682 (taken-over; lines 326819731219..342127643028), 3=11803 (taken-over; lines 342308726393..345961692639), 4=11939 (added; lines 346312391690..348864318488)
+  cut 1 (group 4, 131072 blocks): counted by instance 1, write asked beside instance 1
+  cut 7 (group 13, 3447 blocks): counted by instance 1, write asked beside instance 2   <-- held across 1 start(s), 4.5 s after its cut line
+  cut 41 (group 115, 10546 blocks): counted by instance 2, write asked beside instance 2
+  cut 42 (group 118, 309 blocks): counted by instance 2, write asked beside instance 2
+  cut 43 (group 121, 1615 blocks): counted by instance 2, write asked beside instance 2
+  cut 44 (group 122, 37 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.4 s after its cut line
+  cut 45 (group 128, 1935 blocks): counted by instance 3, write asked beside instance 3
+  cut 48 (group 135, 1662 blocks): counted by instance 3, write asked beside instance 3
+  cut 49 (group 136, 40 blocks): counted by instance 3, write asked beside instance 4   <-- held across 1 start(s), 2.5 s after its cut line
+  cut 50 (group 154, 585 blocks): counted by instance 4, write asked beside instance 4
+  cut 51 (group 156, 152 blocks): counted by instance 4, write asked beside instance 4
+  cut 52 (group 158, 1684 blocks): counted by instance 4, write asked beside instance 4
+  cut 53 (group 159, 37 blocks): counted by instance 4, write asked beside instance 4
+  cut 54 (group 162, 1628 blocks): counted by instance 4, write asked beside instance 4
+  cut 57 (group 176, 206 blocks): counted by instance 4, write asked beside instance 4
+pr-2604arm/takeover: instances 1=12010 (added; lines 599330673993..604313083625), 2=12811 (taken-over; lines 604496852455..610842252408), 3=12946 (taken-over; lines 611022441280..612989061796), 4=13084 (added; lines 613332312457..614498858077)
+  cut 1 (group 4, 131072 blocks): counted by instance 1, write asked beside instance 1
+  cut 9 (group 14, 3541 blocks): counted by instance 1, write asked beside instance 2   <-- held across 1 start(s), 4.4 s after its cut line
+  cut 170 (group 497, 45953 blocks): counted by instance 2, write asked beside instance 2
+  cut 173 (group 506, 948 blocks): counted by instance 2, write asked beside instance 2
+  cut 174 (group 509, 1625 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.5 s after its cut line
+  cut 177 (group 519, 2012 blocks): counted by instance 3, write asked beside instance 3
+  cut 178 (group 520, 46 blocks): counted by instance 3, write asked beside instance 3
+  cut 179 (group 523, 1635 blocks): counted by instance 3, write asked beside instance 3
+  cut 180 (group 524, 49 blocks): counted by instance 3, write asked beside instance 4   <-- held across 1 start(s), 1.7 s after its cut line
+  cut 181 (group 542, 613 blocks): counted by instance 4, write asked beside instance 4
+  cut 182 (group 544, 158 blocks): counted by instance 4, write asked beside instance 4
+  cut 183 (group 546, 1686 blocks): counted by instance 4, write asked beside instance 4
+  cut 184 (group 547, 43 blocks): counted by instance 4, write asked beside instance 4
+  cut 185 (group 550, 1639 blocks): counted by instance 4, write asked beside instance 4
+  cut 188 (group 564, 206 blocks): counted by instance 4, write asked beside instance 4
+push-2604/takeover: instances 1=11440 (added; lines 251551261909..257430479715), 2=12058 (taken-over; lines 257623930607..265258269345), 3=12200 (taken-over; lines 265441567432..267515493935), 4=12338 (added; lines 267869232725..268927644621)
+  cut 1 (group 4, 131072 blocks): counted by instance 1, write asked beside instance 1
+  cut 8 (group 14, 3493 blocks): counted by instance 1, write asked beside instance 2   <-- held across 1 start(s), 5.4 s after its cut line
+  cut 126 (group 368, 35906 blocks): counted by instance 2, write asked beside instance 2
+  cut 131 (group 381, 2609 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.4 s after its cut line
+  cut 133 (group 390, 1956 blocks): counted by instance 3, write asked beside instance 3
+  cut 134 (group 391, 46 blocks): counted by instance 3, write asked beside instance 3
+  cut 135 (group 394, 1636 blocks): counted by instance 3, write asked beside instance 3
+  cut 136 (group 395, 49 blocks): counted by instance 3, write asked beside instance 4   <-- held across 1 start(s), 1.7 s after its cut line
+  cut 137 (group 413, 619 blocks): counted by instance 4, write asked beside instance 4
+  cut 138 (group 415, 158 blocks): counted by instance 4, write asked beside instance 4
+  cut 139 (group 417, 1684 blocks): counted by instance 4, write asked beside instance 4
+  cut 140 (group 418, 37 blocks): counted by instance 4, write asked beside instance 4
+  cut 142 (group 422, 1674 blocks): counted by instance 4, write asked beside instance 4
+  cut 144 (group 435, 181 blocks): counted by instance 4, write asked beside instance 4

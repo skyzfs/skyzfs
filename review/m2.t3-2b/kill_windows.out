@@ -1,0 +1,10 @@
+A: exit 2
+   rig_error: ERROR: the daemon was killed between counting cut 13 (group 26) and writing its line: the next instance counts on from 14
+B: exit 1
+   cuts: FAIL: cut 13: the daemon's is group 26 (itself) at record 734, the reference's group 26 (itself) at record 731
+   cut_numbers: PASS: the 26 cut lines are numbered 1 to 26
+   instance_2: PASS: pid 4343 (took the device over): taken_up by its cuts line and the status's cut_state and intent_state; cuts 12 at the start, 12 counted before it; the intent map named None of None regions at the start
+C: exit 1
+   cuts: FAIL: cut 14: the daemon's is group 26 (itself) at record 734, the reference's group 35 (itself) at record 774
+   cut_numbers: FAIL: cut line 14 (request log line 2163) carries the number '13'
+   instance_2: FAIL: pid 4343 (took the device over): cuts '12' at the start, with 13 counted before it; wanted taken_up

@@ -1,0 +1,3 @@
+pr-2604/takeover: 31 cuts in the 3 s before the kill; barrier line to cut line: median 4.5 us, max 8.4 us, 145 us in all: 0.005% of the 3 s, one kill in 20686
+pr-2604arm/takeover: 155 cuts in the 3 s before the kill; barrier line to cut line: median 4.4 us, max 13.8 us, 720 us in all: 0.024% of the 3 s, one kill in 4166
+push-2604/takeover: 109 cuts in the 3 s before the kill; barrier line to cut line: median 4.5 us, max 16.2 us, 497 us in all: 0.017% of the 3 s, one kill in 6039

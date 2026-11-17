@@ -1,0 +1,9 @@
+pr-2604/takeover: cuts written across a start: [7, 44, 49]; blocks whose copy an earlier instance made, given their later content: 20 ({7: 20, 44: 0, 49: 0})
+exit 1
+    takeover: held_content: FAIL: cut 7 (group 13): 20 blocks differ from the reference at its instant, for example block 37: b2f74a458f0f373c wanted, 17a01842eaee9f59 held, block 38: f97902c31e71afee wanted, 7d1c34c382a06c24 held, block 39: 202b74c577da4cd1 wanted, c15f5c0fddbccfc4 held, block 41: 9aa320af27ba9552 wanted, 4397adab5fe83e5b held, block 44: 05c49c61968ac515 wanted, 0f0a339150392ad5 held
+pr-2604arm/takeover: cuts written across a start: [9, 174, 180]; blocks whose copy an earlier instance made, given their later content: 69 ({9: 69, 174: 0, 180: 0})
+exit 1
+    takeover: held_content: FAIL: cut 9 (group 14): 69 blocks differ from the reference at its instant, for example block 37: cdac4a3b1d25964f wanted, 78b1bfbcfe0ef490 held, block 38: 3244f4d9bbe1845b wanted, d2dc4eba9ceedd28 held, block 39: d69306a934e0e0d4 wanted, df0d35e06990c9ae held, block 40: c649a020f3bd1ad5 wanted, dba7339ef5ccd1f4 held, block 41: 142cf0d52df1c3ec wanted, f817e33e39fcc8a3 held
+push-2604/takeover: cuts written across a start: [8, 131, 136]; blocks whose copy an earlier instance made, given their later content: 28 ({8: 28, 131: 0, 136: 0})
+exit 1
+    takeover: held_content: FAIL: cut 8 (group 14): 28 blocks differ from the reference at its instant, for example block 37: b73fda5634bbf848 wanted, 7da74c7a3f349804 held, block 38: 7622dbeeb5fb21a7 wanted, c72f1ed9f13eead3 held, block 39: b8234810e7463287 wanted, 84a248de9436c077 held, block 41: 8675c7c783ce2f28 wanted, 6110f3ec1cd184bd held, block 42: 8eee4a2dbed732aa wanted, b66e28f31f76ca93 held
