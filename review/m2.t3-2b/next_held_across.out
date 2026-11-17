@@ -1,0 +1,9 @@
+next-cut-daemon-ubuntu-26.04/takeover: instances 1=11356 (added; lines 303089617610..309087044379), 2=12185 (taken-over; lines 309263980234..315046599830), 3=12337 (taken-over; lines 315225159544..317312473203), 4=12482 (added; lines 317647103291..318650408135)
+  cut 10 (group 17, 315 blocks): counted by instance 1, write asked beside instance 2   <-- held across 1 start(s), 3.3 s after its cut line
+  cut 183 (group 534, 2607 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.4 s after its cut line
+  cut 188 (group 548, 46 blocks): counted by instance 3, write asked beside instance 4   <-- held across 1 start(s), 1.7 s after its cut line
+next-cut-daemon-ubuntu-26.04-arm/takeover: instances 1=11388 (added; lines 336975144644..343096909982), 2=11977 (taken-over; lines 343282640710..348797368849), 3=12125 (taken-over; lines 348978811510..350867049345), 4=12264 (added; lines 351208790814..352452189329)
+  cut 10 (group 17, 312 blocks): counted by instance 1, write asked beside instance 2   <-- held across 1 start(s), 3.3 s after its cut line
+  cut 125 (group 362, 1625 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.5 s after its cut line
+  cut 126 (group 363, 43 blocks): counted by instance 2, write asked beside instance 3   <-- held across 1 start(s), 1.6 s after its cut line
+  cut 131 (group 377, 40 blocks): counted by instance 3, write asked beside instance 4   <-- held across 1 start(s), 1.7 s after its cut line

@@ -1,0 +1,6 @@
+next-cut-daemon-ubuntu-26.04/takeover: cuts written across a start: [10, 183, 188]; blocks whose copy an earlier instance made, given their later content: 4 ({10: 4, 183: 0, 188: 0})
+exit 1
+    takeover: held_content: FAIL: cut 10 (group 17): 4 blocks differ from the reference at its instant, for example block 49: 3e396011e1575b1a wanted, e813758405c5b5dc held, block 113: 65380eb634cfd812 wanted, 77ea848cd00d7306 held, block 130993: 153239d2bd17d368 wanted, 8e77158aca7a1833 held, block 131057: b4594225b584b161 wanted, aace2e6473f09a09 held; 14 of 196 cuts written and released; 1835008 bl
+next-cut-daemon-ubuntu-26.04-arm/takeover: cuts written across a start: [10, 125, 126, 131]; blocks whose copy an earlier instance made, given their later content: 4 ({10: 4, 125: 0, 126: 0, 131: 0})
+exit 1
+    takeover: held_content: FAIL: cut 10 (group 17): 4 blocks differ from the reference at its instant, for example block 49: 30e72156f8d8ca5c wanted, 3021ea30a3c446e8 held, block 113: 05e3be0303946908 wanted, d0cfee692ee85278 held, block 130993: 49713f7740bc86f6 wanted, 1d26af6d82061cef held, block 131057: 3bac279fa7a091aa wanted, 6b7975cff66f7705 held; 16 of 139 cuts written and released; 2097152 bl

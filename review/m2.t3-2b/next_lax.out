@@ -1,0 +1,6 @@
+fail-44165956107: the first release was asked +4.33 s from start 2
+  the second start says intent_state taken_up: exit 0; instance_2	PASS	pid 12507 (took the device over, no cut committed before it): cut_state taken_up, intent_state begun or taken_up by its cuts line and the status's cut_state and intent_state; cuts 188 at the start, 182 counted befo
+  the second start says cut_state begun: exit 1; instance_2	FAIL	pid 12507 (took the device over, no cut committed before it): cut_state 'begun'; wanted cut_state taken_up, intent_state begun or taken_up
+  the second start says intent_state off: exit 1; instance_2	FAIL	pid 12507 (took the device over, no cut committed before it): intent_state 'off'; wanted cut_state taken_up, intent_state begun or taken_up
+push-2604: the first release was asked -4.13 s from start 2
+  the second start says intent_state begun: exit 1; instance_2	FAIL	pid 12058 (took the device over): intent_state 'begun'; wanted cut_state taken_up, intent_state taken_up

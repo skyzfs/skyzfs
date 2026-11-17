@@ -1,0 +1,20 @@
+F1 the time of the first release asked, answered or not: KILLED by 2: test_instance_lines, test_the_first_release_answered
+F2 any command answered ok is a commit (a held, a write): KILLED by 1: test_the_first_release_answered
+F3 a release refused is a commit: KILLED by 1: test_the_first_release_answered
+F4 the last release answered, not the first: SURVIVED
+F5 a write is asked for as a release is (its ok is a commit): SURVIVED
+F6 a line that is not a time and a text ends the reading: SURVIVED
+F7 no release answered is time 0 (a commit before every start): KILLED by 1: test_the_first_release_answered
+L1 every later start wants the map taken up (the rule before this commit): KILLED by 1: test_instance_lines
+L2 every later start takes either, a commit before it or not: KILLED by 1: test_instance_lines
+L3 the first start takes either as well: SURVIVED
+L4 either only where a commit came after the start: with no commit at all the map must be taken up: SURVIVED
+L5 either where the commit came before the start (the comparison turned round): KILLED by 1: test_instance_lines
+L6 the commit is held to the first start's time, not this start's: SURVIVED
+L7 the commit is held to the start before this one: SURVIVED
+L8 the cut state takes either too where the map does: SURVIVED
+L9 the cuts line takes either too where the map does: SURVIVED
+L10 where either is taken, the map's state is not looked at (off, or nothing said, passes): SURVIVED
+L11 the line does not say that no cut was committed before the start: KILLED by 1: test_instance_lines
+L12 a begun map at a later start with a commit before it is no verdict (rc stays 0): KILLED by 1: test_instance_lines
+L13 the first start's map is not looked at: SURVIVED
