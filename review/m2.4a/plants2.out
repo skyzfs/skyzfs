@@ -6,3 +6,4 @@ A3 put_sealed keeps the bytes of what it PUT: KILLED by 3: a_put_sealed_dropped_
 A4 a segment leaves the engine before its PUT: one whose PUT fails is lost: KILLED by 2: a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place, a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
 A5 put_sealed seals and PUTs the open segment too: KILLED by 1: sealed_segments_are_put_before_the_commit_and_leave_memory
 A7 put_sealed goes on after a failed PUT and reports no error: KILLED by 1: a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call
+N1 put_sealed as it was at dcf2df3: the sealed list is emptied only after the loop: KILLED by 1: a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place
