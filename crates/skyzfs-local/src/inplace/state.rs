@@ -311,6 +311,11 @@ pub(crate) struct Taken {
     /// Whether the region was there with the length the volume needs:
     /// only then can it hold a state to take up.
     pub(crate) kept: bool,
+    /// The version of the state a named region held when it was there
+    /// with another length, read before it was made again: a state of
+    /// another version is refused for its version, which the start
+    /// says, whatever its length (version 1 is two words shorter).
+    pub(crate) found_version: Option<u64>,
     /// Whose a state must be to be taken up: with the start token this
     /// open found.
     pub(crate) owner: Owner,
@@ -362,12 +367,14 @@ impl Taken {
             ));
         }
         let words = words_for(size / BLOCK_SIZE, records_for(bound));
+        let mut found_version = None;
         let (region, kept) = match &hold.region {
             super::CutRegion::Memory(region) if region.words() >= words => {
                 (StoreRegion::Memory(region.clone()), true)
             }
             super::CutRegion::Memory(_) => (StoreRegion::Memory(MemRegion::new(words)), false),
             super::CutRegion::Named(path) => {
+                found_version = version_in(path);
                 let (region, opened) =
                     skyzfs_mapped::Mapped::open(path, words).map_err(|e| e.to_string())?;
                 (
@@ -379,6 +386,7 @@ impl Taken {
         Ok(Self {
             region,
             kept,
+            found_version,
             owner: Owner {
                 volume: identity,
                 boot: hold.boot,
@@ -391,6 +399,22 @@ impl Taken {
             intent_region_blocks: intent_region / BLOCK_SIZE,
         })
     }
+}
+
+/// The version of the cut state in the file at `path`, read from its
+/// header; `None` where there is no file, or no state's magic in it.
+fn version_in(path: &std::path::Path) -> Option<u64> {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    let (words, _) = header.as_chunks::<8>();
+    let word = |i: usize| words.get(i).map(|word| u64::from_le_bytes(*word));
+    (word(at::MAGIC) == Some(MAGIC))
+        .then(|| word(at::VERSION))
+        .flatten()
 }
 
 /// The region's magic: `SKYZCUT1`.

@@ -824,6 +824,37 @@ fn uberblock_write(txg: u64) -> Op {
     Op::Write { offset, data }
 }
 
+/// A cut state of version 1, from before M2.4 named its state, is
+/// refused for its version though its file is two words shorter than
+/// version 2's: the start reads the old header before it makes the
+/// region again, and says why it began a new state.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn a_cut_state_of_version_1_is_refused_for_its_version() {
+    use skyzfs_local::inplace::CutsTakenUp;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let region = run_dir.path().join("cuts.state");
+    drop(start_holding(&dir, &region, BOOT, false));
+    let store = start_holding(&dir, &region, BOOT, true);
+    assert_eq!(store.cuts_at_start(), Some(&CutsTakenUp::TakenUp));
+    drop(store);
+    // As version 1 would have left it: its version, two words shorter.
+    let mut bytes = std::fs::read(&region).unwrap();
+    bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
+    bytes.truncate(bytes.len() - 16);
+    std::fs::write(&region, &bytes).unwrap();
+    let store = start_holding(&dir, &region, BOOT, true);
+    match store.cuts_at_start() {
+        Some(CutsTakenUp::Begun(why)) => assert!(why.contains("version 1,"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Not a test of its own: the child of
 /// `a_held_cut_outlives_kill_9_in_its_mapped_region`. Writes block 5,
 /// cuts group 7, writes block 5 again, which copies it for the cut,

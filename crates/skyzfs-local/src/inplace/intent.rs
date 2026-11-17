@@ -198,9 +198,13 @@ pub enum Distrust {
     /// place: a page torn by a power cut, or damaged.
     #[error("page {0} of the intent map is not whole")]
     Torn(u64),
-    /// Another format, or another version of it.
-    #[error("the intent map is of another format or version")]
+    /// Another format.
+    #[error("the intent map is of another format")]
     Format,
+    /// Another version of the format, read before the header's
+    /// checksum.
+    #[error("the intent map is of version {0}, and this daemon reads version {VERSION}")]
+    Version(u32),
     /// Another volume's: one made again in the same directory.
     #[error("the intent map is another volume's")]
     Identity,
@@ -286,15 +290,19 @@ impl IntentMap {
         if header[..8] != MAGIC {
             return Err(Distrust::Format);
         }
-        if !whole(header) {
-            return Err(Distrust::Torn(0));
-        }
         let u32_at =
             |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
         let u64_at =
             |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap_or([0; 8]));
-        if u32_at(8) != VERSION {
-            return Err(Distrust::Format);
+        // The version before the checksum: a map of another version is
+        // refused as such, whatever its checksum (the lead's condition
+        // on M2.4b's question 4).
+        let version = u32_at(8);
+        if version != VERSION {
+            return Err(Distrust::Version(version));
+        }
+        if !whole(header) {
+            return Err(Distrust::Torn(0));
         }
         if header[16..32] != shape.identity {
             return Err(Distrust::Identity);

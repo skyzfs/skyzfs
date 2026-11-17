@@ -2324,6 +2324,7 @@ impl<D: Dir> InPlace<D> {
                 state::Taken {
                     region,
                     kept,
+                    found_version,
                     owner,
                     start,
                     bound,
@@ -2347,10 +2348,13 @@ impl<D: Dir> InPlace<D> {
         let trusted = if acknowledged && !self.mutants.has(Mutants::ACKNOWLEDGED_TRUSTED) {
             Err(("the start acknowledges a failure".to_owned(), region))
         } else if !kept {
-            Err((
-                "the region was not there with the volume's length".to_owned(),
-                region,
-            ))
+            let why = match found_version {
+                Some(version) if version != state::VERSION => {
+                    state::RegionError::Version(version).to_string()
+                }
+                _ => "the region was not there with the volume's length".to_owned(),
+            };
+            Err((why, region))
         } else {
             // Read as it is: nothing is stored until it is trusted.
             match CutState::view(region, size, bound, owner, self.mutants) {
