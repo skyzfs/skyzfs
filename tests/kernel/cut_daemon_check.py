@@ -1286,13 +1286,22 @@ def main():
         if not ok:
             rc = 1
         if os.path.exists(os.path.join(rdir, 'holder.log')):
-            # The instances' lines first: they name a start that took up
-            # a state it should have begun, whatever the held cuts show.
-            rc = max(rc, instance_lines(put, rdir, instances, dcuts, records, begun))
-            if name == 'failed':
-                rc = max(rc, failure_line(put, rdir))
-            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
-            rc, errored = max(rc, v), errored or e
+            # A holder that ended with a verdict (the daemon refused to read
+            # a cut it held) ended the recording's holding there, perhaps
+            # before its first cut and before what a whole recording
+            # leaves: held_reads alone is judged of the held cuts.
+            if '\tVERDICT ' in read_file(rdir, 'holder.log'):
+                v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
+                rc, errored = max(rc, v), errored or e
+            else:
+                # The instances' lines first: they name a start that took
+                # up a state it should have begun, whatever the held cuts
+                # show.
+                rc = max(rc, instance_lines(put, rdir, instances, dcuts, records, begun))
+                if name == 'failed':
+                    rc = max(rc, failure_line(put, rdir))
+                v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
+                rc, errored = max(rc, v), errored or e
         elif len(instances) > 1:
             raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
                            'cuts starts the daemon again')

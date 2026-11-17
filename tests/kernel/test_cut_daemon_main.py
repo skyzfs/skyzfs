@@ -23,7 +23,7 @@ import test_cut_daemon_check as t  # noqa: E402
 
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
-              split=None, tamper_split=None, tamper_written=None):
+              split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -34,7 +34,9 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     the k-th cut's line (t.split_begun: a new state, which counts from 1
     again; the holder's numbers then repeat, and failure.tsv is the
     rig's as the recording `failed` leaves it). tamper_written(written,
-    ns) changes the holder's writes after that renumbering."""
+    ns) changes the holder's writes after that renumbering. holder_log:
+    the holder's log in place of a right one's; holder_left: where given,
+    only these of the holder's files are left."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
@@ -67,7 +69,13 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
                 starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
-            t.holder_files(d, written, blocks, final, starts=starts)
+            t.holder_files(d, written, blocks, final, starts=starts,
+                           **({'log': holder_log} if holder_log is not None else {}))
+            if holder_left is not None:
+                for fn in ('holder.log', 'held.tsv', 'held-blocks.tsv', 'held-image.tsv', 'held-final.txt',
+                           'status-held.txt'):
+                    if fn not in holder_left:
+                        os.remove(os.path.join(d, fn))
             status = status or held_status(records, read, dev, cs)
         return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name)
     finally:
@@ -287,6 +295,23 @@ class Main(unittest.TestCase):
                               tamper_written=late)
         self.assertEqual((rc, lines['instance_2'][0], lines['held_content'][0]), (1, 'PASS', 'FAIL'),
                          lines.get('rig_error'))
+
+    def test_a_verdict_before_the_first_cut(self):
+        """The daemon refused to read the first cut the holder asked for
+        (Codex on #113): the holder ended with its VERDICT and wrote no
+        held.tsv, and the recording ended there with no failure.tsv. A
+        verdict, not the rig's error."""
+        none = lambda written, blocks, final: None    # noqa: E731
+        log = ('1\t> t1 held\n2\t< t1 ok (2 lines)\n3\t> t2 write 1 /w/held.img\n'
+               '4\t< t2 refused: read block 7 of cut 1: Input/output error (os error 5)\n'
+               '5\tVERDICT cut 1 is still being uploaded after its write was refused '
+               '(refused: read block 7 of cut 1: Input/output error (os error 5))\n')
+        for name in ('failed', 'takeover'):
+            with self.subTest(name):
+                rc, lines = recording(holder=none, as_name=name, holder_log=log, holder_left=('holder.log',))
+                self.assertNotIn('rig_error', lines)
+                self.assertEqual((rc, lines['held_reads'][0]), (1, 'FAIL'))
+                self.assertIn('read block 7 of cut 1', lines['held_reads'][1])
 
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the

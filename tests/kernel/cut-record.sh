@@ -305,10 +305,23 @@ holder_start() {
 # Wait for the holder's first written cut: its step ends with the
 # release, so a holder asked to leave after this has committed one, and
 # the intent map is taken up at the next start (with no committed cut the
-# daemon begins it anew, which the check then allows).
+# daemon begins it anew, which the check then allows). -> 1 where the
+# holder ended with a verdict before it wrote one (the daemon refused to
+# read the first cut): the recording then ends there, with the pool
+# exported, and the check fails it (held_reads). A holder that ended
+# otherwise is the rig's error.
 holder_wrote_one() {
     local _i
-    for _i in $(seq 1 300); do [ -s "$RDIR/held.tsv" ] && return 0; sleep 1; done
+    for _i in $(seq 1 300); do
+        [ -s "$RDIR/held.tsv" ] && return 0
+        if ! kill -0 "$HOLD_PID" 2>/dev/null; then
+            holder_ended "before it wrote a cut"
+            grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" \
+                || rig_error "the holder ended with 0 before it wrote a cut: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+            return 1
+        fi
+        sleep 1
+    done
     rig_error "the holder wrote no cut in 300 s: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
 # The holder ends between two steps and drains nothing: what the daemon
@@ -729,7 +742,7 @@ rec_takeover() {
     create_pool
     load 2
     # (a)
-    holder_wrote_one
+    holder_wrote_one || { export_pool; return 0; }
     holder_leave
     # Files of 1 MiB, each synced, until the stop file (at most 2000).
     rm -f "$WORK/writer.stop"
@@ -801,7 +814,7 @@ rec_failed() {
     local rc=0
     create_pool
     load 2
-    holder_wrote_one
+    holder_wrote_one || { export_pool; return 0; }
     holder_leave
     load 1
     export_pool
