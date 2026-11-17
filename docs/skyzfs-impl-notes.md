@@ -1260,6 +1260,26 @@ p99 was 3.9 to 4.4 ms in every daemon row (models 3.5 to 3.8) and p99.9 8 ms thr
 
 **The default region is 4 MiB** (lead, 2026-11-15): at 64 MiB the map names about 88 times what changed on the recorded pools, at 4 MiB about 9 times for a cost one run cannot separate from none, and 1 MiB costs too much. Nine 4 KiB pages of map for a TiB (a page covers 32,672 regions).
 
+### What separates the held-cuts rows from the model, round 3 (M2.T4, 2026-11-17)
+
+Run 43739522080: fifteen rows on one machine (Azure runnervmccnms, slow syncs: buffered sync 337 ms), one run per row, two of each of A to D, one of E. The daemon is 1cf30ff, so C's copies are single-block ones, from before #107. C, D and E serve with `--hold-cuts --intent-region-mib 4`; D and E release every cut. The tpcb models drifted early and were steady from the third on (5653, 5879, 6654, 6581, 6642, 6710).
+
+| row | build, serve | tpcb tps | ratio (bracket) | p99 ms | select ratio |
+|---|---|---|---|---|---|
+| A | release, no hold | 5907 / 6340 | 1.024 (3.9%) / 0.958 (1.1%) | 5.7 / 4.7 | 0.840 / 0.864 |
+| B | +hooks, no hold | 5884 / 6158 | 1.020 (3.9%) / 0.931 (0.9%) | 4.7 / 5.5 | 0.869 / 0.838 |
+| C | +hooks, hold, no releaser | 3904 / 4053 | 0.623 (no verdict) / 0.613 (0.9%) | 9.8 / 9.7 | 0.699 / 0.762 |
+| D | +hooks, hold, released | 5672 / 6129 | 0.905 (no verdict) / 0.918 (1.0%) | 5.2 / 4.8 | 0.817 / 0.848 |
+| E | D with perf | 6166 | no ratio | 4.8 | |
+
+- The release build reaches the model on this machine (1.024, 0.958). On round 2's machine every row was 0.80 to 0.90; this sequence does not explain that gap, so it depends on the machine.
+- The hooks cost 0.4% and 2.9% of tps (B against A). Held cuts with a releaser at 4 MiB cost under 0.5% more (D against B, second pair). The map's syncs: 953 to 1043 in the window, 377 to 427 ms in all, the largest 14 to 31 ms; 24 releases in the window in each D and E row.
+- Held cuts without releases are the copy path at its worst on a slow-sync disk: 0.61 to 0.62, twelve cuts abandoned in each window, work-disk writes per transaction 2.17 to 2.19 against 0.66 to 0.69 for A, B and D.
+- select: every daemon row but C is at 0.82 to 0.87, A included. That gap is the daemon's read path, not the hooks, the held cuts or the releaser.
+- Profile of E (20 s at 999 Hz, tpcb): the queue thread had 2438 samples, on a CPU about 12% of the time. 50% in the io_uring wait and its syscalls; 11.9% under `skyzfsd::record::` (the test-hooks `Recorded` wrapper), of which 6.0% is `record::columns` formatting a request-log line with no `--request-log`; 2.8% `IntentMap::named_count` as a leaf; 2.7% a pipe read; 1.3% `cut_commands` (the releaser's polls); 0.4% `store_shown`. Stacks are short (no frame pointers), so these are lower bounds. Not separated: who calls `named_count` (status reader, `held` replies or the write path).
+
+So the earlier 0.72 to 0.90 was the machine and, in part, the test-hooks build, which formats every request on the queue's thread (6 to 12% of that thread's CPU, 0.4 to 2.9% of tps). The release build with held cuts and a releaser has not been measured; the M2.4 daemon is that build, so the figure comes with M2.4c. Open: do not format a log line in the hooks build when no request log is given; find `named_count`'s caller.
+
 ### Copies in runs against copies by the block (M2.T4, M2.2d, 2026-11-15)
 
 Two sequences on two machines, each compared only within itself; one run a row; every daemon row a test-hooks build with `--hold-cuts`. S1 is run 43731184255 (AWS, fast syncs, tpcb models 7742 to 8047), S2 run 43731234507 (Azure, models 3571 to 3624). "d" is M2.2d at b6aaad8 (copies in runs), "c" M2.2c (one 4 KiB block a copy), "b" the build before M2.2c (buffered copies); 0 is no release (round 1's regime: copies up to the 256 MiB bound, then the cut is abandoned, 24 or 25 times in S1's window and 10 or 11 in S2's), 1 releases each cut, 4 the uploading cut once three newer are taken. Ratios are to the mean of the enclosing model rows.
