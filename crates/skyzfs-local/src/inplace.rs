@@ -269,8 +269,8 @@ use state::CutState;
 pub use cuts::{Cut, Cuts, Seen, Watcher};
 pub use intent::Base as CommittedCut;
 pub use state::{
-    Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase, DEFAULT_INTENT_REGION,
-    MAX_INTENT_REGION, MIN_INTENT_REGION,
+    records_for, words_for, Figures as CutFigures, HeldCut, Lost, MemRegion, Phase as CutPhase,
+    DEFAULT_INTENT_REGION, MAX_INTENT_REGION, MIN_INTENT_REGION,
 };
 
 pub use start::{
