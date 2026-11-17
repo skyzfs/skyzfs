@@ -314,20 +314,31 @@ holder_wrote_one() {
 # The holder ends between two steps and drains nothing: what the daemon
 # holds stays held for the next instance's holder.
 holder_leave() {
-    local _i rc=0
+    local _i
     touch "$WORK/hold.leave"
     for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
     if kill -0 "$HOLD_PID" 2>/dev/null; then
-        kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null || true; HOLD_PID=""
         rig_error "the holder did not leave 720 s after it was asked: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
     fi
+    rm -f "$WORK/hold.leave"
+    holder_ended "when asked to leave"
+}
+# The holder has ended (WHEN says when): take its status. 1 with a VERDICT
+# line in its log is the daemon refusing to read a cut it held, which the
+# check fails (held_reads), so the recording goes on to the check; any
+# other status but 0 is the rig's error. Wherever a holder ends, its
+# status goes through here: a bare wait under set -e would end the
+# recording at a verdict as the rig's error.
+holder_ended() {
+    local rc=0
     wait "$HOLD_PID" 2>/dev/null || rc=$?
     HOLD_PID=""
-    rm -f "$WORK/hold.leave"
-    # 1: the daemon refused to read a cut it held; the holder's log says
-    # VERDICT and the check fails it (held_reads).
-    [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" && return 0
-    [ "$rc" = 0 ] || rig_error "the holder ended with $rc when asked to leave: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+    if [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log"; then
+        log "$NAME: the holder ended with a verdict $1: $(grep "$(printf '\tVERDICT ')" "$RDIR/holder.log" | tail -n 1)"
+        return 0
+    fi
+    [ "$rc" = 0 ] || rig_error "the holder ended with $rc $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
 # The volume, served by the daemon with its request log.
 begin_daemon() {
@@ -351,10 +362,10 @@ end_daemon() {
         touch "$WORK/hold.stop"
         for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
         if kill -0 "$HOLD_PID" 2>/dev/null; then
-            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null || true; HOLD_PID=""
             rig_error "the holder did not end 720 s after the stop: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
         fi
-        wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        holder_ended "at the stop"
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
     fi
     # The daemon rewrites its status at most every 100 ms, when a counter

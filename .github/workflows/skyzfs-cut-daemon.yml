@@ -75,6 +75,7 @@ jobs:
       - run: python3 tests/kernel/test_cut_daemon_check.py -v
       - run: python3 tests/kernel/test_cut_daemon_main.py -v
       - run: python3 tests/kernel/test_cut_hold.py -v
+      - run: bash tests/kernel/test_cut_record.sh
 
   record:
     name: record through skyzfsd and check, ${{ matrix.image }}
