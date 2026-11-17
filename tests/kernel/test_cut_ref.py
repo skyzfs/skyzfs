@@ -303,7 +303,8 @@ class Instances(unittest.TestCase):
     @staticmethod
     def run_on(steps, rule='design'):
         """steps: ('ub', txg), ('recv', tag), ('barrier', tag), ('over',),
-        ('created',) -> the cuts' groups and their flush records."""
+        ('created',), ('begun',) (a take-over that trusts no state) -> the
+        cuts' groups and their flush records."""
         records, ubs = [], []
         for k, st in enumerate(steps):
             r = {'i': k, 'offset': 0, 'bytes': 0, 'flags': []}
@@ -315,10 +316,23 @@ class Instances(unittest.TestCase):
             elif st[0] == 'barrier':
                 r.update(flags=['flush'], tag=st[1], received=True)
             else:
-                r.update(flags=['instance'], taken_over=st[0] == 'over')
+                r.update(flags=['instance'], taken_over=st[0] in ('over', 'begun'), begun=st[0] == 'begun')
             records.append(r)
         cs, _ = cut_ref.cuts(records, ubs, rule)
         return [(c['txg'], c['flush_record']) for c in cs]
+
+    def test_a_begun_state_has_no_mark_whatever_the_rule(self):
+        steps = [('ub', 5), ('begun',), ('recv', 'a'), ('barrier', 'a')]
+        for rule in ('design', 'mark-dropped', 'mark-kept'):
+            self.assertEqual(self.run_on(steps, rule), [], rule)
+
+    def test_a_begun_state_has_no_newest_cut(self):
+        """The repeat rule compares with the newest cut of the state: a new
+        state has none, so the same uberblock written again marks."""
+        steps = [('ub', 5), ('recv', 'a'), ('barrier', 'a'), ('begun',), ('ub', 5), ('recv', 'b'), ('barrier', 'b')]
+        self.assertEqual(self.run_on(steps), [(5, 2), (5, 6)])
+        steps[3] = ('over',)
+        self.assertEqual(self.run_on(steps), [(5, 2)])
 
     def test_a_take_over_keeps_the_mark(self):
         steps = [('ub', 5), ('over',), ('recv', 'a'), ('barrier', 'a')]

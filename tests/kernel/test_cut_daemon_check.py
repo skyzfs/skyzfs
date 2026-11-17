@@ -313,7 +313,10 @@ def held_images(records, cs, op):
 START_STATUS = 'cuts 0\ncut_state begun\nintent_state begun\nintent_regions 128\nintent_named_at_start 128\n'
 
 
-def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 9 uploading itself 3\n',
+COMMITTED = '1\t> t1 held\n2\t> t2 release 1\n3\t< t2 ok (0 lines)\n'   # a release answered before every start
+
+
+def holder_files(d, written, blocks, final, log=COMMITTED, held_final='9 9 uploading itself 3\n',
                  status_held='cuts_held 1\n', starts=(START_STATUS,)):
     """The holder's files in recording directory d, and the status the rig
     read at each start (status-start-K.txt)."""
@@ -325,7 +328,10 @@ def holder_files(d, written, blocks, final, log='1\t> t1 held\n', held_final='9 
     w('holder.log', log)
     w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t{x.get('asked', 1)}\t"
                           f"{x.get('asked', 1) + 1}\n" for x in written))
-    w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in blocks.items() for b, h in m.items()))
+    # blocks: {number: map}, or a list of maps in written's order (numbers
+    # that repeat across states, stage 2c)
+    pairs = zip((x['number'] for x in written), blocks) if isinstance(blocks, list) else blocks.items()
+    w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in pairs for b, h in m.items()))
     w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(final.items())))
     w('held-final.txt', held_final)
     w('status-held.txt', status_held)
@@ -909,6 +915,172 @@ def split_log(text, k, lose_line=False):
     return '\n'.join(first + second) + '\n'
 
 
+def split_begun(text, k):
+    """The log of one instance as two, the second begun after the k-th
+    cut's line as a start that acknowledged a failure does (stage 2c): no
+    flush of the first under way, and the second's cut lines count from 1
+    again. -> (text, the second's start ns)."""
+    lines = text.splitlines()
+    ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
+    first, rest = lines[:ci + 1], lines[ci + 1:]
+    ns = int(first[-1].split('\t')[0])
+
+    def moved(ln, at=None):
+        f = ln.split('\t')
+        f[1] = PID2
+        if at is not None:
+            f[0] = str(at)
+        if f[2] == 'cut':
+            f[6] = str(int(f[6]) - k)
+        return '\t'.join(f)
+    second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\tbegun']
+    second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
+    return '\n'.join(first + second) + '\n', ns + 1
+
+
+class AcknowledgedFailure(unittest.TestCase):
+    """A later start that acknowledged a failure begins a state (stage 2c):
+    the fixture life's log split after a cut, the second instance begun."""
+
+    def setUp(self):
+        self.records, self.read, self.dev = fixture('life')
+        self.cs, at = daemon_cuts_of(self.records, self.read, self.dev)
+        text, self.marks = request_log(self.records, self.read, self.dev, at, hashes=True)
+        # the first start's cuts line, as a daemon that holds cuts writes it
+        start = f'\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+        self.text = text.replace(start, f'{start}1015\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n', 1)
+        self.k = len(self.cs) // 2
+
+    def judge(self, text):
+        inst = cdc.parse_log(text)
+        recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: False}, {PID2}), cdc.read_marks(self.marks))
+        starts = cdc.epochs(dcuts, recs)
+        rread = cdc.read_of(recs, self.dev)
+        rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+        return inst, recs, dcuts, starts, cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev, rcs))
+
+    def test_the_count_starts_again(self):
+        text, _ = split_begun(self.text, self.k)
+        inst, recs, dcuts, starts, ref = self.judge(text)
+        self.assertEqual([r['begun'] for r in recs if 'instance' in r['flags']], [True])
+        self.assertEqual(len(starts), 1)
+        self.assertTrue(cdc.compare(dcuts, ref)[0])
+        self.assertEqual([d['number'] for d in dcuts], [str(n + 1) for n in range(len(self.cs))])
+        self.assertEqual([d['local'] for d in dcuts][self.k:self.k + 2], ['1', '2'])
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        self.assertIn('state 2 counts from 1 again', cdc.numbers_verdict(dcuts)[1])
+        # the status holds the new state's count
+        last = ref[-1]
+        st = {'cuts': str(len(self.cs) - self.k), 'cut_group': str(last['txg']),
+              'cut_opens': 'itself' if last['itself'] else 'rewind'}
+        self.assertTrue(cdc.status_verdict(st, ref, since=starts[0]['i'])[0])
+        self.assertFalse(cdc.status_verdict(st, ref)[0])
+
+    def test_a_count_that_goes_on_or_is_wrong(self):
+        text, _ = split_begun(self.text, self.k)
+        on = text.replace('\tbegun\n', '\tbegun\n')
+        lines = on.splitlines()
+        for i, ln in enumerate(lines):
+            f = ln.split('\t')
+            if f[1] == PID2 and f[2] == 'cut':
+                f[6] = str(int(f[6]) + self.k)
+                lines[i] = '\t'.join(f)
+        dcuts = self.judge('\n'.join(lines) + '\n')[2]
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        self.assertIn('state 2 counts on', cdc.numbers_verdict(dcuts)[1])
+        for i, ln in enumerate(lines):
+            f = ln.split('\t')
+            if f[1] == PID2 and f[2] == 'cut':
+                f[6] = str(int(f[6]) + 1)
+                lines[i] = '\t'.join(f)
+                break
+        self.assertEqual(cdc.numbers_verdict(self.judge('\n'.join(lines) + '\n')[2])[0], 'FAIL')
+
+    def test_held_cuts_keyed_by_state(self):
+        text, ns = split_begun(self.text, self.k)
+        _, _, dcuts, starts, _ = self.judge(text)
+        written = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2, 'asked': 1},
+                   {'number': 1, 'group': 6, 'opens': 'itself', 'blocks': 1, 'asked': ns + 5}]
+        h = '0123456789abcdef'
+        blocks = f'1\t3\t{h}\n1\t4\t{h}\n1\t9\t{h}\n'
+        out, b = cdc.held_by_epoch(written, blocks, dcuts, starts)
+        self.assertEqual([w['number'] for w in out], [1, self.k + 1])
+        self.assertEqual(b, {1: {3: h, 4: h}, self.k + 1: {9: h}})
+        with self.assertRaisesRegex(RigError, 'does not hold the 1 blocks'):
+            cdc.held_by_epoch(written, blocks.replace('1\t9', '2\t9'), dcuts, starts)
+        with self.assertRaisesRegex(RigError, 'lines after the last cut'):
+            cdc.held_by_epoch(written, blocks + f'1\t10\t{h}\n', dcuts, starts)
+        written[1]['number'] = 99
+        with self.assertRaisesRegex(RigError, 'cut 99 of state 2, which has no cut line'):
+            cdc.held_by_epoch(written, blocks.replace('1\t9', '99\t9'), dcuts, starts)
+
+    def test_the_second_instance_begins(self):
+        import shutil
+        import tempfile
+        text, _ = split_begun(self.text, self.k)
+        inst, recs, dcuts, _, _ = self.judge(text)
+        begun = [True, True]
+        good = 'cuts 0\ncut_state begun\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        for second, want in ((good, 0), (good.replace('cut_state begun', 'cut_state taken_up'), 1),
+                             (good.replace('intent_state taken_up', 'intent_state begun'), 1)):
+            d = tempfile.mkdtemp(prefix='cdc-ack-')
+            try:
+                for k, st in enumerate((START_STATUS, second)):
+                    with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                        f.write(st)
+                with open(os.path.join(d, 'holder.log'), 'w') as f:
+                    f.write(COMMITTED)
+                got = []
+                rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs, begun)
+                self.assertEqual(rc, want, got)
+                self.assertIn('acknowledging a failure', got[1][2])
+            finally:
+                shutil.rmtree(d)
+
+    def test_kinds_with_the_acknowledgement(self):
+        text = f'{PID}\tadded\n{PID2}\tadded\tacknowledged\n'
+        self.assertEqual(cdc.read_kinds(text), {PID: False, PID2: False})
+        self.assertEqual(cdc.read_acknowledged(text), {PID2})
+        with self.assertRaises(RigError):
+            cdc.read_kinds(f'{PID2}\tadded\tacked\n')
+
+
+class FirstCommit(unittest.TestCase):
+    def test_the_first_release_answered(self):
+        self.assertEqual(cdc.first_commit(COMMITTED), 3)
+        self.assertIsNone(cdc.first_commit('1\t> t1 held\n2\t< t1 ok (1 lines)\n3\t> t2 release 1\n'))
+        self.assertIsNone(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: not uploading\n'))
+        self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
+                                          '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
+
+
+class FailureLine(unittest.TestCase):
+    def run_on(self, text):
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix='cdc-fail-')
+        try:
+            with open(os.path.join(d, 'failure.tsv'), 'w') as f:
+                f.write(text)
+            got = []
+            rc = cdc.failure_line(lambda k, v, t: got.append((k, v, t)), d)
+            return rc, got
+        finally:
+            shutil.rmtree(d)
+
+    def test_failure(self):
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t3\nrefused_rc\t4\n')
+        self.assertEqual((rc, got[0][:2]), (0, ('failure', 'PASS')))
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t3\nrefused_rc\t0\n')
+        self.assertEqual((rc, got[0][1]), (1, 'FAIL'))
+        self.assertIn('ended with 0, wanted 4', got[0][2])
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t1\nrefused_rc\t4\n')
+        self.assertEqual(rc, 1)
+        for bad in ('cuts_held\t0\nfailed_rc\t3\nrefused_rc\t4\n', 'failed_rc\t3\nrefused_rc\t4\n', 'x\n'):
+            with self.assertRaises(RigError):
+                self.run_on(bad)
+
+
 class TwoInstances(unittest.TestCase):
     """A request log of two instances of the daemon (stage 2b), from the
     fixture life's log split at a cut."""
@@ -1002,19 +1174,31 @@ class TwoInstances(unittest.TestCase):
         inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
         second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
                   'intent_named_at_start 3\n')
-        for starts, want in (((START_STATUS, second), 0),
-                             ((START_STATUS, second.replace('intent_state taken_up', 'intent_state begun')), 1),
-                             ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1),
-                             ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1)):
+        # With no release answered before the second start, the daemon
+        # begins the intent map anew ("the intent map has no committed
+        # cut"), and may: either is taken (the push run of 78b4dac).
+        late = f'1\t> t1 release 1\n{inst[1]["ns"] + 1}\t< t1 ok (0 lines)\n'
+        begun_map = second.replace('intent_state taken_up', 'intent_state begun')
+        for starts, want, log in (((START_STATUS, second), 0, COMMITTED),
+                                  ((START_STATUS, begun_map), 1, COMMITTED),
+                                  ((START_STATUS, begun_map), 0, late),
+                                  ((START_STATUS, second), 0, late),
+                                  ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1,
+                                   COMMITTED),
+                                  ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1,
+                                   COMMITTED)):
             d = tempfile.mkdtemp(prefix='cdc-inst-')
             try:
                 for k, st in enumerate(starts):
                     with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
                         f.write(st)
+                with open(os.path.join(d, 'holder.log'), 'w') as f:
+                    f.write(log)
                 got = []
                 rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs)
                 self.assertEqual(rc, want, got)
                 self.assertEqual([k for k, _, _ in got], ['instance_1', 'instance_2'])
+                self.assertEqual('no cut committed before it' in got[1][2], log is late)
             finally:
                 shutil.rmtree(d)
 

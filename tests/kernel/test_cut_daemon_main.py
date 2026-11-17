@@ -23,14 +23,17 @@ import test_cut_daemon_check as t  # noqa: E402
 
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
-              split=None):
+              split=None, tamper_split=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
     files as a right daemon leaves them, with holder(written, blocks,
     final) changing them in place. split: (k, kind) splits the log in two
     instances at the k-th cut (t.split_log), the second having
-    `taken-over` or `added` the device."""
+    `taken-over` or `added` the device, or `acknowledged` a failure after
+    the k-th cut's line (t.split_begun: a new state, which counts from 1
+    again; the holder's numbers then repeat, and failure.tsv is the
+    rig's as the recording `failed` leaves it)."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
@@ -44,7 +47,19 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
             written, blocks, final = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
             holder(written, blocks, final)
             starts = (t.START_STATUS,)
-            if split:
+            if split and split[1] == 'acknowledged':
+                k = split[0]
+                text, ns = t.split_begun(text, k)
+                if tamper_split:
+                    text = tamper_split(text)
+                with open(os.path.join(d, 'instances.tsv'), 'w') as f:
+                    f.write(f'{t.PID2}\tadded\tacknowledged\n')
+                with open(os.path.join(d, 'failure.tsv'), 'w') as f:
+                    f.write('cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n')
+                starts += ('cuts 0\ncut_state begun\nintent_state taken_up\n',)
+                blocks = [blocks[w['number']] for w in written]
+                written = [dict(w, number=w['number'] - k, asked=ns + 1) if w['number'] > k else w for w in written]
+            elif split:
                 text = t.split_log(text, split[0])
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
@@ -224,6 +239,34 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=lambda written, blocks, final: None, as_name='bound')
         self.assertEqual(lines['cuts_abandoned'][0], 'FAIL', lines['cuts_abandoned'])
         self.assertEqual(rc, 1)
+
+    def test_an_acknowledged_failure(self):
+        """The recording `failed` (stage 2c): a later start that
+        acknowledged a failure begins a state whose count starts at 1
+        again; the held cuts of both states are judged, keyed by state,
+        and the status holds the new state's count. A daemon that took
+        the state up there fails cut_state and instance_2."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - k}\n')
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed')
+        for key in ('cuts', 'cut_numbers', 'status', 'cut_state', 'held_content', 'instance_1', 'instance_2',
+                    'failure', 'held_reads'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertIn('state 2 counts from 1 again', lines['cut_numbers'][1])
+        self.assertIn('acknowledging a failure', lines['instance_2'][1])
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if 'DIFFERS' in v[1]})
+        # the total, as a daemon that counted on would say it
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=held_status(records, read, dev, cs),
+                              as_name='failed')
+        self.assertEqual((rc, lines['status'][0]), (1, 'FAIL'))
+        # the second start took the state up
+        took = lambda text: text.replace(f'\t{t.PID2}\tcuts\t-\t-\t-\t-\tbegun', f'\t{t.PID2}\tcuts\t-\t-\t-\t-\ttaken_up')  # noqa: E731,E501
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed',
+                              tamper_split=took)
+        self.assertEqual((rc, lines['cut_state'][0], lines['instance_2'][0]), (1, 'FAIL', 'FAIL'))
 
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the

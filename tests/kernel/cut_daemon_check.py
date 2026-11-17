@@ -154,8 +154,27 @@ it is placed when that one runs it). Then:
   the reference cuts not are left out of `sessions`, obs_noflush_groups).
 A cut counted and killed before its line was written is the rig's
 error (the next instance's number says so); a log with more than one
-instance and no holder is the rig's error too. Not judged here: a held
-cut written after the volume failed (stage 2c).
+instance and no holder is the rig's error too.
+
+Stage 2c, a failure (the recording `failed`): the volume fails with cuts
+held and no client holding its device; DIR/instances.tsv marks the start
+after it `acknowledged`. That start trusts none of the cut state: its
+`instance` record begins a new state (cut_ref: no mark, no newest cut),
+`instance_K` wants `begun` for the cut state and `taken_up` for the
+intent map, and its count of cuts may start from 1 again (the daemon's
+does). The check then numbers the cut lines by their place in the whole
+log (`epochs`); `cut_numbers` says which way each state counted, the
+status's `cuts` is held to the new state's count where it started again,
+and the holder's numbers are keyed by the state whose instance had
+started when the write was asked for (`held_by_epoch`). Then:
+- `failure`: serve ended with 3 at the failure, a start without
+  --acknowledge-failure was refused with 4, and one with it served
+  (DIR/failure.tsv, the rig's). The cuts held at the failure are lost
+  with the instance (design §5.2 as of zfs-topology d26841d: uploading
+  them is M2.5's); the first state's held cuts written before it, and
+  the new state's after it, are judged by `held_content` on one image,
+  so a new state's first cut that lacks a block changed since the last
+  cut written is caught there.
 
 Exit 0: everything as the reference; 1: a verdict; 2: the rig's error.
 """
@@ -172,7 +191,7 @@ import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
-        'bound', 'edges', 'takeover')   # the last three only where the daemon holds cuts (cut-record.sh)
+        'bound', 'edges', 'takeover', 'failed')   # the last four only where the daemon holds cuts (cut-record.sh)
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
 RULES = ('early', 'txg-alone', 'count-repeats', 'previous', 'mark-dropped', 'mark-kept')
 CONTROLS = LISTS + RULES
@@ -187,12 +206,17 @@ CONTROLS = LISTS + RULES
 # run, and say so. mark-dropped and mark-kept tell a recording with more
 # than one instance of the daemon (stage 2b), and takeover is made to
 # hold a mark across a take-over and one across a created device.
+# failed (stage 2c) is new: its columns for the three rules are not known
+# before its first run either; its later instance trusts no state, so
+# neither mark rule changes it.
 EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
-                      rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught')),
+                      rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught'),
+                      failed=('same', 'caught')),
     'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught'),
-                          takeover=('same', 'caught')),
-    'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught'), takeover=('same', 'caught')),
+                          takeover=('same', 'caught'), failed=('same', 'caught')),
+    'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught'), takeover=('same', 'caught'),
+                     failed=('same', 'caught')),
     'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught'),
     'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught'),
 })
@@ -236,21 +260,31 @@ def parse_log(text):
 
 
 def read_kinds(text):
-    """instances.tsv (the rig's: `PID taken-over|added` for each serve, from
-    its line "serving device N (...)") -> {pid: whether it took the device over}."""
+    """instances.tsv (the rig's: `PID taken-over|added [acknowledged]` for
+    each serve, from its line "serving device N (...)", the third column
+    where the serve acknowledged a failure) -> {pid: whether it took the
+    device over}."""
     out = {}
     for ln in text.splitlines():
         f = ln.split('\t')
-        if len(f) != 2 or not f[0].isdigit() or f[1] not in ('taken-over', 'added'):
-            raise RigError(f'instances.tsv: not a pid and taken-over or added: {ln!r}')
+        if len(f) not in (2, 3) or not f[0].isdigit() or f[1] not in ('taken-over', 'added') \
+                or f[2:] not in ([], ['acknowledged']):
+            raise RigError(f'instances.tsv: not a pid, taken-over or added, and maybe acknowledged: {ln!r}')
         out[f[0]] = f[1] == 'taken-over'
     return out
 
 
-def log_lines(instances, kinds=None):
+def read_acknowledged(text):
+    """instances.tsv -> the pids of the serves that acknowledged a failure."""
+    read_kinds(text)
+    return {ln.split('\t')[0] for ln in text.splitlines() if ln.endswith('\tacknowledged')}
+
+
+def log_lines(instances, kinds=None, acked=frozenset()):
     """The instances' lines in the file's order, each instance after the
     first behind a line `instance` that says whether it took the device
-    over (kinds, read_kinds). Instances follow one another in the file:
+    over (kinds, read_kinds) and whether it begins a state, trusting none
+    (acked, read_acknowledged: it acknowledged a failure). Instances follow one another in the file:
     a serve begins once the one before has ended (killed or stopped)."""
     if len(instances) > 1 and kinds is None:
         raise RigError(f'{len(instances)} instances of the daemon in the request log and no instances.tsv '
@@ -265,7 +299,7 @@ def log_lines(instances, kinds=None):
                 raise RigError(f"request log line {inst['line']}: pid {inst['pid']} started before pid "
                                f"{instances[k - 1]['pid']}'s last line (line {prev[-1]['line']})")
             out.append({'event': 'instance', 'ns': inst['ns'], 'pid': inst['pid'], 'line': inst['line'],
-                        'taken_over': kinds[inst['pid']]})
+                        'taken_over': kinds[inst['pid']], 'begun': inst['pid'] in acked})
         out.extend(inst['lines'])
     return out
 
@@ -336,7 +370,7 @@ def records_of(lines, marks):
             zeroing.clear()
             last_barrier = None
             add({'flags': ['instance'], 'offset': 0, 'bytes': 0, 'taken_over': ln['taken_over'], 'pid': ln['pid'],
-                 'ns': ln['ns']})
+                 'ns': ln['ns'], 'begun': ln.get('begun', False)})
             continue
         if ev == 'recv':
             if not (ln['sector'].isdigit() and ln['sectors'].isdigit()):
@@ -454,19 +488,48 @@ def compare(dcuts, ref):
     return True, f'{len(ref)} cuts, each at the same barrier with the same group and the same answer to itself'
 
 
+def epochs(dcuts, records):
+    """Each cut line's state (stage 2c): a later instance that begins a
+    state (it acknowledged a failure) begins an epoch -> the instance
+    records that begin one. Sets each line's `epoch` (0 for the first
+    state), `local` (the number the line carries) and `number`, its place
+    in the whole log (1, 2, ...) where the lines carry numbers, which the
+    reference counts the same way (cut_ref) and the held cuts are keyed
+    by (held_by_epoch). With one state the lines keep their own numbers."""
+    starts = [r for r in records if 'instance' in r['flags'] and r.get('begun')]
+    for k, d in enumerate(dcuts):
+        d['epoch'] = sum(1 for r in starts if r['i'] < d['prefix'])
+        d['local'] = d['number']
+        if starts and d['number'] != '-':
+            d['number'] = str(k + 1)
+    return starts
+
+
 def numbers_verdict(dcuts):
     """The `cut` lines' numbers (M2.2b-2's sectors column; `-` in a log
     from before it) -> (verdict, detail). One instance that held no cuts
     before counts from 1: the k-th line carries k. An instance that took
     the state up counts on (record.rs), so across the instances of one
-    volume the k-th line carries k too."""
-    nums = [d['number'] for d in dcuts]
+    volume the k-th line carries k too. A state begun by a later instance
+    (epochs) may count from 1 again or go on: the design does not say,
+    and the line says which."""
+    nums = [d.get('local', d['number']) for d in dcuts]
     if all(n == '-' for n in nums):
         return 'INFO', 'the cut lines carry no numbers (a daemon from before M2.2b-2)'
+    said, k0, epoch = [], 0, 0
     for k, n in enumerate(nums):
-        if n != str(k + 1):
+        e = dcuts[k].get('epoch', 0)
+        if e != epoch:
+            epoch = e
+            if n == '1':
+                k0 = k
+                said.append(f'state {e + 1} counts from 1 again')
+            else:
+                said.append(f'state {e + 1} counts on')
+        if n != str(k - k0 + 1):
             return 'FAIL', f"cut line {k + 1} (request log line {dcuts[k]['line']}) carries the number {n!r}"
-    return 'PASS', f'the {len(nums)} cut lines are numbered 1 to {len(nums)}'
+    return 'PASS', f'the {len(nums)} cut lines are numbered 1 to {len(nums)}' + (
+        f" ({'; '.join(said)})" if said else '')
 
 
 def full_blocks(off, n):
@@ -597,6 +660,34 @@ def read_hashes(text, what, keyed=True):
     return out
 
 
+def held_by_epoch(written, text, dcuts, starts):
+    """Where a later state began (epochs) its count may start again, so
+    the holder's numbers repeat: each written cut's state is the one whose
+    instance had started when its write was asked for, and its blocks are
+    the next `blocks` lines of held-blocks.tsv, which the holder writes
+    just before each line of held.tsv -> (written, blocks) keyed by the
+    lines' place in the whole log, as `number` after epochs."""
+    rows = text.splitlines()
+    at, blocks, out = 0, {}, []
+    place = {(d['epoch'], d['local']): int(d['number']) for d in dcuts if d['number'] != '-'}
+    for w in written:
+        part = read_hashes('\n'.join(rows[at:at + w['blocks']]), 'held-blocks.tsv')
+        at += w['blocks']
+        if len(rows[at - w['blocks']:at]) != w['blocks'] or set(part) - {w['number']}:
+            raise RigError(f"held-blocks.tsv does not hold the {w['blocks']} blocks of cut {w['number']} where "
+                           'held.tsv puts them')
+        e = sum(1 for r in starts if r['ns'] < w['asked'])
+        n = place.get((e, str(w['number'])))
+        if n is None:
+            raise RigError(f"the holder wrote cut {w['number']} of state {e + 1}, which has no cut line in the "
+                           'request log')
+        out.append(dict(w, number=n, local=w['number'], epoch=e))
+        blocks[n] = part.get(w['number'], {})
+    if at != len(rows):
+        raise RigError(f'held-blocks.tsv has {len(rows) - at} lines after the last cut held.tsv names')
+    return out, blocks
+
+
 def held_content(records, dcuts, written, blocks, final=None):
     """The cuts the holder wrote, each against the reference's content at
     its instant -> (ok, detail, controls {name: (verdict, detail)}, every
@@ -719,13 +810,29 @@ def lost_at_kill(dcuts, ref, records):
         after = [d for d in dcuts if d['prefix'] > b]
         last = max((r['i'] for r in records[:b] if 'flush' in r['flags']), default=None)
         if len(rbefore) == before + 1 and rbefore[-1]['prefix'] == last and after \
-                and after[0]['number'] == str(before + 2):
+                and after[0].get('local', after[0]['number']) == str(before + 2):
             return (f'the daemon was killed between counting cut {before + 1} (group {rbefore[-1]["txg"]}) and '
                     f'writing its line: the next instance counts on from {before + 2}')
     return None
 
 
-def instance_lines(put, rdir, instances, dcuts, records):
+def first_commit(log):
+    """holder.log -> the time of the first release the daemon answered `ok`
+    (a commit, as an upload's will be), or None."""
+    asked = set()
+    for ln in log.splitlines():
+        f = ln.split('\t')
+        if len(f) != 2 or not f[0].isdigit():
+            continue
+        w = f[1].split()
+        if len(w) >= 3 and w[0] == '>' and w[2] == 'release':
+            asked.add(w[1])
+        elif len(w) >= 3 and w[0] == '<' and w[1] in asked and w[2] == 'ok':
+            return int(f[0])
+    return None
+
+
+def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     """Each instance's start with --hold-cuts (stage 2b): its `cuts` line,
     and its status read once it was ready (DIR/status-start-K.txt) ->
     1 when a line is a verdict against the daemon, else 0.
@@ -733,24 +840,44 @@ def instance_lines(put, rdir, instances, dcuts, records):
     The first start of a new volume begins a cut state and an intent
     map; each later one takes both up, whether it took the device over
     or created it, and its count goes on from the cuts counted before it
-    (the status was read after the start, so it may have counted more)."""
+    (the status was read after the start, so it may have counted more).
+    A later start that acknowledges a failure (begun, stage 2c) trusts
+    none of the cut state and begins one, and takes the intent map up
+    (`skyzfsd help`: after a failure that is acknowledged the next cut
+    holds only the regions the map names); its count is not judged here
+    (numbers_verdict). An intent map with no committed cut is begun anew
+    at any start (the daemon: "the intent map has no committed cut"), so a
+    later start wants it taken up only where the holder's log shows a
+    release answered before that start (the request log's clock), and
+    takes either otherwise."""
     rc = 0
     bounds = [r for r in records if 'instance' in r['flags']]
+    begun = begun or [True] + [False] * (len(instances) - 1)
+    committed = first_commit(read_file(rdir, 'holder.log'))
     for k, inst in enumerate(instances):
         said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
         st = read_status(read_file(rdir, f'status-start-{k + 1}.txt'))
-        want = 'begun' if k == 0 else 'taken_up'
-        before = 0 if k == 0 else sum(1 for d in dcuts if d['prefix'] < bounds[k - 1]['i'])
+        want = 'begun' if begun[k] else 'taken_up'
+        want_intent = 'begun' if k == 0 else 'taken_up'
+        if k and (committed is None or committed > inst['ns']):
+            want_intent = ('begun', 'taken_up')
+        before = 0 if begun[k] else sum(1 for d in dcuts if d['prefix'] < bounds[k - 1]['i'])
         bad = []
         if said != [want]:
             bad.append(f"its cuts line says {said or 'nothing'}")
-        for key in ('cut_state', 'intent_state'):
-            if st.get(key) != want:
+        for key, w in (('cut_state', want), ('intent_state', want_intent)):
+            if st.get(key) not in (w if isinstance(w, tuple) else (w,)):
                 bad.append(f'{key} {st.get(key)!r}')
         n = st.get('cuts', '')
         if not n.isdigit() or int(n) < before:
             bad.append(f'cuts {n!r} at the start, with {before} counted before it')
         how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
+        if k and begun[k]:
+            how += ', acknowledging a failure'
+        if isinstance(want_intent, tuple):
+            how += ', no cut committed before it'
+        want = (f"cut_state {want}, intent_state "
+                f"{' or '.join(want_intent) if isinstance(want_intent, tuple) else want_intent}")
         put(f'instance_{k + 1}', 'FAIL' if bad else 'PASS',
             (f"pid {inst['pid']} ({how}): " + '; '.join(bad) + f'; wanted {want}') if bad else
             f"pid {inst['pid']} ({how}): {want} by its cuts line and the status's cut_state and intent_state; "
@@ -758,6 +885,37 @@ def instance_lines(put, rdir, instances, dcuts, records):
             f"{st.get('intent_named_at_start')!r} of {st.get('intent_regions')!r} regions at the start")
         rc = 1 if bad else rc
     return rc
+
+
+def failure_line(put, rdir):
+    """The recording `failed` (stage 2c): DIR/failure.tsv, the rig's `key
+    value` lines -> 1 when the line is a verdict against the daemon. The
+    volume failed (SIGUSR1, the test build) with cuts held and no client
+    holding the device: serve ends with 3; a start without
+    --acknowledge-failure is refused with 4, and one with it serves (the
+    check's other lines judge it). A held cut is lost with the instance
+    that saw the failure (design §5.2, as of zfs-topology d26841d)."""
+    got = {}
+    for ln in read_file(rdir, 'failure.tsv').splitlines():
+        f = ln.split('\t')
+        if len(f) != 2:
+            raise RigError(f'failure.tsv: not a key and a value: {ln!r}')
+        got[f[0]] = f[1]
+    for key in ('cuts_held', 'failed_rc', 'refused_rc'):
+        if key not in got:
+            raise RigError(f'failure.tsv has no {key}: the recording did not get as far')
+    if not got['cuts_held'].isdigit() or int(got['cuts_held']) < 1:
+        raise RigError(f"failure.tsv: {got['cuts_held']!r} cuts held before the failure; the recording holds one "
+                       'across it')
+    bad = []
+    if got['failed_rc'] != '3':
+        bad.append(f"serve ended with {got['failed_rc']} after SIGUSR1, wanted 3")
+    if got['refused_rc'] != '4':
+        bad.append(f"a start without --acknowledge-failure ended with {got['refused_rc']}, wanted 4")
+    put('failure', 'FAIL' if bad else 'PASS', '; '.join(bad) if bad else
+        f"with {got['cuts_held']} cuts held the volume failed and serve ended with 3; a start without "
+        '--acknowledge-failure was refused with 4, and one with it served')
+    return 1 if bad else 0
 
 
 def noflush_kstats(kstats, records, taken, cs):
@@ -844,13 +1002,16 @@ def status_window(status, text):
     return after - int(age) * 1_000_000 + CLOCK_NS
 
 
-def status_verdict(status, ref, times=None, latest=None):
+def status_verdict(status, ref, times=None, latest=None, since=None):
     """status.txt's values and the reference's cuts -> (ok, detail).
 
     The values are held to the last cut. Where they differ, times (of the
     daemon's cut lines) and latest (status_window) say whether the status
-    was written before the last cut line."""
-    want = {'cuts': str(len(ref))}
+    was written before the last cut line. since: the record where the
+    last state began, where the daemon's lines count from 1 again in it
+    (epochs, numbers_verdict): the count is then the reference's cuts
+    after it."""
+    want = {'cuts': str(len(ref) if since is None else sum(1 for c in ref if c['prefix'] > since))}
     if ref:
         want['cut_group'] = str(ref[-1]['txg'])
         want['cut_opens'] = 'itself' if ref[-1]['itself'] else 'rewind'
@@ -873,9 +1034,12 @@ def read_file(rdir, name):
         raise RigError(f'no {name}: the holder did not get as far') from None
 
 
-def held_lines(put, rdir, instances, records, dcuts, status, dev, name=''):
+def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun=None):
     """The second stage's lines, where the holder ran -> (1 when a line is a
-    verdict against the daemon, else 0; whether a line is the rig's ERROR)."""
+    verdict against the daemon, else 0; whether a line is the rig's ERROR).
+    begun: for each instance, whether it begins a state (the first, and
+    one that acknowledged a failure)."""
+    begun = begun or [True] + [False] * (len(instances) - 1)
     rc, errored = 0, False
     log = read_file(rdir, 'holder.log')
     err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
@@ -898,12 +1062,13 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name=''):
     # The state: a new volume's first start begins one, by the log's
     # `cuts` line and by the status; each later start takes it up.
     said = [ln['result'] for inst in instances for ln in inst['lines'] if ln['event'] == 'cuts']
-    want = ['begun'] + ['taken_up'] * (len(instances) - 1)
+    want = ['begun' if b else 'taken_up' for b in begun]
     st = status.get('cut_state')
     ok = said == want and st == want[-1]
     put('cut_state', 'PASS' if ok else 'FAIL', f"the request log's cuts lines say {said or 'nothing'}, the last "
         f"status {st!r}; a new volume's first start with --hold-cuts begins a state, and each start after it "
-        f"takes it up ({len(instances)} instances)")
+        f"takes it up unless it acknowledged a failure, which begins one ({len(instances)} instances, wanted "
+        f"{want})")
     rc = rc if ok else 1
     # cuts_held against the list, both read after the export
     final = read_file(rdir, 'held-final.txt').splitlines()
@@ -915,7 +1080,11 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name=''):
         f"{len(final)} ({'; '.join(final) or 'none'}), a second and a half apart after the export")
     rc = rc if ok else 1
     written = read_held(read_file(rdir, 'held.tsv'))
-    blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
+    starts = [r for r in records if 'instance' in r['flags'] and r.get('begun')]
+    if starts:
+        written, blocks = held_by_epoch(written, read_file(rdir, 'held-blocks.tsv'), dcuts, starts)
+    else:
+        blocks = read_hashes(read_file(rdir, 'held-blocks.tsv'), 'held-blocks.tsv')
     final_image = read_hashes(read_file(rdir, 'held-image.tsv'), 'held-image.tsv', keyed=False)
     ok, detail, controls, wrong = held_content(records, dcuts, written, blocks, final_image)
     if ok is None:
@@ -980,13 +1149,16 @@ def main():
             instances = parse_log(f.read())
         if not instances:
             raise RigError('no instance of the daemon in the request log')
-        kinds = None
+        kinds, acked = None, set()
         if os.path.exists(os.path.join(rdir, 'instances.tsv')):
             kinds = read_kinds(read_file(rdir, 'instances.tsv'))
+            acked = read_acknowledged(read_file(rdir, 'instances.tsv'))
         marks_path = os.path.join(rdir, 'marks.tsv')
         with open(marks_path) as f:
             marks = read_marks(f.read())
-        records, dcuts = records_of(log_lines(instances, kinds), marks)
+        records, dcuts = records_of(log_lines(instances, kinds, acked), marks)
+        starts = epochs(dcuts, records)
+        begun = [True] + [r['begun'] for r in records if 'instance' in r['flags']]
         read = read_of(records, dev)
         ubs = cut_ref.scan(records, read, dev)
         cs, taken = cut_ref.cuts(records, ubs)
@@ -1018,14 +1190,21 @@ def main():
             status = read_status(f.read())
         with open(os.path.join(rdir, 'status-time.tsv')) as f:
             latest = status_window(status, f.read())
-        ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], latest)
+        since = None
+        if starts:
+            first = [d for d in dcuts if d['epoch'] == len(starts)]
+            if first and first[0]['local'] == '1':
+                since = starts[-1]['i']
+        ok, detail = status_verdict(status, ref, [c['ns'] for c in dcuts], latest, since)
         put('status', 'PASS' if ok else 'FAIL', detail)
         if not ok:
             rc = 1
         if os.path.exists(os.path.join(rdir, 'holder.log')):
-            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name)
+            v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
             rc, errored = max(rc, v), errored or e
-            rc = max(rc, instance_lines(put, rdir, instances, dcuts, records))
+            rc = max(rc, instance_lines(put, rdir, instances, dcuts, records, begun))
+            if name == 'failed':
+                rc = max(rc, failure_line(put, rdir))
         elif len(instances) > 1:
             raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
                            'cuts starts the daemon again')

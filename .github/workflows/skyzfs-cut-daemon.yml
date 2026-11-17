@@ -29,7 +29,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full, and with hold: bound edges takeover); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full, and with hold: bound edges takeover failed); empty: all"
         default: ""
       hold:
         description: "serve with --hold-cuts and check the held cuts' content (the second stage)"
