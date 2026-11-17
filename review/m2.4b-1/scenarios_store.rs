@@ -262,7 +262,7 @@ fn review_t6_a_copy_whose_slot_follows_a_blocks_number() {
         assert!(store.release_cut(1));
         let own = [0u64, 1, 2, 200, 201];
         for block in own {
-            write(&mut store, block, 0x40 + block as u8).unwrap();
+            write(&mut store, block, 0x40 + (block % 64) as u8).unwrap();
         }
         group(&mut store, 200, 8, 80);
         assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
@@ -279,7 +279,7 @@ fn review_t6_a_copy_whose_slot_follows_a_blocks_number() {
             for (block, content) in blocks {
                 if own.contains(&block) {
                     assert!(
-                        content == vec![0x40 + block as u8; BLOCK_USIZE],
+                        content == vec![0x40 + (block % 64) as u8; BLOCK_USIZE],
                         "{case}: block {block} of cut 2 in slices of {size} holds {:#x}",
                         content[0]
                     );

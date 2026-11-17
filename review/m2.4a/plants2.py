@@ -4,7 +4,8 @@ far as they still apply, with those of put_sealed written again for its new shap
 two that passed at dcf2df3 (B2, B3), and new ones for what the two commits changed
 (L: the group at a discard and a rollback; N: put_sealed dropped at a PUT). One at a
 time against the tests of skynbd-store and skynbd-engine; the file is restored after
-each.
+each. Results are appended to plants2.out one by one, and a plant with a line there is
+not run again.
 
     plants2.py CHECKOUT TARGET_DIR [PREFIX ...]
 """
@@ -115,9 +116,65 @@ NEW = [
     OLD['E1'], OLD['F1'], OLD['F2'], OLD['F3'],
 ]
 
+def main():
+    """As plants.main, but each result is appended to plants2.out as it comes, and a
+    plant that already has a line there is skipped: a run that is cut short is taken up
+    where it stopped. It refuses to start on a checkout that is not clean."""
+    import os
+    import subprocess
+    root, target = plants.ROOT, plants.TARGET
+    here = os.path.dirname(os.path.abspath(__file__))
+    out_path = os.path.join(here, 'plants2.out')
+    done = open(out_path).read() if os.path.exists(out_path) else ''
+
+    def say(line):
+        with open(out_path, 'a') as f:
+            f.write(line + '\n')
+        print(line, flush=True)
+
+    def clean():
+        st = subprocess.run(['git', 'status', '--short'], cwd=root, capture_output=True, text=True)
+        return st.stdout.strip()
+
+    if clean():
+        print(f'the checkout is not clean, nothing run: {clean()}')
+        return 2
+    env = dict(os.environ, CARGO_INCREMENTAL='0', CARGO_TARGET_DIR=target)
+    if 'A6 of plants.py' not in done:
+        say('A6 of plants.py (after a failed PUT, the segments PUT in that call are forgotten): '
+            'NOT APPLIED (put_sealed no longer counts a call\'s PUTs; A4 and A7 are the failure path now)')
+    if 'as the head has it' not in done:
+        say(f'as the head has it: {plants.tests(env)}')
+    for name, path, edits in NEW:
+        if plants.ONLY and not name.startswith(plants.ONLY):
+            continue
+        if f'\n{name}: ' in '\n' + done:
+            continue
+        full = os.path.join(root, path)
+        orig = open(full).read()
+        text, ok = orig, True
+        for old, new in edits:
+            if text.count(old) != 1:
+                ok = False
+                break
+            text = text.replace(old, new)
+        if not ok:
+            say(f'{name}: NOT APPLIED (the text to replace is not there exactly once)')
+            continue
+        try:
+            open(full, 'w').write(text)
+            failed, broken = plants.tests(env)
+        finally:
+            open(full, 'w').write(orig)
+        if broken:
+            say(f'{name}: DID NOT BUILD: {broken}')
+        elif failed:
+            say(f'{name}: KILLED by {len(failed)}: {", ".join(failed)}')
+        else:
+            say(f'{name}: SURVIVED (every test passes)')
+    say(f'git status --short in the checkout: {clean() or "(clean)"}')
+    return 0
+
+
 if __name__ == '__main__':
-    print('A6 of plants.py (after a failed PUT, the segments PUT in that call are forgotten): '
-          'NOT APPLIED (put_sealed no longer counts a call\'s PUTs; A4 and A7 are the failure path now)',
-          flush=True)
-    plants.PLANTS = NEW
-    plants.main()
+    sys.exit(main())
