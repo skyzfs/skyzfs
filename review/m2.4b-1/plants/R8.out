@@ -1,0 +1,2 @@
+R8 the base read from the header has the number and no state: KILLED by 2: a_death_after_the_commit_leaves_the_cut_to_release_or_named_as_committed, a_map_reads_back_as_written
+git status --short: clean

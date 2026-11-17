@@ -1,0 +1,2 @@
+B9 a slice always says it read a copy: KILLED by 1: a_cut_read_in_slices_holds_each_block_as_it_reads_alone
+git status --short: clean
