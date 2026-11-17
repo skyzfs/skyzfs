@@ -4280,6 +4280,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-upload"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "skynbd-engine",
+ "skynbd-format",
+ "skynbd-refs",
+ "skynbd-store",
+ "skynbd-types",
+ "skyzfs-blk",
+ "skyzfs-local",
+ "skyzfs-uberblock",
+ "thiserror 2.0.19",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
 name = "skyzfsd"
 version = "0.0.1"
 dependencies = [
