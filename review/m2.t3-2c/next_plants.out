@@ -1,0 +1,13 @@
+K1 every refused write of a cut still held is the daemon's: KILLED by 3: test_a_read_of_the_held_cut_refused, test_a_write_refused_while_the_cut_is_held, test_the_program_ends_with_2_at_the_rigs_error
+K2 no refused write is the daemon's: KILLED by 2: test_a_read_of_the_held_cut_refused, test_the_program_ends_with_1_at_a_verdict
+K3 the reason may stand anywhere in the refusal (search, not match): SURVIVED
+K4 a refused release of a cut still held is the daemon's too: KILLED by 1: test_a_release_refused_while_the_cut_is_held
+K5 a refused read is a verdict even where the cut is gone: SURVIVED
+K6 main ends with 2 at a verdict: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K7 main logs a verdict as ERROR: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K8 main does not catch a verdict (a traceback, exit 1, no line in the log): KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K9 the reason is matched whatever number follows "cut" (the cut asked for or not): SURVIVED
+M1 a new state may count on, as before the commit (from 1 again or on, the line says which): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M2 a new state must count on (from 1 again is refused): KILLED by 3: test_a_count_that_goes_on_or_is_wrong, test_the_count_starts_again, test_an_acknowledged_failure
+M3 the new state's own refusal is gone (the line then fails by the rule for every line, in its words): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M4 the count is not begun again at a new state (its first line must be 1, its later lines go on): KILLED by 2: test_the_count_starts_again, test_an_acknowledged_failure

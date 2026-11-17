@@ -33,11 +33,12 @@
       status	PASS	cuts 8, cut_group 55, cut_opens itself
       cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
       instance_2	FAIL	pid 13018 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
-  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 2
+  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 1
       cut_numbers	FAIL	state 2's first cut line (request log line 4124) carries the number '13', not 1: a new state counts from 1 again
       status	FAIL	cuts '20', not '8'
       cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
-      rig_error	ERROR	the holder wrote cut 9 of state 2, which has no cut line in the request log
+      held_content	FAIL	the holder wrote cut 9 in state 2, which has no cut line in that state and has one in the state before: a cut of the state before the start that acknowledged the failure was still held after it, though that start trusts none of the cut state
+      instance_2	FAIL	pid 13018 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
 == arm
   the recording: state 1 counted 12 cuts and its holder wrote [1, 8]; state 2 counted 8 and its holder wrote [1, 3, 4, 8]
   the new state's first written cut is its cut 1 (group 33), 6177 blocks; 1792 of them differ from the image the first state's holder left (what a cut that lacked them would get wrong); whole regions in its map: region 0: 14 of 1024 differ, region 4: 864 of 1024 differ, region 5: 743 of 1024 differ, region 9: 71 of 1024 differ, region 17: 53 of 1024 differ, region 127: 14 of 1024 differ; outside whole regions: 33 blocks, 33 differ
@@ -73,8 +74,9 @@
       status	PASS	cuts 8, cut_group 55, cut_opens itself
       cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
       instance_2	FAIL	pid 12762 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
-  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 2
+  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 1
       cut_numbers	FAIL	state 2's first cut line (request log line 4188) carries the number '13', not 1: a new state counts from 1 again
       status	FAIL	cuts '20', not '8'
       cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
-      rig_error	ERROR	the holder wrote cut 9 of state 2, which has no cut line in the request log
+      held_content	FAIL	the holder wrote cut 9 in state 2, which has no cut line in that state and has one in the state before: a cut of the state before the start that acknowledged the failure was still held after it, though that start trusts none of the cut state
+      instance_2	FAIL	pid 12762 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up

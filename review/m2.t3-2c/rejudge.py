@@ -29,9 +29,11 @@ for art in arts:
             with open(os.path.join(d, 'results.tsv')) as f:
                 after = [ln.rstrip('\n').split('\t') for ln in f if not ln.startswith('time\t')]
             same = before == after
+            order = not same and sorted(before) == sorted(after)
             print(f'{os.path.basename(art)} {name}: exit {p.returncode} here, {len(after)} lines, '
-                  f"{'the same as the run' if same else 'NOT the run lines'}", flush=True)
-            if not same:
+                  + ('the same as the run' if same else "the run's lines in another order" if order
+                     else 'NOT the run lines'), flush=True)
+            if not same and not order:
                 for b, a in zip(before, after):
                     if b != a:
                         print(f'    run:  {b}\n    here: {a}')

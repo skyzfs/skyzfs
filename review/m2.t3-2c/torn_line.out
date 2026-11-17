@@ -1,0 +1,17 @@
+instances.tsv: 9937 added | 10976 taken-over | 11119 taken-over | 11257 added
+18800760 bytes, 53975 lines, the file ends with a newline: True
+1 lines that are not eight to ten columns
+line 43866 at byte 13381812: 8047 bytes, 15 columns
+  its first columns: ['263932738825', '9937', 'label', '25', 'write', '1047960', '8', '0cb1ba000000000088130000']
+  column lengths: [12, 4, 5, 2, 5, 7, 1, 7981, 5, 5, 1, 1, 1, 1, 2]
+  a start line is in it, from column 8: ['000000000000264075526204', '10976', 'start', '0', '-', '-', '-', '64']
+  the column where the two meet has 7981 bytes and ends '0000000000000000000000000000264075526204'
+  the line before: ns 263932565071 pid 9937 label; the line after: ns 264075546749 pid 10976 cuts
+  if the start line's time has 12 digits like the next line's, the torn line ends at byte 13389824 = 3269 * 4096 + 0, 8012 bytes after its start (its start: 3267 * 4096 + 180)
+  the start line would then be: 264075526204 ['10976', 'start', '0', '-', '-', '-', '64']
+    before: 263932552329 9937 recv 25 write 1047960 8 - (43 bytes)
+    before: 263932553267 9937 recv 26 write 1048472 8 - (43 bytes)
+    before: 263932565071 9937 label 24 write 920 8 0cb1ba00000000008813 (8231 bytes)
+    after:  264075546749 10976 cuts - - - - taken_up (40 bytes)
+    after:  264076561903 10976 recv 31 write 408 8 - (40 bytes)
+lines longer than 4096 bytes: 1054 of 53975; the longest 262190 bytes; bytes in such lines: 15084788 of 18800760
