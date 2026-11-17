@@ -1031,6 +1031,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// CAS the head to a snapshot's commit (design §9.6). Refuses with
     /// un-flushed writes (no silent data loss). Connection-level fencing
     /// of live writers is the API layer's job (design §17 open question).
+    /// A group set for the next commit ([`Engine::set_group`]) is cleared:
+    /// the commits after a rollback are not the cut it was set for.
     pub async fn rollback(&mut self, name: &str) -> Result<CommitHash> {
         if !self.overlay.is_empty() {
             return Err(EngineError::DirtyRollback);
@@ -1065,6 +1067,7 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
         self.pending_segments.clear();
         self.sealed_order.clear();
         self.stored_segments.clear();
+        self.next_group = None;
         self.open_seg = OpenSegment::new();
         Ok(snap.commit)
     }
@@ -1129,12 +1132,15 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// Drop every un-committed byte (overlay, pending segments). The
     /// transactional-apply error path (design §9.4: a torn stream changes
     /// nothing) and abort flows use this; acked-but-unflushed NBD writes
-    /// are the caller's responsibility to fence first.
+    /// are the caller's responsibility to fence first. A group set for the
+    /// next commit ([`Engine::set_group`]) goes with the writes: the cut it
+    /// was set for is given up.
     pub fn discard_uncommitted(&mut self) {
         self.overlay = ExtentMap::new();
         self.pending_segments.clear();
         self.sealed_order.clear();
         self.stored_segments.clear();
+        self.next_group = None;
         self.open_seg = OpenSegment::new();
     }
 
@@ -1532,31 +1538,31 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// a later call or by the commit.
     ///
     /// A failed PUT ends the call: that segment and those sealed after it
-    /// keep their bytes, and the next call or the commit PUTs them. A
-    /// segment PUT and never committed (the process died, or the writes
+    /// keep their bytes, and the next call or the commit PUTs them. Each
+    /// segment moves from the sealed to the PUT the moment its PUT ends,
+    /// with no wait between, so a call dropped at a PUT (a time limit
+    /// around it) leaves every segment in one list or the other and none
+    /// in both.
+    ///
+    /// A segment PUT and never committed (the process died, or the writes
     /// were discarded) is an orphan for GC, as a failed commit's segments
-    /// are. GC refuses to run while this engine has uncommitted writes,
-    /// so it does not sweep a commit's segments before the commit.
+    /// are. This engine's [`Engine::gc`] refuses to run while it has
+    /// uncommitted writes. A GC through another handle on the volume
+    /// would sweep segments PUT early and not yet committed, since no
+    /// ref's tree reaches them: a GC on a volume with an upload under way
+    /// must hold the volume's lease or wait for the upload (the review of
+    /// #110; for M4's GC).
     pub async fn put_sealed(&mut self) -> Result<()> {
-        let mut put = 0;
-        let mut outcome = Ok(());
-        for id in &self.sealed_order {
-            let bytes = &self.pending_segments[id];
-            if let Err(e) = self
-                .store
-                .put(&keys::segment(self.vol_id, *id), bytes.clone())
-                .await
-            {
-                outcome = Err(e.into());
-                break;
-            }
-            self.stored_segments.push(segment_meta(*id, bytes));
-            put += 1;
-        }
-        for id in self.sealed_order.drain(..put) {
+        while let Some(&id) = self.sealed_order.first() {
+            let bytes = self.pending_segments[&id].clone();
+            self.store
+                .put(&keys::segment(self.vol_id, id), bytes.clone())
+                .await?;
+            self.sealed_order.remove(0);
             self.pending_segments.remove(&id);
+            self.stored_segments.push(segment_meta(id, &bytes));
         }
-        outcome
+        Ok(())
     }
 
     /// Record `group` in the next commit this engine makes (Commit v2's
@@ -1568,7 +1574,14 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     ///
     /// The group is not carried over to later commits, so that no commit
     /// claims a cut's group it was not made for (the conservative reading
-    /// of the M2.4 plan, which names a setter and not its lifetime).
+    /// of the M2.4 plan, which names a setter and not its lifetime). For
+    /// the same reason [`Engine::discard_uncommitted`] and
+    /// [`Engine::rollback`] clear it.
+    ///
+    /// While a group is set, [`Engine::is_clean`], `rpo_is_current`,
+    /// `rollback` and `gc` still ask only whether anything is written: a
+    /// group with nothing written counts as clean, although `commit` is
+    /// then not a no-op.
     pub fn set_group(&mut self, group: Option<u64>) {
         self.next_group = group;
     }

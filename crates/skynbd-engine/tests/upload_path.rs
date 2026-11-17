@@ -8,12 +8,17 @@
 //! commit; the commit records the cut's group, and the cut's identity
 //! lands in the same refs transaction as the head swap.
 
-use std::sync::Arc;
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
 use skynbd_engine::{fsck, keys, Engine, EngineConfig, EngineError};
 use skynbd_format::{Codec, Commit, CommitKind};
 use skynbd_refs::{MemoryRefStore, ObjectRefStore, RefOp, RefStore};
-use skynbd_store::{FaultOp, FaultStore, FaultWhen, MemoryStore, ObjectStore};
+use skynbd_store::{
+    FaultOp, FaultStore, FaultWhen, MemoryStore, ObjectStore, Precondition, StoreError,
+};
 use skynbd_types::{CommitHash, VolumeId};
 
 const KIB: u64 = 1024;
@@ -57,6 +62,90 @@ fn row(value: &[u8]) -> RefOp {
     RefOp::MetaPut {
         key: CUT_ROW.into(),
         value: value.to_vec(),
+    }
+}
+
+/// A store that writes down each operation while `on`, as its kind and
+/// the class of its key ("put seg", "put_if refs"), and can hold the PUTs
+/// of segments after the first `hold_after` for ever: a request that
+/// never answers. After the review of #110 (its scenarios S2 and S3).
+#[derive(Clone)]
+struct Recording {
+    inner: MemoryStore,
+    log: Arc<Mutex<Vec<String>>>,
+    on: Arc<AtomicBool>,
+    hold_after: Arc<Mutex<Option<usize>>>,
+    segment_puts: Arc<Mutex<usize>>,
+}
+
+impl Recording {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            log: Arc::default(),
+            on: Arc::new(AtomicBool::new(false)),
+            hold_after: Arc::default(),
+            segment_puts: Arc::default(),
+        }
+    }
+
+    fn note(&self, op: &str, key: &str) {
+        if !self.on.load(Ordering::SeqCst) {
+            return;
+        }
+        let class = ["/seg/", "/node/", "/commit/", "/refs", "/sb", "/emap/"]
+            .iter()
+            .find(|class| key.contains(*class))
+            .map_or("?", |class| class.trim_matches('/'));
+        self.log.lock().unwrap().push(format!("{op} {class}"));
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Recording {
+    async fn put(&self, key: &str, data: Bytes) -> Result<(), StoreError> {
+        self.note("put", key);
+        if key.contains("/seg/") {
+            let n = {
+                let mut n = self.segment_puts.lock().unwrap();
+                *n += 1;
+                *n
+            };
+            let hold = *self.hold_after.lock().unwrap();
+            if hold.is_some_and(|after| n > after) {
+                std::future::pending::<()>().await;
+            }
+        }
+        self.inner.put(key, data).await
+    }
+    async fn get(&self, key: &str, range: Option<Range<u64>>) -> Result<Bytes, StoreError> {
+        self.note("get", key);
+        self.inner.get(key, range).await
+    }
+    async fn exists(&self, key: &str) -> Result<bool, StoreError> {
+        self.note("exists", key);
+        self.inner.exists(key).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        self.note("list", prefix);
+        self.inner.list(prefix).await
+    }
+    async fn delete(&self, key: &str) -> Result<(), StoreError> {
+        self.note("delete", key);
+        self.inner.delete(key).await
+    }
+    async fn get_versioned(&self, key: &str) -> Result<(Bytes, String), StoreError> {
+        self.note("get_versioned", key);
+        self.inner.get_versioned(key).await
+    }
+    async fn put_if(
+        &self,
+        key: &str,
+        data: Bytes,
+        pre: Precondition,
+    ) -> Result<String, StoreError> {
+        self.note("put_if", key);
+        self.inner.put_if(key, data, pre).await
     }
 }
 
@@ -224,6 +313,9 @@ async fn upload<S: ObjectStore, R: RefStore>(eng: &mut Engine<S, R>) -> Result<(
     // The next shard.
     eng.write(80 * KIB, &block(23))?;
     eng.put_sealed().await?;
+    // Part of a block: its segment stays open, and the commit seals and
+    // PUTs it (the review of #110, G2).
+    eng.write(6 * BLOCK, &block(24)[..512])?;
     eng.set_group(Some(41));
     eng.commit_with(CommitKind::Flush, vec![row(b"cut 1")])
         .await?;
@@ -250,8 +342,32 @@ fn after() -> Vec<u8> {
     put(BLOCK, &vec![0; BLOCK as usize]);
     put(2 * BLOCK, &block(21));
     put(5 * BLOCK, &block(22));
+    put(6 * BLOCK, &block(24)[..512]);
     put(80 * KIB, &block(23));
     v
+}
+
+/// The volume before the upload, made on `eng`.
+async fn made_before<S: ObjectStore, R: RefStore>(eng: &mut Engine<S, R>) {
+    for i in 0..4u8 {
+        eng.write(u64::from(i) * BLOCK, &block(10 + i)).unwrap();
+    }
+    eng.commit(CommitKind::Flush).await.unwrap();
+}
+
+/// The store operations of [`upload`], in order: the crash test's kill
+/// points.
+async fn operations_of_the_upload() -> Vec<String> {
+    let store = Recording::new();
+    let refs = Arc::new(ObjectRefStore::new(store.clone()));
+    let mut eng = Engine::create_volume(store.clone(), refs, vol(4), 96 * KIB, cfg())
+        .await
+        .unwrap();
+    made_before(&mut eng).await;
+    store.on.store(true, Ordering::SeqCst);
+    upload(&mut eng).await.unwrap();
+    let operations = store.log.lock().unwrap().clone();
+    operations
 }
 
 /// A death at every store operation of an upload, before the operation
@@ -263,6 +379,17 @@ fn after() -> Vec<u8> {
 /// the uploader heard an error.
 #[tokio::test]
 async fn a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole() {
+    let operations = operations_of_the_upload().await;
+    let segments = operations.iter().filter(|op| *op == "put seg").count();
+    assert_eq!(
+        segments, 5,
+        "four segments PUT early and one by the commit: {operations:?}"
+    );
+    assert_eq!(
+        operations.last().map(String::as_str),
+        Some("put_if refs"),
+        "the head swap is the last operation: {operations:?}"
+    );
     for when in [FaultWhen::Before, FaultWhen::After] {
         let mut landed_unheard = 0;
         let mut points = 0;
@@ -273,10 +400,7 @@ async fn a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_wh
             let mut eng = Engine::create_volume(store.clone(), refs, v, 96 * KIB, cfg())
                 .await
                 .unwrap();
-            for i in 0..4u8 {
-                eng.write(u64::from(i) * BLOCK, &block(10 + i)).unwrap();
-            }
-            eng.commit(CommitKind::Flush).await.unwrap();
+            made_before(&mut eng).await;
 
             store.arm_when(FaultOp::Any, "", k, when).await;
             let finished = upload(&mut eng).await.is_ok();
@@ -318,7 +442,11 @@ async fn a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_wh
                 "{when:?} at op {k}"
             );
         }
-        assert!(points > 10, "{when:?}: only {points} kill points");
+        assert_eq!(
+            points,
+            operations.len(),
+            "{when:?}: a kill point at each operation of {operations:?}"
+        );
         match when {
             // Before the swap, nothing of the upload is visible.
             FaultWhen::Before => assert_eq!(landed_unheard, 0),
@@ -692,4 +820,191 @@ async fn a_volume_is_not_created_with_a_shard_of_zero_or_of_part_of_a_sector() {
             "{shard_bytes}: nothing written"
         );
     }
+}
+
+// ------------------------------------------- after the review of #110
+
+/// A discard or a rollback gives up the cut a group was set for: the
+/// group goes with it, and no later commit claims it (the review of
+/// #110, L1).
+#[tokio::test]
+async fn a_discard_or_a_rollback_gives_up_the_group() {
+    let store = MemoryStore::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(12);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    eng.write(0, &block(1)).unwrap();
+    let h0 = eng.commit(CommitKind::Flush).await.unwrap();
+
+    eng.set_group(Some(41));
+    eng.write(0, &block(2)).unwrap();
+    eng.put_sealed().await.unwrap();
+    eng.discard_uncommitted();
+    let h1 = eng.commit(CommitKind::Flush).await.unwrap();
+    assert_eq!(h1, h0, "nothing written and no group: no commit");
+    assert_eq!(eng.head_group(), None);
+
+    eng.set_group(Some(42));
+    eng.write(0, &block(3)).unwrap();
+    eng.discard_uncommitted();
+    let (_, snapshot) = eng.snapshot_create("s").await.unwrap();
+    assert_eq!(commit_of(&store, v, &snapshot).await.group, None);
+
+    eng.set_group(Some(43));
+    eng.rollback("s").await.unwrap();
+    eng.write(BLOCK, &block(4)).unwrap();
+    let after_rollback = eng.commit(CommitKind::Flush).await.unwrap();
+    assert_eq!(commit_of(&store, v, &after_rollback).await.group, None);
+    assert_eq!(eng.read(0, BLOCK).await.unwrap(), block(1));
+}
+
+/// A commit that lands lets go of its list of segments PUT early: the
+/// commit after it lists only its own (the review of #110, G1).
+#[tokio::test]
+async fn the_commit_after_one_with_segments_put_early_lists_only_its_own() {
+    let store = MemoryStore::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(13);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    eng.write(0, &block(1)).unwrap();
+    eng.write(BLOCK, &block(2)).unwrap();
+    eng.put_sealed().await.unwrap();
+    let first = eng.commit(CommitKind::Flush).await.unwrap();
+    eng.write(2 * BLOCK, &block(3)).unwrap();
+    let second = eng.commit(CommitKind::Flush).await.unwrap();
+    assert_eq!(commit_of(&store, v, &first).await.segments.len(), 2);
+    assert_eq!(commit_of(&store, v, &second).await.segments.len(), 1);
+}
+
+/// A commit that fails at any of its operations, before or after it,
+/// with segments PUT early, one sealed and not PUT and part of a block
+/// open, is made again on the same engine: it lists its four segments
+/// once each, with the group, and the volume reads right after a reopen.
+/// Where the swap landed unheard, the commit again is a `Conflict` and
+/// the head is the first attempt's commit (the review of #110, G1, its
+/// scenario S4).
+#[tokio::test]
+async fn a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once() {
+    for when in [FaultWhen::Before, FaultWhen::After] {
+        let mut points = 0;
+        let mut landed_unheard = 0;
+        for k in 0.. {
+            let store = FaultStore::new(MemoryStore::new());
+            let v = vol(14);
+            let refs = Arc::new(ObjectRefStore::new(store.clone()));
+            let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 96 * KIB, cfg())
+                .await
+                .unwrap();
+            eng.write(0, &block(1)).unwrap();
+            eng.commit(CommitKind::Flush).await.unwrap();
+
+            eng.write(0, &block(20)).unwrap();
+            eng.write(2 * BLOCK, &block(21)).unwrap();
+            eng.put_sealed().await.unwrap();
+            eng.write(80 * KIB, &block(23)).unwrap();
+            eng.write(5 * BLOCK, &block(22)[..512]).unwrap();
+            eng.set_group(Some(41));
+
+            store.arm_when(FaultOp::Any, "", k, when).await;
+            let first = eng
+                .commit_with(CommitKind::Flush, vec![row(b"cut 1")])
+                .await;
+            store.disarm().await;
+            let hash = match &first {
+                Ok(hash) => *hash,
+                Err(_) => {
+                    points += 1;
+                    match eng
+                        .commit_with(CommitKind::Flush, vec![row(b"cut 1")])
+                        .await
+                    {
+                        Ok(hash) => hash,
+                        Err(EngineError::Conflict) => {
+                            landed_unheard += 1;
+                            refs.get(v, "head").await.unwrap().unwrap().commit
+                        }
+                        Err(e) => panic!("{when:?} at op {k}: the commit again: {e}"),
+                    }
+                }
+            };
+            let commit = commit_of(store.inner(), v, &hash).await;
+            let mut ids: Vec<_> = commit.segments.iter().map(|s| s.id).collect();
+            assert_eq!(ids.len(), 4, "{when:?} at op {k}: segments listed");
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), 4, "{when:?} at op {k}: each once");
+            assert_eq!(commit.group, Some(41), "{when:?} at op {k}");
+            drop(eng);
+            let refs = Arc::new(ObjectRefStore::new(store.clone()));
+            let eng = Engine::open(store.clone(), refs.clone(), v, cfg())
+                .await
+                .unwrap();
+            assert_eq!(eng.read(0, BLOCK).await.unwrap(), block(20));
+            assert_eq!(eng.read(2 * BLOCK, BLOCK).await.unwrap(), block(21));
+            assert_eq!(eng.read(5 * BLOCK, 512).await.unwrap(), &block(22)[..512]);
+            assert_eq!(eng.read(80 * KIB, BLOCK).await.unwrap(), block(23));
+            assert_eq!(
+                refs.meta_get(v, CUT_ROW).await.unwrap().as_deref(),
+                Some(&b"cut 1"[..]),
+                "{when:?} at op {k}"
+            );
+            assert!(
+                fsck(&store, &refs, v).await.unwrap().ok(),
+                "{when:?} at op {k}"
+            );
+            if first.is_ok() {
+                break;
+            }
+        }
+        assert!(points > 0, "{when:?}");
+        match when {
+            FaultWhen::Before => assert_eq!(landed_unheard, 0),
+            FaultWhen::After => assert_eq!(landed_unheard, 1),
+        }
+    }
+}
+
+/// A `put_sealed` dropped while a PUT is outstanding (a time limit around
+/// the call): each segment is PUT and recorded, or still held, and none
+/// is both; the next call PUTs only the rest, and the commit lists each
+/// once (the review of #110, N1).
+#[tokio::test]
+async fn a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place() {
+    let store = Recording::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(15);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    for i in 0..3u8 {
+        eng.write(u64::from(i) * BLOCK, &block(i)).unwrap();
+    }
+    *store.hold_after.lock().unwrap() = Some(1);
+    let ended = futures_util::FutureExt::now_or_never(eng.put_sealed());
+    assert!(ended.is_none(), "the second PUT never answers");
+    *store.hold_after.lock().unwrap() = None;
+    assert_eq!(
+        eng.held_segment_bytes(),
+        2 * BLOCK,
+        "the segment PUT is no longer held"
+    );
+    eng.put_sealed().await.unwrap();
+    let hash = eng.commit(CommitKind::Flush).await.unwrap();
+    let commit = commit_of(&store.inner, v, &hash).await;
+    let mut ids: Vec<_> = commit.segments.iter().map(|s| s.id).collect();
+    assert_eq!(ids.len(), 3);
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "each once");
+    for i in 0..3u8 {
+        assert_eq!(
+            eng.read(u64::from(i) * BLOCK, BLOCK).await.unwrap(),
+            block(i)
+        );
+    }
+    assert!(fsck(&store.inner, &refs, v).await.unwrap().ok());
 }
