@@ -705,16 +705,23 @@ rec_takeover() {
     load 2
     # (a)
     holder_leave
-    ( for k in $(seq 1 30); do
-          dd if=/dev/urandom of="$MNT/t$k" bs=64K count=16 status=none
+    # Files of 1 MiB, each synced, until the stop file (at most 2000).
+    rm -f "$WORK/writer.stop"
+    ( k=0
+      while [ ! -e "$WORK/writer.stop" ] && [ "$k" -lt 2000 ]; do
+          k=$((k + 1))
+          dd if=/dev/urandom of="$MNT/t$((k % 40))" bs=64K count=16 status=none
           zpool sync "$POOL"
-      done ) > "$RDIR/takeover-writer.log" 2>&1 &
+      done
+      echo "$k files" ) > "$RDIR/takeover-writer.log" 2>&1 &
     w=$!
-    sleep 2
+    sleep 3
     kill -0 "$w" 2>/dev/null || rig_error "the writer had ended before the kill: $(tail -n 2 "$RDIR/takeover-writer.log")"
     kill_serve
     serve_start 2
     holder_start
+    sleep 3
+    touch "$WORK/writer.stop"
     for k in $(seq 1 300); do kill -0 "$w" 2>/dev/null || break; sleep 1; done
     if kill -0 "$w" 2>/dev/null; then
         kill -9 "$w" 2>/dev/null
