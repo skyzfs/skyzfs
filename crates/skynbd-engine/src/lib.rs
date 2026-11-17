@@ -34,7 +34,7 @@ use bytes::{Bytes, BytesMut};
 use skynbd_format::{
     CloneBase, Codec, Commit, CommitKind, Node, SnapKind, SnapshotManifest, Superblock,
 };
-use skynbd_refs::{CasOutcome, RefStore, RefValue};
+use skynbd_refs::{CasOutcome, RefOp, RefStore, RefValue, TxnOutcome};
 use skynbd_store::ObjectStore;
 use skynbd_tree::ExtentMap;
 use skynbd_types::{
@@ -107,6 +107,12 @@ pub enum EngineError {
     PreparedNotFound(String),
     #[error("corrupt volume state: {0}")]
     Corrupt(String),
+    /// An op given to [`Engine::commit_with`] did not hold (a `MetaCas`
+    /// whose row differs, a `CasRef` whose ref moved): `op_index` is its
+    /// index among those ops. Nothing landed, and the engine keeps its
+    /// writes and its group for the commit made again.
+    #[error("commit refused: op {op_index} of its transaction did not hold")]
+    OpConflict { op_index: usize },
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -115,8 +121,17 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub struct EngineConfig {
     /// Seal threshold for the open segment (design D2).
     pub segment_max_bytes: u64,
-    /// Logical shard size (design D3). Tests shrink this to force
-    /// multi-shard commits.
+    /// Logical shard size (design D3), chosen at create and recorded in
+    /// the superblock: an engine that opens a volume adopts the volume's,
+    /// whatever this says. A nonzero multiple of the sector. Tests shrink
+    /// this to force multi-shard commits.
+    ///
+    /// A shard's tree holds at most [`MAX_SHARD_EXTENTS`] extents today
+    /// (one level of internal nodes; deeper trees are not built), and a
+    /// commit that would need more fails. A volume written in 4 KiB
+    /// blocks never meets that limit with shards of at most 256 MiB, which
+    /// is why SkyZFS is to create its volumes with 128 MiB shards (decided
+    /// for M2.4).
     pub shard_bytes: u64,
     /// Fence epoch stamped into every commit this engine writes (design
     /// D-M5): the volume's lease epoch at acquisition. Fixed for the
@@ -168,6 +183,12 @@ impl ReadGets {
         )))
     }
 }
+
+/// The most extents one shard's tree holds: an internal node over leaves
+/// of [`skynbd_format::MAX_NODE_ENTRIES`] each. See
+/// [`EngineConfig::shard_bytes`].
+pub const MAX_SHARD_EXTENTS: usize =
+    skynbd_format::MAX_NODE_ENTRIES * skynbd_format::MAX_NODE_ENTRIES;
 
 /// Upper bound for [`EngineConfig::read_fanout`] and
 /// [`EngineConfig::walk_concurrency`]; larger values are clamped.
@@ -474,10 +495,17 @@ pub struct Engine<S, R> {
     /// Un-committed writes since the last commit.
     overlay: ExtentMap<Placed>,
     open_seg: OpenSegment,
-    /// Bytes of open + sealed-but-uncommitted segments, served for reads
-    /// and uploaded at commit.
+    /// Bytes of sealed segments not yet PUT, served for reads and PUT by
+    /// [`Engine::put_sealed`] or the commit.
     pending_segments: HashMap<SegmentId, Bytes>,
+    /// The keys of `pending_segments`, in the order they sealed.
     sealed_order: Vec<SegmentId>,
+    /// Sealed segments already PUT by [`Engine::put_sealed`] and not yet
+    /// committed, in the order they sealed. Their bytes are not held:
+    /// reads of them go to the store. The next commit lists them first.
+    stored_segments: Vec<skynbd_format::SegmentMeta>,
+    /// The group the next commit records ([`Engine::set_group`]).
+    next_group: Option<u64>,
     /// Own-namespace-first key resolution; falls through the clone base
     /// chain (design §4.1). Trivial (single namespace) for non-clones.
     resolver: Resolver,
@@ -496,6 +524,12 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     ) -> Result<Self> {
         if size == 0 || !size.is_multiple_of(SECTOR) {
             return Err(EngineError::InvalidIo(format!("bad volume size {size}")));
+        }
+        if cfg.shard_bytes == 0 || !cfg.shard_bytes.is_multiple_of(SECTOR) {
+            return Err(EngineError::InvalidIo(format!(
+                "bad shard size {}: a nonzero multiple of {SECTOR}",
+                cfg.shard_bytes
+            )));
         }
         let sb = Superblock {
             vol_id,
@@ -559,6 +593,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             open_seg: OpenSegment::new(),
             pending_segments: HashMap::new(),
             sealed_order: vec![],
+            stored_segments: vec![],
+            next_group: None,
             resolver: Resolver::new(vol_id, vec![]).walk(walk),
         })
     }
@@ -674,6 +710,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             open_seg: OpenSegment::new(),
             pending_segments: HashMap::new(),
             sealed_order: vec![],
+            stored_segments: vec![],
+            next_group: None,
             resolver,
         })
     }
@@ -711,6 +749,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             open_seg: OpenSegment::new(),
             pending_segments: HashMap::new(),
             sealed_order: vec![],
+            stored_segments: vec![],
+            next_group: None,
             resolver,
         })
     }
@@ -750,6 +790,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             open_seg: OpenSegment::new(),
             pending_segments: HashMap::new(),
             sealed_order: vec![],
+            stored_segments: vec![],
+            next_group: None,
             resolver,
         })
     }
@@ -790,6 +832,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             open_seg: OpenSegment::new(),
             pending_segments: HashMap::new(),
             sealed_order: vec![],
+            stored_segments: vec![],
+            next_group: None,
             resolver,
         })
     }
@@ -800,6 +844,29 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
 
     pub fn flush_seq(&self) -> u64 {
         self.head_commit.flush_seq
+    }
+
+    /// The volume's shard size: the one recorded at create.
+    pub fn shard_bytes(&self) -> u64 {
+        self.shard_bytes
+    }
+
+    /// The group the head's commit records ([`Engine::set_group`]); `None`
+    /// for a commit made with none.
+    pub fn head_group(&self) -> Option<u64> {
+        self.head_commit.group
+    }
+
+    /// Bytes of written data this engine holds in memory: the open
+    /// segment's and those of the sealed segments not yet PUT
+    /// ([`Engine::put_sealed`]).
+    pub fn held_segment_bytes(&self) -> u64 {
+        self.open_seg.buf.len() as u64
+            + self
+                .pending_segments
+                .values()
+                .map(|b| b.len() as u64)
+                .sum::<u64>()
     }
 
     /// The commit this engine currently serves.
@@ -964,6 +1031,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// CAS the head to a snapshot's commit (design §9.6). Refuses with
     /// un-flushed writes (no silent data loss). Connection-level fencing
     /// of live writers is the API layer's job (design §17 open question).
+    /// A group set for the next commit ([`Engine::set_group`]) is cleared:
+    /// the commits after a rollback are not the cut it was set for.
     pub async fn rollback(&mut self, name: &str) -> Result<CommitHash> {
         if !self.overlay.is_empty() {
             return Err(EngineError::DirtyRollback);
@@ -997,6 +1066,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
         self.overlay = ExtentMap::new();
         self.pending_segments.clear();
         self.sealed_order.clear();
+        self.stored_segments.clear();
+        self.next_group = None;
         self.open_seg = OpenSegment::new();
         Ok(snap.commit)
     }
@@ -1061,11 +1132,15 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// Drop every un-committed byte (overlay, pending segments). The
     /// transactional-apply error path (design §9.4: a torn stream changes
     /// nothing) and abort flows use this; acked-but-unflushed NBD writes
-    /// are the caller's responsibility to fence first.
+    /// are the caller's responsibility to fence first. A group set for the
+    /// next commit ([`Engine::set_group`]) goes with the writes: the cut it
+    /// was set for is given up.
     pub fn discard_uncommitted(&mut self) {
         self.overlay = ExtentMap::new();
         self.pending_segments.clear();
         self.sealed_order.clear();
+        self.stored_segments.clear();
+        self.next_group = None;
         self.open_seg = OpenSegment::new();
     }
 
@@ -1454,26 +1529,121 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
         self.sealed_order.push(seg.id);
     }
 
+    /// PUT every sealed segment not yet in the store, in the order they
+    /// sealed, and drop its bytes from memory (SkyZFS M2.4: the first
+    /// upload of a whole volume is not held in memory until its commit).
+    /// The overlay still points into each segment: reads of it go to the
+    /// store from now on, and the next commit lists it without a second
+    /// PUT. The open segment stays open; it is PUT once it has sealed, by
+    /// a later call or by the commit.
+    ///
+    /// A failed PUT ends the call: that segment and those sealed after it
+    /// keep their bytes, and the next call or the commit PUTs them. Each
+    /// segment moves from the sealed to the PUT the moment its PUT ends,
+    /// with no wait between, so a call dropped at a PUT (a time limit
+    /// around it) leaves every segment in one list or the other and none
+    /// in both.
+    ///
+    /// A segment PUT and never committed (the process died, or the writes
+    /// were discarded) is an orphan for GC, as a failed commit's segments
+    /// are. This engine's [`Engine::gc`] refuses to run while it has
+    /// uncommitted writes. A GC through another handle on the volume
+    /// would sweep segments PUT early and not yet committed, since no
+    /// ref's tree reaches them: a GC on a volume with an upload under way
+    /// must hold the volume's lease or wait for the upload (the review of
+    /// #110; for M4's GC).
+    pub async fn put_sealed(&mut self) -> Result<()> {
+        while let Some(&id) = self.sealed_order.first() {
+            let bytes = self.pending_segments[&id].clone();
+            self.store
+                .put(&keys::segment(self.vol_id, id), bytes.clone())
+                .await?;
+            self.sealed_order.remove(0);
+            self.pending_segments.remove(&id);
+            self.stored_segments.push(segment_meta(id, &bytes));
+        }
+        Ok(())
+    }
+
+    /// Record `group` in the next commit this engine makes (Commit v2's
+    /// `group`). SkyZFS records there the ZFS transaction group of the cut
+    /// the commit uploads (M2.4). It is for that commit alone: a commit
+    /// that lands clears it, and one that fails keeps it for the commit
+    /// made again. `None` clears it. While a group is set, a commit is
+    /// made even with nothing written since the last one.
+    ///
+    /// The group is not carried over to later commits, so that no commit
+    /// claims a cut's group it was not made for (the conservative reading
+    /// of the M2.4 plan, which names a setter and not its lifetime). For
+    /// the same reason [`Engine::discard_uncommitted`] and
+    /// [`Engine::rollback`] clear it.
+    ///
+    /// While a group is set, [`Engine::is_clean`], `rpo_is_current`,
+    /// `rollback` and `gc` still ask only whether anything is written: a
+    /// group with nothing written counts as clean, although `commit` is
+    /// then not a no-op.
+    pub fn set_group(&mut self, group: Option<u64>) {
+        self.next_group = group;
+    }
+
     /// The single durability path (design §6.3). Maps NBD FLUSH/FUA.
-    /// No-ops (returning the current head) when nothing changed.
+    /// No-ops (returning the current head) when nothing changed and no
+    /// group is set ([`Engine::set_group`]).
     pub async fn commit(&mut self, kind: CommitKind) -> Result<CommitHash> {
-        if self.overlay.is_empty() {
+        self.commit_inner(kind, None).await
+    }
+
+    /// [`Engine::commit`], with `ops` applied in the same refs transaction
+    /// as the swap of the ref this engine commits to: the swap and the
+    /// ops land together or not at all (design D13). SkyZFS puts the
+    /// cut's identity there, in the meta row `skyzfs/cut` (M2.4). The ops
+    /// may not touch that ref ([`EngineError::InvalidIo`], before anything
+    /// is written). A commit with ops is made even with nothing written
+    /// since the last one: the ops are what it records. So is one with an
+    /// empty list of ops: `commit_with(kind, vec![])` is never a no-op.
+    ///
+    /// When the ref moved, the error is [`EngineError::Conflict`]; when
+    /// one of `ops` did not hold, [`EngineError::OpConflict`]. After any
+    /// error the engine keeps its writes and its group for the commit
+    /// made again. No error proves that nothing landed: a reply lost
+    /// after the swap leaves this commit as the head, and so does an S3
+    /// retry of a conditional PUT that had landed, which answers 412 and
+    /// reads as `Conflict`. A caller that must know reads the ref or its
+    /// row again (the review of #110).
+    pub async fn commit_with(&mut self, kind: CommitKind, ops: Vec<RefOp>) -> Result<CommitHash> {
+        if let Some(own) = ops.iter().find_map(|op| match op {
+            RefOp::CasRef { name, .. } if *name == self.target_ref => Some(name),
+            _ => None,
+        }) {
+            return Err(EngineError::InvalidIo(format!(
+                "the ops of a commit may not swap {own:?}, the ref it commits to"
+            )));
+        }
+        self.commit_inner(kind, Some(ops)).await
+    }
+
+    /// [`Engine::commit`] (`ops: None`: the swap alone, by compare and
+    /// swap, as always) or [`Engine::commit_with`] (`Some`: the swap and
+    /// the ops in one transaction).
+    async fn commit_inner(
+        &mut self,
+        kind: CommitKind,
+        ops: Option<Vec<RefOp>>,
+    ) -> Result<CommitHash> {
+        if self.overlay.is_empty() && self.next_group.is_none() && ops.is_none() {
             return Ok(self.head.commit);
         }
         self.seal_open_segment();
 
-        // 1. PUT all pending segments, recording integrity metadata (D9).
-        let mut seg_metas = Vec::with_capacity(self.sealed_order.len());
+        // 1. PUT the segments not yet PUT, recording integrity metadata
+        //    (D9). Those `put_sealed` PUT come first: they sealed first.
+        let mut seg_metas = self.stored_segments.clone();
         for id in &self.sealed_order {
             let bytes = &self.pending_segments[id];
             self.store
                 .put(&keys::segment(self.vol_id, *id), bytes.clone())
                 .await?;
-            seg_metas.push(skynbd_format::SegmentMeta {
-                id: *id,
-                len: bytes.len() as u64,
-                blake3: *blake3::hash(bytes).as_bytes(),
-            });
+            seg_metas.push(segment_meta(*id, bytes));
         }
 
         // 2. Group the overlay by shard, splitting runs that straddle a
@@ -1563,7 +1733,7 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             flush_seq: self.head_commit.flush_seq + 1,
             created_at_ms: now_ms(),
             kind,
-            group: None,
+            group: self.next_group,
             epoch: self.cfg.epoch,
         };
         let commit_hash = commit.content_hash()?;
@@ -1574,33 +1744,50 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             )
             .await?;
 
-        // 5. CAS the head ref — the visibility point (I1, I2).
-        let new_head = match self
-            .refs
-            .compare_and_swap(
-                self.vol_id,
-                &self.target_ref,
-                Some(self.head),
-                Some(commit_hash),
-            )
-            .await?
-        {
-            CasOutcome::Committed(Some(rv)) => rv,
-            CasOutcome::Conflict(actual) => {
-                // The conflict names both sides. The error itself is one
-                // opaque line ("head CAS conflict"), and when this fired
-                // in CI the logs could not say whose commit had moved
-                // the ref — the hashes identify the foreign writer.
-                tracing::warn!(
-                    vol = %self.vol_id.0,
-                    target = %self.target_ref,
-                    expected = ?(&self.head.commit[..4], self.head.generation),
-                    actual = ?actual.as_ref().map(|a| (&a.commit[..4], a.generation)),
-                    "head CAS conflict: the ref moved behind this engine handle"
-                );
-                return Err(EngineError::Conflict);
+        // 5. CAS the head ref — the visibility point (I1, I2) — alone, or
+        //    with the caller's ops in one transaction.
+        let new_head = match ops {
+            None => match self
+                .refs
+                .compare_and_swap(
+                    self.vol_id,
+                    &self.target_ref,
+                    Some(self.head),
+                    Some(commit_hash),
+                )
+                .await?
+            {
+                CasOutcome::Committed(Some(rv)) => rv,
+                CasOutcome::Conflict(actual) => return Err(self.ref_moved(actual)),
+                CasOutcome::Committed(None) => unreachable!("swapped in a value"),
+            },
+            Some(ops) => {
+                let mut txn = Vec::with_capacity(ops.len() + 1);
+                txn.push(RefOp::CasRef {
+                    name: self.target_ref.clone(),
+                    expected: Some(self.head),
+                    new_commit: Some(commit_hash),
+                });
+                txn.extend(ops);
+                match self.refs.transact(self.vol_id, txn).await? {
+                    // The generation a store assigns is the store contract
+                    // (`expected.generation + 1`), as `ActingRefStore`
+                    // reconstructs it.
+                    TxnOutcome::Committed => RefValue {
+                        commit: commit_hash,
+                        generation: self.head.generation + 1,
+                    },
+                    TxnOutcome::Conflict {
+                        op_index: 0,
+                        actual,
+                    } => return Err(self.ref_moved(actual)),
+                    TxnOutcome::Conflict { op_index, .. } => {
+                        return Err(EngineError::OpConflict {
+                            op_index: op_index - 1,
+                        })
+                    }
+                }
             }
-            CasOutcome::Committed(None) => unreachable!("swapped in a value"),
         };
 
         // 6. Only now adopt the new state (a failure above leaves acked
@@ -1611,7 +1798,25 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
         self.overlay = ExtentMap::new();
         self.pending_segments.clear();
         self.sealed_order.clear();
+        self.stored_segments.clear();
+        self.next_group = None;
         Ok(commit_hash)
+    }
+
+    /// The error of a commit whose ref moved behind this engine. The
+    /// conflict names both sides: the error itself is one opaque line
+    /// ("head CAS conflict"), and when this fired in CI the logs could not
+    /// say whose commit had moved the ref; the hashes identify the
+    /// foreign writer.
+    fn ref_moved(&self, actual: Option<RefValue>) -> EngineError {
+        tracing::warn!(
+            vol = %self.vol_id.0,
+            target = %self.target_ref,
+            expected = ?(&self.head.commit[..4], self.head.generation),
+            actual = ?actual.as_ref().map(|a| (&a.commit[..4], a.generation)),
+            "head CAS conflict: the ref moved behind this engine handle"
+        );
+        EngineError::Conflict
     }
 
     /// Serialize one shard's extents into leaf/internal nodes; returns the
@@ -1645,6 +1850,16 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
             .put(&keys::node(self.vol_id, &hash), internal.encode()?.into())
             .await?;
         Ok(Some(hash))
+    }
+}
+
+/// A sealed segment's integrity metadata (design D9), as its commit
+/// records it.
+fn segment_meta(id: SegmentId, bytes: &Bytes) -> skynbd_format::SegmentMeta {
+    skynbd_format::SegmentMeta {
+        id,
+        len: bytes.len() as u64,
+        blake3: *blake3::hash(bytes).as_bytes(),
     }
 }
 

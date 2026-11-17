@@ -202,7 +202,9 @@ pub trait RefStore: Send + Sync {
     /// Atomic multi-op transaction (design D13): CAS refs, pin/unpin, and
     /// meta rows commit together or not at all — the publish-implies-pin
     /// primitive (I8). A `Conflict` reports the first failing CAS and
-    /// leaves everything untouched.
+    /// leaves everything untouched. A CAS that lands stores its value
+    /// with the generation assigned as [`RefStore::compare_and_swap`]
+    /// assigns it: `expected.generation + 1`, or 0.
     async fn transact(&self, vol: VolumeId, ops: Vec<RefOp>) -> Result<TxnOutcome>;
 
     /// [`RefStore::transact`], fenced under an explicit principal
