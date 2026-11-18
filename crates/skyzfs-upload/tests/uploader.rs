@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore, RefValue};
+use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore, RefValue, RenewOutcome};
 use skynbd_store::FaultOp;
 use skynbd_types::{CommitHash, VolumeId};
 use skyzfs_local::inplace::{CommittedCut, InPlace};
@@ -730,7 +730,7 @@ where
 /// The lease's way to the refs object, apart from the uploads': its own
 /// store over the same objects, which can fail on its own, and a refs
 /// clock that is tokio's time. Each take can be held for a while of
-/// tokio's time first, the renewal's read can be told that the row is
+/// tokio's time first, the renewal can be told that the row is
 /// gone, and the time at which each take reached the refs object is
 /// recorded.
 #[derive(Clone)]
@@ -844,6 +844,28 @@ impl RefStore for Leasing {
         tokio::time::sleep(Duration::from_millis(ms)).await;
         self.takes.lock().expect("takes").push(self.elapsed());
         self.refs.lease_acquire(vol, holder, ttl_ms).await
+    }
+    /// A renewal is held as a take is, and recorded as one where it wrote
+    /// the row. A row told gone is answered as a store with no row
+    /// answers, and nothing is written.
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> skynbd_refs::Result<RenewOutcome> {
+        let ms = self.take_ms.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        if self.gone.load(Ordering::SeqCst) {
+            return Ok(RenewOutcome::NotHeld(None));
+        }
+        let at = self.elapsed();
+        let outcome = self.refs.lease_renew(vol, holder, epoch, ttl_ms).await?;
+        if matches!(outcome, RenewOutcome::Renewed(_)) {
+            self.takes.lock().expect("takes").push(at);
+        }
+        Ok(outcome)
     }
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> skynbd_refs::Result<()> {
         self.refs.lease_release(vol, holder).await

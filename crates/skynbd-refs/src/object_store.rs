@@ -28,7 +28,7 @@ use skynbd_types::VolumeId;
 
 use crate::{
     lease, CasOutcome, Clock, Lease, LeaseConfig, LeaseOutcome, RefError, RefEvent, RefOp,
-    RefStore, RefValue, Result, TxnOutcome, WATCH_CAPACITY,
+    RefStore, RefValue, RenewOutcome, Result, TxnOutcome, WATCH_CAPACITY,
 };
 
 /// The volume's refs object (design §5.1). Lives beside `sb/` and `base`
@@ -542,6 +542,34 @@ impl<S: ObjectStore> RefStore for ObjectRefStore<S> {
                     Ok((outcome, vec![]))
                 }
                 // Held: nothing to write, the answer is final.
+                None => Err(outcome),
+            }
+        })
+        .await
+    }
+
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        let holder = holder.to_string();
+        let clock = std::sync::Arc::clone(&self.clock);
+        // Unfenced as the other lease operations: the rule is its own
+        // authority. The read and the write are one conditional PUT on the
+        // object's etag, so a take in between makes the PUT fail and the
+        // rule is judged again on the row the take wrote.
+        self.update_inner(vol, false, move |state| {
+            let current = state.owner.as_ref().map(tuple_to_lease);
+            let (write, outcome) = lease::renew(current.as_ref(), &holder, epoch, ttl_ms, clock());
+            match write {
+                Some(l) => {
+                    state.owner = Some((l.holder.clone(), l.epoch, l.expires_at_ms));
+                    Ok((outcome, vec![]))
+                }
+                // Not held: nothing to write, the answer is final.
                 None => Err(outcome),
             }
         })

@@ -239,6 +239,14 @@ async fn passes_the_lease_conformance() {
 }
 
 #[tokio::test]
+async fn passes_the_lease_renew_conformance() {
+    let (now, clock) = test_clock();
+    let s = ObjectRefStore::new(MemoryStore::new()).with_clock(clock);
+    let advance = move |ms: u64| _ = now.fetch_add(ms, Ordering::SeqCst);
+    conformance::exercise_lease_renew(&s, &advance).await;
+}
+
+#[tokio::test]
 async fn passes_the_fenced_transact_conformance() {
     let (now, clock) = test_clock();
     let s = ObjectRefStore::new(MemoryStore::new()).with_clock(clock);
@@ -477,4 +485,109 @@ async fn steal_race_has_one_winner() {
         })
         .unwrap();
     assert_eq!(held.holder, acquired[0].holder);
+}
+
+// ---- The renewal is one conditional write (F5 of the review of M2.4c-1) ----
+
+/// The bucket, where another process takes the lease and its own lease
+/// then runs out, all after the renewal has read the refs object and
+/// before its conditional write lands: the write's precondition fails,
+/// and the renewal is judged again on the row the take wrote.
+struct TakeBeforeWrite {
+    shared: Arc<MemoryStore>,
+    clock: Clock,
+    now: Arc<AtomicU64>,
+    armed: std::sync::atomic::AtomicBool,
+    writes: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for TakeBeforeWrite {
+    async fn put(&self, key: &str, data: bytes::Bytes) -> skynbd_store::Result<()> {
+        self.shared.put(key, data).await
+    }
+    async fn get(
+        &self,
+        key: &str,
+        range: Option<std::ops::Range<u64>>,
+    ) -> skynbd_store::Result<bytes::Bytes> {
+        self.shared.get(key, range).await
+    }
+    async fn exists(&self, key: &str) -> skynbd_store::Result<bool> {
+        self.shared.exists(key).await
+    }
+    async fn list(&self, prefix: &str) -> skynbd_store::Result<Vec<String>> {
+        self.shared.list(prefix).await
+    }
+    async fn delete(&self, key: &str) -> skynbd_store::Result<()> {
+        self.shared.delete(key).await
+    }
+    async fn get_versioned(&self, key: &str) -> skynbd_store::Result<(bytes::Bytes, String)> {
+        self.shared.get_versioned(key).await
+    }
+    async fn put_if(
+        &self,
+        key: &str,
+        data: bytes::Bytes,
+        pre: skynbd_store::Precondition,
+    ) -> skynbd_store::Result<String> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            let other = ObjectRefStore::new(Arc::clone(&self.shared) as Arc<dyn ObjectStore>)
+                .with_clock(Arc::clone(&self.clock));
+            let taken = other
+                .lease_acquire(vol(60), "node-b", 10_000)
+                .await
+                .expect("the other take");
+            assert!(
+                matches!(&taken, LeaseOutcome::Acquired(l) if l.epoch == 2),
+                "{taken:?}"
+            );
+            self.now.fetch_add(10_001, Ordering::SeqCst);
+        }
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        self.shared.put_if(key, data, pre).await
+    }
+}
+
+/// A renewal at the epoch this holder held, where another holder took the
+/// expired lease between the renewal's read and its write and let its own
+/// run out too: the write fails on the etag, the renewal reads the row
+/// again, finds it not this holder's, and writes nothing. A take in its
+/// place (`lease_acquire`) would have stolen the lease back at epoch 3 and
+/// left both holders without it.
+#[tokio::test]
+async fn a_take_between_the_renewals_read_and_its_write_is_not_undone() {
+    use skynbd_refs::RenewOutcome;
+    let (now, clock) = test_clock();
+    let shared = Arc::new(MemoryStore::new());
+    let racing = Arc::new(TakeBeforeWrite {
+        shared: Arc::clone(&shared),
+        clock: Arc::clone(&clock),
+        now: Arc::clone(&now),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        writes: AtomicU64::new(0),
+    });
+    let a = ObjectRefStore::new(Arc::clone(&racing) as Arc<dyn ObjectStore>)
+        .with_clock(Arc::clone(&clock));
+    let v = vol(60);
+    assert!(matches!(
+        a.lease_acquire(v, "node-a", 10_000).await.unwrap(),
+        LeaseOutcome::Acquired(l) if l.epoch == 1
+    ));
+    // node-a's lease runs out (an outage), and the race is armed.
+    now.fetch_add(10_001, Ordering::SeqCst);
+    racing.armed.store(true, Ordering::SeqCst);
+    let before = racing.writes.load(Ordering::SeqCst);
+    let outcome = a.lease_renew(v, "node-a", 1, 10_000).await.unwrap();
+    let row = a.lease_get(v).await.unwrap().expect("the row");
+    assert_eq!((row.holder.as_str(), row.epoch), ("node-b", 2));
+    assert_eq!(outcome, RenewOutcome::NotHeld(Some(row.clone())));
+    // One write tried, and refused on the etag; none after.
+    assert_eq!(racing.writes.load(Ordering::SeqCst) - before, 1);
+    let unchanged: Lease = ObjectRefStore::new(Arc::clone(&shared) as Arc<dyn ObjectStore>)
+        .lease_get(v)
+        .await
+        .unwrap()
+        .expect("the row");
+    assert_eq!(unchanged, row, "node-b's row stands");
 }

@@ -17,8 +17,11 @@
 //!   not reach the store, it stops the uploads for the rest of the
 //!   instance.
 //! - **A renewal** (every third of the lease's time, and each commit
-//!   renews it too) first reads the row, and takes the lease again only
-//!   where the row names this holder at the epoch it last held. Expired or
+//!   renews it too) renews the row only where it names this holder at the
+//!   epoch it last held, in one conditional write of the refs store
+//!   (`RefStore::lease_renew`; before F5 of the review of M2.4c-1 it was a
+//!   read and then a take, and another holder's take between the two
+//!   could be stolen back at a newer epoch). Expired or
 //!   not: a store out of reach for longer than the lease's time must not
 //!   end the uploads for good. Any other holder, or another epoch, is
 //!   [`LeaseState::Lost`], and the lease is never taken back from it,
@@ -30,7 +33,7 @@
 //!   by the epoch, and the next renewal decides.
 //! - **A commit refused by the fence** ([`Keeper::fenced`]) is lost too.
 
-use skynbd_refs::{LeaseOutcome, RefStore};
+use skynbd_refs::{LeaseOutcome, RefStore, RenewOutcome};
 use skynbd_types::VolumeId;
 
 /// Where the lease stands.
@@ -169,57 +172,35 @@ impl<R: RefStore> Keeper<R> {
         }
     }
 
-    /// A renewal of the lease last held at `epoch`.
+    /// A renewal of the lease last held at `epoch`: one conditional write
+    /// in the refs store, which renews the row only where it names this
+    /// holder at this epoch, expired or not, and otherwise writes nothing
+    /// (`RefStore::lease_renew`). There is no read before it, so another
+    /// holder's take cannot fall between a read and a take: a row taken by
+    /// another, even one whose own lease has expired since, stays that
+    /// holder's (F5 of the review of M2.4c-1).
     async fn renew(&self, epoch: u64) -> LeaseState {
-        let unsure = |e: skynbd_refs::RefError| LeaseState::Unsure {
-            epoch,
-            why: e.to_string(),
-        };
-        let row = match self.refs.lease_get(self.vol).await {
-            Ok(row) => row,
-            Err(e) => return unsure(e),
-        };
-        match row {
-            Some(lease) if lease.holder == self.holder && lease.epoch == epoch => {}
-            Some(lease) => {
-                return LeaseState::Lost {
-                    holder: lease.holder,
-                    epoch: lease.epoch,
-                }
-            }
-            None => {
-                return LeaseState::Lost {
-                    holder: String::new(),
-                    epoch: 0,
-                }
-            }
-        }
-        // The row is this holder's at this epoch: the take keeps the epoch
-        // (a holder never fences itself), expired or not.
         match self
             .refs
-            .lease_acquire(self.vol, &self.holder, self.ttl_ms)
+            .lease_renew(self.vol, &self.holder, epoch, self.ttl_ms)
             .await
         {
-            Ok(LeaseOutcome::Acquired(lease)) if lease.epoch == epoch => LeaseState::Held {
+            Ok(RenewOutcome::Renewed(lease)) => LeaseState::Held {
                 epoch,
                 expires_at_ms: lease.expires_at_ms,
             },
-            // Another holder took the lease between the read and the take,
-            // and its own expired too: this take bumped the epoch. Not
-            // this holder's to keep: give it back.
-            Ok(LeaseOutcome::Acquired(lease)) => {
-                let _ = self.refs.lease_release(self.vol, &self.holder).await;
-                LeaseState::Lost {
-                    holder: String::new(),
-                    epoch: lease.epoch,
-                }
-            }
-            Ok(LeaseOutcome::Held(lease)) => LeaseState::Lost {
+            Ok(RenewOutcome::NotHeld(Some(lease))) => LeaseState::Lost {
                 holder: lease.holder,
                 epoch: lease.epoch,
             },
-            Err(e) => unsure(e),
+            Ok(RenewOutcome::NotHeld(None)) => LeaseState::Lost {
+                holder: String::new(),
+                epoch: 0,
+            },
+            Err(e) => LeaseState::Unsure {
+                epoch,
+                why: e.to_string(),
+            },
         }
     }
 }
@@ -230,7 +211,7 @@ mod tests {
     use std::sync::Arc;
 
     use skynbd_refs::ObjectRefStore;
-    use skynbd_store::{FaultOp, FaultStore, MemoryStore};
+    use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore};
 
     use super::*;
 
@@ -434,31 +415,30 @@ mod tests {
         assert_eq!(w.row().await, Some(("b".into(), 2)));
     }
 
-    /// The refs object, where another holder takes the lease between
-    /// this holder's read of the row and its take, and the clock then
-    /// moves on by `jump` (past the other's expiry, or not): the race the
-    /// renewal's second check is for. With `read_as`, the read names that
-    /// holder in place of the row's: a row deleted and taken anew under
-    /// another name at the same epoch, which the refs store's own calls
-    /// cannot make.
+    /// The refs object, where another holder takes the lease just before
+    /// this holder's renewal reaches the store, and the clock then moves
+    /// on by `jump` (past the other's expiry, or not). Before F5 of the
+    /// review of M2.4c-1 the renewal was a read and then a take, and this
+    /// take fell between the two. It is one conditional write now, so a
+    /// take can fall only before it here; a take between the store's own
+    /// read and its write is `skynbd-refs`'s test
+    /// `a_take_between_the_renewals_read_and_its_write_is_not_undone`.
     struct Racing {
         inner: ObjectRefStore<FaultStore<MemoryStore>>,
         other: ObjectRefStore<FaultStore<MemoryStore>>,
         now: Arc<AtomicU64>,
         armed: std::sync::atomic::AtomicBool,
         jump: u64,
-        read_as: Option<&'static str>,
     }
 
     impl Racing {
-        fn new(w: &World, jump: u64, read_as: Option<&'static str>) -> Self {
+        fn new(w: &World, jump: u64) -> Self {
             Self {
                 inner: w.refs(),
                 other: w.refs(),
                 now: Arc::clone(&w.now),
                 armed: std::sync::atomic::AtomicBool::new(false),
                 jump,
-                read_as,
             }
         }
     }
@@ -529,6 +509,20 @@ mod tests {
         ) -> skynbd_refs::Result<LeaseOutcome> {
             self.inner.lease_acquire(vol, holder, ttl_ms).await
         }
+        async fn lease_renew(
+            &self,
+            vol: VolumeId,
+            holder: &str,
+            epoch: u64,
+            ttl_ms: u64,
+        ) -> skynbd_refs::Result<RenewOutcome> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                let taken = self.other.lease_acquire(vol, "b", TTL).await.unwrap();
+                assert!(matches!(taken, LeaseOutcome::Acquired(_)), "{taken:?}");
+                self.now.fetch_add(self.jump, Ordering::SeqCst);
+            }
+            self.inner.lease_renew(vol, holder, epoch, ttl_ms).await
+        }
         async fn lease_release(&self, vol: VolumeId, holder: &str) -> skynbd_refs::Result<()> {
             self.inner.lease_release(vol, holder).await
         }
@@ -536,30 +530,20 @@ mod tests {
             &self,
             vol: VolumeId,
         ) -> skynbd_refs::Result<Option<skynbd_refs::Lease>> {
-            let row = self.inner.lease_get(vol).await;
-            if self.armed.swap(false, Ordering::SeqCst) {
-                let taken = self.other.lease_acquire(vol, "b", TTL).await.unwrap();
-                assert!(matches!(taken, LeaseOutcome::Acquired(_)), "{taken:?}");
-                self.now.fetch_add(self.jump, Ordering::SeqCst);
-            }
-            match (row, self.read_as) {
-                (Ok(Some(lease)), Some(holder)) => Ok(Some(skynbd_refs::Lease {
-                    holder: holder.into(),
-                    ..lease
-                })),
-                (row, _) => row,
-            }
+            self.inner.lease_get(vol).await
         }
     }
 
-    /// The row is this holder's at its epoch when read, but another holder
-    /// takes the lease before this holder's take and lets it expire: the
-    /// take steals it back at a newer epoch. That epoch is not the one
-    /// the uploads are fenced by, so the lease is given back and lost.
+    /// Another holder takes this holder's expired lease, and lets its own
+    /// run out too, before this holder's renewal: the renewal writes
+    /// nothing, the lease is lost to that holder, and that holder still
+    /// has it at its epoch (F5 of the review of M2.4c-1: the renewal's
+    /// take used to steal it back at a newer epoch and give it back, and
+    /// neither holder had it).
     #[tokio::test]
-    async fn a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost() {
+    async fn a_lease_another_took_and_let_run_out_before_the_renewal_stays_with_it() {
         let w = World::new();
-        let mut k = Keeper::new(Racing::new(&w, 2 * TTL, None), w.vol, "a", TTL);
+        let mut k = Keeper::new(Racing::new(&w, 2 * TTL), w.vol, "a", TTL);
         assert!(held(1)(k.keep().await));
         // This holder's lease runs out (an outage), and the race is armed.
         w.pass(2 * TTL);
@@ -568,28 +552,28 @@ mod tests {
         assert_eq!(
             state,
             LeaseState::Lost {
-                holder: String::new(),
-                epoch: 3
+                holder: "b".into(),
+                epoch: 2
             }
         );
-        // Given back: the row names this holder at the newer epoch, released.
+        // The other holder's row stands, not released.
         let row = w.refs().lease_get(w.vol).await.unwrap().expect("the row");
-        assert_eq!(
-            (row.holder.as_str(), row.epoch, row.expires_at_ms),
-            ("a", 3, 0)
-        );
-        // And never taken again.
+        assert_eq!((row.holder.as_str(), row.epoch), ("b", 2));
+        assert_ne!(row.expires_at_ms, 0);
+        // Its next renewal keeps its epoch, so its commits are not fenced.
+        assert!(matches!(w.taken_by("b").await, LeaseOutcome::Acquired(l) if l.epoch == 2));
+        // And this holder never takes it again.
         assert_eq!(k.keep().await.clone(), state);
-        assert_eq!(w.row().await, Some(("a".into(), 3)));
+        assert_eq!(w.row().await, Some(("b".into(), 2)));
     }
 
     /// The race again, with the other holder's lease still live at this
-    /// holder's take (K5 of #117's review): the take finds it held, and
-    /// the lease is lost to that holder, not unsure.
+    /// holder's renewal (K5 of #117's review): the lease is lost to that
+    /// holder, not unsure.
     #[tokio::test]
-    async fn a_lease_another_holder_took_between_the_read_and_the_take_is_lost_to_it() {
+    async fn a_lease_another_holder_took_before_the_renewal_is_lost_to_it() {
         let w = World::new();
-        let mut k = Keeper::new(Racing::new(&w, 0, None), w.vol, "a", TTL);
+        let mut k = Keeper::new(Racing::new(&w, 0), w.vol, "a", TTL);
         assert!(held(1)(k.keep().await));
         w.pass(2 * TTL);
         k.refs.armed.store(true, Ordering::SeqCst);
@@ -604,16 +588,17 @@ mod tests {
     }
 
     /// A row that names another holder at this holder's epoch is not this
-    /// holder's (K2 of #117's review): the renewal compares the holder as
-    /// well as the epoch, and takes nothing.
+    /// holder's (K2 of #117's review). The refs object deleted under a
+    /// holding keeper, and the lease taken anew by another holder, makes
+    /// one: a new row begins again at epoch 1. The renewal writes nothing.
     #[tokio::test]
     async fn a_row_of_another_name_at_this_holders_epoch_is_lost() {
         let w = World::new();
-        let mut k = Keeper::new(Racing::new(&w, 0, Some("b")), w.vol, "a", TTL);
+        let mut k = w.keeper("a");
         assert!(held(1)(k.keep().await));
-        let LeaseState::Held { expires_at_ms, .. } = k.state().clone() else {
-            panic!("held")
-        };
+        w.store.delete(&skynbd_refs::refs_key(w.vol)).await.unwrap();
+        assert!(matches!(w.taken_by("b").await, LeaseOutcome::Acquired(l) if l.epoch == 1));
+        let before = w.refs().lease_get(w.vol).await.unwrap();
         w.pass(TTL / 3);
         assert_eq!(
             k.keep().await,
@@ -622,8 +607,11 @@ mod tests {
                 epoch: 1
             }
         );
-        let row = w.refs().lease_get(w.vol).await.unwrap().expect("the row");
-        assert_eq!(row.expires_at_ms, expires_at_ms, "nothing taken");
+        assert_eq!(
+            w.refs().lease_get(w.vol).await.unwrap(),
+            before,
+            "nothing written"
+        );
     }
 
     /// A commit the fence refused loses a held lease at once, naming the
@@ -667,11 +655,11 @@ mod tests {
         );
     }
 
-    /// A renewal whose read finds the row this holder's and whose take
-    /// then fails on the store leaves the lease unsure, not lost (K13 of
+    /// A renewal whose write fails on the store, after its read found
+    /// the row this holder's, leaves the lease unsure, not lost (K13 of
     /// #117's review): nothing says that anyone else holds it.
     #[tokio::test]
-    async fn a_renewal_whose_take_fails_after_its_read_is_unsure() {
+    async fn a_renewal_whose_write_fails_after_its_read_is_unsure() {
         let w = World::new();
         let mut k = w.keeper("a");
         k.keep().await;

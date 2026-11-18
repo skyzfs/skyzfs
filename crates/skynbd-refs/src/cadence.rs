@@ -35,7 +35,7 @@ use tokio::sync::Mutex;
 use crate::object_store::VolumeRows;
 use crate::{
     CasOutcome, Lease, LeaseOutcome, MemoryRefStore, ObjectRefStore, RefEvent, RefOp, RefStore,
-    RefValue, Result, TxnOutcome,
+    RefValue, RenewOutcome, Result, TxnOutcome,
 };
 
 /// Ref names that defer to the cadence rather than exporting on every
@@ -294,6 +294,16 @@ impl<S: ObjectStore> RefStore for CadencedRefStore<S> {
         self.authority.lease_acquire(vol, holder, ttl_ms).await
     }
 
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        self.authority.lease_renew(vol, holder, epoch, ttl_ms).await
+    }
+
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> Result<()> {
         // Export-before-release: the successor must see everything this
         // owner acked — the write half of the single-epoch-gap
@@ -356,6 +366,7 @@ mod tests {
         let s = CadencedRefStore::new(ObjectRefStore::new(MemoryStore::new()).with_clock(clock));
         let advance = move |ms: u64| _ = now.fetch_add(ms, Ordering::SeqCst);
         conformance::exercise_lease(&s, &advance).await;
+        conformance::exercise_lease_renew(&s, &advance).await;
     }
 
     #[tokio::test]
