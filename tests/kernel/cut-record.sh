@@ -1014,24 +1014,42 @@ nudge_until() {
     return 1
 }
 # The volume's state and its newest uploaded cut before another writer
-# acts: DIR/STEP-status.txt after a drain, DIR/STEP-row.txt. Then up to
-# 120 s for the watcher to have fetched that cut under that head: a
-# commit, the row's read and the other writer's act can all fall
-# between two of its looks (run 44253158409, umoved), and the cuts after
-# it are not the daemon's to upload.
+# acts: DIR/STEP-status.txt after a sync of the pool (where it is
+# imported) and a drain, DIR/STEP-row.txt. Then up to 120 s for the
+# watcher to have fetched that cut under that head: a commit, the row's
+# read and the other writer's act can all fall between two of its looks
+# (run 44253158409, umoved), and the cuts after it are not the daemon's
+# to upload. Every 5 s node B reads the row again (DIR/STEP-now.txt):
+# where head or the row has moved on, the daemon cut after the look (a
+# sync of data the pool still held: run 44280164949, urow), the watcher
+# can no longer fetch that cut under that head, and the look is taken
+# again, up to five times, each a line in DIR/looks-again.txt.
 before_other() {
-    local st n g h _i
-    drain "$1-status.txt" idle 1
-    nbrow "$1-row.txt"
-    read -r st n g <<< "$(rowcut "$1-row.txt")"
-    [ -n "$st" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
-    h=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-row.txt")
-    for _i in $(seq 1 240); do
-        awk -F '\t' -v n="$n" -v g="$g" -v s="$st" -v h="$h" '$1 == n && $2 == g && $3 == s && $4 == h { f = 1 }
-            END { exit !f }' "$RDIR/uploaded.tsv" 2>/dev/null && return 0
-        sleep 0.5
+    local st n g h now _i _k
+    for _k in 1 2 3 4 5; do
+        if zpool list -H "$POOL" > /dev/null 2>&1; then z 60 zpool sync "$POOL"; fi
+        drain "$1-status.txt" idle 1
+        nbrow "$1-row.txt"
+        read -r st n g <<< "$(rowcut "$1-row.txt")"
+        [ -n "$st" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
+        h=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-row.txt")
+        now=""
+        for _i in $(seq 1 240); do
+            awk -F '\t' -v n="$n" -v g="$g" -v s="$st" -v h="$h" '$1 == n && $2 == g && $3 == s && $4 == h { f = 1 }
+                END { exit !f }' "$RDIR/uploaded.tsv" 2>/dev/null && return 0
+            if [ $((_i % 10)) = 0 ]; then
+                nbrow "$1-now.txt"
+                now="$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-now.txt") $(rowcut "$1-now.txt")"
+                [ "$now" = "$h $st $n $g" ] || break
+                now=""
+            fi
+            sleep 0.5
+        done
+        [ -n "$now" ] || rig_error "the watcher had not fetched cut $n (group $g) under head $h 120 s after $1's row named it"
+        log "$NAME: the daemon cut after the look before $1 (cut $n, then $now): again"
+        printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "$now" >> "$RDIR/looks-again.txt"
     done
-    rig_error "the watcher had not fetched cut $n (group $g) under head $h 120 s after $1's row named it"
+    rig_error "the row moved on after the look before $1 five times in a row"
 }
 
 # umoved (b): another writer moves head. The uploader finds head's group

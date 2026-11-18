@@ -193,5 +193,50 @@ is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 
 is "a row that moved five times is the rig's error" "$(acted 5)" \
     "2 rig error: node B's act at step found the row moved five times in a row"
 
+# The look before the other writer's act: where the daemon cuts after
+# the look, the watcher cannot fetch that cut under that head, and the
+# look is taken again (run 44280164949, urow). A stand-in node B's row
+# names cut L at look L, and its later read names cut L+1 while L is at
+# most MOVES; the stand-in watcher fetches the cut a look names once L
+# is past MOVES. -> "fetched N after K looks again, synced S", or what
+# ended it.
+bother=$(sed -n '/^before_other() {$/,/^}$/p' "$SCRIPT")
+is "before_other is in the script" "$([ -n "$bother" ] && echo yes)" yes
+looked() { # moves [pool imported: 1 or 0]
+    # shellcheck disable=SC2034,SC2329
+    (
+        set -euo pipefail
+        RDIR=$T/b; NAME=rec; POOL=p; MOVES=$1; UP=${2:-1}; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
+        log() { :; }
+        sleep() { :; }
+        rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
+        zpool() { [ "$UP" = 1 ]; }
+        z() { shift; echo x >> "$RDIR/syncs"; }
+        drain() { :; }
+        eval "$rcut"
+        eval "$bother"
+        nbrow() {
+            local k
+            case $1 in
+            *-row.txt)
+                echo x >> "$RDIR/looks"; k=$(wc -l < "$RDIR/looks")
+                [ "$k" -le "$MOVES" ] || printf '%s\t40\tst\thd\n' "$k" >> "$RDIR/uploaded.tsv" ;;
+            *) k=$(wc -l < "$RDIR/looks"); [ "$k" -gt "$MOVES" ] || k=$((k + 1)) ;;
+            esac
+            printf 'head\thd\t4\nrow\tst\t%s\t40\n' "$k" > "$RDIR/$1"
+        }
+        before_other step
+        echo "fetched $(rowcut step-row.txt) after $(cat "$RDIR/looks-again.txt" 2>/dev/null | wc -l) looks again," \
+            "synced $(cat "$RDIR/syncs" 2>/dev/null | wc -l)" > "$T/why"
+    )
+    echo "$? $(cat "$T/why" 2>/dev/null)"
+    rm -f "$T/why"
+}
+is "a cut the watcher fetched" "$(looked 0)" "0 fetched st 1 40 after 0 looks again, synced 1"
+is "a daemon that cut after two looks: the third look's cut" "$(looked 2)" "0 fetched st 3 40 after 2 looks again, synced 3"
+is "a pool not imported is not synced" "$(looked 0 0)" "0 fetched st 1 40 after 0 looks again, synced 0"
+is "a row that moved on five times is the rig's error" "$(looked 5)" \
+    "2 rig error: the row moved on after the look before step five times in a row"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
