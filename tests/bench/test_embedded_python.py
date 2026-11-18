@@ -56,17 +56,20 @@ class Embedded(unittest.TestCase):
     def test_a_row_that_uploads(self):
         """TB_SKZ_UPLOAD (M2.4c): the row names the volume it uploads to,
         and the summary has a line for it in the uploader's table, with
-        the counters over the window and the state at its end; a row
-        without uploads has neither."""
+        the counters over the window, the state at its end and how long
+        the first upload took before the windows (its .skzinfo line); a
+        row without uploads has neither."""
         devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
         before = (devs + 'skz cuts 10\nskz uploaded 3\nskz uploaded_whole 1\nskz upload_blocks 900\nskz cuts_replaced 6\n'
-                  'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 1\n')
+                  'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 1\n'
+                  'skz upload_cuts_lost 2\n')
         after = (devs + 'skz cuts 40\nskz uploaded 9\nskz uploaded_whole 1\nskz upload_blocks 1500\nskz cuts_replaced 30\n'
                  'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 2\n'
-                 'skz upload_cut 39\nskz upload_state putting\nskz lease held\n')
+                 'skz upload_cut 39\nskz upload_state putting\nskz lease held\nskz upload_cuts_lost 5\n')
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
-                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n')
+                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n'
+                        'first_upload after 40 s (uploaded 1, cuts lost 0)\n')
             r = self.row(d, {'.before': before, '.after': after, '.pgbench': 'tps = 812.5 (without initial connection time)\n'})
             self.assertEqual(r['skyzfsd']['upload'], {'endpoint': 'http://127.0.0.1:9000', 'bucket': 'tb-1-1', 'volume': 'tb-17'})
             self.assertTrue(r['skyzfsd']['serve_args'].endswith('(uploads to tb-17)'), r['skyzfsd']['serve_args'])
@@ -79,8 +82,8 @@ class Embedded(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr[-2000:])
             rows = [ln for ln in p.stdout.splitlines() if ln.startswith('| tpcb | ') and '(whole)' not in ln
                     and ' / 40 |' in ln]
-            self.assertEqual(rows, ['| tpcb | zfs-skyzfsd [x] | 812 | 30 | 6 (0) | 600 | 24 | 0 | 0 | 0 | 2 | 39 / 40 | '
-                                    'putting | held |'], p.stdout[-3000:])
+            self.assertEqual(rows, ['| tpcb | zfs-skyzfsd [x] | 812 | 30 | 6 (0) | 600 | 24 | 0 | 0 | 0 | 3 | 2 | 39 / 40 | '
+                                    'putting | held | after 40 s (uploaded 1, cuts lost 0) |'], p.stdout[-3000:])
             # a row without uploads
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')
@@ -95,7 +98,8 @@ class Embedded(unittest.TestCase):
         and one whose daemon keeps no map (left out)."""
         devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
         old = 'skz intent_state taken_up\nskz intent_syncs {}\nskz intent_sync_ns {}\nskz intent_sync_max_ns 3000000\nskz intent_waits {}\n'
-        new = old + 'skz intent_header_sync on\nskz intent_header_syncs {}\nskz intent_header_sync_ns {}\nskz intent_header_sync_max_ns 1500000\n'
+        new = old + ('skz intent_header_sync on\nskz intent_header_syncs {}\nskz intent_header_sync_ns {}\n'
+                     'skz intent_header_sync_max_ns 1500000\nskz intent_named 12\nskz intent_regions 8192\n')
         cases = {'on': (devs + new.format(10, 10_000_000, 2, 4, 4_000_000), devs + new.format(110, 260_000_000, 7, 54, 54_000_000)),
                  'old': (devs + old.format(10, 10_000_000, 2), devs + old.format(30, 50_000_000, 2)),
                  'none': (devs + 'skz cuts 1\n', devs + 'skz cuts 2\n')}
@@ -117,8 +121,8 @@ class Embedded(unittest.TestCase):
             table = text[1].split('\n\n')[1].splitlines()
             rows = [ln for ln in table if 'zfs-skyzfsd' in ln]
             self.assertEqual(sorted(rows), sorted([
-                '| on | zfs-skyzfsd [x] | 700 | on | 100 | 2.50 | 3.00 | 50 | 1.00 | 1.50 | 5 |',
-                '| old | zfs-skyzfsd [x] | 701 | n/a | 20 | 2.00 | 3.00 | n/a | n/a | n/a | 0 |']), text[1][:3000])
+                '| on | zfs-skyzfsd [x] | 700 | on | 100 | 2.50 | 3.00 | 50 | 1.00 | 1.50 | 5 | 12 / 8192 |',
+                '| old | zfs-skyzfsd [x] | 701 | n/a | 20 | 2.00 | 3.00 | n/a | n/a | n/a | 0 | n/a / n/a |']), text[1][:3000])
 
     def test_a_row_says_what_its_releaser_did(self):
         """TB_SKZ_RELEASE (M2.T4): the row's serve arguments give the

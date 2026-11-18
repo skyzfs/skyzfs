@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -190,5 +190,33 @@ settle "writes 7" "held 0" "checkpoint_step under way" "unstored 0" "log_live 0"
 check "a step under way: never at rest" '[ "$rc" = 1 ]'
 settle ""; rc=$?
 check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "did not come to rest" "$tt/settle-said"'
+
+# 8. TB_SKZ_UPLOAD: the wait for the first upload before the windows
+# (skz_first_upload), on a status that changes with the clock. The clock
+# moves 10 s a call; the status reads uploaded 0 until UP_AT s.
+first_upload() { # up_at wait_s -> rc; the row's line in $OUT/t.skzinfo
+    echo "$1" > "$tt/up_at"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
+    # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_first_upload
+    (
+        TOPO=t; SKZ_UPLOAD_WAIT_S=$2
+        skz_status() {
+            local up=0
+            [ "$(cat "$tt/clock")" -lt "$(cat "$tt/up_at")" ] || up=1
+            printf 'uploaded %s\nupload_state reading\nupload_cuts_lost 4\nupload_cut 9\ncuts 12\n' "$up"
+        }
+        sleep() { :; }
+        date() { local n; n=$(( $(cat "$tt/clock") + 10 )); echo "$n" > "$tt/clock"; echo "$n"; }
+        skz_first_upload
+    ) 2> /dev/null
+}
+setup
+first_upload 100 900; rc=$?
+check "the first upload lands: the row says when" \
+    '[ "$rc" = 0 ] && grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
+first_upload 100000 300; rc=$?
+check "no upload in the limit: the row says so, and the run goes on" \
+    '[ "$rc" = 0 ] && grep -qx "first_upload NONE in 300 s (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
+check "the wait is wired after the settle, for an upload's row only" \
+    'grep -qx "            if \[ \"\$SKZ_UPLOAD\" = 1 \] && \[ \"\$SKZ_UPLOAD_WAIT_S\" -gt 0 \]; then skz_first_upload; fi" "$script"'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
