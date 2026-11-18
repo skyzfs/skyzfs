@@ -1,0 +1,60 @@
+U1	KILLED	a whole cut is uploaded whatever head's group	by 4: a_head_moved_by_another_writer_stops_the_upload, a_row_moved_before_the_commit_gives_the_commit_up, check::tests::a_whole_cut_onto_a_head_that_is_not_the_rows_is_a_mismatch, no_row_under_a_cut_of_part_of_the_volume_is_a_mismatch
+U2	KILLED	the row names the cut by its state and number alone (not its group)	by 1: check::tests::a_row_differing_from_the_cut_in_anything_is_not_its_commit
+U3	KILLED	a delta is uploaded whatever cut the row names	by 4: a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most, a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up, a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_whole, check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch
+U3b	KILLED	Q8 relaxed: a row of this state between the map's base and the cut is taken as the base	by 1: a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most
+U3c	KILLED	a delta is uploaded whatever head's group	by 4: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up, a_head_moved_by_another_writer_stops_the_upload, a_lost_cut_leaves_the_next_check_to_find_head_as_it_is, check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch
+U3d	KILLED	a row that cannot be read is taken as no row	by 2: a_row_of_another_version_is_never_overwritten, check::tests::a_row_that_cannot_be_read_is_always_a_mismatch
+R1	KILLED	a row of another version is read as version 1	by 1: row::tests::a_row_of_another_version_or_length_is_unreadable
+R2	KILLED	a row of version 1 that is too long is read	by 1: row::tests::a_row_of_another_version_or_length_is_unreadable
+U4	KILLED	no reset of the engine where the row names the cut after a failed commit	by 1: a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta
+U5	KILLED	no reset of the engine where a commit is given up	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up
+U6	SURVIVED	a commit that conflicted is made again where the row and head read as before	
+U7	KILLED	a failed commit is made again though head moved	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up	with scenarios.rs s6_: FAILS (plants2_detail/U7.with)
+U7b	KILLED	a failed commit is made again though the row moved	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up
+U8	KILLED	only the last slice says whether a copy was read	by 1: a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant
+U10	KILLED	a cut that went keeps its writes in the engine	by 1: a_lost_cut_leaves_the_next_check_to_find_head_as_it_is
+U12	KILLED	a cut that went since its check is committed all the same	by 2: a_cut_abandoned_after_its_last_slice_is_not_committed, a_lost_cut_leaves_the_next_check_to_find_head_as_it_is
+U13	KILLED	a cut found committed and gone is not named	by 1: a_cut_the_bound_takes_after_the_check_found_it_committed_is_named
+U13b	KILLED	a cut uploaded and gone is not named	by 2: a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta, a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most
+U14	KILLED	a run of blocks is written as its first block is: zeros or data	by 16: a_cut_abandoned_after_its_last_slice_is_not_committed, a_cut_abandoned_at_the_bound_while_it_is_read_is_lost, a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded, a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver, a_cut_read_from_no_copy_is_committed_without_a_sync, a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta ...
+U15	KILLED	the commit expects no row	by 10: a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded, a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver, a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta, a_cut_the_bound_takes_after_the_check_found_it_committed_is_named, a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most, a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on ...
+U17	KILLED	the driver goes on after a cut the store kept	by 1: a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver
+U18	SURVIVED	no PUT of sealed segments before a slice is read	
+U19	SURVIVED	no PUT of sealed segments after a slice	
+U20	KILLED	a cut with a copy read is committed without the sync of the copies	by 2: a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant, a_failed_sync_of_the_copies_loses_the_cut_and_its_heir_goes_up
+U21	KILLED	a failed sync of the copies commits all the same	by 1: a_failed_sync_of_the_copies_loses_the_cut_and_its_heir_goes_up
+U5s	KILLED	as U5 (no reset where a commit is given up), with the scenario of a head moved after a failed commit	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up	with scenarios.rs s6_: FAILS (plants2_detail/U5s.with)
+U18+19	KILLED	no PUT of sealed segments before the commit at all	by 2: a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on, a_failed_put_goes_on_from_the_next_slice
+U24	KILLED	a commit that failed is made again without the row and head read again	by 5: a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta, a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most, a_failed_commit_is_made_again_or_found_landed_by_the_row, a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up, a_row_moved_before_the_commit_gives_the_commit_up
+U9	KILLED	a cut is offered whatever its phase (its flush under way)	by 1: a_cut_whose_flush_is_under_way_is_not_uploaded	with scenarios.rs s7_: FAILS (plants2_detail/U9.with)
+U31	KILLED	a cut the store kept is reported as let go	by 1: a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver
+U32	KILLED	a cut let go on a failed volume is reported as kept (the driver stops at any failure)	by 1: a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded	with scenarios.rs s8_: FAILS (plants2_detail/U32.with)
+U26	KILLED	observe opens the engine again at a moved head though it holds writes	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up	with scenarios.rs s6_: FAILS (plants2_detail/U26.with)
+U27	KILLED	the commit carries no group	by 21: a_cut_abandoned_after_its_last_slice_is_not_committed, a_cut_abandoned_at_the_bound_while_it_is_read_is_lost, a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded, a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver, a_cut_read_from_no_copy_is_committed_without_a_sync, a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant ...
+U28	KILLED	the commit does not swap the row	by 22: a_cut_abandoned_after_its_last_slice_is_not_committed, a_cut_abandoned_at_the_bound_while_it_is_read_is_lost, a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded, a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver, a_cut_read_from_no_copy_is_committed_without_a_sync, a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant ...
+U30	KILLED	observe keeps a clean engine though head moved	by 2: a_head_moved_by_another_writer_stops_the_upload, a_lost_cut_leaves_the_next_check_to_find_head_as_it_is
+M1	KILLED	TEST: the object-storage matrix skips its first kill point	by 1: a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on
+M1b	KILLED	TEST: the object-storage matrix stops one point early	by 1: a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on
+M2	KILLED	TEST: the cut-state matrix skips its first kill point	by 1: a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch
+M3	KILLED	TEST: the cut-state matrix stops after three kill points	by 1: a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch
+M4	KILLED	release lets the cut go before the map names it	by 1: a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch
+L1	SURVIVED	naming a cut does not count as a commit of the map		with scenarios_store.rs T1: passes
+L2	KILLED	a release counts as a commit only where it moves the map's base (the alternative of question 3)	by 1: inplace::tests::cuts::a_release_made_again_after_a_death_counts_for_a_write_that_waits	with scenarios_store.rs T1: FAILS (plants2_detail/L2.with)
+L2b	KILLED	a release does not count as a commit of the map at all	by 2: inplace::tests::cuts::a_release_made_again_after_a_death_counts_for_a_write_that_waits, inplace::tests::cuts::a_write_whose_bit_a_clear_takes_while_it_waits_sets_it_again	with scenarios_store.rs T1: FAILS (plants2_detail/L2b.with)
+L3	KILLED	naming a cut clears every bit of the map	by 1: inplace::tests::cuts::a_committed_cut_the_bound_took_is_named_as_committed	with scenarios.rs s5_: FAILS (plants2_detail/L3.with)
+L3s	SURVIVED	as L3 (naming clears every bit), for what the random programs say of it		with scenarios.rs s5_: FAILS (plants2_detail/L3s.with)
+L4	KILLED	a held cut can be named as committed	by 1: inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer
+L5	KILLED	naming moves the map's base back to an older cut of the state	by 1: inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer
+L6	KILLED	the state's newest cut cannot be named	by 3: a_cut_the_bound_takes_after_the_check_found_it_committed_is_named, inplace::tests::cuts::a_committed_cut_the_bound_took_is_named_as_committed, inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer
+L6b	KILLED	a cut the state never made can be named	by 1: inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer
+L7	KILLED	a naming whose write of the map fails does not fail the volume	by 1: inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer	with scenarios.rs s2_: passes
+L8	KILLED	a release whose write of the map fails says the cut was not the one (false)	by 4: a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver, inplace::tests::cuts::a_cut_kept_at_a_failed_write_of_the_map_is_held_again_only_where_no_marker_was_written, inplace::tests::cuts::a_failed_write_of_the_map_at_a_commit_fails_the_volume, inplace::tests::cuts::after_a_power_cut_the_next_cut_holds_every_block_changed_since_the_newest_commit
+V1	KILLED	TEST: in the new test of a failed commit, the other writer moves neither head nor the row	by 1: a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up
+V2	KILLED	TEST: in the new test of a flush under way, the image's sync is not held	by 1: a_cut_whose_flush_is_under_way_is_not_uploaded
+V3	KILLED	TEST: in the new test of a failed volume, the image's writes do not fail	by 1: a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded
+V4	KILLED	TEST: in the new store test, the map's sync is not held under the waiting write	by 1: inplace::tests::cuts::a_release_made_again_after_a_death_counts_for_a_write_that_waits
+V4b	KILLED	TEST: in the new store test, the release is made again with no write waiting	by 1: inplace::tests::cuts::a_release_made_again_after_a_death_counts_for_a_write_that_waits
+V6	SURVIVED	the last slice's segments are PUT by the commit alone (no PUT after the last slice)	
+U33	KILLED	a failed volume offers no cut to the uploader	by 1: a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded
+L9	KILLED	naming does not write the map's pages	by 3: a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most, inplace::tests::cuts::a_committed_cut_the_bound_took_is_named_as_committed, inplace::tests::cuts::a_cut_is_named_as_committed_only_when_it_is_gone_and_newer
+U6s	SURVIVED	as U6 (a conflict with the row and head as before is made again), with the scenario of a commit refused for want of a lease row		with scenarios.rs s9_: passes

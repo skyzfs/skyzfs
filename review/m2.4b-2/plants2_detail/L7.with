@@ -1,0 +1,23 @@
+
+running 1 test
+test s2_a_naming_whose_write_fails ... S2 the step: Ok(UploadedNotHeld { number: 2, named: true })
+S2 the volume failed: false; the map's base in memory before Some((1, 7)), after Some((2, 8))
+S2 then: [Began { number: 3, rule: Delta }, Kept { number: 3 }]
+S2 head's group Some(9), the row Some((3, 9)), head reads as the volume at cut 3's instant: true
+S2 figures: mismatches 0, named 1, kept 1, doing Stopped
+S2 (the file takes writes again) the step: Ok(UploadedNotHeld { number: 2, named: true }); then [Began { number: 3, rule: Delta }, Uploaded { number: 3, rule: Delta, blocks: 76 }]
+S2 (the file takes writes again) the map's base Some((3, 9)), held 0, failed false
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-local v0.0.1 (<scratch>/wt114b/crates/skyzfs-local)
+   Compiling skyzfs-upload v0.0.1 (<scratch>/wt114b/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.53s
+     Running tests/review_scn.rs (target/debug/build/skyzfs-upload/61e082c1fa54f041/out/review_scn-61e082c1fa54f041)
+
+--- exit 0

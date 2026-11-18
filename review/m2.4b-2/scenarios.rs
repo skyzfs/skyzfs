@@ -862,3 +862,64 @@ async fn s8_a_volume_failed_at_a_write_of_the_image_still_uploads_its_cut() {
     assert!(held.is_empty());
     fx.assert_uploaded(8, "S8").await;
 }
+
+// ---------------------------------------------------------------------
+// S9 (the next look, G7). A commit refused for want of a lease row, on a
+// refs store that fences its writes (`ActingRefStore`): the engine
+// reports the refusal as a conflict, with head and the row as they were.
+// What the driver does with such a conflict, run after run.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn s9_a_commit_refused_for_want_of_a_lease_row_is_a_conflict_with_nothing_moved() {
+    use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
+    use skyzfs_upload::{Driver, EngineRemote};
+    use std::sync::Arc;
+
+    let mut fx = Fixture::new(54).await;
+    let mut store = fx.start();
+    for block in 60..100 {
+        fx.write(&mut store, block, block as u8);
+    }
+    fx.group(&mut store, 7);
+    let plain = ObjectRefStore::new(fx.store.clone());
+    let lease = plain.lease_get(fx.vol).await.expect("the lease");
+    println!("S9 the volume has a lease row: {}", lease.is_some());
+    let refs = Arc::new(ActingRefStore::new(
+        ObjectRefStore::new(fx.store.clone()),
+        "this node",
+        1,
+    ));
+    let remote = EngineRemote::new(fx.store.clone(), refs, fx.vol, cfg());
+    let mut up = Driver::with_slices(store, remote, 16);
+    let before = fx.uploaded().await;
+    fx.store.inner().record(true);
+    let mut seen = 0;
+    for round in 0..4 {
+        let ran = up.run().await;
+        let log = fx.store.inner().log();
+        let new = &log[seen..];
+        let puts = new.iter().filter(|op| *op == "put seg").count();
+        println!(
+            "S9 run {round}: ends {:?}; operations on object storage {}, of them PUTs of a segment {puts}; \
+             segment bytes in the store {}; given up {}, lost {}, errors {}, the driver is {:?}",
+            ran.as_ref().map(|steps| told(steps)),
+            new.len(),
+            fx.segment_bytes().await,
+            up.figures().gave_up,
+            up.figures().lost,
+            up.figures().errors,
+            up.doing()
+        );
+        seen = log.len();
+    }
+    fx.store.inner().record(false);
+    let after = fx.uploaded().await;
+    let held: Vec<u64> = up.local().held_cuts().iter().map(|c| c.number).collect();
+    println!(
+        "S9 head and the row as before: {}; held {held:?}",
+        after.group == before.group && after.row == before.row && after.content == before.content
+    );
+    assert_eq!(after.group, before.group);
+    assert_eq!(after.row, before.row);
+}

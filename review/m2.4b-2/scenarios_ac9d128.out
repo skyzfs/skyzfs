@@ -1,0 +1,152 @@
+
+running 9 tests
+test s1_the_matrix_counted ... S1 operations on object storage: 35
+S1   op  0: get_versioned refs
+S1   op  1: get_versioned refs
+S1   op  2: get sb
+S1   op  3: get_versioned refs
+S1   op  4: get ?
+S1   op  5: get commit
+S1   op  6: get node
+S1   op  7: get emap
+S1   op  8: put seg
+S1   op  9: put seg
+S1   op 10: put seg
+S1   op 11: put seg
+S1   op 12: put seg
+S1   op 13: get node
+S1   op 14: put node
+S1   op 15: put node
+S1   op 16: put node
+S1   op 17: put node
+S1   op 18: put node
+S1   op 19: put commit
+S1   op 20: get_versioned refs
+S1   op 21: put_if refs
+S1   op 22: get_versioned refs
+S1   op 23: get_versioned refs
+S1   op 24: put seg
+S1   op 25: put seg
+S1   op 26: get node
+S1   op 27: put node
+S1   op 28: put node
+S1   op 29: put node
+S1   op 30: put node
+S1   op 31: put node
+S1   op 32: put commit
+S1   op 33: get_versioned refs
+S1   op 34: put_if refs
+S1 put seg 7, put node 10, put commit 2, put_if refs 2, get_versioned refs 7, others 7
+S1   step Began { number: 1, rule: Whole }: operations 0..8, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 8..8, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 8..8, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 8..8, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 8..9, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 9..10, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 10..11, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 11..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step Read { number: 1, blocks: 16 }: operations 12..12, stores so far 0
+S1   step CopiesSynced { number: 1 }: operations 12..12, stores so far 0
+S1   step Uploaded { number: 1, rule: Whole, blocks: 256 }: operations 12..22, stores so far 13
+S1   step Began { number: 2, rule: Delta }: operations 22..24, stores so far 13
+S1   step Read { number: 2, blocks: 6 }: operations 24..25, stores so far 13
+S1   step CopiesSynced { number: 2 }: operations 25..25, stores so far 13
+S1   step Uploaded { number: 2, rule: Delta, blocks: 6 }: operations 25..35, stores so far 21
+S1 stores into the cut state during the run: 21
+S1   store  0: head's group Some(7), held at the restart [(1, Uploading), (2, Waiting)], the map's base Some(1), then [FoundCommitted { number: 1 }, Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  1: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  2: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  3: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  4: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  5: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  6: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  7: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  8: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store  9: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store 10: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store 11: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store 12: head's group Some(7), held at the restart [(2, Uploading)], the map's base Some(1), then [Began { number: 2, rule: Delta }, CopiesSynced { number: 2 }, Uploaded { number: 2, rule: Delta, blocks: 6 }]
+S1   store 13: head's group Some(8), held at the restart [(2, Uploading)], the map's base Some(2), then [FoundCommitted { number: 2 }]
+S1   store 14: head's group Some(8), held at the restart [(2, Uploading)], the map's base Some(2), then [FoundCommitted { number: 2 }]
+S1   store 15: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1   store 16: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1   store 17: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1   store 18: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1   store 19: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1   store 20: head's group Some(8), held at the restart [], the map's base Some(2), then []
+S1 deaths at a store into the cut state: 21; the cut held for the row to name at [0, 13, 14]
+S1 deaths at an operation, Before: 35
+S1 deaths at an operation, After: 35
+ok
+test s2_a_naming_whose_write_fails ... S2 the step: Ok(UploadedNotHeld { number: 2, named: false })
+S2 the volume failed: true; the map's base in memory before Some((1, 7)), after Some((2, 8))
+S2 then: [Began { number: 3, rule: Delta }, Kept { number: 3 }]
+S2 head's group Some(9), the row Some((3, 9)), head reads as the volume at cut 3's instant: true
+S2 figures: mismatches 0, named 0, kept 1, doing Stopped
+S2 (the file takes writes again) the step: Ok(UploadedNotHeld { number: 2, named: false }); then [Began { number: 3, rule: Delta }, Uploaded { number: 3, rule: Delta, blocks: 76 }]
+S2 (the file takes writes again) the map's base Some((3, 9)), held 0, failed true
+ok
+test s3_a_whole_cut_taken_after_its_commit ... S3 held after the bound took cut 1: [2]
+S3 the step: UploadedNotHeld { number: 1, named: true }; the map's base Some((1, 7))
+S3 then: [Began { number: 2, rule: Whole }, Uploaded { number: 2, rule: Whole, blocks: 256 }]
+S3 figures: uploaded 2, whole 2, blocks 512
+ok
+test s4_a_restart_of_the_machine_under_the_uploader ... S4a after the reboot: cuts Some(Begun("the cut state was begun in another boot")), the map Some(TakenUp { named: 4, regions: 4 }), its base Some((2, 8))
+S4a then: [Began { number: 1, rule: Delta }, Uploaded { number: 1, rule: Delta, blocks: 256 }]
+S4b after the reboot: the map Some(TakenUp { named: 4, regions: 4 }), its base Some((2, 8))
+S4b then: [Began { number: 1, rule: Delta }, Uploaded { number: 1, rule: Delta, blocks: 256 }]
+S4c after the reboot: the map Some(TakenUp { named: 4, regions: 4 }), its base Some((1, 7))
+S4c then: [Mismatch { why: NotTheBase, abandoned: [1] }]
+S4c then: [Began { number: 2, rule: Whole }, Uploaded { number: 2, rule: Whole, blocks: 256 }]
+ok
+test s5_random_programs_and_a_power_cut ... S5 groups to four labels : Tally { programs: 600, named: 667, named_whole: 253, reboots_taken_up: 223, reboots_narrowed: 28, reboots_begun: 377, first_delta: 171, first_mismatch: 52, first_whole: 377, uploads_checked: 2239 }
+S5 groups to one label : Tally { programs: 600, named: 667, named_whole: 253, reboots_taken_up: 254, reboots_narrowed: 105, reboots_begun: 346, first_delta: 221, first_mismatch: 33, first_whole: 346, uploads_checked: 2258 }
+ok
+test s6_a_failed_commit_and_then_a_head_moved_by_another_writer ... S6 the commit: Err(Store("store: backend error: injected fault"))
+S6 the step after head moved: Ok(GaveUp { number: 2 })
+S6 then: [Mismatch { why: HeadMoved, abandoned: [2] }]
+S6 head's group None, the row Some((1, 7)); head as the other writer left it: true
+ok
+test s7_a_cut_whose_flush_is_under_way_is_not_uploaded ... S7 held while the flush is under way: [(1, Flushing)]
+S7 the step: Ok(Idle); checked Unchecked
+S7 the step once the flush has ended: Ok(Began { number: 1, rule: Whole })
+ok
+test s8_a_volume_failed_at_a_write_of_the_image_still_uploads_its_cut ... S8 the write failed: Some(true); the volume failed: true; held [(2, Uploading)]
+S8 the run: [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; the driver is Checking; held after []
+ok
+test s9_a_commit_refused_for_want_of_a_lease_row_is_a_conflict_with_nothing_moved ... S9 the volume has a lease row: false
+S9 run 0: ends Err(Conflict); operations on object storage 21, of them PUTs of a segment 5; segment bytes in the store 180224; given up 0, lost 0, errors 1, the driver is Committing
+S9 run 1: ends Err(Conflict); operations on object storage 29, of them PUTs of a segment 5; segment bytes in the store 360448; given up 1, lost 0, errors 2, the driver is Committing
+S9 run 2: ends Err(Conflict); operations on object storage 34, of them PUTs of a segment 5; segment bytes in the store 540672; given up 2, lost 0, errors 3, the driver is Committing
+S9 run 3: ends Err(Conflict); operations on object storage 39, of them PUTs of a segment 5; segment bytes in the store 720896; given up 3, lost 0, errors 4, the driver is Committing
+S9 head and the row as before: true; held [1]
+ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.28s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling rustix v1.1.4
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.33
+   Compiling skyzfs-blk v0.0.1 (<scratch>/wt114b/crates/skyzfs-blk)
+   Compiling futures-util v0.3.33
+   Compiling skynbd-engine v0.0.1 (<scratch>/wt114b/crates/skynbd-engine)
+   Compiling skyzfs-mapped v0.0.1 (<scratch>/wt114b/crates/skyzfs-mapped)
+   Compiling skyzfs-local v0.0.1 (<scratch>/wt114b/crates/skyzfs-local)
+   Compiling skyzfs-upload v0.0.1 (<scratch>/wt114b/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 12.22s
+     Running tests/review_scn.rs (target/debug/build/skyzfs-upload/61e082c1fa54f041/out/review_scn-61e082c1fa54f041)
+
+--- exit 0
