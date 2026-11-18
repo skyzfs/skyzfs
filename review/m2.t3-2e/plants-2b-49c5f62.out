@@ -1,0 +1,39 @@
+R1 a flush received before the instance ended still carries its mark to a barrier: KILLED by 2: test_a_flush_received_before_the_end_carries_nothing_on, test_the_stored_mark_is_the_newest
+R2 a take-over drops the mark (the design rule is mark-dropped): NOT APPLIED (found [0] times)
+R3 a created device keeps the mark (the design rule is mark-kept): NOT APPLIED (found [0] times)
+R4 the rule mark-dropped is the design: NOT APPLIED (found [0] times)
+R5 the rule mark-kept is the design: NOT APPLIED (found [0] times)
+R6 a cut does not clear the stored mark: KILLED by 3: test_a_begun_state_has_no_newest_cut, test_a_cut_clears_the_stored_mark, test_the_newest_cut_is_kept_across
+R7 any cut clears the stored mark, whatever state it holds: KILLED by 1: test_a_cut_clears_only_its_own_mark_from_the_state
+R8 a mark is not stored: KILLED by 4: test_a_created_device_drops_it, test_a_cut_clears_only_its_own_mark_from_the_state, test_a_take_over_keeps_the_mark, test_the_stored_mark_is_the_newest
+R9 at a take-over the instance keeps the mark it had in memory, not the state's: NOT APPLIED (found [0] times)
+R10 a created device forgets the newest cut as well: NOT APPLIED (found [0] times)
+R11 the stored mark is the first made, not the newest: KILLED by 2: test_a_cut_clears_only_its_own_mark_from_the_state, test_the_stored_mark_is_the_newest
+C1 no record `instance` where an instance starts: NOT APPLIED (found [0] times)
+C2 a flush received and not at its barrier is kept across the boundary, with what waits behind it: KILLED by 1: test_nothing_of_the_first_instance_carries_over
+C3 a write received and not applied is kept across the boundary: KILLED by 1: test_nothing_of_the_first_instance_carries_over
+C4 the last barrier is kept across the boundary: KILLED by 1: test_nothing_of_the_first_instance_carries_over
+C5 every later instance is read as a take-over: NOT APPLIED (found [0] times)
+C6 every later instance is read as a created device: NOT APPLIED (found [0] times)
+C7 two instances with no instances.tsv are read as take-overs: KILLED by 1: test_the_log_must_say_which_took_over
+C8 a pid instances.tsv does not name took the device over: KILLED by 1: test_the_log_must_say_which_took_over
+C9 an instance that starts before the one before it wrote its last line is no error: KILLED by 1: test_instances_do_not_interleave
+C10 a second start line of one pid begins another instance: KILLED by 1: test_the_log_must_say_which_took_over
+C11 instances.tsv may say anything: what is not `taken-over` is a created device: NOT APPLIED (found [0] times)
+C12 a write-zeroes behind a flush with no barrier is placed at the boundary: KILLED by 1: test_what_the_first_instance_did_not_finish
+K1 lost_at_kill never finds a lost line: KILLED by 2: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_missing_cut_line_by_hand
+K2 lost_at_kill: the next instance's number is not looked at: NOT APPLIED (found [0] times)
+K3 lost_at_kill: the reference's extra cut may be at any barrier before the kill: KILLED by 1: test_a_missing_cut_line_by_hand
+K4 lost_at_kill: any number of cuts may be missing before the kill: KILLED by 1: test_a_missing_cut_line_by_hand
+K5 main does not ask lost_at_kill: a lost line is a verdict: NOT APPLIED (found [0] times)
+K6 main asks lost_at_kill and goes on: the line is no error: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+I1 every start is to say begun: NOT APPLIED (found [0] times)
+I2 every start is to say taken_up: NOT APPLIED (found [0] times)
+I3 an instance's cuts line in the log is not looked at by instance_K: KILLED by 1: test_instance_lines_and_the_commit
+I4 the status's cut_state at a start is not looked at: NOT APPLIED (found [0] times)
+I5 the status's intent_state at a start is not looked at: NOT APPLIED (found [0] times)
+I6 a count at a start below the cuts counted before it is no finding: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+I7 a failed instance line is no verdict (main drops instance_lines' result): NOT APPLIED (found [0] times)
+I8 cut_state: only the first start's cuts line is looked at: KILLED by 1: test_an_acknowledged_failure
+I9 cut_state: the last status may say begun after a take-up: KILLED by 1: test_two_instances
+I10 several instances with no holder are no error: KILLED by 1: test_what_cannot_be_judged

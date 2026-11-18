@@ -1,0 +1,29 @@
+U1 a barrier with no cut line at a kill is kept (shape B as before the pull request): KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+U2 a cut line cut again by the next instance is kept (shape C as before): NOT APPLIED (found [0] times)
+U3 the barrier is taken out even where the next instance counts on past one more (shape A excused): KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+U4 a next instance that acknowledged a failure can count past one more too: NOT APPLIED (found [0] times)
+U5 past one more is n + 1 (the next number itself): NOT APPLIED (found [0] times)
+U6 shape C by the number alone (any group): NOT APPLIED (found [0] times)
+U7 shape C by the group alone (any number): NOT APPLIED (found [0] times)
+U8 shape C before a start that acknowledged a failure too: NOT APPLIED (found [0] times)
+U9 shape C takes out the cut line and leaves its barrier: KILLED by 2: test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+U10 shape C whatever flush the barrier before the cut line is of: NOT APPLIED (found [0] times)
+U11 the count before the kill is not begun again at a start that acknowledged a failure: KILLED by 1: test_the_kill_window_by_hand
+U12 the count before the kill is the instances' before it, never this one's own lines: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+U13 main judges the log as it stood (the instances without the lines are dropped): KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut
+U14 main does not say which starts acknowledged a failure: KILLED by 1: test_an_acknowledged_start_cuts_nothing_again
+U15 shape C where the cut line ends the instance, whatever stands before it: NOT APPLIED (found [0] times)
+U16 shape C looks at the next instance's last cut, not its first: NOT APPLIED (found [0] times)
+U17 the line of a shape C says what a shape B's says: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+U18 the last instance's barrier at the end of the log is taken out too: NOT APPLIED (found [0] times)
+M1 cut_line_missing: the reference need not have one cut more before the kill: KILLED by 1: test_a_missing_cut_line_by_hand
+H1 a cut written by the instance that counted it counts too (<= to <): KILLED by 1: test_held_across_start
+H2 the writes up to the last start before the cut's write count, not up to the first after its instant: SURVIVED
+H8 a cut held across a start with no block from a copy meets the floor: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+H9 the floor's line is INFO whatever it found: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+H10 a take-over that shows nothing is no error of the rig (the exit): KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+H11 every recording is asked for a cut held across a start: KILLED by 6: test_a_control_missed_is_a_verdict, test_a_floor_not_met_is_the_rigs_error, test_a_right_daemon, test_a_wrong_block_is_a_verdict, test_a_wrong_block_is_a_verdict_whatever_the_log_holds_after, test_edges_must_send_both
+H12 the instance that wrote is counted by the starts before the cut line, not before the write was asked: KILLED by 1: test_a_cut_held_across_the_take_over
+A1 the old state's image is left empty (every block of the first cut that is not zeros differs): KILLED by 1: test_across_failure
+A2 the blocks that are the same are counted: KILLED by 1: test_across_failure
+A3 a block the old image does not hold differs whatever it holds (zeros too): KILLED by 1: test_across_failure

@@ -1,0 +1,29 @@
+E1 a cut line belongs to the states begun after it (the comparison turned round): KILLED by 1: test_held_cuts_keyed_by_state
+E2 every cut line is of the first state: KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+E3 the lines keep the numbers they carry (no place in the whole log): KILLED by 2: test_held_cuts_keyed_by_state, test_the_count_starts_again
+E4 every later instance begins an epoch, acknowledged or not: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+E5 local is the place in the whole log too (the number the line carries is lost): KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+N1 a new state must count from 1 again (going on is refused): NOT APPLIED (found [0] times)
+N2 a new state must go on (from 1 again is refused): NOT APPLIED (found [0] times)
+N3 a new state's numbers are not looked at: KILLED by 1: test_every_line_of_a_new_state
+N4 a new state may begin at any number and count on from it: NOT APPLIED (found [0] times)
+N5 only the first line of a new state is looked at: KILLED by 1: test_every_line_of_a_new_state
+N6 the line does not say which way a state counted: KILLED by 1: test_the_count_starts_again
+N7 the numbers read are the places in the whole log, not what the lines carry: KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+H1 a written cut is of the states begun after its write was asked for (turned round): KILLED by 1: test_held_cuts_keyed_by_state
+H2 every written cut is of the first state: KILLED by 1: test_held_cuts_keyed_by_state
+H3 every written cut is of the last state: KILLED by 1: test_held_cuts_keyed_by_state
+H4 held-blocks.tsv need not hold the cut's blocks where held.tsv puts them: KILLED by 1: test_held_cuts_keyed_by_state
+H5 lines of held-blocks.tsv after the last cut are no error: KILLED by 1: test_held_cuts_keyed_by_state
+H6 a written cut with no cut line in its state is skipped, not the rig's error: KILLED by 1: test_held_cuts_keyed_by_state
+H7 the blocks of a written cut are dropped: KILLED by 1: test_held_cuts_keyed_by_state
+H8 held_lines never keys by state (the numbers as the holder wrote them): NOT APPLIED (found [0] times)
+H9 the blocks are taken by the number alone, wherever they are in the file: KILLED by 1: test_held_cuts_keyed_by_state
+S1 the status is held to the whole log's count, whichever way the state counted: NOT APPLIED (found [0] times)
+S2 the status is held to the new state's count, whichever way the state counted: NOT APPLIED (found [0] times)
+S3 the status's count is the cuts before the new state: KILLED by 1: test_the_cuts_since_a_new_state
+I1 a start that acknowledged a failure wants the state taken up, as any later start: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_the_second_instance_begins
+I2 a start that acknowledged a failure wants the intent map begun: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_the_second_instance_begins
+I3 a start that acknowledged a failure takes either for the intent map: KILLED by 1: test_the_second_instance_begins
+I4 the acknowledged start's count is held to the cuts before it: NOT APPLIED (found [0] times)
+I5 the line does not say that the start acknowledged a failure: KILLED by 1: test_the_second_instance_begins
