@@ -497,6 +497,47 @@ async fn a_group_goes_into_the_next_commit_only() {
     assert_eq!(eng.head_group(), Some(78), "read from the head's commit");
 }
 
+/// The group of any commit of the volume, read from its object: what a
+/// caller whose engine is left behind head needs to know of head (the
+/// uploader, after a commit that failed, F1 of #122's review). A clone
+/// reads the commits it shares with its base from the base's namespace.
+#[tokio::test]
+async fn the_group_of_any_commit_is_read_from_its_object() {
+    let store = MemoryStore::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(25);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    eng.set_group(Some(9));
+    eng.write(0, &block(1)).unwrap();
+    let h1 = eng.commit(CommitKind::Flush).await.unwrap();
+    eng.write(BLOCK, &block(2)).unwrap();
+    let h2 = eng.commit(CommitKind::Flush).await.unwrap();
+
+    // Another engine moves head: the first, behind it, reads its group.
+    let mut other = Engine::open(store.clone(), refs.clone(), v, cfg())
+        .await
+        .unwrap();
+    other.set_group(Some(11));
+    other.write(2 * BLOCK, &block(3)).unwrap();
+    let h3 = other.commit(CommitKind::Flush).await.unwrap();
+    assert_eq!(eng.commit_group(&h1).await.unwrap(), Some(9));
+    assert_eq!(eng.commit_group(&h2).await.unwrap(), None);
+    assert_eq!(eng.commit_group(&h3).await.unwrap(), Some(11));
+    assert_eq!(eng.head_group(), None, "the engine's own head is unchanged");
+
+    // A commit that is not there is an error, not a group of none.
+    assert!(eng.commit_group(&[7; 32]).await.is_err());
+
+    // A clone of the volume at h1 reads h1 from the base's namespace.
+    let c = vol(26);
+    let clone = Engine::clone_volume(store.clone(), refs.clone(), c, 256 * KIB, v, h1, cfg())
+        .await
+        .unwrap();
+    assert_eq!(clone.commit_group(&h1).await.unwrap(), Some(9));
+}
+
 /// A group or ops make a commit even with nothing written since the last
 /// one: they are what it records. With neither, a commit is still none.
 #[tokio::test]

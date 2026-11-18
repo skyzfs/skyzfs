@@ -982,6 +982,8 @@ fn the_status_shows_the_uploader_as_it_is() {
         uploaded_whole: 2,
         blocks: 3,
         found_committed: 4,
+        // Not in the status until M2.5-2's version.
+        not_offered: 0,
         not_held: 5,
         named: 6,
         kept: 7,

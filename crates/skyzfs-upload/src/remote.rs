@@ -5,14 +5,16 @@
 //! [`EngineRemote`] is the engine of `skynbd-engine` opened at the
 //! volume's head, with the refs object for the row: the writes of a cut,
 //! its sealed segments PUT as it goes (M2.4a), and one commit that swaps
-//! head and the cut's row together.
+//! head and the cut's row together. A publish (M2.5) PUTs the manifests
+//! and makes one transaction of its own on the same refs.
 
 use skynbd_engine::{Engine, EngineConfig, EngineError};
-use skynbd_format::CommitKind;
-use skynbd_refs::{RefError, RefOp, RefStore};
-use skynbd_store::ObjectStore;
-use skynbd_types::VolumeId;
+use skynbd_format::{Codec, CommitKind, SnapKind, SnapshotManifest};
+use skynbd_refs::{RefError, RefOp, RefStore, TxnOutcome};
+use skynbd_store::{ObjectStore, StoreError};
+use skynbd_types::{CommitHash, VolumeId};
 
+use crate::publish::{manifest_key, snap_ref, snap_row_key, Found, Snapshot};
 use crate::row::ROW_KEY;
 
 /// Why a call to object storage failed.
@@ -64,19 +66,33 @@ impl From<RefError> for RemoteError {
     }
 }
 
+impl From<StoreError> for RemoteError {
+    fn from(e: StoreError) -> Self {
+        RemoteError::from(EngineError::from(e))
+    }
+}
+
 /// Head's row and head's commit, as read now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
     /// The row's bytes; `None` where there is no row.
     pub row: Option<Vec<u8>>,
-    /// The group of head's commit, `None` for a commit with none: what
-    /// the engine was opened at, which is head as read now where
-    /// `current`.
+    /// The group of head's commit as read now, `None` for a commit with
+    /// none. Where the engine is left behind head (not `current`), it is
+    /// read from head's commit object, not taken from the engine (F1 of
+    /// #122's review: after a commit that failed, whether head is still
+    /// the cut's).
     pub head_group: Option<u64>,
     /// Whether the engine is open at head as read now. An engine with no
     /// writes is opened again where head has moved, so only one with
     /// writes (a commit that failed) can be left behind it.
     pub current: bool,
+    /// Head's commit as read now. Where the row names a cut and head's
+    /// group is the cut's, this is the cut's commit: this uploader moves
+    /// the row only with head, in one transaction, and another writer that
+    /// moves head alone leaves a commit of another group (the driver's
+    /// module docs say what the group cannot tell apart).
+    pub head: CommitHash,
 }
 
 /// Object storage, as the uploader reaches it.
@@ -98,15 +114,31 @@ pub trait Remote {
     async fn put_sealed(&mut self) -> Result<(), RemoteError>;
 
     /// Commit what was written, with `group` in the commit, swapping head
-    /// and the cut's row to `row` in one transaction. The row's swap
-    /// expects `expected`: the row as the check read it, `None` for no
-    /// row. After an error the engine keeps its writes for the commit
-    /// made again, and the error does not say whether it landed.
+    /// and the cut's row to `row` in one transaction; the commit's hash.
+    /// The row's swap expects `expected`: the row as the check read it,
+    /// `None` for no row. After an error the engine keeps its writes for
+    /// the commit made again, and the error does not say whether it
+    /// landed.
     async fn commit(
         &mut self,
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
+    ) -> Result<CommitHash, RemoteError>;
+
+    /// `snap/<name>` and its row, `None` where there is no such ref.
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError>;
+
+    /// Publish `snapshot` on `commit`, a commit that has landed: PUT the
+    /// ZFS manifest and SkyNBD's framed manifest, then, in one
+    /// transaction, create `snap/<name>` on `commit` (expecting none) and
+    /// put the snapshot's row. [`RemoteError::Conflict`] where the ref
+    /// exists. After any error the caller looks the ref up: no error
+    /// says that the transaction did not land.
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
     ) -> Result<(), RemoteError>;
 
     /// Drop the writes not committed.
@@ -165,10 +197,12 @@ where
         match &self.engine {
             Some(engine) if at_head(engine) => {}
             Some(engine) if !engine.is_clean() => {
+                let head_group = engine.commit_group(&head.commit).await?;
                 return Ok(Observed {
                     row,
-                    head_group: engine.head_group(),
+                    head_group,
                     current: false,
+                    head: head.commit,
                 });
             }
             _ => {
@@ -188,6 +222,7 @@ where
             row,
             head_group: engine.head_group(),
             current: engine.head_commit_hash() == head.commit,
+            head: head.commit,
         })
     }
 
@@ -208,7 +243,7 @@ where
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
-    ) -> Result<(), RemoteError> {
+    ) -> Result<CommitHash, RemoteError> {
         let engine = self.engine()?;
         engine.set_group(Some(group));
         let ops = vec![RefOp::MetaCas {
@@ -216,8 +251,68 @@ where
             expected,
             value: row,
         }];
-        engine.commit_with(CommitKind::Flush, ops).await?;
-        Ok(())
+        Ok(engine.commit_with(CommitKind::Flush, ops).await?)
+    }
+
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
+        let Some(value) = self.refs.get(self.vol, &snap_ref(name)).await? else {
+            return Ok(None);
+        };
+        let row = self.refs.meta_get(self.vol, &snap_row_key(name)).await?;
+        Ok(Some(Found {
+            commit: value.commit,
+            row,
+        }))
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<(), RemoteError> {
+        let ref_name = snap_ref(snapshot.name);
+        // The manifests first, as `Engine::snapshot_create` PUTs its own
+        // before the ref: a ref never names a snapshot whose manifest is
+        // missing. A death between them leaves garbage, no ref.
+        self.store
+            .put(
+                &manifest_key(self.vol, snapshot.snap),
+                snapshot.manifest.to_vec().into(),
+            )
+            .await?;
+        let manifest = SnapshotManifest {
+            snap_id: snapshot.snap,
+            vol_id: self.vol,
+            ref_name: ref_name.clone(),
+            commit,
+            parent_snap: None,
+            kind: SnapKind::Manual,
+            created_at_ms: now_ms(),
+        };
+        let encoded = manifest
+            .encode()
+            .map_err(|e| RemoteError::Volume(format!("the snapshot's manifest: {e}")))?;
+        self.store
+            .put(
+                &skynbd_engine::keys::snapshot(self.vol, snapshot.snap),
+                encoded.into(),
+            )
+            .await?;
+        let ops = vec![
+            RefOp::CasRef {
+                name: ref_name,
+                expected: None,
+                new_commit: Some(commit),
+            },
+            RefOp::MetaPut {
+                key: snap_row_key(snapshot.name),
+                value: snapshot.row.encode(),
+            },
+        ];
+        match self.refs.transact(self.vol, ops).await? {
+            TxnOutcome::Committed => Ok(()),
+            TxnOutcome::Conflict { .. } => Err(RemoteError::Conflict),
+        }
     }
 
     fn discard(&mut self) {
@@ -229,4 +324,13 @@ where
     fn reset(&mut self) {
         self.engine = None;
     }
+}
+
+/// Now, in milliseconds since the Unix epoch, for a manifest's
+/// `created_at_ms` (0 where the clock is before the epoch).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

@@ -181,8 +181,8 @@ use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{
-    CutFigures, CutHoles, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions,
-    Opened, StartError,
+    CutFigures, CutHoles, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, IntentFigures,
+    OpenOptions, Opened, StartError,
 };
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
@@ -598,10 +598,16 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
 
 /// The intent map as the status file says it.
 fn intent_shown(store: &Target) -> IntentShown {
-    let Some(figures) = store.intent_figures() else {
-        return IntentShown::default();
-    };
-    let (state, named_at_start) = intent_at_start_shown(store.intent_at_start(), figures.regions);
+    match store.intent_figures() {
+        Some(figures) => intent_shown_of(figures, store.intent_at_start()),
+        None => IntentShown::default(),
+    }
+}
+
+/// The status's intent map from the store's figures and what its start
+/// did with the map.
+fn intent_shown_of(figures: IntentFigures, at_start: Option<&IntentAtStart>) -> IntentShown {
+    let (state, named_at_start) = intent_at_start_shown(at_start, figures.regions);
     IntentShown {
         state,
         region_bytes: figures.region_bytes,
@@ -2312,6 +2318,53 @@ mod tests {
         assert!(hold.intent_header_sync);
         let hold = hold_cuts_of(&default, false, path, boot).expect("cuts are held");
         assert!(!hold.intent_header_sync);
+    }
+
+    /// The status carries the store's figures of the header's sync as the
+    /// store gives them, apart from the write path's (G2 of #120's
+    /// review): whether it is on, and the header's syncs, not the write
+    /// path's.
+    #[test]
+    fn the_status_carries_the_stores_header_syncs_apart_from_the_write_paths() {
+        use skyzfs_local::store::Spent as Shown;
+        let spent = |count, sum_ns, max_ns| Shown {
+            count,
+            sum_ns,
+            max_ns,
+        };
+        for on in [false, true] {
+            let figures = IntentFigures {
+                regions: 9,
+                named: 4,
+                region_bytes: 1 << 20,
+                syncs: spent(5, 500, 200),
+                waits: 3,
+                header_sync: on,
+                header_syncs: if on { spent(2, 70, 40) } else { spent(0, 0, 0) },
+            };
+            let shown = intent_shown_of(figures, None);
+            assert_eq!(
+                shown.syncs,
+                Shown {
+                    count: 5,
+                    sum_ns: 500,
+                    max_ns: 200
+                },
+                "on {on}"
+            );
+            let header = shown.header.expect("the header's sync is shown");
+            assert_eq!(header.on, on);
+            let expected = if on {
+                Shown {
+                    count: 2,
+                    sum_ns: 70,
+                    max_ns: 40,
+                }
+            } else {
+                Shown::default()
+            };
+            assert_eq!(header.syncs, expected, "on {on}");
+        }
     }
 
     /// The status says how many regions the map named at the start: a

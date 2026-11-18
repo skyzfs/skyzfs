@@ -138,7 +138,7 @@ shift $(( $# >= 2 ? 2 : 1 ))
 ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
 # Only where the daemon holds cuts (CUT_HOLD=1): what the ten above
 # never make the daemon do (M2.T3).
-HELD_ONLY="bound edges takeover failed"
+HELD_ONLY="bound boundsparse edges takeover failed"
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
@@ -195,7 +195,7 @@ VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
 # The upload courses': extra options of the next serve, a function run
 # between the create and the first serve, the uploader's rest (drain), a
 # writer in the background.
-SERVE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""
+SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
@@ -463,7 +463,8 @@ begin_daemon() {
         nodeb bucket > "$RDIR/bucket.log" 2>&1 || rig_error "node B could not make the bucket: $(tail -n 2 "$RDIR/bucket.log")"
         place=(--endpoint "$S3_ENDPOINT" --bucket "$S3_BUCKET" --volume "cut-$NAME")
     fi
-    timeout 90 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" "${place[@]}" > "$RDIR/create.log" 2>&1 \
+    echo "${CREATE_ARGS[*]}" > "$RDIR/create-args.txt"
+    timeout 90 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" "${CREATE_ARGS[@]}" "${place[@]}" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
     # A course's PRE_SERVE may pause the watcher (unostore): the pause
     # holds until the course lifts it, past the watcher's start.
@@ -764,9 +765,13 @@ rec_autotrim() {
 }
 # bound (held cuts only): the holder keeps the first cut, which maps the
 # whole volume of a new state, while the pool writes 320 MiB of new
-# data. Every block first written after the cut is copied, the copies
-# pass the bound (1/256 of the volume, at least 256 MiB), and the cut is
-# abandoned: its map passes to the cut that waits.
+# data. The volume is written through at its create (--zero-fill), so
+# that it has no holes: every block first written after the cut is
+# copied, the copies pass the bound (1/256 of the volume, at least
+# 256 MiB), and the cut is abandoned: its map passes to the cut that
+# waits. On a sparse volume a daemon that keeps the image's holes
+# (M2.4e) copies no write into a hole and reads the hole as zeros:
+# boundsparse, the same writes on a volume made sparse.
 rec_bound() {
     local k
     touch "$WORK/hold.pause"
@@ -779,6 +784,7 @@ rec_bound() {
     load 2
     export_pool
 }
+rec_boundsparse() { rec_bound; }
 
 # The holder paused with no cut held: a cut taken from here on is the
 # one being uploaded, and stays held until hold_go. The pool is synced
@@ -1336,6 +1342,7 @@ rec_full() {
 record() {
     WORST=0
     case $1 in
+        bound) CREATE_ARGS=(--zero-fill) ;;
         ulease) PRE_SERVE=ulease_other ;;
         ukill) SERVE_ARGS=(--kill-at-upload swap:3) ;;
         ukillput) SERVE_ARGS=(--kill-at-upload put:5) ;;

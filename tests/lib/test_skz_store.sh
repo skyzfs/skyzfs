@@ -117,6 +117,66 @@ has "TB_SKZ_RELEASE with both: past the check" "$r" "unknown topology: no-such-t
 has "  --hold-cuts may come anywhere, and with spaces" "$(bench_release abc+hooks "--hold-cuts --queues 1")" "unknown topology: no-such-topology"
 is "  --hold-cutsx is not --hold-cuts" "$(bench_release abc+hooks "--hold-cutsx" | head -c 2)" 64
 has "    and it is refused for it" "$(bench_release abc+hooks "--hold-cutsx")" "needs --hold-cuts"
+# TB_SKZ_UPLOAD's refusals (the review of #123, F3): each before
+# anything runs, with exit 64 and the reason. The full settings with a
+# topology the script does not know get past them all.
+bench_upload() { # TOPOLOGIES then NAME=VALUE... -> "rc|log"
+    local rc=0 topo=$1; shift
+    env PATH="$T/bin:$PATH" TB_TOPOLOGIES="$topo" TB_SKYZFSD="$T/current" TB_SKYZFSD_ARGS=--hold-cuts \
+        TB_OUT="$T/bench-out" TB_WORK="$T/bench-work" TB_SKZ_UPLOAD=1 TB_S3_ENDPOINT=http://127.0.0.1:9000 \
+        TB_S3_BUCKET=b TB_S3_KEY_ID=k TB_S3_SECRET=s "$@" bash "$ROOT/tests/bench/topology-bench.sh" > "$T/bench.log" 2>&1 || rc=$?
+    echo "$rc|$(cat "$T/bench.log")"
+}
+r=$(bench_upload "zfs-skyzfsd no-such-topology")
+has "uploads with every setting: past the checks" "$r" "unknown topology: no-such-topology"
+r=$(bench_upload zfs-slog)
+is "uploads in a row with no daemon: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-slog"
+r=$(bench_upload "zfs-slog zfs-skyzfsd")
+is "uploads in a row with the daemon and another: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-slog zfs-skyzfsd"
+for v in TB_S3_ENDPOINT TB_S3_BUCKET TB_S3_KEY_ID TB_S3_SECRET; do
+    r=$(bench_upload zfs-skyzfsd "$v=")
+    is "uploads without $v: 64" "${r%%|*}" 64
+    has "  and says which" "$r" "TB_SKZ_UPLOAD=1 needs $v"
+done
+r=$(bench_upload zfs-skyzfsd TB_SKZ_RELEASE=1 TB_SKYZFSD_REF=abc+hooks)
+is "uploads with the releaser: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD=1 and TB_SKZ_RELEASE"
+r=$(bench_upload zfs-skyzfsd TB_SKYZFSD_COPY_REPEAT=2)
+is "uploads with copies repeated: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD=1 and TB_SKYZFSD_COPY_REPEAT"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD=yes)
+is "TB_SKZ_UPLOAD=yes: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD is 1 or unset, not: yes"
+r=$(bench_upload zfs-slog TB_SKZ_UPLOAD=0)
+is "TB_SKZ_UPLOAD=0 is not an upload, and is refused as not 1" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD is 1 or unset, not: 0"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_WAIT_S=abc)
+is "TB_SKZ_UPLOAD_WAIT_S=abc: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: abc"
+# The check after the loop, alone: the runs above end in the loop before
+# it for a row the loop lets through (review of #123, R9).
+eval "$(sed -n '/^skz_upload_topologies() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")"
+up_topos() { local rc=0; skz_upload_topologies "$@" 2> /dev/null || rc=$?; echo "$rc"; }
+is "uploads with the daemon alone: let through" "$(up_topos 1 zfs-skyzfsd)" 0
+is "  with blanks around it too" "$(up_topos 1 "  zfs-skyzfsd ")" 0
+is "  the daemon twice: refused" "$(up_topos 1 "zfs-skyzfsd zfs-skyzfsd")" 1
+is "  beside the model: refused" "$(up_topos 1 "zfs-skyzfsd zfs-slog")" 1
+is "  no topology: refused" "$(up_topos 1 "")" 1
+is "no uploads, any topologies: let through" "$(up_topos "" "zfs-slog zfs-skyzfsd")" 0
+# shellcheck disable=SC2016  # the script's own text
+check_call=$(grep -c '^skz_upload_topologies "\$SKZ_UPLOAD" "\$TOPOLOGIES" || exit 64$' "$ROOT/tests/bench/topology-bench.sh")
+is "  and the script calls it, with exit 64" "$check_call" 1
+# minio.sh deletes its directory as root: only one named minio-data
+# (G8), refused before docker or sudo is called.
+mkdir -p "$T/keep"
+rc=0; out=$(bash "$ROOT/tests/bench/minio.sh" down "$T/keep" 2>&1) || rc=$?
+is "minio.sh down on a directory not named minio-data: 64" "$rc" 64
+has "  and says why" "$out" "deletes only a directory named minio-data, not: $T/keep"
+is "  and the directory is still there" "$(test -d "$T/keep" && echo there)" there
+rc=0; bash "$ROOT/tests/bench/minio.sh" down "$T/keep/" > /dev/null 2>&1 || rc=$?
+is "  a trailing slash is not a way round it" "$rc" 64
 # The releaser's line in each snapshot (the review of #108): the count
 # of its releases, whether it runs, its last line.
 eval "$(sed -n '/^skz_release_line() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")"

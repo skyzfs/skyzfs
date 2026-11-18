@@ -27,6 +27,9 @@ pub struct Uploadable {
     pub group: u64,
     /// Whether the cut holds the whole volume, so that it needs no base.
     pub whole: bool,
+    /// Whether it opens as itself (design §5.2): only such a cut is
+    /// published (M2.5).
+    pub itself: bool,
     /// The cut the intent map names as committed: what the held cuts
     /// were made against, the uploader's assumed base. `None` where the
     /// map names none.
@@ -173,6 +176,7 @@ impl<D: Dir> Store for InPlace<D> {
             number: first.number,
             group: first.state.txg,
             whole: self.cut_is_whole(first.number),
+            itself: first.itself,
             base: self.committed_cut(),
         })
     }
