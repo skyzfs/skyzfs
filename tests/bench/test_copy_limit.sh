@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -34,6 +34,7 @@ setup() {
     head -c 3145728 /dev/zero > "$WORK/zfs-origin.img"
     SKZ_DIR=$WORK/vol; SKZ_RUN=$WORK/run; SKZ_PID=$$; SKZ_CGROUP=""; SKZ_DEV=/dev/null; SKZ_UP=""
     SKYZFSD_ARGS="--io-threads,8"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
+    SKZ_UPLOAD=""; SKZ_VOLUME_NAME=""
     SKZ_SYSRQ=$tt/sysrq; : > "$SKZ_SYSRQ"
     : > "$tt/calls"; : > "$tt/log"
     rm -f "$tt/hang-on" "$tt/dd-count" "$tt/sync-hang-on" "$tt/sync-count"
@@ -139,6 +140,17 @@ setup
 skz_create 4096 2> /dev/null
 check "with none, nothing is added" 'grep -q -- "--size 4096$" "$tt/create-args"'
 
+# 5b. TB_SKZ_UPLOAD (M2.4c): the volume is made in object storage too,
+# under a new name each create, after the create's own arguments.
+setup; SKZ_UPLOAD=1; SKYZFSD_CREATE_ARGS="--zero-fill"
+TB_S3_ENDPOINT=http://127.0.0.1:9000; TB_S3_BUCKET=tb-9-1
+skz_create 4096 2> /dev/null; first=$SKZ_VOLUME_NAME
+check "an upload's create names the place, after the create's arguments" \
+    'grep -qE -- "--size 4096 --zero-fill --endpoint http://127.0.0.1:9000 --bucket tb-9-1 --volume tb-[0-9]+$" "$tt/create-args"'
+check "the volume's name is the one the create was given" 'grep -q -- "--volume $first$" "$tt/create-args"'
+rm -rf -- "$SKZ_DIR"; skz_create 4096 2> /dev/null
+check "each create a new name" '[ -n "$first" ] && [ "$SKZ_VOLUME_NAME" != "$first" ]'
+
 # 6. The label of a row after failed rows (TB_EARLIER_FAILED, set by the
 # workflow), taken out of the script like the functions.
 sed -n '/^LABEL=\${TB_LABEL/,/^esac/p' "$script" > "$tt/label.sh"
@@ -178,5 +190,88 @@ settle "writes 7" "held 0" "checkpoint_step under way" "unstored 0" "log_live 0"
 check "a step under way: never at rest" '[ "$rc" = 1 ]'
 settle ""; rc=$?
 check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "did not come to rest" "$tt/settle-said"'
+
+# 8. TB_SKZ_UPLOAD: the wait for the first upload before the windows
+# (skz_first_upload), on a status that changes with the clock. The clock
+# moves 10 s a call; the status reads uploaded 0 until UP_AT s.
+# DEAD_UNTIL: the status is not read before that time (a daemon gone).
+# BEGAN: the time the workload began (run_workload's file), or none.
+first_upload() { # up_at wait_s [watch] -> rc; the row's line in $OUT/t.skzinfo
+    echo "$1" > "$tt/up_at"; echo "${DEAD_UNTIL:-0}" > "$tt/dead"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
+    rm -f "$tt/began"; [ -z "${BEGAN:-}" ] || echo "$BEGAN" > "$tt/began"
+    # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_first_upload
+    (
+        TOPO=t; SKZ_UPLOAD_WAIT_S=$2; SKZ_SEED_BEGAN=$tt/began
+        skz_status() {
+            local up=0
+            [ "$(cat "$tt/clock")" -ge "$(cat "$tt/dead")" ] || return 1
+            [ "$(cat "$tt/clock")" -lt "$(cat "$tt/up_at")" ] || up=1
+            printf 'uploaded %s\nupload_state reading\nupload_cuts_lost 4\nupload_cut 9\ncuts 12\n' "$up"
+        }
+        sleep() { :; }
+        date() { local n; n=$(( $(cat "$tt/clock") + 10 )); echo "$n" > "$tt/clock"; echo "$n"; }
+        skz_first_upload "${3:-}"
+    ) 2> /dev/null
+}
+setup
+first_upload 100 900; rc=$?
+check "the first upload lands: the row says when" \
+    '[ "$rc" = 0 ] && grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
+first_upload 100000 300; rc=$?
+check "no upload in the limit: the row says so, and the run goes on" \
+    '[ "$rc" = 0 ] && grep -qx "first_upload NONE in 300 s (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
+# The wait comes after the pool's import and a sync: a cut is taken at
+# a flush, and none comes while the image is copied on.
+check "the wait follows the import and a sync, on the daemon's upload rows only" \
+    'awk "/^    zpool import -N/ { i = NR } /^        lim 120 zpool sync/ && !y { y = NR } /^        skz_first_upload\$/ { w = NR }
+          /if \\[ \"\\\$1\" = skyzfsd \\] && \\[ \"\\\$SKZ_UPLOAD\" = 1 \\]/ && !c { c = NR }
+          END { exit !(i && c > i && y == c + 1 && w == y + 1) }" "$script"'
+check "the wait is called nowhere else" '[ "$(grep -c "^ *skz_first_upload$" "$script")" = 1 ]'
+# With no wait the watcher runs beside the row (run 44372469282: the
+# seed committed during the setup, while the line said "under the
+# workload"). The clock reads 10 at the start, and the status is read
+# at 10, 20, ...: up at 100, seen at the read at 100, written at 110.
+first_upload 100 3600 watch; rc=$?
+check "the seed watched: it says first that nothing has committed" \
+    '[ "$rc" = 0 ] && [ "$(head -n 1 "$OUT/t.skzinfo")" = "first_upload not committed by the window'"'"'s end (watched from the import)" ]'
+check "  and with no workload begun, that it committed before the workload" \
+    '[ "$(tail -n 1 "$OUT/t.skzinfo")" = "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" ]'
+BEGAN=50 first_upload 100 3600 watch; rc=$?
+check "  a workload begun before the commit: under it, and how long after" \
+    '[ "$(tail -n 1 "$OUT/t.skzinfo")" = "first_upload after 100 s from the import, under the workload, 60 s after its warm-up began (uploaded 1, cuts lost 4)" ]'
+BEGAN=110 first_upload 100 3600 watch; rc=$?
+check "  begun in the very second of the commit: under it" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 0 s after its warm-up began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+BEGAN=500 first_upload 100 3600 watch; rc=$?
+check "  a workload that began after the commit: before it" \
+    'grep -qx "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+BEGAN=x first_upload 100 3600 watch; rc=$?
+check "  a time that is not a number: not under the workload" \
+    'grep -q "before the workload began" "$OUT/t.skzinfo"'
+BEGAN=50 first_upload 100000 3600 watch; rc=$?
+check "a seed that never lands says so" \
+    'grep -qx "first_upload NONE in 3600 s from the import (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
+DEAD_UNTIL=100000 first_upload 10 900; rc=$?
+check "a status not read three times running ends the wait, and says so" \
+    '[ "$rc" = 0 ] && grep -qE "^first_upload NONE after [0-9]+ s: the status could not be read three times running$" "$OUT/t.skzinfo"'
+DEAD_UNTIL=100000 first_upload 10 3600 watch; rc=$?
+check "  the watcher too" \
+    'grep -qE "^first_upload NONE after [0-9]+ s from the import: the status could not be read three times running$" "$OUT/t.skzinfo"'
+# The clock moves 10 s a round, from 10: rounds at 10 and 20 unread, the
+# third read.
+DEAD_UNTIL=25 first_upload 10 900; rc=$?
+check "  a status unread two rounds running: the wait goes on to the upload" \
+    'grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
+# The row keeps the last value of a key: the watcher's first line until
+# the commit's.
+check "a row reads the last first_upload of its .skzinfo" \
+    'grep -q "if key: k\[.info.\]\[key\] = value" "$script"'
+check "with no wait, the watcher runs in the background and the teardown stops it" \
+    'grep -q "( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload watch ) &" "$script" && grep -q "kill \"\$SKZ_SEED_WATCH\"" "$script"'
+check "  a watcher still running at the teardown: the record says NONE by the end of the rows" \
+    'grep -q "first_upload NONE by the end of the rows" "$script"'
+rw=$(sed -n '/^run_workload() {/,/^}$/p' "$script")
+check "  run_workload marks the start of the workload for it, before the first warm-up" \
+    '[ "$(printf "%s\n" "$rw" | grep -m1 -F -e "date +%s > \"\$SKZ_SEED_BEGAN\"" -e "log \"\$tag: warm-up" | grep -c SKZ_SEED_BEGAN)" = 1 ]'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

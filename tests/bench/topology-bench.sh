@@ -245,6 +245,35 @@
 #                           refuses it). With any, the create may take up
 #                           to 1800 s instead of 120, and what it said on
 #                           stderr is kept in the row's .skzinfo
+#   TB_SKZ_UPLOAD=1         zfs-skyzfsd only (M2.4c): the volume is created
+#                           in object storage too (create --endpoint
+#                           TB_S3_ENDPOINT --bucket TB_S3_BUCKET --volume
+#                           tb-<ns>, a new name each create), so the
+#                           daemon holds its cuts and uploads each one
+#                           there, as a deployed daemon does. The keys are
+#                           TB_S3_KEY_ID and TB_S3_SECRET, given to the
+#                           daemon as AWS_ACCESS_KEY_ID and
+#                           AWS_SECRET_ACCESS_KEY. The workflow sets the
+#                           four for MinIO on the runner when the sequence
+#                           names TB_SKZ_UPLOAD=1, and makes the bucket.
+#                           The first cut goes up whole (the seed).
+#                           The row waits for its commit before its
+#                           first window, with the pool imported, synced
+#                           and idle: TB_SKZ_UPLOAD_WAIT_S, default 900.
+#                           The wait is per row and the job's limit is
+#                           120 minutes: name a shorter one for a
+#                           sequence of many upload rows. 0 does not
+#                           wait: the seed runs under the workload, as
+#                           in production, and a watcher beside it
+#                           records when it commits (up to 3600 s). The
+#                           time it took, or that it did not land, is in
+#                           the row's .skzinfo (first_upload) and the
+#                           uploader's table, which says what the
+#                           uploader did in the window. Refused with
+#                           TB_SKZ_RELEASE (a daemon that uploads lets
+#                           its cuts go itself), with
+#                           TB_SKYZFSD_COPY_REPEAT, and with any
+#                           topology but zfs-skyzfsd in the row
 #   TB_SKZ_RELEASE=N        zfs-skyzfsd with --hold-cuts in TB_SKYZFSD_ARGS
 #                           and a build with the test hooks
 #                           (TB_SKYZFSD_REF=<ref>+hooks): a releaser
@@ -652,6 +681,81 @@ if drows:
                                 for c, (n, ms) in calls if n)
                 print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {s_['tool']}, {s_['seconds']:.0f} | "
                       f"{name} ({t['tids']}) | {txt} |")
+    # What the uploader did in the window (TB_SKZ_UPLOAD): the status's
+    # counters over the window, and its state at the window's end.
+    ups = [r for r in runs if r.get('skyzfsd', {}).get('upload')]
+    # A window whose daemon died or changed (the pid not the same at its
+    # two reads) shows no one daemon's figures: said in the row's name.
+    def one(r):
+        return label(r) + (' (TWO DAEMONS in the window)' if r['skyzfsd'].get('pid_same') is False else '')
+    if ups:
+        print('\nWhat the uploader did in the window (TB_SKZ_UPLOAD), from the daemon\'s status at its two ends: '
+              'cuts taken, uploaded (of them whole), blocks uploaded, replaced before their upload, abandoned (every '
+              'cut the store abandoned: at the bound, at a copy or read that failed, or at a mismatch; in brackets '
+              'those the uploader abandoned at a mismatch), mismatches and errors over the window; the uploads lost (a cut that went before its '
+              'commit, its writes dropped) over the window; the blocks written as zeros with nothing read (status '
+              'version 17, M2.4e: not in blocks; n/a for an older daemon) over the window; at its end the image\'s '
+              'holes (held, dropped or none, with their 64 KiB chunks); the cuts held at the start and at the end; the cut being uploaded '
+              'and the newest, the uploader\'s state and the lease; and the first upload: with TB_SKZ_UPLOAD_WAIT_S above 0, '
+              'how long it took with the pool idle before the windows, or NONE; with 0, when it committed counted from the '
+              'import, to 5 s, and whether the workload had begun, or that it had not committed by the window\'s end. Cuts taken = '
+              'uploaded + found committed − committed and gone − committed and kept + replaced + abandoned + the '
+              'change in held (status.rs\'s balance); found committed, gone and kept have no column here (0 in every '
+              'window so far): where they are not, the balance is read from the status files.\n')
+        print('| workload | daemon row | tps | cuts | uploaded (whole) | blocks | replaced | abandoned (at a mismatch) | '
+              'mismatches | errors | lost | zero blocks | holes | held start → end | uploading / newest | state | lease | '
+              'first upload |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+        for r in ups:
+            sb, sa = r['skyzfsd']['before'], r['skyzfsd']['after']
+            def d(key):
+                a, b = sa.get(key, ''), sb.get(key, '')
+                return str(int(a) - int(b)) if a.isdigit() and b.isdigit() else 'n/a'
+            tps = f"{r['tps']:.0f}" if r.get('tps') is not None else 'n/a'
+            print(f"| {r['workload']} | {one(r)} | {tps} | {d('cuts')} | {d('uploaded')} ({d('uploaded_whole')}) | "
+                  f"{d('upload_blocks')} | {d('cuts_replaced')} | {d('cuts_abandoned')} ({d('upload_abandoned_at_mismatch')}) | "
+                  f"{d('upload_mismatches')} | {d('upload_errors')} | {d('upload_cuts_lost')} | {d('upload_zero_blocks')} | "
+                  f"{sa.get('cut_holes', 'n/a')} ({sa.get('cut_hole_chunks', 'n/a')}) | "
+                  f"{sb.get('cuts_held', 'n/a')} → {sa.get('cuts_held', 'n/a')} | "
+                  f"{sa.get('upload_cut', 'n/a')} / {sa.get('cuts', 'n/a')} | {sa.get('upload_state', 'n/a')} | "
+                  f"{sa.get('lease', 'n/a')} | {r['skyzfsd'].get('info', {}).get('first_upload', 'not waited for')} |")
+    # The intent map in the window (M2.3; the header's own syncs since
+    # status version 16, M2.4d's --intent-header-sync): the map's syncs
+    # on the write path and the header's, each over the window with its
+    # mean, the longest since the daemon started, and the writes that
+    # waited for a sync. A row whose daemon keeps no map is left out: a
+    # daemon of status version 14 or later prints the map's keys with
+    # intent_state off and zeros when it holds no cuts.
+    ims = [r for r in runs if r.get('skyzfsd', {}).get('after', {}).get('intent_syncs', '').isdigit()
+           and r['skyzfsd']['after'].get('intent_state', 'off') != 'off']
+    if ims:
+        print('\nThe intent map in the window (M2.3, M2.4d), from the daemon\'s status at its two ends: the map\'s '
+              'syncs on the write path over the window and ms each; the header\'s own syncs (status version 16, '
+              '`--intent-header-sync`; n/a for an older daemon) over the window and ms each; the longest of each since '
+              'the daemon started; the writes that waited for a sync of the map over the window; the regions named '
+              'in the map at the window\'s end, of all. A map with every region named needs no sync: until an upload '
+              'commits, nothing is cleared and the window shows no cost of the map.\n')
+        print('| workload | daemon row | tps | header sync | map syncs | ms each | longest ms | header syncs | ms each | '
+              'longest ms | waits | named at end |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|')
+        for r in ims:
+            sb, sa = r['skyzfsd']['before'], r['skyzfsd']['after']
+            def dn(key):
+                a, b = sa.get(key, ''), sb.get(key, '')
+                return int(a) - int(b) if a.isdigit() and b.isdigit() else None
+            def each(n, ns):
+                return f'{dn(ns) / dn(n) / 1e6:.2f}' if dn(n) and dn(ns) is not None else 'n/a'
+            def ms(key):
+                v = sa.get(key, '')
+                return f'{int(v) / 1e6:.2f}' if v.isdigit() else 'n/a'
+            def s(v):
+                return 'n/a' if v is None else str(v)
+            tps = f"{r['tps']:.0f}" if r.get('tps') is not None else 'n/a'
+            print(f"| {r['workload']} | {one(r)} | {tps} | {sa.get('intent_header_sync', 'n/a')} | "
+                  f"{s(dn('intent_syncs'))} | {each('intent_syncs', 'intent_sync_ns')} | {ms('intent_sync_max_ns')} | "
+                  f"{s(dn('intent_header_syncs'))} | {each('intent_header_syncs', 'intent_header_sync_ns')} | "
+                  f"{ms('intent_header_sync_max_ns')} | {s(dn('intent_waits'))} | "
+                  f"{sa.get('intent_named', 'n/a')} / {sa.get('intent_regions', 'n/a')} |")
     # Where the daemon's CPU went (TB_PERF_RECORD): per thread name, the
     # kernel's share of its samples, that share by what the kernel was
     # doing, and its ten commonest kernel symbols.
@@ -930,6 +1034,11 @@ SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 SKYZFSD_CREATE_ARGS=${TB_SKYZFSD_CREATE_ARGS:-}
 SKZ_COPY_LIMIT_S=${TB_SKYZFSD_COPY_LIMIT_S:-600}
 SKZ_RELEASE=${TB_SKZ_RELEASE:-}
+SKZ_UPLOAD=${TB_SKZ_UPLOAD:-}
+[ -z "$SKZ_UPLOAD" ] || [ "$SKZ_UPLOAD" = 1 ] || { echo "TB_SKZ_UPLOAD is 1 or unset, not: $SKZ_UPLOAD" >&2; exit 64; }
+SKZ_UPLOAD_WAIT_S=${TB_SKZ_UPLOAD_WAIT_S:-900}
+[[ $SKZ_UPLOAD_WAIT_S =~ ^[0-9]+$ ]] || { echo "TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: $SKZ_UPLOAD_WAIT_S" >&2; exit 64; }
+SKZ_VOLUME_NAME=""
 [ -z "$SKZ_RELEASE" ] || [[ $SKZ_RELEASE =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKZ_RELEASE must be a count of cuts from 1: $SKZ_RELEASE" >&2; exit 64; }
 [[ $SKZ_COPY_LIMIT_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_LIMIT_S must be a number of seconds: $SKZ_COPY_LIMIT_S" >&2; exit 64; }
 SKZ_COPY_REPEAT=${TB_SKYZFSD_COPY_REPEAT:-}
@@ -997,10 +1106,33 @@ for t in $TOPOLOGIES; do
                 [ -n "$_hold" ] || { echo "TB_SKZ_RELEASE needs --hold-cuts in TB_SKYZFSD_ARGS ('$SKYZFSD_ARGS'): without it the daemon holds no cut" >&2; exit 64; }
                 [[ ${TB_SKYZFSD_REF:-} == *+hooks ]] || { echo "TB_SKZ_RELEASE needs a build with the test hooks, TB_SKYZFSD_REF=<ref>+hooks, not '${TB_SKYZFSD_REF:-}': a release build has no commands about held cuts" >&2; exit 64; }
             fi
+            # Uploads: the place and the keys, and no releaser (a daemon
+            # that uploads refuses `release`, and lets its cuts go itself).
+            if [ "$SKZ_UPLOAD" = 1 ]; then
+                for _v in TB_S3_ENDPOINT TB_S3_BUCKET TB_S3_KEY_ID TB_S3_SECRET; do
+                    [ -n "${!_v:-}" ] || { echo "TB_SKZ_UPLOAD=1 needs $_v (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)" >&2; exit 64; }
+                done
+                [ -z "$SKZ_RELEASE" ] || { echo "TB_SKZ_UPLOAD=1 and TB_SKZ_RELEASE: a daemon that uploads lets its cuts go itself" >&2; exit 64; }
+                # Each repetition would make a volume in object storage that
+                # uploads during the next copies, which the copy's table
+                # does not say.
+                [ -z "$SKZ_COPY_REPEAT" ] || { echo "TB_SKZ_UPLOAD=1 and TB_SKYZFSD_COPY_REPEAT: each copy would upload during the next" >&2; exit 64; }
+                export AWS_ACCESS_KEY_ID="$TB_S3_KEY_ID" AWS_SECRET_ACCESS_KEY="$TB_S3_SECRET"
+            fi
             ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
+# A row that names uploads and has a topology other than the daemon
+# would measure it without them under a label that says otherwise.
+skz_upload_topologies() { # upload topologies -> 0, or 1 and why on stderr
+    local topos
+    read -ra topos <<< "$2"
+    if [ "$1" = 1 ] && [ "${topos[*]}" != zfs-skyzfsd ]; then
+        echo "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: $2" >&2; return 1
+    fi
+}
+skz_upload_topologies "$SKZ_UPLOAD" "$TOPOLOGIES" || exit 64
 if [ -n "$ANY_ZFS" ] && [ -z "$ZFS_ARC_MB" ] && [ -n "$MEM_LIMIT" ] && [ "$MEM_LIMIT" != max ]; then
     # The ARC is kernel memory outside postgres's cgroup. Give it what
     # the page cache can have in the other topologies: the cap minus
@@ -1154,7 +1286,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""; PR_PID=""
-SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_SEED_WATCH=""; SKZ_SEED_T0=0; SKZ_SEED_INFO=/dev/null; SKZ_SEED_BEGAN=$WORK/skz-workload-began; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -1178,6 +1310,14 @@ teardown_topology() {
     fi
     if [ -n "$SKZ_SAMPLER" ]; then
         kill "$SKZ_SAMPLER" 2>/dev/null; SKZ_SAMPLER=""
+    fi
+    if [ -n "$SKZ_SEED_WATCH" ]; then
+        # A seed that has not committed by the end of the rows: said in
+        # the record, since the watcher's own NONE needs 3600 s.
+        if kill -0 "$SKZ_SEED_WATCH" 2>/dev/null; then
+            echo "first_upload NONE by the end of the rows ($(( $(date +%s) - SKZ_SEED_T0 )) s after the import)" >> "$SKZ_SEED_INFO"
+        fi
+        kill "$SKZ_SEED_WATCH" 2>/dev/null; SKZ_SEED_WATCH=""
     fi
     # A trace or recording still running after an early exit: stopped,
     # so that nothing writes into the output once the job is done.
@@ -1734,6 +1874,62 @@ skz_settle() {
     log "skyzfsd: $said"
     echo "settle $said" >> "$OUT/$TOPO.skzinfo"
 }
+# TB_SKZ_UPLOAD: wait, the pool idle, for the uploader's first commit
+# (status `uploaded` at 1 or more), at most SKZ_UPLOAD_WAIT_S. Under the
+# workload a whole cut can be abandoned at the cut bound before it is
+# committed, and the next whole cut with it, so that nothing is ever
+# uploaded and every region stays named in the intent map: a window
+# then measures neither an upload nor the map. What happened is the
+# row's `first_upload` line, and a wait that ran out is no failure.
+#
+# "watch" (TB_SKZ_UPLOAD_WAIT_S=0) runs beside the row and waits for
+# nothing: it says first that the seed has not committed, which a row
+# whose window ends before the commit keeps, and at the commit whether
+# the workload had begun (SKZ_SEED_BEGAN, written by run_workload at the
+# row's first warm-up). Run 44372469282: every seed committed during the
+# row's setup, before pgbench, where the line said "under the workload".
+# The status is read once a round, every 5 s, so a time is to 5 s.
+skz_first_upload() { # [watch]
+    local t0 now all up st lost how="" unread=0 began
+    kv() { awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }' <<< "$all"; }
+    t0=$(date +%s)
+    if [ "${1:-}" = watch ]; then
+        how=" from the import"
+        echo "first_upload not committed by the window's end (watched from the import)" >> "$OUT/$TOPO.skzinfo"
+    fi
+    while :; do
+        all=$(skz_status)
+        up=$(kv uploaded); st=$(kv upload_state); lost=$(kv upload_cuts_lost)
+        now=$(date +%s)
+        # A status that cannot be read three times running (a daemon
+        # that died) ends the wait: nothing will land.
+        if [ -z "$up" ]; then unread=$((unread + 1)); else unread=0; fi
+        if [ "$unread" -ge 3 ]; then
+            echo "first_upload NONE after $(( now - t0 )) s$how: the status could not be read three times running" >> "$OUT/$TOPO.skzinfo"
+            log "skyzfsd: the status could not be read three times running; no first upload"
+            return 0
+        fi
+        if [[ $up =~ ^[0-9]+$ ]] && [ "$up" -ge 1 ]; then
+            if [ "${1:-}" = watch ]; then
+                began=$(cat "$SKZ_SEED_BEGAN" 2> /dev/null || true)
+                if [[ $began =~ ^[0-9]+$ ]] && [ "$now" -ge "$began" ]; then
+                    how=" from the import, under the workload, $(( now - began )) s after its warm-up began"
+                else
+                    how=" from the import, before the workload began"
+                fi
+            fi
+            echo "first_upload after $(( now - t0 )) s$how (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+            log "skyzfsd: the first upload committed after $(( now - t0 )) s$how (cuts lost ${lost:-n/a})"
+            return 0
+        fi
+        if [ $(( now - t0 )) -ge "$SKZ_UPLOAD_WAIT_S" ]; then
+            echo "first_upload NONE in $SKZ_UPLOAD_WAIT_S s$how (state ${st:-n/a}, uploading cut $(kv upload_cut) of $(kv cuts), cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+            log "skyzfsd: no upload committed in $SKZ_UPLOAD_WAIT_S s (state ${st:-n/a}, cuts lost ${lost:-n/a}); the windows begin all the same"
+            return 0
+        fi
+        sleep 5
+    done
+}
 # The evidence of a step on the daemon's device that did not end: into
 # DIR, every read under a limit, since a look at a hung device can hang
 # too. What the threads in uninterruptible sleep wait for (their kernel
@@ -1803,6 +1999,10 @@ skz_create() { # size
     if [ -n "$SKYZFSD_CREATE_ARGS" ]; then
         read -r -a args <<< "${SKYZFSD_CREATE_ARGS//,/ }"
         secs=1800
+    fi
+    if [ "$SKZ_UPLOAD" = 1 ]; then
+        SKZ_VOLUME_NAME="tb-$(date +%s%N)"
+        args+=(--endpoint "$TB_S3_ENDPOINT" --bucket "$TB_S3_BUCKET" --volume "$SKZ_VOLUME_NAME")
     fi
     lim "$secs" "$SKYZFSD" create --dir "$SKZ_DIR" --size "$1" "${args[@]}" > "$WORK/skyzfsd-create.out" 2> "$WORK/skyzfsd-create.err" || rc=$?
     cat "$WORK/skyzfsd-create.out" "$WORK/skyzfsd-create.err" >&2
@@ -1953,6 +2153,11 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKZ_SERVE_ARGS:-}" >> "$OUT/$TOPO.skzinfo"
             echo "release_every ${SKZ_RELEASE:-0}" >> "$OUT/$TOPO.skzinfo"
+            if [ "$SKZ_UPLOAD" = 1 ]; then
+                echo "upload $TB_S3_ENDPOINT $TB_S3_BUCKET $SKZ_VOLUME_NAME" >> "$OUT/$TOPO.skzinfo"
+            else
+                echo "upload none" >> "$OUT/$TOPO.skzinfo"
+            fi
             echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
             # Every status of this row is read by skz_status, with this
             # row's own binary: a newer `status` prints an older status
@@ -1972,6 +2177,23 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
     ZFS_UP=1
     log "zpool import from $dev took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
     zfs_set_props
+    # The daemon takes a cut at a flush, and none came while the image
+    # was copied on (run 44335231766: no cut in 900 s): the pool is
+    # imported and synced first, so that its first cut is there to go
+    # up while nothing else writes.
+    if [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ] && [ "$SKZ_UPLOAD_WAIT_S" -gt 0 ]; then
+        lim 120 zpool sync "$ZFS_POOL"
+        skz_first_upload
+    elif [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ]; then
+        # The seed beside the row: watched, not waited for. Whether it
+        # commits before the workload or under it depends on how long it
+        # takes against the row's setup.
+        lim 120 zpool sync "$ZFS_POOL"
+        rm -f "$SKZ_SEED_BEGAN"
+        SKZ_SEED_T0=$(date +%s); SKZ_SEED_INFO="$OUT/$TOPO.skzinfo"
+        ( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload watch ) &
+        SKZ_SEED_WATCH=$!
+    fi
     FS_DEV=$dev
 }
 zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg key n"
@@ -2470,6 +2692,8 @@ run_workload() { # topology workload [snapshot mode]
         update) builtin=simple-update ;;
         *) echo "unknown workload $wl (tpcb|select|update)" >&2; return 1 ;;
     esac
+    # The seed's watcher reads when the workload began (its first warm-up).
+    if [ -n "$SKZ_SEED_WATCH" ] && [ ! -e "$SKZ_SEED_BEGAN" ]; then date +%s > "$SKZ_SEED_BEGAN"; fi
     log "$tag: warm-up ${WARMUP}s"
     as_pg "'$PGBENCH' -h '$SOCK' -T $WARMUP -c $CLIENTS -j $JOBS -b $builtin bench" >/dev/null 2>&1
     sync; sleep 2
@@ -2668,6 +2892,11 @@ if skz[base + '.after']:
             # its label would say. bracket.py gives it no verdict.
             k['release']['ended'] = k['release']['last'] or 'no line from the releaser'
             k['serve_args'] += f" (cuts released every {every}: THE RELEASER ENDED, {k['release']['ended']})"
+    # The uploads (TB_SKZ_UPLOAD): where the volume is in object storage.
+    up = k['info'].get('upload', 'none').split()
+    if up and up[0] != 'none':
+        k['upload'] = {'endpoint': up[0], 'bucket': up[1] if len(up) > 1 else '', 'volume': up[2] if len(up) > 2 else ''}
+        k['serve_args'] += f" (uploads to {k['upload']['volume']})"
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k

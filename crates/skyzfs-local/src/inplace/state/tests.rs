@@ -2820,6 +2820,166 @@ fn the_slices_of_a_large_hole_read_the_hole_set_once_over() {
     assert!(loads <= 4 * once, "{loads} loads for {once} words");
 }
 
+/// The slices of the first cut over a sparse volume, a chunk of data in
+/// every MiB and nothing written before the cut, read the open map's
+/// summary and the hole set once over, in slices of 64 blocks as the
+/// uploader takes them (F4 of the review of #125, Codex's P2 at
+/// `af7b524`). Before, each slice looked for the next block of the map
+/// from its first run to the volume's end: over 64 GiB, 37.6 million
+/// loads, and about two minutes at a TiB, on the store's queue thread.
+/// Counts of loads rather than times, so that the bounds hold on any
+/// machine: one in proportion to a pass, and one on how the cost grows
+/// with the volume.
+#[test]
+fn the_slices_of_a_sparse_volume_read_the_map_and_hole_set_once_over() {
+    // 64 GiB: a summary of 4096 words, a hole set of 16384.
+    const LARGE: u64 = 1 << 24;
+    let (loads, once) = sparse_slicing(LARGE);
+    assert!(loads <= 8 * once, "{loads} loads for {once}");
+    // A quarter of the volume costs about a quarter: the code at
+    // `af7b524` made 3.1 million loads at 16 GiB, a twelfth.
+    let (quarter, _) = sparse_slicing(LARGE / 4);
+    assert!(
+        loads <= 5 * quarter,
+        "{loads} loads at 64 GiB, {quarter} at 16 GiB"
+    );
+}
+
+/// [`Maps::first_in`] gives the first block of the maps in a range, or
+/// none, over ranges that span several words of a map's summary. The
+/// state calls it on one stretch of [`RUN_LOOK`] blocks, which a single
+/// word of the summary covers, so no other test reaches past the first
+/// word (F4g, a plant for F4 of the review of #125).
+#[test]
+fn the_first_block_in_a_range_is_found_over_several_words_of_the_summary() {
+    const BLOCKS: u64 = 5 * RUN_LOOK + 100;
+    let mut region = MemRegion::new(Maps::words(BLOCKS));
+    let maps = Maps::new(0, BLOCKS, Mutants(0));
+    let in_first = [5, RUN_LOOK + 70, 3 * RUN_LOOK + 1];
+    let in_second = [2 * RUN_LOOK + 9, BLOCKS - 1];
+    for block in in_first {
+        maps.insert(&mut region, 0, block);
+    }
+    for block in in_second {
+        maps.insert(&mut region, 1, block);
+    }
+    let first: BTreeSet<u64> = in_first.into_iter().collect();
+    let both: BTreeSet<u64> = in_first.into_iter().chain(in_second).collect();
+    let froms = [
+        0,
+        5,
+        6,
+        RUN_LOOK,
+        RUN_LOOK + 71,
+        2 * RUN_LOOK + 9,
+        2 * RUN_LOOK + 10,
+        3 * RUN_LOOK + 2,
+        BLOCKS - 1,
+        BLOCKS,
+    ];
+    for from in froms {
+        for length in [0, 1, 64, RUN_LOOK, 3 * RUN_LOOK, BLOCKS, BLOCKS + 10] {
+            let until = from + length;
+            let end = until.min(BLOCKS).max(from);
+            for (named, set) in [(&[0][..], &first), (&[0, 1][..], &both)] {
+                assert_eq!(
+                    maps.first_in(&region, named, from, until),
+                    set.range(from..end).next().copied(),
+                    "maps {named:?}, {from}..{until}"
+                );
+            }
+        }
+    }
+}
+
+/// A run of zeros is not cut where a look for its end stops, every
+/// [`RUN_LOOK`] blocks, and it ends at the next block of the cut's map
+/// however many stretches away that lies: at the first block of one,
+/// at its last, or with none to the volume's end (F4 of the review of
+/// #125).
+#[test]
+fn a_run_of_zeros_goes_on_over_the_looks_to_the_next_block_of_the_map() {
+    const BLOCKS: u64 = 4 * RUN_LOOK;
+    let bound = 64 * BLOCK_SIZE;
+    let written = [
+        None,
+        Some(RUN_LOOK - 1),
+        Some(RUN_LOOK + 5),
+        Some(2 * RUN_LOOK),
+        Some(BLOCKS - 1),
+    ];
+    for written in written {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+        let mut state = CutState::begin_with(
+            region,
+            BLOCKS * BLOCK_SIZE,
+            bound,
+            OWNER,
+            Mutants(0),
+            None,
+            Some(&[(0, BLOCKS)]),
+        );
+        if let Some(block) = written {
+            state.change(block, 1, &mut NoCopies).expect("the change");
+        }
+        let number = state.freeze(&marked(1), true);
+        state.flushed(number);
+        let slice = state.slice_from(number, 7, 64).expect("held");
+        let (zeroes, blocks) = match written {
+            None => (vec![(7, BLOCKS - 7)], vec![]),
+            Some(block) if block + 1 == BLOCKS => (vec![(7, block - 7)], vec![block]),
+            Some(block) => (
+                vec![(7, block - 7), (block + 1, BLOCKS - block - 1)],
+                vec![block],
+            ),
+        };
+        assert_eq!(slice.zeroes, zeroes, "written {written:?}");
+        assert_eq!(slice.blocks, blocks, "written {written:?}");
+        assert_eq!(slice.next, None, "written {written:?}");
+    }
+}
+
+/// The loads that the slices of the first cut over a volume of `large`
+/// blocks take, a chunk of data in every MiB, in slices of 64 blocks;
+/// and what they would be at a few loads for each block read and each
+/// run, and one pass over the open map's summary and the hole set.
+fn sparse_slicing(large: u64) -> (u64, u64) {
+    const MIB: u64 = (1 << 20) / BLOCK_SIZE;
+    const SLICE: usize = 64;
+    let bound = 64 * BLOCK_SIZE;
+    let holes: Vec<(u64, u64)> = (0..large / MIB)
+        .map(|mib| (mib * MIB + HOLE_BLOCKS, MIB - HOLE_BLOCKS))
+        .collect();
+    let region = MemRegion::new(words_for(large, records_for(bound)));
+    let mut state = CutState::begin_with(
+        region.clone(),
+        large * BLOCK_SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&holes),
+    );
+    let number = state.freeze(&marked(1), true);
+    state.flushed(number);
+    let before = region.loads();
+    let (mut from, mut zeroes, mut runs, mut blocks) = (Some(0), 0, 0, 0);
+    while let Some(at) = from {
+        let slice = state.slice_from(number, at, SLICE).expect("held");
+        assert!(slice.blocks.len() <= SLICE);
+        zeroes += slice.zeroes.iter().map(|&(_, count)| count).sum::<u64>();
+        runs += slice.zeroes.len() as u64;
+        blocks += slice.blocks.len() as u64;
+        from = slice.next;
+    }
+    let loads = region.loads() - before;
+    assert_eq!(blocks, large / MIB * HOLE_BLOCKS);
+    assert_eq!(runs, large / MIB);
+    assert_eq!(zeroes + blocks, large);
+    let once = blocks + runs + large / 64 / 64 + hole_words(large) as u64;
+    (loads, once)
+}
+
 /// The bit that says a block of a hole was written is the block's bit
 /// in the open map, stored before the write is begun, so a death
 /// between the bit and the write, or between the write and its answer,
