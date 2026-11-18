@@ -4750,15 +4750,16 @@ fn settle_map(store: &mut InPlace<SimDisk>) {
 }
 
 /// The header that names the cut a release lets go is synced only when
-/// the store is told to (`serve --intent-header-sync`, M2.4d, for the
-/// lead's Q7 of M2.4b): one sync of the map, begun on its helper and
-/// counted apart from the write path's, and a power cut after it keeps
-/// the base, so the start after a restart of the machine takes the map
-/// up naming cut 1. Off, as built in M2.3, the release syncs nothing,
-/// and the power cut that loses everything no sync covered leaves the
-/// map as the start wrote it, naming no cut: it is begun anew, and the
-/// next cut is the whole volume. The defects, planted by hand: the sync
-/// not begun, and the sync counted as the write path's.
+/// the store is told to (M2.4d, for the lead's Q7 of M2.4b; the daemon
+/// tells it to unless `serve --no-intent-header-sync` is given): one
+/// sync of the map, begun on its helper and counted apart from the write
+/// path's, and a power cut after it keeps the base, so the start after a
+/// restart of the machine takes the map up naming cut 1. Off, as built
+/// in M2.3, the release syncs nothing, and the power cut that loses
+/// everything no sync covered leaves the map as the start wrote it,
+/// naming no cut: it is begun anew, and the next cut is the whole
+/// volume. The defects, planted by hand: the sync not begun, and the
+/// sync counted as the write path's.
 #[test]
 fn a_release_syncs_the_header_only_when_told_to() {
     for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
