@@ -771,7 +771,10 @@ rec_autotrim() {
 # 256 MiB), and the cut is abandoned: its map passes to the cut that
 # waits. On a sparse volume a daemon that keeps the image's holes
 # (M2.4e) copies no write into a hole and reads the hole as zeros:
-# boundsparse, the same writes on a volume made sparse.
+# boundsparse, the same writes on a volume made sparse. The status is
+# read once the writes are synced and before the holder lets the first
+# cut go (DIR/status-bound-held.txt): the copies are judged there, while
+# the cut that made them is held (cut_daemon_check.py, cut_copied_held).
 rec_bound() {
     local k
     touch "$WORK/hold.pause"
@@ -780,6 +783,7 @@ rec_bound() {
         dd if=/dev/urandom of="$MNT/b$k" bs=1M count=32 status=none
         z 60 zpool sync "$POOL"
     done
+    ustatus status-bound-held.txt
     rm -f "$WORK/hold.pause"
     load 2
     export_pool

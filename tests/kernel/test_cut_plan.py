@@ -126,12 +126,27 @@ class Plan(unittest.TestCase):
                 self.assertTrue(cut_plan.touches_upload([p]), p)
                 self.assertTrue(in_workflow(p), p)
 
+    def test_every_upload_path_starts_the_workflow(self):
+        """Each entry of UPLOAD_PATHS, crates or not (Cargo.lock,
+        tests/lib/, the workflow), is in the workflow's pull request paths
+        too: a path that starts the upload job but not the workflow runs
+        nothing (the review of #121)."""
+        for p in cut_plan.UPLOAD_PATHS:
+            with self.subTest(p):
+                path = p + 'x' if p.endswith('/') else p
+                self.assertTrue(cut_plan.touches_upload([path]), path)
+                self.assertTrue(in_workflow(path), path)
+
     def test_the_closure_from_cargo(self):
-        """The manifests' closure is cargo's (where cargo is at hand)."""
+        """The manifests' closure is cargo's (where cargo is at hand). It
+        reads the registry's index offline, so on a runner whose cargo has
+        not fetched the workspace's dependencies it skips: it is a local
+        check, as long as the job that runs these tests has no toolchain.
+        `--locked`: the comparison never rewrites Cargo.lock."""
         cargo = shutil.which('cargo')
         if not cargo:
             self.skipTest('no cargo')
-        got = subprocess.run([cargo, 'metadata', '--format-version', '1', '--offline'], cwd=ROOT,
+        got = subprocess.run([cargo, 'metadata', '--format-version', '1', '--offline', '--locked'], cwd=ROOT,
                              capture_output=True, text=True)
         if got.returncode != 0:
             self.skipTest('cargo metadata: ' + got.stderr[-200:])

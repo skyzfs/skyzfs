@@ -314,13 +314,23 @@ def held_images(records, cs, op):
 START_STATUS = 'cuts 0\ncut_state begun\nintent_state begun\nintent_regions 128\nintent_named_at_start 128\n'
 
 
+# bound and boundsparse (status version 17): the status once the first
+# start was ready, and the one rec_bound reads while the first cut is
+# held. The copies held are boundsparse's in 44378510338 (0.75 to 1 MiB).
+FILLED_START = START_STATUS + 'cut_holes held\ncut_hole_chunks 0\n'
+SPARSE_START = START_STATUS + 'cut_holes held\ncut_hole_chunks 8192\n'
+FILLED_HELD = 'cuts_held 1\ncut_holes held\ncuts_abandoned 1\ncut_copied_bytes 4096\ncut_bound_bytes 268435456\n'
+SPARSE_HELD = 'cuts_held 1\ncut_holes held\ncuts_abandoned 0\ncut_copied_bytes 917504\ncut_bound_bytes 268435456\n'
+
+
 COMMITTED = '1\t> t1 held\n2\t> t2 release 1\n3\t< t2 ok (0 lines)\n'   # a release answered before every start
 
 
 def holder_files(d, written, blocks, final, log=COMMITTED, held_final='9 9 uploading itself 3\n',
-                 status_held='cuts_held 1\n', starts=(START_STATUS,)):
-    """The holder's files in recording directory d, and the status the rig
-    read at each start (status-start-K.txt)."""
+                 status_held='cuts_held 1\n', starts=(START_STATUS,), bound_held=None):
+    """The holder's files in recording directory d, the status the rig
+    read at each start (status-start-K.txt), and with bound_held the one
+    rec_bound reads while the first cut is held (status-bound-held.txt)."""
     def w(fn, text):
         with open(os.path.join(d, fn), 'w') as f:
             f.write(text)
@@ -336,6 +346,8 @@ def holder_files(d, written, blocks, final, log=COMMITTED, held_final='9 9 uploa
     w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(final.items())))
     w('held-final.txt', held_final)
     w('status-held.txt', status_held)
+    if bound_held is not None:
+        w('status-bound-held.txt', bound_held)
 
 
 UNPLACED_WRITTEN = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2},
@@ -660,7 +672,8 @@ class HeldLines(HeldFixture):
     holder's files, the status, what it was given."""
 
     def lines(self, name='life', status=None, final=None, log='', status_held=None, cuts_line='begun',
-              recs=None, dcuts=None, written=None, blocks=None, image=None, begun=None):
+              recs=None, dcuts=None, written=None, blocks=None, image=None, begun=None, starts=None,
+              bound_held=None):
         import shutil
         import tempfile
         d = tempfile.mkdtemp(prefix='cdc-held-')
@@ -668,7 +681,10 @@ class HeldLines(HeldFixture):
             holder_files(d, written or self.written, blocks or self.blocks, self.final if image is None else image,
                          log=log or '1\t> t1 held\n',
                          held_final=final if final is not None else '9 9 uploading itself 3\n',
-                         status_held=status_held if status_held is not None else 'cuts_held 1\n')
+                         status_held=status_held if status_held is not None else 'cuts_held 1\n',
+                         starts=starts or ({'bound': FILLED_START, 'boundsparse': SPARSE_START}.get(name, START_STATUS),),
+                         bound_held={'bound': FILLED_HELD, 'boundsparse': SPARSE_HELD}.get(name)
+                         if bound_held is None else bound_held)
             inst = {'lines': [{'event': 'cuts', 'result': cuts_line}]}
             got = []
             rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, [inst] * len(begun or [1]), recs or self.recs,
@@ -779,6 +795,95 @@ class HeldLines(HeldFixture):
         # bound itself: as before, on its zero-filled volume
         rc, lines = self.lines(name='bound', status=st())
         self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+
+    def bound_st(self, **kw):
+        return {'cut_state': 'begun', 'status_version': '17', 'cuts_abandoned': '0', 'cut_copied_bytes': '0',
+                'cut_bound_bytes': '268435456', 'cut_holes': 'dropped', 'cut_hole_chunks': '8192', **kw}
+
+    def test_boundsparse_judges_the_copies_while_the_first_cut_is_held(self):
+        """The copies are read while the cut that made them is held
+        (status-bound-held.txt), not after the let-go, when they are 0 for
+        any daemon (review of #123, F4): a cut held, its holes held, none
+        abandoned, and under 4 MiB."""
+        rc, lines = self.lines(name='boundsparse', status=self.bound_st())
+        self.assertEqual(rc, (0, False), lines)
+        self.assertEqual(lines['cut_copied_held'][0], 'PASS')
+        self.assertIn("cut_copied_bytes '917504'", lines['cut_copied_held'][1])
+        held = dict(ln.split(' ', 1) for ln in SPARSE_HELD.splitlines())
+
+        def with_held(**kw):
+            return ''.join(f'{k} {v}\n' for k, v in {**held, **kw}.items())
+        # 4 MiB is the limit, not under it; a daemon that copied the writes
+        # into holes holds about 320 MiB
+        for bad in (dict(cut_copied_bytes=str(4 << 20)), dict(cut_copied_bytes=str(320 << 20)),
+                    dict(cuts_held='0'), dict(cuts_abandoned='1'), dict(cut_holes='dropped'),
+                    dict(cut_holes='none')):
+            rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held=with_held(**bad))
+            self.assertEqual((rc[0], lines['cut_copied_held'][0]), (1, 'FAIL'), bad)
+        rc, lines = self.lines(name='boundsparse', status=self.bound_st(),
+                               bound_held=with_held(cut_copied_bytes=str((4 << 20) - 1)))
+        self.assertEqual((rc[0], lines['cut_copied_held'][0]), (0, 'PASS'))
+        # figures that cannot be read: the rig's error, not a verdict
+        for bad in (dict(cut_copied_bytes=''), dict(cuts_held='x')):
+            rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held=with_held(**bad))
+            self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'), bad)
+        rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held='cuts_held 1\n')
+        self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'))
+        rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held='')
+        self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'))
+        # no such read at version 17: the recording did not get as far
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix='cdc-bound-')
+        try:
+            with open(os.path.join(d, 'status-start-1.txt'), 'w') as f:
+                f.write(SPARSE_START)
+            with self.assertRaises(RigError):
+                cdc.bound_lines(lambda *a: None, d, 'boundsparse', 0, False)
+        finally:
+            shutil.rmtree(d)
+
+    def test_the_premise_of_bound_and_boundsparse(self):
+        """The status once the first start was ready: bound's volume,
+        written through at its create, has no hole chunk; boundsparse's
+        holds its holes, and some."""
+        rc, lines = self.lines(name='bound', status=self.bound_st(cuts_abandoned='1'))
+        self.assertEqual(rc, (0, False), lines)
+        self.assertEqual(lines['bound_premise'][0], 'PASS')
+        self.assertEqual(lines['cut_copied_held'][0], 'INFO')
+        self.assertIn("cuts_abandoned '1'", lines['cut_copied_held'][1])
+        rc, lines = self.lines(name='bound', status=self.bound_st(cuts_abandoned='1'), starts=(SPARSE_START,))
+        self.assertEqual((rc[0], lines['bound_premise'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='bound', status=self.bound_st(cuts_abandoned='1'),
+                               starts=(START_STATUS + 'cut_holes held\ncut_hole_chunks 1\n',))
+        self.assertEqual((rc[0], lines['bound_premise'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='boundsparse', status=self.bound_st())
+        self.assertEqual(lines['bound_premise'][0], 'PASS')
+        for start in (FILLED_START, START_STATUS + 'cut_holes none\ncut_hole_chunks 0\n',
+                      START_STATUS + 'cut_holes dropped\ncut_hole_chunks 8192\n'):
+            rc, lines = self.lines(name='boundsparse', status=self.bound_st(), starts=(start,))
+            self.assertEqual((rc[0], lines['bound_premise'][0]), (1, 'FAIL'), start)
+        for start in (START_STATUS, START_STATUS + 'cut_holes held\n', START_STATUS + 'cut_hole_chunks 0\n'):
+            for name in ('bound', 'boundsparse'):
+                rc, lines = self.lines(name=name, status=self.bound_st(cuts_abandoned='1' if name == 'bound' else '0'),
+                                       starts=(start,))
+                self.assertEqual((rc, lines['bound_premise'][0]), ((0, True), 'ERROR'), (name, start))
+
+    def test_bound_says_no_copies_read_after_the_let_go(self):
+        """bound's line printed the copies read after the holder let every
+        cut go (review of #123, N3): they are gone from it."""
+        rc, lines = self.lines(name='bound', status=self.bound_st(cuts_abandoned='1'))
+        self.assertEqual(lines['cuts_abandoned'][0], 'PASS')
+        self.assertNotIn('bytes of', lines['cuts_abandoned'][1])
+        self.assertNotIn("'268435456'", lines['cuts_abandoned'][1])
+
+    def test_a_daemon_before_version_17_has_no_held_or_premise_line(self):
+        for name in ('bound', 'boundsparse'):
+            for ver in ('16', ''):
+                rc, lines = self.lines(name=name, status=self.bound_st(status_version=ver, cuts_abandoned='1'),
+                                       starts=(START_STATUS,), bound_held='')
+                self.assertNotIn('bound_premise', lines)
+                self.assertNotIn('cut_copied_held', lines)
 
     def test_edges_must_send_write_zeroes_and_a_discard(self):
         with self.assertRaises(RigError):

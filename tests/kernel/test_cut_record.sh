@@ -283,5 +283,24 @@ is "the create takes the course's arguments" \
 is "boundsparse is a course of the held cuts, and does what bound does" \
     "$(grep -cx 'HELD_ONLY="bound boundsparse edges takeover failed"' "$SCRIPT")$(grep -cx 'rec_boundsparse() { rec_bound; }' "$SCRIPT")" 11
 
+# rec_bound reads the status once the ten writes are synced and while
+# the holder is still paused, the first cut held (status-bound-held.txt,
+# cut_copied_held in cut_daemon_check.py), and lets it go after.
+rb=$(sed -n '/^rec_bound() {$/,/^}$/p' "$SCRIPT")
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are rec_bound's, run through eval
+bound_trace() { (
+    WORK=$(mktemp -d); MNT=/nonexistent; POOL=p
+    create_pool() { echo create; }
+    dd() { echo dd; }
+    z() { echo "z $*"; }
+    ustatus() { echo "status $1 paused=$([ -e "$WORK/hold.pause" ] && echo yes || echo no)"; }
+    load() { echo "load $1"; }
+    export_pool() { echo export; }
+    eval "$rb"; rec_bound; rm -rf "${WORK:?}"
+) 2>&1; }
+is "rec_bound: the writes, then the status while the holder is paused, then the let-go" \
+    "$(bound_trace | grep -c '^dd$') $(bound_trace | head -n 1) $(bound_trace | tail -n 4 | tr '\n' ';')" \
+    "10 create z 60 zpool sync p;status status-bound-held.txt paused=yes;load 2;export;"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
