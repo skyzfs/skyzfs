@@ -1,5 +1,6 @@
-//! `create`, `status` and `detach`. Each returns what it would print
-//! and its exit status, and does no printing itself. `status` and
+//! `create`, `status` and `detach`, and the requests to a serving
+//! daemon's channel ([`ask`]). Each returns what it would print and its
+//! exit status, and does no printing itself. `status` and
 //! `detach` work over whatever stands for the kernel's control
 //! interface ([`Control`]); `create` needs no kernel.
 //!
@@ -68,7 +69,8 @@ use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Noted};
 use skyzfs_ublk::volume::StoreVolume;
 
-use crate::cli::{Create, Exit, Volume};
+use crate::cli::{Ask, Create, Exit, Volume};
+use crate::control::{Reply, Request};
 
 /// How often a locked volume is tried again: 20 times.
 pub const LOCK_RETRIES: u32 = 20;
@@ -703,6 +705,63 @@ pub fn create_warning(dir: &Path, run_dir: &Path, boot: &[u8; 16]) -> Option<Str
         dir.display(),
         path.display()
     ))
+}
+
+/// `cuts`, `publish`, `publish-progress` and `withdraw`: send `ask`'s
+/// request to the channel of the daemon that serves its volume, through
+/// `asker` (`control::ask` with [`crate::control::ASK_LIMIT`]), and print
+/// the answer's line. A publish's manifest is read from its file first,
+/// and one over `MANIFEST_MAX` is not sent. Exit 0 for an answer, 1 for a
+/// refusal or no answer: either way the request was not carried out (the
+/// line printed says which refusal).
+pub fn ask(
+    ask: &Ask,
+    asker: impl FnOnce(&Path, &Request, &[u8]) -> io::Result<Reply>,
+) -> Output {
+    use skyzfs_upload::publish::MANIFEST_MAX;
+    let socket = match records::volume_run_dir(&ask.volume.run_dir, &ask.volume.dir) {
+        Ok(dir) => dir.join(crate::control::SOCKET),
+        Err(e) => return Output::error(format!("{}: {e}", ask.volume.dir.display())),
+    };
+    let mut request = ask.request.clone();
+    let mut manifest = Vec::new();
+    if let (Request::Publish(publish), Some(path)) = (&mut request, &ask.manifest) {
+        let read = std::fs::File::open(path).and_then(|file| {
+            let mut bytes = Vec::new();
+            io::Read::read_to_end(
+                &mut io::Read::take(file, MANIFEST_MAX as u64 + 1),
+                &mut bytes,
+            )
+            .map(|_| bytes)
+        });
+        manifest = match read {
+            Ok(bytes) if bytes.len() > MANIFEST_MAX => {
+                return Output::error(format!(
+                    "the manifest {} is over {MANIFEST_MAX} bytes",
+                    path.display()
+                ))
+            }
+            Ok(bytes) => bytes,
+            Err(e) => return Output::error(format!("the manifest {}: {e}", path.display())),
+        };
+        publish.manifest = manifest.len();
+    }
+    match asker(&socket, &request, &manifest) {
+        Ok(reply) => Output {
+            exit: if reply.refused() {
+                Exit::Error
+            } else {
+                Exit::Done
+            },
+            out: format!("{}\n", reply.line()),
+            err: String::new(),
+        },
+        Err(e) => Output::error(format!(
+            "no answer from the daemon's channel {}: {e} (is the volume served, by a daemon \
+             of M2.5 or later?)",
+            socket.display()
+        )),
+    }
 }
 
 #[cfg(test)]

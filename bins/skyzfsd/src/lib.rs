@@ -31,6 +31,7 @@ pub fn to_stderr(text: &str) {
 
 pub mod cli;
 pub mod commands;
+pub mod control;
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
 pub mod cut_commands;
 pub mod delay;

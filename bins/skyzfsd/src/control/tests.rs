@@ -1,0 +1,673 @@
+use std::io::{self, Cursor, Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use skyzfs_upload::publish::{EXPIRY_DEFAULT, EXPIRY_MAX, MANIFEST_MAX};
+use skyzfs_upload::{Progress, Refusal};
+
+use super::*;
+
+const A: [u8; 16] = [0xa1; 16];
+const S: [u8; 16] = [0x5e; 16];
+
+fn publish(expiry: Option<Duration>) -> Request {
+    Request::Publish(Publish {
+        name: "pool-7.b_c".into(),
+        attachment: A,
+        state: S,
+        after: 3,
+        group: 41,
+        manifest: 5,
+        expiry,
+    })
+}
+
+fn every_code() -> Vec<Code> {
+    CODES.iter().map(|(code, _)| *code).collect()
+}
+
+/// Mutant: any word of the protocol changed (it is version 1's: a
+/// change is a new version).
+#[test]
+fn the_lines_are_version_1s_words() {
+    let hex_a = "a1".repeat(16);
+    let hex_s = "5e".repeat(16);
+    assert_eq!(Request::Cuts.line(), "cuts");
+    assert_eq!(
+        publish(None).line(),
+        format!("publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 manifest=5")
+    );
+    assert_eq!(
+        publish(Some(Duration::from_secs(90))).line(),
+        format!(
+            "publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 \
+             manifest=5 expiry-s=90"
+        )
+    );
+    assert_eq!(Request::Progress("t".into()).line(), "progress name=t");
+    assert_eq!(Request::Withdraw("t".into()).line(), "withdraw name=t");
+    let cuts = |state, newest| {
+        Reply::Cuts(CutsReply {
+            attachment: A,
+            state,
+            count: 7,
+            newest,
+        })
+        .line()
+    };
+    assert_eq!(
+        cuts(None, None),
+        format!("cuts attachment={hex_a} state=none count=7 group=none opens=none")
+    );
+    assert_eq!(
+        cuts(Some(S), Some((12, true))),
+        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself")
+    );
+    assert_eq!(
+        cuts(Some(S), Some((12, false))),
+        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind")
+    );
+    assert_eq!(
+        Reply::Done([0x0f; 32]).line(),
+        format!("done commit={}", "0f".repeat(32))
+    );
+    for (reply, line) in [
+        (Reply::Accepted, "accepted"),
+        (Reply::Pending, "pending"),
+        (Reply::Expired, "expired"),
+        (Reply::Withdrawn, "withdrawn"),
+        (Reply::Unknown, "unknown"),
+        (
+            Reply::Refused(Code::NoAnswer, "late".into()),
+            "refused no-answer late",
+        ),
+    ] {
+        assert_eq!(reply.line(), line);
+    }
+    let words: Vec<&str> = every_code().into_iter().map(Code::word).collect();
+    assert_eq!(
+        words,
+        [
+            "name",
+            "attachment",
+            "state",
+            "manifest",
+            "expiry",
+            "asked",
+            "busy",
+            "taken",
+            "stopped",
+            "version",
+            "malformed",
+            "peer",
+            "no-upload",
+            "ended",
+            "no-answer"
+        ]
+    );
+}
+
+/// Mutant: a field dropped or swapped in either direction.
+#[test]
+fn every_line_reads_back_as_written() {
+    let requests = [
+        Request::Cuts,
+        publish(None),
+        publish(Some(EXPIRY_MAX)),
+        Request::Progress("x".into()),
+        Request::Withdraw("y".into()),
+    ];
+    for request in requests {
+        assert_eq!(Request::parse(&request.line()), Ok(request));
+    }
+    let mut replies = vec![
+        Reply::Accepted,
+        Reply::Pending,
+        Reply::Done([7; 32]),
+        Reply::Expired,
+        Reply::Withdrawn,
+        Reply::Unknown,
+    ];
+    for state in [None, Some(S)] {
+        for newest in [None, Some((0, true)), Some((u64::MAX, false))] {
+            replies.push(Reply::Cuts(CutsReply {
+                attachment: A,
+                state,
+                count: u64::MAX,
+                newest,
+            }));
+        }
+    }
+    for code in every_code() {
+        replies.push(Reply::Refused(code, format!("why {}", code.word())));
+        replies.push(Reply::Refused(code, String::new()));
+    }
+    for reply in replies {
+        assert_eq!(Reply::parse(&reply.line()), Ok(reply));
+    }
+}
+
+/// Mutant: a key taken twice, a key of another verb, or a value parsed
+/// loosely.
+#[test]
+fn a_line_that_is_not_exactly_a_request_does_not_parse() {
+    let a = "a1".repeat(16);
+    let good = format!("publish name=t attachment={a} state={a} after=1 group=2 manifest=0");
+    assert!(Request::parse(&good).is_ok());
+    for bad in [
+        String::new(),
+        "cut".into(),
+        "CUTS".into(),
+        "cuts ".into(),
+        " cuts".into(),
+        "cuts name=t".into(),
+        "progress".into(),
+        "progress name=t name=u".into(),
+        "progress  name=t".into(),
+        "progress name".into(),
+        "withdraw name=t after=1".into(),
+        good.replace(" group=2", ""),
+        good.replace("after=1", "after=+1"),
+        good.replace("after=1", "after=-1"),
+        good.replace("after=1", "after=18446744073709551616"),
+        good.replace("after=1", "after="),
+        good.replace(&format!("state={a}"), &format!("state={}", &a[2..])),
+        good.replace(&format!("state={a}"), &format!("state={}g", &a[1..])),
+        good.replace(&format!("state={a}"), "state=none"),
+        format!("{good} after=1"),
+        format!("{good} expiry-s=x"),
+        format!("{good} commit=00"),
+    ] {
+        assert!(Request::parse(&bad).is_err(), "`{bad}` parsed");
+    }
+    for bad in [
+        "cuts",
+        "accepted now",
+        "done",
+        "done commit=00",
+        "refused nope why",
+        &format!("cuts attachment={a} state=none count=1 group=3 opens=none"),
+        &format!("cuts attachment={a} state=none count=1 group=none opens=itself"),
+    ] {
+        assert!(Reply::parse(bad).is_err(), "`{bad}` parsed");
+    }
+}
+
+/// Mutant: a refusal's text written as it came (a `\n` in it would end
+/// the answer early; one over the limit would not be read).
+#[test]
+fn a_refusals_text_stays_on_one_line_within_the_limit() {
+    let line = Reply::Refused(Code::Taken, "one\ntwo\rthree".into()).line();
+    assert_eq!(line, "refused taken one two three");
+    let line = Reply::Refused(Code::Taken, "é".repeat(LINE_MAX)).line();
+    assert!(line.len() < LINE_MAX, "{}", line.len());
+    assert!(line.starts_with("refused taken é"));
+    let back = read_line(&mut Cursor::new(format!("{line}\n"))).map(|l| Reply::parse(&l));
+    assert!(matches!(back, Ok(Ok(Reply::Refused(Code::Taken, _)))));
+}
+
+/// Mutant: a publish's refusal given another code.
+#[test]
+fn a_publishs_refusal_keeps_its_own_code() {
+    let cases = [
+        (Refusal::Name, Code::Name),
+        (Refusal::Attachment, Code::Attachment),
+        (Refusal::State, Code::State),
+        (Refusal::Manifest(9), Code::Manifest),
+        (Refusal::Expiry(Duration::ZERO), Code::Expiry),
+        (Refusal::Asked, Code::Asked),
+        (Refusal::Busy, Code::Busy),
+        (Refusal::Taken, Code::Taken),
+        (Refusal::Stopped, Code::Stopped),
+    ];
+    for (refusal, code) in cases {
+        assert_eq!(Code::of(&refusal), code);
+        assert_eq!(
+            Reply::of(&Progress::Refused(refusal.clone())),
+            Reply::Refused(code, refusal.to_string())
+        );
+    }
+    assert_eq!(Reply::of(&Progress::Pending), Reply::Pending);
+    assert_eq!(Reply::of(&Progress::Done([3; 32])), Reply::Done([3; 32]));
+    assert_eq!(Reply::of(&Progress::Expired), Reply::Expired);
+    assert_eq!(Reply::of(&Progress::Withdrawn), Reply::Withdrawn);
+    assert_eq!(Reply::of(&Progress::Unknown), Reply::Unknown);
+}
+
+/// One end of a connection, in memory: what the peer sent, and what is
+/// written back.
+struct Duplex {
+    input: Cursor<Vec<u8>>,
+    output: Vec<u8>,
+}
+
+impl Read for Duplex {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.input.read(buf)
+    }
+}
+
+impl Write for Duplex {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.output.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What a handler was asked, and how often.
+#[derive(Default)]
+struct Asked {
+    count: AtomicU64,
+    manifest: std::sync::Mutex<Vec<u8>>,
+}
+
+fn recording(asked: &Arc<Asked>, reply: Reply) -> Handler {
+    let asked = Arc::clone(asked);
+    Box::new(move |_: &Request, manifest: Vec<u8>| {
+        asked.count.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut kept) = asked.manifest.lock() {
+            *kept = manifest;
+        }
+        reply.clone()
+    })
+}
+
+/// Answer `sent` as one connection, with a handler that answers
+/// `accepted`: the answer, what was written back, and how often the
+/// handler was asked.
+fn answered(sent: &[u8]) -> (io::Result<Reply>, String, Arc<Asked>) {
+    let asked = Arc::new(Asked::default());
+    let mut handler = recording(&asked, Reply::Accepted);
+    let mut stream = Duplex {
+        input: Cursor::new(sent.to_vec()),
+        output: Vec::new(),
+    };
+    let reply = answer(&mut stream, &mut handler);
+    let written = String::from_utf8_lossy(&stream.output).into_owned();
+    (reply, written, asked)
+}
+
+/// Mutant: the manifest not read, read short, or the answer written
+/// without the greeting.
+#[test]
+fn a_publish_hands_its_manifest_to_the_handler() {
+    let sent = format!("{HELLO}\n{}\nhello", publish(None).line());
+    let (reply, written, asked) = answered(sent.as_bytes());
+    assert_eq!(reply.ok(), Some(Reply::Accepted));
+    assert_eq!(written, format!("{HELLO}\naccepted\n"));
+    assert_eq!(asked.count.load(Ordering::SeqCst), 1);
+    assert_eq!(asked.manifest.lock().map(|m| m.clone()).ok(), Some(b"hello".to_vec()));
+}
+
+/// Mutant: a request taken without the greeting, or one cut short
+/// taken.
+#[test]
+fn a_request_that_cannot_be_taken_is_refused_without_asking() {
+    let long = format!("progress name={}", "n".repeat(LINE_MAX));
+    let over = Request::Publish(Publish {
+        manifest: MANIFEST_MAX + 1,
+        ..match publish(None) {
+            Request::Publish(p) => p,
+            _ => unreachable!(),
+        }
+    });
+    let expiry = |e| publish(Some(e)).line().replace("manifest=5", "manifest=0");
+    for (sent, code) in [
+        (format!("{HELLO}x\ncuts\n"), Code::Version),
+        ("skyzfs-control 2\ncuts\n".to_string(), Code::Version),
+        (format!("cuts\n{HELLO}\n"), Code::Version),
+        (format!("{}\ncuts\n", "h".repeat(LINE_MAX)), Code::Version),
+        (format!("{HELLO}\n{long}\n"), Code::Malformed),
+        (format!("{HELLO}\ncuts please\n"), Code::Malformed),
+        (format!("{HELLO}\n\u{7f}\u{0}\n"), Code::Malformed),
+        (format!("{HELLO}\n{}\n", over.line()), Code::Manifest),
+        (format!("{HELLO}\n{}\n", expiry(Duration::ZERO)), Code::Expiry),
+        (
+            format!("{HELLO}\n{}\n", expiry(EXPIRY_MAX + Duration::from_secs(1))),
+            Code::Expiry,
+        ),
+    ] {
+        let (reply, written, asked) = answered(sent.as_bytes());
+        let Ok(Reply::Refused(got, _)) = reply else {
+            panic!("{sent:?}: {reply:?}");
+        };
+        assert_eq!(got, code, "{sent:?}");
+        assert!(written.starts_with(&format!("{HELLO}\nrefused {} ", code.word())));
+        assert_eq!(asked.count.load(Ordering::SeqCst), 0, "{sent:?}");
+    }
+    let bytes = [HELLO.as_bytes(), b"\n\xff\xfe\n"].concat();
+    let (reply, _, asked) = answered(&bytes);
+    assert!(matches!(reply, Ok(Reply::Refused(Code::Malformed, _))));
+    assert_eq!(asked.count.load(Ordering::SeqCst), 0);
+    // An expiry of exactly the most is taken.
+    let sent = format!("{HELLO}\n{}\n", expiry(EXPIRY_MAX));
+    assert_eq!(answered(sent.as_bytes()).0.ok(), Some(Reply::Accepted));
+}
+
+/// Mutant: a manifest cut short handed on as it came, or a connection
+/// that ended answered.
+#[test]
+fn a_connection_that_ends_early_is_not_a_request() {
+    for sent in [
+        String::new(),
+        format!("{HELLO}\n"),
+        format!("{HELLO}\ncuts"),
+        format!("{HELLO}\n{}\nhel", publish(None).line()),
+    ] {
+        let (reply, written, asked) = answered(sent.as_bytes());
+        assert!(reply.is_err(), "{sent:?}: {reply:?}");
+        assert_eq!(written, "", "{sent:?}");
+        assert_eq!(asked.count.load(Ordering::SeqCst), 0, "{sent:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod socket {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    use super::*;
+
+    fn dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("a directory")
+    }
+
+    /// Mutant: the socket left with the umask's mode, or answers not
+    /// counted.
+    #[test]
+    fn the_channel_answers_through_its_socket() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::open(&path, recording(&asked, Reply::Pending)).expect("open");
+        let meta = std::fs::symlink_metadata(&path).expect("the socket");
+        assert!(meta.file_type().is_socket());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        let reply = ask(&path, &Request::Progress("t".into()), &[], IO_LIMIT).expect("asked");
+        assert_eq!(reply, Reply::Pending);
+        let reply = ask(&path, &publish(None), b"12345", IO_LIMIT).expect("asked");
+        assert_eq!(reply, Reply::Pending);
+        assert_eq!(asked.manifest.lock().map(|m| m.clone()).ok(), Some(b"12345".to_vec()));
+        let mut raw = UnixStream::connect(&path).expect("connect");
+        raw.write_all(b"hello\n").expect("write");
+        let mut back = String::new();
+        raw.read_to_string(&mut back).expect("read");
+        assert!(back.starts_with(&format!("{HELLO}\nrefused version ")), "{back}");
+        assert_eq!(
+            channel.figures(),
+            ChannelFigures {
+                answered: 3,
+                peer: 0,
+                malformed: 1
+            }
+        );
+        assert_eq!(asked.count.load(Ordering::SeqCst), 2);
+        assert!(channel.close());
+        assert!(!path.exists());
+    }
+
+    /// Mutant: the peer check skipped, or a refused peer's request read
+    /// and handed on.
+    #[test]
+    fn a_peer_of_another_user_is_refused_and_its_request_not_asked() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel =
+            Channel::open_checked(&path, recording(&asked, Reply::Accepted), |_| false)
+                .expect("open");
+        let reply = ask(&path, &publish(None), b"12345", IO_LIMIT).expect("asked");
+        assert!(matches!(reply, Reply::Refused(Code::Peer, _)), "{reply:?}");
+        assert_eq!(asked.count.load(Ordering::SeqCst), 0);
+        assert_eq!(channel.figures().peer, 1);
+        assert_eq!(channel.figures().answered, 0);
+        assert!(channel.close());
+    }
+
+    /// The check itself: this test's own user passes it.
+    #[test]
+    fn the_daemons_own_user_and_root_may_ask() {
+        assert!(super::super::server::same_user_or_root(0));
+        assert!(super::super::server::same_user_or_root(
+            rustix::process::geteuid().as_raw()
+        ));
+    }
+
+    /// Mutant: a stale socket not removed (the bind fails), or anything
+    /// at the path removed.
+    #[test]
+    fn a_stale_socket_is_replaced_and_anything_else_left() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        drop(UnixListener::bind(&path).expect("a socket left behind"));
+        assert!(UnixStream::connect(&path).is_err());
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::open(&path, recording(&asked, Reply::Unknown)).expect("open");
+        let reply = ask(&path, &Request::Cuts, &[], IO_LIMIT).expect("asked");
+        assert_eq!(reply, Reply::Unknown);
+        assert!(channel.close());
+
+        std::fs::write(&path, b"not a socket").expect("a file");
+        let opened = Channel::open(&path, recording(&asked, Reply::Unknown));
+        assert!(opened.is_err());
+        assert_eq!(std::fs::read(&path).ok(), Some(b"not a socket".to_vec()));
+    }
+
+    /// Mutant: the client gives up on its write's error (the daemon
+    /// refused before reading the manifest, and closed).
+    #[test]
+    fn a_refusal_before_the_manifest_is_read_reaches_the_client() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::open(&path, recording(&asked, Reply::Accepted)).expect("open");
+        let over = Request::Publish(Publish {
+            manifest: 4 * MANIFEST_MAX,
+            ..match publish(None) {
+                Request::Publish(p) => p,
+                _ => unreachable!(),
+            }
+        });
+        let manifest = vec![0u8; 4 * MANIFEST_MAX];
+        let reply = ask(&path, &over, &manifest, IO_LIMIT).expect("asked");
+        assert!(matches!(reply, Reply::Refused(Code::Manifest, _)), "{reply:?}");
+        assert_eq!(asked.count.load(Ordering::SeqCst), 0);
+        assert!(channel.close());
+    }
+
+    /// Mutant: close() that does not wake the thread (it would wait the
+    /// whole limit and say false).
+    #[test]
+    fn close_ends_the_thread_at_once() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let channel = Channel::open(&path, handler::no_upload("none".into())).expect("open");
+        let began = std::time::Instant::now();
+        assert!(channel.close());
+        assert!(began.elapsed() < server::CLOSE_LIMIT);
+        assert!(!path.exists());
+        assert!(ask(&path, &Request::Cuts, &[], IO_LIMIT).is_err());
+    }
+}
+
+mod uploader {
+    use skyzfs_local::inplace::Cut;
+    use skyzfs_upload::publish::Request as Ask;
+    use skyzfs_upload::{Answer, Control, CutsNow};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    /// An uploader on a thread of its own that answers each control with
+    /// `answer`, after keeping what it was asked.
+    fn uploader_with(
+        answer: impl Fn(Control, &mut Vec<String>) + Send + 'static,
+    ) -> (Handler, std::thread::JoinHandle<Vec<String>>) {
+        let (tx, mut rx) = mpsc::channel(handler::INBOX);
+        let thread = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            while let Some(control) = rx.blocking_recv() {
+                answer(control, &mut seen);
+            }
+            seen
+        });
+        let handler = handler::uploader(A, tx, LIMIT).expect("a handler");
+        (handler, thread)
+    }
+
+    /// Mutant: a field of a request or an answer lost on the way (the
+    /// attachment answered is the daemon's, not the request's).
+    #[test]
+    fn each_request_goes_to_the_uploader_and_its_answer_back() {
+        let (mut handler, thread) = uploader_with(|control, seen| match control {
+            Control::Cuts(reply) => {
+                seen.push("cuts".into());
+                let _ = reply.send(CutsNow {
+                    state: Some(S),
+                    count: 4,
+                    newest: Some(Cut {
+                        number: 4,
+                        group: 9,
+                        itself: false,
+                    }),
+                });
+            }
+            Control::Ask(ask, reply) => {
+                seen.push(format!("{ask:?}"));
+                let _ = reply.send(match ask.name.as_str() {
+                    "taken" => Answer::Refused(Refusal::Taken),
+                    _ => Answer::Accepted,
+                });
+            }
+            Control::Progress(name, reply) => {
+                seen.push(format!("progress {name}"));
+                let _ = reply.send(Progress::Done([2; 32]));
+            }
+            Control::Withdraw(name, reply) => {
+                seen.push(format!("withdraw {name}"));
+                let _ = reply.send(Progress::Withdrawn);
+            }
+        });
+        assert_eq!(
+            handler(&Request::Cuts, Vec::new()),
+            Reply::Cuts(CutsReply {
+                attachment: A,
+                state: Some(S),
+                count: 4,
+                newest: Some((9, false)),
+            })
+        );
+        assert_eq!(handler(&publish(None), b"12345".to_vec()), Reply::Accepted);
+        let taken = Request::Publish(Publish {
+            name: "taken".into(),
+            expiry: Some(Duration::from_secs(5)),
+            ..match publish(None) {
+                Request::Publish(p) => p,
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(
+            handler(&taken, b"12345".to_vec()),
+            Reply::Refused(Code::Taken, Refusal::Taken.to_string())
+        );
+        assert_eq!(
+            handler(&Request::Progress("t".into()), Vec::new()),
+            Reply::Done([2; 32])
+        );
+        assert_eq!(
+            handler(&Request::Withdraw("u".into()), Vec::new()),
+            Reply::Withdrawn
+        );
+        drop(handler);
+        let seen = thread.join().expect("the uploader");
+        let ask = |name: &str, expiry| {
+            format!(
+                "{:?}",
+                Ask {
+                    name: name.into(),
+                    attachment: A,
+                    state: S,
+                    after: 3,
+                    group: 41,
+                    manifest: b"12345".to_vec(),
+                    expiry,
+                }
+            )
+        };
+        assert_eq!(
+            seen,
+            [
+                "cuts".to_string(),
+                ask("pool-7.b_c", EXPIRY_DEFAULT),
+                ask("taken", Duration::from_secs(5)),
+                "progress t".into(),
+                "withdraw u".into(),
+            ]
+        );
+    }
+
+    /// Mutant: a wait with no limit (the test would not end), or the
+    /// wrong code.
+    #[test]
+    fn an_uploader_that_does_not_answer_in_time_reads_no_answer() {
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler =
+            handler::uploader(A, tx, Duration::from_millis(50)).expect("a handler");
+        let reply = handler(&Request::Cuts, Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::NoAnswer, _)), "{reply:?}");
+        drop(rx);
+    }
+
+    /// Mutant: a closed inbox, or a request dropped unanswered, read as
+    /// anything but `ended`.
+    #[test]
+    fn an_uploader_that_has_ended_reads_ended() {
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler = handler::uploader(A, tx, LIMIT).expect("a handler");
+        drop(rx);
+        let reply = handler(&Request::Progress("t".into()), Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
+
+        let (mut handler, thread) = uploader_with(|control, _| drop(control));
+        let reply = handler(&Request::Withdraw("t".into()), Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
+        drop(handler);
+        let _ = thread.join();
+    }
+
+    /// Mutant: a full inbox waited on (the channel would hang).
+    #[test]
+    fn a_full_inbox_is_not_waited_on() {
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler =
+            handler::uploader(A, tx.clone(), Duration::from_millis(1)).expect("a handler");
+        for _ in 0..handler::INBOX {
+            let (reply, _) = tokio::sync::oneshot::channel();
+            tx.try_send(Control::Cuts(reply)).expect("room");
+        }
+        let reply = handler(&Request::Cuts, Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::NoAnswer, _)), "{reply:?}");
+        drop(rx);
+    }
+
+    #[test]
+    fn without_an_uploader_every_request_is_refused_no_upload() {
+        let mut handler = handler::no_upload("no `remote` file".into());
+        for request in [
+            Request::Cuts,
+            publish(None),
+            Request::Progress("t".into()),
+            Request::Withdraw("t".into()),
+        ] {
+            assert_eq!(
+                handler(&request, Vec::new()),
+                Reply::Refused(Code::NoUpload, "no `remote` file".into())
+            );
+        }
+    }
+}

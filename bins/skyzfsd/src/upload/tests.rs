@@ -873,6 +873,7 @@ fn the_status_shows_the_uploader_as_it_is() {
                 state,
                 lease,
                 figures,
+                publishes: Default::default(),
             },
             "node-a",
         )
@@ -1117,6 +1118,22 @@ fn uploading(world: &World) -> Up {
 /// [`uploading`], with the lease taken at the start only if `take`, and
 /// `before` given the runtime before the thread takes it over.
 fn uploading_with(world: &World, take: bool, before: impl FnOnce(&Runtime)) -> Up {
+    let (_, inbox) = tokio::sync::mpsc::channel(1);
+    let publishes = Publishes {
+        attachment: None,
+        state: None,
+        inbox,
+    };
+    uploading_from(world, take, before, publishes)
+}
+
+/// [`uploading_with`], publishing from `publishes`.
+fn uploading_from(
+    world: &World,
+    take: bool,
+    before: impl FnOnce(&Runtime),
+    publishes: Publishes,
+) -> Up {
     world.place(SIZE).expect("made");
     let mut at = start(world.keeper("node-a"), false);
     if take {
@@ -1137,7 +1154,7 @@ fn uploading_with(world: &World, take: bool, before: impl FnOnce(&Runtime)) -> U
         remote().id,
     );
     let (posted, posts) = mpsc::channel();
-    let up = Uploading::start(runtime, keeper, make, desk, move |shown| {
+    let up = Uploading::start(runtime, keeper, make, desk, publishes, move |shown| {
         let _ = posted.send(shown);
     })
     .expect("started");
@@ -1401,4 +1418,70 @@ fn the_region_is_aws_region_or_the_default() {
     assert_eq!(ambient_region(unset), Some(REGION));
     assert_eq!(ambient_region(empty), Some(REGION));
     assert_eq!(ambient_region(set), None);
+}
+
+/// The uploader's thread answers the channel's requests from its inbox,
+/// for the attachment and the cut state it was given: a publish of
+/// another attachment is refused, one of this attachment and state is
+/// taken.
+///
+/// Mutant: the attachment or the state not given to the uploader (the
+/// first publish is refused), or the inbox not read (no answer).
+#[test]
+fn the_thread_answers_the_channel_for_its_attachment_and_state() {
+    use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
+    use skyzfs_upload::{Answer, Control, Progress, Refusal};
+    let world = World::new();
+    let (requests, inbox) = tokio::sync::mpsc::channel(4);
+    let publishes = Publishes {
+        attachment: Some([0xa1; 16]),
+        state: Some([0x5e; 16]),
+        inbox,
+    };
+    let (up, posts, queue, _) = uploading_from(&world, true, |_| {}, publishes);
+    idle_and_held(&posts);
+    // An answer within 10 s, or none: an inbox that is not read fails
+    // the test rather than holding it.
+    fn within<T>(mut answer: tokio::sync::oneshot::Receiver<T>) -> Option<T> {
+        for _ in 0..1000 {
+            if let Ok(got) = answer.try_recv() {
+                return Some(got);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests.blocking_send(Control::Cuts(reply)).expect("sent");
+    let now = within(answer).expect("the count");
+    assert_eq!(now, skyzfs_upload::CutsNow::default());
+    let ask = |attachment| Ask {
+        name: "t".into(),
+        attachment,
+        state: [0x5e; 16],
+        after: 0,
+        group: 1,
+        manifest: Vec::new(),
+        expiry: EXPIRY_DEFAULT,
+    };
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests
+        .blocking_send(Control::Ask(ask([0xa1; 16]), reply))
+        .expect("sent");
+    assert_eq!(within(answer), Some(Answer::Accepted));
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    let mut other = ask([0xa2; 16]);
+    other.name = "u".into();
+    requests.blocking_send(Control::Ask(other, reply)).expect("sent");
+    assert_eq!(
+        within(answer),
+        Some(Answer::Refused(Refusal::Attachment))
+    );
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests
+        .blocking_send(Control::Progress("t".into(), reply))
+        .expect("sent");
+    assert_eq!(within(answer), Some(Progress::Pending));
+    assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
+    queue.join().expect("the queue's thread");
 }

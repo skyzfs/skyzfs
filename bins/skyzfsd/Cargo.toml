@@ -49,9 +49,10 @@ sha2 = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 
-# statfs, for the rule that the daemon's files are on no ZFS pool.
+# statfs, for the rule that the daemon's files are on no ZFS pool; the
+# channel's peer check (`SO_PEERCRED`, the effective user).
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "net", "process"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }

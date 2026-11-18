@@ -758,3 +758,86 @@ fn a_build_with_the_hooks_lists_them() {
     assert!(usage().starts_with(USAGE) && help().starts_with(HELP));
     assert!(!USAGE.contains("--request-log") && !HELP.contains("--request-log"));
 }
+
+/// The channel's commands: each names a volume, as `status` does, and
+/// its request. A publish's manifest length is the file's, read when it
+/// is sent.
+///
+/// Mutant: a command mapped to another request, a value dropped, or a
+/// name the channel's line could not carry taken.
+#[test]
+fn the_channels_commands_name_a_volume_and_a_request() {
+    use crate::control::{Publish, Request};
+    let volume = Volume {
+        dir: "/v/a".into(),
+        run_dir: "/run/skyzfsd".into(),
+    };
+    let ask = |request, manifest: Option<&str>| {
+        Ok(Command::Ask(Ask {
+            volume: volume.clone(),
+            request,
+            manifest: manifest.map(PathBuf::from),
+        }))
+    };
+    assert_eq!(plain("cuts --dir /v/a"), ask(Request::Cuts, None));
+    assert_eq!(
+        plain("publish-progress --dir /v/a --name pool.t-1_x"),
+        ask(Request::Progress("pool.t-1_x".into()), None)
+    );
+    assert_eq!(
+        plain("withdraw --name t --dir /v/a"),
+        ask(Request::Withdraw("t".into()), None)
+    );
+    let (a, s) = ("a1".repeat(16), "5E".repeat(16));
+    let publish = |expiry| Publish {
+        name: "t".into(),
+        attachment: [0xa1; 16],
+        state: [0x5e; 16],
+        after: 3,
+        group: 41,
+        manifest: 0,
+        expiry,
+    };
+    assert_eq!(
+        plain(&format!(
+            "publish --dir /v/a --name t --attachment {a} --state {s} --after 3 --group 41"
+        )),
+        ask(Request::Publish(publish(None)), None)
+    );
+    assert_eq!(
+        plain(&format!(
+            "publish --dir /v/a --name t --attachment {a} --state {s} --after 3 --group 41 \
+             --manifest /m --expiry-s 3600"
+        )),
+        ask(
+            Request::Publish(publish(Some(Duration::from_secs(3600)))),
+            Some("/m")
+        )
+    );
+    for (line, name) in [
+        ("cuts --dir /v/a", "cuts"),
+        ("withdraw --dir /v/a --name t", "withdraw"),
+        ("publish-progress --dir /v/a --name t", "publish-progress"),
+    ] {
+        assert_eq!(plain(line).map(|c| c.name()), Ok(name));
+    }
+    let full = format!("publish --dir /v/a --name t --attachment {a} --state {s} --after 3 --group 41");
+    let long = "n".repeat(129);
+    for bad in [
+        "cuts".to_string(),
+        "cuts --dir /v/a --name t".into(),
+        "publish-progress --dir /v/a".into(),
+        "withdraw --dir /v/a --name a/b".into(),
+        format!("withdraw --dir /v/a --name {long}"),
+        full.replace(" --group 41", ""),
+        full.replace(" --attachment ", " --attachment 0"),
+        full.replace(&format!("--state {s}"), &format!("--state {}", &s[2..])),
+        full.replace("--after 3", "--after -1"),
+        format!("{full} --expiry-s 0"),
+        format!("{full} --expiry-s 3601"),
+        format!("{full} --kernel-has-async-delete"),
+    ] {
+        assert!(plain(&bad).is_err(), "{bad}");
+    }
+    assert!(plain(&format!("withdraw --dir /v/a --name {}", &long[1..])).is_ok());
+}

@@ -55,6 +55,7 @@
 //!   volume's run directory (`cut_commands.rs`).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::remote::Remote;
 use skyzfs_local::inplace::IoMode;
@@ -118,6 +119,11 @@ pub const USAGE: &str = "usage:
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
+  skyzfsd cuts   --dir DIR [--run-dir DIR]
+  skyzfsd publish --dir DIR --name T --attachment HEX --state HEX --after C --group G
+                 [--manifest FILE] [--expiry-s N] [--run-dir DIR]
+  skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
+  skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
   skyzfsd help";
 
 /// The test hooks, which a build with the feature `test-hooks` takes and
@@ -323,6 +329,35 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A pool made on a partition of the device, not on the whole device,
       makes no cuts.
 
+  skyzfsd cuts --dir DIR [--run-dir DIR]
+  skyzfsd publish --dir DIR --name T --attachment HEX --state HEX --after C --group G
+                  [--manifest FILE] [--expiry-s N] [--run-dir DIR]
+  skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
+  skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
+      Ask the daemon serving the volume, through its channel (the socket
+      control in the volume's run directory, made once the device
+      serves; a daemon answers only its own user and root), and print
+      its answer, one line. Status 0 for an answer, 1 for a refusal
+      (refused CODE TEXT) or no answer.
+      cuts prints `cuts attachment=A state=S count=C group=G opens=O`:
+      the attachment the daemon serves, the store's cut state (none
+      before its first cut), its count of cuts, and the newest cut's
+      group and whether it opens as itself or with a rewind (none
+      before the first).
+      publish asks that the first cut of state S counted after C whose
+      group is G or later and that opens as itself be published as the
+      snapshot snap/T in object storage, with FILE's bytes (at most
+      1 MiB; none unless given) as its ZFS manifest. Read A, S and C with
+      cuts before taking the pool's snapshot T, and give its createtxg
+      as G. It waits at most N seconds (1 to 3600, 600 unless given) for
+      such a cut. T is 1 to 128 of A-Z, a-z, 0-9, '.', '-' and '_'.
+      `accepted` says only that it pends: publish-progress says how it
+      stands (pending, done commit=H, expired, withdrawn, unknown, or
+      refused), and withdraw ends it unless it is made already. Asking
+      the same publish again is asking it once. A daemon with no place
+      in object storage, or serving without upload, refuses each
+      request no-upload.
+
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,
 another instance or a live server holds the volume; 6 detach deleted
@@ -422,7 +457,10 @@ impl Exit {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UsageError {
     /// No command, or one that does not exist.
-    #[error("expected a command: create, serve, detach or status")]
+    #[error(
+        "expected a command: create, serve, detach, status, cuts, publish, publish-progress or \
+         withdraw"
+    )]
     Command,
     /// An argument that is not an option of the command.
     #[error("{0}: not an option of this command")]
@@ -625,8 +663,24 @@ pub enum Command {
     Detach(Detach),
     /// `status`.
     Status(Volume),
+    /// `cuts`, `publish`, `publish-progress` or `withdraw`.
+    Ask(Ask),
     /// `help`, `--help` or `-h`: print [`HELP`].
     Help,
+}
+
+/// `cuts`, `publish`, `publish-progress` and `withdraw`: a request to
+/// the channel of the daemon that serves a volume ([`crate::control`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ask {
+    /// The volume whose daemon is asked.
+    pub volume: Volume,
+    /// The request. A publish's manifest length is 0 here: it is the
+    /// length of the file `manifest`, read when the request is sent.
+    pub request: crate::control::Request,
+    /// `--manifest FILE` of `publish`: the manifest's bytes. None: an
+    /// empty manifest.
+    pub manifest: Option<PathBuf>,
 }
 
 impl Command {
@@ -637,6 +691,12 @@ impl Command {
             Command::Serve(_) => "serve",
             Command::Detach(_) => "detach",
             Command::Status(_) => "status",
+            Command::Ask(ask) => match ask.request {
+                crate::control::Request::Cuts => "cuts",
+                crate::control::Request::Publish(_) => "publish",
+                crate::control::Request::Progress(_) => "publish-progress",
+                crate::control::Request::Withdraw(_) => "withdraw",
+            },
             Command::Help => "help",
         }
     }
@@ -699,6 +759,24 @@ const SERVE: &[Opt] = &[
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
+
+const NAMED: &[Opt] = &[
+    opt("--dir", true, false),
+    opt("--run-dir", true, false),
+    opt("--name", true, false),
+];
+
+const PUBLISH: &[Opt] = &[
+    opt("--dir", true, false),
+    opt("--run-dir", true, false),
+    opt("--name", true, false),
+    opt("--attachment", true, false),
+    opt("--state", true, false),
+    opt("--after", true, false),
+    opt("--group", true, false),
+    opt("--manifest", true, false),
+    opt("--expiry-s", true, false),
+];
 
 const DETACH: &[Opt] = &[
     opt("--dir", true, false),
@@ -899,6 +977,18 @@ fn run_dir(given: &Given) -> PathBuf {
         .map_or_else(|| PathBuf::from(DEFAULT_RUN_DIR), PathBuf::from)
 }
 
+/// `--name`: a snapshot's name, 1 to 128 of `[A-Za-z0-9._-]`.
+fn snapshot_name(given: &Given) -> Result<String, UsageError> {
+    let name = given.get("--name").ok_or(UsageError::Missing("--name"))?;
+    if !skyzfs_upload::publish::valid_name(name) {
+        return Err(UsageError::Value(
+            "--name".into(),
+            "not 1 to 128 of A-Z, a-z, 0-9, '.', '-' and '_'",
+        ));
+    }
+    Ok(name.to_string())
+}
+
 fn volume(given: &Given) -> Result<Volume, UsageError> {
     Ok(Volume {
         dir: given.path("--dir")?,
@@ -1021,6 +1111,50 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
         "status" => Ok(Command::Status(volume(&Given::collect(
             VOLUME, args, hooks,
         )?)?)),
+        "cuts" => Ok(Command::Ask(Ask {
+            volume: volume(&Given::collect(VOLUME, args, hooks)?)?,
+            request: crate::control::Request::Cuts,
+            manifest: None,
+        })),
+        "publish-progress" | "withdraw" => {
+            let given = Given::collect(NAMED, args, hooks)?;
+            let name = snapshot_name(&given)?;
+            Ok(Command::Ask(Ask {
+                volume: volume(&given)?,
+                request: match command.as_str() {
+                    "withdraw" => crate::control::Request::Withdraw(name),
+                    _ => crate::control::Request::Progress(name),
+                },
+                manifest: None,
+            }))
+        }
+        "publish" => {
+            let given = Given::collect(PUBLISH, args, hooks)?;
+            let id = |name: &'static str| {
+                let text = given.get(name).ok_or(UsageError::Missing(name))?;
+                crate::control::unhex::<16>(text)
+                    .ok_or(UsageError::Value(name.into(), "not 32 hexadecimal digits"))
+            };
+            let number = |name: &'static str| given.number(name)?.ok_or(UsageError::Missing(name));
+            let expiry = given.number("--expiry-s")?;
+            let most = skyzfs_upload::publish::EXPIRY_MAX.as_secs();
+            if expiry.is_some_and(|s| !(1..=most).contains(&s)) {
+                return Err(UsageError::Value("--expiry-s".into(), "out of range"));
+            }
+            Ok(Command::Ask(Ask {
+                volume: volume(&given)?,
+                request: crate::control::Request::Publish(crate::control::Publish {
+                    name: snapshot_name(&given)?,
+                    attachment: id("--attachment")?,
+                    state: id("--state")?,
+                    after: number("--after")?,
+                    group: number("--group")?,
+                    manifest: 0,
+                    expiry: expiry.map(Duration::from_secs),
+                }),
+                manifest: given.get("--manifest").map(PathBuf::from),
+            }))
+        }
         _ => Err(UsageError::Command),
     }
 }

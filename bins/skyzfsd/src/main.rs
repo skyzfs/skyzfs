@@ -62,6 +62,9 @@ fn run(command: &Command) -> Output {
             let boot = Now::read().ok().map(|now| now.boot);
             commands::create_placed(create, id, boot, skyzfsd::upload::place_within)
         }
+        Command::Ask(ask) => commands::ask(ask, |path, request, manifest| {
+            skyzfsd::control::ask(path, request, manifest, skyzfsd::control::ASK_LIMIT)
+        }),
         // `serve` prints for itself: see `main`.
         Command::Serve(_) => failed("serve is run by main".into()),
     }
