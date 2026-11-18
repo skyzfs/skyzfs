@@ -2056,8 +2056,17 @@ async fn a_publish_past_its_deadline_or_withdrawn_is_dropped_and_no_cut_carries_
         up.publishing().ask(asked(state, "withdrawn", 1, 8)),
         Answer::Accepted
     );
-    // Looked up, absent: both wait for a cut after cut 1.
-    until_idle(&mut up, 100).await;
+    // Looked up, absent: both wait for a cut after cut 1. Each lookup is
+    // a turn of its own, after which the uploader turns again at once;
+    // then neither has a step to take, and the idle uploader sleeps its
+    // idle wait.
+    let mut waits = Vec::new();
+    while waits.last().is_none_or(Duration::is_zero) {
+        assert!(waits.len() < 10, "the uploader never sleeps: {waits:?}");
+        waits.push(up.turn().await);
+    }
+    assert_eq!(up.shown().state, State::Idle);
+    assert_eq!(waits, [Duration::ZERO, Duration::ZERO, IDLE]);
     assert_eq!(up.publishing().progress("late"), Progress::Pending);
     assert_eq!(up.publishing().withdraw("withdrawn"), Progress::Withdrawn);
     let began = tokio::time::Instant::now();

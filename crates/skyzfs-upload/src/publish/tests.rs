@@ -757,4 +757,13 @@ async fn each_publish_waits_alone_after_its_own_failures() {
         Some(Duration::from_secs(1))
     );
     assert_eq!(publishing.wait_after("never", now), None);
+
+    // Publishes that all wait for a cut have no step: no due time, so
+    // that the uploader sleeps as long as it would without them.
+    let mut waiting_only = self::publishing();
+    assert_eq!(waiting_only.ask(request("w", 1, 50)), Answer::Accepted);
+    assert_eq!(waiting_only.due_at(), Some(Instant::now()));
+    waiting_only.absent("w");
+    assert_eq!(stage(&waiting_only, "w"), Some(Stage::Wait));
+    assert_eq!(waiting_only.due_at(), None);
 }
