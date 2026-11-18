@@ -2598,6 +2598,67 @@ fn a_cut_made_whole_after_the_drop_reads_the_holes_written_before_it() {
     assert_eq!(slice.blocks, (0..64).collect::<Vec<u64>>());
 }
 
+/// A copier for changes made while no cut is held: none needs a copy.
+struct NoCopies;
+
+impl Copier for NoCopies {
+    fn read_image(&mut self, _: u64, _: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::other("no copy is needed while no cut is held"))
+    }
+
+    fn write_copies(&mut self, _: u32, _: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("no copy is needed while no cut is held"))
+    }
+}
+
+/// The slices of the first cut over a large hole that blocks were
+/// written into read the hole set once over, and not once for each gap
+/// between those blocks (Codex on #125): a run of zeros ends at the next
+/// block of the cut's map, and the look into the hole set for the run's
+/// end stops there too. Before, each run's end was looked for to the
+/// end of the hole, twice, which over a sparse 1 TiB volume made the
+/// first upload's slicing cost the gaps times the volume, on the
+/// store's queue thread.
+#[test]
+fn the_slices_of_a_large_hole_read_the_hole_set_once_over() {
+    // 4 GiB: a hole set of 1024 words, an open map of 16384.
+    const LARGE: u64 = 1 << 20;
+    const APART: u64 = 512;
+    let bound = 64 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(LARGE, records_for(bound)));
+    let mut state = CutState::begin_with(
+        region.clone(),
+        LARGE * BLOCK_SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&[(0, LARGE)]),
+    );
+    for block in (APART / 2..LARGE).step_by(APART as usize) {
+        state.change(block, 1, &mut NoCopies).expect("the change");
+    }
+    let number = state.freeze(&marked(1), true);
+    state.flushed(number);
+    let before = region.loads();
+    let (mut from, mut zeroes, mut blocks, mut slices) = (Some(0), 0, 0, 0);
+    while let Some(at) = from {
+        let slice = state.slice_from(number, at, usize::MAX).expect("held");
+        zeroes += slice.zeroes.iter().map(|&(_, count)| count).sum::<u64>();
+        blocks += slice.blocks.len() as u64;
+        slices += 1;
+        from = slice.next;
+    }
+    let loads = region.loads() - before;
+    assert_eq!(blocks, LARGE / APART);
+    assert_eq!(zeroes + blocks, LARGE);
+    assert!(slices > 1, "the runs fill more than one slice");
+    // One pass over the open map's words and the hole set's, with room
+    // for the few loads each block of the map takes.
+    let once = LARGE / 64 + hole_words(LARGE) as u64;
+    assert!(loads <= 4 * once, "{loads} loads for {once} words");
+}
+
 /// The bit that says a block of a hole was written is the block's bit
 /// in the open map, stored before the write is begun, so a death
 /// between the bit and the write, or between the write and its answer,
