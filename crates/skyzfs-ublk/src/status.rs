@@ -143,7 +143,7 @@
 //! | 976 | 8 | `intent_header_sync`: whether the intent map's header is synced at each release of a committed cut and where a committed cut is named (`serve --intent-header-sync`, M2.4d): 1 on; any other value, off. Off, the header is written without a sync, and a power cut that loses it costs one whole upload. On, a sync of the map's file begins on its helper once the header is written, and nothing waits for it |
 //! | 984 | 24 | the syncs of the map begun for a header with no write waiting, since this daemon started serving: how many, their summed time from begin to end, the longest. None where `intent_header_sync` is off. A header written while a sync for the writes that wait is under way is synced by the next, which is counted with the write path's (offset 392) when writes wait for it too |
 //! | 1008 | 8 | `cut_holes`: the image's holes as the cut state holds them (M2.4e): 0 none (the store holds no cut, the state began from an intent map that named what changed, the image's file system could not say where its holes are, or the state is of an earlier version); 1 the set holds: the first cut held holds the whole volume, and a block of a hole chunk that nothing wrote since the state began reads as zeros in it, with no copy made at a write there; 2 the set was dropped, once that cut was uploaded or let go. Any other value is read as "not said" |
-//! | 1016 | 8 | `cut_hole_chunks`: the chunks of 64 KiB the set names as holes (none where `cut_holes` is 0). A volume whose image has no holes (made with `create --zero-fill`, or written through) has none, and its first cut copies every block written under it, as before M2.4e |
+//! | 1016 | 8 | `cut_hole_chunks`: the chunks of 64 KiB the set named as holes when the cut state began. The count is kept once the set is dropped (`cut_holes` 2): it is what the state's first cut could read as zeros, not what it reads now. 0 where `cut_holes` is 0, no set having been taken. A volume whose image has no holes (made with `create --zero-fill`, or written through) has none, and its first cut copies every block written under it, as before M2.4e |
 //! | 1024 | 8 | `upload_zero_blocks`: among the blocks of the cuts committed, those written as zeros with nothing read: blocks of a hole chunk that nothing wrote up to the cut's instant. Not in `upload_blocks` |
 //! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
 //!
@@ -690,7 +690,9 @@ pub struct HeldShown {
 pub struct HolesShown {
     /// Whether the set holds.
     pub state: CutHolesShown,
-    /// The chunks of [`HOLE_CHUNK_BYTES`] it names as holes.
+    /// The chunks of [`HOLE_CHUNK_BYTES`] it named as holes when the cut
+    /// state began: kept once the set is dropped, and 0 where none was
+    /// taken.
     pub chunks: u64,
 }
 
