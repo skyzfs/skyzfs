@@ -21,9 +21,9 @@ the merge.**
   checked on 86,532 random slices and 41,440 slices at the edges of
   stretches. It makes the cost linear: 37.6 million loads at 64 GiB
   become 4.1 million, and 553 million at 256 GiB become 16.5 million.
-- **The test's bounds** fail the old code by a wide margin, and they fail
-  any regression that brings back a quadratic slicing cost across
-  slices.
+- **The test's bounds** fail the old code by a wide margin. They also
+  fail any regression that brings back a quadratic cost across slices
+  at more than about 4% of the old one (question 2).
 - **What is not pinned** is the cost of a single run over many stretches
   (G3 below). Two one-word slips make it quadratic, and no test of the
   pull request catches them. That is a gap in the tests, not a defect.
@@ -34,8 +34,7 @@ the merge.**
   upload job. `bound` abandons a cut at the bound on a zero-filled
   volume, and `boundsparse` abandons none while the pool writes 320 MiB
   into holes. So F1 is closed. Every other pull-request workflow is
-  green, except the daemon rig, which was still running when I wrote
-  this.
+  green, the daemon rig among them.
 
 ## Findings, most severe first
 
@@ -397,7 +396,7 @@ neither, and CI runs both.
 test and unit-arm64. No pull-request workflow ran, because the branch
 conflicted with its base.
 
-**At `c9b2b14`**, at 23:30 UTC, pull-request runs:
+**At `c9b2b14`**, at 23:35 UTC, pull-request runs:
 
 | Workflow | Run | Result |
 |---|---|---|
@@ -408,7 +407,7 @@ conflicted with its base.
 | `coverage` | 44416413892 | green |
 | `e2e` | 44416413866 | green |
 | `k3s-smoke` | 44416413912 | green |
-| `skyzfs-daemon-rig` | 44416413859 | still running on 24.04, 26.04 and 26.04-arm |
+| `skyzfs-daemon-rig` | 44416413859 | green on 24.04, 26.04 and 26.04-arm |
 
 The cut rig's jobs are green on ubuntu-26.04 and ubuntu-26.04-arm, and
 its upload job too, each with worst exit 0. From the job logs:
@@ -423,6 +422,11 @@ its upload job too, each with worst exit 0. From the job logs:
 That closes F1 on the merged code. Testing's dispatched run had not
 appeared when I wrote this.
 
+**The daemon rig, read from its summary lines in the job logs, not its
+colour.** Each of the three images has 57 PASS. The 5 FAIL lines are all
+negative controls (`ctl_*`), as in every run, and the one known pin,
+`pin_failed_volume_while_a_request_is_held`, is WAITING.
+
 **Codex.** Both threads are answered and resolved:
 
 - F2, at `0f56669`;
@@ -436,11 +440,9 @@ Codex has posted no review of `d71869a` or `c9b2b14`.
 
 ## Before the merge
 
-1. **The daemon rig green on `c9b2b14`** (run 44416413859). It is the
-   one pull-request workflow still running.
-2. **Codex's look at `c9b2b14`, if it comes**, read once before "ready
+1. **Codex's look at `c9b2b14`, if it comes**, read once before "ready
    to merge".
-3. **Optional, and cheap:**
+2. **Optional, and cheap:**
    - G3: R13, or a load bound on the empty-volume case;
    - G4: R10 and R11.
 
