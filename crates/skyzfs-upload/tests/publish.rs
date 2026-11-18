@@ -20,6 +20,7 @@
 mod common;
 
 use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 
 use common::*;
 use futures_util::FutureExt;
@@ -28,7 +29,9 @@ use skynbd_format::{Codec, SnapKind, SnapshotManifest};
 use skynbd_refs::{ObjectRefStore, RefOp, RefStore};
 use skynbd_store::{FaultOp, FaultWhen, ObjectStore};
 use skynbd_types::CommitHash;
-use skyzfs_upload::publish::{manifest_key, snap_ref, snap_row_key, Publishing, SnapRow};
+use skyzfs_upload::publish::{
+    manifest_key, snap_ref, snap_row_key, Publishing, SnapRow, EXPIRY_DEFAULT,
+};
 use skyzfs_upload::{Answer, Doing, Progress, Refusal, RemoteError, Request, Rule, Step};
 
 const ATTACHMENT: [u8; 16] = *b"the attachment..";
@@ -62,6 +65,7 @@ fn request(up: &mut Up, name: &str, after: u64, group: u64) -> Request {
         after,
         group,
         manifest: manifest(name),
+        expiry: EXPIRY_DEFAULT,
     }
 }
 
@@ -887,6 +891,7 @@ async fn a_request_of_another_cut_state_is_refused_before_any_cut() {
         after: 3,
         group: 7,
         manifest: manifest("t"),
+        expiry: EXPIRY_DEFAULT,
     };
     assert_ne!(stale.state, right);
     assert_eq!(up.publishing().ask(stale), Answer::Refused(Refusal::State));
@@ -1107,4 +1112,41 @@ async fn a_driver_not_told_its_cut_state_learns_it_at_its_first_check() {
         .await
         .expect("published");
     assert_eq!(done.row.cut.number, 1);
+}
+
+/// Q1 of #122's review, as the lead decided it, on the driver alone: a
+/// publish whose deadline passes while it waits is not made on the cut
+/// that carries it, though that cut goes up. It ends expired, counted,
+/// and no ref, row or manifest is written.
+#[tokio::test(start_paused = true)]
+async fn a_publish_past_its_deadline_is_not_made_on_the_cut_that_carries_it() {
+    let mut fx = Fixture::new(41).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x51);
+    fx.group(&mut store, 51);
+    let mut up = driver(&fx, store);
+    up.run().await.expect("cut 1");
+    let after = up.local().cuts().count;
+    let mut asked = request(&mut up, "t", after, 52);
+    asked.expiry = Duration::from_secs(60);
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup");
+    assert_eq!(steps, [Step::PublishLooked { name: "t".into() }]);
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+
+    tokio::time::advance(Duration::from_secs(61)).await;
+    fx.write(up.local(), 101, 0x52);
+    fx.group(up.local(), 52);
+    let steps = up.run().await.expect("cut 2");
+    assert!(
+        told(&steps)
+            .iter()
+            .all(|step| matches!(step, Step::Began { .. } | Step::Uploaded { .. })),
+        "{steps:?}"
+    );
+    fx.assert_uploaded(52, "cut 2").await;
+    assert_eq!(up.publishes().progress("t"), Progress::Expired);
+    let figures = up.publishes().figures();
+    assert_eq!((figures.expired, figures.published), (1, 0));
+    assert!(published(&fx, "t", "cut 2").await.is_none());
 }

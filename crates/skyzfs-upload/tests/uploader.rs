@@ -16,7 +16,7 @@ use skynbd_types::{CommitHash, VolumeId};
 use skyzfs_local::inplace::InPlace;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
-use skyzfs_upload::publish::{Found, Snapshot};
+use skyzfs_upload::publish::{Found, Snapshot, EXPIRY_DEFAULT, EXPIRY_MAX};
 use skyzfs_upload::remote::{Observed, Remote, RemoteError};
 use skyzfs_upload::uploader::{State, Uploader, AT_REST, IDLE};
 use skyzfs_upload::{
@@ -141,7 +141,11 @@ async fn another_holders_lease_stops_the_uploads_for_good() {
         .await
         .expect("the other's take");
     assert!(matches!(other, LeaseOutcome::Acquired(_)));
+    let state = store.cut_state_id().expect("the cut state");
     let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    let request = asked(state, "t", 0, 7);
+    assert_eq!(up.publishing().ask(request.clone()), Answer::Accepted);
 
     let lost = State::LeaseLost {
         holder: "node-b".into(),
@@ -149,6 +153,16 @@ async fn another_holders_lease_stops_the_uploads_for_good() {
     };
     assert_eq!(up.turn().await, AT_REST);
     assert_eq!(up.shown().state, lost);
+    // A publish pending ends, and none is taken after (F4 of #122's
+    // review).
+    assert_eq!(
+        up.publishing().progress("t"),
+        Progress::Refused(Refusal::Stopped)
+    );
+    assert_eq!(
+        up.publishing().ask(request),
+        Answer::Refused(Refusal::Stopped)
+    );
     // The other's lease expires: it is still not taken back.
     clock.pass(TTL * 3);
     for _ in 0..5 {
@@ -1643,6 +1657,7 @@ fn asked(state: [u8; 16], name: &str, after: u64, group: u64) -> Request {
         after,
         group,
         manifest: format!("the ZFS manifest of pool@{name}").into_bytes(),
+        expiry: EXPIRY_DEFAULT,
     }
 }
 
@@ -1837,8 +1852,12 @@ impl<R: Remote> Remote for Publishes<R> {
 /// Ten minutes of turns, the lease kept on its own clock, after a publish
 /// that cannot be made was asked while cut 2 waits to go up: cut 2 goes
 /// up, and the publish is sent again at waits that grow. The times it was
-/// sent.
-async fn ten_minutes_of_a_publish_that_fails(seed: u64, refuse: bool) -> Vec<Duration> {
+/// sent, and how the publish stands at the end. `expiry` is the request's.
+async fn ten_minutes_of_a_publish_that_fails(
+    seed: u64,
+    refuse: bool,
+    expiry: Duration,
+) -> (Vec<Duration>, Progress) {
     let mut fx = Fixture::new(seed).await;
     let store = one_cut(&mut fx);
     let clock = Clock::new();
@@ -1864,10 +1883,9 @@ async fn ten_minutes_of_a_publish_that_fails(seed: u64, refuse: bool) -> Vec<Dur
         // store that refuses that key (a policy on the prefix, say).
         fx.store.arm(FaultOp::Put, "skyzfs/manifest", 0).await;
     }
-    assert_eq!(
-        up.publishing().ask(asked(state, "t", 0, 7)),
-        Answer::Accepted
-    );
+    let mut request = asked(state, "t", 0, 7);
+    request.expiry = expiry;
+    assert_eq!(up.publishing().ask(request), Answer::Accepted);
     {
         let local = up.driver().expect("the driver").local();
         fx.write(local, 20, 0x20);
@@ -1881,16 +1899,16 @@ async fn ten_minutes_of_a_publish_that_fails(seed: u64, refuse: bool) -> Vec<Dur
     }
     fx.assert_uploaded(8, "cut 2, while the publish fails")
         .await;
-    assert_eq!(up.publishing().progress("t"), Progress::Pending);
     assert_eq!(snap(&fx, "t").await, (None, None));
+    let progress = up.publishing().progress("t");
     let sent: Vec<Duration> = sent
         .lock()
         .expect("the times")
         .iter()
         .map(|at| at.duration_since(began))
         .collect();
-    println!("publishes sent at {sent:?}");
-    sent
+    println!("publishes sent at {sent:?}; {progress:?}");
+    (sent, progress)
 }
 
 /// The waits between the publishes `sent` grow from a second, and no
@@ -1918,8 +1936,9 @@ fn waits_grow(sent: &[Duration], case: &str) {
 /// name), and the publish is sent again at the publishes' own waits.
 #[tokio::test(start_paused = true)]
 async fn a_publish_that_cannot_be_made_does_not_stop_the_cuts() {
-    let sent = ten_minutes_of_a_publish_that_fails(73, false).await;
+    let (sent, progress) = ten_minutes_of_a_publish_that_fails(73, false, EXPIRY_MAX).await;
     waits_grow(&sent, "a manifest's PUT fails");
+    assert_eq!(progress, Progress::Pending);
 }
 
 /// F3, the conflict: a publish refused with a conflict, again and again,
@@ -1927,8 +1946,9 @@ async fn a_publish_that_cannot_be_made_does_not_stop_the_cuts() {
 /// review), and the cuts go on.
 #[tokio::test(start_paused = true)]
 async fn a_publish_refused_again_and_again_is_waited_after() {
-    let sent = ten_minutes_of_a_publish_that_fails(74, true).await;
+    let (sent, progress) = ten_minutes_of_a_publish_that_fails(74, true, EXPIRY_MAX).await;
     waits_grow(&sent, "the publish is refused");
+    assert_eq!(progress, Progress::Pending);
 }
 
 /// F4: a cut is committed and the store keeps it (the intent map's pages
@@ -1968,4 +1988,71 @@ async fn a_publish_whose_cut_the_store_kept_ends_refused() {
         up.publishing().ask(request),
         Answer::Refused(Refusal::Stopped)
     );
+}
+
+/// Q1 of #122's review, as the lead decided it: a publish that fails
+/// past its deadline is looked up once more, found absent, and ends
+/// expired, and its transaction is not sent after the deadline. A
+/// manifest PUT that always fails, and a publish always refused, with an
+/// expiry of a minute; the cuts go on either way.
+#[tokio::test(start_paused = true)]
+async fn a_publish_that_fails_past_its_deadline_ends_expired_and_is_not_sent_again() {
+    for (seed, refuse) in [(76, false), (77, true)] {
+        let (sent, progress) =
+            ten_minutes_of_a_publish_that_fails(seed, refuse, Duration::from_secs(60)).await;
+        assert_eq!(progress, Progress::Expired, "refused: {refuse}");
+        assert!(
+            sent.iter().all(|at| *at < Duration::from_secs(60)),
+            "refused: {refuse}: sent after its deadline: {sent:?}"
+        );
+        assert!(sent.len() >= 5, "refused: {refuse}: {sent:?}");
+    }
+}
+
+/// Q1 of #122's review, as the lead decided it: a publish that waits for
+/// a cut past its deadline is dropped and counted while the uploader is
+/// idle, and the cut that comes after does not carry it. A publish
+/// withdrawn is dropped at once, and no cut carries it either.
+#[tokio::test(start_paused = true)]
+async fn a_publish_past_its_deadline_or_withdrawn_is_dropped_and_no_cut_carries_it() {
+    let mut fx = Fixture::new(78).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    let mut late = asked(state, "late", 1, 8);
+    late.expiry = Duration::from_secs(60);
+    assert_eq!(up.publishing().ask(late), Answer::Accepted);
+    assert_eq!(
+        up.publishing().ask(asked(state, "withdrawn", 1, 8)),
+        Answer::Accepted
+    );
+    // Looked up, absent: both wait for a cut after cut 1.
+    until_idle(&mut up, 100).await;
+    assert_eq!(up.publishing().progress("late"), Progress::Pending);
+    assert_eq!(up.publishing().withdraw("withdrawn"), Progress::Withdrawn);
+    let began = tokio::time::Instant::now();
+    while began.elapsed() < Duration::from_secs(61) {
+        let wait = up.turn().await;
+        clock.pass(wait.as_millis() as u64);
+        tokio::time::advance(wait.max(Duration::from_millis(1))).await;
+    }
+    assert_eq!(up.publishing().progress("late"), Progress::Expired);
+    let figures = up.publishing().figures().clone();
+    assert_eq!((figures.expired, figures.withdrawn), (1, 1));
+    assert_eq!(up.publishing().pending().0, 0);
+    {
+        let local = up.driver().expect("the driver").local();
+        fx.write(local, 20, 0x20);
+        fx.group(local, 8);
+    }
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(8, "cut 2").await;
+    for name in ["late", "withdrawn"] {
+        assert_eq!(snap(&fx, name).await, (None, None), "{name}");
+    }
+    assert_eq!(up.publishing().figures().published, 0);
 }

@@ -51,9 +51,33 @@
 //! its lease is lost for good, or its store kept a committed cut, every
 //! publish pending ends refused ([`Refusal::Stopped`]), and so does every
 //! request after (F4 of #122's review).
+//!
+//! **A publish has a deadline** (the lead's decision on Q1 of #122's
+//! review): the agent holds `pool@t` while its publish pends, and a
+//! publish made after the agent gave up and let the hold go could name a
+//! cut taken after `pool@t` was destroyed. So a request names how long it
+//! may pend ([`Request::expiry`]: at most [`EXPIRY_MAX`], and
+//! [`EXPIRY_DEFAULT`] where the agent names none), counted from when it
+//! is accepted. Once that time is up no transaction of it is made: it
+//! ends expired ([`Progress::Expired`]). [`Publishing::expire`], given
+//! the time, ends it: the driver calls it before each publish step, so a
+//! transaction is not begun after the deadline, and the uploader at each
+//! turn, so `publish?` reads expired while nothing else is done (before
+//! the lease is held, or idle). A
+//! publish whose transaction failed, and so may have landed, is looked up
+//! first: it ends done if the transaction landed, and expired if not, and
+//! the transaction is not made again. A transaction begun before the
+//! deadline can land after it; its cut was given to the publish before
+//! the deadline, so it was taken while the agent held the snapshot. The
+//! agent lets its hold go once `publish?` says how the publish ended, or
+//! once the expiry has passed by its own clock with a margin for the
+//! channel (M2.6). The agent can also withdraw a publish
+//! ([`Publishing::withdraw`]): it ends the same way, at once.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use skynbd_types::{CommitHash, SnapId, VolumeId};
 use skyzfs_local::inplace::CommittedCut;
@@ -76,6 +100,13 @@ pub const PENDING_MAX: usize = 64;
 
 /// The outcomes kept for [`Publishing::progress`]: the newest 1024.
 pub const OUTCOMES_KEPT: usize = 1024;
+
+/// How long a publish may pend where the agent names no expiry: ten
+/// minutes. The channel (M2.5-2) fills it in.
+pub const EXPIRY_DEFAULT: Duration = Duration::from_secs(10 * 60);
+
+/// The longest a publish may pend: an hour.
+pub const EXPIRY_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// The prefix of a snapshot's row among the refs object's meta rows.
 pub const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
@@ -132,6 +163,11 @@ pub struct Request {
     pub group: u64,
     /// The ZFS manifest of design §5.4: opaque, at most [`MANIFEST_MAX`].
     pub manifest: Vec<u8>,
+    /// How long the publish may pend, from when it is accepted: more
+    /// than zero and at most [`EXPIRY_MAX`]; [`EXPIRY_DEFAULT`] where the
+    /// agent names none. No cut is given to it and no transaction of it
+    /// is made after that ([module docs](self)).
+    pub expiry: Duration,
 }
 
 impl Request {
@@ -188,6 +224,9 @@ pub enum Refusal {
     /// The manifest is over [`MANIFEST_MAX`].
     #[error("a manifest of {0} bytes; at most {MANIFEST_MAX}")]
     Manifest(usize),
+    /// The expiry is zero or over [`EXPIRY_MAX`].
+    #[error("an expiry of {0:?}; more than zero and at most {EXPIRY_MAX:?}")]
+    Expiry(Duration),
     /// The name is pending with other parameters.
     #[error("the name is pending with other parameters")]
     Asked,
@@ -200,7 +239,9 @@ pub enum Refusal {
     #[error("the name names another commit")]
     Taken,
     /// The uploader publishes nothing more: its lease is lost for good, or
-    /// its store kept a committed cut ([`Publishing::stop`]).
+    /// its store kept a committed cut ([`Publishing::stop`]). A
+    /// transaction of the publish that failed may have landed all the
+    /// same: a new uploader asked again finds it.
     #[error("this uploader publishes nothing more")]
     Stopped,
 }
@@ -223,8 +264,13 @@ pub enum Progress {
     Pending,
     /// Published on this commit.
     Done(CommitHash),
-    /// Refused once it was looked up in object storage.
+    /// Refused once it was looked up in object storage, or ended by the
+    /// uploader's stop.
     Refused(Refusal),
+    /// Not made by its deadline ([`Request::expiry`]), and dropped.
+    Expired,
+    /// Withdrawn by the agent ([`Publishing::withdraw`]), and dropped.
+    Withdrawn,
     /// Not asked of this uploader, or its outcome has left the view.
     Unknown,
 }
@@ -363,6 +409,10 @@ pub struct PublishFigures {
     pub found: u64,
     /// The requests refused, at once or once looked up.
     pub refused: u64,
+    /// The publishes dropped at their deadline.
+    pub expired: u64,
+    /// The publishes withdrawn.
+    pub withdrawn: u64,
     /// The last snapshot published or found: its name, its cut and its
     /// commit.
     pub last: Option<(String, CommittedCut, CommitHash)>,
@@ -382,11 +432,25 @@ pub(crate) enum Stage {
     Recheck(Known),
 }
 
+/// Why a publish ends with nothing made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lapse {
+    /// Its deadline passed.
+    Expired,
+    /// The agent withdrew it.
+    Withdrawn,
+}
+
 #[derive(Debug, Clone)]
 struct Pending {
     request: Request,
     snap: SnapId,
     asked: Instant,
+    /// When its time is up: `asked` and its expiry.
+    deadline: Instant,
+    /// Set when its time is up or it is withdrawn while a transaction of
+    /// it may have landed: it ends once looked up.
+    lapse: Option<Lapse>,
     stage: Stage,
 }
 
@@ -395,6 +459,7 @@ enum Outcome {
     /// Published, or found so, with this row on this commit.
     Done(SnapRow, CommitHash),
     Refused(Refusal),
+    Lapsed(Lapse),
 }
 
 /// The publishes of one uploader ([module docs](self)).
@@ -521,6 +586,9 @@ impl Publishing {
         if request.manifest.len() > MANIFEST_MAX {
             return Answer::Refused(Refusal::Manifest(request.manifest.len()));
         }
+        if request.expiry.is_zero() || request.expiry > EXPIRY_MAX {
+            return Answer::Refused(Refusal::Expiry(request.expiry));
+        }
         if let Some(pending) = self.pending.iter().find(|p| p.request.name == request.name) {
             return if pending.request == request {
                 Answer::Accepted
@@ -538,10 +606,13 @@ impl Publishing {
             self.order.retain(|name| *name != request.name);
         }
         self.figures.accepted += 1;
+        let asked = Instant::now();
         self.pending.push(Pending {
+            deadline: asked + request.expiry,
             request,
             snap: SnapId(ulid::Ulid::new()),
-            asked: Instant::now(),
+            asked,
+            lapse: None,
             stage: Stage::Look,
         });
         Answer::Accepted
@@ -555,7 +626,53 @@ impl Publishing {
         match self.outcomes.get(name) {
             Some(Outcome::Done(_, commit)) => Progress::Done(*commit),
             Some(Outcome::Refused(why)) => Progress::Refused(why.clone()),
+            Some(Outcome::Lapsed(Lapse::Expired)) => Progress::Expired,
+            Some(Outcome::Lapsed(Lapse::Withdrawn)) => Progress::Withdrawn,
             None => Progress::Unknown,
+        }
+    }
+
+    /// End each publish whose time is up at `now` ([`Request::expiry`]):
+    /// it is dropped and counted ([`Progress::Expired`]). One whose
+    /// transaction failed, and so may have landed, is looked up first:
+    /// it ends done if the transaction landed, expired if not, and its
+    /// transaction is not made again.
+    pub fn expire(&mut self, now: Instant) {
+        for pending in &mut self.pending {
+            if pending.lapse.is_none() && now >= pending.deadline {
+                pending.lapse = Some(Lapse::Expired);
+            }
+        }
+        self.end_lapsed();
+    }
+
+    /// Withdraw the publish of `name`: it ends at once
+    /// ([`Progress::Withdrawn`]), unless a transaction of it failed and
+    /// may have landed; then it is looked up first, and ends done if the
+    /// transaction landed, withdrawn if not. A name not pending is left as
+    /// it stands. How the name stands after.
+    pub fn withdraw(&mut self, name: &str) -> Progress {
+        if let Some(i) = self.at(name) {
+            self.pending[i].lapse = Some(Lapse::Withdrawn);
+            self.end_lapsed();
+        }
+        self.progress(name)
+    }
+
+    /// End each lapsed publish that has no transaction that may have
+    /// landed.
+    fn end_lapsed(&mut self) {
+        let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| p.lapse.is_some() && !matches!(p.stage, Stage::Recheck(_)));
+        self.pending = kept;
+        for pending in ended {
+            let Some(lapse) = pending.lapse else { continue };
+            match lapse {
+                Lapse::Expired => self.figures.expired += 1,
+                Lapse::Withdrawn => self.figures.withdrawn += 1,
+            }
+            self.end(&pending.request.name, Outcome::Lapsed(lapse));
         }
     }
 
@@ -593,6 +710,13 @@ impl Publishing {
     /// that carries it, or waits for one.
     pub(crate) fn absent(&mut self, name: &str) {
         let Some(i) = self.at(name) else { return };
+        if self.pending[i].lapse.is_some() {
+            // Its time is up, or it was withdrawn, after a transaction
+            // that did not land: it ends, and is not made again.
+            self.pending[i].stage = Stage::Look;
+            self.end_lapsed();
+            return;
+        }
         let first = self
             .known
             .iter()

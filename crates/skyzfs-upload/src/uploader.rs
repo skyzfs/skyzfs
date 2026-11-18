@@ -50,7 +50,10 @@
 //! An uploader that will upload nothing more (its lease lost, or its
 //! driver stopped) publishes nothing more either: its publishes pending
 //! end refused, and so does every request after
-//! ([`crate::publish::Publishing::stop`], F4 of #122's review).
+//! ([`crate::publish::Publishing::stop`], F4 of #122's review). Each
+//! turn first ends the publishes whose time is up
+//! ([`crate::publish::Publishing::expire`]), whatever the turn does
+//! next: before the lease is held, and while the uploader is idle.
 //!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
@@ -229,6 +232,9 @@ where
     /// the failure and a slow take's wait at the take's end.
     pub async fn turn(&mut self) -> Duration {
         let mut now = Instant::now();
+        // Publishes whose time is up end now, whatever the uploader does
+        // next, so that `publish?` says so as soon as it is so.
+        self.publishing().expire(now);
         if now >= self.lease_at {
             self.lease_at = Self::keep_lease(&mut self.lease, &mut self.lease_backoff, now).await;
             now = Instant::now();

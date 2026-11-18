@@ -407,6 +407,8 @@ impl<L: Local, R: Remote> Driver<L, R> {
     /// none has work. An error leaves the publish pending, to be looked up
     /// before its transaction is made again.
     pub async fn step_publish(&mut self) -> Result<Step, RemoteError> {
+        // A publish whose time is up makes no transaction.
+        self.publishing.expire(tokio::time::Instant::now());
         let result = match self.publishing.next() {
             Some((name, stage)) => self.publish(name, stage).await,
             None => Ok(Step::Idle),

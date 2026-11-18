@@ -12,6 +12,7 @@ fn request(name: &str, after: u64, group: u64) -> Request {
         after,
         group,
         manifest: b"the pool's manifest".to_vec(),
+        expiry: EXPIRY_DEFAULT,
     }
 }
 
@@ -93,6 +94,7 @@ fn a_request_is_refused_for_its_name_attachment_state_or_manifest() {
             after: 0,
             group: 0,
             manifest: vec![7; len],
+            expiry: EXPIRY_DEFAULT,
         };
         assert_eq!(
             publishing.ask(asked),
@@ -522,4 +524,128 @@ fn the_keys_are_named_as_documented() {
             skynbd_engine::keys::volume_prefix(vol)
         )
     );
+}
+
+/// An expiry of zero, or over an hour, is refused; an hour is not.
+#[test]
+fn a_request_is_refused_for_its_expiry() {
+    let mut publishing = publishing();
+    for expiry in [Duration::ZERO, EXPIRY_MAX + Duration::from_nanos(1)] {
+        let mut asked = request("t", 0, 0);
+        asked.expiry = expiry;
+        assert_eq!(
+            publishing.ask(asked),
+            Answer::Refused(Refusal::Expiry(expiry))
+        );
+    }
+    assert_eq!(publishing.pending().0, 0);
+    let mut asked = request("t", 0, 0);
+    asked.expiry = EXPIRY_MAX;
+    assert_eq!(publishing.ask(asked), Answer::Accepted);
+    assert_eq!(EXPIRY_DEFAULT, Duration::from_secs(600));
+    assert_eq!(EXPIRY_MAX, Duration::from_secs(3600));
+}
+
+/// A publish whose time is up (the lead's decision on Q1 of #122's
+/// review) is dropped and counted, at any stage: to be looked up,
+/// waiting for a cut, or ready on one. One whose transaction failed is
+/// looked up first: absent, it ends expired and is not made again; found
+/// recording it, it ends done. Before its time nothing ends, and a name
+/// that expired is looked up anew when asked again.
+#[test]
+fn a_publish_whose_time_is_up_is_dropped_unless_its_transaction_may_have_landed() {
+    let mut publishing = publishing();
+    let asked_at = Instant::now();
+    for name in ["look", "wait", "ready", "absent", "landed"] {
+        // `wait` asks for a group that cut 3 does not reach.
+        let group = if name == "wait" { 50 } else { 40 };
+        let mut asked = request(name, 1, group);
+        asked.expiry = Duration::from_secs(60);
+        assert_eq!(publishing.ask(asked), Answer::Accepted);
+    }
+    publishing.absent("wait");
+    for name in ["ready", "absent", "landed"] {
+        publishing.absent(name);
+    }
+    // `committed` sweeps on the real clock: well before the deadline.
+    publishing.committed(cut(3, 42, true));
+    for name in ["absent", "landed"] {
+        publishing.failed(name);
+    }
+    assert_eq!(stage(&publishing, "look"), Some(Stage::Look));
+    assert_eq!(stage(&publishing, "wait"), Some(Stage::Wait));
+    assert_eq!(
+        stage(&publishing, "ready"),
+        Some(Stage::Ready(cut(3, 42, true)))
+    );
+
+    publishing.expire(asked_at + Duration::from_secs(59));
+    assert_eq!(publishing.pending().0, 5, "nothing ends before its time");
+
+    publishing.expire(asked_at + Duration::from_secs(61));
+    for name in ["look", "wait", "ready"] {
+        assert_eq!(publishing.progress(name), Progress::Expired, "{name}");
+    }
+    assert_eq!(publishing.figures().expired, 3);
+    for name in ["absent", "landed"] {
+        assert_eq!(publishing.progress(name), Progress::Pending, "{name}");
+    }
+    assert!(matches!(publishing.next(), Some((_, Stage::Recheck(_)))));
+
+    // Absent once looked up: expired, and not made again.
+    publishing.absent("absent");
+    assert_eq!(publishing.progress("absent"), Progress::Expired);
+    assert_eq!(publishing.figures().expired, 4);
+    // Landed after all: done.
+    let (_, row, _) = publishing
+        .snapshot("landed", &cut(3, 42, true))
+        .expect("pending");
+    let found = Found {
+        commit: [3; 32],
+        row: Some(row.encode()),
+    };
+    assert_eq!(publishing.found("landed", &found), Ok(row));
+    assert_eq!(publishing.progress("landed"), Progress::Done([3; 32]));
+    assert_eq!(publishing.figures().expired, 4);
+    assert_eq!(publishing.next(), None);
+
+    // Asked again: looked up anew.
+    assert_eq!(publishing.ask(request("wait", 1, 40)), Answer::Accepted);
+    assert_eq!(stage(&publishing, "wait"), Some(Stage::Look));
+}
+
+/// A publish withdrawn ends at once, at any stage but after a failed
+/// transaction: then it is looked up first, and ends withdrawn if absent
+/// and done if it landed. A name not pending is left as it stands.
+#[test]
+fn a_withdrawn_publish_ends_at_once_or_once_its_failed_transaction_is_looked_up() {
+    let mut publishing = publishing();
+    for name in ["look", "absent", "landed"] {
+        assert_eq!(publishing.ask(request(name, 1, 40)), Answer::Accepted);
+    }
+    publishing.committed(cut(3, 42, true));
+    for name in ["absent", "landed"] {
+        publishing.absent(name);
+        publishing.failed(name);
+    }
+    assert_eq!(publishing.withdraw("look"), Progress::Withdrawn);
+    assert_eq!(publishing.withdraw("absent"), Progress::Pending);
+    assert_eq!(publishing.withdraw("landed"), Progress::Pending);
+    assert_eq!(publishing.figures().withdrawn, 1);
+    publishing.absent("absent");
+    assert_eq!(publishing.progress("absent"), Progress::Withdrawn);
+    let (_, row, _) = publishing
+        .snapshot("landed", &cut(3, 42, true))
+        .expect("pending");
+    let found = Found {
+        commit: [3; 32],
+        row: Some(row.encode()),
+    };
+    assert_eq!(publishing.found("landed", &found), Ok(row));
+    assert_eq!(publishing.progress("landed"), Progress::Done([3; 32]));
+    assert_eq!(publishing.figures().withdrawn, 2);
+    assert_eq!(publishing.withdraw("landed"), Progress::Done([3; 32]));
+    assert_eq!(publishing.withdraw("never"), Progress::Unknown);
+    assert_eq!(publishing.figures().withdrawn, 2);
+    assert_eq!(publishing.pending().0, 0);
 }
