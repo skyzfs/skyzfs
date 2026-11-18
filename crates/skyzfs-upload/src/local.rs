@@ -5,9 +5,9 @@
 //!
 //! The store lives on the queue's thread and the uploader off it. The
 //! daemon (M2.4c) answers these calls on the queue's thread between its
-//! turns, by a channel, so each is one round trip there and back; the
-//! tests and a store with no queue answer them at once ([`Local`] for
-//! [`InPlace`]).
+//! turns ([`crate::queued`]), so each is one round trip there and back;
+//! the tests and a store with no queue answer them at once ([`Store`],
+//! which gives [`Local`]).
 
 use std::io;
 
@@ -102,8 +102,54 @@ pub trait Local {
     async fn abandon_all(&mut self) -> Vec<u64>;
 }
 
-impl<D: Dir> Local for InPlace<D> {
+/// [`Local`] answered at once, where the store lives: the store's side of
+/// each call. The daemon answers the uploader's calls with it on the
+/// queue's thread (`queued`); the tests and a store with no queue use it
+/// as [`Local`] directly.
+pub trait Store {
+    /// [`Local::uploadable`].
+    fn uploadable(&mut self) -> Option<Uploadable>;
+    /// [`Local::read`], into `buf`.
+    fn read(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice>;
+    /// [`Local::sync_copies`].
+    fn sync_copies(&mut self, number: u64) -> io::Result<()>;
+    /// [`Local::release`].
+    fn release(&mut self, number: u64) -> Released;
+    /// [`Local::name_committed`].
+    fn name_committed(&mut self, number: u64, group: u64) -> bool;
+    /// [`Local::abandon_all`].
+    fn abandon_all(&mut self) -> Vec<u64>;
+}
+
+impl<S: Store> Local for S {
     async fn uploadable(&mut self) -> Option<Uploadable> {
+        Store::uploadable(self)
+    }
+
+    async fn read(&mut self, number: u64, from: u64, mut buf: Buf) -> (Buf, io::Result<CutSlice>) {
+        let read = Store::read(self, number, from, &mut buf);
+        (buf, read)
+    }
+
+    async fn sync_copies(&mut self, number: u64) -> io::Result<()> {
+        Store::sync_copies(self, number)
+    }
+
+    async fn release(&mut self, number: u64) -> Released {
+        Store::release(self, number)
+    }
+
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        Store::name_committed(self, number, group)
+    }
+
+    async fn abandon_all(&mut self) -> Vec<u64> {
+        Store::abandon_all(self)
+    }
+}
+
+impl<D: Dir> Store for InPlace<D> {
+    fn uploadable(&mut self) -> Option<Uploadable> {
         let first = *self.held_cuts().first()?;
         if first.phase != CutPhase::Uploading {
             return None;
@@ -117,18 +163,17 @@ impl<D: Dir> Local for InPlace<D> {
         })
     }
 
-    async fn read(&mut self, number: u64, from: u64, mut buf: Buf) -> (Buf, io::Result<CutSlice>) {
-        let read = self.read_cut_from(number, from, &mut buf);
-        (buf, read)
+    fn read(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice> {
+        self.read_cut_from(number, from, buf)
     }
 
-    async fn sync_copies(&mut self, number: u64) -> io::Result<()> {
+    fn sync_copies(&mut self, number: u64) -> io::Result<()> {
         self.sync_cut_copies(number)?;
         self.cut_copies_synced(true)
             .unwrap_or_else(|| Err(io::Error::other("the sync of the copies did not end")))
     }
 
-    async fn release(&mut self, number: u64) -> Released {
+    fn release(&mut self, number: u64) -> Released {
         if !self.release_cut(number) {
             return Released::Gone;
         }
@@ -141,11 +186,11 @@ impl<D: Dir> Local for InPlace<D> {
         }
     }
 
-    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+    fn name_committed(&mut self, number: u64, group: u64) -> bool {
         self.name_committed_cut(number, group)
     }
 
-    async fn abandon_all(&mut self) -> Vec<u64> {
+    fn abandon_all(&mut self) -> Vec<u64> {
         self.abandon_all_cuts()
     }
 }
