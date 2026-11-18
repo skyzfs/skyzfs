@@ -28,7 +28,7 @@ FAILURE = 'cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n'
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
               split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None,
-              failure=FAILURE):
+              failure=FAILURE, tamper_starts=None, tamper_marks=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -45,12 +45,16 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     ns) changes the holder's writes after that renumbering, or, after
     another split, with ns the second instance's start. holder_log:
     the holder's log in place of a right one's; holder_left: where given,
-    only these of the holder's files are left."""
+    only these of the holder's files are left. tamper_starts(starts)
+    changes the statuses read at each start; tamper_marks(marks) the
+    rig's marks."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
     if tamper_log:
         text = tamper_log(text)
+    if tamper_marks:
+        marks = tamper_marks(marks)
     d = tempfile.mkdtemp(prefix='cdc-')
     try:
         if holder is not None:
@@ -88,6 +92,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
                 starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
+            if tamper_starts:
+                starts = tamper_starts(starts)
             t.holder_files(d, written, blocks, final, starts=starts,
                            **({'log': holder_log} if holder_log is not None else {}))
             if holder_left is not None:
@@ -297,6 +303,67 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=lambda written, blocks, final: None, as_name='bound')
         self.assertEqual(lines['cuts_abandoned'][0], 'FAIL', lines['cuts_abandoned'])
         self.assertEqual(rc, 1)
+
+    def test_a_failed_instance_line_is_a_verdict(self):
+        """A start's status that only its instance line judges (cuts_held
+        at an acknowledged start, G3 of #113) ends main with 1 (the plant I7
+        of #111: main dropped what instance_lines returns)."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - k}\n')
+        held = lambda starts: starts[:1] + tuple(st.replace('cuts_held 0', 'cuts_held 1') for st in starts[1:])  # noqa: E731,E501
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed',
+                              tamper_starts=held)
+        self.assertEqual(lines['instance_2'][0], 'FAIL', lines['instance_2'])
+        self.assertEqual([key for key, (v, _) in lines.items() if v in ('FAIL', 'ERROR')], ['instance_2'])
+        self.assertEqual(rc, 1)
+
+    def test_a_group_synced_with_no_flush(self):
+        """A group the pool committed with no flush (zfs_nocacheflush,
+        between the marks noflush-begin and noflush-end) is cut by neither
+        the daemon nor the reference: main leaves it out of the sessions'
+        committed groups and says so (the plant N5 of #111). Without the
+        marks, `sessions` holds it to a cut and fails."""
+        records, read, dev = t.fixture('life')
+        cs, at = t.daemon_cuts_of(records, read, dev)
+        text, _ = t.request_log(records, read, dev, at)
+        lines = text.splitlines()
+        cuts = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut']
+        ci = cuts[10]
+        self.assertEqual([lines[i].split('\t')[2:5] for i in (ci - 2, ci - 1)],
+                         [['recv', '1', 'flush'], ['barrier', '1', 'flush']])
+        group = lines[ci].split('\t')[7]
+        lo, hi = int(lines[cuts[9]].split('\t')[0]) + 5, int(lines[ci].split('\t')[0]) + 5
+
+        # every flush from the one that cut the group to the one before the
+        # next cut's: under zfs_nocacheflush the pool sends none of them
+        gone = set(range(ci - 2, ci + 1)) | {i for i in range(ci + 1, cuts[11] - 2)
+                                             if lines[i].split('\t')[2:5] in (['recv', '1', 'flush'],
+                                                                               ['barrier', '1', 'flush'])}
+        self.assertEqual(len(gone), 5)
+
+        def no_flush(text):
+            return ''.join(ln + '\n' for i, ln in enumerate(text.splitlines()) if i not in gone)
+
+        def span(marks):
+            return ''.join(f'{n}\t{m}\n' for n, m in sorted(
+                [tuple(ln.split('\t')) for ln in marks.splitlines()] + [(str(lo), 'noflush-begin'),
+                                                                         (str(hi), 'noflush-end')],
+                key=lambda nm: int(nm[0])))
+        last = cs[-1]
+        op = cut_ref.opens(records, read, dev, cs)
+        status = (f"cuts {len(cs) - 1}\ncut_group {last['txg']}\n"
+                  f"cut_opens {'itself' if op[last['n']]['itself'] else 'rewind'}\nage_ms 0\n")
+        rc, out = recording(no_flush, status=status, tamper_marks=span)
+        self.assertEqual(out['sessions'][0], 'PASS', out['sessions'])
+        self.assertEqual(out['obs_noflush_groups'][0], 'INFO')
+        self.assertIn(f'groups [{group}] were synced with no flush', out['obs_noflush_groups'][1])
+        self.assertEqual(rc, 0, {k: v for k, v in out.items() if v[0] in ('FAIL', 'ERROR')})
+        rc, out = recording(no_flush, status=status)
+        self.assertEqual(out['sessions'][0], 'FAIL', out['sessions'])
+        self.assertNotIn('obs_noflush_groups', out)
 
     def test_an_acknowledged_failure(self):
         """The recording `failed` (stage 2c): a later start that

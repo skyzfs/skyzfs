@@ -1304,6 +1304,19 @@ class FirstCommit(unittest.TestCase):
         self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
                                           '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
 
+    def test_the_first_of_several_and_only_a_release(self):
+        """The plants F4-F6 of the second look at #111: the first release
+        answered, not the last; a write's `ok` is no commit (every real log
+        has one before its release); a line that is not a time and a text
+        is passed over, not the end of the reading."""
+        two = '1\t> t2 release 1\n2\t< t2 ok (0 lines)\n9\t> t3 release 2\n10\t< t3 ok (0 lines)\n'
+        self.assertEqual(cdc.first_commit(two), 2)
+        write = '1\t> t1 write 1 /img\n2\t< t1 ok (0 lines)\n3\t> t2 release 1\n4\t< t2 ok (0 lines)\n'
+        self.assertEqual(cdc.first_commit(write), 4)
+        self.assertIsNone(cdc.first_commit('1\t> t1 write 1 /img\n2\t< t1 ok (0 lines)\n'))
+        self.assertEqual(cdc.first_commit('a line torn\n1\t> t2 release 1\n2\t< t2 ok (0 lines)\n'), 2)
+        self.assertEqual(cdc.first_commit('1\tx\ty\n1\t> t2 release 1\n2\t< t2 ok (0 lines)\n'), 2)
+
 
 class FailureLine(unittest.TestCase):
     def run_on(self, text):
@@ -1581,6 +1594,60 @@ class TwoInstances(unittest.TestCase):
                 self.assertEqual('no cut committed before it' in got[1][2], log is late)
             finally:
                 shutil.rmtree(d)
+
+    def test_instance_lines_and_the_commit(self):
+        """The plants L3, L4, L6, L7, L9, L10 and L13 of the second look at
+        #111: what a start's intent map may say, by where the first commit
+        falls (the holder's log, on the request log's clock)."""
+        import copy
+        import shutil
+        import tempfile
+        inst, recs, dcuts, _ = self.judge(split_log(self.text, self.k))
+        inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
+        t0, t1 = inst[0]['ns'], inst[1]['ns']
+        second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
+                  'intent_named_at_start 3\n')
+        begun_map = second.replace('intent_state taken_up', 'intent_state begun')
+        between = f'1\t> t1 release 1\n{(t0 + t1) // 2}\t< t1 ok (0 lines)\n'   # after the first start
+        late = f'1\t> t1 release 1\n{t1 + 1}\t< t1 ok (0 lines)\n'               # after the second
+        none = '1\t> t1 held\n2\t< t1 ok (1 lines)\n'                             # no release at all
+        first_taken = START_STATUS.replace('intent_state begun', 'intent_state taken_up')
+        cuts_begun = copy.deepcopy(inst)
+        for ln in cuts_begun[1]['lines']:
+            if ln['event'] == 'cuts':
+                ln['result'] = 'begun'
+        self.assertIn('cuts', [ln['event'] for ln in inst[1]['lines']])
+        cases = (
+            # L6, L7: a commit between the two starts; the second must take the map up
+            ('between, a begun map', inst, (START_STATUS, begun_map), between, 1),
+            ('between, taken up', inst, (START_STATUS, second), between, 0),
+            # L4: with no release at all, the map may be begun anew
+            ('no release, a begun map', inst, (START_STATUS, begun_map), none, 0),
+            # L9: where the map takes either, the cuts line still says taken_up
+            ('late, the cuts line begun', cuts_begun, (START_STATUS, second), late, 1),
+            # L10: where the map takes either, it must say one of the two
+            ('late, the map off', inst, (START_STATUS, second.replace('taken_up\nintent_regions',
+                                                                       'off\nintent_regions')), late, 1),
+            ('late, the map not said', inst, (START_STATUS, second.replace('intent_state taken_up\n', '')),
+             late, 1),
+            # L3, L13: the first start's map is begun, whenever the commit
+            ('late, the first start takes the map up', inst, (first_taken, second), late, 1),
+            ('committed, the first start takes the map up', inst, (first_taken, second), COMMITTED, 1),
+        )
+        for name, ins, starts, log, want in cases:
+            with self.subTest(name):
+                d = tempfile.mkdtemp(prefix='cdc-inst-')
+                try:
+                    for k, st in enumerate(starts):
+                        with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                            f.write(st)
+                    with open(os.path.join(d, 'holder.log'), 'w') as f:
+                        f.write(log)
+                    got = []
+                    rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, ins, dcuts, recs)
+                    self.assertEqual(rc, want, got)
+                finally:
+                    shutil.rmtree(d)
 
 
 class NoFlush(unittest.TestCase):

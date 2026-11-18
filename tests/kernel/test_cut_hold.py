@@ -283,7 +283,7 @@ class AgainstAFake(unittest.TestCase):
         self.assertTrue(holder.step())
         self.assertEqual(holder.written, [2])
 
-    def program(self, cuts, at_stop, **kw):
+    def program(self, cuts, at_stop, leave=False, **kw):
         """cut_hold.py run as the rig runs it, against the fake; AT_STOP:
         the stop file exists before it starts, so a refusal comes in its
         drain and not in its loop -> (exit status, its log's lines)."""
@@ -296,6 +296,9 @@ class AgainstAFake(unittest.TestCase):
         if at_stop:
             open(stop, 'w').close()
         env = {k: v for k, v in os.environ.items() if not k.startswith('CUT_HOLD_')}
+        if leave:
+            env['CUT_HOLD_LEAVE'] = os.path.join(self.d, 'leave')
+            open(env['CUT_HOLD_LEAVE'], 'w').close()
         p = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'cut_hold.py'), self.out, str(self.proc.pid),
                             vdir, rdir, self.image, str(16 * 4096), stop, shutil.which('true') or '/bin/true'],
                            env=env, capture_output=True, timeout=60, check=False)
@@ -314,6 +317,17 @@ class AgainstAFake(unittest.TestCase):
                 self.assertIn('read block 7 of cut 1: ', [ln for ln in log if '\tVERDICT ' in ln][0])
                 self.tearDown()
                 self.setUp()
+
+    def test_the_program_ends_at_a_leave(self):
+        """A leave ends the holder with 0 and holds on to what it holds: no
+        drain, no final listing (the plant H4 of #111). The recording
+        `takeover` leaves its cuts held for the next instance."""
+        rc, log = self.program({'1': [5, 'itself', {'0': 1}]}, False, leave=True)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual([ln.split('\t', 1)[1] for ln in log if ln.split('\t', 1)[1] == 'left'], ['left'])
+        self.assertFalse([ln for ln in log if '\tdrained' in ln or ' release ' in ln or ' write ' in ln], log)
+        for name in ('held-final.txt', 'status-held.txt', 'held-image.tsv'):
+            self.assertFalse(os.path.exists(os.path.join(self.out, name)), name)
 
     def test_the_program_ends_with_2_at_the_rigs_error(self):
         for at_stop in (False, True):
