@@ -2154,10 +2154,14 @@ async fn a_publish_accepted_between_turns_is_taken_at_once() {
         let asked_at = tokio::time::Instant::now();
         let answer = ask_of(&inbox, |r| Control::Ask(asked(state, "t", 0, 7), r)).await;
         assert_eq!(answer, Answer::Accepted);
-        loop {
+        // Polled with a short sleep, not a yield: the clock is paused and
+        // moves only while every task waits, and a mutant that leaves the
+        // publish to the idle wait must reach it (and fail below) rather
+        // than poll for ever.
+        while asked_at.elapsed() < 2 * IDLE {
             match ask_of(&inbox, |r| Control::Progress("t".into(), r)).await {
                 Progress::Done(_) => break,
-                Progress::Pending => tokio::task::yield_now().await,
+                Progress::Pending => tokio::time::sleep(Duration::from_millis(1)).await,
                 other => panic!("{other:?}"),
             }
         }
@@ -2240,6 +2244,32 @@ async fn a_publish_whose_time_is_up_reads_expired_between_turns() {
     let (_keeper, (before, at)) = tokio::join!(run, client);
     assert_eq!(before, Progress::Pending);
     assert_eq!(at, Progress::Expired);
+}
+
+/// A request is judged against the store's cut state as it is when it
+/// is asked: one whose state was read after the store's first cut is
+/// taken before any turn has checked that cut, and one of another state
+/// is refused all the same.
+///
+/// Mutant: the state left to the driver's check (the first is refused
+/// `State`).
+#[tokio::test(start_paused = true)]
+async fn a_request_is_judged_against_the_stores_cut_state_when_it_is_asked() {
+    let mut fx = Fixture::new(86).await;
+    let store = one_cut(&mut fx);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), None);
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    assert!(up.control(Control::Ask(asked(state, "t", 0, 1), reply)).await);
+    assert_eq!(answer.await.ok(), Some(Answer::Accepted));
+    let mut other = state;
+    other[0] ^= 1;
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    assert!(!up.control(Control::Ask(asked(other, "u", 0, 1), reply)).await);
+    assert_eq!(answer.await.ok(), Some(Answer::Refused(Refusal::State)));
+    assert_eq!(up.publishing().progress("t"), Progress::Pending);
 }
 
 /// The count of cuts a request reads is the store's when it is asked: a

@@ -307,6 +307,17 @@ where
                 if reply.is_closed() {
                     return false;
                 }
+                // The store's cut state as it is now. The driver names it
+                // at each check of a cut; a request whose state was read
+                // with `cuts` after the store's first cut, and before
+                // that check, would be refused otherwise.
+                let state = match self.local() {
+                    Some(local) => local.cuts().await.state,
+                    None => None,
+                };
+                if let Some(state) = state {
+                    self.publishing().set_state(state);
+                }
                 let answer = self.publishing().ask(request);
                 let accepted = answer == Answer::Accepted;
                 let _ = reply.send(answer);
