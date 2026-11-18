@@ -113,6 +113,11 @@ enum Step {
     Fail,
     /// The cut being uploaded is uploaded and let go.
     Release,
+    /// The pool's history went back past the cuts (a mismatch, D7):
+    /// every held cut is let go, and the next cut counts the whole
+    /// volume as changed (`abandon_all`). Only in the programs of
+    /// [`program_with_mismatches`] (the review of #125, G1).
+    Mismatch,
 }
 
 /// The rules of D7, independently of the state: the held cuts as
@@ -212,6 +217,14 @@ impl Rules {
             None => self.open_lo = lo,
         }
     }
+
+    /// A mismatch lets every held cut go, oldest first, each as at the
+    /// bound: the open map ends with the lowest `lo`.
+    fn mismatch(&mut self) {
+        while !self.held.is_empty() {
+            self.abandon();
+        }
+    }
 }
 
 /// A program's run: the state, the disk under it and the models.
@@ -230,6 +243,10 @@ struct World {
     touched: Vec<bool>,
     /// For each block, the epochs in which it was written or zeroed.
     changes: Vec<BTreeSet<u64>>,
+    /// The epochs that count the whole volume as changed: the first, of
+    /// a state begun with nothing known, and the open epoch at each
+    /// mismatch.
+    whole: BTreeSet<u64>,
     /// The image the next upload goes onto: `None` where nothing was
     /// uploaded or a hole was.
     uploaded: Vec<Option<u64>>,
@@ -297,6 +314,7 @@ impl World {
                 })
                 .collect(),
             changes: vec![BTreeSet::new(); BLOCKS as usize],
+            whole: BTreeSet::from([1]),
             uploaded: vec![None; BLOCKS as usize],
             rules: Rules::default(),
             flushing: VecDeque::new(),
@@ -479,6 +497,19 @@ impl World {
                 }
                 self.rules.release();
             }
+            Step::Mismatch => {
+                if self.failed {
+                    return Ok(());
+                }
+                let epoch = self.state.count() + 1;
+                let abandoned = self.state.abandon_all();
+                self.whole.insert(epoch);
+                self.rules.mismatch();
+                self.abandoned += abandoned.len() as u64;
+                // A flush under way still completes; its cut is not held,
+                // and the state passes it by.
+                self.flushing.clear();
+            }
         }
         Ok(())
     }
@@ -613,7 +644,8 @@ impl World {
                     .iter()
                     .any(|c| c.number > cut.number && c.lo <= cut.lo);
             let let_go = cut.phase == Phase::Uploading
-                || (cut.phase == Phase::Flushing && step == Step::Cut);
+                || (cut.phase == Phase::Flushing && step == Step::Cut)
+                || step == Step::Mismatch;
             let at_bound = matches!(step, Step::Write(..) | Step::Zero(..))
                 && before[..i]
                     .iter()
@@ -625,8 +657,9 @@ impl World {
                 ));
             }
         }
-        // The cuts abandoned: in a change, the oldest cuts held before
-        // it that are lost, each once; in any other step, none. This
+        // The cuts abandoned: in a change or a mismatch, the oldest cuts
+        // held before it that are lost, each once; in any other step,
+        // none. This
         // world's copier never refuses, so a change abandons only at the
         // bound, oldest first. A refused copy lets go the newest cuts
         // instead, which this check would have to know if the world
@@ -636,7 +669,7 @@ impl World {
             .iter()
             .take_while(|cut| !after.iter().any(|c| c.number == cut.number))
             .count() as u64;
-        let abandoned = if matches!(step, Step::Write(..) | Step::Zero(..)) {
+        let abandoned = if matches!(step, Step::Write(..) | Step::Zero(..) | Step::Mismatch) {
             lost_oldest
         } else {
             0
@@ -709,7 +742,7 @@ impl World {
     /// The blocks written or zeroed in the epochs `(lo, number]`, or
     /// every block if the whole volume counts as changed in them.
     fn model_map(&self, lo: u64, number: u64) -> Vec<u64> {
-        if lo < 1 && number >= 1 {
+        if self.whole.range(lo + 1..=number).next().is_some() {
             return (0..BLOCKS).collect();
         }
         (0..BLOCKS)
@@ -811,6 +844,26 @@ fn program(seed: u64, len: usize) -> Vec<Step> {
                 68..=83 => Step::Flushed,
                 84..=85 => Step::Fail,
                 _ => Step::Release,
+            }
+        })
+        .collect()
+}
+
+/// A program of `len` steps from `seed` as [`program`] makes it, with
+/// about one step in twelve a mismatch in its place (the review of
+/// #125, G1): every held cut let go while the hole set may hold.
+fn program_with_mismatches(seed: u64, len: usize) -> Vec<Step> {
+    let mut x = seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1;
+    program(seed, len)
+        .into_iter()
+        .map(|step| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if x % 12 == 0 {
+                Step::Mismatch
+            } else {
+                step
             }
         })
         .collect()
@@ -2596,6 +2649,110 @@ fn a_cut_made_whole_after_the_drop_reads_the_holes_written_before_it() {
     let slice = world.state.slice_from(number, 0, 64).expect("held");
     assert!(slice.zeroes.is_empty(), "{slice:?}");
     assert_eq!(slice.blocks, (0..64).collect::<Vec<u64>>());
+}
+
+/// A mismatch while the hole set holds (the review of #125, G1): every
+/// held cut is let go, and their maps go to the open map with the
+/// lowest `lo`, 0, so the set stays held and the next cut, whole and
+/// with `lo` 0, reads by it. Its map still holds every block written
+/// since the state began: block 1, written into a hole before the
+/// mismatch, reads as written, and the rest of its chunk as zeros; so
+/// do blocks 33 and 49, written into holes under the cuts let go. A
+/// write into a hole after the mismatch makes no copy for the new cut.
+/// The defects this catches: the open map cleared before the open epoch
+/// is marked whole (the new cut would read block 1 as a hole's zeros),
+/// and the set dropped at the mismatch (the write after it would be
+/// copied).
+#[test]
+fn a_mismatch_while_the_holes_are_held_keeps_them_and_the_writes_before_it() {
+    // Chunks 0, 2 and 3 (blocks 0 to 15 and 32 to 63) are holes, and
+    // chunk 1 (16 to 31) is data.
+    let steps = [
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Write(33, 1),
+        Step::Cut,
+        Step::Write(49, 1),
+        Step::Mismatch,
+        Step::Write(50, 1),
+        Step::Cut,
+        Step::Flushed,
+    ];
+    let mut world = run_in(true, &steps, 0, 64, None).expect("runs");
+    assert_eq!(world.state.figures().abandoned, 2);
+    assert_eq!(world.state.figures().holes, Holes::Held);
+    let held = world.state.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let (number, lo) = (held[0].number, held[0].lo);
+    assert_eq!((number, lo), (3, 0));
+    assert!(world.state.is_whole_cut(number));
+    for block in [1, 16, 31, 33, 49, 50] {
+        assert_eq!(
+            world.state.read(number, block),
+            Some(Read::Image),
+            "block {block}, written or data"
+        );
+    }
+    for block in [0, 2, 15, 32, 34, 47, 48, 51, 63] {
+        assert_eq!(
+            world.state.read(number, block),
+            Some(Read::Zero),
+            "block {block}, a hole's"
+        );
+    }
+    assert_eq!(world.state.figures().copied, 0);
+    world.step(Step::Write(40, 1)).expect("written");
+    assert_eq!(world.state.figures().copied, 0, "a write into a hole after it");
+    assert_eq!(world.state.read(number, 40), Some(Read::Zero));
+    world.step(Step::Release).expect("released");
+    assert_eq!(world.state.figures().holes, Holes::Dropped);
+}
+
+/// Over random programs with mismatches, with and without the image's
+/// holes, the bound at 2 blocks and at 64, every held cut reads as the
+/// volume at its instant and the hole set holds exactly while a cut may
+/// read by it (the review of #125, G1).
+#[test]
+fn every_held_cut_reads_as_the_volume_at_its_instant_through_mismatches() {
+    let mut mismatches = 0;
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in 0..200 {
+                let steps = program_with_mismatches(seed, 80);
+                mismatches += steps.iter().filter(|s| **s == Step::Mismatch).count();
+                if let Err(e) = run_in(holes, &steps, 0, bound, None) {
+                    panic!("holes {holes}, bound {bound}, seed {seed}: {e}");
+                }
+            }
+        }
+    }
+    assert!(mismatches > 1000, "{mismatches} mismatches");
+}
+
+/// The same with the daemon lost at every store of the region, a
+/// mismatch's stores included: four programs for each bound.
+#[test]
+fn a_death_at_any_store_through_mismatches_leaves_every_held_cut_whole() {
+    let mut runs = 0;
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in 0..4 {
+                let steps = program_with_mismatches(seed, 50);
+                assert!(steps.contains(&Step::Mismatch), "seed {seed}");
+                let stores = stores_in(holes, &steps, 0, bound);
+                for death in 0..stores {
+                    runs += 1;
+                    if let Err(e) = run_in(holes, &steps, 0, bound, Some(death)) {
+                        panic!(
+                            "holes {holes}, bound {bound}, seed {seed}, death at store {death}: {e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(runs > 500, "{runs} runs");
 }
 
 /// A copier for changes made while no cut is held: none needs a copy.
