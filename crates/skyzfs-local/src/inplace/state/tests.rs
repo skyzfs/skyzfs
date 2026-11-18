@@ -2927,3 +2927,71 @@ fn a_state_begun_from_an_intent_map_has_no_hole_set() {
     );
     assert_eq!(state.figures().holes, Holes::None);
 }
+
+/// The words of the state of version 2 in `state/region-v2.txt`.
+fn region_v2_words() -> Vec<u64> {
+    let mut words = Vec::new();
+    for line in include_str!("region-v2.txt")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let f: Vec<&str> = line.split(' ').collect();
+        match f[0] {
+            "len" => words = vec![0; f[1].parse().expect("a length")],
+            "w" => {
+                let at: usize = f[1].parse().expect("a word's place");
+                words[at] = u64::from_str_radix(f[2], 16).expect("hex");
+            }
+            _ => {}
+        }
+    }
+    words
+}
+
+/// A named region that holds a state of version 2, at that version's
+/// length, is opened at its own length and kept, with every word as it
+/// was, so that the start can take it up (M2.4e). A file of version 2 at
+/// another length, and no file, are made at this version's length; the
+/// version found is said either way.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_named_region_of_version_2_is_kept_at_its_own_length() {
+    let old = region_v2_words();
+    let bound = 64 * BLOCK_SIZE;
+    let records = records_for(bound);
+    assert_eq!(old.len(), words_of(2, BLOCKS, records));
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join("cuts");
+    let hold = crate::inplace::HoldCuts {
+        region: crate::inplace::CutRegion::Named(path.clone()),
+        boot: BOOT,
+        bound: Some(bound),
+        intent_region: None,
+        intent_header_sync: false,
+    };
+    let open = || Taken::open(&hold, SIZE, OWNER.volume, None, [9; 16]).expect("the region");
+    let bytes: Vec<u8> = old.iter().flat_map(|word| word.to_le_bytes()).collect();
+
+    std::fs::write(&path, &bytes).expect("the file");
+    let taken = open();
+    assert!(taken.kept);
+    assert_eq!(taken.found_version, Some(2));
+    assert_eq!(taken.region.words(), old.len());
+    for (at, &word) in old.iter().enumerate() {
+        assert_eq!(taken.region.load(at), word, "word {at}");
+    }
+    drop(taken);
+
+    std::fs::write(&path, &bytes[..bytes.len() - 8]).expect("the file");
+    let taken = open();
+    assert!(!taken.kept);
+    assert_eq!(taken.found_version, Some(2));
+    assert_eq!(taken.region.words(), words_for(BLOCKS, records));
+    drop(taken);
+
+    std::fs::remove_file(&path).expect("removed");
+    let taken = open();
+    assert!(!taken.kept);
+    assert_eq!(taken.found_version, None);
+    assert_eq!(taken.region.words(), words_for(BLOCKS, records));
+}

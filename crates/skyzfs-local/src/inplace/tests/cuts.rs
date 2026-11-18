@@ -1501,6 +1501,118 @@ fn a_cut_read_in_slices_holds_each_block_as_it_reads_alone() {
     }
 }
 
+/// Every slice of held cut `number` from its first block, each with the
+/// runs of zeros it names.
+fn zero_runs(store: &mut InPlace<SimDisk>, number: u64) -> Vec<(u64, u64)> {
+    let mut runs = Vec::new();
+    let mut buf = Buf::filled(16, 0xEE);
+    let mut from = Some(0);
+    while let Some(at) = from {
+        let slice = store.read_cut_from(number, at, &mut buf).expect("reads");
+        runs.extend(slice.zeroes);
+        from = slice.next;
+    }
+    runs
+}
+
+/// A daemon that takes the device over between the state's beginning and
+/// its first commit takes the state up with its hole set (M2.4e): the
+/// set is kept whole, and the first cut still reads as the volume at its
+/// instant: a block written into a hole before the instant as written,
+/// one written into a hole after it as zeros, with no copy made for it,
+/// and one written over data after it from its copy. The writes are
+/// flushed before the death, so that the image holds them. Deaths at
+/// every store of the state, and between a block's bit and its write,
+/// are in `state/tests.rs`.
+#[test]
+fn a_take_over_before_the_first_commit_keeps_the_hole_set() {
+    let disk = created(62, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    let begun = store.cut_figures();
+    assert_eq!(begun.holes, CutHoles::Held);
+    assert!(begun.hole_chunks > 0, "{begun:?}");
+    for block in 64..96 {
+        write(&mut store, block, block as u8).unwrap();
+    }
+    // Into a hole, before the instant.
+    write(&mut store, 210, 0xD2).unwrap();
+    group(&mut store, 100, 7, 70);
+    let (instant, _) = sliced(&mut store, 1, 16);
+    let block = |blocks: &[(u64, Vec<u8>)], at: u64| {
+        blocks
+            .iter()
+            .find(|(b, _)| *b == at)
+            .map(|(_, data)| data[0])
+    };
+    assert_eq!(block(&instant, 210), Some(0xD2));
+    assert_eq!(block(&instant, 200), Some(0));
+    // Into a hole and over data, after the instant.
+    write(&mut store, 200, 0xC8).unwrap();
+    write(&mut store, 70, 0x77).unwrap();
+    assert_eq!(store.cut_figures().copied, BLOCK, "a copy of block 70 only");
+    assert!(run(&mut store, 300, Op::Flush).result.is_ok());
+    drop(store);
+    disk.kill();
+
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    assert_eq!(store.cuts_at_start(), Some(&CutsTakenUp::TakenUp));
+    let taken = store.cut_figures();
+    assert_eq!(
+        (taken.holes, taken.hole_chunks),
+        (CutHoles::Held, begun.hole_chunks)
+    );
+    let (after, _) = sliced(&mut store, 1, 16);
+    assert!(after == instant, "cut 1 after the take-over");
+    assert!(!zero_runs(&mut store, 1).is_empty());
+}
+
+/// A volume whose image has no holes (made with `create --zero-fill`)
+/// has an empty hole set: its first cut reads every block of the image
+/// with no run of zeros, and a write over a block of it that nothing had
+/// written since the state began makes a copy, as before M2.4e. On a
+/// sparse volume the same write, into a hole, makes none.
+#[test]
+fn a_volume_made_zero_filled_has_no_holes_and_copies_as_before() {
+    for sparse in [true, false] {
+        let case = if sparse { "sparse" } else { "zero-filled" };
+        let disk = if sparse {
+            created(63, 0)
+        } else {
+            let disk = SimDisk::new(63);
+            disk.set_write_unit(BLOCK);
+            disk.set_page_size(BLOCK);
+            disk.set_block_size(Some(BLOCK));
+            let config = VolumeConfig {
+                volume: *b"in-place volume.",
+                size_mib: 1,
+                base: Base::Empty,
+                write_unit: 4096,
+            };
+            create_zero_filled(&disk, &config).unwrap();
+            disk
+        };
+        let mut store = start_on(&disk, 0, &region(), ON_CALLER);
+        let figures = store.cut_figures();
+        assert_eq!(figures.holes, CutHoles::Held, "{case}");
+        assert_eq!(figures.hole_chunks == 0, !sparse, "{case}: {figures:?}");
+        for block in 64..96 {
+            write(&mut store, block, block as u8).unwrap();
+        }
+        group(&mut store, 100, 7, 70);
+        write(&mut store, 200, 0xC8).unwrap();
+        write(&mut store, 70, 0x77).unwrap();
+        let copies = if sparse { 1 } else { 2 };
+        assert_eq!(store.cut_figures().copied, copies * BLOCK, "{case}");
+        let runs = zero_runs(&mut store, 1);
+        assert_eq!(runs.is_empty(), !sparse, "{case}: {runs:?}");
+        let (blocks, _) = sliced(&mut store, 1, 16);
+        assert_eq!(blocks.len(), VOLUME_BLOCKS as usize, "{case}");
+        let at = |b: u64| blocks[b as usize].1[0];
+        assert_eq!((at(200), at(70), at(80)), (0, 70, 80), "{case}");
+    }
+}
+
 /// A slice of a held cut reads each run of the image, and each run of
 /// copies in adjacent slots, in one read (M2.4, as M2.2d writes them):
 /// 16 blocks unchanged since the cut and 16 written over it in one
