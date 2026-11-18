@@ -63,13 +63,13 @@ class Embedded(unittest.TestCase):
         changed says so; a row without uploads has neither."""
         devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
         before = (devs + 'skz pid 7\nskz cuts 10\nskz uploaded 3\nskz uploaded_whole 1\nskz upload_blocks 900\n'
-                  'skz cuts_replaced 6\nskz cuts_abandoned 1\nskz upload_abandoned_at_mismatch 0\n'
-                  'skz upload_mismatches 0\nskz upload_errors 1\nskz cuts_held 1\nskz upload_cuts_lost 2\n'
+                  'skz cuts_replaced 6\nskz cuts_abandoned 1\nskz upload_abandoned_at_mismatch 1\n'
+                  'skz upload_mismatches 1\nskz upload_errors 1\nskz cuts_held 1\nskz upload_cuts_lost 2\n'
                   'skz upload_zero_blocks 100\nskz upload_cut 9\nskz upload_state idle\nskz lease waiting\n'
                   'skz cut_holes held\nskz cut_hole_chunks 7\n')
         after = (devs + 'skz pid 7\nskz cuts 40\nskz uploaded 9\nskz uploaded_whole 1\nskz upload_blocks 1500\n'
-                 'skz cuts_replaced 30\nskz cuts_abandoned 4\nskz upload_abandoned_at_mismatch 1\n'
-                 'skz upload_mismatches 1\nskz upload_errors 3\nskz cuts_held 2\nskz upload_cuts_lost 5\n'
+                 'skz cuts_replaced 30\nskz cuts_abandoned 4\nskz upload_abandoned_at_mismatch 2\n'
+                 'skz upload_mismatches 2\nskz upload_errors 3\nskz cuts_held 2\nskz upload_cuts_lost 5\n'
                  'skz upload_zero_blocks 8292\nskz upload_cut 39\nskz upload_state putting\nskz lease held\n'
                  'skz cut_holes dropped\nskz cut_hole_chunks 0\n')
         with tempfile.TemporaryDirectory() as d:

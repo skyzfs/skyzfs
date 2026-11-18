@@ -127,9 +127,10 @@ The second stage, where DIR/holder.log says the holder ran
   first written cut maps the whole volume and holds nearly all of them.
 - `cuts_abandoned`: at least one in `bound`, whose volume is written
   through at its create (`--zero-fill`); in `boundsparse`, the same
-  writes on a sparse volume, none and nothing copied, where the
-  daemon keeps the image's holes (`cut_holes` in its
-  status, M2.4e), and nothing asked of an older daemon; `edges`: at least one
+  writes on a sparse volume, none (the copies stayed under the
+  bound), where the daemon keeps the image's holes (status version 17,
+  M2.4e; `cut_holes` missing there is the rig's error), and nothing
+  asked of an older daemon; `edges`: at least one
   write-zeroes and one discard, and a cut written after the first that
   had a block a write-zeroes changed before its write (the rig's
   error otherwise: the recording did not hold a cut across it).
@@ -1511,23 +1512,33 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
             f'(--zero-fill, no holes), so at least one must be{said_holes if holes is not None else ""}')
         rc = rc if ok_ab else 1
     elif name == 'boundsparse':
-        cb, bb = status.get('cut_copied_bytes', ''), status.get('cut_bound_bytes', '')
-        if holes is None:
-            # A daemon from before M2.4e keeps no holes: it copies these
-            # writes as in bound, and nothing is asked of it here.
-            put('cuts_abandoned', 'INFO', f'{ab!r}: the daemon keeps no holes (no cut_holes in its status, before '
-                'M2.4e), so nothing is asked of it on a sparse volume')
+        ver = status.get('status_version', '')
+        if not (ver.isdigit() and int(ver) >= 17):
+            # A daemon from before M2.4e (status version 17) keeps no
+            # holes: it copies these writes as in bound, and nothing is
+            # asked of it here.
+            put('cuts_abandoned', 'INFO', f'{ab!r}: the daemon keeps no holes (status version {ver or "not said"}, '
+                'before 17 and M2.4e), so nothing is asked of it on a sparse volume')
+        elif holes is None:
+            put('cuts_abandoned', 'ERROR', f'status version {ver} and no cut_holes in the status: the rig cannot tell '
+                'whether the daemon kept the holes')
+            errored = True
         else:
             # M2.4e: a write into a hole of the image is not copied, and
-            # 320 MiB of new data go into holes: nothing is copied and no
-            # cut abandoned (0 and 0 on both images in #125's first run,
-            # 44371078092). Pinned, so that a change shows.
+            # 320 MiB of new data go into holes, so the copies stay under
+            # the bound of 256 MiB and no cut is abandoned (0 on both
+            # images in #125's first run, 44371078092). Only that is
+            # judged: the status is read after the holder let every cut
+            # go, when the copies are 0 for any daemon. While the first
+            # cut is held the daemon still copies the blocks the pool
+            # wrote before the cut and wrote again (labels, uberblocks,
+            # metadata: 0.75 to 1 MiB in 44378510338).
             ok_ab = ab is not None and ab.isdigit() and int(ab) == 0
-            ok_cp = cb == '0'
-            put('cuts_abandoned', 'PASS' if ok_ab and ok_cp else 'FAIL', f'{ab!r} abandoned, with the copies '
-                f'{cb!r} bytes of {bb!r}{said_holes}; the holder kept the first cut while the pool wrote 320 MiB of '
-                'new data into the holes of a sparse volume, so none must be, and nothing copied')
-            rc = rc if ok_ab and ok_cp else 1
+            why = '' if ok_ab or holes != 'none' else ': the daemon took no holes on this volume'
+            put('cuts_abandoned', 'PASS' if ok_ab else 'FAIL', f'{ab!r} abandoned{why}{said_holes}; the holder '
+                'kept the first cut while the pool wrote 320 MiB of new data into the holes of a sparse volume, so '
+                'none must be: the copies stayed under the bound')
+            rc = rc if ok_ab else 1
     else:
         put('cuts_abandoned', 'INFO', f'{ab!r}')
     cp = copied(records, dcuts, written, blocks)

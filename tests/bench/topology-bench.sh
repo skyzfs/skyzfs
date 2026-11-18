@@ -696,10 +696,12 @@ if drows:
               'commit, its writes dropped) over the window; the blocks written as zeros with nothing read (status '
               'version 17, M2.4e: not in blocks; n/a for an older daemon) over the window; at its end the image\'s '
               'holes (held, dropped or none, with their 64 KiB chunks); the cuts held at the start and at the end; the cut being uploaded '
-              'and the newest, the uploader\'s state and the lease; and the first upload before the windows '
-              '(TB_SKZ_UPLOAD_WAIT_S: how long it took with the pool idle, or under the workload, or NONE). Cuts taken = '
+              'and the newest, the uploader\'s state and the lease; and the first upload: with TB_SKZ_UPLOAD_WAIT_S above 0, '
+              'how long it took with the pool idle before the windows, or NONE; with 0, when it committed counted from the '
+              'import, to 5 s, and whether the workload had begun, or that it had not committed by the window\'s end. Cuts taken = '
               'uploaded + found committed − committed and gone − committed and kept + replaced + abandoned + the '
-              'change in held (status.rs\'s balance).\n')
+              'change in held (status.rs\'s balance); found committed, gone and kept have no column here (0 in every '
+              'window so far): where they are not, the balance is read from the status files.\n')
         print('| workload | daemon row | tps | cuts | uploaded (whole) | blocks | replaced | abandoned (at a mismatch) | '
               'mismatches | errors | lost | zero blocks | holes | held start → end | uploading / newest | state | lease | '
               'first upload |')
@@ -1123,10 +1125,14 @@ for t in $TOPOLOGIES; do
 done
 # A row that names uploads and has a topology other than the daemon
 # would measure it without them under a label that says otherwise.
-read -ra _topos <<< "$TOPOLOGIES"
-if [ "$SKZ_UPLOAD" = 1 ] && [ "${_topos[*]}" != zfs-skyzfsd ]; then
-    echo "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: $TOPOLOGIES" >&2; exit 64
-fi
+skz_upload_topologies() { # upload topologies -> 0, or 1 and why on stderr
+    local topos
+    read -ra topos <<< "$2"
+    if [ "$1" = 1 ] && [ "${topos[*]}" != zfs-skyzfsd ]; then
+        echo "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: $2" >&2; return 1
+    fi
+}
+skz_upload_topologies "$SKZ_UPLOAD" "$TOPOLOGIES" || exit 64
 if [ -n "$ANY_ZFS" ] && [ -z "$ZFS_ARC_MB" ] && [ -n "$MEM_LIMIT" ] && [ "$MEM_LIMIT" != max ]; then
     # The ARC is kernel memory outside postgres's cgroup. Give it what
     # the page cache can have in the other topologies: the cap minus
@@ -1280,7 +1286,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""; PR_PID=""
-SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_SEED_WATCH=""; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_SEED_WATCH=""; SKZ_SEED_T0=0; SKZ_SEED_INFO=/dev/null; SKZ_SEED_BEGAN=$WORK/skz-workload-began; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -1306,6 +1312,11 @@ teardown_topology() {
         kill "$SKZ_SAMPLER" 2>/dev/null; SKZ_SAMPLER=""
     fi
     if [ -n "$SKZ_SEED_WATCH" ]; then
+        # A seed that has not committed by the end of the rows: said in
+        # the record, since the watcher's own NONE needs 3600 s.
+        if kill -0 "$SKZ_SEED_WATCH" 2>/dev/null; then
+            echo "first_upload NONE by the end of the rows ($(( $(date +%s) - SKZ_SEED_T0 )) s after the import)" >> "$SKZ_SEED_INFO"
+        fi
         kill "$SKZ_SEED_WATCH" 2>/dev/null; SKZ_SEED_WATCH=""
     fi
     # A trace or recording still running after an early exit: stopped,
@@ -1870,27 +1881,49 @@ skz_settle() {
 # uploaded and every region stays named in the intent map: a window
 # then measures neither an upload nor the map. What happened is the
 # row's `first_upload` line, and a wait that ran out is no failure.
-skz_first_upload() { # [under]: "under" says that the workload runs meanwhile
-    local t0 up st lost how="" unread=0
-    [ "${1:-}" != under ] || how=" under the workload"
+#
+# "watch" (TB_SKZ_UPLOAD_WAIT_S=0) runs beside the row and waits for
+# nothing: it says first that the seed has not committed, which a row
+# whose window ends before the commit keeps, and at the commit whether
+# the workload had begun (SKZ_SEED_BEGAN, written by run_workload at the
+# row's first warm-up). Run 44372469282: every seed committed during the
+# row's setup, before pgbench, where the line said "under the workload".
+# The status is read once a round, every 5 s, so a time is to 5 s.
+skz_first_upload() { # [watch]
+    local t0 now all up st lost how="" unread=0 began
+    kv() { awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }' <<< "$all"; }
     t0=$(date +%s)
+    if [ "${1:-}" = watch ]; then
+        how=" from the import"
+        echo "first_upload not committed by the window's end (watched from the import)" >> "$OUT/$TOPO.skzinfo"
+    fi
     while :; do
-        up=$(skz_stat uploaded); st=$(skz_stat upload_state); lost=$(skz_stat upload_cuts_lost)
+        all=$(skz_status)
+        up=$(kv uploaded); st=$(kv upload_state); lost=$(kv upload_cuts_lost)
+        now=$(date +%s)
         # A status that cannot be read three times running (a daemon
         # that died) ends the wait: nothing will land.
         if [ -z "$up" ]; then unread=$((unread + 1)); else unread=0; fi
         if [ "$unread" -ge 3 ]; then
-            echo "first_upload NONE after $(( $(date +%s) - t0 )) s$how: the status could not be read three times running" >> "$OUT/$TOPO.skzinfo"
+            echo "first_upload NONE after $(( now - t0 )) s$how: the status could not be read three times running" >> "$OUT/$TOPO.skzinfo"
             log "skyzfsd: the status could not be read three times running; no first upload"
             return 0
         fi
         if [[ $up =~ ^[0-9]+$ ]] && [ "$up" -ge 1 ]; then
-            echo "first_upload after $(( $(date +%s) - t0 )) s$how (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
-            log "skyzfsd: the first upload committed after $(( $(date +%s) - t0 )) s (cuts lost ${lost:-n/a})"
+            if [ "${1:-}" = watch ]; then
+                began=$(cat "$SKZ_SEED_BEGAN" 2> /dev/null || true)
+                if [[ $began =~ ^[0-9]+$ ]] && [ "$now" -ge "$began" ]; then
+                    how=" from the import, under the workload, $(( now - began )) s after its warm-up began"
+                else
+                    how=" from the import, before the workload began"
+                fi
+            fi
+            echo "first_upload after $(( now - t0 )) s$how (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+            log "skyzfsd: the first upload committed after $(( now - t0 )) s$how (cuts lost ${lost:-n/a})"
             return 0
         fi
-        if [ $(( $(date +%s) - t0 )) -ge "$SKZ_UPLOAD_WAIT_S" ]; then
-            echo "first_upload NONE in $SKZ_UPLOAD_WAIT_S s$how (state ${st:-n/a}, uploading cut $(skz_stat upload_cut) of $(skz_stat cuts), cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+        if [ $(( now - t0 )) -ge "$SKZ_UPLOAD_WAIT_S" ]; then
+            echo "first_upload NONE in $SKZ_UPLOAD_WAIT_S s$how (state ${st:-n/a}, uploading cut $(kv upload_cut) of $(kv cuts), cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
             log "skyzfsd: no upload committed in $SKZ_UPLOAD_WAIT_S s (state ${st:-n/a}, cuts lost ${lost:-n/a}); the windows begin all the same"
             return 0
         fi
@@ -2152,9 +2185,13 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
         lim 120 zpool sync "$ZFS_POOL"
         skz_first_upload
     elif [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ]; then
-        # The seed under the workload: watched, not waited for.
+        # The seed beside the row: watched, not waited for. Whether it
+        # commits before the workload or under it depends on how long it
+        # takes against the row's setup.
         lim 120 zpool sync "$ZFS_POOL"
-        ( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload under ) &
+        rm -f "$SKZ_SEED_BEGAN"
+        SKZ_SEED_T0=$(date +%s); SKZ_SEED_INFO="$OUT/$TOPO.skzinfo"
+        ( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload watch ) &
         SKZ_SEED_WATCH=$!
     fi
     FS_DEV=$dev
@@ -2655,6 +2692,8 @@ run_workload() { # topology workload [snapshot mode]
         update) builtin=simple-update ;;
         *) echo "unknown workload $wl (tpcb|select|update)" >&2; return 1 ;;
     esac
+    # The seed's watcher reads when the workload began (its first warm-up).
+    if [ -n "$SKZ_SEED_WATCH" ] && [ ! -e "$SKZ_SEED_BEGAN" ]; then date +%s > "$SKZ_SEED_BEGAN"; fi
     log "$tag: warm-up ${WARMUP}s"
     as_pg "'$PGBENCH' -h '$SOCK' -T $WARMUP -c $CLIENTS -j $JOBS -b $builtin bench" >/dev/null 2>&1
     sync; sleep 2

@@ -155,6 +155,19 @@ has "  and says why" "$r" "TB_SKZ_UPLOAD is 1 or unset, not: 0"
 r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_WAIT_S=abc)
 is "TB_SKZ_UPLOAD_WAIT_S=abc: 64" "${r%%|*}" 64
 has "  and says why" "$r" "TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: abc"
+# The check after the loop, alone: the runs above end in the loop before
+# it for a row the loop lets through (review of #123, R9).
+eval "$(sed -n '/^skz_upload_topologies() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")"
+up_topos() { local rc=0; skz_upload_topologies "$@" 2> /dev/null || rc=$?; echo "$rc"; }
+is "uploads with the daemon alone: let through" "$(up_topos 1 zfs-skyzfsd)" 0
+is "  with blanks around it too" "$(up_topos 1 "  zfs-skyzfsd ")" 0
+is "  the daemon twice: refused" "$(up_topos 1 "zfs-skyzfsd zfs-skyzfsd")" 1
+is "  beside the model: refused" "$(up_topos 1 "zfs-skyzfsd zfs-slog")" 1
+is "  no topology: refused" "$(up_topos 1 "")" 1
+is "no uploads, any topologies: let through" "$(up_topos "" "zfs-slog zfs-skyzfsd")" 0
+# shellcheck disable=SC2016  # the script's own text
+check_call=$(grep -c '^skz_upload_topologies "\$SKZ_UPLOAD" "\$TOPOLOGIES" || exit 64$' "$ROOT/tests/bench/topology-bench.sh")
+is "  and the script calls it, with exit 64" "$check_call" 1
 # minio.sh deletes its directory as root: only one named minio-data
 # (G8), refused before docker or sudo is called.
 mkdir -p "$T/keep"
