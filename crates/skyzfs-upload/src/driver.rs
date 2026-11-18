@@ -42,11 +42,22 @@
 //! A death at any point leaves the cut held, with head and the row as
 //! they were or as the commit made them: the next instance's check finds
 //! which.
+//!
+//! **Publishes** ([`crate::publish`], M2.5) are steps of their own, taken
+//! before the cut's: a publish asked is first looked up in object
+//! storage, then made, in a transaction of its own, on the first cut
+//! committed that carries it, and looked up again after a transaction
+//! that failed. Each cut committed, or found committed at its check, is
+//! handed to the publishes ([`Publishing::committed`]) before it is let
+//! go. A publish that fails on object storage stays pending, and the
+//! step's error is the caller's, as a cut's is.
 
+use skynbd_types::CommitHash;
 use skyzfs_blk::{Buf, BLOCK_SIZE, BLOCK_USIZE};
 
 use crate::check::{judge, Mismatch, Rule, Verdict};
 use crate::local::{Local, Released, Uploadable};
+use crate::publish::{Known, Publishing, Refusal, Snapshot, Stage as PublishStage};
 use crate::remote::{Remote, RemoteError};
 use crate::row::{self, Row};
 
@@ -144,6 +155,31 @@ pub enum Step {
     GaveUp {
         /// The cut.
         number: u64,
+    },
+    /// A publish was looked up: `snap/<name>` is absent. It is made next
+    /// where a cut known carries it, or waits for one.
+    PublishLooked {
+        /// The snapshot.
+        name: String,
+    },
+    /// `snap/<name>` names a cut that carries the publish: published by
+    /// this step, or found so in object storage (`found`).
+    Published {
+        /// The snapshot.
+        name: String,
+        /// The cut published.
+        number: u64,
+        /// Its commit.
+        commit: CommitHash,
+        /// Whether it was found published, not published by this step.
+        found: bool,
+    },
+    /// `snap/<name>` exists and does not record the publish: refused.
+    PublishRefused {
+        /// The snapshot.
+        name: String,
+        /// Why.
+        why: Refusal,
     },
 }
 
@@ -252,6 +288,7 @@ pub struct Driver<L, R> {
     stage: Stage,
     buf: Buf,
     figures: Figures,
+    publishing: Publishing,
 }
 
 impl<L: Local, R: Remote> Driver<L, R> {
@@ -268,7 +305,25 @@ impl<L: Local, R: Remote> Driver<L, R> {
             stage: Stage::Check,
             buf: Buf::zeroed(blocks.max(1)),
             figures: Figures::default(),
+            publishing: Publishing::default(),
         }
+    }
+
+    /// The driver, with `publishing` as its publishes: those asked before
+    /// it was made ([`crate::Uploader`]).
+    pub fn with_publishing(mut self, publishing: Publishing) -> Self {
+        self.publishing = publishing;
+        self
+    }
+
+    /// The publishes: to ask for one, and to see how one stands.
+    pub fn publishing(&mut self) -> &mut Publishing {
+        &mut self.publishing
+    }
+
+    /// The publishes, to read.
+    pub fn publishes(&self) -> &Publishing {
+        &self.publishing
     }
 
     /// The store.
@@ -310,15 +365,21 @@ impl<L: Local, R: Remote> Driver<L, R> {
     /// Take the next step. An error from object storage leaves the stage
     /// as it was, for the step to be taken again.
     pub async fn step(&mut self) -> Result<Step, RemoteError> {
-        let stage = std::mem::replace(&mut self.stage, Stage::Check);
-        let (stage, result) = match stage {
-            Stage::Check => self.check().await,
-            Stage::Read(upload) => self.read(upload).await,
-            Stage::Sync(upload) => self.sync(upload).await,
-            Stage::Commit { upload, failed } => self.commit(upload, failed).await,
-            Stage::Stopped => (Stage::Stopped, Ok(Step::Idle)),
+        let result = match self.publishing.next() {
+            Some((name, stage)) => self.publish(name, stage).await,
+            None => {
+                let stage = std::mem::replace(&mut self.stage, Stage::Check);
+                let (stage, result) = match stage {
+                    Stage::Check => self.check().await,
+                    Stage::Read(upload) => self.read(upload).await,
+                    Stage::Sync(upload) => self.sync(upload).await,
+                    Stage::Commit { upload, failed } => self.commit(upload, failed).await,
+                    Stage::Stopped => (Stage::Stopped, Ok(Step::Idle)),
+                };
+                self.stage = stage;
+                result
+            }
         };
-        self.stage = stage;
         if let Err(e) = &result {
             self.figures.errors += 1;
             self.figures.last_error = Some(e.clone());
@@ -339,10 +400,61 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
+    /// One step of the publish of `name`, which stands at `stage`.
+    async fn publish(&mut self, name: String, stage: PublishStage) -> Result<Step, RemoteError> {
+        let known = match stage {
+            PublishStage::Look | PublishStage::Recheck(_) => {
+                return match self.remote.snapshot(&name).await? {
+                    None => {
+                        self.publishing.absent(&name);
+                        Ok(Step::PublishLooked { name })
+                    }
+                    Some(found) => Ok(match self.publishing.found(&name, &found) {
+                        Ok(row) => Step::Published {
+                            name,
+                            number: row.cut.number,
+                            commit: found.commit,
+                            found: true,
+                        },
+                        Err(why) => Step::PublishRefused { name, why },
+                    }),
+                };
+            }
+            PublishStage::Ready(known) => known,
+            // Not a stage with work: `Publishing::next` does not give it.
+            PublishStage::Wait => return Ok(Step::Idle),
+        };
+        let Some((snap, row, manifest)) = self.publishing.snapshot(&name, &known) else {
+            return Ok(Step::Idle);
+        };
+        let snapshot = Snapshot {
+            name: &name,
+            snap,
+            row: &row,
+            manifest,
+        };
+        match self.remote.publish(known.commit, &snapshot).await {
+            Ok(()) => {
+                self.publishing.published(&name, row, known.commit);
+                Ok(Step::Published {
+                    name,
+                    number: known.cut.number,
+                    commit: known.commit,
+                    found: false,
+                })
+            }
+            Err(e) => {
+                self.publishing.failed(&name);
+                Err(e)
+            }
+        }
+    }
+
     async fn check(&mut self) -> (Stage, Result<Step, RemoteError>) {
         let Some(cut) = self.local.uploadable().await else {
             return (Stage::Check, Ok(Step::Idle));
         };
+        self.publishing.set_state(cut.state);
         let seen = match self.remote.observe().await {
             Ok(seen) => seen,
             Err(e) => return (Stage::Check, Err(e)),
@@ -351,6 +463,9 @@ impl<L: Local, R: Remote> Driver<L, R> {
         match judge(&cut, &row, seen.head_group) {
             Verdict::Committed => {
                 self.figures.checked = Checked::Matched;
+                // The row names the cut, so head is its commit: the row
+                // moves only with head.
+                self.committed(&cut, seen.head);
                 let step = self.found_committed(&cut).await;
                 (Self::after(&step), Ok(step))
             }
@@ -391,6 +506,16 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Released::Kept => self.kept(number),
             Released::Gone => self.not_held(cut).await,
         }
+    }
+
+    /// `cut` is committed in object storage on `commit`: hand it to the
+    /// publishes.
+    fn committed(&mut self, cut: &Uploadable, commit: CommitHash) {
+        self.publishing.committed(Known {
+            cut: cut.row(),
+            itself: cut.itself,
+            commit,
+        });
     }
 
     /// The store kept cut `number`, committed: stop.
@@ -491,7 +616,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
             };
             if Row::of(seen.row.as_deref()) == Row::Named(upload.cut.row()) {
                 self.remote.reset();
-                let step = self.uploaded(&upload).await;
+                let step = self.uploaded(&upload, seen.head).await;
                 return (Self::after(&step), Ok(step));
             }
             if conflict || seen.row != upload.expected || !seen.current {
@@ -515,8 +640,8 @@ impl<L: Local, R: Remote> Driver<L, R> {
             .commit(upload.cut.group, upload.expected.clone(), row)
             .await
         {
-            Ok(()) => {
-                let step = self.uploaded(&upload).await;
+            Ok(commit) => {
+                let step = self.uploaded(&upload, commit).await;
                 (Self::after(&step), Ok(step))
             }
             Err(e) => {
@@ -532,8 +657,10 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// `upload`'s cut is committed: let it go.
-    async fn uploaded(&mut self, upload: &Upload) -> Step {
+    /// `upload`'s cut is committed on `commit`: hand it to the publishes,
+    /// and let it go.
+    async fn uploaded(&mut self, upload: &Upload, commit: CommitHash) -> Step {
+        self.committed(&upload.cut, commit);
         let number = upload.cut.number;
         self.figures.uploaded += 1;
         self.figures.blocks += upload.blocks;

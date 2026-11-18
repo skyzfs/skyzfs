@@ -53,6 +53,7 @@ use crate::backoff::Backoff;
 use crate::driver::{Doing, Driver, Figures, Step};
 use crate::lease::{Keeper, LeaseState};
 use crate::local::Local;
+use crate::publish::Publishing;
 use crate::remote::{Remote, RemoteError};
 
 /// How long an idle uploader waits before it asks the store again for a
@@ -126,6 +127,9 @@ pub struct Uploader<L, R, F, M> {
     lease_at: Instant,
     /// When the driver may next step.
     step_at: Instant,
+    /// The publishes asked before the driver is made, which it then takes
+    /// ([`Uploader::publishing`]).
+    publishing: Option<Publishing>,
 }
 
 impl<L, R, F, M> Uploader<L, R, F, M>
@@ -157,6 +161,17 @@ where
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
             step_at: now,
+            publishing: Some(Publishing::default()),
+        }
+    }
+
+    /// The publishes (M2.5): the driver's once it is made, and before
+    /// that, those it takes when it is. A publish asked while the lease is
+    /// not held waits as accepted.
+    pub fn publishing(&mut self) -> &mut Publishing {
+        match self.driver {
+            Some(ref mut driver) => driver.publishing(),
+            None => self.publishing.get_or_insert_with(Publishing::default),
         }
     }
 
@@ -213,7 +228,11 @@ where
         if self.driver.is_none() {
             if let Some(local) = self.local.take() {
                 let remote = (self.make)(epoch);
-                self.driver = Some(Driver::with_slices(local, remote, self.slice_blocks));
+                let publishing = self.publishing.take().unwrap_or_default();
+                self.driver = Some(
+                    Driver::with_slices(local, remote, self.slice_blocks)
+                        .with_publishing(publishing),
+                );
             }
         }
         let Some(driver) = self.driver.as_mut() else {

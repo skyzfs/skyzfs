@@ -7,6 +7,7 @@ license-file.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 skyzfs-blk = { workspace = true }
 skyzfs-local = { workspace = true }
 skynbd-engine = { workspace = true }
@@ -16,6 +17,7 @@ skynbd-store = { workspace = true }
 skynbd-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+ulid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
@@ -23,4 +25,3 @@ bytes = { workspace = true }
 futures-util = { workspace = true }
 skyzfs-uberblock = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
-ulid = { workspace = true }

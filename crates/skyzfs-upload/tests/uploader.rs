@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore, RefValue};
 use skynbd_store::FaultOp;
-use skynbd_types::VolumeId;
+use skynbd_types::{CommitHash, VolumeId};
 use skyzfs_local::inplace::InPlace;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
+use skyzfs_upload::publish::{Found, Snapshot};
 use skyzfs_upload::remote::{Observed, Remote, RemoteError};
 use skyzfs_upload::uploader::{State, Uploader, AT_REST, IDLE};
 use skyzfs_upload::{Doing, EngineRemote, LeaseState};
@@ -298,8 +299,20 @@ impl<R: Remote> Remote for Flaky<R> {
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
-    ) -> Result<(), RemoteError> {
+    ) -> Result<CommitHash, RemoteError> {
         self.inner.commit(group, expected, row).await
+    }
+
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
+        self.inner.snapshot(name).await
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<(), RemoteError> {
+        self.inner.publish(commit, snapshot).await
     }
 
     fn discard(&mut self) {
@@ -410,7 +423,7 @@ impl<R: Remote> Remote for Refusing<R> {
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
-    ) -> Result<(), RemoteError> {
+    ) -> Result<CommitHash, RemoteError> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         self.sent
             .lock()
@@ -420,6 +433,18 @@ impl<R: Remote> Remote for Refusing<R> {
             return Err(RemoteError::Conflict);
         }
         self.inner.commit(group, expected, row).await
+    }
+
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
+        self.inner.snapshot(name).await
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<(), RemoteError> {
+        self.inner.publish(commit, snapshot).await
     }
 
     fn discard(&mut self) {
@@ -1448,7 +1473,7 @@ impl<R: Remote> Remote for Refusals<R> {
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
-    ) -> Result<(), RemoteError> {
+    ) -> Result<CommitHash, RemoteError> {
         match self.mode.load(Ordering::SeqCst) {
             REFUSE => Err(RemoteError::Conflict),
             LAND_UNSEEN => {
@@ -1458,6 +1483,18 @@ impl<R: Remote> Remote for Refusals<R> {
             }
             _ => self.inner.commit(group, expected, row).await,
         }
+    }
+
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
+        self.inner.snapshot(name).await
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<(), RemoteError> {
+        self.inner.publish(commit, snapshot).await
     }
 
     fn discard(&mut self) {
