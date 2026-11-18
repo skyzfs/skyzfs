@@ -738,7 +738,7 @@ impl Publishing {
 
     /// A step of the publish of `name` that ended at `ended` failed on
     /// object storage: it takes no step for its wait, one second doubling
-    /// to five minutes at each failure of it in a row
+    /// to five minutes at each failure of it, in a row or not
     /// ([`crate::backoff`]). The wait is the publish's own: the other
     /// publishes step meanwhile, and a publish that ends, however it
     /// ends, takes its wait with it. A lookup that succeeds does not
