@@ -5,6 +5,7 @@ out as the daemon's request log would hold it, read back, and held to
 the reference."""
 import hashlib
 import os
+import re
 import sys
 import unittest
 
@@ -901,13 +902,15 @@ class Parse(unittest.TestCase):
     START = '264075526204\t10976\tstart\t1\t-\t-\t-\t64'
     NEXT = '264075546749\t10976\tcuts\t-\t-\t-\t-\ttaken_up\n'
 
-    @staticmethod
-    def filler(n):
+    FILL = '2639321'    # the filler's times, with five digits more
+
+    def filler(self, n):
         """recv lines of the first instance, n bytes in all (n >= 40), between BEGIN and RECV."""
         out, i = [], 0
         while n:
             size = n if n <= 80 else min(44, n - 40)
-            out.append(f'2639321{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * (size - 34 - len(str(i))) + '\t8\t-\n')
+            pad = size - 27 - len(self.FILL) - len(str(i))
+            out.append(f'{self.FILL}{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * pad + '\t8\t-\n')
             n, i = n - size, i + 1
         return ''.join(out)
 
@@ -920,6 +923,15 @@ class Parse(unittest.TestCase):
         head = self.BEGIN + self.filler(fill + (cdc.PAGE if fill < 40 else 0) + off) + self.RECV
         return (head + lost + (self.START if start is None else start) + '\n'
                 + (self.NEXT if after is None else after)), head.count('\n') + 1
+
+    def retimed(self, f):
+        """This case with each time t of its lines, and of LABEL, made f(t)."""
+        import copy
+        o = copy.copy(self)
+        for a in ('LABEL', 'BEGIN', 'RECV', 'START', 'NEXT'):
+            setattr(o, a, re.sub(r'^\d+', lambda m: f(m.group(0)), getattr(self, a)))
+        o.FILL = f(self.FILL + '00000')[:-5]
+        return o
 
     def test_a_label_line_torn_by_a_kill(self):
         self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
@@ -955,15 +967,20 @@ class Parse(unittest.TestCase):
             'a line of digits over three pages': ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t' + '1' * 9000,
                                                   '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'),
         }
-        for why, (lost, head) in cases.items():
-            with self.subTest(why):
-                text, n = self.torn(lost)
+        # and the same after 1000 s of uptime, times of 13 digits (the
+        # review of #113's next look, B8)
+        later = self.retimed(lambda t: '1' + t)
+        for (why, (lost, head)), (o, d) in [(c, (self, '')) for c in cases.items()] + \
+                [(c, (later, '1')) for c in cases.items()]:
+            with self.subTest(why, digits=12 + len(d)):
+                lost, head = d + lost, d + head
+                text, n = o.torn(lost)
                 torn = []
                 inst = cdc.parse_log(text, torn)
                 self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': len(lost),
                                          'head': '\t'.join(head.split('\t')[:7])}])
-                self.assertEqual((inst[1]['ns'], inst[1]['line']), (264075526204, n))
-                self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
+                self.assertEqual((inst[1]['ns'], inst[1]['line']), (int(d + '264075526204'), n))
+                self.assertEqual(inst[0]['lines'][-1]['ns'], int(d + '263932700000'))
         # Off the page, a tear inside the time is a start line with a time
         # some digits too long, later than the line after it: the rig's error.
         for off in (1, -1):
@@ -1010,10 +1027,25 @@ class Parse(unittest.TestCase):
             'a whole pid that begins the last instance\'s': self.torn('263932738825\t99\tlabel\t25\twrite\t1047960\t8\t'),
             'the torn line\'s daemon writes after it': self.torn(cut, after=self.NEXT
                                                                  + '264075546750\t9937\trecv\t26\twrite\t0\t8\t-\n'),
+            # what is left of the time has more digits than the next
+            # line's (the review of #113's next look, B3)
+            'a cut time longer than the next line\'s': self.torn('2639327388251'),
+            # a start with a leading zero, the next line's time a digit
+            # longer than the start's (P6): at 999.99 s and 1000.0 s
+            'a start with a leading zero': self.retimed(
+                lambda t: {'263932738825': '999980000000', '263932000000': '999900000000',
+                           '263932700000': '999970000000', '264075526204': '0999990000000',
+                           '264075546749': '1000000000000', '263932100000': '999932100000'}[t]).torn(
+                self.LABEL[:8012].replace('263932738825', '999980000000', 1)),
+            # a next line with a time no daemon writes (B7): before
+            # parse_log reaches it, torn_line must not int() it
+            'a next line of 5000 digits': self.torn(cut, after='9' * 5000 + self.NEXT[12:]),
+            'a next line of 21 digits': self.torn(cut, after='9' * 21 + self.NEXT[12:]),
         }
         for why, (text, n) in bad.items():
             with self.subTest(why):
-                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 2}: pid 9937 writes after'):
+                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 1}: a time of |'
+                                            f'line {n + 2}: pid 9937 writes after'):
                     cdc.parse_log(text, [])
         # A tear that left eight columns and a newline parses as a line,
         # and its label is short of its sectors.

@@ -276,7 +276,9 @@ def torn_line(ln, k, lines, offset, instances, by_pid):
     nxt = lines[k + 1].split('\t', 1)[0]
     # A time no longer than the next line's: a boundary pages before the
     # tear can see thousands of digits, which int() refuses (the review of
-    # #113, T3).
+    # #113, T3). A next line whose time has more than 20 digits is no
+    # daemon's, and parse_log refuses it: none is taken here, where int()
+    # would refuse it first.
     if not nxt.isdigit() or len(nxt) > 20:
         return None
     before = last['lines'][-1]['ns'] if last['lines'] else last['ns']
@@ -345,6 +347,9 @@ def parse_log(text, torn=None):
         # blocks' hashes) and, with --request-log-content whole, a tenth.
         if not 8 <= len(f) <= 10 or not f[0].isdigit():
             raise RigError(f'request log line {k + 1}: not eight to ten columns: {ln[:120]!r}')
+        # The daemon writes a u64 of nanoseconds: 20 digits at most.
+        if len(f[0]) > 20:
+            raise RigError(f'request log line {k + 1}: a time of {len(f[0])} digits: {ln[:120]!r}')
         if len(f) > 8 and f[2] != 'applied':
             raise RigError(f'request log line {k + 1}: a {f[2]} line with more than eight columns: {ln[:120]!r}')
         rec = {'ns': int(f[0]), 'pid': f[1], 'event': f[2], 'tag': f[3], 'op': f[4], 'sector': f[5],
@@ -354,7 +359,7 @@ def parse_log(text, torn=None):
                            'kill (torn_line): the rule holds while the daemon writes its log from one thread')
         if rec['event'] == 'start':
             nxt = lines[k + 1].split('\t', 1)[0] if k + 1 < len(lines) else ''
-            if nxt.isdigit() and rec['ns'] > int(nxt):
+            if nxt.isdigit() and len(nxt) <= 20 and rec['ns'] > int(nxt):
                 raise RigError(f'request log line {k + 1}: a start line later than the line after it, as of a '
                                f'line cut short in its time: {ln[:120]!r}')
             if rec['pid'] in by_pid:
