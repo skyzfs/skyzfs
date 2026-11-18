@@ -26,3 +26,9 @@ T1 the helper does not replace held_lines: KILLED by 1: test_a_floor_not_met_end
 T2 the helper takes any end of main as exit 2: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
 T3 the helper takes any end of main as exit 0: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
 T4 main ends 2 whatever the flag when held_lines is called (after the instances): KILLED by 4: test_a_floor_not_met_ends_as_the_rigs_error, test_an_acknowledged_failure, test_the_failure_and_later_states, test_the_second_stage
+T5 main ends 2 whatever the flag when held_lines is called (after a verdict): KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+T6 main: the flag of the call after the instances is the first call's only: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+T7 main: an ERROR flag ends 1: KILLED by 2: test_a_failed_cuts_with_what_the_check_cannot_place, test_a_floor_not_met_ends_as_the_rigs_error
+again S2e only at a take-over, not at a start that created the device: KILLED by 1: test_instance_lines
+again S2f only at a start that created the device: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+again S2j the rule is never asked: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines

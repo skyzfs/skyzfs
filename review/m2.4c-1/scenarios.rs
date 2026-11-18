@@ -676,6 +676,25 @@ async fn l3_one_holder_name_on_two_nodes_step_by_step() {
 struct Hooked {
     inner: LeaseRefs,
     hook: Hook,
+    /// The lease's calls answer after this long (tokio's time).
+    lease_ms: Arc<AtomicU64>,
+    /// And with an error (a timeout), after that time.
+    lease_fails: Arc<AtomicBool>,
+    /// The calls that take or renew the lease.
+    takes: Arc<AtomicU64>,
+}
+
+impl Hooked {
+    async fn slow(&self) -> skynbd_refs::Result<()> {
+        let ms = self.lease_ms.load(Ordering::SeqCst);
+        if ms > 0 {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
+        if self.lease_fails.load(Ordering::SeqCst) {
+            return Err(skynbd_refs::RefError::Backend("the scenario's timeout".into()));
+        }
+        Ok(())
+    }
 }
 
 type Hook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
@@ -722,6 +741,8 @@ impl RefStore for Hooked {
         self.inner.meta_list(vol, prefix).await
     }
     async fn lease_acquire(&self, vol: VolumeId, holder: &str, ttl_ms: u64) -> skynbd_refs::Result<LeaseOutcome> {
+        self.takes.fetch_add(1, Ordering::SeqCst);
+        self.slow().await?;
         self.inner.lease_acquire(vol, holder, ttl_ms).await
     }
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> skynbd_refs::Result<()> {
@@ -751,6 +772,9 @@ async fn l4_a_take_at_a_newer_epoch_costs_both_nodes_the_lease() {
     let hooked = Hooked {
         inner: Arc::clone(&refs),
         hook: Arc::clone(&hook),
+        lease_ms: Arc::default(),
+        lease_fails: Arc::default(),
+        takes: Arc::default(),
     };
     let mut a = Keeper::new(hooked, fx.vol, "node-a", TTL);
     println!("## L4: A's first take: {:?}", a.keep().await);
@@ -1133,6 +1157,306 @@ async fn c1_a_slow_step_delays_the_renewal_by_the_wait_as_well() {
             &kept_at[..kept_at.len().min(8)]
         );
     }
+}
+
+/// A store whose check takes its time (tokio's): always, or only where it
+/// begins within `late_ms` of the lease's next renewal, which `due` says.
+struct SlowCheck<L> {
+    inner: L,
+    ms: u64,
+    /// Sleep only where the renewal is due within this many ms (`None`:
+    /// always).
+    late_ms: Option<u64>,
+    /// Milliseconds since the scenario's start at which the lease was last
+    /// renewed, as the scenario saw it.
+    renewed_at: Rc<std::cell::Cell<u64>>,
+    start: tokio::time::Instant,
+    slow_checks: Rc<std::cell::Cell<u64>>,
+}
+
+impl<L: Local> Local for SlowCheck<L> {
+    async fn uploadable(&mut self) -> Option<Uploadable> {
+        let since = self.start.elapsed().as_millis() as u64 - self.renewed_at.get();
+        let due_in = (TTL / 3).saturating_sub(since);
+        if self.late_ms.is_none_or(|late| due_in > 0 && due_in <= late) {
+            self.slow_checks.set(self.slow_checks.get() + 1);
+            tokio::time::sleep(Duration::from_millis(self.ms)).await;
+        }
+        self.inner.uploadable().await
+    }
+    async fn read(&mut self, number: u64, from: u64, buf: Buf) -> (Buf, io::Result<CutSlice>) {
+        self.inner.read(number, from, buf).await
+    }
+    async fn sync_copies(&mut self, number: u64) -> io::Result<()> {
+        self.inner.sync_copies(number).await
+    }
+    async fn release(&mut self, number: u64) -> Released {
+        self.inner.release(number).await
+    }
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        self.inner.name_committed(number, group).await
+    }
+    async fn abandon_all(&mut self) -> Vec<u64> {
+        self.inner.abandon_all().await
+    }
+}
+
+/// An idle uploader whose check of the store takes `ms`: every check, or
+/// (`late`) only one that begins in the last quarter second before the
+/// renewal is due. Ten minutes. The longest time between two renewals,
+/// the least left on the lease when a turn began, and the turns.
+async fn slow_checks(ms: u64, late: bool) -> (u64, u64, u64) {
+    let fx = Fixture::new(7_970).await;
+    let store = fx.start();
+    let start = tokio::time::Instant::now();
+    let now = move || 1_000_000_000 + start.elapsed().as_millis() as u64;
+    let refs: LeaseRefs = Arc::new(ObjectRefStore::new(fx.store.clone()).with_clock(Arc::new(now)));
+    let make = {
+        let (store, vol, refs) = (fx.store.clone(), fx.vol, Arc::clone(&refs));
+        move |epoch| {
+            EngineRemote::new(
+                store.clone(),
+                Arc::new(ActingRefStore::new(Arc::clone(&refs), "node-a", epoch)),
+                vol,
+                cfg(),
+            )
+        }
+    };
+    let renewed_at = Rc::new(std::cell::Cell::new(0));
+    let slow = SlowCheck {
+        inner: store,
+        ms,
+        late_ms: late.then_some(250),
+        renewed_at: Rc::clone(&renewed_at),
+        start,
+        slow_checks: Rc::default(),
+    };
+    let lease = Keeper::new(Arc::clone(&refs), fx.vol, "node-a", TTL);
+    let mut up = Uploader::with_slices(slow, lease, make, 16);
+    let (mut last_expiry, mut longest, mut least_left, mut turns) = (0, 0, u64::MAX, 0);
+    while start.elapsed() < Duration::from_secs(600) {
+        if let Some((_, _, expires)) = lease_row(fx.store.inner(), fx.vol).await {
+            least_left = least_left.min(expires.saturating_sub(now()));
+        }
+        let wait = up.turn().await;
+        turns += 1;
+        let (_, _, expires) = lease_row(fx.store.inner(), fx.vol).await.expect("the row");
+        if expires != last_expiry {
+            let at = expires - TTL - 1_000_000_000;
+            if last_expiry != 0 {
+                longest = longest.max(at - renewed_at.get());
+            }
+            renewed_at.set(at);
+            last_expiry = expires;
+        }
+        tokio::time::sleep(wait).await;
+    }
+    (longest, least_left, turns)
+}
+
+/// Records: what is left of F4 once a wait is counted from when the step
+/// came back. A step that is under way when the renewal falls due still
+/// delays it by the step's own time.
+#[tokio::test(start_paused = true)]
+async fn c2_a_step_under_way_when_the_renewal_is_due() {
+    for (ms, late) in [
+        (5_000u64, false),
+        (9_700, false),
+        (15_000, false),
+        (25_000, false),
+        (35_000, false),
+        (5_000, true),
+        (15_000, true),
+        (19_000, true),
+        (21_000, true),
+        (25_000, true),
+    ] {
+        let (longest, least_left, turns) = slow_checks(ms, late).await;
+        println!(
+            "## C2: an idle uploader, {} takes {ms} ms: the longest time between two renewals {longest} ms \
+             (the lease's time is {TTL} ms); the least left on the lease when a turn began: {least_left} ms; \
+             {turns} turns in ten minutes",
+            if late {
+                "a check that begins in the last 250 ms before the renewal is due"
+            } else {
+                "every check"
+            }
+        );
+    }
+}
+
+/// One uploader for ten minutes of tokio's time over a refs store whose
+/// lease calls take `lease_ms` (and fail, if `lease_fails`), with steps
+/// that fail at once (`steps_fail`) or upload one cut and then find
+/// nothing. The turns, the takes of the lease, the reads of head, the
+/// longest run of turns that took no time and asked for no wait, and the
+/// lease at the end.
+async fn slow_lease(lease_ms: u64, lease_fails_from: Option<u64>, steps_fail: bool) -> (u64, u64, u64, u64, String) {
+    let mut fx = Fixture::new(7_980).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    let start = tokio::time::Instant::now();
+    let now = move || 1_000_000_000 + start.elapsed().as_millis() as u64;
+    let refs: LeaseRefs = Arc::new(ObjectRefStore::new(fx.store.clone()).with_clock(Arc::new(now)));
+    let knobs = Rc::new(Knobs::default());
+    knobs.observe_fails.store(steps_fail, Ordering::SeqCst);
+    let make = {
+        let (knobs, store, vol, refs) = (Rc::clone(&knobs), fx.store.clone(), fx.vol, Arc::clone(&refs));
+        move |epoch| Tweak {
+            inner: EngineRemote::new(
+                store.clone(),
+                Arc::new(ActingRefStore::new(Arc::clone(&refs), "node-a", epoch)),
+                vol,
+                cfg(),
+            ),
+            knobs: Rc::clone(&knobs),
+        }
+    };
+    let hooked = Hooked {
+        inner: Arc::clone(&refs),
+        hook: Arc::default(),
+        lease_ms: Arc::new(AtomicU64::new(lease_ms)),
+        lease_fails: Arc::default(),
+        takes: Arc::default(),
+    };
+    let (fails, takes) = (Arc::clone(&hooked.lease_fails), Arc::clone(&hooked.takes));
+    if lease_fails_from == Some(0) {
+        fails.store(true, Ordering::SeqCst);
+    }
+    let lease = Keeper::new(hooked, fx.vol, "node-a", TTL);
+    let mut up = Uploader::with_slices(store, lease, make, 16);
+    let (mut turns, mut zero_waits, mut zero_run, mut longest_zero_run) = (0u64, 0u64, 0u64, 0u64);
+    while start.elapsed() < Duration::from_secs(600) {
+        if lease_fails_from.is_some_and(|from| start.elapsed() >= Duration::from_millis(from)) {
+            fails.store(true, Ordering::SeqCst);
+        }
+        let before = tokio::time::Instant::now();
+        let wait = up.turn().await;
+        turns += 1;
+        // A turn that took no time and asks for no wait: the loop spins
+        // if these follow each other.
+        if wait.is_zero() && before.elapsed().is_zero() {
+            zero_waits += 1;
+            zero_run += 1;
+            longest_zero_run = longest_zero_run.max(zero_run);
+        } else {
+            zero_run = 0;
+        }
+        assert!(turns < 100_000, "the loop spins: {:?}", up.shown());
+        tokio::time::sleep(wait).await;
+    }
+    let _ = zero_waits;
+    (
+        turns,
+        takes.load(Ordering::SeqCst),
+        knobs.observes.load(Ordering::SeqCst),
+        longest_zero_run,
+        format!("{:?}", up.shown().lease),
+    )
+}
+
+/// Records, and asserts that the loop does not spin: the lease's calls
+/// take longer than the renewal's interval, so that the next renewal is
+/// due before the last came back.
+#[tokio::test(start_paused = true)]
+async fn c3_lease_calls_slower_than_the_renewals_interval() {
+    for (what, lease_ms, fails_from, steps_fail) in [
+        ("the lease's calls answer at once, idle", 0u64, None, false),
+        ("the lease's calls take 12 s and succeed, idle", 12_000, None, false),
+        ("the lease's calls take 12 s and succeed, every step fails at once", 12_000, None, true),
+        ("the lease's calls take 12 s and fail from the first take on, idle", 12_000, Some(0), false),
+        ("the lease's calls take 12 s and fail after the first take (unsure), idle", 12_000, Some(1), false),
+        ("the lease's calls take 12 s and fail after the first take (unsure), every step fails at once", 12_000, Some(1), true),
+        ("the lease's calls take 40 s and fail after the first take (unsure), idle", 40_000, Some(1), false),
+        ("the lease's calls fail at once after the first take (unsure), every step fails at once", 0, Some(1), true),
+    ] {
+        let (turns, takes, observes, zero_run, lease) = slow_lease(lease_ms, fails_from, steps_fail).await;
+        println!(
+            "## C3: {what}: {turns} turns, {takes} takes of the lease and {observes} reads of head in ten minutes; \
+             the most turns in a row that took no time and asked for no wait: {zero_run} (the cut's own upload is 18 such turns); \
+             the lease at the end: {lease}"
+        );
+        // An idle uploader turns four times a second: 2400 turns. More
+        // than that is a loop that spins.
+        assert!(turns < 2_600, "the loop spins: {turns} turns");
+        assert!(zero_run <= 18, "turns that take no time and wait for nothing follow each other");
+    }
+}
+
+/// Asserts: a wait is counted from when the lease's call came back, on
+/// the two ways out of a turn that take no step. A first take that fails
+/// after 5 s is tried again one second after it failed; and a renewal
+/// that takes 4 s during a backoff is followed by a wait of the 6 s that
+/// are left until the next renewal, not of 10.
+#[tokio::test(start_paused = true)]
+async fn c4_a_wait_after_a_slow_take_is_counted_from_when_it_came_back() {
+    let mut fx = Fixture::new(7_990).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    let start = tokio::time::Instant::now();
+    let now = move || 1_000_000_000 + start.elapsed().as_millis() as u64;
+    let refs: LeaseRefs = Arc::new(ObjectRefStore::new(fx.store.clone()).with_clock(Arc::new(now)));
+    let knobs = Rc::new(Knobs::default());
+    knobs.observe_fails.store(true, Ordering::SeqCst);
+    let make = {
+        let (knobs, store, vol, refs) = (Rc::clone(&knobs), fx.store.clone(), fx.vol, Arc::clone(&refs));
+        move |epoch| Tweak {
+            inner: EngineRemote::new(
+                store.clone(),
+                Arc::new(ActingRefStore::new(Arc::clone(&refs), "node-a", epoch)),
+                vol,
+                cfg(),
+            ),
+            knobs: Rc::clone(&knobs),
+        }
+    };
+    let hooked = Hooked {
+        inner: Arc::clone(&refs),
+        hook: Arc::default(),
+        lease_ms: Arc::new(AtomicU64::new(5_000)),
+        lease_fails: Arc::new(AtomicBool::new(true)),
+        takes: Arc::default(),
+    };
+    let (lease_ms, lease_fails) = (Arc::clone(&hooked.lease_ms), Arc::clone(&hooked.lease_fails));
+    let mut up = Uploader::with_slices(store, Keeper::new(hooked, fx.vol, "node-a", TTL), make, 16);
+
+    // The first take fails after five seconds.
+    let wait = up.turn().await;
+    assert!(matches!(up.shown().state, State::NoLease(_)), "{:?}", up.shown().state);
+    println!("## C4: a first take that failed after 5 s: the wait before the next is {wait:?}");
+    assert_eq!(wait, Duration::from_secs(1), "one second after the take failed");
+    tokio::time::sleep(wait).await;
+
+    // The lease is taken at once; every step fails at once, until the
+    // backoff is longer than the renewal's interval.
+    lease_ms.store(0, Ordering::SeqCst);
+    lease_fails.store(false, Ordering::SeqCst);
+    let mut wait = up.turn().await;
+    while !matches!(up.shown().state, State::Backoff { wait, .. } if wait >= Duration::from_secs(32)) {
+        tokio::time::sleep(wait).await;
+        wait = up.turn().await;
+    }
+    // Turn until the renewal is next due, then make it take four seconds.
+    loop {
+        tokio::time::sleep(wait).await;
+        let Some((_, _, expires)) = lease_row(fx.store.inner(), fx.vol).await else {
+            panic!("no row")
+        };
+        if now() >= expires - TTL + TTL / 3 {
+            break;
+        }
+        wait = up.turn().await;
+    }
+    lease_ms.store(4_000, Ordering::SeqCst);
+    let before = now();
+    let wait = up.turn().await;
+    let (_, _, expires) = lease_row(fx.store.inner(), fx.vol).await.expect("the row");
+    assert!(expires > before + TTL, "the turn renewed the lease, after four seconds");
+    assert!(matches!(up.shown().state, State::Backoff { .. }), "{:?}", up.shown().state);
+    println!("## C4: a renewal that took 4 s during a backoff: the wait after it is {wait:?}");
+    assert_eq!(wait, Duration::from_secs(6), "what is left of the ten seconds to the next renewal");
 }
 
 // ---------------------------------------------------------------------

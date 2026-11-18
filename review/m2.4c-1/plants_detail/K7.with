@@ -1,0 +1,20 @@
+
+running 1 test
+test l1_two_nodes_never_commit_under_a_lease_that_is_not_theirs ... ## L1: 400 programs, 159777 turns, 26115 commits landed (14622 by node-a, 11493 by node-b), 581 changes of hand; turns with the lease unsure: 2904
+## L1: at the end (both reach the store, clocks agree, 7 minutes, both pools write): somebody uploads in 357 (in 9 of them the lease changed hands once more, when the clocks were set equal); nobody uploads in 1 because the holder's daemon is stopped and the other lost the lease, in 3 with both uploaders running, in 39 otherwise (no uploader running, or a case below)
+## L1:   seed 123: states [Some(LeaseLost { holder: "node-b", epoch: 4 }), Some(LeaseLost { holder: "node-b", epoch: 4 })], row Some(("node-b", 4, 1001668540))
+## L1:   seed 285: states [Some(LeaseLost { holder: "node-a", epoch: 7 }), Some(LeaseLost { holder: "node-a", epoch: 7 })], row Some(("node-a", 7, 1001358084))
+## L1:   seed 337: states [Some(LeaseLost { holder: "node-a", epoch: 6 }), Some(LeaseLost { holder: "node-a", epoch: 6 })], row Some(("node-a", 6, 1001850873))
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 61.65s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.26s
+     Running tests/review_scn.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb8be93e4a904ad1/out/review_scn-bb8be93e4a904ad1)
+
+--- exit 0

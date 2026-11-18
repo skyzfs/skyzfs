@@ -102,5 +102,14 @@ p.PLANTS = [
      "    if errored and rc == 0:\n        rc = 1\n"),
 ]
 
+S2K = "        if k and not begun[k]:\n            # The state's own numbers"
+p.PLANTS += [
+    ('again S2e only at a take-over, not at a start that created the device', J, S2K,
+     "        if k and not begun[k] and bounds[k - 1]['taken_over']:\n            # The state's own numbers"),
+    ('again S2f only at a start that created the device', J, S2K,
+     "        if k and not begun[k] and not bounds[k - 1]['taken_over']:\n            # The state's own numbers"),
+    ('again S2j the rule is never asked', J, S2K, "        if False:\n            # The state's own numbers"),
+]
+
 if __name__ == '__main__':
     p.main()

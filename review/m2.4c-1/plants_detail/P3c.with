@@ -1,0 +1,19 @@
+
+running 1 test
+test b1_a_long_upload_over_a_link_that_loses_a_put_now_and_then ... ## B1: every 0th PUT call of 512 fails (0 failures): the cut of 60 data blocks and 4 slots is uploaded after 0 s of tokio's time; waits (s): []
+## B1: every 50th PUT call of 512 fails (10 failures): the cut of 60 data blocks and 4 slots is uploaded after 10 s of tokio's time; waits (s): [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+## B1: every 20th PUT call of 512 fails (25 failures): the cut of 60 data blocks and 4 slots is uploaded after 25 s of tokio's time; waits (s): [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+## B1: every 8th PUT call of 512 fails (64 failures): the cut of 60 data blocks and 4 slots is uploaded after 64 s of tokio's time; waits (s): [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.02s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.50s
+     Running tests/review_scn.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb8be93e4a904ad1/out/review_scn-bb8be93e4a904ad1)
+
+--- exit 0

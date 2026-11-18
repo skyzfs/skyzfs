@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plants for the review of #117 at 5bebcc0 (M2.4c-1).
+"""Plants for the review of #117 at 1415db1 (M2.4c-1).
 
 usage: plants.py CHECKOUT OUT [ID ...]
 
@@ -137,8 +137,8 @@ PLANTS = [
      "                self.next_wait(now, now + IDLE)",
      "                Duration::ZERO", []),
     ("P14", "a failed take of the lease is tried again at once (no backoff)", UPLOADER,
-     "            LeaseState::None(_) => now + self.lease_backoff.failed(),",
-     "            LeaseState::None(_) => now,", []),
+     "            LeaseState::None(_) => after + self.lease_backoff.failed(),",
+     "            LeaseState::None(_) => after,", []),
     ("P15", "the lease's backoff is never reset", UPLOADER,
      "                self.lease_backoff.succeeded();\n",
      "", []),
@@ -151,6 +151,34 @@ PLANTS = [
     ("R3", "run does not publish", UPLOADER,
      "            publish(self.shown());\n",
      "", []),
+    # --- the change of 1415db1: where the clock is read (uploader.rs) --
+    ("X0", "all of 1415db1's change taken back: one clock read a turn", UPLOADER,
+     ("            self.keep_lease(now).await;\n            now = Instant::now();\n",
+      "        let step = driver.step().await;\n        let now = Instant::now();\n",
+      "            LeaseState::None(_) => after + self.lease_backoff.failed(),",
+      "            LeaseState::Lost { .. } => after + AT_REST,"),
+     ("            self.keep_lease(now).await;\n",
+      "        let step = driver.step().await;\n",
+      "            LeaseState::None(_) => before + self.lease_backoff.failed(),",
+      "            LeaseState::Lost { .. } => before + AT_REST,"), [scn("c1_")]),
+    ("X1", "the clock is not read again after the lease is kept", UPLOADER,
+     "            self.keep_lease(now).await;\n            now = Instant::now();\n",
+     "            self.keep_lease(now).await;\n", []),
+    ("X1s", "as X1 (the clock is not read again after the lease is kept), with the scenario of a slow take", UPLOADER,
+     "            self.keep_lease(now).await;\n            now = Instant::now();\n",
+     "            self.keep_lease(now).await;\n", [scn("c4_")]),
+    ("X2", "the clock is not read again after the step", UPLOADER,
+     "        let step = driver.step().await;\n        let now = Instant::now();\n",
+     "        let step = driver.step().await;\n", [scn("c1_")]),
+    ("X3", "a failed take's backoff is counted from before the take", UPLOADER,
+     "            LeaseState::None(_) => after + self.lease_backoff.failed(),",
+     "            LeaseState::None(_) => before + self.lease_backoff.failed(),", []),
+    ("X4", "the rest after a lost lease is counted from before the take", UPLOADER,
+     "            LeaseState::Lost { .. } => after + AT_REST,",
+     "            LeaseState::Lost { .. } => before + AT_REST,", []),
+    ("X5", "the next renewal is counted from when the take came back (not from when it was sent)", UPLOADER,
+     "                before + renew\n",
+     "                after + renew\n", []),
     # --- the backoff (backoff.rs) --------------------------------------
     ("B1", "the wait does not double", BACKOFF,
      "        self.next = Some(wait.saturating_mul(2).min(LAST));",

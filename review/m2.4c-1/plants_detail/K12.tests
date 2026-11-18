@@ -1,0 +1,166 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/1636ce5e84eb833f/out/skyzfs_upload-1636ce5e84eb833f)
+
+running 21 tests
+test backoff::tests::the_wait_doubles_from_a_second_to_five_minutes ... ok
+test backoff::tests::a_success_starts_the_waits_again ... ok
+test check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch ... ok
+test check::tests::a_row_differing_from_the_cut_in_anything_is_not_its_commit ... ok
+test check::tests::a_cut_of_part_of_the_volume_is_uploaded_onto_the_base_the_row_names ... ok
+test check::tests::a_row_naming_the_cut_being_uploaded_says_it_is_committed ... ok
+test check::tests::a_row_that_cannot_be_read_is_always_a_mismatch ... ok
+test check::tests::a_whole_cut_is_uploaded_onto_the_rows_commit_whatever_the_row_names ... ok
+test check::tests::a_whole_cut_onto_a_head_that_is_not_the_rows_is_a_mismatch ... ok
+test lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back ... ok
+test lease::tests::a_store_out_of_reach_at_the_first_take_leaves_no_lease_and_a_later_take_holds ... ok
+test lease::tests::a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost ... ok
+test lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it ... ok
+test lease::tests::another_holders_lease_at_the_first_take_is_lost_and_left_alone ... ok
+test lease::tests::an_expired_lease_of_another_holder_is_taken_at_the_first_take ... ok
+test lease::tests::the_first_take_creates_the_row_and_a_renewal_keeps_its_epoch ... ok
+test row::tests::a_row_of_another_version_or_length_is_unreadable ... ok
+test lease::tests::this_holders_name_at_another_epoch_is_lost ... ok
+test row::tests::a_row_of_version_1_is_laid_out_as_documented ... ok
+test row::tests::a_row_reads_back_as_the_cut_it_names ... ok
+test lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go ... FAILED
+
+failures:
+
+---- lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go stdout ----
+
+thread 'lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go' (25983) panicked at crates/skyzfs-upload/src/lease.rs:419:9:
+assertion `left == right` failed
+  left: Held { epoch: 1, expires_at_ms: 1030000 }
+ right: None("released")
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:452:17
+   3: core::panicking::assert_failed::<&skyzfs_upload::lease::LeaseState, &skyzfs_upload::lease::LeaseState>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:407:5
+   4: skyzfs_upload::lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go::{closure#0}
+             at ./src/lease.rs:419:9
+   5: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/future/future.rs:133:9
+   6: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/future/future.rs:133:9
+   7: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+   8: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+   9: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  10: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  11: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  13: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  14: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  15: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  16: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/thread/local.rs:463:12
+  17: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/thread/local.rs:427:20
+  18: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  19: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  20: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  21: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  22: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  23: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  24: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  25: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  26: skyzfs_upload::lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go
+             at ./src/lease.rs:433:57
+  27: skyzfs_upload::lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go::{closure#0}
+             at ./src/lease.rs:414:80
+  28: <skyzfs_upload::lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+  29: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p skyzfs-upload --lib`
+     Running tests/crash.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/afb87bf7485a9c0d/out/crash-afb87bf7485a9c0d)
+
+running 3 tests
+test a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most ... ok
+test a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch ... ok
+test a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+     Running tests/driver.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/6029d3d490335114/out/driver-6029d3d490335114)
+
+running 22 tests
+test a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded ... ok
+test a_cut_read_from_no_copy_is_committed_without_a_sync ... ok
+test a_cut_abandoned_at_the_bound_while_it_is_read_is_lost ... ok
+test a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver ... ok
+test a_cut_abandoned_after_its_last_slice_is_not_committed ... ok
+test a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant ... ok
+test a_cut_whose_flush_is_under_way_is_not_uploaded ... ok
+test a_cut_the_bound_takes_after_the_check_found_it_committed_is_named ... ok
+test a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta ... ok
+test a_failed_put_goes_on_from_the_next_slice ... ok
+test a_failed_commit_is_made_again_or_found_landed_by_the_row ... ok
+test a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up ... ok
+test a_row_moved_before_the_commit_gives_the_commit_up ... ok
+test a_failed_sync_of_the_copies_loses_the_cut_and_its_heir_goes_up ... ok
+test a_head_moved_by_another_writer_stops_the_upload ... ok
+test a_row_of_another_version_is_never_overwritten ... ok
+test no_cut_held_is_nothing_to_upload ... ok
+test a_lost_cut_leaves_the_next_check_to_find_head_as_it_is ... ok
+test a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_whole ... ok
+test the_first_cut_goes_up_whole_and_the_next_as_a_delta_onto_it ... ok
+test zero_blocks_go_up_as_zeros ... ok
+test no_row_under_a_cut_of_part_of_the_volume_is_a_mismatch ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/queued.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/a12a5f684f0a6b6f/out/queued-a12a5f684f0a6b6f)
+
+running 2 tests
+test a_closed_desk_answers_as_a_store_that_holds_nothing ... ok
+test a_cut_goes_up_through_the_desk_answered_on_the_stores_thread ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/uploader.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb59b7d39d371e0f/out/uploader-bb59b7d39d371e0f)
+
+running 9 tests
+test after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure ... ok
+test a_store_out_of_reach_for_longer_than_the_lease_does_not_stop_the_uploads ... ok
+test a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing ... ok
+test a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle ... ok
+test after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once ... ok
+test an_idle_uploader_asks_again_after_a_quarter_second ... ok
+test another_holders_lease_stops_the_uploads_for_good ... ok
+test the_lease_is_kept_every_third_of_its_time ... ok
+test no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: 1 target failed:
+    `-p skyzfs-upload --lib`

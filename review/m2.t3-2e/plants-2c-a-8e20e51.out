@@ -63,3 +63,23 @@ K3 the reason may stand anywhere in the refusal (search, not match): KILLED by 1
 K4 a refused release of a cut still held is the daemon's too: KILLED by 1: test_a_release_refused_while_the_cut_is_held
 K5 a refused read is a verdict even where the cut is gone: KILLED by 1: test_a_read_refused_of_a_cut_that_went
 K6 main ends with 2 at a verdict: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K7 main logs a verdict as ERROR: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K8 main does not catch a verdict (a traceback, exit 1, no line in the log): KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K9 the reason is matched whatever number follows "cut" (the cut asked for or not): SURVIVED
+M1 a new state may count on, as before the commit (from 1 again or on, the line says which): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M2 a new state must count on (from 1 again is refused): KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+M3 the new state's own refusal is gone (the line then fails by the rule for every line, in its words): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M4 the count is not begun again at a new state (its first line must be 1, its later lines go on): KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+M5 a new state whose first line is not 1 passes: KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M6 a new state is not seen (every line is of the first state): KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+Q1 the status is held to the whole log's count: KILLED by 4: test_a_failed_instance_line_is_a_verdict, test_a_floor_not_met_ends_as_the_rigs_error, test_an_acknowledged_failure, test_the_failure_and_later_states
+Q2 the status is held to the cuts since the first new state, not the last: KILLED by 1: test_the_failure_and_later_states
+Q3 the status is held to the last state's cuts only where its first line carries 1, as before the commit: KILLED by 1: test_the_failure_and_later_states
+W1 the bare wait is back in end_daemon (D1 as it was): KILLED by 2: test_cut_record.sh: FAIL no bare wait for the holder: got '392:         wait "$HOLD_PID" 2>/dev/null, test_cut_record.sh: FAIL the holder's leave, its stop and an early end all go through holder_ended: 
+W2 the bare wait is back inside holder_ended: KILLED by 4: test_cut_record.sh: FAIL a holder that ends with its verdict goes on to the check: got '1 ', want '0, test_cut_record.sh: FAIL 1 without a VERDICT line is the rig's error: got '1 ', want '2 rig error: t, test_cut_record.sh: FAIL the holder's own error is the rig's error: got '2 ', want '2 rig error: the, test_cut_record.sh: FAIL no bare wait for the holder: got '359:     wait "$HOLD_PID" 2>/dev/null; rc
+W3 the holder's 1 is a verdict without a VERDICT line in its log: KILLED by 1: test_cut_record.sh: FAIL 1 without a VERDICT line is the rig's error: got '0 went on', want '2 rig e
+W4 a VERDICT line is a verdict whatever the holder's status: SURVIVED
+W5 a verdict is the rig's error (the recording does not go on): KILLED by 3: test_cut_record.sh: FAIL a holder that ends with its verdict goes on to the check: got '2 rig error:, test_cut_record.sh: FAIL a verdict before the first cut ends the recording for the check: got '2 rig, test_cut_record.sh: FAIL a verdict while the holder is asked to pause ends the recording for the che
+W6 the holder's own error (2) is let through: KILLED by 4: test_cut_record.sh: FAIL 1 without a VERDICT line is the rig's error: got '0 went on', want '2 rig e, test_cut_record.sh: FAIL the holder's own error is the rig's error: got '0 went on', want '2 rig err, test_cut_record.sh: FAIL a holder that ended with its error before a cut is the rig's error: got '2 , test_cut_record.sh: FAIL a holder that ended with its error while asked to pause is the rig's error:
+W7 the wait after the kill is bare again in end_daemon: KILLED by 1: test_cut_record.sh: FAIL no bare wait for the holder: got '389:             kill "$HOLD_PID" 2>/dev/
+W8 holder_leave takes the holder's status itself, any status: KILLED by 1: test_cut_record.sh: FAIL the holder's leave, its stop and an early end all go through holder_ended: 

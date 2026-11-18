@@ -26,11 +26,11 @@ failures:
 failures:
     l5_the_lease_row_gone_under_an_uploader
 
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.38s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.13s
 
 
 --- panics
-thread 'l5_the_lease_row_gone_under_an_uploader' (1763) panicked at crates/skyzfs-upload/tests/review_scn.rs:879:5:
+thread 'l5_the_lease_row_gone_under_an_uploader' (1742) panicked at crates/skyzfs-upload/tests/review_scn.rs:903:5:
 the uploader stops: Idle
 stack backtrace:
    0: __rustc::rust_begin_unwind
@@ -38,7 +38,7 @@ stack backtrace:
    1: core::panicking::panic_fmt
              at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
    2: review_scn::l5_the_lease_row_gone_under_an_uploader::{closure#0}
-             at ./tests/review_scn.rs:879:5
+             at ./tests/review_scn.rs:903:5
    3: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
              at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/future/future.rs:133:9
    4: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
@@ -82,9 +82,9 @@ stack backtrace:
   23: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
              at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
   24: review_scn::l5_the_lease_row_gone_under_an_uploader
-             at ./tests/review_scn.rs:884:94
+             at ./tests/review_scn.rs:908:94
   25: review_scn::l5_the_lease_row_gone_under_an_uploader::{closure#0}
-             at ./tests/review_scn.rs:827:51
+             at ./tests/review_scn.rs:851:51
   26: <review_scn::l5_the_lease_row_gone_under_an_uploader::{closure#0} as core::ops::function::FnOnce<()>>::call_once
              at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
   27: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
@@ -109,9 +109,9 @@ ry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:
   23: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
              at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
   24: review_scn::l5_the_lease_row_gone_under_an_uploader
-             at ./tests/review_scn.rs:884:94
+             at ./tests/review_scn.rs:908:94
   25: review_scn::l5_the_lease_row_gone_under_an_uploader::{closure#0}
-             at ./tests/review_scn.rs:827:51
+             at ./tests/review_scn.rs:851:51
   26: <review_scn::l5_the_lease_row_gone_under_an_uploader::{closure#0} as core::ops::function::FnOnce<()>>::call_once
              at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
   27: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once

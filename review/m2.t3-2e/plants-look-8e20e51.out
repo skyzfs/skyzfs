@@ -1,0 +1,31 @@
+I7 (in this head's text) a failed instance line is no verdict (main drops instance_lines' result): KILLED by 1: test_a_failed_instance_line_is_a_verdict
+N5 (again) main does not take the groups out of the kstats: KILLED by 1: test_a_group_synced_with_no_flush
+G1 a page is 8192 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+G1 a page is 16384 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+G1 a page is 12288 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+G1 a page is 65536 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+G1 a page is 2048 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+G1 a page is 1024 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+G1 a page is 512 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+G1 a page is 1 byte (a tear anywhere): KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start
+O1 no release answered is ever a commit: KILLED by 5: test_instance_lines, test_instance_lines_and_the_commit, test_the_first_of_several_and_only_a_release, test_the_first_release_answered, test_the_second_instance_begins
+O2 the time the first release was asked, not answered: KILLED by 3: test_instance_lines, test_the_first_of_several_and_only_a_release, test_the_first_release_answered
+O3 a release is not asked for unless it is the log's first line: KILLED by 4: test_instance_lines, test_the_first_of_several_and_only_a_release, test_the_first_release_answered, test_the_second_instance_begins
+O4 a line that is not a time and a text is the rig's error: NOT APPLIED (found [2] times)
+O5 a later start takes either map whenever (no commit is looked at): KILLED by 3: test_instance_lines, test_instance_lines_and_the_commit, test_the_second_instance_begins
+O6 a later start never takes either: the map must be taken up: KILLED by 2: test_instance_lines, test_instance_lines_and_the_commit
+O7 every later start is a verdict: KILLED by 4: test_a_third_instance_takes_the_new_state_up, test_instance_lines, test_instance_lines_and_the_commit, test_the_second_instance_begins
+O8 no start is a verdict: KILLED by 4: test_a_third_instance_takes_the_new_state_up, test_instance_lines, test_instance_lines_and_the_commit, test_the_second_instance_begins
+O9 the commit is held to the start, at or after (> to >=) and a commit at the start's own time: SURVIVED
+O10 a leave ends the holder with 1: KILLED by 1: test_the_program_ends_at_a_leave
+O11 a leave writes no `left` line: KILLED by 2: test_pause_then_leave, test_the_program_ends_at_a_leave
+O12 a leave is not looked at before the first step (the holder steps once, then leaves): KILLED by 1: test_the_program_ends_at_a_leave
+O13 at a leave the holder writes its final listing and status, and drains nothing: KILLED by 1: test_the_program_ends_at_a_leave
+O14 main does not say which groups it left out: KILLED by 1: test_a_group_synced_with_no_flush
+O15 main says obs_noflush_groups in every recording: KILLED by 1: test_a_group_synced_with_no_flush
+O16 main leaves every group out of the kstats that the reference does not cut, marks or none: KILLED by 2: test_a_group_synced_with_no_flush, test_a_session_whose_kstat_has_a_group_the_daemon_did_not_cut
+O17 main takes the groups out and holds the sessions to nothing (session_verdicts on no kstats): KILLED by 21: test_a_control_that_differs_from_its_table, test_a_cut_counted_at_the_flush_after_its_own, test_a_cut_held_across_the_take_over, test_a_cut_line_torn_at_the_take_over, test_a_cut_the_daemon_did_not_count, test_a_failed_instance_line_is_a_verdict
+O18 a failed instance line is the rig's error (exit 2): KILLED by 2: test_a_failed_instance_line_is_a_verdict, test_an_acknowledged_failure
+X1 the helper drops what tamper_starts returns: KILLED by 1: test_a_failed_instance_line_is_a_verdict
+X2 the helper drops what tamper_marks returns: KILLED by 1: test_a_group_synced_with_no_flush
+W1 the line says again that the kill was before the state stored the cut: KILLED by 1: test_a_kill_before_the_state_stored_the_cut

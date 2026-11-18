@@ -1,4 +1,29 @@
+X0	KILLED	all of 1415db1's change taken back: one clock read a turn	by 2: after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once	with scenarios.rs c1_: passes
+X1	SURVIVED	the clock is not read again after the lease is kept	
+X2	KILLED	the clock is not read again after the step	by 2: after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once	with scenarios.rs c1_: passes
+X3	SURVIVED	a failed take's backoff is counted from before the take	
+X4	SURVIVED	the rest after a lost lease is counted from before the take	
+X5	SURVIVED	the next renewal is counted from when the take came back (not from when it was sent)	
 K1	KILLED	a renewal takes the row as its own whatever the epoch	by 1: lease::tests::this_holders_name_at_another_epoch_is_lost	with scenarios.rs l1_: passes
 K2	SURVIVED	a renewal takes the row as its own whatever the holder		with scenarios.rs l1_: passes
 K3	SURVIVED	a renewal that finds no row takes the lease again		with scenarios.rs l5_: FAILS (plants_detail/K3.with)
 K4	KILLED	a renewal that took the lease at a newer epoch does not give it back	by 1: lease::tests::a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost	with scenarios.rs l4_: passes
+K4b	KILLED	a renewal that took the lease at a newer epoch holds it at that epoch	by 1: lease::tests::a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost	with scenarios.rs l1_: passes
+K5	SURVIVED	a renewal's take that finds another holder leaves the lease unsure	
+K6	KILLED	a first take that finds another holder is tried again (not lost)	by 2: another_holders_lease_stops_the_uploads_for_good, lease::tests::another_holders_lease_at_the_first_take_is_lost_and_left_alone
+K7	KILLED	a lost lease is taken again at the next keep	by 3: another_holders_lease_stops_the_uploads_for_good, lease::tests::a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost, lease::tests::another_holders_lease_at_the_first_take_is_lost_and_left_alone	with scenarios.rs l1_: passes
+K8	SURVIVED	a commit the fence refused does not lose the lease		with scenarios.rs l1_: passes
+K9	SURVIVED	an unsure lease is not released	
+K10	KILLED	an unsure lease has no epoch (LeaseState::epoch)	by 1: lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it
+K11	KILLED	a renewal whose read fails loses the lease	by 3: a_store_out_of_reach_for_longer_than_the_lease_does_not_stop_the_uploads, lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back, lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it
+K12	KILLED	a release leaves the keeper holding	by 1: lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go
+K13	SURVIVED	a renewal whose take fails loses the lease	
+P1	SURVIVED	no step while the lease is unsure	
+P2	SURVIVED	a cut found committed does not end the wait		with scenarios.rs b2_: FAILS (plants_detail/P2.with)
+P3	SURVIVED	a cut uploaded and not held does not end the wait	
+P3b	KILLED	a cut uploaded does not end the wait	by 1: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle
+P3c	KILLED	any step that goes on ends the wait (the reading the author sets aside)	by 1: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle	with scenarios.rs b1_: passes
+P4	KILLED	no wait after a step that failed	by 2: a_store_out_of_reach_for_longer_than_the_lease_does_not_stop_the_uploads, after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure
+P4b	SURVIVED	no wait after a commit given up	
+P5	KILLED	a commit the fence refused is an error like another (wait and try again)	by 1: a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing	with scenarios.rs l1_: passes
+P6	SURVIVED	a stopped driver is stepped all the same	

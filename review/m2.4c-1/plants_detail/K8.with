@@ -1,0 +1,17 @@
+
+running 1 test
+test l1_two_nodes_never_commit_under_a_lease_that_is_not_theirs ... ## L1: 400 programs, 156017 turns, 25455 commits landed (14316 by node-a, 11139 by node-b), 535 changes of hand; turns with the lease unsure: 2887
+## L1: at the end (both reach the store, clocks agree, 7 minutes, both pools write): somebody uploads in 345 (in 7 of them the lease changed hands once more, when the clocks were set equal); nobody uploads in 16 because the holder's daemon is stopped and the other lost the lease, in 0 with both uploaders running, in 39 otherwise (no uploader running, or a case below)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 53.07s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.75s
+     Running tests/review_scn.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb8be93e4a904ad1/out/review_scn-bb8be93e4a904ad1)
+
+--- exit 0
