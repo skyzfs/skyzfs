@@ -10,7 +10,7 @@ The head of this look is `3fe4133`. Where a result is from `ab34565` it says so;
 - **No wrong daemon passes** through either commit, and no right one is failed: the 42 recordings I have give exit 0 with the same lines on `3fe4133`, and a torn line is judged exactly as a kill at the end of the line before it, in twenty shapes on the recorded `takeover`.
 - **L12 to L14 are held now**, and so is everything else I planted in the two commits but the survivors listed below, none of which changes a verdict.
 
-What is left is small and none of it blocks: one new defect of no weight on the safe side (T3, a torn line that ends in more than 4300 decimal digits is the rig's error), two remarks on the rule's edges, and the survivors.
+What is left is small and none of it blocks: one new defect on the safe side that needs a tear in one of a few bytes of a 13 MB log (T3: a torn line that ends in 8192 decimal digits or more, with a page on the first of them, is the rig's error), two remarks on the rule's edges, and the survivors.
 
 I formed this from `git diff e88773b ab34565` and `git diff ab34565 3fe4133` before I read the author's notes on either.
 
@@ -34,7 +34,7 @@ I formed this from `git diff e88773b ab34565` and `git diff ab34565 3fe4133` bef
 
   With the 163 of the e88773b look that is 668 torn lines and not one off a page. The tmpfs with huge pages tore none: a write that stays inside one large folio is copied in one piece, so there a tear is rarer and falls on the folio's end, still a multiple of the page. I had no `mkfs.xfs` or `mkfs.btrfs` here, so xfs and btrfs are not measured.
 - *A larger page.* A kernel with 16 KiB or 64 KiB pages cuts at multiples of those, which are multiples of 4096; the rule then also looks at places such a kernel cannot cut, which costs nothing.
-- *Another writer first, or larger writes.* The offset is that of the file from its first byte, whoever wrote the bytes before: each instance appends to the same file and the judge reads the same file. A daemon that wrote several lines in one `write` would be cut on a page all the same. The judge counts bytes from the decoded text (`:324`), which is right for a log of plain ASCII with no carriage return; the 42 recorded logs have no byte above 0x7f, no carriage return and no control byte but tab and newline.
+- *Another writer first, or larger writes.* The offset is that of the file from its first byte, whoever wrote the bytes before: each instance appends to the same file and the judge reads the same file. A daemon that wrote several lines in one `write` would be cut on a page all the same. The judge counts bytes from the decoded text (`:328`), which is right for a log of plain ASCII with no carriage return; the 42 recorded logs have no byte above 0x7f, no carriage return and no control byte but tab and newline.
 - *What can still be cut off a page.* I know of one way: a copy that stops short inside a page because the writer's own buffer had to be paged in, with the kill arriving before the retry. The daemon has just formatted the line, so this needs memory pressure at that instant. Such a line is not taken and the recording is the rig's error, exit 2: the safe side. A file system that does not write through the page cache would be another; the rig uses none.
 
 **Is any shape a kill can leave still exit 2, or read wrongly?**
@@ -45,11 +45,13 @@ I formed this from `git diff e88773b ab34565` and `git diff ab34565 3fe4133` bef
 - *My fifteen logs of the e88773b look* (`next_torn-3fe4133.out`): those whose tear stayed on the page are exit 0 as before (as recorded, the last hex digit changed to a or f, cut a page earlier). Those I had cut at a place of my choosing (after a tab, in the time, in the pid, a `cut` or `barrier` line) are exit 2 now, as tears no kill leaves. T1's shapes are in the two lists above, on a page.
 - *A whole start line that a page crosses is not taken for a torn one* (part 3), with one exception that the rig does not reach, a remark below.
 
-**T3, a defect of no weight, not blocking, on the safe side.** `torn_line` turns the digits before the first tab of "the rest" into a number at every page inside a line (`cut_daemon_check.py:288`). Scenario: what is left of the torn line ends in more than 4300 decimal digits that begin, at a page of the file, with a digit other than 0, for example a label whose last 4.5 KB are bytes 0x11. At the page before the tear the rest is those digits and the start line, a "start line" with a time of 8204 digits, and Python refuses the conversion: `ValueError: Exceeds the limit (4300 digits)`, which `main` reports as the rig's error, exit 2, where the line should have been taken (`next2_torn_rule-3fe4133.out`, part 7; 4000 such digits are taken, 9000 are not). Certainty: high, run. Weight: none that I can see in this rig. Only `label` lines are longer than a page (1054 of them in the recorded log), their long runs are zero bytes, and a run of zeros is stopped by the rule's "no leading zero" before any conversion; the recorded line ends in 7610 zeros and is taken. A bound on the digits of a start's time (a time has 12 or 13) before the conversion would close it.
+**T3, a defect, not blocking, on the safe side.** `torn_line` turns the digits before the first tab of "the rest" into a number at every page inside a line (`cut_daemon_check.py:289`). Scenario: a page of the file falls on a decimal digit other than 0 in a label line, everything after it in the line is decimal digits, and the kill tears the line two pages or more further on. At that earlier page the rest is those 8192 digits or more and the start line, a "start line" with a time of over 8200 digits, and Python refuses the conversion: `ValueError: Exceeds the limit (4300 digits)`, which `main` reports as the rig's error, exit 2, where the line should have been taken (`next2_torn_rule-3fe4133.out`, part 7: 4000 such digits are taken, 9000 are not; one page of them, 4096 and the time's 12, stays under the limit). Certainty: high, run.
+
+Weight: small. Only `label` lines are longer than a page. Their long runs are the digit 0, and a page inside a run of zeros is stopped by the rule's "no leading zero" before any conversion: the line torn on the runner ends in a 1 and 7609 zeros and is taken. What it takes is a page exactly on the last digits other than 0 before such a run. In the recorded `takeover` log a kill tears a line at 3251 of the first instance's 3269 pages, and at none of them is an earlier page of the line such a place (`next2_torn_digits.py`, `next2_torn_digits-3fe4133.out`); the log has 28 runs of 8192 digits and more after a digit other than 0, so a page has to fall on one of a few dozen bytes of 13 MB, and the kill inside that line. A bound on the digits of a start's time (a time has 12 or 13) before the conversion would close it.
 
 **Two remarks on the rule.**
 
-- *A whole start line can be read as torn if two instances are 100 s apart.* Where a page falls after the first digit of a whole start line's time, the rest is a start line with a shorter time, and it is taken if that time is not earlier than the last instance's last line: last line at 95 s, start at 196 s, read as a start at 96 s with "1 byte lost" (part 3, the last five lines; the same at 950 s and 1960 s). It needs at least 100 s between one instance's last line and the next one's start while the clock is below 1000 s, 1000 s above that, and the page exactly there. The rig leaves under a second before the two instances that take a device over, and a line taken before any other instance is the rig's error (`torn_detail`), so no recording of this rig can be read wrongly this way.
+- *A whole start line can be read as torn if two instances are 100 s apart.* Where a page falls after the first digit of a whole start line's time, the rest is a start line with a shorter time, and it is taken if that time is not earlier than the last instance's last line: last line at 95 s, start at 196 s, read as a start at 96 s with "1 byte lost" (part 3, its second list, where the page falls one byte into the start line; the same at 950 s and 1960 s, and not where the shorter time would be earlier than the last line's). It needs at least 100 s between one instance's last line and the next one's start while the clock is below 1000 s, 1000 s above that, and the page exactly there. The rig leaves under a second before the two instances that take a device over, and a line taken before any other instance is the rig's error (`torn_detail`), so no recording of this rig can be read wrongly this way.
 - *The bounds on time rest on the log being in the order of its times.* The torn line's time must not be earlier than the line before it. In the 42 recorded logs, 675510 pairs of neighbouring lines, no line carries an earlier time than the line before it.
 
 The rule's premise is as at e88773b and is now written into the function: one writing thread. A pid that writes after its torn line is the rig's error with that reason (`:346-348`).
@@ -85,7 +87,7 @@ Three things I checked because they are easy to get wrong:
 - A holder that wrote its cut and gave its verdict in the same second is not lost between the two tests of a turn: whichever the wait sees first, the verdict reaches the check.
 - After an early end `HOLD_PID` is empty, so `end_daemon` skips its part for the holder and does not wait 720 s for one that is gone; what stays in the work directory is removed by the next recording's `begin_daemon`.
 
-A nit: the comment that belongs to `holder_ended` now stands above `holder_gone` (`cut-record.sh:336-349`), and `holder_ended` has none of its own.
+A nit: the comment that belongs to `holder_ended` now stands above `holder_gone` (`cut-record.sh:335-350`), and `holder_ended` has none of its own.
 
 ### 3. The check after a verdict: no wrong daemon passes, no right one fails
 
@@ -114,13 +116,44 @@ Two remarks on what the summary of such a run shows. Neither changes a verdict.
 
 ### 4. Plants
 
-One at a time, the file restored after each, against the four Python test files and `test_cut_record.sh`; both worktrees clean afterwards.
+One at a time, the file restored after each, against the four Python test files and `test_cut_record.sh`.
 
-PLANTS
+**On `ab34565`** (`next2_plants-ab34565.out`): 19 plants in what the commit changed, 16 KILLED, 3 SURVIVED.
+
+- The wait and the two recordings (Y1 to Y10): all KILLED. The wait that does not look whether the holder has ended (Y1, the script as it was) is killed here by my runner's limit of 300 s on a test file, because the old wait takes 300 s a case. Run to its end against that plant, `test_cut_record.sh` fails four lines and ends with 1: "a verdict before the first cut ends the recording for the check", "a holder that ended with 0 before a cut is the rig's error", "a holder that ended with its error before a cut is the rig's error", and the count of the calls of `holder_ended`.
+- The check (Z1 to Z8, X5b): Z1, Z2, Z3, Z5, Z6 and Z8 KILLED; Z4, Z7 and X5b SURVIVED, below.
+
+**On `3fe4133`** (`next2_plants-3fe4133.out`): the plants of the e88773b look in the code that the two commits touch (I, W, X and L: the acknowledged start, the holder's status, the held cuts' lines, the torn line) and those of `ab34565` again, and 27 new ones in the rule (P1 to P19) and the waits (U1 to U8). I did not run the other 71 plants of the e88773b look again: the two commits change four places of the check (the rule, two places of `parse_log`, the order in `main`) and the two waits of the script, remove no test and change one line of the shell test (the count of the calls of `holder_ended`). 81 plants: 59 KILLED, 8 SURVIVED, 14 NOT APPLIED.
+
+- **L12, L13 and L14 are KILLED**, each by `test_a_line_torn_at_the_take_over` (`test_cut_daemon_main.py:354`): `main` without the list for torn lines, `main` not holding a torn line to the take-over, `main` saying nothing of it. L8 to L11 are killed as before.
+- **The rule** (P1 to P19): 16 KILLED. The start at any byte and not at a page (P1), a page of 8192 (P2), pages counted from the line's beginning (P4), an offset that counts no newlines (P5), a leading zero (P6), any whole pid or any digits of a cut pid before the start (P8, P9), each of the four bounds on time (P10, P12, P13, P14), the writer after its torn line (P15), the start later than the line after it (P16), only a line that does not parse looked at (P17), the last instance's start instead of its last line as the bound (P18), what is left without its whole time (P19). P3, P7 and P11 SURVIVED, below.
+- **The waits** (U1 to U8): all KILLED. `hold_idle` and `holder_wrote_one` without the look at the holder (U1, U7) are killed by my runner's limit again. Run to its end against U1 (the old `hold_idle`), `test_cut_record.sh` fails four lines and ends with 1: "a verdict while the holder is asked to pause ends the recording for the check", "a holder that ended with 0 while asked to pause is the rig's error" and "a holder that ended with its error while asked to pause is the rig's error", each with "the holder did not say it had paused in 120 s", and "no wait for the holder without a look at whether it lives". The author's four lines; three of them carry the message they quote, the fourth is the count.
+- **NOT APPLIED, 14**, each because the text it changes is gone and another plant stands for it: L1 to L7 are in the rule of e88773b, which the new rule replaced (P1 to P19); Y1 to Y5 and Y10 are in the wait as `ab34565` had it, now in `holder_gone` (U5 to U8, and W2 and W5 for the status); X5 is X5b.
+
+The survivors:
+
+| Plant | Why it survives | What it means |
+|---|---|---|
+| P3, a page is 2048 bytes | No test has a start at an odd multiple of 2048 that must not be taken. | A gap in the tests, not in the rule: with 2048 the rule would take a tear that no kernel with 4 KiB pages leaves. A case of `test_a_line_torn_anywhere_on_a_page` with the start moved by 2048 bytes would hold it. A suggestion. |
+| P7, the start may be of a pid already started | Equivalent: `parse_log` gives "a second start line of pid" for it, the rig's error either way. | Nothing. The author names it as equivalent, and I agree. |
+| P11, the start may be later than the line after it | Equivalent: `parse_log`'s own test (`:351`) gives the rig's error either way. | Nothing. The same. |
+| L15, the line after the start need not begin with a time | Equivalent in the exit: without the test the conversion of that line's first column fails, the rig's error either way. | Nothing. |
+| W4, a VERDICT line is a verdict whatever the holder's status | As at e88773b. | As there: the holder writes the line and ends with 1 in one place. |
+| Z4, the instances' lines judged after a verdict as well | No test asks that they are not written. | The first remark of part 3. |
+| Z7, a verdict judged first in `failed` only | `takeover` gave exit 1 at an early end before the commit too (the table of part 3); the test's `takeover` half asks for the exit and `held_reads`, which both orders give. | The order matters to `failed` alone; nothing is lost. |
+| X5b, the held cuts judged before the instances' lines where there is no verdict | No test pins the order of the lines. | As X5 at e88773b: the order changes what a summary shows first, not an exit. |
+
+All three worktrees are at `3fe4133` with nothing changed after the runs.
 
 ### 5. CI and Codex
 
-CI
+**On `3fe4133`**, every run has ended. Green: `ci` (44198227959, `lint` and `unit-arm64` in it), `coverage` (44198227947), `e2e` (44198227827), the push's `skyzfs-ci` (44198217339), the cut rig on the daemon (44198228019, the check's logic and two images), the cut rig (44198228271, the reference with no kernel and four images) and node B's rig (44198227956). I read the cut rig on the daemon's two jobs, ubuntu-26.04 and ubuntu-26.04-arm: `takeover`, `failed` and `edges` are whole on both, `held_reads` PASS, no line cut short at a kill in this run, worst exit 0. So the new waits and the new rule have run on a kernel in their ordinary course; the early end and a torn line have not run there on this head.
+
+Cancelled by the author on this head, as on the heads before it: the daemon rig (44198227931), the replay rig (44198227944), the kernel probe (44198227990), and the push's duplicates of three rigs. The two commits change `cut-record.sh`, `cut_daemon_check.py` and their three test files, which those three workflows do not run; what each of them last showed on this pull request is in `next_look.md`, and nothing since changes it. Whether that is enough for "CI is green on the head" is the lead's to read.
+
+**On `ab34565`**: green `ci` (44194942962), `coverage` (44194942806), `e2e` (44194942793), `skyzfs-ci` (44194934440), the cut rig on the daemon (44194942764) and node B's rig (44194942861); the cut rig (44194942885) was cancelled by the push of `3fe4133`.
+
+**Codex** has reviewed neither `ab34565` nor `3fe4133`. Its only sign since is a thumbs-up on the pull request at 23:23 UTC on 17 November, five minutes after the push of `3fe4133`, which is what it leaves when it has nothing to say. Both of its findings (the stop's bare wait, and R1) have the author's answer on their threads; whether the threads are marked resolved cannot be read over REST. The author's answers to T1, T2, R1 and L12 to L14 are in the comment of 23:20 UTC. I checked each claim there against what I had already run: the page rule, the equivalent survivors (P7, P11), the 42 recordings and the four failing lines of the shell test agree with mine. T3, the 100 s remark and P3 are not in it.
 
 ### 6. What I could only read
 
@@ -136,5 +169,6 @@ All in `review/m2.t3-2c/` on `skyzfs-review`. New for this look:
 
 - the torn-line rule: `next2_tear_fs.sh`, `next2_tear_fs.out`; `next2_torn_rule.py`, `next2_torn_rule-3fe4133.out`; `next2_torn_real.py`, `next2_torn_real-3fe4133.out`; `next_torn-3fe4133.out`;
 - the holder's end: `next2_holder_ends.sh` with its three outputs; `next2_verdict.py` with its three outputs;
-- plants: `next2_plants.py`, `next2_plants-ab34565.out`, `next2_plants-3fe4133.out`;
+- T3's weight: `next2_torn_digits.py`, `next2_torn_digits-3fe4133.out`;
+- plants: `next2_plants.py`, `next2_plants-ab34565.out`, `next2_plants-3fe4133.out`; the shell test run to its end against the old waits, `next2_shell_old_wait-ab34565.out` and `next2_shell_old_hold_idle-3fe4133.out`;
 - reruns: `next_scenarios-`, `next_third_instance-` and `next_rejudge-` with `ab34565.out` and `3fe4133.out`, and `next_torn-ab34565.out`.

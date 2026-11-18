@@ -1,0 +1,82 @@
+# plants on 3fe4133, one at a time, each restored; two runs in two worktrees of the same head
+I1 a start that acknowledged a failure wants the state taken up, as any later start: KILLED by 2: test_the_second_instance_begins, test_an_acknowledged_failure
+I2 a start that acknowledged a failure wants the intent map begun: KILLED by 2: test_the_second_instance_begins, test_an_acknowledged_failure
+I3 a start that acknowledged a failure takes either for the intent map: KILLED by 1: test_the_second_instance_begins
+I4 the acknowledged start's count is held to the cuts before it: KILLED by 2: test_the_second_instance_begins, test_an_acknowledged_failure
+I5 the line does not say that the start acknowledged a failure: KILLED by 2: test_the_second_instance_begins, test_an_acknowledged_failure
+I6 main passes no begun list to instance_lines: KILLED by 1: test_an_acknowledged_failure
+W1 the bare wait is back in end_daemon (D1 as it was): KILLED by 2: test_cut_record.sh: no bare wait for the holder, test_cut_record.sh: the holder's leave, its stop and an early end all go through holder_ended
+W2 the bare wait is back inside holder_ended: KILLED by 4: test_cut_record.sh: a holder that ends with its verdict goes on to the check, test_cut_record.sh: 1 without a VERDICT line is the rig's error, test_cut_record.sh: the holder's own error is the rig's error, test_cut_record.sh: no bare wait for the holder
+W3 the holder's 1 is a verdict without a VERDICT line in its log: KILLED by 1: test_cut_record.sh: 1 without a VERDICT line is the rig's error
+W4 a VERDICT line is a verdict whatever the holder's status: SURVIVED
+W5 a verdict is the rig's error (the recording does not go on): KILLED by 3: test_cut_record.sh: a holder that ends with its verdict goes on to the check, test_cut_record.sh: a verdict before the first cut ends the recording for the check, test_cut_record.sh: a verdict while the holder is asked to pause ends the recording for the check
+W6 the holder's own error (2) is let through: KILLED by 4: test_cut_record.sh: 1 without a VERDICT line is the rig's error, test_cut_record.sh: the holder's own error is the rig's error, test_cut_record.sh: a holder that ended with its error before a cut is the rig's error, test_cut_record.sh: a holder that ended with its error while asked to pause is the rig's error
+W7 the wait after the kill is bare again in end_daemon: KILLED by 1: test_cut_record.sh: no bare wait for the holder
+W8 holder_leave takes the holder's status itself, any status: KILLED by 1: test_cut_record.sh: the holder's leave, its stop and an early end all go through holder_ended
+X1 the branch is gone: such a write is the rig's error again (D2 as it was): KILLED by 1: test_an_acknowledged_failure
+X2 a written cut with no line in any state is a verdict too: KILLED by 1: test_held_cuts_keyed_by_state
+X3 held_lines does not look at such writes (the content is judged without them): KILLED by 1: test_an_acknowledged_failure
+X4 the line fails and is no verdict (rc 0): KILLED by 1: test_an_acknowledged_failure
+X5 the held cuts are judged before the instances' lines again: NOT APPLIED (found [0] times)
+X6 a cut of this state with a line counts as an old state's where an earlier state has the number too: KILLED by 2: test_held_cuts_keyed_by_state, test_an_acknowledged_failure
+L1 a cut line of any pid counts, not the last instance's only: NOT APPLIED (found [0] times)
+L2 the start after a cut line may be of a pid already started: NOT APPLIED (found [0] times)
+L3 the start need not end the line: NOT APPLIED (found [0] times)
+L4 the start may be earlier than the cut line: NOT APPLIED (found [0] times)
+L5 the start may be later than the line after it: NOT APPLIED (found [0] times)
+L6 a cut line that ends in no digit counts too (<= to <): NOT APPLIED (found [0] times)
+L7 the start is taken with all the digits before it: NOT APPLIED (found [0] times)
+L8 a cut line counts before any start (the next instance need not have taken the device over): KILLED by 2: test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+L9 a cut line counts where there is no instances.tsv: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L10 a cut line counts where instances.tsv does not name the next pid: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L11 a cut line counts only before an instance that created the device: KILLED by 2: test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+L12 the program takes no cut line (parse_log without the list): KILLED by 1: test_a_line_torn_at_the_take_over
+L13 the program does not hold a cut line to the take-over: KILLED by 1: test_a_line_torn_at_the_take_over
+L14 the program says nothing of a cut line: KILLED by 1: test_a_line_torn_at_the_take_over
+L15 the line after the start need not begin with a time: SURVIVED
+Y1 the wait does not look whether the holder has ended (as before the commit: 300 s, then the rig's error): NOT APPLIED (found [0] times)
+Y2 the ended holder's status is not taken (a VERDICT line alone decides): NOT APPLIED (found [0] times)
+Y3 a holder that ended with 0 before a cut ends the recording for the check too: NOT APPLIED (found [0] times)
+Y4 after a verdict before the first cut the wait says "wrote one" (the recording goes on): NOT APPLIED (found [0] times)
+Y5 a verdict before the first cut is the rig's error (as before, said at once): NOT APPLIED (found [0] times)
+Y6 takeover does not take the wait's 1 (set -e ends the recording with it, and no line): KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y7 failed does not take the wait's 1: KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y8 takeover ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y9 failed goes on after the verdict (the wait's 1 is dropped): KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y10 the ended holder's status is taken by a bare wait: NOT APPLIED (found [0] times)
+Z1 a verdict is not judged first (the order of e88773b for every recording): KILLED by 1: test_a_verdict_before_the_first_cut
+Z2 every recording with a holder is judged as one that ended at a verdict (no instance or failure line): KILLED by 3: test_a_line_torn_at_the_take_over, test_an_acknowledged_failure, test_two_instances
+Z3 after a verdict the failure line is judged as well: KILLED by 1: test_a_verdict_before_the_first_cut
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z5 a verdict judged first does not count (rc as it was): KILLED by 1: test_a_verdict_before_the_first_cut
+Z6 held_lines goes on to the held cuts' files after a verdict: KILLED by 2: test_a_held_cut_the_daemon_could_not_read, test_a_verdict_before_the_first_cut
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED
+Z8 a verdict is judged first in takeover only: KILLED by 1: test_a_verdict_before_the_first_cut
+X5b the held cuts are judged before the instances' lines again (with no verdict): SURVIVED
+P1 the start may follow at any byte of the line, not at a page of the file: KILLED by 3: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start, test_cut_daemon_main.py did not end in 300 s
+P2 a page is 8192 bytes: KILLED by 1: test_a_line_torn_at_the_take_over
+P3 a page is 2048 bytes: SURVIVED
+P4 the pages are counted from the line's beginning, not the file's: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+P5 the file's offset counts no newlines: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+P6 the start line may carry a leading zero: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P7 the start may be of a pid already started (the author's survivor): SURVIVED
+P8 what is left may carry any whole pid: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P9 what is left may carry any digits where its pid is cut: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P10 the start may be earlier than the last whole line: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P11 the start may be later than the line after it (the author's survivor): SURVIVED
+P12 the torn line's own time is not held to the lines around it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P13 the torn line may be earlier than the last whole line: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P14 the torn line may be later than the start: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P15 the torn line's daemon may write after it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P16 a start line later than the line after it is let through: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P17 only a line that does not parse is looked at (as e88773b): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P18 the last instance's start, not its last whole line, bounds the times: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P19 what is left must hold the whole time and its tab: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+U1 hold_idle does not look whether the holder has ended (as before: 120 s, then the rig's error): KILLED by 1: test_cut_record.sh did not end in 300 s
+U2 after a verdict hold_idle says the holder is idle (the recording goes on): KILLED by 1: test_cut_record.sh: a verdict while the holder is asked to pause ends the recording for the check
+U3 edges does not take hold_idle's 1: KILLED by 1: test_cut_record.sh: edges ends at a verdict while the holder is asked to pause
+U4 edges ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: edges ends at a verdict while the holder is asked to pause
+U5 a holder that ended with 0 while the recording waits ends it for the check too: KILLED by 2: test_cut_record.sh: a holder that ended with 0 before a cut is the rig's error, test_cut_record.sh: a holder that ended with 0 while asked to pause is the rig's error
+U6 the gone holder's status is not taken (a VERDICT line alone decides): KILLED by 3: test_cut_record.sh: a holder that ended with its error before a cut is the rig's error, test_cut_record.sh: a holder that ended with its error while asked to pause is the rig's error, test_cut_record.sh: the holder's leave, its stop and an early end all go through holder_ended
+U7 the wait for the first cut does not look whether the holder has ended (300 s, then the rig's error): KILLED by 1: test_cut_record.sh did not end in 300 s
+U8 after a verdict before the first cut the wait says "wrote one": KILLED by 1: test_cut_record.sh: a verdict before the first cut ends the recording for the check

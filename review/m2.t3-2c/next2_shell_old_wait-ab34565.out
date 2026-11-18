@@ -1,0 +1,14 @@
+ok   holder_ended is in the script
+ok   holder_wrote_one is in the script
+ok   a holder that ends with 0
+ok   a holder that ends with its verdict goes on to the check
+ok   1 without a VERDICT line is the rig's error
+ok   the holder's own error is the rig's error
+ok   a holder that wrote a cut
+FAIL a verdict before the first cut ends the recording for the check: got '2 rig error: the holder wrote no cut in 300 s: 1	VERDICT cut 1 is still being uploaded', want '0 ended early'
+FAIL a holder that ended with 0 before a cut is the rig's error: got '2 rig error: the holder wrote no cut in 300 s: ', want '2 rig error: the holder ended with 0 before it wrote a cut: '
+FAIL a holder that ended with its error before a cut is the rig's error: got '2 rig error: the holder wrote no cut in 300 s: 1	ERROR HolderError: x', want '2 rig error: the holder ended with 2 before it wrote a cut: 1	ERROR HolderError: x'
+ok   the recordings end at a verdict before the first cut
+ok   no bare wait for the holder
+FAIL the holder's leave, its stop and an early end all go through holder_ended: got '2', want '3'
+exit 1
