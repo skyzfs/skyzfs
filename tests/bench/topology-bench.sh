@@ -261,8 +261,9 @@
 #                           abandoned at the cut bound before its commit,
 #                           again and again, so the row waits for the
 #                           first upload before its first window, with
-#                           the pool idle: TB_SKZ_UPLOAD_WAIT_S (default
-#                           900; 0 does not wait). The time it took, or
+#                           the pool imported, synced and idle:
+#                           TB_SKZ_UPLOAD_WAIT_S (default 900; 0 does not
+#                           wait). The time it took, or
 #                           that it did not land, is in the row's
 #                           .skzinfo (first_upload) and the uploader's
 #                           table. The summary has a table of what the
@@ -2095,7 +2096,6 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             # as that daemon's (a reader thread that never ran).
             echo "status_reader $(basename "$SKYZFSD") sha256:$(sha256sum "$SKYZFSD" | cut -c1-12)" >> "$OUT/$TOPO.skzinfo"
             skz_settle
-            if [ "$SKZ_UPLOAD" = 1 ] && [ "$SKZ_UPLOAD_WAIT_S" -gt 0 ]; then skz_first_upload; fi
             ;;
         *) echo "build_zfs_direct: $1?" >&2; return 1 ;;
     esac
@@ -2108,6 +2108,14 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
     ZFS_UP=1
     log "zpool import from $dev took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
     zfs_set_props
+    # The daemon takes a cut at a flush, and none came while the image
+    # was copied on (run 44335231766: no cut in 900 s): the pool is
+    # imported and synced first, so that its first cut is there to go
+    # up while nothing else writes.
+    if [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ] && [ "$SKZ_UPLOAD_WAIT_S" -gt 0 ]; then
+        lim 120 zpool sync "$ZFS_POOL"
+        skz_first_upload
+    fi
     FS_DEV=$dev
 }
 zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg key n"

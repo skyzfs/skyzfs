@@ -216,7 +216,12 @@ check "the first upload lands: the row says when" \
 first_upload 100000 300; rc=$?
 check "no upload in the limit: the row says so, and the run goes on" \
     '[ "$rc" = 0 ] && grep -qx "first_upload NONE in 300 s (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
-check "the wait is wired after the settle, for an upload's row only" \
-    'grep -qx "            if \[ \"\$SKZ_UPLOAD\" = 1 \] && \[ \"\$SKZ_UPLOAD_WAIT_S\" -gt 0 \]; then skz_first_upload; fi" "$script"'
+# The wait comes after the pool's import and a sync: a cut is taken at
+# a flush, and none comes while the image is copied on.
+check "the wait follows the import and a sync, on the daemon's upload rows only" \
+    'awk "/^    zpool import -N/ { i = NR } /^        lim 120 zpool sync/ { y = NR } /^        skz_first_upload\$/ { w = NR }
+          /if \\[ \"\\\$1\" = skyzfsd \\] && \\[ \"\\\$SKZ_UPLOAD\" = 1 \\]/ { c = NR }
+          END { exit !(i && c > i && y == c + 1 && w == y + 1) }" "$script"'
+check "the wait is called nowhere else" '[ "$(grep -c "^ *skz_first_upload$" "$script")" = 1 ]'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
