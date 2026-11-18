@@ -32,7 +32,10 @@ name: skyzfs-cut-daemon
 # Runs on a pull request that touches the rig's files or the daemon's
 # code (ubuntu-26.04 and ubuntu-26.04-arm), on a push of the rig's
 # files to a testing branch (ubuntu-26.04), and by dispatch (all four
-# images by default).
+# images by default). A pull request that changes the uploader, the
+# daemon that drives it, the rig's upload files or this workflow also
+# runs the upload stage's courses (a) to (d) on ubuntu-26.04; (e) to
+# (g) run by dispatch only. tests/kernel/cut_plan.py makes the jobs.
 on:
   workflow_dispatch:
     inputs:
@@ -61,6 +64,7 @@ on:
       - bins/skyzfs-nodeb/**
       - tests/lib/**
       - bins/skyzfsd/**
+      - crates/skyzfs-upload/**
       - crates/skyzfs-local/**
       - crates/skyzfs-uberblock/**
       - crates/skyzfs-ublk/**
@@ -96,16 +100,44 @@ jobs:
       - run: python3 tests/kernel/test_cut_daemon_main.py -v
       - run: python3 tests/kernel/test_cut_hold.py -v
       - run: python3 tests/kernel/test_cut_watch.py -v
+      - run: python3 tests/kernel/test_cut_plan.py -v
       - run: bash tests/kernel/test_cut_record.sh
 
+  plan:
+    name: which jobs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IMAGES: ${{ inputs.images || '' }}
+          UPLOAD: ${{ inputs.upload }}
+          HOLD: ${{ inputs.hold }}
+          RECORDINGS: ${{ inputs.recordings || '' }}
+          BASE: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          : > "$RUNNER_TEMP/changed.txt"
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only "$BASE...$HEAD" > "$RUNNER_TEMP/changed.txt"
+          fi
+          m=$(python3 tests/kernel/cut_plan.py "$EVENT" "$IMAGES" "$UPLOAD" "$HOLD" "$RECORDINGS" "$RUNNER_TEMP/changed.txt")
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          { echo "## Jobs"; echo; echo '```'; python3 -m json.tool <<< "$m"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   record:
-    name: record through skyzfsd and check, ${{ matrix.image }}
+    name: record through skyzfsd and check, ${{ matrix.label }}
+    needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        image: ${{ fromJSON(inputs.images || (github.event_name == 'push' && '["ubuntu-26.04"]') || '["ubuntu-26.04","ubuntu-26.04-arm"]') }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
       - name: Package mirrors
@@ -131,7 +163,7 @@ jobs:
       # minio/minio was removed from Docker Hub (Sept 2026); pgsty/minio
       # is the community fork, pinned as in e2e.yml and the node B rig.
       - name: Start MinIO
-        if: inputs.upload
+        if: matrix.upload == '1'
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
@@ -163,13 +195,13 @@ jobs:
               >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Build skyzfs-nodeb
-        if: inputs.upload
+        if: matrix.upload == '1'
         run: cargo build --locked -p skyzfs-nodeb
       - name: Record through skyzfsd and check
         env:
-          RECORDINGS: ${{ inputs.recordings || '' }}
-          HOLD: ${{ (github.event_name != 'workflow_dispatch' || (inputs.hold && !inputs.upload)) && '1' || '0' }}
-          UPLOAD: ${{ inputs.upload && '1' || '0' }}
+          RECORDINGS: ${{ matrix.recordings }}
+          HOLD: ${{ matrix.hold }}
+          UPLOAD: ${{ matrix.upload }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
           for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
@@ -185,11 +217,11 @@ jobs:
         run: |
           sudo chmod -R a+rX cut-out 2>/dev/null || true
           if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
+          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.label }}" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
             || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: cut-daemon-${{ matrix.image }}
+          name: cut-daemon-${{ matrix.label }}
           path: cut-out/
           retention-days: 90
