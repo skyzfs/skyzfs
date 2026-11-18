@@ -1023,9 +1023,13 @@ nudge_until() {
 # where head or the row has moved on, the daemon cut after the look (a
 # sync of data the pool still held: run 44280164949, urow), the watcher
 # can no longer fetch that cut under that head, and the look is taken
-# again, up to five times, each a line in DIR/looks-again.txt.
+# again, up to five times, each a line in DIR/looks-again.txt. The
+# status is read before the row, and the daemon rewrites it at most once
+# in 100 ms: just after a sync it can still say idle, nothing held, one
+# upload before the row's (the review of #119, F1). Where its cut_group
+# is older than the row's group, the look is taken again too.
 before_other() {
-    local st n g h now _i _k
+    local st n g h cg now _i _k
     for _k in 1 2 3 4 5; do
         if zpool list -H "$POOL" > /dev/null 2>&1; then z 60 zpool sync "$POOL"; fi
         drain "$1-status.txt" idle 1
@@ -1033,6 +1037,12 @@ before_other() {
         read -r st n g <<< "$(rowcut "$1-row.txt")"
         [ -n "$st" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
         h=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-row.txt")
+        cg=$(skey "$1-status.txt" cut_group)
+        if [[ $cg =~ ^[0-9]+$ ]] && [ "$cg" -lt "$g" ]; then
+            log "$NAME: the status before $1 was older than its row (cut group $cg, the row's $g): again"
+            printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "status at group $cg" >> "$RDIR/looks-again.txt"
+            continue
+        fi
         now=""
         for _i in $(seq 1 240); do
             awk -F '\t' -v n="$n" -v g="$g" -v s="$st" -v h="$h" '$1 == n && $2 == g && $3 == s && $4 == h { f = 1 }
@@ -1049,7 +1059,7 @@ before_other() {
         log "$NAME: the daemon cut after the look before $1 (cut $n, then $now): again"
         printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "$now" >> "$RDIR/looks-again.txt"
     done
-    rig_error "the row moved on after the look before $1 five times in a row"
+    rig_error "the row or the status moved on after the look before $1 five times in a row"
 }
 
 # umoved (b): another writer moves head. The uploader finds head's group
@@ -1096,6 +1106,13 @@ other_act() {
     for _i in 1 2 3 4 5; do
         before_other "$1"
         read -r st n g <<< "$(rowcut "$1-row.txt")"
+        # The guard's control (the review of #119, F2): the same act on
+        # a row node B did not read (the number one past) must end with
+        # 6 and change nothing, whether or not the daemon cuts meanwhile.
+        rc=0
+        "$2" "$st" $((n + 1)) "$g" || rc=$?
+        [ "$rc" = 6 ] || rig_error "node B's act at $1 on the row $st:$((n + 1)):$g, which it did not read, ended with $rc, not 6: the guard is not wired"
+        printf '%s\t%s\n' "$1" "$st:$((n + 1)):$g" >> "$RDIR/guard-controls.txt"
         rc=0
         "$2" "$st" "$n" "$g" || rc=$?
         [ "$rc" = 6 ] || return 0

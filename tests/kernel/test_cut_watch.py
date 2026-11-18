@@ -3,9 +3,11 @@
 stand-in script that prints what files in a directory say."""
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,12 +20,15 @@ HEAD = 'cd' * 32
 # node B's stand-in: `row` prints DIR/row.txt; `get` copies DIR/head.img
 # to --out and, where DIR/move exists, puts its text in row.txt first
 # (head moved under the read); DIR/get-rc is get's exit, and DIR/row-rc
-# row's.
+# row's; where DIR/get-once exists, get removes it and ends with 2. Each
+# call is a line in DIR/calls.
 NODEB = textwrap.dedent('''\
     #!/usr/bin/env python3
     import os, shutil, sys
     d = os.environ['FAKE_NODEB']
     cmd, args = sys.argv[1], sys.argv[2:]
+    with open(os.path.join(d, 'calls'), 'a') as f:
+        f.write(cmd + '\\n')
     def rc(name):
         p = os.path.join(d, name)
         if not os.path.exists(p):
@@ -36,6 +41,10 @@ NODEB = textwrap.dedent('''\
         with open(os.path.join(d, 'row.txt')) as f:
             sys.stdout.write(f.read())
     elif cmd == 'get':
+        once = os.path.join(d, 'get-once')
+        if os.path.exists(once):
+            os.remove(once)
+            sys.exit(2)
         if rc('get-rc'):
             sys.stderr.write('no such object\\n')
             sys.exit(rc('get-rc'))
@@ -49,8 +58,11 @@ NODEB = textwrap.dedent('''\
 ''')
 
 
-def row_text(number, group, head=HEAD, state=STATE):
-    return f'head\t{head}\t{number}\nrow\t{state}\t{number}\t{group}\nlease\trunner\t1\t99\n'
+def row_text(number, group, head=HEAD, state=STATE, gen=None):
+    """node B's `row`: head's commit and its generation (the number unless
+    GEN), the row, the lease."""
+    return (f'head\t{head}\t{number if gen is None else gen}\nrow\t{state}\t{number}\t{group}\n'
+            'lease\trunner\t1\t99\n')
 
 
 class Pure(unittest.TestCase):
@@ -76,7 +88,7 @@ class Pure(unittest.TestCase):
             cw.parse_row('head\tnone\n')
 
 
-class Steps(unittest.TestCase):
+class Fake(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix='cw-')
         self.out = os.path.join(self.d, 'out')
@@ -98,12 +110,18 @@ class Steps(unittest.TestCase):
         with open(os.path.join(self.fake, name), 'w' if isinstance(text, str) else 'wb') as f:
             f.write(text)
 
-    def read(self, name):
-        p = os.path.join(self.out, name)
+    def read(self, name, where=None):
+        p = os.path.join(where or self.out, name)
         if not os.path.exists(p):
             return ''
         with open(p) as f:
             return f.read()
+
+
+class Steps(Fake):
+    def test_the_row_alone_keeps_heads_generation(self):
+        """W02a's case moves the row and not head's line."""
+        self.assertEqual(row_text(2, 11, gen=1).splitlines()[0], row_text(1, 10).splitlines()[0])
 
     def test_each_cut_once_with_what_changed(self):
         self.put('row.txt', 'head\tnone\nrow\tnone\nlease\tnone\n')
@@ -138,7 +156,7 @@ class Steps(unittest.TestCase):
         """The courses move them apart: move-head moves head and not the
         row, set-row the row and not head. Either alone drops the fetch
         (review of #119, W02a and W02b)."""
-        for why, moved in (('head alone', row_text(1, 10, head='ef' * 32)), ('the row alone', row_text(2, 11))):
+        for why, moved in (('head alone', row_text(1, 10, head='ef' * 32)), ('the row alone', row_text(2, 11, gen=1))):
             with self.subTest(why):
                 self.w.last = None
                 self.put('row.txt', row_text(1, 10))
@@ -199,6 +217,62 @@ class Steps(unittest.TestCase):
         with self.assertRaises(cw.RigError):
             self.w.finish()
         self.assertEqual(len(looks), cw.TRIES)
+
+
+class Main(Fake):
+    """The watcher as the rig runs it (review of #119, F5): the command,
+    its pause, its last look at STOP and its exits."""
+
+    def run_watch(self, env=None, until=None):
+        stop = os.path.join(self.d, 'stop')
+        p = subprocess.Popen([sys.executable, os.path.join(HERE, 'cut_watch.py'), self.out, self.nodeb,
+                              'http://x', 'b', 'v', stop], env={**os.environ, **(env or {})},
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if until:
+                until()
+            open(stop, 'w').close()
+            return p.wait(timeout=60)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+
+    def test_the_last_look_retries(self):
+        """At STOP the last look fetches though the first get fails."""
+        self.put('row.txt', row_text(1, 10))
+        self.put('head.img', b'\1' * 4096)
+        self.put('get-once', '')
+        open(os.path.join(self.d, 'stop'), 'w').close()
+        self.assertEqual(self.run_watch(), 0)
+        self.assertTrue(self.read('uploaded.tsv').startswith('1\t10\t'))
+        self.assertIn('stopped', self.read('watch.log'))
+
+    def test_the_pause(self):
+        """While the pause file exists nothing is called; the last look
+        at STOP still is."""
+        self.put('row.txt', row_text(1, 10))
+        self.put('head.img', b'\1' * 4096)
+        pause = os.path.join(self.d, 'pause')
+        open(pause, 'w').close()
+        seen = []
+
+        def paused():
+            time.sleep(1.6)
+            seen.append(self.read('calls', self.fake))
+        self.assertEqual(self.run_watch({'CUT_WATCH_PAUSE': pause}, paused), 0)
+        self.assertEqual(seen, [''])
+        self.assertTrue(self.read('uploaded.tsv').startswith('1\t10\t'))
+
+    def test_the_exits(self):
+        self.put('row.txt', row_text(1, 10))
+        self.put('head.img', b'\1' * 4096)
+        self.put('get-rc', '4')
+        self.assertEqual(self.run_watch(), 1)
+        self.assertIn('VERDICT', self.read('watch.log'))
+        self.put('get-rc', '2')
+        self.assertEqual(self.run_watch(), 2)
+        self.assertIn('ERROR', self.read('watch.log'))
 
 
 if __name__ == '__main__':

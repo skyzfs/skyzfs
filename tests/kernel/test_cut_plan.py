@@ -49,6 +49,16 @@ class Plan(unittest.TestCase):
         self.assertEqual(stages(cut_plan.plan('workflow_dispatch', '["ubuntu-26.04"]', 'false', 'false', 'life', [])),
                          [('ubuntu-26.04', '0', '0', 'life', 'ubuntu-26.04')])
 
+    def test_a_dispatch_with_no_images(self):
+        for images in ('', '[]', '"ubuntu-26.04"', '[""]', 'ubuntu-26.04'):
+            with self.subTest(images), self.assertRaisesRegex(ValueError, 'the input images'):
+                cut_plan.plan('workflow_dispatch', images, 'false', 'true', '', [])
+        got = subprocess.run([sys.executable, os.path.join(HERE, 'cut_plan.py'), 'workflow_dispatch', '', 'false',
+                              'true', ''], capture_output=True, text=True)
+        self.assertEqual((got.returncode, got.stdout), (1, ''))
+        self.assertIn('the input images must be a JSON list', got.stderr)
+        self.assertNotIn('Traceback', got.stderr)
+
     def test_a_push(self):
         self.assertEqual(stages(cut_plan.plan('push', '', '', '', '', [])),
                          [('ubuntu-26.04', '1', '0', '', 'ubuntu-26.04')])

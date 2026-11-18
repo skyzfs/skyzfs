@@ -1126,14 +1126,24 @@ class Courses(unittest.TestCase):
         d = tempfile.mkdtemp(prefix='cdc-raw-')
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         self.assertIsNone(cdc.raw_held(d))
-        h = [cdc.hashlib.sha256(cdc.raw_block(k)).digest()[:8].hex() for k in range(3)]
-        for fn, body in (('raw.tsv', 'raw\t100\t3\n'),
+        h = [cdc.hashlib.sha256(cdc.raw_block(k)).digest()[:8].hex() for k in range(4)]
+        for fn, body in (('raw.tsv', 'raw\t100\t4\n'),
                          ('uploaded-blocks.tsv', f'0\t1\t100\t{h[0]}\n0\t1\t101\t{h[1]}\n1\t2\t101\t{cdc.ZERO}\n'
-                                                 f'1\t2\t102\t{h[2]}\n')):
+                                                 f'1\t2\t102\t{h[2]}\n1\t2\t103\t{h[3]}\n')):
             with open(os.path.join(d, fn), 'w') as f:
                 f.write(body)
-        self.assertEqual(cdc.raw_held(d), (2, 3))       # block 101 was zeroed at the second fetch
+        # Block 101 was zeroed at the second fetch, which brought 102 and
+        # 103: the image is every fetch's, not the first's alone (J50).
+        self.assertEqual(cdc.raw_held(d), (3, 4))
         self.assertNotEqual(cdc.raw_block(0), cdc.raw_block(1))
+        # Blocks missing where the content line failed too: the new state
+        # lost acknowledged writes (J49).
+        def again(written, blocks, st):
+            blocks['again'] = {}
+            return written + [dict(written[-1], head='dd' * 32, key='again')], blocks, st, {'raw.tsv': 'raw\t120000\t4\n'}
+        rc, lines = recording(upload=again)
+        self.assertEqual((rc, lines['upload_content'][0], lines['upload_raw'][0]), (1, 'FAIL', 'FAIL'), lines['upload_raw'])
+        self.assertIn('0 of the 4 blocks', lines['upload_raw'][1])
         # Blocks the reference never had either: the course shows nothing.
         rc, lines = recording(upload=lambda w, b, st: (w, b, st, {'raw.tsv': 'raw\t120000\t4\n'}))
         self.assertEqual((rc, lines['upload_raw'][0]), (2, 'ERROR'), lines['upload_raw'])

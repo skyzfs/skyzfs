@@ -5,7 +5,9 @@ Usage: cut_plan.py EVENT IMAGES UPLOAD HOLD RECORDINGS [CHANGED_FILES]
 
 EVENT is github.event_name; IMAGES, UPLOAD, HOLD and RECORDINGS are the
 dispatch's inputs (empty on other events); CHANGED_FILES is a file that
-lists the pull request's changed paths, one a line. Prints the matrix as
+lists the pull request's changed paths, one a line (`git diff
+--no-renames`, so that a file moved out of a listed directory counts
+under its old name too). Prints the matrix as
 JSON, `{"include": [...]}`, each entry with `image`, `hold` and `upload`
 ('1' or '0'), `recordings` and `label` (the job's name and the artifact's
 suffix).
@@ -55,7 +57,13 @@ def entry(image, hold, upload, recordings):
 def plan(event, images, upload, hold, recordings, changed):
     if event == 'workflow_dispatch':
         up = upload == 'true'
-        return [entry(i, hold == 'true' and not up, up, recordings) for i in json.loads(images)]
+        try:
+            names = json.loads(images)
+        except ValueError:
+            names = None
+        if not isinstance(names, list) or not names or not all(isinstance(i, str) and i for i in names):
+            raise ValueError(f'the input images must be a JSON list of runner images, not {images!r}')
+        return [entry(i, hold == 'true' and not up, up, recordings) for i in names]
     if event == 'push':
         return [entry('ubuntu-26.04', True, False, '')]
     if event == 'pull_request':
@@ -74,7 +82,11 @@ def main():
     if len(sys.argv) == 7:
         with open(sys.argv[6]) as f:
             changed = [ln.strip() for ln in f if ln.strip()]
-    print(json.dumps({'include': plan(event, images, upload, hold, recordings, changed)}))
+    try:
+        jobs = plan(event, images, upload, hold, recordings, changed)
+    except ValueError as e:
+        sys.exit(f'cut_plan.py: {e}')
+    print(json.dumps({'include': jobs}))
 
 
 if __name__ == '__main__':

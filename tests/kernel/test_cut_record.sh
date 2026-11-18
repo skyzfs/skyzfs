@@ -166,54 +166,73 @@ is "a pause left from the recording before does not" "$(started ':')" "0 not pau
 # The other writer's act (umoved, urow): a row that moved between the
 # look and the act (node B's exit 6) means look again and act again, up
 # to five times. A stand-in look writes a row whose number counts the
-# looks; the stand-in act ends with 6 until the number reaches MOVES+1.
-# -> "acted on N after K agains", or what ended it.
+# looks; the stand-in act ends with 6 where the row it was given is not
+# the last look's, or until the number reaches MOVES+1, and ignores the
+# row it was given where UNGUARDED is 1. -> "acted on N after K agains,
+# C controls", or what ended it.
 oact=$(sed -n '/^other_act() {$/,/^}$/p' "$SCRIPT")
 rcut=$(grep '^rowcut() ' "$SCRIPT")
+rskey=$(grep '^skey() ' "$SCRIPT")
 is "other_act and rowcut are in the script" "$([ -n "$oact" ] && [ -n "$rcut" ] && echo yes)" yes
-acted() { # moves
+acted() { # moves [unguarded]
     # shellcheck disable=SC2034,SC2329
     (
         set -euo pipefail
-        RDIR=$T/a; NAME=rec; MOVES=$1; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
+        RDIR=$T/a; NAME=rec; MOVES=$1; UNGUARDED=${2:-0}; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
         log() { :; }
         rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
         eval "$rcut"
         eval "$oact"
         before_other() { echo x >> "$RDIR/looks"; printf 'row\tab\t%s\t40\n' "$(wc -l < "$RDIR/looks")" > "$RDIR/$1-row.txt"; }
-        act() { [ "$2" -gt "$MOVES" ] || return 6; echo "$1 $2 $3" > "$RDIR/acted"; }
+        act() {
+            local cur
+            cur=$(wc -l < "$RDIR/looks")
+            [ "$UNGUARDED" = 1 ] || [ "$2" = "$cur" ] || return 6
+            [ "$cur" -gt "$MOVES" ] || return 6
+            echo "$1 $2 $3" > "$RDIR/acted"
+        }
         other_act step act
-        echo "acted on $(cat "$RDIR/acted") after $(cat "$RDIR/acts-again.txt" 2>/dev/null | wc -l) agains" > "$T/why"
+        echo "acted on $(cat "$RDIR/acted") after $(cat "$RDIR/acts-again.txt" 2>/dev/null | wc -l) agains," \
+            "$(cat "$RDIR/guard-controls.txt" | wc -l) controls" > "$T/why"
     )
     echo "$? $(cat "$T/why" 2>/dev/null)"
     rm -f "$T/why"
 }
-is "an act on the row as read" "$(acted 0)" "0 acted on ab 1 40 after 0 agains"
-is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 40 after 2 agains"
+is "an act on the row as read" "$(acted 0)" "0 acted on ab 1 40 after 0 agains, 1 controls"
+is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 40 after 2 agains, 3 controls"
 is "a row that moved five times is the rig's error" "$(acted 5)" \
     "2 rig error: node B's act at step found the row moved five times in a row"
+is "an act that does not check the row it was given is the rig's error" "$(acted 0 1)" \
+    "2 rig error: node B's act at step on the row ab:2:40, which it did not read, ended with 0, not 6: the guard is not wired"
 
 # The look before the other writer's act: where the daemon cuts after
 # the look, the watcher cannot fetch that cut under that head, and the
 # look is taken again (run 44280164949, urow). A stand-in node B's row
 # names cut L at look L, and its later read names cut L+1 while L is at
 # most MOVES; the stand-in watcher fetches the cut a look names once L
-# is past MOVES. -> "fetched N after K looks again, synced S", or what
-# ended it.
+# is past MOVES. The stand-in drain's status says cut group 39, one
+# before the row's, at its first STALE looks (F1), 40 after. -> "fetched
+# N after K looks again, synced S", or what ended it.
 bother=$(sed -n '/^before_other() {$/,/^}$/p' "$SCRIPT")
 is "before_other is in the script" "$([ -n "$bother" ] && echo yes)" yes
-looked() { # moves [pool imported: 1 or 0]
+looked() { # moves [pool imported: 1 or 0] [stale looks]
     # shellcheck disable=SC2034,SC2329
     (
         set -euo pipefail
-        RDIR=$T/b; NAME=rec; POOL=p; MOVES=$1; UP=${2:-1}; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
+        RDIR=$T/b; NAME=rec; POOL=p; MOVES=$1; UP=${2:-1}; STALE=${3:-0}; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
         log() { :; }
         sleep() { :; }
         rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
         zpool() { [ "$UP" = 1 ]; }
         z() { shift; echo x >> "$RDIR/syncs"; }
-        drain() { :; }
+        drain() {
+            echo x >> "$RDIR/drains"
+            local cg=40
+            [ "$(wc -l < "$RDIR/drains")" -gt "$STALE" ] || cg=39
+            printf 'seconds 0\nupload_state idle\ncuts_held 0\ncut_group %s\n' "$cg" > "$RDIR/$1"
+        }
         eval "$rcut"
+        eval "$rskey"
         eval "$bother"
         nbrow() {
             local k
@@ -236,7 +255,11 @@ is "a cut the watcher fetched" "$(looked 0)" "0 fetched st 1 40 after 0 looks ag
 is "a daemon that cut after two looks: the third look's cut" "$(looked 2)" "0 fetched st 3 40 after 2 looks again, synced 3"
 is "a pool not imported is not synced" "$(looked 0 0)" "0 fetched st 1 40 after 0 looks again, synced 0"
 is "a row that moved on five times is the rig's error" "$(looked 5)" \
-    "2 rig error: the row moved on after the look before step five times in a row"
+    "2 rig error: the row or the status moved on after the look before step five times in a row"
+is "a status one upload older than its row: the look again" "$(looked 0 1 1)" \
+    "0 fetched st 2 40 after 1 looks again, synced 2"
+is "a status older than its row five times is the rig's error" "$(looked 0 1 5)" \
+    "2 rig error: the row or the status moved on after the look before step five times in a row"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

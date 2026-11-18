@@ -124,7 +124,7 @@ jobs:
         run: |
           : > "$RUNNER_TEMP/changed.txt"
           if [ "$EVENT" = pull_request ]; then
-            git diff --name-only "$BASE...$HEAD" > "$RUNNER_TEMP/changed.txt"
+            git diff --name-only --no-renames "$BASE...$HEAD" > "$RUNNER_TEMP/changed.txt"
           fi
           m=$(python3 tests/kernel/cut_plan.py "$EVENT" "$IMAGES" "$UPLOAD" "$HOLD" "$RECORDINGS" "$RUNNER_TEMP/changed.txt")
           echo "matrix=$m" >> "$GITHUB_OUTPUT"
