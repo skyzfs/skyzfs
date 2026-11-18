@@ -4,8 +4,9 @@
 
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use skynbd_refs::ObjectRefStore;
 use skyzfs_blk::Buf;
@@ -16,6 +17,9 @@ use skyzfs_upload::uploader::{State, Uploader};
 use skyzfs_upload::{Desk, Local, Queued, Released};
 
 use common::*;
+
+/// The copies file's name in the volume's directory.
+const COPIES: &str = "copies.img";
 
 /// The queue's thread: after each wake (a turn), answer the call
 /// waiting. It ends when the desk is closed and gives the store back.
@@ -80,6 +84,183 @@ async fn a_cut_goes_up_through_the_desk_answered_on_the_stores_thread() {
     up.turn().await;
     assert_eq!(up.shown().state, State::Idle);
     assert_eq!(desk.answered(), answered);
+}
+
+/// The queue's thread, counting its turns and timing the longest answer.
+fn timed_queue_thread(
+    desk: Arc<Desk>,
+    mut store: InPlace<SimDisk>,
+    woken: std::sync::mpsc::Receiver<()>,
+    turns: Arc<AtomicU64>,
+    longest: Arc<Mutex<Duration>>,
+) -> std::thread::JoinHandle<InPlace<SimDisk>> {
+    std::thread::spawn(move || loop {
+        let _ = woken.recv_timeout(Duration::from_millis(5));
+        if desk.closed() {
+            return store;
+        }
+        let began = Instant::now();
+        desk.answer(&mut store);
+        let took = began.elapsed();
+        let mut longest = longest.lock().expect("the longest");
+        *longest = (*longest).max(took);
+        drop(longest);
+        turns.fetch_add(1, Ordering::SeqCst);
+    })
+}
+
+/// A sync of the copies through the desk is begun at one turn and
+/// answered at a later one: while the disk holds it, the queue's thread
+/// goes on turning, no answer waits for it, and nobody waits at the
+/// sync's end. Once it ends the cut goes up (F1 of #117's review).
+#[tokio::test]
+async fn a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning() {
+    const HELD: Duration = Duration::from_millis(400);
+    let mut fx = Fixture::new(52).await;
+    let mut store = fx.start();
+    for block in 20..30 {
+        fx.write(&mut store, block, block as u8);
+    }
+    fx.group(&mut store, 7);
+    // Overwritten after the cut's instant: the cut reads them from copies.
+    for block in 20..30 {
+        fx.write(&mut store, block, 0xEE);
+    }
+    let disk = fx.disk.clone();
+    disk.hold_syncs_of(COPIES);
+    let synced_before = disk.syncs_of(COPIES);
+
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let (turns, longest) = (Arc::new(AtomicU64::new(0)), Arc::default());
+    let queue = timed_queue_thread(
+        Arc::clone(&desk),
+        store,
+        woken,
+        Arc::clone(&turns),
+        Arc::clone(&longest),
+    );
+    let refs = Arc::new(ObjectRefStore::new(fx.store.clone()));
+    let lease = Keeper::new(refs, fx.vol, "node-a", 30_000);
+    let mut remote = Some(fx.remote());
+    let make = move |_epoch| remote.take().expect("made once");
+    let mut up = Uploader::with_slices(Queued::new(Arc::clone(&desk)), lease, make, 4);
+
+    let uploading = async {
+        for _ in 0..400 {
+            up.turn().await;
+            if up.shown().figures.uploaded == 1 {
+                return;
+            }
+        }
+        panic!("not uploaded: {:?}", up.shown());
+    };
+    let holding = async {
+        while disk.syncs_of(COPIES) == synced_before {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let at_begin = turns.load(Ordering::SeqCst);
+        tokio::time::sleep(HELD).await;
+        let during = turns.load(Ordering::SeqCst) - at_begin;
+        assert_eq!(disk.held_waiters(), 0, "nobody waits at the held sync");
+        disk.release_syncs();
+        during
+    };
+    let ((), during) = tokio::join!(uploading, holding);
+    assert!(
+        during >= 20,
+        "the queue's thread turned {during} times in {HELD:?} of the held sync"
+    );
+    let longest = *longest.lock().expect("the longest");
+    assert!(
+        longest < HELD / 4,
+        "no answer waited for the sync: the longest took {longest:?}"
+    );
+    fx.assert_uploaded(7, "copies synced through the desk")
+        .await;
+    desk.close();
+    let store = queue.join().expect("the queue's thread");
+    assert!(store.held_cuts().is_empty(), "the cut was let go");
+}
+
+/// A sync of the copies that fails, through the desk, is answered as
+/// failed at the turn that finds its end: the cut is lost, and nothing
+/// of it goes up.
+#[tokio::test]
+async fn a_failed_sync_of_the_copies_through_the_desk_loses_the_cut() {
+    let mut fx = Fixture::new(53).await;
+    let mut store = fx.start();
+    for block in 20..30 {
+        fx.write(&mut store, block, block as u8);
+    }
+    fx.group(&mut store, 7);
+    for block in 20..30 {
+        fx.write(&mut store, block, 0xEE);
+    }
+    fx.disk.fail_sync_of(COPIES);
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), store, woken);
+    let refs = Arc::new(ObjectRefStore::new(fx.store.clone()));
+    let lease = Keeper::new(refs, fx.vol, "node-a", 30_000);
+    let mut remote = Some(fx.remote());
+    let make = move |_epoch| remote.take().expect("made once");
+    let mut up = Uploader::with_slices(Queued::new(Arc::clone(&desk)), lease, make, 4);
+    for _ in 0..400 {
+        up.turn().await;
+        if up.shown().figures.lost == 1 {
+            break;
+        }
+    }
+    let figures = up.shown().figures;
+    assert_eq!((figures.lost, figures.uploaded), (1, 0), "{figures:?}");
+    desk.close();
+    let store = queue.join().expect("the queue's thread");
+    assert!(store.held_cuts().is_empty(), "the cut was abandoned");
+    assert_eq!(fx.uploaded().await.group, None, "nothing of it went up");
+}
+
+/// A sync of the copies under way when the desk closes is not answered
+/// by the store: the uploader's call ends at the close, as failed, and
+/// the queue's thread ends with the sync still held.
+#[tokio::test]
+async fn a_sync_of_the_copies_under_way_at_the_close_ends_as_failed() {
+    let mut fx = Fixture::new(54).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 20, 0x20);
+    fx.group(&mut store, 7);
+    let number = store.held_cuts()[0].number;
+    let disk = fx.disk.clone();
+    disk.hold_syncs_of(COPIES);
+    let synced_before = disk.syncs_of(COPIES);
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), store, woken);
+    let mut up = Queued::new(Arc::clone(&desk));
+    let syncing = async { up.sync_copies(number).await };
+    let closing = async {
+        while disk.syncs_of(COPIES) == synced_before {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        desk.close();
+    };
+    let (synced, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(syncing, closing)
+    })
+    .await
+    .expect("the call ends at the close");
+    let e = synced.expect_err("not synced");
+    assert!(e.to_string().contains("no longer served"), "{e}");
+    let store = queue.join().expect("the queue's thread ends");
+    disk.release_syncs();
+    drop(store);
 }
 
 /// A call waiting when the desk closes is dropped and answered as by a

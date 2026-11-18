@@ -769,8 +769,11 @@ impl Store for Empty {
     fn read(&mut self, _: u64, _: u64, _: &mut Buf) -> std::io::Result<CutSlice> {
         Err(std::io::Error::other("no cut"))
     }
-    fn sync_copies(&mut self, _: u64) -> std::io::Result<()> {
+    fn begin_sync_copies(&mut self, _: u64) -> std::io::Result<()> {
         Err(std::io::Error::other("no cut"))
+    }
+    fn copies_synced(&mut self, _: bool) -> Option<std::io::Result<()>> {
+        None
     }
     fn release(&mut self, _: u64) -> Released {
         Released::Gone

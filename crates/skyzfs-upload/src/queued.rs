@@ -8,11 +8,25 @@
 //! round trip and one turn's wait, and a turn never waits on the
 //! uploader: the thread answers what is there and goes on.
 //!
+//! Nor does a turn wait on the disk for the uploader. A read of a slice
+//! is made on the queue's thread (the shape decided for M2.4), but the
+//! sync of the copies file is not: the turn that takes the call begins
+//! it on the file's helper ([`Store::begin_sync_copies`]) and keeps the
+//! reply, and the turn that finds its end answers
+//! ([`Store::copies_synced`]); the helper wakes the queue's thread when
+//! the sync ends, as for the image's syncs (F1 of #117's review).
+//!
 //! When the queue's thread stops serving, the desk is closed
-//! ([`Desk::close`]): a call waiting is dropped, and every call after is
-//! answered as by a store that holds nothing ([`Queued`]'s doc): the
-//! uploader idles and lands nothing more, until the daemon stops its
-//! thread, which it does when the queue stops.
+//! ([`Desk::close`]): a call waiting is dropped, a sync of the copies
+//! under way is not answered, and every call after is answered as by a
+//! store that holds nothing ([`Queued`]'s doc): the uploader idles and
+//! lands nothing more, until the daemon stops its thread, which it does
+//! when the queue stops. The daemon closes it on every way out of the
+//! queue's thread, and from the main thread when the serve ends. A call
+//! that found the desk open can still wake the queue's thread once after
+//! the close (it leaves the call, the desk closes, it wakes), so the wake
+//! must be harmless once the queue has ended: the daemon's is an event
+//! descriptor that outlives the queue's thread.
 
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,7 +35,7 @@ use skyzfs_blk::Buf;
 use skyzfs_local::inplace::CutSlice;
 use tokio::sync::oneshot;
 
-use crate::local::{Local, Released, Store, Uploadable};
+use crate::local::{not_ended, Local, Released, Store, Uploadable};
 
 /// A call of [`Local`], as it travels.
 #[derive(Debug)]
@@ -69,7 +83,8 @@ pub enum Answer {
     AbandonAll(Vec<u64>),
 }
 
-/// Answer `call` from `store`.
+/// Answer `call` from `store` at once. A sync of the copies is begun
+/// and waited for: [`Desk::answer`] takes it in two turns instead.
 pub fn answer_from(store: &mut impl Store, call: Call) -> Answer {
     match call {
         Call::Uploadable => Answer::Uploadable(store.uploadable()),
@@ -81,7 +96,13 @@ pub fn answer_from(store: &mut impl Store, call: Call) -> Answer {
             let read = store.read(number, from, &mut buf);
             Answer::Read(buf, read)
         }
-        Call::SyncCopies(number) => Answer::SyncCopies(store.sync_copies(number)),
+        Call::SyncCopies(number) => {
+            Answer::SyncCopies(store.begin_sync_copies(number).and_then(|()| {
+                store
+                    .copies_synced(true)
+                    .unwrap_or_else(|| Err(not_ended()))
+            }))
+        }
         Call::Release(number) => Answer::Release(store.release(number)),
         Call::NameCommitted { number, group } => {
             Answer::NameCommitted(store.name_committed(number, group))
@@ -100,6 +121,9 @@ pub struct Desk {
 #[derive(Default)]
 struct Slot {
     call: Option<(Call, oneshot::Sender<Answer>)>,
+    /// The reply to a sync of the copies that an earlier turn began,
+    /// sent by the turn that finds its end.
+    syncing: Option<oneshot::Sender<Answer>>,
     closed: bool,
     /// The calls answered, for the status and the tests.
     answered: u64,
@@ -122,25 +146,66 @@ impl Desk {
     }
 
     /// On the queue's thread, after a turn: answer the call waiting, if
-    /// there is one, from `store`. Whether one was answered.
+    /// there is one, from `store`, without waiting on the disk. A sync of
+    /// the copies under way is answered first, once it has ended; until
+    /// then a call waiting stays where it is. A sync of the copies asked
+    /// for is begun, and answered here at once only if it has ended
+    /// already. Whether anything was done: a call taken, or a sync's end
+    /// answered.
     pub fn answer(&self, store: &mut impl Store) -> bool {
+        let mut done = false;
+        let syncing = self.slot().syncing.take();
+        if let Some(reply) = syncing {
+            let Some(synced) = store.copies_synced(false) else {
+                self.park(reply);
+                return false;
+            };
+            self.reply(reply, Answer::SyncCopies(synced));
+            done = true;
+        }
         let Some((call, reply)) = self.slot().call.take() else {
-            return false;
+            return done;
         };
-        let answer = answer_from(store, call);
-        self.slot().answered += 1;
-        // The uploader may have stopped waiting; its answer is then not
-        // wanted.
-        let _ = reply.send(answer);
+        match call {
+            Call::SyncCopies(number) => {
+                match store
+                    .begin_sync_copies(number)
+                    .map(|()| store.copies_synced(false))
+                {
+                    Err(e) => self.reply(reply, Answer::SyncCopies(Err(e))),
+                    Ok(Some(synced)) => self.reply(reply, Answer::SyncCopies(synced)),
+                    Ok(None) => self.park(reply),
+                }
+            }
+            call => self.reply(reply, answer_from(store, call)),
+        }
         true
     }
 
-    /// The queue's thread serves no more: drop the call waiting, and
-    /// answer every call after as a store that holds nothing would.
+    /// Keep the reply to a sync of the copies under way, unless the desk
+    /// closed meanwhile.
+    fn park(&self, reply: oneshot::Sender<Answer>) {
+        let mut slot = self.slot();
+        if !slot.closed {
+            slot.syncing = Some(reply);
+        }
+    }
+
+    /// Send `answer`. The uploader may have stopped waiting; its answer
+    /// is then not wanted.
+    fn reply(&self, reply: oneshot::Sender<Answer>, answer: Answer) {
+        self.slot().answered += 1;
+        let _ = reply.send(answer);
+    }
+
+    /// The queue's thread serves no more: drop the call waiting and the
+    /// reply to a sync under way, and answer every call after as a store
+    /// that holds nothing would.
     pub fn close(&self) {
         let mut slot = self.slot();
         slot.closed = true;
         slot.call = None;
+        slot.syncing = None;
     }
 
     /// Whether the desk is closed.
@@ -162,7 +227,10 @@ impl Desk {
             if slot.closed {
                 return None;
             }
-            // One caller, which waits for each answer: the slot is empty.
+            // One caller, which waits for each answer, so the slot is
+            // empty, unless a turn of the uploader was dropped while its
+            // call waited: that call is not wanted, and this one takes
+            // its place.
             slot.call = Some((call, reply));
         }
         (self.wake)();

@@ -102,23 +102,36 @@ pub trait Local {
     async fn abandon_all(&mut self) -> Vec<u64>;
 }
 
-/// [`Local`] answered at once, where the store lives: the store's side of
-/// each call. The daemon answers the uploader's calls with it on the
-/// queue's thread (`queued`); the tests and a store with no queue use it
-/// as [`Local`] directly.
+/// [`Local`] answered where the store lives: the store's side of each
+/// call. The daemon answers the uploader's calls with it on the queue's
+/// thread (`queued`); the tests and a store with no queue use it as
+/// [`Local`] directly. Every call is answered at once but the sync of the
+/// copies, which comes in two halves, so that the queue's thread begins
+/// it at one turn and takes its end at a later one, and does not wait
+/// for the disk meanwhile (F1 of #117's review).
 pub trait Store {
     /// [`Local::uploadable`].
     fn uploadable(&mut self) -> Option<Uploadable>;
     /// [`Local::read`], into `buf`.
     fn read(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice>;
-    /// [`Local::sync_copies`].
-    fn sync_copies(&mut self, number: u64) -> io::Result<()>;
+    /// [`Local::sync_copies`], its first half: begin the sync for cut
+    /// `number`. An error is the sync's outcome, and nothing was begun.
+    fn begin_sync_copies(&mut self, number: u64) -> io::Result<()>;
+    /// Its second half: the outcome of the sync begun, once it has ended.
+    /// `None` while it is under way, which only `wait` false answers, and
+    /// where none was begun. With `wait` the caller waits for its end.
+    fn copies_synced(&mut self, wait: bool) -> Option<io::Result<()>>;
     /// [`Local::release`].
     fn release(&mut self, number: u64) -> Released;
     /// [`Local::name_committed`].
     fn name_committed(&mut self, number: u64, group: u64) -> bool;
     /// [`Local::abandon_all`].
     fn abandon_all(&mut self) -> Vec<u64>;
+}
+
+/// A sync waited for that found none under way.
+pub(crate) fn not_ended() -> io::Error {
+    io::Error::other("the sync of the copies did not end")
 }
 
 impl<S: Store> Local for S {
@@ -132,7 +145,8 @@ impl<S: Store> Local for S {
     }
 
     async fn sync_copies(&mut self, number: u64) -> io::Result<()> {
-        Store::sync_copies(self, number)
+        Store::begin_sync_copies(self, number)?;
+        Store::copies_synced(self, true).unwrap_or_else(|| Err(not_ended()))
     }
 
     async fn release(&mut self, number: u64) -> Released {
@@ -167,10 +181,12 @@ impl<D: Dir> Store for InPlace<D> {
         self.read_cut_from(number, from, buf)
     }
 
-    fn sync_copies(&mut self, number: u64) -> io::Result<()> {
-        self.sync_cut_copies(number)?;
-        self.cut_copies_synced(true)
-            .unwrap_or_else(|| Err(io::Error::other("the sync of the copies did not end")))
+    fn begin_sync_copies(&mut self, number: u64) -> io::Result<()> {
+        self.sync_cut_copies(number)
+    }
+
+    fn copies_synced(&mut self, wait: bool) -> Option<io::Result<()>> {
+        self.cut_copies_synced(wait)
     }
 
     fn release(&mut self, number: u64) -> Released {
