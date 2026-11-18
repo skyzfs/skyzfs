@@ -111,6 +111,10 @@
 # shellcheck disable=SC2329
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The writes to the device below are O_DIRECT, which uutils' dd on
+# ubuntu-26.04 does not do the GNU way: run "$DD" for them.
+# shellcheck source=tests/lib/gnu-dd.sh
+. "$HERE/../lib/gnu-dd.sh"
 OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
@@ -511,7 +515,7 @@ rec_rewindsync() {
     export_pool
 }
 rec_rewindf() {
-    local ub dvas d off asize n=0
+    local ub dvas d off asize ss n=0
     create_pool
     load 6
     export_pool
@@ -523,7 +527,10 @@ rec_rewindf() {
     mark "damage"
     for d in "${dvas[@]}"; do
         off=$(( 0x$(cut -d: -f2 <<< "$d") + (4 << 20) )); asize=$(( 0x$(cut -d: -f3 <<< "$d" | tr -d '>') ))
-        dd if=/dev/zero of="$DEV" bs=512 seek=$((off / 512)) count=$((asize / 512)) oflag=direct conv=notrunc status=none
+        # In the device's logical blocks: a direct write of less is
+        # refused (EINVAL) where they are 4 KiB, as skyzfsd's are.
+        ss=$(blockdev --getss "$DEV")
+        "$DD" if=/dev/zero of="$DEV" bs="$ss" seek=$((off / ss)) count=$((asize / ss)) oflag=direct conv=notrunc status=none
         n=$((n + 1))
     done
     printf 'zeroed %s copies of the root block of group %s: %s\n' "$n" "$(awk '$1 == "txg" { print $3; exit }' <<< "$ub")" "${dvas[*]}" > "$RDIR/rewind-f.txt"
@@ -711,14 +718,14 @@ rec_edges() {
     create_pool
     load 1
     hold_idle || { export_pool; return 0; }
-    dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
+    "$DD" if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
     z 60 zpool sync "$POOL"
     load 1
     z 60 blkdiscard -f -z -o "$base" -l $((128 << 10)) "$DEV"
     load 1
     z 60 blkdiscard -f -o $((base + (128 << 10))) -l $((64 << 10)) "$DEV"
     load 1
-    dd if=/dev/urandom of="$DEV" bs=4K count=1 seek=$(( (base + (192 << 10)) >> 12 )) oflag=direct conv=notrunc status=none
+    "$DD" if=/dev/urandom of="$DEV" bs=4K count=1 seek=$(( (base + (192 << 10)) >> 12 )) oflag=direct conv=notrunc status=none
     hold_go
     load 1
     export_pool
@@ -746,13 +753,15 @@ kill_serve() {
     SERVE_PID=""
 }
 rec_takeover() {
-    local w k
+    local w k g0 n
     [ -w "$NOFLUSH" ] || rig_error "no $NOFLUSH to write"
     create_pool
     load 2
     # (a)
     holder_wrote_one || { export_pool; return 0; }
     holder_leave
+    g0=$(committed | tail -n 1)
+    [ -n "$g0" ] || rig_error "no group committed in $POOL's txgs before the writer"
     # Files of 1 MiB, each synced, until the stop file (at most 2000).
     rm -f "$WORK/writer.stop"
     ( k=0
@@ -763,8 +772,24 @@ rec_takeover() {
       done
       echo "$k files" ) > "$RDIR/takeover-writer.log" 2>&1 &
     w=$!
-    sleep 3
+    # The kill waits for 40 groups that wrote after the holder left,
+    # whatever the runner's speed: the held cut's own slot of the
+    # uberblock ring (txg mod 31) is written again 31 such groups after
+    # it while they come at an even step (31 is prime), and
+    # held_across_start's floor needs a block of the held cut changed
+    # before the kill (the review of #115, S1; at 3 s the slowest run
+    # went 95 cuts past it). Groups that wrote nothing write no
+    # uberblock and carry no cut: here two of every three are empty.
+    n=0
+    for k in $(seq 1 600); do
+        n=$(groups_written | awk -v g="$g0" '$1 > g' | wc -l)
+        [ "$n" -ge 40 ] && break
+        kill -0 "$w" 2>/dev/null || break
+        sleep 0.5
+    done
     kill -0 "$w" 2>/dev/null || rig_error "the writer had ended before the kill: $(tail -n 2 "$RDIR/takeover-writer.log")"
+    [ "$n" -ge 40 ] || rig_error "$POOL wrote $n groups in 300 s after the holder left; the kill waits for 40"
+    log "takeover: the kill after $n groups written since the holder left (the newest committed then $g0)"
     kill_serve
     serve_start 2
     holder_start
