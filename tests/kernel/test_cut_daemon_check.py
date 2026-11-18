@@ -1173,9 +1173,11 @@ class AcknowledgedFailure(unittest.TestCase):
         text, _ = split_begun(self.text, self.k)
         inst, recs, dcuts, _, _ = self.judge(text)
         begun = [True, True]
-        good = 'cuts 0\ncut_state begun\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
         for second, want in ((good, 0), (good.replace('cut_state begun', 'cut_state taken_up'), 1),
-                             (good.replace('intent_state taken_up', 'intent_state begun'), 1)):
+                             (good.replace('intent_state taken_up', 'intent_state begun'), 1),
+                             (good.replace('cuts_held 0', 'cuts_held 2'), 1),
+                             (good.replace('cuts_held 0\n', ''), 1)):
             d = tempfile.mkdtemp(prefix='cdc-ack-')
             try:
                 for k, st in enumerate((START_STATUS, second)):
@@ -1209,7 +1211,7 @@ class AcknowledgedFailure(unittest.TestCase):
         starts = cdc.epochs(dcuts, recs)
         self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
         begun = [True, True, False]
-        good = 'cuts 0\ncut_state begun\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
         for third_status, want in (('cuts 2\ncut_state taken_up\nintent_state taken_up\n', 0),
                                    ('cuts 1\ncut_state taken_up\nintent_state taken_up\n', 1)):
             d = tempfile.mkdtemp(prefix='cdc-ack-')
@@ -1534,6 +1536,61 @@ class Numbers(unittest.TestCase):
         self.assertEqual(cdc.numbers_verdict([])[0], 'INFO')
         for wrong in (('1', '3'), ('2', '3'), ('1', '1'), ('1', '-')):
             self.assertEqual(cdc.numbers_verdict(self.cuts(*wrong))[0], 'FAIL', wrong)
+
+
+class AcrossStarts(unittest.TestCase):
+    """held_across_start and across_failure on a few records made by hand."""
+
+    A, B, C = 'a' * 16, 'b' * 16, 'c' * 16
+
+    def records(self, hashes=True):
+        def wr(i, ns, block, h, n=1):
+            r = {'i': i, 'ns': ns, 'flags': [], 'pos': 0, 'offset': block * 4096, 'bytes': n * 4096}
+            if hashes:
+                r['hashes'] = h
+            return r
+        # a record `instance` marks each start after the first
+        return [{'i': 0, 'ns': 0, 'flags': [], 'op': 'flush'},
+                wr(1, 10, 1, [self.A]),
+                wr(2, 20, 1, [self.B]),            # after cut 1's instant (prefix 1): changes block 1
+                wr(3, 30, 2, [self.A, None], 2),   # block 2 as the cut holds it; block 3 in part
+                {'i': 4, 'ns': 40, 'flags': ['instance']},
+                wr(5, 50, 4, [self.C])]            # after the next start: not the copies' doing
+
+    def test_held_across_start(self):
+        recs = self.records()
+        dcuts = [{'number': '1', 'prefix': 1}, {'number': '2', 'prefix': 3}, {'number': '-', 'prefix': 3}]
+        blocks = {1: {1: self.A, 2: self.A, 3: self.A, 4: self.A}, 2: {1: self.B}}
+        # cut 1 written after the second start, cut 2 before it
+        written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 35}]
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 2)])
+        # both after: cut 2 (counted after block 1's write) has nothing changed
+        written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 46}]
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 2), (2, 1, 2, 0)])
+        # a log with no hashes: every block a write touched counts
+        self.assertEqual(cdc.held_across_start(self.records(hashes=False), dcuts, written, blocks)[0], (1, 1, 2, 3))
+        # a cut counted by the second instance is no cut held across it
+        dcuts = [{'number': '1', 'prefix': 5}]
+        self.assertEqual(cdc.held_across_start(recs, dcuts, [{'number': 1, 'asked': 60}], blocks), [])
+        # a written cut with no cut line is passed over
+        self.assertEqual(cdc.held_across_start(recs, [], [{'number': 1, 'asked': 60}], blocks), [])
+
+    def test_across_failure(self):
+        Z = cdc.ZERO
+        dcuts = [{'number': '1', 'epoch': 0}, {'number': '2', 'epoch': 0}, {'number': '3', 'epoch': 1},
+                 {'number': '4', 'epoch': 1}]
+        blocks = {1: {1: self.A, 2: self.A}, 2: {2: self.B}, 3: {1: self.A, 2: self.B, 3: Z, 4: self.C},
+                  4: {1: self.C}}
+        written = [{'number': n} for n in (1, 2, 3, 4)]
+        # block 3 reads zeros in the old image; block 4 differs
+        self.assertEqual(cdc.across_failure(dcuts, written, blocks), (3, 4, 1))
+        # the first written of the new state, not the first counted
+        self.assertEqual(cdc.across_failure(dcuts, [w for w in written if w['number'] != 3], blocks), (4, 1, 1))
+        # an old cut not written is not in the image
+        self.assertEqual(cdc.across_failure(dcuts, [w for w in written if w['number'] != 2], blocks), (3, 4, 2))
+        # nothing of the new state written
+        self.assertIsNone(cdc.across_failure(dcuts, written[:2], blocks))
+        self.assertIsNone(cdc.across_failure(dcuts, [], blocks))
 
 
 class Expected(unittest.TestCase):

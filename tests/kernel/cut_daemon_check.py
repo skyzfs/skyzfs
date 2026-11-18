@@ -757,6 +757,59 @@ def copied(records, dcuts, written, blocks):
     return out
 
 
+def held_across_start(records, dcuts, written, blocks):
+    """The cuts written by a later instance's holder than the instance that
+    counted them -> [(number, counted by, written by, blocks)], instances
+    counted from 1 and blocks those of the cut's map that a write applied
+    after the cut's instant and before the next instance started had
+    changed in the home: the next instance read them from copies an
+    earlier one made (the review of #111, G1)."""
+    starts = [r for r in records if 'instance' in r['flags']]
+    by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
+    out = []
+    for w in written:
+        d = by_number.get(w['number'])
+        if d is None:
+            continue
+        counted = sum(1 for r in starts if r['i'] < d['prefix'])
+        wrote = sum(1 for r in starts if r['ns'] < w['asked'])
+        if wrote <= counted:
+            continue
+        end = starts[counted]['i']
+        held = blocks.get(w['number'], {})
+        hit = set()
+        for r in records[d['prefix'] + 1:end]:
+            if cut_ref.is_write(r):
+                hs = r.get('hashes')
+                first = r['offset'] // BLOCK
+                for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+                    if b in held and (hs is None or hs[k] is None or hs[k] != held[b]):
+                        hit.add(b)
+        out.append((w['number'], counted + 1, wrote + 1, len(hit)))
+    return out
+
+
+def across_failure(dcuts, written, blocks):
+    """The first cut written of a state that an acknowledged start began,
+    against the image the holders of the state before left -> (its number,
+    its blocks, those that differ from that image), or None where no such
+    cut was written. The start trusts none of the old state, so this cut
+    holds whole every region the intent map names: what differs is what a
+    cut that lacked them would get wrong (the review of #113, G2)."""
+    by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
+    image = {}
+    for w in written:
+        d = by_number.get(w['number'])
+        if d is None:
+            continue
+        mine = blocks.get(w['number'], {})
+        if d.get('epoch', 0) == 0:
+            image.update(mine)
+            continue
+        return w['number'], len(mine), sum(1 for b, h in mine.items() if image.get(b, ZERO) != h)
+    return None
+
+
 def read_hashes(text, what, keyed=True):
     """`number block hash` (keyed) or `block hash` lines -> {number: {block: hash}} or {block: hash}."""
     out = {}
@@ -1057,6 +1110,10 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
         n = st.get('cuts', '')
         if not n.isdigit() or int(n) < before:
             bad.append(f'cuts {n!r} at the start, with {before} counted before it')
+        if k and begun[k] and st.get('cuts_held') != '0':
+            # It trusts none of the cut state: nothing of the old one is
+            # held (the review of #113, G3).
+            bad.append(f"cuts_held {st.get('cuts_held')!r} at a start that acknowledged a failure, wanted '0'")
         how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
         if k and begun[k]:
             how += ', acknowledging a failure'
@@ -1315,6 +1372,22 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
                            'block a write-zeroes changed before its write')
         put('edges', 'INFO', f'{nz} write-zeroes and {nt} discards in the log, none of them from ZFS; held across '
             f"the write-zeroes: {', '.join(f'cut {n} ({z} blocks)' for n, z in held_over)}")
+    if name == 'takeover':
+        across = [x for x in held_across_start(records, dcuts, written, blocks) if x[3]]
+        put('held_across_start', 'INFO' if across else 'ERROR', '; '.join(
+            f'cut {n}, counted by instance {c} and written by instance {w}: {b} blocks from copies instance {c} '
+            'made' for n, c, w, b in across) if across else
+            'no cut was written by a later instance than the one that counted it with a block from an earlier '
+            "instance's copy: the recording is there to show copies surviving a start")
+        errored = errored or not across
+    if any(begun[1:]):
+        got = across_failure(dcuts, written, blocks)
+        ok = got is not None and got[2] > 0
+        put('carried_across_failure', 'INFO' if ok else 'ERROR',
+            f'cut {got[0]}, the first written of the new state: {got[2]} of its {got[1]} blocks differ from the '
+            'image the holders of the state before left' if got else
+            'no cut of the new state was written')
+        errored = errored or not ok
     for c in CONTENT_CONTROLS:
         verdict, d = controls[c]
         good = verdict == CONTENT_EXPECTED[c]

@@ -35,7 +35,8 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     again; the holder's numbers then repeat, and failure.tsv is the
     rig's as the recording `failed` leaves it); tamper_split(text)
     changes the split log. tamper_written(written,
-    ns) changes the holder's writes after that renumbering. holder_log:
+    ns) changes the holder's writes after that renumbering, or, after
+    another split, with ns the second instance's start. holder_log:
     the holder's log in place of a right one's; holder_left: where given,
     only these of the holder's files are left."""
     records, read, dev = t.fixture(name)
@@ -60,7 +61,7 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     f.write(f'{t.PID2}\tadded\tacknowledged\n')
                 with open(os.path.join(d, 'failure.tsv'), 'w') as f:
                     f.write('cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n')
-                starts += ('cuts 0\ncut_state begun\nintent_state taken_up\n',)
+                starts += ('cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\n',)
                 blocks = [blocks[w['number']] for w in written]
                 written = [dict(w, number=w['number'] - k, asked=ns + 1) if w['number'] > k else w for w in written]
                 if tamper_written:
@@ -69,6 +70,10 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                 text = t.split_log(text, split[0], shape=split[2] if len(split) > 2 else None)
                 if tamper_split:
                     text = tamper_split(text)
+                if tamper_written:
+                    ns = int(next(ln for ln in text.splitlines() if ln.split('\t')[1:3] == [t.PID2, 'start'])
+                             .split('\t')[0])
+                    written = tamper_written(written, ns)
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
                 starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
@@ -300,6 +305,10 @@ class Main(unittest.TestCase):
         self.assertIn('state 2 counts from 1 again', lines['cut_numbers'][1])
         self.assertIn('acknowledging a failure', lines['instance_2'][1])
         self.assertEqual(rc, 0, {k: v for k, v in lines.items() if 'DIFFERS' in v[1]})
+        # the new state's first written cut, against the old state's image
+        # (the review of #113, G2)
+        self.assertEqual(lines['carried_across_failure'][0], 'INFO', lines['carried_across_failure'])
+        self.assertIn(f'cut {k + 1}, the first written of the new state: ', lines['carried_across_failure'][1])
         # the total, as a daemon that counted on would say it
         rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=held_status(records, read, dev, cs),
                               as_name='failed')
@@ -326,6 +335,33 @@ class Main(unittest.TestCase):
                               tamper_written=late)
         self.assertEqual((rc, lines['instance_2'][0], lines['held_content'][0]), (1, 'PASS', 'FAIL'),
                          lines.get('rig_error'))
+
+    def test_carried_across_failure_must_show_something(self):
+        """carried_across_failure is the rig's ERROR where no cut of the
+        new state was written, or where its first holds nothing the old
+        state's image does not (the review of #113, G2)."""
+        k = 13
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - k}\n')
+
+        def same(written, blocks, final):
+            old = {}
+            for n in range(1, k + 1):
+                old.update(blocks[n])
+            blocks[k + 1] = dict(list(old.items())[:5])
+            written[k]['blocks'] = 5
+        rc, lines = recording(holder=same, split=(k, 'acknowledged'), status=status, as_name='failed')
+        self.assertEqual(lines['carried_across_failure'],
+                         ('ERROR', f'cut {k + 1}, the first written of the new state: 0 of its 5 blocks differ from '
+                          'the image the holders of the state before left'))
+        none = lambda written, blocks, final: None    # noqa: E731
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed',
+                              tamper_written=lambda written, ns: [w for w in written if w.get('asked', 1) <= ns])
+        self.assertEqual(lines['carried_across_failure'], ('ERROR', 'no cut of the new state was written'))
+        # a recording with no acknowledged start is not asked
+        rc, lines = recording(holder=none)
+        self.assertNotIn('carried_across_failure', lines)
 
     def test_a_verdict_before_the_first_cut(self):
         """The daemon refused to read the first cut the holder asked for
@@ -378,6 +414,30 @@ class Main(unittest.TestCase):
         # and the first status's state must be begun
         rc, lines = recording(holder=none, split=(k, 'taken-over'), as_name='takeover')
         self.assertEqual(lines['cut_state'][0], 'FAIL', lines['cut_state'])
+
+    def test_a_cut_held_across_the_take_over(self):
+        """A cut the first instance counted and the second wrote, with
+        blocks of its map changed in the home before the second started:
+        held_across_start names it (the review of #111, G1); a take-over
+        whose holder wrote every cut before the start is the rig's
+        ERROR, the recording being there to show copies surviving it."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
+        later = lambda written, ns: [dict(w, asked=ns + w['number']) for w in written]    # noqa: E731
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover',
+                              tamper_written=later)
+        self.assertEqual(lines['held_content'][0], 'PASS', lines['held_content'])
+        self.assertEqual(lines['held_across_start'][0], 'INFO', lines['held_across_start'])
+        self.assertIn('cut 1, counted by instance 1 and written by instance 2: ', lines['held_across_start'][1])
+        self.assertEqual(rc, 1)    # ctl_mark-kept, as test_two_instances
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover')
+        self.assertEqual(lines['held_across_start'][0], 'ERROR', lines['held_across_start'])
+        # only the take-over is asked for it
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, tamper_written=later)
+        self.assertNotIn('held_across_start', lines)
 
     def test_a_kill_before_the_state_stored_the_cut(self):
         """The take-over after a kill between the barrier and the state
