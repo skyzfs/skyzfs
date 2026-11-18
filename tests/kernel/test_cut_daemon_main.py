@@ -22,8 +22,13 @@ import cut_ref  # noqa: E402
 import test_cut_daemon_check as t  # noqa: E402
 
 
+PID3 = '4444'
+FAILURE = 'cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n'
+
+
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
-              split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None):
+              split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None,
+              failure=FAILURE):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -33,7 +38,9 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     `taken-over` or `added` the device, or `acknowledged` a failure after
     the k-th cut's line (t.split_begun: a new state, which counts from 1
     again; the holder's numbers then repeat, and failure.tsv is the
-    rig's as the recording `failed` leaves it); tamper_split(text)
+    rig's as the recording `failed` leaves it, or FAILURE; a third
+    element k2 begins a third state after the k2-th cut, pid PID3);
+    tamper_split(text)
     changes the split log. tamper_written(written,
     ns) changes the holder's writes after that renumbering, or, after
     another split, with ns the second instance's start. holder_log:
@@ -55,15 +62,19 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
             if split and split[1] == 'acknowledged':
                 k = split[0]
                 text, ns = t.split_begun(text, k)
+                k2 = split[2] if len(split) > 2 else None
+                if k2:
+                    text, ns2 = t.split_begun(text, k2, pid=PID3, minus=k2 - k)
                 if tamper_split:
                     text = tamper_split(text)
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
-                    f.write(f'{t.PID2}\tadded\tacknowledged\n')
+                    f.write(f'{t.PID2}\tadded\tacknowledged\n' + (f'{PID3}\tadded\tacknowledged\n' if k2 else ''))
                 with open(os.path.join(d, 'failure.tsv'), 'w') as f:
-                    f.write('cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n')
-                starts += ('cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\n',)
+                    f.write(failure)
+                starts += ('cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\n',) * (2 if k2 else 1)
                 blocks = [blocks[w['number']] for w in written]
-                written = [dict(w, number=w['number'] - k, asked=ns + 1) if w['number'] > k else w for w in written]
+                written = [dict(w, number=w['number'] - k2, asked=ns2 + 1) if k2 and w['number'] > k2 else
+                           dict(w, number=w['number'] - k, asked=ns + 1) if w['number'] > k else w for w in written]
                 if tamper_written:
                     written = tamper_written(written, ns)
             elif split:
@@ -335,6 +346,49 @@ class Main(unittest.TestCase):
                               tamper_written=late)
         self.assertEqual((rc, lines['instance_2'][0], lines['held_content'][0]), (1, 'PASS', 'FAIL'),
                          lines.get('rig_error'))
+
+    def test_the_failure_and_later_states(self):
+        """failed: a failure line that fails is a verdict (the plant F7 of
+        the review of #113); with two starts that acknowledged a failure
+        the status holds the last state's count (Q2); where a new state
+        numbers its cuts wrong, cut_numbers says so and the status is
+        still held to that state's cuts (Q3); and the instances' lines
+        come before the held cuts', so a rig's error in the holder leaves
+        them (X5)."""
+        k = 9
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        st = held_status(records, read, dev, cs)
+
+        def since(n):
+            return st.replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - n}\n')
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=since(k), as_name='failed',
+                              failure='cuts_held\t1\nfailed_rc\t0\nrefused_rc\t4\n')
+        self.assertEqual((rc, lines['failure']), (1, ('FAIL', 'serve ended with 0 after SIGUSR1, wanted 3')))
+        k2 = 18
+        rc, lines = recording(holder=none, split=(k, 'acknowledged', k2), status=since(k2), as_name='failed')
+        self.assertEqual(rc, 0, {n: v for n, v in lines.items() if v[0] not in ('PASS', 'INFO', 'CAUGHT', 'SAME')})
+        self.assertIn('state 2 counts from 1 again; state 3 counts from 1 again', lines['cut_numbers'][1])
+        rc, lines = recording(holder=none, split=(k, 'acknowledged', k2), status=since(k), as_name='failed')
+        self.assertEqual((rc, lines['status']), (1, ('FAIL', f"cuts '{len(cs) - k}', not '{len(cs) - k2}'")))
+
+        def from_2(text):
+            out = []
+            for ln in text.split('\n'):
+                f = ln.split('\t')
+                if len(f) > 6 and f[1:3] == [t.PID2, 'cut']:
+                    f[6] = str(int(f[6]) + 1)
+                out.append('\t'.join(f))
+            return '\n'.join(out)
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=since(k), as_name='failed',
+                              tamper_split=from_2)
+        self.assertEqual((rc, lines['cut_numbers'][0], lines['status'][0]), (1, 'FAIL', 'PASS'))
+        rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=since(k), as_name='failed',
+                              holder_log='1\t> t1 held\n2\tERROR HolderError: no reply\n')
+        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        for key in ('instance_1', 'instance_2', 'failure'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines))
 
     def test_carried_across_failure_must_show_something(self):
         """carried_across_failure is the rig's ERROR where no cut of the

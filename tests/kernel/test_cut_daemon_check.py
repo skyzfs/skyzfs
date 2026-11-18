@@ -1100,11 +1100,14 @@ def split_log(text, k, lose_line=False, shape=None):
     return '\n'.join(first + second) + '\n'
 
 
-def split_begun(text, k):
+def split_begun(text, k, pid=PID2, minus=None):
     """The log of one instance as two, the second begun after the k-th
     cut's line as a start that acknowledged a failure does (stage 2c): no
     flush of the first under way, and the second's cut lines count from 1
-    again. -> (text, the second's start ns)."""
+    again. -> (text, the second's start ns). pid: the second's; minus:
+    what its cut lines' numbers lose (k), where the first's state began
+    at another cut than the log's first."""
+    minus = k if minus is None else minus
     lines = text.splitlines()
     ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
     first, rest = lines[:ci + 1], lines[ci + 1:]
@@ -1112,13 +1115,13 @@ def split_begun(text, k):
 
     def moved(ln, at=None):
         f = ln.split('\t')
-        f[1] = PID2
+        f[1] = pid
         if at is not None:
             f[0] = str(at)
         if f[2] == 'cut':
-            f[6] = str(int(f[6]) - k)
+            f[6] = str(int(f[6]) - minus)
         return '\t'.join(f)
-    second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\tbegun']
+    second = [f'{ns + 1}\t{pid}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{pid}\tcuts\t-\t-\t-\t-\tbegun']
     second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
     return '\n'.join(first + second) + '\n', ns + 1
 
@@ -1603,6 +1606,17 @@ class Status(unittest.TestCase):
     def test_no_cut(self):
         self.assertTrue(cdc.status_verdict(cdc.read_status('cuts 0\n'), [])[0])
 
+    def test_the_cuts_since_a_new_state(self):
+        """Since a start that began a state, the count is of the reference's
+        cuts after it, not before (the plant S3 of the review of #113)."""
+        ref = self.REF + [{'txg': 11, 'itself': False, 'prefix': 9}]
+        self.assertTrue(cdc.status_verdict(cdc.read_status('cuts 2\ncut_group 11\ncut_opens rewind\n'), ref,
+                                           since=5)[0])
+        self.assertFalse(cdc.status_verdict(cdc.read_status('cuts 1\ncut_group 11\ncut_opens rewind\n'), ref,
+                                            since=5)[0])
+        self.assertFalse(cdc.status_verdict(cdc.read_status('cuts 3\ncut_group 11\ncut_opens rewind\n'), ref,
+                                            since=5)[0])
+
     def test_a_status_written_before_the_last_cut(self):
         """Run 43675273810: the status read at once after the export was
         one write behind (cuts 22 of 26). The rig reads it a second later.
@@ -1644,6 +1658,17 @@ class Numbers(unittest.TestCase):
         self.assertEqual(cdc.numbers_verdict([])[0], 'INFO')
         for wrong in (('1', '3'), ('2', '3'), ('1', '1'), ('1', '-')):
             self.assertEqual(cdc.numbers_verdict(self.cuts(*wrong))[0], 'FAIL', wrong)
+
+    def test_every_line_of_a_new_state(self):
+        """A new state's lines after its first are held to its count too
+        (the plant N5 of the review of #113)."""
+        def states(*nums):
+            return [{'number': str(k + 1), 'local': n, 'epoch': e, 'line': k + 10}
+                    for k, (e, n) in enumerate(nums)]
+        self.assertEqual(cdc.numbers_verdict(states((0, '1'), (0, '2'), (1, '1'), (1, '2'), (1, '3')))[0], 'PASS')
+        verdict, detail = cdc.numbers_verdict(states((0, '1'), (0, '2'), (1, '1'), (1, '3')))
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn("cut line 4 (request log line 13) carries the number '3'", detail)
 
 
 class AcrossStarts(unittest.TestCase):
