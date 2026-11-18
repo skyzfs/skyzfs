@@ -35,7 +35,7 @@ CI on the head: everything is green except `skyzfs-cut-daemon` on
 ubuntu-26.04 and ubuntu-26.04-arm, which fail at `bound: cuts_abandoned`.
 The same line fails on #125's own run, and #126's run, which does not
 contain #125, is green. So the failure comes with the stack and not with
-these commits (section CI). The daemon rig's state is in the same section.
+these commits (section CI). The daemon rig is green on all three images.
 
 ### What I did
 
@@ -307,7 +307,13 @@ The tests that catch each plant are in `plants.out`.
 Runs on 1595d6f:
 - Green: `ci`, `e2e`, `k3s-smoke`, `coverage`, `skyzfs-ci` (push),
   `skyzfs-replay-rig`, `skyzfs-control-rig`.
-- `skyzfs-daemon-rig`: DAEMON_RIG_STATE
+- `skyzfs-daemon-rig` (run 44401327108): green on ubuntu-24.04,
+  ubuntu-26.04 and ubuntu-26.04-arm, on the daemon. Each table has 54
+  PASS and the one documented WAITING
+  (`pin_failed_volume_while_a_request_is_held`), and its five FAIL lines
+  are the negative controls (`ctl_*`), as expected. No rig drives the
+  channel, so this shows that the commits break nothing the rig
+  checks, and nothing about the channel.
 - `skyzfs-cut-daemon` (run 44401327161): fails on ubuntu-26.04 and
   ubuntu-26.04-arm, and passes on ubuntu-26.04-upload. The only FAIL is
   `bound: cuts_abandoned: FAIL: '0' abandoned at the bound, with the
