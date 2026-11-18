@@ -1,0 +1,21 @@
+     Running unittests src/lib.rs (target/debug/build/skyzfs-local/8283a10c693ef846/out/skyzfs_local-8283a10c693ef846)
+test inplace::state::tests::a_failed_run_in_the_middle_of_a_change_keeps_what_an_older_cut_reads ... ok
+test inplace::tests::a_failed_sync_fails_the_volume_for_good ... ok
+test inplace::tests::a_failed_write_fails_the_volume ... ok
+test inplace::tests::a_start_that_meets_the_failed_disk_fails_the_volume ... ok
+test inplace::tests::cuts::a_failed_read_of_the_cut_being_uploaded_abandons_it ... ok
+test inplace::tests::cuts::a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded ... ok
+test inplace::tests::cuts::a_failed_sync_of_the_copies_heard_by_a_start_that_is_lost ... ok
+test inplace::tests::cuts::a_failed_write_of_the_map_at_a_commit_fails_the_volume ... ok
+test inplace::tests::cuts::a_start_that_heard_a_failed_sync_of_the_copies_lost_at_any_store ... ok
+test inplace::tests::cuts::a_write_that_waited_does_not_begin_after_the_volume_failed ... ok
+test inplace::tests::ported::a_failed_read_fails_only_its_own_request ... ok
+test inplace::tests::ported::a_read_in_flight_across_a_failed_sync_returns_the_write_or_fails ... ok
+test inplace::tests::ported::a_store_failed_on_demand_fails_every_later_request ... ok
+test sim::tests::a_failed_read_changes_nothing ... ok
+test sim::tests::a_failed_sync_leaves_data_dirty_dropped_or_only_cached ... ok
+test sim::tests::a_failed_write_leaves_any_part_written ... ok
+test result: ok. 266 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 121.73s
+     Running tests/inplace_real.rs (target/debug/build/skyzfs-local/192744f5afd76bdb/out/inplace_real-192744f5afd76bdb)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

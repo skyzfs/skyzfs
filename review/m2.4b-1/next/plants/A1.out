@@ -1,0 +1,2 @@
+A1 a mismatch marks the open epoch first, before any cut is abandoned: KILLED by 1: a_death_while_a_mismatch_abandons_leaves_the_oldest_cut_whole
+git status --short: clean

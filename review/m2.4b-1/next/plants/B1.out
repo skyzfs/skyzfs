@@ -1,0 +1,2 @@
+B1 a failed read for the cut being uploaded does not abandon it: KILLED by 1: a_failed_read_of_the_cut_being_uploaded_abandons_it
+git status --short: clean
