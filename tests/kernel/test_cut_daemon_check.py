@@ -950,6 +950,10 @@ class Parse(unittest.TestCase):
             'inside the pid': ('263932738825\t99', '263932738825\t99'),
             'after the time': ('263932738825\t', '263932738825\t'),
             'inside the time': ('2639', '2639'),
+            # two pages before the tear, a page falls on a digit, and the
+            # digits from there to the start line are more than int() takes
+            'a line of digits over three pages': ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t' + '1' * 9000,
+                                                  '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'),
         }
         for why, (lost, head) in cases.items():
             with self.subTest(why):

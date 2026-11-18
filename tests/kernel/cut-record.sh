@@ -144,6 +144,9 @@ for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a
 for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+# A kill -9 cuts a line of the request log on a page of the file
+# (cut_daemon_check.py's torn_line): say where the logs are written.
+[ "$SERVER" != daemon ] || log "request logs on $(stat -f -c %T "$OUT"), page size $(getconf PAGESIZE)"
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
 VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
@@ -332,12 +335,6 @@ holder_leave() {
     rm -f "$WORK/hold.leave"
     holder_ended "when asked to leave"
 }
-# The holder has ended (WHEN says when): take its status. 1 with a VERDICT
-# line in its log is the daemon refusing to read a cut it held, which the
-# check fails (held_reads), so the recording goes on to the check; any
-# other status but 0 is the rig's error. Wherever a holder ends, its
-# status goes through here: a bare wait under set -e would end the
-# recording at a verdict as the rig's error.
 # The holder has ended while the recording waits on it (WHEN): with its
 # verdict (1 and a VERDICT line) the recording ends there and goes to the
 # check; any other end is the rig's error, 0 as well, since it was not
@@ -347,6 +344,12 @@ holder_gone() {
     grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" \
         || rig_error "the holder ended with 0 $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
+# The holder has ended (WHEN says when): take its status. 1 with a VERDICT
+# line in its log is the daemon refusing to read a cut it held, which the
+# check fails (held_reads), so the recording goes on to the check; any
+# other status but 0 is the rig's error. Wherever a holder ends, its
+# status goes through here: a bare wait under set -e would end the
+# recording at a verdict as the rig's error.
 holder_ended() {
     local rc=0
     wait "$HOLD_PID" 2>/dev/null || rc=$?

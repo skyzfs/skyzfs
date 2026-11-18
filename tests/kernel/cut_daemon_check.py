@@ -273,7 +273,10 @@ def torn_line(ln, k, lines, offset, instances, by_pid):
         return None
     last = instances[-1]
     nxt = lines[k + 1].split('\t', 1)[0]
-    if not nxt.isdigit():
+    # A time no longer than the next line's: a boundary pages before the
+    # tear can see thousands of digits, which int() refuses (the review of
+    # #113, T3).
+    if not nxt.isdigit() or len(nxt) > 20:
         return None
     before = last['lines'][-1]['ns'] if last['lines'] else last['ns']
     for p in range(-offset % PAGE or PAGE, len(ln), PAGE):
@@ -285,6 +288,8 @@ def torn_line(ln, k, lines, offset, instances, by_pid):
         if h.group(3) is not None and h.group(2) != last['pid']:
             continue
         if h.group(2) is not None and not last['pid'].startswith(h.group(2)):
+            continue
+        if len(m.group(1)) > len(nxt) or len(h.group(1).lstrip('0')) > len(nxt):
             continue
         ns = int(m.group(1))
         if not before <= ns <= int(nxt):
