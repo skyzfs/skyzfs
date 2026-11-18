@@ -179,7 +179,13 @@ def cuts(records, ubs, rule='design'):
     the device ("a mark does not outlive the attachment"). The rules
     `mark-dropped` and `mark-kept` turn those two over, as the
     defects of a daemon that drops the mark at a take-over or keeps it
-    on a created device."""
+    on a created device.
+
+    An instance record with `begun` (stage 2c) is a start that trusts
+    none of the state, as one that acknowledges a failure: it begins a
+    new state with no mark and no newest cut, whatever the rule. The
+    count goes on here; the check numbers the daemon's lines the same
+    way (cut_daemon_check.epochs)."""
     if rule not in ('design', 'txg-alone', 'count-repeats', 'early', 'previous', 'mark-dropped', 'mark-kept'):
         raise ValueError(f'no rule {rule}')
     by_record = {}
@@ -217,8 +223,10 @@ def cuts(records, ubs, rule='design'):
             # mark-dropped: none is kept, a take-over's either;
             # mark-kept: a created device's is kept as well.
             keep = {'mark-dropped': False, 'mark-kept': True}.get(rule, r['taken_over'])
-            if not keep:
+            if not keep or r.get('begun'):
                 stored = None
+            if r.get('begun'):
+                newest = None
             mark = stored
             continue
         if 'receipt' in flags:

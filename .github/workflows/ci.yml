@@ -59,6 +59,7 @@ jobs:
       - run: sudo bash tests/lib/test_skz_store.sh
       - run: bash tests/bench/test_copy_limit.sh
       - run: bash tests/kernel/test_zfs_stuck.sh
+      - run: bash tests/kernel/test_cut_record.sh
       # The cut rig's reference and check, and the recorded pools in
       # tests/fixtures/pools that the daemon's tests read: no kernel.
       - run: python3 tests/kernel/test_cut_ref.py

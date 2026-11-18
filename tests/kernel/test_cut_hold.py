@@ -31,6 +31,7 @@ vrun = sys.argv[1]
 cuts = {int(k): v for k, v in json.loads(sys.argv[2]).items()}
 refuse = set(json.loads(sys.argv[3]))
 fail = set(json.loads(sys.argv[4]))
+unread = set(json.loads(sys.argv[6])) if len(sys.argv) > 6 else set()
 stuck = set(json.loads(sys.argv[5]))
 asked = []
 signal.signal(signal.SIGUSR2, lambda *a: asked.append(1))
@@ -60,6 +61,9 @@ while not os.path.exists(os.path.join(vrun, 'stop')):
             continue
         if n in fail:
             reply(f'{token} refused: {path}: write block 0: No space left on device (os error 28)\n')
+            continue
+        if n in unread:
+            reply(f'{token} refused: read block 7 of cut {n}: Input/output error (os error 5)\n')
             continue
         blocks = sorted(int(b) for b in cuts[n][2])
         with open(path, 'r+b') as f:
@@ -190,10 +194,11 @@ class AgainstAFake(unittest.TestCase):
             self.proc.wait(timeout=10)
         shutil.rmtree(self.d)
 
-    def fake(self, cuts, refuse=(), fail=(), stuck=()):
+    def fake(self, cuts, refuse=(), fail=(), stuck=(), unread=()):
         import json
         self.proc = subprocess.Popen([sys.executable, '-I', '-c', FAKE, self.vrun, json.dumps(cuts),
-                                      json.dumps(list(refuse)), json.dumps(list(fail)), json.dumps(list(stuck))])
+                                      json.dumps(list(refuse)), json.dumps(list(fail)), json.dumps(list(stuck)),
+                                      json.dumps(list(unread))])
         end = time.monotonic() + 10
         while not os.path.exists(os.path.join(self.vrun, 'ready')):
             self.assertLess(time.monotonic(), end, 'the fake did not start')
@@ -232,6 +237,60 @@ class AgainstAFake(unittest.TestCase):
         self.assertEqual([c['number'] for c in holder.held()], [1, 2])
         self.assertEqual(holder.written, [])
         self.assertFalse(os.path.exists(os.path.join(self.out, 'held.tsv')))
+
+    def test_a_read_of_the_held_cut_refused(self):
+        """The daemon could not read a block of the cut it holds: its own
+        failure, a verdict and not the rig's error (the review of #103,
+        R2)."""
+        holder = self.fake({'1': [5, 'itself', {'0': 1}]}, unread=[1])
+        with self.assertRaisesRegex(ch.HolderVerdict, 'cut 1 is still being uploaded after its write was refused '
+                                    r'\(refused: read block 7 of cut 1: '):
+            holder.step()
+        self.assertFalse(issubclass(ch.HolderVerdict, ch.HolderError))
+        # a refusal that names the rig's image stays the rig's error
+        self.assertIsNone(ch.READ_REFUSED.match('refused: /mnt/x/held.img: read block 7 of cut 1: no'))
+
+    def program(self, cuts, at_stop, **kw):
+        """cut_hold.py run as the rig runs it, against the fake; AT_STOP:
+        the stop file exists before it starts, so a refusal comes in its
+        drain and not in its loop -> (exit status, its log's lines)."""
+        vdir, rdir = os.path.join(self.d, 'vol'), os.path.join(self.d, 'run')
+        os.makedirs(vdir)
+        self.vrun = ch.run_dir_of(vdir, rdir)
+        os.makedirs(self.vrun)
+        self.fake(cuts, **kw)
+        stop = os.path.join(self.d, 'stop')
+        if at_stop:
+            open(stop, 'w').close()
+        env = {k: v for k, v in os.environ.items() if not k.startswith('CUT_HOLD_')}
+        p = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'cut_hold.py'), self.out, str(self.proc.pid),
+                            vdir, rdir, self.image, str(16 * 4096), stop, shutil.which('true') or '/bin/true'],
+                           env=env, capture_output=True, timeout=60, check=False)
+        return p.returncode, self.read('holder.log')
+
+    def test_the_program_ends_with_1_at_a_verdict(self):
+        """A refused read ends the holder with 1 and a VERDICT line, in its
+        loop and in its drain at the stop (the review of #113: the rig
+        takes 1 with that line as a verdict wherever the holder ends)."""
+        for at_stop in (False, True):
+            with self.subTest(at_stop=at_stop):
+                rc, log = self.program({'1': [5, 'itself', {'0': 1}]}, at_stop, unread=[1])
+                self.assertEqual(rc, 1, log)
+                self.assertEqual([ln.split('\t')[1].split(' ')[0] for ln in log if '\tVERDICT ' in ln
+                                  or '\tERROR ' in ln], ['VERDICT'])
+                self.assertIn('read block 7 of cut 1: ', [ln for ln in log if '\tVERDICT ' in ln][0])
+                self.tearDown()
+                self.setUp()
+
+    def test_the_program_ends_with_2_at_the_rigs_error(self):
+        for at_stop in (False, True):
+            with self.subTest(at_stop=at_stop):
+                rc, log = self.program({'1': [5, 'itself', {'0': 1}]}, at_stop, fail=[1])
+                self.assertEqual(rc, 2, log)
+                self.assertFalse([ln for ln in log if '\tVERDICT ' in ln])
+                self.assertTrue([ln for ln in log if '\tERROR HolderError: ' in ln])
+                self.tearDown()
+                self.setUp()
 
     def test_a_release_refused_while_the_cut_is_held(self):
         holder = self.fake({'1': [5, 'itself', {'0': 1}]}, stuck=[1])
