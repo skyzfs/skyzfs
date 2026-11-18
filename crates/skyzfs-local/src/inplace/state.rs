@@ -866,6 +866,10 @@ pub struct Slice {
 /// holes.
 pub const SLICE_ZERO_RUNS: usize = 256;
 
+/// The blocks a look for the end of a run of zeros takes at a time: a
+/// word of a map's summary, and four words of the hole set.
+const RUN_LOOK: u64 = 64 * 64;
+
 /// A record, as read from the region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Record {
@@ -1488,9 +1492,9 @@ impl<R: Region> CutState<R> {
     /// The end of the run of hole chunks that holds `block`, in blocks,
     /// looked for no further than `stop` (at most the volume's end):
     /// `block` itself where its chunk is no hole, and `stop` where the
-    /// run goes on to it. A slice ends a run at the next block of the
-    /// cut's map, so it reads the hole set up to there and no further,
-    /// and the slices of one cut read it once over (Codex on #125).
+    /// run goes on to it. [`CutState::zero_run_end`] gives it a stop no
+    /// further than the next block of the cut's map, so a slice reads
+    /// the hole set up to there and no further (Codex on #125).
     fn hole_run_end(&self, block: u64, stop: u64) -> u64 {
         let Some(base) = self.holes_base else {
             return block;
@@ -1514,6 +1518,35 @@ impl<R: Region> CutState<R> {
             chunk += left;
         }
         (chunk.min(chunks) * HOLE_BLOCKS).min(stop)
+    }
+
+    /// The end of the run of zeros that begins at `block`, a block of a
+    /// hole chunk outside the map `maps` make up: the end of the run of
+    /// hole chunks that holds it, or the next block of the map, which
+    /// comes first. It looks [`RUN_LOOK`] blocks at a time, in the map
+    /// and the hole set together, so a run reads each over its own
+    /// length and one stretch more, wherever the map's next block lies,
+    /// and the slices of a cut read them once over. A look for the next
+    /// block of the map to the volume's end, once a slice (the code at
+    /// `af7b524`), made the slices of a sparse volume quadratic: about
+    /// two minutes at a TiB on the queue thread (F4 of the review of
+    /// #125).
+    fn zero_run_end(&self, maps: &[usize], block: u64) -> u64 {
+        let mut from = block;
+        loop {
+            let stretch = (from / RUN_LOOK + 1)
+                .saturating_mul(RUN_LOOK)
+                .min(self.blocks);
+            let stop = self
+                .maps
+                .first_in(&self.region, maps, from, stretch)
+                .unwrap_or(stretch);
+            let end = self.hole_run_end(from, stop);
+            if end < stretch || stretch >= self.blocks {
+                return end;
+            }
+            from = stretch;
+        }
     }
 
     /// Whether `cut` reads `block` as zeros where its map does not hold
@@ -2468,7 +2501,9 @@ impl<R: Region> CutState<R> {
     /// cut's map, which is read. The cut being uploaded reads the same
     /// whatever the queue does between two slices: its map does not
     /// change while it is held, and the hole set does not change while
-    /// a cut reads by it.
+    /// a cut reads by it. A slice reads the cut's map and the hole set
+    /// over its own blocks and a stretch more, so the slices of a cut
+    /// read them once over (F4 of the review of #125).
     pub fn slice_from(&self, number: u64, from: u64, limit: usize) -> Option<Slice> {
         let cut = self.hold(number)?;
         if !self.hole_reader(&cut) {
@@ -2485,8 +2520,6 @@ impl<R: Region> CutState<R> {
         let limit = limit.max(1);
         let mut block = from.min(self.blocks);
         let mut slice = Slice::default();
-        // The next block of the map at or after `block`, once looked for.
-        let mut mapped: Option<Option<u64>> = None;
         while block < self.blocks
             && slice.blocks.len() < limit
             && slice.zeroes.len() < SLICE_ZERO_RUNS
@@ -2496,17 +2529,7 @@ impl<R: Region> CutState<R> {
                 block += 1;
                 continue;
             }
-            let next_mapped = match mapped {
-                Some(Some(next)) if next > block => Some(next),
-                Some(None) => None,
-                _ => {
-                    let (found, _) = self.maps.blocks_from(&self.region, &maps, block, 1);
-                    let next = found.first().copied();
-                    mapped = Some(next);
-                    next
-                }
-            };
-            let end = self.hole_run_end(block, next_mapped.unwrap_or(self.blocks));
+            let end = self.zero_run_end(&maps, block);
             slice.zeroes.push((block, end - block));
             block = end;
         }

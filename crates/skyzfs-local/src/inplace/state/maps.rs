@@ -7,8 +7,9 @@
 //! ([`Maps::insert`]), to move all of one map into another
 //! ([`Maps::move_into`]), to clear one ([`Maps::clear`]), what a pass
 //! over one costs ([`Maps::weight`]), and the blocks in some maps, in
-//! order ([`Maps::blocks`]), or some of them from a block on
-//! ([`Maps::blocks_from`]). A freeze and a taking only rename maps (the
+//! order ([`Maps::blocks`]), some of them from a block on
+//! ([`Maps::blocks_from`]), or the first of them in a range of blocks
+//! ([`Maps::first_in`]). A freeze and a taking only rename maps (the
 //! word of the count names the open map, a cut's map word its parts),
 //! so they do not reach in here. What the protocol relies on, at every
 //! store a death can follow, is all a layout has to keep:
@@ -313,6 +314,52 @@ impl Maps {
             }
         }
         (blocks, None)
+    }
+
+    /// The first block in any of `maps` in `from..until`, or `None`
+    /// where there is none. A look visits the summary over the range
+    /// only, and of the words it names those up to the first block: a
+    /// slice bounds each look for a run's end so, and the slices of a
+    /// cut read the summary once over (F4 of the review of #125).
+    pub(super) fn first_in(
+        &self,
+        region: &impl Region,
+        maps: &[usize],
+        from: u64,
+        until: u64,
+    ) -> Option<u64> {
+        let until = until.min(self.blocks);
+        if from >= until {
+            return None;
+        }
+        let first_word = (from / 64) as usize;
+        let last_word = ((until - 1) / 64) as usize;
+        for i in first_word / 64..=last_word / 64 {
+            let mut summary = maps
+                .iter()
+                .fold(0, |acc, &map| acc | region.load(self.summary_base(map) + i));
+            if i == first_word / 64 {
+                summary &= u64::MAX << (first_word % 64);
+            }
+            if i == last_word / 64 {
+                summary &= u64::MAX >> (63 - last_word % 64);
+            }
+            while summary != 0 {
+                let word = i * 64 + summary.trailing_zeros() as usize;
+                summary &= summary - 1;
+                let mut bits = maps
+                    .iter()
+                    .fold(0, |acc, &map| acc | region.load(self.bits_base(map) + word));
+                if word == first_word {
+                    bits &= u64::MAX << (from % 64);
+                }
+                if bits != 0 {
+                    let block = word as u64 * 64 + u64::from(bits.trailing_zeros());
+                    return (block < until).then_some(block);
+                }
+            }
+        }
+        None
     }
 
     /// The blocks in any of `maps`, in order.
