@@ -292,6 +292,22 @@ jobs:
           fi
           sudo modprobe ublk_drv
 
+      - name: Object storage (MinIO) for the daemon's uploads
+        # Only for a sequence that names TB_SKZ_UPLOAD=1 (M2.4c): MinIO on
+        # this runner (tests/bench/minio.sh), its data in TB_MINIO_DIR, a
+        # bucket for the job, and the four TB_S3_* settings the script
+        # gives the daemon. The keys are MinIO's local defaults, not
+        # secrets. The sequence records what each upload row left in it
+        # and starts it anew after the row.
+        if: contains(inputs.sequence, 'TB_SKZ_UPLOAD=1')
+        run: |
+          bucket="tb-${{ github.run_id }}-${{ github.run_attempt }}"
+          dir="$RUNNER_TEMP/minio-data"
+          bash tests/bench/minio.sh up "$dir" "$bucket" || { echo "::error::MinIO did not come up with the bucket $bucket"; exit 2; }
+          { echo "TB_S3_ENDPOINT=http://127.0.0.1:9000"; echo "TB_S3_BUCKET=$bucket"
+            echo "TB_S3_KEY_ID=minioadmin"; echo "TB_S3_SECRET=minioadmin"; echo "TB_MINIO_DIR=$dir"; } >> "$GITHUB_ENV"
+          echo "MinIO on the runner, bucket $bucket" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
         run: |
@@ -400,6 +416,7 @@ jobs:
           # machine as the hang left it.
           failed=""
           hung=""
+          minio_rows=""
           for e in "${entries[@]}"; do
             i=$((i + 1))
             label=${e%%|*}; assigns=${e#*|}
@@ -419,6 +436,21 @@ jobs:
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
               "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}" || rc=$?
             echo "::endgroup::"
+            # An upload row: what it left in MinIO, and the work disk's
+            # free space after it, in the summary and its output; then
+            # MinIO anew, so that the next row starts with nothing there.
+            if [[ " $assigns " == *" TB_SKZ_UPLOAD=1 "* ]] && [ -n "${TB_MINIO_DIR:-}" ]; then
+              used="$(bash tests/bench/minio.sh usage "$TB_MINIO_DIR" "$TB_S3_BUCKET" || echo "minio usage not read") work_free_mib $(df -Pm "$TB_WORK" | awk 'NR==2 {print $4}')"
+              # A row refused before it ran has made no output directory.
+              sudo mkdir -p "$TB_OUT/$i"
+              echo "$used" | sudo tee "$TB_OUT/$i/minio.txt" > /dev/null
+              [ -n "$minio_rows" ] || echo "MinIO after each upload row, then started anew: its data in MiB, the objects in the bucket, uploads not finished, and the work disk's free MiB." >> "$GITHUB_STEP_SUMMARY"
+              minio_rows=1
+              echo "- row $i ($label): $used" >> "$GITHUB_STEP_SUMMARY"
+              bash tests/bench/minio.sh down "$TB_MINIO_DIR"
+              bash tests/bench/minio.sh up "$TB_MINIO_DIR" "$TB_S3_BUCKET" \
+                || { echo "::error::MinIO did not come up again after row $i"; exit 2; }
+            fi
             if sudo test -d "$TB_OUT/$i/skyzfsd-hang"; then
               hung=$i
               failed="$failed $i"

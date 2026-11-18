@@ -739,6 +739,47 @@ class HeldLines(HeldFixture):
         rc, lines = self.lines(name='bound', status={'cut_state': 'begun', 'cuts_abandoned': '2'})
         self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
 
+    def test_boundsparse_must_abandon_none(self):
+        """M2.4e: on a sparse volume a daemon that keeps the image's holes
+        copies no write into one, so the copies stay under the bound and
+        no cut is abandoned. The status is the one the rig reads, after
+        the holder let every cut go (44378510338): holes dropped with
+        their count, copies 0. A daemon before status version 17 is asked
+        nothing; one at 17 without cut_holes is the rig's error."""
+        def st(**kw):
+            return {'cut_state': 'begun', 'status_version': '17', 'cuts_abandoned': '0', 'cut_copied_bytes': '0',
+                    'cut_bound_bytes': '268435456', 'cut_holes': 'dropped', 'cut_hole_chunks': '8192', **kw}
+        rc, lines = self.lines(name='boundsparse', status=st())
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
+        self.assertIn('the copies stayed under the bound', lines['cuts_abandoned'][1])
+        self.assertNotIn('nothing copied', lines['cuts_abandoned'][1])
+        rc, lines = self.lines(name='boundsparse', status=st(cuts_abandoned='1'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='boundsparse', status=st(cuts_abandoned=''))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        # a daemon of version 17 that took no holes: judged, and says so
+        rc, lines = self.lines(name='boundsparse', status=st(cut_holes='none', cut_hole_chunks='0', cuts_abandoned='2'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        self.assertIn('took no holes', lines['cuts_abandoned'][1])
+        rc, lines = self.lines(name='boundsparse', status=st(cut_holes='none', cut_hole_chunks='0'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
+        # a later version is judged too
+        rc, lines = self.lines(name='boundsparse', status=st(status_version='18', cuts_abandoned='1'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        # version 17 without the key: the rig cannot tell
+        no_key = st(cuts_abandoned='1')
+        del no_key['cut_holes'], no_key['cut_hole_chunks']
+        rc, lines = self.lines(name='boundsparse', status=no_key)
+        self.assertEqual(lines['cuts_abandoned'][0], 'ERROR')
+        # before 17: asked nothing, with or without the key
+        for older in (st(status_version='16', cuts_abandoned='3'), st(status_version='', cuts_abandoned='3')):
+            rc, lines = self.lines(name='boundsparse', status=older)
+            self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'INFO'))
+            self.assertIn('keeps no holes', lines['cuts_abandoned'][1])
+        # bound itself: as before, on its zero-filled volume
+        rc, lines = self.lines(name='bound', status=st())
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+
     def test_edges_must_send_write_zeroes_and_a_discard(self):
         with self.assertRaises(RigError):
             self.lines(name='edges')

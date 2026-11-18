@@ -125,7 +125,12 @@ The second stage, where DIR/holder.log says the holder ran
   (held.tsv's times, the request log's clock): those the daemon wrote
   from copies, so that held_content is shown to have read some. The
   first written cut maps the whole volume and holds nearly all of them.
-- `cuts_abandoned`: at least one in `bound`; `edges`: at least one
+- `cuts_abandoned`: at least one in `bound`, whose volume is written
+  through at its create (`--zero-fill`); in `boundsparse`, the same
+  writes on a sparse volume, none (the copies stayed under the
+  bound), where the daemon keeps the image's holes (status version 17,
+  M2.4e; `cut_holes` missing there is the rig's error), and nothing
+  asked of an older daemon; `edges`: at least one
   write-zeroes and one discard, and a cut written after the first that
   had a block a write-zeroes changed before its write (the rig's
   error otherwise: the recording did not hold a cut across it).
@@ -195,7 +200,7 @@ import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
-        'bound', 'edges', 'takeover', 'failed',   # these four only where the daemon holds cuts (cut-record.sh)
+        'bound', 'boundsparse', 'edges', 'takeover', 'failed',   # these only where the daemon holds cuts (cut-record.sh)
         'umoved', 'urow', 'ukill', 'ulease', 'ulost',     # these where it uploads them
         'unostore', 'ukillput', 'ufailed')                # and these by name only
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
@@ -1496,12 +1501,44 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
     # The paths the ten recordings do not take (the lead, M2.T3): bound
     # must abandon a cut, edges must send write-zeroes and a discard.
     ab = status.get('cuts_abandoned')
+    holes = status.get('cut_holes')
+    said_holes = f"; the image's holes {holes!r}, {status.get('cut_hole_chunks')!r} chunks of 64 KiB"
+    ok_ab, ok_cp = None, None
     if name == 'bound':
-        ok = ab is not None and ab.isdigit() and int(ab) >= 1
-        put('cuts_abandoned', 'PASS' if ok else 'FAIL', f'{ab!r} abandoned at the bound, with the copies '
+        ok_ab = ab is not None and ab.isdigit() and int(ab) >= 1
+        put('cuts_abandoned', 'PASS' if ok_ab else 'FAIL', f'{ab!r} abandoned at the bound, with the copies '
             f"{status.get('cut_copied_bytes')!r} bytes of {status.get('cut_bound_bytes')!r}; the holder kept the "
-            'first cut while the pool wrote 320 MiB of new data, so at least one must be')
-        rc = rc if ok else 1
+            'first cut while the pool wrote 320 MiB of new data on a volume written through at its create '
+            f'(--zero-fill, no holes), so at least one must be{said_holes if holes is not None else ""}')
+        rc = rc if ok_ab else 1
+    elif name == 'boundsparse':
+        ver = status.get('status_version', '')
+        if not (ver.isdigit() and int(ver) >= 17):
+            # A daemon from before M2.4e (status version 17) keeps no
+            # holes: it copies these writes as in bound, and nothing is
+            # asked of it here.
+            put('cuts_abandoned', 'INFO', f'{ab!r}: the daemon keeps no holes (status version {ver or "not said"}, '
+                'before 17 and M2.4e), so nothing is asked of it on a sparse volume')
+        elif holes is None:
+            put('cuts_abandoned', 'ERROR', f'status version {ver} and no cut_holes in the status: the rig cannot tell '
+                'whether the daemon kept the holes')
+            errored = True
+        else:
+            # M2.4e: a write into a hole of the image is not copied, and
+            # 320 MiB of new data go into holes, so the copies stay under
+            # the bound of 256 MiB and no cut is abandoned (0 on both
+            # images in #125's first run, 44371078092). Only that is
+            # judged: the status is read after the holder let every cut
+            # go, when the copies are 0 for any daemon. While the first
+            # cut is held the daemon still copies the blocks the pool
+            # wrote before the cut and wrote again (labels, uberblocks,
+            # metadata: 0.75 to 1 MiB in 44378510338).
+            ok_ab = ab is not None and ab.isdigit() and int(ab) == 0
+            why = '' if ok_ab or holes != 'none' else ': the daemon took no holes on this volume'
+            put('cuts_abandoned', 'PASS' if ok_ab else 'FAIL', f'{ab!r} abandoned{why}{said_holes}; the holder '
+                'kept the first cut while the pool wrote 320 MiB of new data into the holes of a sparse volume, so '
+                'none must be: the copies stayed under the bound')
+            rc = rc if ok_ab else 1
     else:
         put('cuts_abandoned', 'INFO', f'{ab!r}')
     cp = copied(records, dcuts, written, blocks)
@@ -1509,7 +1546,8 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
     put('obs_copied_blocks', 'INFO', f'{sum(c for _, c, _ in first)} blocks of the first written cut and '
         f'{sum(c for _, c, _ in later)} of the {len(later)} written after it (in cuts '
         f"{', '.join(str(n) for n, c, _ in later if c) or 'none'}; {sum(z for _, _, z in cp)} under a write-zeroes) "
-        'had changed in the home between the cut\'s instant and its write: the daemon wrote them from copies')
+        'had changed in the home between the cut\'s instant and its write: the daemon wrote them from copies, '
+        'or, in a hole of the image that it keeps (cut_holes held, M2.4e), as zeros with nothing copied')
     if name == 'edges':
         nz = sum(1 for r in records if r.get('op') == 'write_zeroes')
         nt = sum(1 for r in records if 'trim' in r['flags'])
