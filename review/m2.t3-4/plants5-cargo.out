@@ -1,0 +1,11 @@
+M01 the uploader depends on skynbd-nbd (workspace = true): KILLED by 1: test_every_crate_under_the_uploader
+M02 the uploader depends on skynbd-nbd (the dotted form): KILLED by 1: test_every_crate_under_the_uploader
+M03 the uploader depends on skynbd-stream by path: KILLED by 1: test_every_crate_under_the_uploader
+M04 the uploader depends on skynbd-stream by path under another name: KILLED by 1: test_every_crate_under_the_uploader
+M05 the uploader has skynbd-nbd as a build dependency: KILLED by 1: test_every_crate_under_the_uploader
+M06 the uploader has skynbd-nbd as a dependency on one target: KILLED by 1: test_every_crate_under_the_uploader
+M07 the uploader has skynbd-nbd as an optional dependency: KILLED by 2: test_every_crate_under_the_uploader, test_the_closure_from_cargo
+M08 the uploader has skynbd-nbd as a table of its own: KILLED by 1: test_every_crate_under_the_uploader
+M09 node B depends on skynbd-nbd: KILLED by 1: test_every_crate_under_the_uploader
+M10 a crate deep under the uploader (skynbd-tree) depends on skynbd-stream by path: KILLED by 1: test_every_crate_under_the_uploader
+M20 (no gap) the uploader has skynbd-nbd as a dev-dependency: SURVIVED

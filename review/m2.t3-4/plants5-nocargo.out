@@ -1,0 +1,78 @@
+P100 the plan without crates/skyzfs-upload/: KILLED by 3: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader, test_the_command
+Y100 the workflow without crates/skyzfs-upload/**: KILLED by 1: test_every_crate_under_the_uploader
+P101 the plan without bins/skyzfsd/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y101 the workflow without bins/skyzfsd/**: KILLED by 1: test_every_crate_under_the_uploader
+P102 the plan without crates/skyzfs-local/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y102 the workflow without crates/skyzfs-local/**: KILLED by 1: test_every_crate_under_the_uploader
+P103 the plan without crates/skyzfs-ublk/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y103 the workflow without crates/skyzfs-ublk/**: KILLED by 1: test_every_crate_under_the_uploader
+P104 the plan without crates/skyzfs-ublk-sys/: KILLED by 1: test_every_crate_under_the_uploader
+Y104 the workflow without crates/skyzfs-ublk-sys/**: KILLED by 1: test_every_crate_under_the_uploader
+P105 the plan without crates/skyzfs-blk/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y105 the workflow without crates/skyzfs-blk/**: KILLED by 1: test_every_crate_under_the_uploader
+P106 the plan without crates/skyzfs-mapped/: KILLED by 1: test_every_crate_under_the_uploader
+Y106 the workflow without crates/skyzfs-mapped/**: KILLED by 1: test_every_crate_under_the_uploader
+P107 the plan without crates/skyzfs-uberblock/: KILLED by 1: test_every_crate_under_the_uploader
+Y107 the workflow without crates/skyzfs-uberblock/**: KILLED by 1: test_every_crate_under_the_uploader
+P108 the plan without bins/skyzfs-nodeb/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y108 the workflow without bins/skyzfs-nodeb/**: KILLED by 1: test_every_crate_under_the_uploader
+P109 the plan without crates/skynbd-engine/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y109 the workflow without crates/skynbd-engine/**: KILLED by 1: test_every_crate_under_the_uploader
+P110 the plan without crates/skynbd-refs/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y110 the workflow without crates/skynbd-refs/**: KILLED by 1: test_every_crate_under_the_uploader
+P111 the plan without crates/skynbd-store/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y111 the workflow without crates/skynbd-store/**: KILLED by 1: test_every_crate_under_the_uploader
+P112 the plan without crates/skynbd-format/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y112 the workflow without crates/skynbd-format/**: KILLED by 1: test_every_crate_under_the_uploader
+P113 the plan without crates/skynbd-tree/: KILLED by 1: test_every_crate_under_the_uploader
+Y113 the workflow without crates/skynbd-tree/**: KILLED by 1: test_every_crate_under_the_uploader
+P114 the plan without crates/skynbd-types/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+Y114 the workflow without crates/skynbd-types/**: KILLED by 1: test_every_crate_under_the_uploader
+P120 the plan without tests/kernel/cut_watch.py: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+P121 the plan without tests/kernel/cut_daemon_check.py: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+P122 the plan without tests/kernel/cut_plan.py: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+P123 the plan without tests/kernel/cut_summary.py: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_every_crate_under_the_uploader
+P124 the plan without tests/kernel/cut_check.py: KILLED by 1: test_every_crate_under_the_uploader
+P125 the plan without tests/kernel/cut_ref.py: KILLED by 1: test_every_crate_under_the_uploader
+P126 the plan without tests/kernel/replay_check.py: KILLED by 1: test_every_crate_under_the_uploader
+P127 the plan without tests/kernel/logwrites.py: KILLED by 1: test_every_crate_under_the_uploader
+P130 the plan without Cargo.toml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P131 the plan without Cargo.lock: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P132 the plan without rust-toolchain.toml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P133 the plan without tests/lib/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P134 the plan without tests/kernel/cut-record.sh: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P135 the plan without .github/workflows/skyzfs-cut-daemon.yml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+Y120 the workflow without tests/kernel/cut*: KILLED by 1: test_every_crate_under_the_uploader
+Y121 the workflow without tests/kernel/replay_check.py: KILLED by 1: test_every_crate_under_the_uploader
+Y122 the workflow without tests/kernel/logwrites.py: KILLED by 1: test_every_crate_under_the_uploader
+Y130 the workflow without Cargo.lock: SURVIVED
+Y131 the workflow without Cargo.toml: SURVIVED
+Y132 the workflow without rust-toolchain.toml: SURVIVED
+Y133 the workflow without tests/lib/**: SURVIVED
+Y134 the workflow no longer starts on itself: SURVIVED
+Y140 the workflow leaves out a crate with a pattern that begins with !: SURVIVED
+Y141 the workflow has paths-ignore for a crate: SURVIVED
+M01 the uploader depends on skynbd-nbd (workspace = true): KILLED by 1: test_every_crate_under_the_uploader
+M02 the uploader depends on skynbd-nbd (the dotted form): KILLED by 1: test_every_crate_under_the_uploader
+M03 the uploader depends on skynbd-stream by path: KILLED by 1: test_every_crate_under_the_uploader
+M04 the uploader depends on skynbd-stream by path under another name: KILLED by 1: test_every_crate_under_the_uploader
+M05 the uploader has skynbd-nbd as a build dependency: KILLED by 1: test_every_crate_under_the_uploader
+M06 the uploader has skynbd-nbd as a dependency on one target: KILLED by 1: test_every_crate_under_the_uploader
+M07 the uploader has skynbd-nbd as an optional dependency: KILLED by 1: test_every_crate_under_the_uploader
+M08 the uploader has skynbd-nbd as a table of its own: KILLED by 1: test_every_crate_under_the_uploader
+M09 node B depends on skynbd-nbd: KILLED by 1: test_every_crate_under_the_uploader
+M10 a crate deep under the uploader (skynbd-tree) depends on skynbd-stream by path: KILLED by 1: test_every_crate_under_the_uploader
+M20 (no gap) the uploader has skynbd-nbd as a dev-dependency: SURVIVED
+I01 cut_ref.py: import control_check: KILLED by 1: test_every_crate_under_the_uploader
+I02 cut_ref.py: from control_check import EXPECTED: KILLED by 1: test_every_crate_under_the_uploader
+I03 cut_ref.py: import control_check as cc: KILLED by 1: test_every_crate_under_the_uploader
+I04 cut_ref.py: import os, control_check on one line: KILLED by 1: test_every_crate_under_the_uploader
+I05 cut_ref.py: the import under try: KILLED by 1: test_every_crate_under_the_uploader
+I06 logwrites.py (reached through two modules): the import inside a function: KILLED by 1: test_every_crate_under_the_uploader
+I07 cut_watch.py: the import inside a function: KILLED by 1: test_every_crate_under_the_uploader
+I08 cut_summary.py: the import inside a function: KILLED by 1: test_every_crate_under_the_uploader
+I10 cut_ref.py: importlib.import_module: SURVIVED
+I11 cut_ref.py: __import__: SURVIVED
+I12 cut_watch.py: the script run as a command: SURVIVED
+I13 the recorder runs a script of tests/kernel that is in neither list: SURVIVED
+I14 the recorder sources a script of tests/kernel that is in neither list: SURVIVED
