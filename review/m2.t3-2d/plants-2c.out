@@ -1,0 +1,68 @@
+E1 a cut line belongs to the states begun after it (the comparison turned round): KILLED by 1: test_held_cuts_keyed_by_state
+E2 every cut line is of the first state: KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+E3 the lines keep the numbers they carry (no place in the whole log): KILLED by 2: test_held_cuts_keyed_by_state, test_the_count_starts_again
+E4 every later instance begins an epoch, acknowledged or not: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+E5 local is the place in the whole log too (the number the line carries is lost): KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+N1 a new state must count from 1 again (going on is refused): NOT APPLIED (found [0] times)
+N2 a new state must go on (from 1 again is refused): NOT APPLIED (found [0] times)
+N3 a new state's numbers are not looked at: KILLED by 1: test_every_line_of_a_new_state
+N4 a new state may begin at any number and count on from it: NOT APPLIED (found [0] times)
+N5 only the first line of a new state is looked at: KILLED by 1: test_every_line_of_a_new_state
+N6 the line does not say which way a state counted: KILLED by 1: test_the_count_starts_again
+N7 the numbers read are the places in the whole log, not what the lines carry: KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+H1 a written cut is of the states begun after its write was asked for (turned round): KILLED by 1: test_held_cuts_keyed_by_state
+H2 every written cut is of the first state: KILLED by 1: test_held_cuts_keyed_by_state
+H3 every written cut is of the last state: KILLED by 1: test_held_cuts_keyed_by_state
+H4 held-blocks.tsv need not hold the cut's blocks where held.tsv puts them: KILLED by 1: test_held_cuts_keyed_by_state
+H5 lines of held-blocks.tsv after the last cut are no error: KILLED by 1: test_held_cuts_keyed_by_state
+H6 a written cut with no cut line in its state is skipped, not the rig's error: KILLED by 1: test_held_cuts_keyed_by_state
+H7 the blocks of a written cut are dropped: KILLED by 1: test_held_cuts_keyed_by_state
+H8 held_lines never keys by state (the numbers as the holder wrote them): NOT APPLIED (found [0] times)
+H9 the blocks are taken by the number alone, wherever they are in the file: KILLED by 1: test_held_cuts_keyed_by_state
+S1 the status is held to the whole log's count, whichever way the state counted: NOT APPLIED (found [0] times)
+S2 the status is held to the new state's count, whichever way the state counted: NOT APPLIED (found [0] times)
+S3 the status's count is the cuts before the new state: KILLED by 1: test_the_cuts_since_a_new_state
+I1 a start that acknowledged a failure wants the state taken up, as any later start: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_the_second_instance_begins
+I2 a start that acknowledged a failure wants the intent map begun: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_the_second_instance_begins
+I3 a start that acknowledged a failure takes either for the intent map: KILLED by 1: test_the_second_instance_begins
+I4 the acknowledged start's count is held to the cuts before it: NOT APPLIED (found [0] times)
+I5 the line does not say that the start acknowledged a failure: KILLED by 1: test_the_second_instance_begins
+I6 main passes no begun list to instance_lines: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+C1 cut_state wants every later start taken up: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+C2 cut_state does not look at the last status: KILLED by 1: test_the_state_not_begun
+C3 main passes no begun list to held_lines: NOT APPLIED (found [2] times)
+F1 serve may end with any status at the failure: KILLED by 1: test_failure
+F2 a start without the acknowledgement may end with any status: KILLED by 1: test_failure
+F3 a start without the acknowledgement that ends with 0 or 4: KILLED by 1: test_failure
+F4 no cut held before the failure is no error of the rig: KILLED by 1: test_failure
+F5 a failure.tsv without its keys is no error of the rig: KILLED by 1: test_failure
+F6 main does not judge the failure: NOT APPLIED (found [0] times)
+F7 main judges the failure and drops the verdict: NOT APPLIED (found [0] times)
+F8 main judges a failure in every recording that held cuts: NOT APPLIED (found [0] times)
+V1 a VERDICT of the holder is not looked for: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V2 held_reads fails and the check goes on to the lines after it: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V3 held_reads fails and is no verdict (rc 0): KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V4 a refused read is the rig's ERROR line: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+A1 main reads no acknowledgement from instances.tsv: KILLED by 3: test_an_acknowledged_failure, test_carried_across_failure_must_show_something, test_the_failure_and_later_states
+A2 instances.tsv may say anything in its third column: KILLED by 1: test_kinds_with_the_acknowledgement
+A3 every later instance acknowledged a failure: KILLED by 1: test_kinds_with_the_acknowledgement
+A4 log_lines marks no instance as begun: KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+A5 records_of drops the mark from the instance record: KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_held_cuts_keyed_by_state, test_the_count_starts_again
+A6 main's begun list has the first instance only: KILLED by 3: test_an_acknowledged_failure, test_carried_across_failure_must_show_something, test_the_failure_and_later_states
+A7 lost_at_kill reads the place in the whole log, not the number the line carries: SURVIVED
+T1 failed is not a recording the table knows: KILLED by 1: test_the_table
+T2 failed must be caught by the rule mark-dropped: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+T3 failed must be the same under txg-alone (no "or caught"): KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+R1 a begun state keeps the mark where the device was taken over: KILLED by 1: test_a_begun_state_has_no_mark_whatever_the_rule
+R2 a begun state keeps the newest cut (the repeat rule compares with it): KILLED by 1: test_a_begun_state_has_no_newest_cut
+R3 every instance record forgets the newest cut: KILLED by 2: test_a_begun_state_has_no_newest_cut, test_the_newest_cut_is_kept_across
+R4 a begun state drops the mark only under the design's rule: KILLED by 1: test_a_begun_state_has_no_mark_whatever_the_rule
+K1 every refused write of a cut still held is the daemon's: KILLED by 4: test_a_read_of_the_held_cut_refused, test_a_read_refused_that_is_not_the_daemons_own, test_a_write_refused_while_the_cut_is_held, test_the_program_ends_with_2_at_the_rigs_error
+K2 no refused write is the daemon's: KILLED by 2: test_a_read_of_the_held_cut_refused, test_the_program_ends_with_1_at_a_verdict
+K3 the reason may stand anywhere in the refusal (search, not match): KILLED by 1: test_a_read_refused_that_is_not_the_daemons_own
+K4 a refused release of a cut still held is the daemon's too: KILLED by 1: test_a_release_refused_while_the_cut_is_held
+K5 a refused read is a verdict even where the cut is gone: KILLED by 1: test_a_read_refused_of_a_cut_that_went
+K6 main ends with 2 at a verdict: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K7 main logs a verdict as ERROR: KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K8 main does not catch a verdict (a traceback, exit 1, no line in the log): KILLED by 1: test_the_program_ends_with_1_at_a_verdict
+K9 the reason is matched whatever number follows "cut" (the cut asked for or not): SURVIVED

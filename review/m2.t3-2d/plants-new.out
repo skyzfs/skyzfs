@@ -1,0 +1,51 @@
+U1 a barrier with no cut line at a kill is kept (shape B as before the pull request): KILLED by 2: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U2 a cut line cut again by the next instance is kept (shape C as before): KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U3 the barrier is taken out even where the next instance counts on past one more (shape A excused): KILLED by 2: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again
+U4 a next instance that acknowledged a failure can count past one more too: SURVIVED
+U5 past one more is n + 1 (the next number itself): KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U6 shape C by the number alone (any group): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U7 shape C by the group alone (any number): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U8 shape C before a start that acknowledged a failure too: KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U9 shape C takes out the cut line and leaves its barrier: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U10 shape C whatever flush the barrier before the cut line is of: SURVIVED
+U11 the count before the kill is not begun again at a start that acknowledged a failure: SURVIVED
+U12 the count before the kill is the instances' before it, never this one's own lines: KILLED by 2: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again
+U13 main judges the log as it stood (the instances without the lines are dropped): KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut
+U14 main does not say which starts acknowledged a failure: SURVIVED
+U15 shape C where the cut line ends the instance, whatever stands before it: SURVIVED
+U16 shape C looks at the next instance's last cut, not its first: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U17 the line of a shape C says what a shape B's says: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U18 the last instance's barrier at the end of the log is taken out too: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_a_kill_before_the_state_stored_the_cut
+M1 cut_line_missing: the reference need not have one cut more before the kill: KILLED by 1: test_a_missing_cut_line_by_hand
+H1 a cut written by the instance that counted it counts too (<= to <): KILLED by 1: test_held_across_start
+H2 the writes up to the last start before the cut's write count, not up to the first after its instant: SURVIVED
+H3 the writes before the cut's instant count too: KILLED by 1: test_held_across_start
+H4 the writes after the next start count too: KILLED by 1: test_held_across_start
+H5 a block written again with the content the cut holds counts: KILLED by 1: test_held_across_start
+H6 only a block written again with the content the cut holds counts: KILLED by 1: test_a_cut_held_across_the_take_over
+H7 a block that is not of the cut's map counts: KILLED by 1: test_a_cut_held_across_the_take_over
+H8 a cut held across a start with no block from a copy meets the floor: SURVIVED
+H9 the floor's line is INFO whatever it found: KILLED by 1: test_a_cut_held_across_the_take_over
+H10 a take-over that shows nothing is no error of the rig (the exit): SURVIVED
+H11 every recording is asked for a cut held across a start: KILLED by 5: test_a_control_missed_is_a_verdict, test_a_right_daemon, test_a_wrong_block_is_a_verdict, test_a_wrong_block_is_a_verdict_whatever_the_log_holds_after, test_edges_must_send_both
+H12 the instance that wrote is counted by the starts before the cut line, not before the write was asked: KILLED by 1: test_a_cut_held_across_the_take_over
+A1 the old state's image is left empty (every block of the first cut that is not zeros differs): KILLED by 1: test_across_failure
+A2 the blocks that are the same are counted: KILLED by 1: test_across_failure
+A3 a block the old image does not hold differs whatever it holds (zeros too): KILLED by 1: test_across_failure
+A4 a first cut of the new state that differs in no block meets the floor: KILLED by 1: test_carried_across_failure_must_show_something
+A5 the floor's line is INFO whatever it found: KILLED by 1: test_carried_across_failure_must_show_something
+A6 a failure that carries nothing is no error of the rig (the exit): SURVIVED
+A7 no recording is asked for it: KILLED by 2: test_an_acknowledged_failure, test_carried_across_failure_must_show_something
+A8 the old image is the cuts of every state but the last written: KILLED by 1: test_across_failure
+G1 the cuts before a start are counted from the log's first line (as before): KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G2 the cuts before a start are counted from the first start that began a state: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G3 a start that acknowledged a failure is not asked what it holds: KILLED by 1: test_the_second_instance_begins
+G4 a status with no cuts_held passes at an acknowledged start: KILLED by 1: test_the_second_instance_begins
+G5 every later start must hold nothing: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+T1 parse_log takes a time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T2 parse_log refuses a time of more than 12 digits: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_time_of_more_than_20_digits
+T3 parse_log refuses a time of 20 digits: KILLED by 1: test_a_time_of_more_than_20_digits
+T4 the start check converts a next line's time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T5 a torn line's time may begin with zeros again: SURVIVED
+T6 torn_line takes a next line's time of any length: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+T7 torn_line refuses where the next line's time has more than 12 digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page

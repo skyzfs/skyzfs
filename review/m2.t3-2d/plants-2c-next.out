@@ -1,0 +1,44 @@
+M1 a new state may count on, as before the commit (from 1 again or on, the line says which): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M2 a new state must count on (from 1 again is refused): KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+M3 the new state's own refusal is gone (the line then fails by the rule for every line, in its words): KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M4 the count is not begun again at a new state (its first line must be 1, its later lines go on): KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+M5 a new state whose first line is not 1 passes: KILLED by 1: test_a_count_that_goes_on_or_is_wrong
+M6 a new state is not seen (every line is of the first state): KILLED by 4: test_a_count_that_goes_on_or_is_wrong, test_a_third_instance_takes_the_new_state_up, test_every_line_of_a_new_state, test_the_count_starts_again
+Q1 the status is held to the whole log's count: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+Q2 the status is held to the cuts since the first new state, not the last: KILLED by 1: test_the_failure_and_later_states
+Q3 the status is held to the last state's cuts only where its first line carries 1, as before the commit: KILLED by 1: test_the_failure_and_later_states
+X1 the branch is gone: such a write is the rig's error again (D2 as it was): KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+X2 a written cut with no line in any state is a verdict too: KILLED by 1: test_held_cuts_keyed_by_state
+X3 held_lines does not look at such writes (the content is judged without them): KILLED by 1: test_an_acknowledged_failure
+X4 the line fails and is no verdict (rc 0): KILLED by 1: test_an_acknowledged_failure
+X5 the held cuts are judged before the instances' lines again: NOT APPLIED (found [0] times)
+X6 a cut of this state with a line counts as an old state's where an earlier state has the number too: KILLED by 1: test_held_cuts_keyed_by_state
+L1 a cut line of any pid counts, not the last instance's only: NOT APPLIED (found [0] times)
+L2 the start after a cut line may be of a pid already started: NOT APPLIED (found [0] times)
+L3 the start need not end the line: NOT APPLIED (found [0] times)
+L4 the start may be earlier than the cut line: NOT APPLIED (found [0] times)
+L5 the start may be later than the line after it: NOT APPLIED (found [0] times)
+L6 a cut line that ends in no digit counts too (<= to <): NOT APPLIED (found [0] times)
+L7 the start is taken with all the digits before it: NOT APPLIED (found [0] times)
+L8 a cut line counts before any start (the next instance need not have taken the device over): KILLED by 1: test_a_torn_line_only_before_a_take_over
+L9 a cut line counts where there is no instances.tsv: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L10 a cut line counts where instances.tsv does not name the next pid: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L11 a cut line counts only before an instance that created the device: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L12 the program takes no cut line (parse_log without the list): KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_line_torn_at_the_take_over
+L13 the program does not hold a cut line to the take-over: KILLED by 1: test_a_line_torn_at_the_take_over
+L14 the program says nothing of a cut line: KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_line_torn_at_the_take_over
+L15 the line after the start need not begin with a time: NOT APPLIED (found [0] times)
+Z1 a verdict is not judged first (the order of e88773b for every recording): KILLED by 1: test_a_verdict_before_the_first_cut
+Z2 every recording with a holder is judged as one that ended at a verdict (no instance or failure line): KILLED by 6: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_an_acknowledged_failure, test_the_failure_and_later_states, test_two_instances
+Z3 after a verdict the failure line is judged as well: KILLED by 1: test_a_verdict_before_the_first_cut
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z5 a verdict judged first does not count (rc as it was): KILLED by 1: test_a_verdict_before_the_first_cut
+Z6 held_lines goes on to the held cuts' files after a verdict: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED
+Z8 a verdict is judged first in takeover only: KILLED by 1: test_a_verdict_before_the_first_cut
+X5b the held cuts are judged before the instances' lines again (with no verdict): KILLED by 1: test_the_failure_and_later_states
+P1 the start may follow at any byte of the line, not at a page of the file: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start
+P2 a page is 8192 bytes: SURVIVED
+P3 a page is 2048 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P4 the pages are counted from the line's beginning, not the file's: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+P5 the file's offset counts no newlines: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over

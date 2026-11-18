@@ -1,0 +1,10 @@
+2b K2 cut_line_missing: the next instance's number is not looked at: KILLED by 1: test_a_missing_cut_line_by_hand
+2b K5 main does not ask cut_line_missing: a lost line is a verdict: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+2c F6 main does not judge the failure: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+2c F7 main judges the failure and drops the verdict: KILLED by 1: test_the_failure_and_later_states
+2c F8 main judges a failure in every recording that held cuts: KILLED by 8: test_a_cut_held_across_the_take_over, test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_the_second_stage, test_the_second_stage_knows_the_recording
+2c I4 the acknowledged start's count is held to the cuts before it: KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_instance_lines, test_the_second_instance_begins
+2b B3 skz_release_line does not cut the last line: KILLED by 1: test_skz_store.sh: FAIL   the last line is cut at 300 characters: got '414', want '312'
+2b B4 skz_release_line does not squeeze the last line's blanks: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 	# a  
+2b B4 (as #115 has it) skz_release_line leaves the blanks at the ends of the last line: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0  # a l
+2b B4 (as #115 has it) only the blank at the beginning is taken: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 # a li

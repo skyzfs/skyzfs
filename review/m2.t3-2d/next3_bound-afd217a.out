@@ -1,0 +1,32 @@
+1. the eighteen shapes on a page, with the times a recording can have
+  times of 12 digits (the recorded ones, 264 s): 18 of 18 shapes taken
+  times of 13 digits (after 1000 s): 18 of 18 shapes taken
+  the torn line at 999.95 s, the start at 1000.1 s (12 digits, then 13): 18 of 18 shapes taken
+  the start at 999.99 s, the next line at 1000.0 s (the start 12 digits, the next line 13): 18 of 18 shapes taken
+  times of 9 digits (the first second after boot): 18 of 18 shapes taken
+  times of 20 digits: 18 of 18 shapes taken
+2. what no kill leaves: the times the bound is about
+  left: 13 digits and no tab, where the next line's time has 12: the rig's error: request log line 53: a time of 25 digits: '2639327388251264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  left: 12 digits and no tab (a whole time): taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 12 bytes of pid 9937's line
+  left: 30 digits and no tab: the rig's error: request log line 52: a time of 42 digits: '222222222222222222222222222222264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  left: 0 and eleven digits, no tab (a leading zero): the rig's error: request log line 53: a time of 24 digits: '026393273882264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  left: twenty zeros and a 1, no tab: the rig's error: request log line 52: a time of 33 digits: '000000000000000000001264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  left: a time with a leading zero, the pid and more: the rig's error: request log line 52: not eight to ten columns: '0263932738825\t9937\tbarrier\t26\tflush\t-\t-\t0264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  left: a time of 9000 digits, the pid and more: the rig's error: request log line 42: not eight to ten columns: '22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
+  the next line's time has 20 digits: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the next line's time has 21 digits: the rig's error: request log line 54: a time of 21 digits: '184467440737095516150\t10976\tcuts\t-\t-\t-\t-\ttaken_up'
+  the next line's time has 5000 digits: the rig's error: request log line 54: a time of 5000 digits: '11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+  the next line's time has a leading zero and is later: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the next line's time is shorter than the start's: the rig's error: request log line 53: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t1\t-\t-
+  the start has 13 digits, the next line 12: the rig's error: request log line 53: a start line later than the line after it, as of a line cut short in its time: '26392640755262040\t10976\tstart\t1\t-\t
+3. a second kill in the line after the start (its time cut: the start is not on a page, so not a tear a kill leaves)
+  4 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a start line later than the line after it, as of a line cut short in its time: '2640264500000000\t11500\tstart\t1\t-\t-
+  9 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a time of 21 digits: '264075546264500000000\t11500\tstart\t1\t-\t-\t-\t64'
+  12 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a time of 24 digits: '264075546749264500000000\t11500\tstart\t1\t-\t-\t-\t64'
+4. T3: a line of digits over three pages (what is left ends in N digits that begin on a page with a digit 1 to 9)
+  4096 digits 1: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4145 bytes of pid 9937's line
+  8192 digits 1: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 8241 bytes of pid 9937's line
+  8192 digits 9: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 8241 bytes of pid 9937's line
+  12288 digits 7: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 12337 bytes of pid 9937's line
+  262144 digits 1: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 262193 bytes of pid 9937's line
+  a 1 on the page and 8191 zeros: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 8241 bytes of pid 9937's line

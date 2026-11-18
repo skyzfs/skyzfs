@@ -1,0 +1,10 @@
+art115-2604 instance 1: 6209 ms of lines, 138 flushes with no cut and 135 with one; N 37.4 ms (0.60%), B 0.659 ms (0.0106%), C+ 8.7 ms (0.14%); of the kills that end on a barrier line, 98.27% had no cut at stake
+art115-2604 instance 2: 6616 ms of lines, 17 flushes with no cut and 17 with one; N 75.6 ms (1.14%), B 0.098 ms (0.0015%), C+ 68.2 ms (1.03%); of the kills that end on a barrier line, 99.87% had no cut at stake
+art115-2604arm instance 1: 6407 ms of lines, 109 flushes with no cut and 105 with one; N 25.3 ms (0.39%), B 0.484 ms (0.0076%), C+ 5.9 ms (0.09%); of the kills that end on a barrier line, 98.12% had no cut at stake
+art115-2604arm instance 2: 5551 ms of lines, 14 flushes with no cut and 15 with one; N 29.7 ms (0.54%), B 0.083 ms (0.0015%), C+ 48.5 ms (0.87%); of the kills that end on a barrier line, 99.72% had no cut at stake
+art113-amd instance 1: 6128 ms of lines, 185 flushes with no cut and 182 with one; N 42.9 ms (0.70%), B 1.058 ms (0.0173%), C+ 8.4 ms (0.14%); of the kills that end on a barrier line, 97.59% had no cut at stake
+art113-amd instance 2: 7343 ms of lines, 17 flushes with no cut and 17 with one; N 83.0 ms (1.13%), B 0.117 ms (0.0016%), C+ 84.3 ms (1.15%); of the kills that end on a barrier line, 99.86% had no cut at stake
+art113-arm instance 1: 6250 ms of lines, 108 flushes with no cut and 105 with one; N 23.6 ms (0.38%), B 0.497 ms (0.0079%), C+ 6.1 ms (0.10%); of the kills that end on a barrier line, 97.94% had no cut at stake
+art113-arm instance 2: 5414 ms of lines, 14 flushes with no cut and 14 with one; N 29.6 ms (0.55%), B 0.089 ms (0.0016%), C+ 31.2 ms (0.58%); of the kills that end on a barrier line, 99.70% had no cut at stake
+art113f-amd instance 1: 6475 ms of lines, 226 flushes with no cut and 222 with one; N 29.0 ms (0.45%), B 1.138 ms (0.0176%), C+ 8.9 ms (0.14%); of the kills that end on a barrier line, 96.22% had no cut at stake
+art113f-amd instance 2: 6537 ms of lines, 14 flushes with no cut and 15 with one; N 63.4 ms (0.97%), B 0.096 ms (0.0015%), C+ 107.0 ms (1.64%); of the kills that end on a barrier line, 99.85% had no cut at stake

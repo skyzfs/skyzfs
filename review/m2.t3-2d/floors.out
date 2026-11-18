@@ -1,0 +1,106 @@
+== art115-2604
+  lines torn at a kill: 0; flushes unstored at a kill: 0
+  held_across_start, by the check: [(10, 1, 2, 17), (152, 2, 3, 0), (157, 3, 4, 0)]
+  cut 10 (group 17), counted by instance 1, written by instance 2: 321 blocks in its map, 17 counted; they lie in: label 0 (uberblock ring): 1, label 1 (uberblock ring): 1, label 2 (uberblock ring): 1, label 3 (uberblock ring): 1, the pool's space: 13
+      the instance counted 125 more cuts before the next start (to group 392)
+      the first block of the map changed 602 ms after the cut's instant and 2476 ms before the next start, 31 cuts after it; by blocks, cuts after the cut at the first change: [31, 31, 31, 31, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114]
+      counted blocks that held the cut's content again at the next start: 0
+      by the review of #111's count (the content at the next start differs from the cut's): 17
+  T1 cut 10 written without the copies instance 1 made (17 blocks as they were at the next start): exit 1
+      held_content	FAIL	cut 10 (group 17): 17 blocks differ from the reference at its instant, for example block 49: 7a46a7904b02182d wanted, 6ad1cee212a6fb83 held, block 113: be0006c2a5370074 wanted, e842666a6993f04d held, block 17520: 45feb6b24595de5d wanted, f4991c37e2b32b10 held, block 17521: 5dd7fb2049078803 wanted, 4
+      held_across_start	INFO	cut 10, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+  T2 cut 10 let go at the start and never written; cut 147, the next written, has its 304 other blocks too (the status files as recorded): exit 2
+      held_content	PASS	13 of 165 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      held_across_start	ERROR	no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+  T3 held_across_start with no block of cut 10 changed before the start: [(10, 1, 2, 0), (152, 2, 3, 0), (157, 3, 4, 0)] (the program takes blocks 0 as none: ERROR)
+  cut 152, counted by instance 2, written by instance 3: no block counted
+  cut 157, counted by instance 3, written by instance 4: no block counted
+  failed, judged here: exit 0
+      carried_across_failure	INFO	cut 13, the first written of the new state: 1784 of its 6180 blocks differ from the image the holders of the state before left
+      held_content	PASS	6 of 20 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      instance_2	PASS	pid 11384 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+== art115-2604arm
+  lines torn at a kill: 0; flushes unstored at a kill: 0
+  held_across_start, by the check: [(10, 1, 2, 4), (120, 2, 3, 0), (125, 3, 4, 0)]
+  cut 10 (group 17), counted by instance 1, written by instance 2: 315 blocks in its map, 4 counted; they lie in: label 0 (uberblock ring): 1, label 1 (uberblock ring): 1, label 2 (uberblock ring): 1, label 3 (uberblock ring): 1
+      the instance counted 95 more cuts before the next start (to group 302)
+      the first block of the map changed 834 ms after the cut's instant and 2310 ms before the next start, 31 cuts after it; by blocks, cuts after the cut at the first change: [31, 31, 31, 31]
+      counted blocks that held the cut's content again at the next start: 0
+      by the review of #111's count (the content at the next start differs from the cut's): 4
+  T1 cut 10 written without the copies instance 1 made (4 blocks as they were at the next start): exit 1
+      held_content	FAIL	cut 10 (group 17): 4 blocks differ from the reference at its instant, for example block 49: af6578ae388f6341 wanted, efdeff26c2e2cc7b held, block 113: 599c21ccf576d560 wanted, 51b8e030f1ae49e1 held, block 130993: b2b34e319cb96a0e wanted, 9e94d5068e432947 held, block 131057: f463340323bafb18 wanted, 
+      held_across_start	INFO	cut 10, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+  T2 cut 10 let go at the start and never written; cut 110, the next written, has its 311 other blocks too (the status files as recorded): exit 2
+      held_content	PASS	15 of 133 cuts written and released; 1966080 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      held_across_start	ERROR	no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+  T3 held_across_start with no block of cut 10 changed before the start: [(10, 1, 2, 0), (120, 2, 3, 0), (125, 3, 4, 0)] (the program takes blocks 0 as none: ERROR)
+  cut 120, counted by instance 2, written by instance 3: no block counted
+  cut 125, counted by instance 3, written by instance 4: no block counted
+  failed, judged here: exit 0
+      carried_across_failure	INFO	cut 14, the first written of the new state: 1791 of its 6180 blocks differ from the image the holders of the state before left
+      held_content	PASS	6 of 21 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      instance_2	PASS	pid 12235 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+== art113-amd
+  lines torn at a kill: 0; flushes unstored at a kill: 0
+  held_across_start, by the check: [(9, 1, 2, 4), (199, 2, 3, 0), (204, 3, 4, 0)]
+  cut 9 (group 17), counted by instance 1, written by instance 2: 315 blocks in its map, 4 counted; they lie in: label 0 (uberblock ring): 1, label 1 (uberblock ring): 1, label 2 (uberblock ring): 1, label 3 (uberblock ring): 1
+      the instance counted 173 more cuts before the next start (to group 536)
+      the first block of the map changed 540 ms after the cut's instant and 2629 ms before the next start, 31 cuts after it; by blocks, cuts after the cut at the first change: [31, 31, 31, 31]
+      counted blocks that held the cut's content again at the next start: 0
+      by the review of #111's count (the content at the next start differs from the cut's): 4
+  T1 cut 9 written without the copies instance 1 made (4 blocks as they were at the next start): exit 1
+      held_content	FAIL	cut 9 (group 17): 4 blocks differ from the reference at its instant, for example block 49: 65d34c82891f5ef3 wanted, ca9a81a1d8c118df held, block 113: 422c0a5b3466c156 wanted, e606c151d4860520 held, block 130993: 3fe4588d1cb60aca wanted, e95cd6f827ad19a3 held, block 131057: 446e6708464edb5f wanted, 9
+      held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+  T2 cut 9 let go at the start and never written; cut 192, the next written, has its 311 other blocks too (the status files as recorded): exit 2
+      held_content	PASS	14 of 212 cuts written and released; 1835008 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      held_across_start	ERROR	no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+  T3 held_across_start with no block of cut 9 changed before the start: [(9, 1, 2, 0), (199, 2, 3, 0), (204, 3, 4, 0)] (the program takes blocks 0 as none: ERROR)
+  cut 199, counted by instance 2, written by instance 3: no block counted
+  cut 204, counted by instance 3, written by instance 4: no block counted
+  failed, judged here: exit 0
+      carried_across_failure	INFO	cut 13, the first written of the new state: 1775 of its 6180 blocks differ from the image the holders of the state before left
+      held_content	PASS	6 of 20 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      instance_2	PASS	pid 13018 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+== art113-arm
+  lines torn at a kill: 0; flushes unstored at a kill: 0
+  held_across_start, by the check: [(9, 1, 2, 4), (118, 2, 3, 0), (119, 2, 3, 0), (124, 3, 4, 0)]
+  cut 9 (group 17), counted by instance 1, written by instance 2: 315 blocks in its map, 4 counted; they lie in: label 0 (uberblock ring): 1, label 1 (uberblock ring): 1, label 2 (uberblock ring): 1, label 3 (uberblock ring): 1
+      the instance counted 96 more cuts before the next start (to group 305)
+      the first block of the map changed 781 ms after the cut's instant and 2380 ms before the next start, 31 cuts after it; by blocks, cuts after the cut at the first change: [31, 31, 31, 31]
+      counted blocks that held the cut's content again at the next start: 0
+      by the review of #111's count (the content at the next start differs from the cut's): 4
+  T1 cut 9 written without the copies instance 1 made (4 blocks as they were at the next start): exit 1
+      held_content	FAIL	cut 9 (group 17): 4 blocks differ from the reference at its instant, for example block 49: afc5772c54f39b52 wanted, 285ea55685ce5aea held, block 113: 85dadd77ecbd3d32 wanted, 68b3e2451cf4fb4f held, block 130993: 989fd6916e0d1c50 wanted, 96faec529d451ffe held, block 131057: 7c7ae9a3835cf4fb wanted, 6
+      held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+  T2 cut 9 let go at the start and never written; cut 109, the next written, has its 311 other blocks too (the status files as recorded): exit 2
+      held_content	PASS	16 of 132 cuts written and released; 2097152 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      held_across_start	ERROR	no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+  T3 held_across_start with no block of cut 9 changed before the start: [(9, 1, 2, 0), (118, 2, 3, 0), (119, 2, 3, 0), (124, 3, 4, 0)] (the program takes blocks 0 as none: ERROR)
+  cut 118, counted by instance 2, written by instance 3: no block counted
+  cut 119, counted by instance 2, written by instance 3: no block counted
+  cut 124, counted by instance 3, written by instance 4: no block counted
+  failed, judged here: exit 0
+      carried_across_failure	INFO	cut 13, the first written of the new state: 1792 of its 6177 blocks differ from the image the holders of the state before left
+      held_content	PASS	6 of 20 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      instance_2	PASS	pid 12762 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+== art113f-amd
+  lines torn at a kill: 1; flushes unstored at a kill: 0
+  held_across_start, by the check: [(9, 1, 2, 282), (237, 2, 3, 0), (242, 3, 4, 0)]
+  cut 9 (group 17), counted by instance 1, written by instance 2: 315 blocks in its map, 282 counted; they lie in: label 0 (uberblock ring): 1, label 1 (uberblock ring): 1, label 2 (uberblock ring): 1, label 3 (uberblock ring): 1, the pool's space: 278
+      the instance counted 213 more cuts before the next start (to group 656)
+      the first block of the map changed 376 ms after the cut's instant and 2755 ms before the next start, 31 cuts after it; by blocks, cuts after the cut at the first change: [31, 31, 31, 31, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 153, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 154, 155, 155, 155, 155, 155, 155, 155, 155, 155, 155, 155, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 156, 157, 157, 157, 157, 157, 157, 157, 157, 157, 157, 157, 157, 158, 158, 158, 158, 158, 158, 158, 158, 158, 158, 158, 159, 159, 159, 159, 159, 159, 159, 159, 159, 159, 159, 160, 160, 160, 160, 160, 160, 160, 160, 160, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 163, 163, 163, 163, 163, 163, 163, 163, 163, 163, 163, 163, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 165, 166, 166, 166, 166, 166, 166, 166, 166, 166, 166, 166, 166, 167, 167, 167, 167, 167, 167, 167, 167, 167, 167, 167, 168, 168, 168, 168, 168, 168, 168, 168, 168, 168, 168, 168, 168, 169, 169, 169, 169, 169, 169, 169, 169, 169, 169, 169, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 172, 172, 172, 172, 172, 172, 172, 172, 172, 172, 172, 172, 173, 173, 173, 173, 173, 173, 173, 173, 173, 173, 173, 173, 174, 174, 174, 174, 174, 174, 174, 174, 174, 174]
+      counted blocks that held the cut's content again at the next start: 0
+      by the review of #111's count (the content at the next start differs from the cut's): 282
+  T1 cut 9 written without the copies instance 1 made (282 blocks as they were at the next start): exit 1
+      held_content	FAIL	cut 9 (group 17): 282 blocks differ from the reference at its instant, for example block 49: 489dbdfe694144f2 wanted, 54a22cc4bb136023 held, block 113: 7e4dd1b4021e70c8 wanted, cfa61cc34d82c919 held, block 4254: efcc3bbdcd0e9ad0 wanted, 5a71dc494cfccfb9 held, block 4255: 5907d1a7c8e76ea5 wanted, 8e6
+      held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 225 blocks from copies instance 1 made
+  T2 cut 9 let go at the start and never written; cut 231, the next written, has its 33 other blocks too (the status files as recorded): exit 2
+      held_content	PASS	12 of 250 cuts written and released; 1572864 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      held_across_start	ERROR	no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+  T3 held_across_start with no block of cut 9 changed before the start: [(9, 1, 2, 0), (237, 2, 3, 0), (242, 3, 4, 0)] (the program takes blocks 0 as none: ERROR)
+  cut 237, counted by instance 2, written by instance 3: no block counted
+  cut 242, counted by instance 3, written by instance 4: no block counted
+  failed, judged here: exit 0
+      carried_across_failure	INFO	cut 13, the first written of the new state: 1793 of its 6177 blocks differ from the image the holders of the state before left
+      held_content	PASS	4 of 20 cuts written and released; 524288 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+      instance_2	PASS	pid 11752 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start

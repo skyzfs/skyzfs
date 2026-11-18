@@ -1,0 +1,264 @@
+runs-of-113/last-run-amd64 autotrim: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 bound: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 config: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 edges: exit 0 here, 31 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 failed: exit 0 here, 33 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       carried_across_failure	INFO	cut 13, the first written of the new state: 1775 of its 6180 blocks differ from the image the holders of the state before left
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    records	INFO	1011 records from the request log (119 with their bytes), 20 uberblock writes that mark, of 80; 6 marks
+    cuts	PASS	20 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+    obs_opens_as_itself	INFO	20 of 20 cuts open as themselves, by the reference
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 12788 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 13018 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '1
+    failure	PASS	with 2 cuts held the volume failed and serve ended with 3; a start without --acknowledge-failure was refused with 4, and one with it served
+    held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    cut_state	PASS	the request log's cuts lines say ['begun', 'begun'], the last status 'begun'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 in
+    cuts_held	PASS	the status says '2' held, `held` listed 2 (7 46 uploading itself 74; 8 55 waiting itself 117), a second and a half apart after the export
+    held_content	PASS	6 of 20 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    cuts_abandoned	INFO	'0'
+    obs_copied_blocks	INFO	1782 blocks of the first written cut and 20 of the 5 written after it (in cuts 13; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote them from copies
+    carried_across_failure	INFO	cut 13, the first written of the new state: 1775 of its 6180 blocks differ from the image the holders of the state before left
+    ctl_content_early	CAUGHT	cut 17: 1622 blocks differ (expected: caught)
+    ctl_content_stale	CAUGHT	cut 17: 3323 blocks differ (expected: caught)
+    sessions	PASS	2 sessions as committed; 15 cuts within the kstats' windows, the others in strictly increasing groups
+    import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 33..35)
+    ctl_drop	CAUGHT	cut 11: the daemon's is group 31 (itself) at record 582, the reference's group 22 (itself) at record 539 (expected: caught)
+    ctl_last	CAUGHT	the daemon counted 19 cuts, the reference 20 (expected: caught)
+    ctl_extra	CAUGHT	the daemon counted 21 cuts, the reference 20 (expected: caught)
+    ctl_group	CAUGHT	cut 11: the daemon's is group 23 (itself) at record 539, the reference's group 22 (itself) at record 539 (expected: caught)
+    ctl_opens	CAUGHT	cut 11: the daemon's is group 22 (rewind) at record 539, the reference's group 22 (itself) at record 539 (expected: caught)
+    ctl_late	CAUGHT	cut 11: the daemon's is group 22 (itself) at record 572, the reference's group 22 (itself) at record 539 (expected: caught)
+    ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 65, the reference's group 4 (rewind) at record 59 (expected: caught)
+    ctl_txg-alone	SAME	the rule txg-alone gives the design's 20 cuts here (expected: same or caught)
+    ctl_count-repeats	SAME	the rule count-repeats gives the design's 20 cuts here (expected: same or caught)
+    ctl_previous	SAME	the rule previous gives the design's 20 cuts here (expected: same or caught)
+    ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 20 cuts here (expected: same)
+    ctl_mark-kept	SAME	the rule mark-kept gives the design's 20 cuts here (expected: same)
+runs-of-113/last-run-amd64 full: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 life: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 multihost: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 rewind: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 rewindf: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 rewindsync: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 slog: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 stray: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-amd64 takeover: exit 0 here, 35 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+runs-of-113/last-run-arm64 autotrim: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 bound: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 config: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 edges: exit 0 here, 31 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 failed: exit 0 here, 33 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       carried_across_failure	INFO	cut 13, the first written of the new state: 1792 of its 6177 blocks differ from the image the holders of the state before left
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    records	INFO	1031 records from the request log (119 with their bytes), 20 uberblock writes that mark, of 80; 6 marks
+    cuts	PASS	20 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+    obs_opens_as_itself	INFO	20 of 20 cuts open as themselves, by the reference
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 12534 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 12762 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '1
+    failure	PASS	with 2 cuts held the volume failed and serve ended with 3; a start without --acknowledge-failure was refused with 4, and one with it served
+    held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    cut_state	PASS	the request log's cuts lines say ['begun', 'begun'], the last status 'begun'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 in
+    cuts_held	PASS	the status says '2' held, `held` listed 2 (4 38 uploading itself 40; 8 55 waiting itself 1812), a second and a half apart after the export
+    held_content	PASS	6 of 20 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    cuts_abandoned	INFO	'0'
+    obs_copied_blocks	INFO	2016 blocks of the first written cut and 16 of the 5 written after it (in cuts 13; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote them from copies
+    carried_across_failure	INFO	cut 13, the first written of the new state: 1792 of its 6177 blocks differ from the image the holders of the state before left
+    ctl_content_early	CAUGHT	cut 15: 1628 blocks differ (expected: caught)
+    ctl_content_stale	CAUGHT	cut 15: 1669 blocks differ (expected: caught)
+    sessions	PASS	2 sessions as committed; 15 cuts within the kstats' windows, the others in strictly increasing groups
+    import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 33..35)
+    ctl_drop	CAUGHT	cut 11: the daemon's is group 31 (itself) at record 614, the reference's group 22 (itself) at record 573 (expected: caught)
+    ctl_last	CAUGHT	the daemon counted 19 cuts, the reference 20 (expected: caught)
+    ctl_extra	CAUGHT	the daemon counted 21 cuts, the reference 20 (expected: caught)
+    ctl_group	CAUGHT	cut 11: the daemon's is group 23 (itself) at record 573, the reference's group 22 (itself) at record 573 (expected: caught)
+    ctl_opens	CAUGHT	cut 11: the daemon's is group 22 (rewind) at record 573, the reference's group 22 (itself) at record 573 (expected: caught)
+    ctl_late	CAUGHT	cut 11: the daemon's is group 22 (itself) at record 604, the reference's group 22 (itself) at record 573 (expected: caught)
+    ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 64, the reference's group 4 (rewind) at record 58 (expected: caught)
+    ctl_txg-alone	SAME	the rule txg-alone gives the design's 20 cuts here (expected: same or caught)
+    ctl_count-repeats	SAME	the rule count-repeats gives the design's 20 cuts here (expected: same or caught)
+    ctl_previous	SAME	the rule previous gives the design's 20 cuts here (expected: same or caught)
+    ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 20 cuts here (expected: same)
+    ctl_mark-kept	SAME	the rule mark-kept gives the design's 20 cuts here (expected: same)
+runs-of-113/last-run-arm64 full: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 life: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 multihost: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 rewind: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 rewindf: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 rewindsync: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 slog: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 stray: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/last-run-arm64 takeover: exit 0 here, 35 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+runs-of-113/set-of-14-amd64 autotrim: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 bound: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 config: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 edges: exit 0 here, 31 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 failed: exit 0 here, 33 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       carried_across_failure	INFO	cut 13, the first written of the new state: 1793 of its 6177 blocks differ from the image the holders of the state before left
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    records	INFO	1033 records from the request log (119 with their bytes), 20 uberblock writes that mark, of 80; 6 marks
+    cuts	PASS	20 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+    obs_opens_as_itself	INFO	20 of 20 cuts open as themselves, by the reference
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 11522 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 11752 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '1
+    failure	PASS	with 2 cuts held the volume failed and serve ended with 3; a start without --acknowledge-failure was refused with 4, and one with it served
+    held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    cut_state	PASS	the request log's cuts lines say ['begun', 'begun'], the last status 'begun'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 in
+    cuts_held	PASS	the status says '1' held, `held` listed 1 (8 55 uploading itself 3549), a second and a half apart after the export
+    held_content	PASS	4 of 20 cuts written and released; 524288 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    cuts_abandoned	INFO	'0'
+    obs_copied_blocks	INFO	3444 blocks of the first written cut and 32 of the 3 written after it (in cuts 13, 20; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote them from copies
+    carried_across_failure	INFO	cut 13, the first written of the new state: 1793 of its 6177 blocks differ from the image the holders of the state before left
+    ctl_content_early	CAUGHT	cut 13: 45 blocks differ (expected: caught)
+    ctl_content_stale	CAUGHT	cut 13: 1793 blocks differ (expected: caught)
+    sessions	PASS	2 sessions as committed; 15 cuts within the kstats' windows, the others in strictly increasing groups
+    import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 33..35)
+    ctl_drop	CAUGHT	cut 11: the daemon's is group 31 (itself) at record 629, the reference's group 22 (itself) at record 592 (expected: caught)
+    ctl_last	CAUGHT	the daemon counted 19 cuts, the reference 20 (expected: caught)
+    ctl_extra	CAUGHT	the daemon counted 21 cuts, the reference 20 (expected: caught)
+    ctl_group	CAUGHT	cut 11: the daemon's is group 23 (itself) at record 592, the reference's group 22 (itself) at record 592 (expected: caught)
+    ctl_opens	CAUGHT	cut 11: the daemon's is group 22 (rewind) at record 592, the reference's group 22 (itself) at record 592 (expected: caught)
+    ctl_late	CAUGHT	cut 11: the daemon's is group 22 (itself) at record 619, the reference's group 22 (itself) at record 592 (expected: caught)
+    ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 69, the reference's group 4 (rewind) at record 63 (expected: caught)
+    ctl_txg-alone	SAME	the rule txg-alone gives the design's 20 cuts here (expected: same or caught)
+    ctl_count-repeats	SAME	the rule count-repeats gives the design's 20 cuts here (expected: same or caught)
+    ctl_previous	SAME	the rule previous gives the design's 20 cuts here (expected: same or caught)
+    ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 20 cuts here (expected: same)
+    ctl_mark-kept	SAME	the rule mark-kept gives the design's 20 cuts here (expected: same)
+runs-of-113/set-of-14-amd64 full: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 life: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 multihost: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 rewind: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 rewindf: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 rewindsync: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 slog: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 stray: exit 0 here, 30 lines, NOT the run lines
+    only here:       obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+runs-of-113/set-of-14-amd64 takeover: exit 0 here, 35 lines, NOT the run lines
+    only in the run: rig_error	ERROR	request log line 43866: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1ba0000000000881300000000000093020000000000000e201fa029701f3fa8ccfc6a00000'
+    only here:       obs_torn_at_kill	INFO	1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 8012 bytes, then pid 10976's start
+    only here:       obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    only here:       records	INFO	10842 records from the request log (1051 with their bytes), 253 uberblock writes that mark, of 1012; 10 marks
+    only here:       cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    only here:       cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    only here:       obs_opens_as_itself	INFO	250 of 250 cuts open as themselves, by the reference
+    only here:       status	PASS	cuts 250, cut_group 753, cut_opens itself
+    only here:       instance_1	PASS	pid 9937 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' re
+    only here:       instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start, 222 counted before it; the intent map n
+    only here:       instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start, 237 counted before it; the intent map n
+    only here:       instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 242 counted before it; the intent map nam
+    only here:       held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    only here:       cut_state	PASS	the request log's cuts lines say ['begun', 'taken_up', 'taken_up', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it
+    only here:       cuts_held	PASS	the status says '2' held, `held` listed 2 (246 736 uploading itself 40; 250 753 waiting itself 1868), a second and a half apart after the export
+    only here:       held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    only here:       cuts_abandoned	INFO	'0'
+    only here:       obs_copied_blocks	INFO	3444 blocks of the first written cut and 918 of the 12 written after it (in cuts 9, 231, 244; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote 
+    only here:       held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 282 blocks from copies instance 1 made
+    only here:       ctl_content_early	CAUGHT	cut 240: 46 blocks differ (expected: caught)
+    only here:       ctl_content_stale	CAUGHT	cut 240: 46 blocks differ (expected: caught)
+    only here:       obs_noflush_groups	INFO	groups [716, 720, 729] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+    only here:       sessions	PASS	2 sessions as committed; 247 cuts within the kstats' windows, the others in strictly increasing groups
+    only here:       import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 731..733)
+    only here:       ctl_drop	CAUGHT	cut 126: the daemon's is group 371 (itself) at record 5243, the reference's group 368 (itself) at record 5200 (expected: caught)
+    only here:       ctl_last	CAUGHT	the daemon counted 249 cuts, the reference 250 (expected: caught)
+    only here:       ctl_extra	CAUGHT	the daemon counted 251 cuts, the reference 250 (expected: caught)
+    only here:       ctl_group	CAUGHT	cut 126: the daemon's is group 369 (itself) at record 5200, the reference's group 368 (itself) at record 5200 (expected: caught)
+    only here:       ctl_opens	CAUGHT	cut 126: the daemon's is group 368 (rewind) at record 5200, the reference's group 368 (itself) at record 5200 (expected: caught)
+    only here:       ctl_late	CAUGHT	cut 126: the daemon's is group 368 (itself) at record 5237, the reference's group 368 (itself) at record 5200 (expected: caught)
+    only here:       ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 67, the reference's group 4 (rewind) at record 61 (expected: caught)
+    only here:       ctl_txg-alone	SAME	the rule txg-alone gives the design's 250 cuts here (expected: same or caught)
+    only here:       ctl_count-repeats	SAME	the rule count-repeats gives the design's 250 cuts here (expected: same or caught)
+    only here:       ctl_previous	SAME	the rule previous gives the design's 250 cuts here (expected: same or caught)
+    only here:       ctl_mark-dropped	CAUGHT	the reference by the rule mark-dropped: cut 238: the daemon's is group 705 (itself) at record 10096, the reference's group 708 (itself) at record 10102 (expected: caught)
+    only here:       ctl_mark-kept	CAUGHT	the reference by the rule mark-kept: cut 243: the daemon's is group 731 (itself) at record 10432, the reference's group 729 (itself) at record 10422 (expected: caught)

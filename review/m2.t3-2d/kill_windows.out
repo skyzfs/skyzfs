@@ -1,0 +1,39 @@
+A: exit 2
+   obs_unstored_at_kill: INFO: 0 flushes the daemon was killed at, between the barrier and the state storing the cut
+   rig_error: ERROR: the next instance counts on from 14, and the log has no line of cut 13 (group 26): the daemon writes a cut's line before it stores the cut, so no kill leaves this; a line was lost, or the daemon counted the cut before it said so
+B: exit 1
+   obs_unstored_at_kill: INFO: 1 flushes the daemon was killed at, between the barrier and the state storing the cut; line 2157: pid 4242's barrier with no cut line, a flush with no barrier
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+C: exit 1
+   obs_unstored_at_kill: INFO: 1 flushes the daemon was killed at, between the barrier and the state storing the cut; line 2158: pid 4242's cut 13 (group 26), cut again by the next instance: no cut
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+stored: exit 1
+   obs_unstored_at_kill: INFO: 0 flushes the daemon was killed at, between the barrier and the state storing the cut
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+N (a flush with no cut, killed while it synced): exit 1
+   obs_unstored_at_kill: INFO: 1 flushes the daemon was killed at, between the barrier and the state storing the cut; line 2139: pid 4242's barrier with no cut line, a flush with no barrier
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+M0 (killed between the applied line and the mark's store): exit 1
+   obs_unstored_at_kill: INFO: 0 flushes the daemon was killed at, between the barrier and the state storing the cut
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+M1 (as M0, another flush received first by the next instance): exit 1
+   obs_unstored_at_kill: INFO: 0 flushes the daemon was killed at, between the barrier and the state storing the cut
+   cuts: FAIL: cut 13: the daemon's is group 26 (itself) at record 735, the reference's group 26 (itself) at record 729
+   ctl_mark-dropped: MISSED: the reference by the rule mark-dropped: 26 cuts, each at the same barrier with the same group and the same answer to itself (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+C2 (C, the next instance killed before the barrier, a third cuts): exit 1
+   obs_unstored_at_kill: INFO: 0 flushes the daemon was killed at, between the barrier and the state storing the cut
+   cuts: FAIL: cut 14: the daemon's is group 26 (itself) at record 736, the reference's group 35 (itself) at record 776
+   cut_numbers: FAIL: cut line 14 (request log line 2166) carries the number '13'
+   instance_2: FAIL: pid 4343 (took the device over): cuts '12' at the start, with 13 counted before it; wanted cut_state taken_up, intent_state taken_up
+   instance_3: FAIL: pid 4545 (took the device over): cuts '12' at the start, with 13 counted before it; wanted cut_state taken_up, intent_state taken_up
+   ctl_drop: MISSED: 26 cuts, each at the same barrier with the same group and the same answer to itself (expected: caught; DIFFERS)
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 26 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+Cc (C, the next instance created the device; its first cut is 13 again, at a later group):
+   unstored_at_kill: 0 notes
+   cuts: (True, '26 cuts, each at the same barrier with the same group and the same answer to itself')
+   cut_numbers: ('FAIL', "cut line 14 (request log line 2274) carries the number '13'")
