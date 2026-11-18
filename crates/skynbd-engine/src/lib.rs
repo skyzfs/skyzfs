@@ -857,6 +857,22 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
         self.head_commit.group
     }
 
+    /// The group commit `hash` of this volume records
+    /// ([`Engine::set_group`]); `None` for a commit made with none. One
+    /// read of the commit's object, found through the volume's base chain
+    /// as every read is. For a caller whose engine is behind head and
+    /// cannot be opened again, since it holds writes: SkyZFS's uploader,
+    /// after a commit that failed, to know whether head is still the
+    /// cut's (F1 of #122's review). A commit that is not there is an
+    /// error.
+    pub async fn commit_group(&self, hash: &CommitHash) -> Result<Option<u64>> {
+        let bytes = self
+            .resolver
+            .get(&self.store, &|v| keys::commit(v, hash), None)
+            .await?;
+        Ok(Commit::decode(&bytes)?.group)
+    }
+
     /// Bytes of written data this engine holds in memory: the open
     /// segment's and those of the sealed segments not yet PUT
     /// ([`Engine::put_sealed`]).

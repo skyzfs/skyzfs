@@ -77,16 +77,21 @@ impl From<StoreError> for RemoteError {
 pub struct Observed {
     /// The row's bytes; `None` where there is no row.
     pub row: Option<Vec<u8>>,
-    /// The group of head's commit, `None` for a commit with none: what
-    /// the engine was opened at, which is head as read now where
-    /// `current`.
+    /// The group of head's commit as read now, `None` for a commit with
+    /// none. Where the engine is left behind head (not `current`), it is
+    /// read from head's commit object, not taken from the engine (F1 of
+    /// #122's review: after a commit that failed, whether head is still
+    /// the cut's).
     pub head_group: Option<u64>,
     /// Whether the engine is open at head as read now. An engine with no
     /// writes is opened again where head has moved, so only one with
     /// writes (a commit that failed) can be left behind it.
     pub current: bool,
-    /// Head's commit as read now. Where the row names a cut, this is the
-    /// cut's commit: the row moves only with head, in one transaction.
+    /// Head's commit as read now. Where the row names a cut and head's
+    /// group is the cut's, this is the cut's commit: this uploader moves
+    /// the row only with head, in one transaction, and another writer that
+    /// moves head alone leaves a commit of another group (the driver's
+    /// module docs say what the group cannot tell apart).
     pub head: CommitHash,
 }
 
@@ -192,9 +197,10 @@ where
         match &self.engine {
             Some(engine) if at_head(engine) => {}
             Some(engine) if !engine.is_clean() => {
+                let head_group = engine.commit_group(&head.commit).await?;
                 return Ok(Observed {
                     row,
-                    head_group: engine.head_group(),
+                    head_group,
                     current: false,
                     head: head.commit,
                 });

@@ -19,7 +19,9 @@ use skyzfs_upload::lease::Keeper;
 use skyzfs_upload::publish::{Found, Snapshot};
 use skyzfs_upload::remote::{Observed, Remote, RemoteError};
 use skyzfs_upload::uploader::{State, Uploader, AT_REST, IDLE};
-use skyzfs_upload::{Doing, EngineRemote, LeaseState};
+use skyzfs_upload::{
+    Answer, Doing, EngineRemote, LeaseState, Progress, Publishing, Refusal, Request,
+};
 
 use common::*;
 
@@ -1620,5 +1622,350 @@ async fn a_cut_committed_and_gone_ends_the_wait_of_the_refusals() {
         give_ups(&mut up, 1).await,
         [SECOND],
         "the wait starts again"
+    );
+}
+
+// ------------------------------------------- publishes through the loop
+
+/// The uploader's tests of a publish (M2.5-1), from the review of #122:
+/// T2 (none went through `Uploader`), F3 (a publish that fails or is
+/// refused must neither stop the cuts nor be sent again without a wait)
+/// and F4 (a publish that cannot be made once the uploader stops is ended,
+/// not left pending).
+const ATTACHMENT: [u8; 16] = *b"the attachment..";
+
+/// The request for `pool@name` in cut state `state`.
+fn asked(state: [u8; 16], name: &str, after: u64, group: u64) -> Request {
+    Request {
+        name: name.into(),
+        attachment: ATTACHMENT,
+        state,
+        after,
+        group,
+        manifest: format!("the ZFS manifest of pool@{name}").into_bytes(),
+    }
+}
+
+/// `snap/<name>` and its row, as the refs object has them.
+async fn snap(fx: &Fixture, name: &str) -> (Option<CommitHash>, Option<Vec<u8>>) {
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    let found = refs
+        .get(fx.vol, &format!("snap/{name}"))
+        .await
+        .expect("the ref")
+        .map(|value| value.commit);
+    let row = refs
+        .meta_get(fx.vol, &format!("skyzfs/snap/{name}"))
+        .await
+        .expect("the row");
+    (found, row)
+}
+
+async fn head_of(fx: &Fixture) -> CommitHash {
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    refs.get(fx.vol, "head")
+        .await
+        .expect("head")
+        .expect("a head")
+        .commit
+}
+
+/// T2: a publish asked before the lease is held, and so before the
+/// driver is made, is made once the lease is held and the cut committed.
+#[tokio::test(start_paused = true)]
+async fn a_publish_asked_before_the_lease_is_made_once_it_is_held() {
+    let mut fx = Fixture::new(71).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    fx.store.arm(FaultOp::Any, "", 0).await;
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    let wait = up.turn().await;
+    assert!(matches!(up.shown().state, State::NoLease(_)));
+    assert!(up.driver().is_none());
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    assert_eq!(up.publishing().progress("t"), Progress::Pending);
+    fx.store.disarm().await;
+    tokio::time::advance(wait).await;
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    let head = head_of(&fx).await;
+    assert_eq!(up.publishing().progress("t"), Progress::Done(head));
+    let (found, row) = snap(&fx, "t").await;
+    assert_eq!(found, Some(head));
+    assert!(row.is_some());
+}
+
+/// T2 and F4: the publish's transaction is fenced by the lease's epoch.
+/// After another holder has taken the lease, a publish by this uploader
+/// lands no ref and no row and loses the lease, as a commit does; the
+/// publish then ends refused (`Stopped`), and every request after it is
+/// refused at once.
+#[tokio::test(start_paused = true)]
+async fn a_publish_after_another_took_the_lease_is_fenced_and_ends() {
+    let mut fx = Fixture::new(72).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    clock.pass(TTL + 1);
+    let other = clock
+        .refs(&fx)
+        .lease_acquire(fx.vol, "node-b", TTL)
+        .await
+        .expect("the other's take");
+    assert!(matches!(other, LeaseOutcome::Acquired(l) if l.epoch == 2));
+    let request = asked(state, "t", 0, 7);
+    assert_eq!(up.publishing().ask(request.clone()), Answer::Accepted);
+    fx.store.inner().record(true);
+    let mut states = Vec::new();
+    for _ in 0..20 {
+        up.turn().await;
+        states.push(up.shown().state);
+        if matches!(states.last(), Some(State::LeaseLost { .. })) {
+            break;
+        }
+    }
+    fx.store.inner().record(false);
+    assert_eq!(
+        states.last(),
+        Some(&State::LeaseLost {
+            holder: "node-b".into(),
+            epoch: 2
+        }),
+        "{states:?}"
+    );
+    let log = fx.store.inner().log();
+    assert_eq!(
+        log.iter().filter(|op| op.starts_with("put_if")).count(),
+        0,
+        "the fence refused the transaction before any write of the refs object: {log:?}"
+    );
+    assert_eq!(snap(&fx, "t").await, (None, None), "nothing landed");
+    assert_eq!(
+        up.publishing().progress("t"),
+        Progress::Refused(Refusal::Stopped)
+    );
+    for _ in 0..3 {
+        tokio::time::advance(AT_REST).await;
+        assert_eq!(up.turn().await, AT_REST);
+    }
+    assert_eq!(
+        up.publishing().ask(request),
+        Answer::Refused(Refusal::Stopped)
+    );
+    assert_eq!(
+        up.publishing().ask(asked(state, "u", 0, 7)),
+        Answer::Refused(Refusal::Stopped)
+    );
+}
+
+/// A remote that notes when each publish is sent. Where `refuse`, the
+/// lookup finds no ref and the publish is refused with a conflict, as a
+/// refs store that fences writes answers while the volume has no lease
+/// row; otherwise both go to the engine.
+struct Publishes<R> {
+    inner: R,
+    refuse: bool,
+    sent: Arc<Mutex<Vec<tokio::time::Instant>>>,
+}
+
+impl<R: Remote> Remote for Publishes<R> {
+    async fn observe(&mut self) -> Result<Observed, RemoteError> {
+        self.inner.observe().await
+    }
+
+    fn write(&mut self, offset: u64, data: &[u8]) -> Result<(), RemoteError> {
+        self.inner.write(offset, data)
+    }
+
+    fn write_zeroes(&mut self, offset: u64, len: u64) -> Result<(), RemoteError> {
+        self.inner.write_zeroes(offset, len)
+    }
+
+    async fn put_sealed(&mut self) -> Result<(), RemoteError> {
+        self.inner.put_sealed().await
+    }
+
+    async fn commit(
+        &mut self,
+        group: u64,
+        expected: Option<Vec<u8>>,
+        row: Vec<u8>,
+    ) -> Result<CommitHash, RemoteError> {
+        self.inner.commit(group, expected, row).await
+    }
+
+    async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
+        if self.refuse {
+            return Ok(None);
+        }
+        self.inner.snapshot(name).await
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<(), RemoteError> {
+        self.sent
+            .lock()
+            .expect("the times")
+            .push(tokio::time::Instant::now());
+        if self.refuse {
+            return Err(RemoteError::Conflict);
+        }
+        self.inner.publish(commit, snapshot).await
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard()
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset()
+    }
+}
+
+/// Ten minutes of turns, the lease kept on its own clock, after a publish
+/// that cannot be made was asked while cut 2 waits to go up: cut 2 goes
+/// up, and the publish is sent again at waits that grow. The times it was
+/// sent.
+async fn ten_minutes_of_a_publish_that_fails(seed: u64, refuse: bool) -> Vec<Duration> {
+    let mut fx = Fixture::new(seed).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let mut make = fenced(&fx, &clock);
+    let times = Arc::clone(&sent);
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(
+        store,
+        keeper(&fx, &clock),
+        move |epoch| Publishes {
+            inner: make(epoch),
+            refuse,
+            sent: Arc::clone(&times),
+        },
+        16,
+    );
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    if !refuse {
+        // Every PUT of a ZFS manifest fails, and nothing else does: a
+        // store that refuses that key (a policy on the prefix, say).
+        fx.store.arm(FaultOp::Put, "skyzfs/manifest", 0).await;
+    }
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    {
+        let local = up.driver().expect("the driver").local();
+        fx.write(local, 20, 0x20);
+        fx.group(local, 8);
+    }
+    let began = tokio::time::Instant::now();
+    while began.elapsed() < Duration::from_secs(600) {
+        let wait = up.turn().await;
+        clock.pass(wait.as_millis() as u64);
+        tokio::time::advance(wait.max(Duration::from_millis(1))).await;
+    }
+    fx.assert_uploaded(8, "cut 2, while the publish fails")
+        .await;
+    assert_eq!(up.publishing().progress("t"), Progress::Pending);
+    assert_eq!(snap(&fx, "t").await, (None, None));
+    let sent: Vec<Duration> = sent
+        .lock()
+        .expect("the times")
+        .iter()
+        .map(|at| at.duration_since(began))
+        .collect();
+    println!("publishes sent at {sent:?}");
+    sent
+}
+
+/// The waits between the publishes `sent` grow from a second, and no
+/// publish follows another at once.
+fn waits_grow(sent: &[Duration], case: &str) {
+    assert!(
+        sent.len() >= 5,
+        "{case}: the publish is tried again: {sent:?}"
+    );
+    assert!(
+        sent.len() <= 12,
+        "{case}: sent {} times in ten minutes: {sent:?}",
+        sent.len()
+    );
+    let gaps: Vec<Duration> = sent.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps[0] >= Duration::from_secs(1), "{case}: {gaps:?}");
+    assert!(
+        gaps.windows(2).all(|w| w[1] >= w[0]),
+        "{case}: the waits do not grow: {gaps:?}"
+    );
+}
+
+/// F3: the PUT of a ZFS manifest fails every time. The cuts go on (design
+/// §5.2: the cut gives, the recovery point does not wait on a snapshot's
+/// name), and the publish is sent again at the publishes' own waits.
+#[tokio::test(start_paused = true)]
+async fn a_publish_that_cannot_be_made_does_not_stop_the_cuts() {
+    let sent = ten_minutes_of_a_publish_that_fails(73, false).await;
+    waits_grow(&sent, "a manifest's PUT fails");
+}
+
+/// F3, the conflict: a publish refused with a conflict, again and again,
+/// is waited after, as a commit refused again and again is (G7 of #114's
+/// review), and the cuts go on.
+#[tokio::test(start_paused = true)]
+async fn a_publish_refused_again_and_again_is_waited_after() {
+    let sent = ten_minutes_of_a_publish_that_fails(74, true).await;
+    waits_grow(&sent, "the publish is refused");
+}
+
+/// F4: a cut is committed and the store keeps it (the intent map's pages
+/// cannot be written: the volume has failed). The driver stops and the
+/// uploader steps it no more: the publish the cut carries ends refused
+/// (`Stopped`), and no request after it is accepted.
+#[tokio::test(start_paused = true)]
+async fn a_publish_whose_cut_the_store_kept_ends_refused() {
+    let mut fx = Fixture::new(75).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    let request = asked(state, "t", 0, 7);
+    assert_eq!(up.publishing().ask(request.clone()), Answer::Accepted);
+    for _ in 0..100 {
+        up.turn().await;
+        if up.driver().is_some_and(|d| d.doing() == Doing::Committing) {
+            break;
+        }
+    }
+    fx.disk.fail_write_of("intent.map");
+    for _ in 0..10 {
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    fx.assert_uploaded(7, "cut 1 is committed").await;
+    assert_eq!(up.shown().state, State::Stopped);
+    assert_eq!(up.shown().figures.kept, 1);
+    assert_eq!(
+        up.publishing().progress("t"),
+        Progress::Refused(Refusal::Stopped)
+    );
+    assert_eq!(snap(&fx, "t").await, (None, None));
+    assert_eq!(
+        up.publishing().ask(request),
+        Answer::Refused(Refusal::Stopped)
     );
 }

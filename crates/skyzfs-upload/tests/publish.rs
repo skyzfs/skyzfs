@@ -10,6 +10,12 @@
 //! publish goes to the next cut; the ref names a commit only once that
 //! commit is whole (the crash matrix); an attachment's publish is not
 //! carried out on the next.
+//!
+//! Then the review of #122: a publish is never made on a commit that is
+//! not its cut's (F1), a request of another cut state is refused at once
+//! (F2), a name asked again is looked up anew (F5), a ref made anew beside
+//! a row left behind is not ours (F6), and a transaction refused because
+//! the name was taken after its lookup is not taken for ours (T1).
 
 mod common;
 
@@ -22,8 +28,8 @@ use skynbd_format::{Codec, SnapKind, SnapshotManifest};
 use skynbd_refs::{ObjectRefStore, RefOp, RefStore};
 use skynbd_store::{FaultOp, FaultWhen, ObjectStore};
 use skynbd_types::CommitHash;
-use skyzfs_upload::publish::{manifest_key, snap_ref, snap_row_key, SnapRow};
-use skyzfs_upload::{Answer, Doing, Progress, Refusal, Request, Rule, Step};
+use skyzfs_upload::publish::{manifest_key, snap_ref, snap_row_key, Publishing, SnapRow};
+use skyzfs_upload::{Answer, Doing, Progress, Refusal, RemoteError, Request, Rule, Step};
 
 const ATTACHMENT: [u8; 16] = *b"the attachment..";
 const OTHER: [u8; 16] = *b"the next one....";
@@ -35,8 +41,14 @@ fn manifest(name: &str) -> Vec<u8> {
 
 /// A driver of the fixture's store that serves [`ATTACHMENT`].
 fn driver(fx: &Fixture, store: skyzfs_local::inplace::InPlace<skyzfs_local::sim::SimDisk>) -> Up {
-    let mut up = fx.driver(store, 64);
-    up.publishing().set_attachment(ATTACHMENT);
+    serving(fx.driver(store, 64), ATTACHMENT)
+}
+
+/// `up`, serving `attachment`, its store's cut state known: what the
+/// daemon tells the uploader when it makes it.
+fn serving(mut up: Up, attachment: [u8; 16]) -> Up {
+    let state = up.local().cut_state_id().expect("a store that holds cuts");
+    *up.publishing() = Publishing::new(Some(attachment), Some(state));
     up
 }
 
@@ -77,10 +89,10 @@ struct Published {
 }
 
 /// `snap/<name>` as object storage holds it, checked whole: where the ref
-/// exists, its row reads, its two manifests are there and name it, and
-/// its commit reads as the volume at the instant of the cut its row
-/// names. `None` where the ref does not exist; then the row does not
-/// either.
+/// exists, its row reads and names its commit, its two manifests are there
+/// and name it, it is listed as SkyNBD lists a snapshot, and its commit
+/// reads as the volume at the instant of the cut its row names. `None`
+/// where the ref does not exist; then the row does not either.
 async fn published(fx: &Fixture, name: &str, case: &str) -> Option<Published> {
     let inner = fx.store.inner().clone();
     let refs = ObjectRefStore::new(inner.clone());
@@ -95,6 +107,10 @@ async fn published(fx: &Fixture, name: &str, case: &str) -> Option<Published> {
     };
     let row = SnapRow::decode(&row.unwrap_or_else(|| panic!("{case}: a ref with no row")))
         .unwrap_or_else(|e| panic!("{case}: the row: {e}"));
+    assert_eq!(
+        row.commit, found.commit,
+        "{case}: the row names the ref's commit"
+    );
     let zfs = inner
         .get(&manifest_key(fx.vol, row.snap), None)
         .await
@@ -124,6 +140,13 @@ async fn published(fx: &Fixture, name: &str, case: &str) -> Option<Published> {
         engine.head_group(),
         Some(row.cut.group),
         "{case}: the commit is the cut's"
+    );
+    // Listed through SkyNBD as any snapshot is (the M2.5 row; N7 of
+    // #122's review).
+    let listed = engine.snapshot_list().await.expect("the snapshots");
+    assert!(
+        listed.contains(&(name.to_string(), found.commit)),
+        "{case}: {listed:?}"
     );
     let content = engine.read(0, SIZE).await.expect("the snapshot");
     let instant = &fx.at[&row.cut.group];
@@ -339,8 +362,7 @@ async fn an_attachments_publish_is_not_carried_out_on_the_next() {
     // The uploader ends with the publish pending; the next serves
     // another attachment.
     fx.died(up);
-    let mut up = fx.driver(fx.start(), 64);
-    up.publishing().set_attachment(OTHER);
+    let mut up = serving(fx.driver(fx.start(), 64), OTHER);
     assert_eq!(up.publishes().progress("t"), Progress::Unknown);
     assert_eq!(up.publishes().pending().0, 0);
     let stale = request(&mut up, "t", 1, 8);
@@ -439,8 +461,9 @@ async fn a_name_taken_is_refused_and_the_cuts_go_on() {
     assert_eq!(still.commit, ours.commit);
 }
 
-/// The agent asks again after the uploader that published `snap/t`
-/// ended: the next looks it up and answers done, publishing nothing.
+/// The agent asks again: of the uploader that published `snap/t`, and
+/// after it ended, of the next. Each looks the name up and answers done,
+/// publishing nothing.
 #[tokio::test]
 async fn asked_again_after_a_restart_answers_done() {
     let mut fx = Fixture::new(45).await;
@@ -451,11 +474,19 @@ async fn asked_again_after_a_restart_answers_done() {
     assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
     up.run().await.expect("cut 1 and its publish");
     let first = published(&fx, "t", "first").await.expect("published");
-    // Asking twice is asking once.
+    // Asking twice is asking once: looked up, and found ours.
+    assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup");
     assert_eq!(
-        up.publishing().ask(asked.clone()),
-        Answer::Done(first.commit)
+        steps,
+        [Step::Published {
+            name: "t".into(),
+            number: 1,
+            commit: first.commit,
+            found: true
+        }]
     );
+    assert_eq!(up.publishes().figures().published, 1);
 
     fx.died(up);
     let mut up = driver(&fx, fx.start());
@@ -510,8 +541,7 @@ async fn publish_killed_at(when: FaultWhen, k: u64, back: Back) -> Seen {
         fx.write(&mut store, block, block as u8);
     }
     fx.group(&mut store, 7);
-    let mut up = fx.driver(store, 16);
-    up.publishing().set_attachment(ATTACHMENT);
+    let mut up = serving(fx.driver(store, 16), ATTACHMENT);
     let asked = request(&mut up, "t", 0, 7);
     assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
     fx.store.arm_when(FaultOp::Any, "", k, when).await;
@@ -600,8 +630,7 @@ async fn operations_of_the_publish() -> Vec<String> {
         fx.write(&mut store, block, block as u8);
     }
     fx.group(&mut store, 7);
-    let mut up = fx.driver(store, 16);
-    up.publishing().set_attachment(ATTACHMENT);
+    let mut up = serving(fx.driver(store, 16), ATTACHMENT);
     let asked = request(&mut up, "t", 0, 7);
     up.publishing().ask(asked);
     fx.store.inner().record(true);
@@ -726,4 +755,356 @@ async fn a_publish_waiting_takes_no_step() {
     assert_eq!(up.step().await, Ok(Step::Idle));
     assert_eq!(up.doing(), Doing::Checking);
     assert_eq!(up.publishes().progress("t"), Progress::Pending);
+}
+
+// ------------------------------------------------- the review of #122
+
+/// Step until the cut under way is at its commit.
+async fn to_the_commit(up: &mut Up) {
+    for _ in 0..200 {
+        if up.doing() == Doing::Committing {
+            return;
+        }
+        up.step().await.expect("a step");
+    }
+    panic!("the commit was not reached");
+}
+
+/// Cut 1 (group 7), with `pool@t` asked before it: its head swap lands
+/// and the reply is lost, and the driver is left at the commit. The
+/// request, and cut 1's commit.
+async fn swap_unheard(fx: &mut Fixture) -> (Up, Request, CommitHash) {
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = driver(fx, store);
+    let asked = request(&mut up, "t", 0, 7);
+    assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
+    to_the_commit(&mut up).await;
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, FaultWhen::After)
+        .await;
+    assert!(up.step().await.is_err(), "the reply to the swap is lost");
+    fx.store.disarm().await;
+    let cut1 = head(fx).await;
+    assert_eq!(fx.uploaded().await.group, Some(7), "cut 1's swap landed");
+    (up, asked, cut1)
+}
+
+/// Delete `snap/<name>` as SkyNBD's engine does: the ref alone, and the
+/// row stays.
+async fn delete(fx: &Fixture, name: &str) {
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    let current = refs.get(fx.vol, &snap_ref(name)).await.expect("the ref");
+    refs.transact(
+        fx.vol,
+        vec![RefOp::CasRef {
+            name: snap_ref(name),
+            expected: current,
+            new_commit: None,
+        }],
+    )
+    .await
+    .expect("the delete");
+}
+
+/// F1 of #122's review, the same uploader: cut 1's head swap landed and
+/// its reply was lost, and another writer moved head (an operator's
+/// write: a commit with no group) before the uploader read the row and
+/// head again. The row still names cut 1, so cut 1 is committed and let
+/// go, as before; but head is not its commit, so no publish goes on it,
+/// and `snap/t` is not made on the other writer's commit. The next cut's
+/// check finds head moved.
+#[tokio::test]
+async fn a_cut_found_committed_after_head_moved_carries_no_publish() {
+    let mut fx = Fixture::new(60).await;
+    let (mut up, _, cut1) = swap_unheard(&mut fx).await;
+    fx.move_head().await;
+    assert_ne!(head(&fx).await, cut1);
+    let steps = up.run().await.expect("the run after");
+    assert!(
+        matches!(told(&steps)[..], [Step::Uploaded { number: 1, .. }]),
+        "{steps:?}"
+    );
+    assert!(published(&fx, "t", "head moved").await.is_none());
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+    assert_eq!(up.figures().not_offered, 1);
+
+    fx.write(up.local(), 101, 0x08);
+    fx.group(up.local(), 8);
+    let steps = up.run().await.expect("cut 2");
+    assert!(
+        steps.iter().any(|step| matches!(
+            step,
+            Step::Mismatch {
+                why: skyzfs_upload::Mismatch::HeadMoved,
+                ..
+            }
+        )),
+        "{steps:?}"
+    );
+    assert!(published(&fx, "t", "after cut 2").await.is_none());
+}
+
+/// F1 of #122's review, a new uploader: as above, but the daemon dies
+/// with the reply lost, head is moved while it is down, and the next
+/// uploader, asked again, finds cut 1 committed at its check. Head is
+/// not its commit: no publish goes on it.
+#[tokio::test]
+async fn a_cut_found_committed_at_the_check_after_head_moved_carries_no_publish() {
+    let mut fx = Fixture::new(61).await;
+    let (up, asked, _) = swap_unheard(&mut fx).await;
+    fx.died(up);
+    fx.move_head().await;
+    let mut up = driver(&fx, fx.start());
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let steps = up.run().await.expect("the run after");
+    assert_eq!(
+        steps,
+        [
+            Step::PublishLooked { name: "t".into() },
+            Step::FoundCommitted { number: 1 }
+        ]
+    );
+    assert!(published(&fx, "t", "head moved").await.is_none());
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+    assert_eq!(up.figures().not_offered, 1);
+}
+
+/// F2 of #122's review: a request of another cut state than the store's
+/// is refused at once, before any cut has been checked, and does not keep
+/// the name from a request of the store's state.
+#[tokio::test]
+async fn a_request_of_another_cut_state_is_refused_before_any_cut() {
+    let mut fx = Fixture::new(62).await;
+    let mut up = driver(&fx, fx.start());
+    assert_eq!(up.step().await, Ok(Step::Idle), "no cut yet");
+    let right = up.local().cut_state_id().expect("the store's cut state");
+    let stale = Request {
+        name: "t".into(),
+        attachment: ATTACHMENT,
+        state: *b"the state before",
+        after: 3,
+        group: 7,
+        manifest: manifest("t"),
+    };
+    assert_ne!(stale.state, right);
+    assert_eq!(up.publishing().ask(stale), Answer::Refused(Refusal::State));
+    assert_eq!(up.publishes().pending().0, 0);
+    let fresh = request(&mut up, "t", 0, 7);
+    assert_eq!(up.publishing().ask(fresh), Answer::Accepted);
+    fx.write(up.local(), 100, 0x07);
+    fx.group(up.local(), 7);
+    up.run().await.expect("cut 1 and its publish");
+    let done = published(&fx, "t", "the store's state")
+        .await
+        .expect("published");
+    assert_eq!(done.row.cut.number, 1);
+}
+
+/// F5 of #122's review: `snap/t` published, then deleted in object
+/// storage (the ref, as retention deletes a snapshot). Asked again, the
+/// name is looked up, not answered from memory: the same request is
+/// published anew on the first cut in view that carries it, and, once
+/// deleted again, a new snapshot of the name goes on the next cut that
+/// carries it.
+#[tokio::test]
+async fn a_name_deleted_and_asked_again_is_looked_up() {
+    let mut fx = Fixture::new(68).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = driver(&fx, store);
+    let asked = request(&mut up, "t", 0, 7);
+    assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
+    up.run().await.expect("cut 1 and its publish");
+    let first = published(&fx, "t", "first").await.expect("published");
+
+    delete(&fx, "t").await;
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let steps = up.run().await.expect("the publish again");
+    assert_eq!(
+        steps,
+        [
+            Step::PublishLooked { name: "t".into() },
+            Step::Published {
+                name: "t".into(),
+                number: 1,
+                commit: first.commit,
+                found: false
+            }
+        ]
+    );
+    let again = published(&fx, "t", "again").await.expect("published anew");
+    assert_ne!(again.row.snap, first.row.snap, "a snapshot of its own");
+
+    delete(&fx, "t").await;
+    let after = up.local().cuts().count;
+    let anew = request(&mut up, "t", after, 8);
+    assert_eq!(up.publishing().ask(anew), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup");
+    assert_eq!(steps, [Step::PublishLooked { name: "t".into() }]);
+    fx.write(up.local(), 101, 0x08);
+    fx.group(up.local(), 8);
+    up.run().await.expect("cut 2 and its publish");
+    let anew = published(&fx, "t", "a new snapshot")
+        .await
+        .expect("published");
+    assert_eq!((anew.row.cut.number, anew.row.cut.group), (2, 8));
+}
+
+/// F6 of #122's review (and Codex's P2 on it): `snap/t` published on cut
+/// 1, then deleted as SkyNBD deletes a snapshot (the ref alone: the row
+/// `skyzfs/snap/t` stays), and made anew by another on cut 2's commit. A
+/// new uploader asked for the first publish again does not take that ref
+/// for its own: the row names cut 1's commit, the ref cut 2's.
+#[tokio::test]
+async fn a_ref_made_anew_beside_a_row_left_behind_is_not_ours() {
+    let mut fx = Fixture::new(66).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = driver(&fx, store);
+    let asked = request(&mut up, "t", 0, 7);
+    assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
+    up.run().await.expect("cut 1 and its publish");
+    published(&fx, "t", "first").await.expect("published");
+    fx.write(up.local(), 100, 0x08);
+    fx.group(up.local(), 8);
+    up.run().await.expect("cut 2");
+    let cut2 = head(&fx).await;
+    delete(&fx, "t").await;
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    assert!(
+        refs.meta_get(fx.vol, &snap_row_key("t"))
+            .await
+            .expect("the row")
+            .is_some(),
+        "the row left behind by the delete"
+    );
+    refs.transact(
+        fx.vol,
+        vec![RefOp::CasRef {
+            name: snap_ref("t"),
+            expected: None,
+            new_commit: Some(cut2),
+        }],
+    )
+    .await
+    .expect("another's snapshot of the name");
+
+    fx.died(up);
+    let mut up = driver(&fx, fx.start());
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup");
+    assert_eq!(
+        steps,
+        [Step::PublishRefused {
+            name: "t".into(),
+            why: Refusal::Taken
+        }]
+    );
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Taken)
+    );
+    let theirs = refs.get(fx.vol, &snap_ref("t")).await.expect("the ref");
+    assert_eq!(theirs.map(|value| value.commit), Some(cut2));
+}
+
+/// T1 of #122's review: the name is taken by another between the lookup,
+/// which found it absent, and the publish's transaction. The transaction
+/// is refused (a conflict, once), the lookup after it finds the other's
+/// ref, the publish ends refused, nothing of ours is written beside their
+/// ref, and the cuts go on.
+#[tokio::test]
+async fn a_name_taken_between_the_lookup_and_the_transaction_is_refused() {
+    let mut fx = Fixture::new(67).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = driver(&fx, store);
+    up.run().await.expect("cut 1");
+    let cut1 = head(&fx).await;
+    assert_eq!(ask_now(&mut up, "t", 8), Answer::Accepted);
+    assert_eq!(
+        up.step().await,
+        Ok(Step::PublishLooked { name: "t".into() })
+    );
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    refs.transact(
+        fx.vol,
+        vec![RefOp::CasRef {
+            name: snap_ref("t"),
+            expected: None,
+            new_commit: Some(cut1),
+        }],
+    )
+    .await
+    .expect("another's snapshot");
+    fx.write(up.local(), 100, 0x08);
+    fx.group(up.local(), 8);
+    let mut steps = Vec::new();
+    let mut errors = 0;
+    for _ in 0..50 {
+        match up.step().await {
+            Ok(Step::Idle) => break,
+            Ok(step) => steps.push(step),
+            Err(e) => {
+                errors += 1;
+                assert_eq!(e, RemoteError::Conflict);
+            }
+        }
+    }
+    assert_eq!(errors, 1, "the transaction is refused once: {steps:?}");
+    assert_eq!(
+        told(&steps).last(),
+        Some(&Step::PublishRefused {
+            name: "t".into(),
+            why: Refusal::Taken
+        }),
+        "{steps:?}"
+    );
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Taken)
+    );
+    let theirs = refs.get(fx.vol, &snap_ref("t")).await.expect("the ref");
+    assert_eq!(theirs.map(|value| value.commit), Some(cut1));
+    assert_eq!(
+        refs.meta_get(fx.vol, &snap_row_key("t"))
+            .await
+            .expect("the row"),
+        None,
+        "no row of ours beside their ref"
+    );
+    assert_eq!(up.publishes().figures().refused, 1, "counted once refused");
+    assert_eq!(up.publishes().figures().published, 0);
+    fx.assert_uploaded(8, "cut 2").await;
+}
+
+/// A driver its maker did not tell its store's cut state learns it from
+/// the first cut it checks (C03 of #122's review): a request asked before
+/// then is refused (`State`); the same request asked after it is
+/// accepted, and published on the cut that carries it.
+#[tokio::test]
+async fn a_driver_not_told_its_cut_state_learns_it_at_its_first_check() {
+    let mut fx = Fixture::new(63).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 64);
+    up.publishing().set_attachment(ATTACHMENT);
+    let asked = request(&mut up, "t", 0, 7);
+    assert_eq!(
+        up.publishing().ask(asked.clone()),
+        Answer::Refused(Refusal::State)
+    );
+    up.run().await.expect("cut 1");
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    up.run().await.expect("the publish");
+    let done = published(&fx, "t", "after the first check")
+        .await
+        .expect("published");
+    assert_eq!(done.row.cut.number, 1);
 }

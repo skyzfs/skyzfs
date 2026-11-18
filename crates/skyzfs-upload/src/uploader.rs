@@ -35,7 +35,22 @@
 //!    A commit refused by the fence (`RemoteError::Fenced`) loses the
 //!    lease. A cut the store kept at its release (`Step::Kept`) stops the
 //!    driver for good.
+//!
+//!    **A publish** (M2.5) takes its step before the cut's when it has
+//!    one ([`Driver::step_publish`]), with a wait of its own (F3 of #122's
+//!    review): a publish step that fails waits one second doubling to five
+//!    minutes before the publishes step again, and that wait is reset only
+//!    when a publish ends (published, found, or refused), not by its
+//!    lookup, which can succeed while its transaction cannot be made. The
+//!    cut's steps go on meanwhile, and their wait is not touched by a
+//!    publish's: a publish that cannot be made does not hold the uploads.
+//!    A publish refused by the fence loses the lease, as a commit does.
 //! 3. With no cut to upload, the next turn comes after [`IDLE`].
+//!
+//! An uploader that will upload nothing more (its lease lost, or its
+//! driver stopped) publishes nothing more either: its publishes pending
+//! end refused, and so does every request after
+//! ([`crate::publish::Publishing::stop`], F4 of #122's review).
 //!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
@@ -117,6 +132,8 @@ pub struct Uploader<L, R, F, M> {
     errors: Backoff,
     /// After a commit given up.
     refused: Backoff,
+    /// After a publish's step that failed.
+    publish_errors: Backoff,
     /// A commit was refused, and the step after it, which reads the row
     /// and head again, has not ended yet.
     rereading: bool,
@@ -125,8 +142,10 @@ pub struct Uploader<L, R, F, M> {
     state: State,
     /// When the lease is next kept.
     lease_at: Instant,
-    /// When the driver may next step.
+    /// When the driver may next take a cut's step.
     step_at: Instant,
+    /// When the driver may next take a publish's step.
+    publish_at: Instant,
     /// The publishes asked before the driver is made, which it then takes
     /// ([`Uploader::publishing`]).
     publishing: Option<Publishing>,
@@ -156,18 +175,21 @@ where
             slice_blocks: blocks,
             errors: Backoff::new(),
             refused: Backoff::new(),
+            publish_errors: Backoff::new(),
             rereading: false,
             lease_backoff: Backoff::new(),
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
             step_at: now,
+            publish_at: now,
             publishing: Some(Publishing::default()),
         }
     }
 
     /// The publishes (M2.5): the driver's once it is made, and before
     /// that, those it takes when it is. A publish asked while the lease is
-    /// not held waits as accepted.
+    /// not held yet waits as accepted; one asked of an uploader that will
+    /// upload nothing more is refused ([module docs](self)).
     pub fn publishing(&mut self) -> &mut Publishing {
         match self.driver {
             Some(ref mut driver) => driver.publishing(),
@@ -217,6 +239,7 @@ where
                     holder: holder.clone(),
                     epoch: *epoch,
                 };
+                self.publishing().stop();
                 return AT_REST;
             }
             LeaseState::None(why) => {
@@ -240,19 +263,25 @@ where
         };
         if driver.doing() == Doing::Stopped {
             self.state = State::Stopped;
+            driver.publishing().stop();
             return AT_REST;
         }
-        if now < self.step_at {
+        let publish = driver.publish_due() && now >= self.publish_at;
+        if !publish && now < self.step_at {
             return self.next_wait(now, self.step_at);
         }
         let (step, ended) = Self::step_keeping(
             driver,
+            publish,
             &mut self.lease,
             &mut self.lease_backoff,
             &mut self.lease_at,
         )
         .await;
         let now = Instant::now();
+        if publish {
+            return self.after_publish(step, ended);
+        }
         let (doing, under_way) = (driver.doing(), driver.under_way());
         if step.is_ok() {
             self.errors.succeeded();
@@ -265,6 +294,7 @@ where
             }
             Ok(Step::Kept { .. }) => {
                 self.state = State::Stopped;
+                driver.publishing().stop();
                 AT_REST
             }
             Ok(Step::GaveUp { number }) => {
@@ -292,11 +322,7 @@ where
                 self.state = State::Working(doing, under_way);
                 Duration::ZERO
             }
-            Err(RemoteError::Fenced { holder, epoch }) => {
-                self.lease.fenced(holder.clone(), epoch);
-                self.state = State::LeaseLost { holder, epoch };
-                AT_REST
-            }
+            Err(RemoteError::Fenced { holder, epoch }) => self.fenced(holder, epoch),
             // A commit refused: the next step reads the row and head
             // again at once, and the wait comes at its give-up. Only at
             // the commit, where the driver stays to read them, and only
@@ -316,22 +342,57 @@ where
         }
     }
 
-    /// One step of the driver, and when it came back, with the lease
-    /// kept beside it each time its renewal falls due while the step goes
-    /// on. The step is polled throughout, and neither it nor a renewal is
-    /// dropped half done: a step that ends during a renewal waits for the
-    /// renewal to end, and its wait is still counted from its own end.
+    /// After a publish's step that ended at `ended`: its wait, where it
+    /// failed; nothing else waits on it ([module docs](self)).
+    fn after_publish(&mut self, step: Result<Step, RemoteError>, ended: Instant) -> Duration {
+        match step {
+            Ok(Step::Published { .. } | Step::PublishRefused { .. }) => {
+                self.publish_errors.succeeded();
+            }
+            // A lookup: the publish goes on, and its wait is not reset.
+            Ok(_) => {}
+            Err(RemoteError::Fenced { holder, epoch }) => return self.fenced(holder, epoch),
+            Err(_) => {
+                let wait = self.publish_errors.failed();
+                self.publish_at = ended + wait;
+            }
+        }
+        Duration::ZERO
+    }
+
+    /// A transaction refused by the fence: `holder` holds the lease at
+    /// `epoch`, and nothing more is uploaded or published.
+    fn fenced(&mut self, holder: String, epoch: u64) -> Duration {
+        self.lease.fenced(holder.clone(), epoch);
+        self.state = State::LeaseLost { holder, epoch };
+        self.publishing().stop();
+        AT_REST
+    }
+
+    /// One step of the driver, a publish's where `publish`, else the
+    /// cut's, and when it came back, with the lease kept beside it each
+    /// time its renewal falls due while the step goes on. The step is
+    /// polled throughout, and neither it nor a renewal is dropped half
+    /// done: a step that ends during a renewal waits for the renewal to
+    /// end, and its wait is still counted from its own end.
     ///
     /// A renewal that loses the lease does not stop the step: the step
     /// cannot be dropped, and a commit it makes is refused by the fence,
     /// which is what decides. The next turn finds the lease lost.
     async fn step_keeping(
         driver: &mut Driver<L, R>,
+        publish: bool,
         lease: &mut Keeper<F>,
         lease_backoff: &mut Backoff,
         lease_at: &mut Instant,
     ) -> (Result<Step, RemoteError>, Instant) {
-        let mut step = std::pin::pin!(driver.step());
+        let mut step = std::pin::pin!(async {
+            if publish {
+                driver.step_publish().await
+            } else {
+                driver.step_cut().await
+            }
+        });
         loop {
             tokio::select! {
                 biased;
@@ -389,10 +450,14 @@ where
         self.next_wait(now, self.step_at)
     }
 
-    /// The wait until `until`, or until the lease is next kept if that
-    /// comes first.
+    /// The wait until `until`, or until the lease is next kept, or a
+    /// publish with a step to take may take it, if that comes first.
     fn next_wait(&self, now: Instant, until: Instant) -> Duration {
-        until.min(self.lease_at).saturating_duration_since(now)
+        let mut until = until.min(self.lease_at);
+        if self.driver.as_ref().is_some_and(Driver::publish_due) {
+            until = until.min(self.publish_at);
+        }
+        until.saturating_duration_since(now)
     }
 
     /// Turn until `stop` resolves, giving `publish` what the status shows

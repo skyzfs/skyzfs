@@ -30,14 +30,27 @@
 //! **Pending publishes are kept in memory** (the lead's Q4 of M2.5): they
 //! are lost with the uploader, and the agent asks again. Asking twice is
 //! asking once: a request the same as one pending is accepted again, and
-//! one whose `snap/t` names a cut that carries it, with its manifest,
-//! answers done ([`Answer::Done`]).
+//! one asked again after it ended is looked up anew, so that `snap/t`
+//! deleted since is not answered done from memory (F5 of #122's review).
+//! A lookup that finds `snap/t` named by a row that records the request
+//! (its commit, a cut that carries it, its manifest) ends it as done.
 //!
 //! **The attachment and the cut state.** A request names the attachment
-//! and the cut state it read *C* in. One of another attachment is
-//! refused: *C* counts in an attachment's state, and a publish asked on
-//! one attachment is not carried out on the next. Within one uploader the
-//! attachment does not change, and a new uploader has nothing pending.
+//! and the cut state it read *C* in. One of another attachment, or of
+//! another cut state than the store's, is refused: *C* counts in an
+//! attachment's state, and a publish asked on one attachment is not
+//! carried out on the next. Both are known before any request is taken
+//! ([`Publishing::new`]); a request asked while either is not known is
+//! refused (F2 of #122's review: a request of another state taken before
+//! the uploader knew its own would wait for ever). Within one uploader
+//! neither changes, and a new uploader has nothing pending; a setter that
+//! changes one ends what pends of the other ([`Publishing::set_state`],
+//! [`Publishing::set_attachment`]).
+//!
+//! **A stopped uploader publishes nothing** ([`Publishing::stop`]): once
+//! its lease is lost for good, or its store kept a committed cut, every
+//! publish pending ends refused ([`Refusal::Stopped`]), and so does every
+//! request after (F4 of #122's review).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -71,7 +84,7 @@ pub const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
 pub const SNAP_ROW_VERSION: u16 = 1;
 
 /// The length of a snapshot's row of version 1.
-pub const SNAP_ROW_LEN: usize = 2 + 16 + 8 + 8 + 16 + 4 + 32;
+pub const SNAP_ROW_LEN: usize = 2 + 16 + 8 + 8 + 32 + 16 + 4 + 32;
 
 /// The ref of snapshot `name`, as SkyNBD names a snapshot's ref.
 pub fn snap_ref(name: &str) -> String {
@@ -131,15 +144,18 @@ impl Request {
             && cut.itself
     }
 
-    /// Whether `row` records this publish: a cut that carries it, and
-    /// this manifest.
+    /// Whether `row`, found beside a ref that names `commit`, records this
+    /// publish: it names that commit (a ref made anew beside a row left
+    /// behind is not this publish, F6 of #122's review), a cut that
+    /// carries the request, and this manifest.
     fn recorded_in(&self, row: &SnapRow, commit: CommitHash) -> bool {
         let cut = Known {
             cut: row.cut,
             itself: true,
             commit,
         };
-        self.carried_by(&cut)
+        row.commit == commit
+            && self.carried_by(&cut)
             && row.manifest_len as usize == self.manifest.len()
             && row.manifest_hash == *blake3::hash(&self.manifest).as_bytes()
     }
@@ -165,7 +181,8 @@ pub enum Refusal {
     /// The request names another attachment than this daemon's.
     #[error("another attachment")]
     Attachment,
-    /// The request names another cut state than this daemon's.
+    /// The request names another cut state than the store's, or the
+    /// store's is not known.
     #[error("another cut state")]
     State,
     /// The manifest is over [`MANIFEST_MAX`].
@@ -177,20 +194,24 @@ pub enum Refusal {
     /// [`PENDING_MAX`] publishes are pending.
     #[error("{PENDING_MAX} publishes are pending")]
     Busy,
-    /// `snap/<name>` exists and does not record this publish: it names
-    /// another commit, or a cut that does not carry the request, or
-    /// another manifest, or it has no row of version 1.
+    /// `snap/<name>` exists and does not record this publish: its row
+    /// names another commit than the ref, or a cut that does not carry
+    /// the request, or another manifest, or it has no row of version 1.
     #[error("the name names another commit")]
     Taken,
+    /// The uploader publishes nothing more: its lease is lost for good, or
+    /// its store kept a committed cut ([`Publishing::stop`]).
+    #[error("this uploader publishes nothing more")]
+    Stopped,
 }
 
-/// The answer to a request.
+/// The answer to a request. A request is answered with no I/O, so it is
+/// never answered done: one published already is accepted, and the
+/// lookup ends it ([`Publishing::progress`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     /// Pending: [`Publishing::progress`] says how it ends.
     Accepted,
-    /// Published already, on this commit.
-    Done(CommitHash),
     /// Refused, and nothing is pending.
     Refused(Refusal),
 }
@@ -208,7 +229,7 @@ pub enum Progress {
     Unknown,
 }
 
-/// A snapshot's row (`skyzfs/snap/<t>`), version 1, 86 bytes, little
+/// A snapshot's row (`skyzfs/snap/<t>`), version 1, 118 bytes, little
 /// endian:
 ///
 /// | bytes | what |
@@ -217,15 +238,21 @@ pub enum Progress {
 /// | 2..18 | the cut state's name |
 /// | 18..26 | the cut's number in that state |
 /// | 26..34 | the cut's transaction group |
-/// | 34..50 | the snapshot's id (a ULID, big endian), which names its manifests |
-/// | 50..54 | the ZFS manifest's length |
-/// | 54..86 | the ZFS manifest's BLAKE3 hash |
+/// | 34..66 | the commit `snap/<t>` was made on: the cut's |
+/// | 66..82 | the snapshot's id (a ULID, big endian), which names its manifests |
+/// | 82..86 | the ZFS manifest's length |
+/// | 86..118 | the ZFS manifest's BLAKE3 hash |
 ///
-/// The cut it names opens as itself: no other is published.
+/// The cut it names opens as itself: no other is published. The row
+/// names its commit so that a ref deleted and made anew on another
+/// commit, beside the row left behind (SkyNBD deletes a snapshot's ref
+/// and not the row), does not read as this publish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapRow {
     /// The cut published.
     pub cut: CommittedCut,
+    /// The commit `snap/<t>` was made on.
+    pub commit: CommitHash,
     /// The snapshot's id: its SkyNBD manifest and its ZFS manifest are
     /// named by it.
     pub snap: SnapId,
@@ -254,6 +281,7 @@ impl SnapRow {
         row.extend_from_slice(&self.cut.state);
         row.extend_from_slice(&self.cut.number.to_le_bytes());
         row.extend_from_slice(&self.cut.group.to_le_bytes());
+        row.extend_from_slice(&self.commit);
         row.extend_from_slice(&self.snap.0.to_bytes());
         row.extend_from_slice(&self.manifest_len.to_le_bytes());
         row.extend_from_slice(&self.manifest_hash);
@@ -280,18 +308,21 @@ impl SnapRow {
         };
         let mut state = [0; 16];
         state.copy_from_slice(field(2, 16));
+        let mut commit = [0; 32];
+        commit.copy_from_slice(field(34, 32));
         let mut snap = [0; 16];
-        snap.copy_from_slice(field(34, 16));
+        snap.copy_from_slice(field(66, 16));
         let mut len = [0; 4];
-        len.copy_from_slice(field(50, 4));
+        len.copy_from_slice(field(82, 4));
         let mut manifest_hash = [0; 32];
-        manifest_hash.copy_from_slice(field(54, 32));
+        manifest_hash.copy_from_slice(field(86, 32));
         Ok(SnapRow {
             cut: CommittedCut {
                 state,
                 number: u64_at(18),
                 group: u64_at(26),
             },
+            commit,
             snap: SnapId(ulid::Ulid::from_bytes(snap)),
             manifest_len: u32::from_le_bytes(len),
             manifest_hash,
@@ -371,6 +402,7 @@ enum Outcome {
 pub struct Publishing {
     attachment: Option<[u8; 16]>,
     state: Option<[u8; 16]>,
+    stopped: bool,
     pending: Vec<Pending>,
     known: VecDeque<Known>,
     outcomes: BTreeMap<String, Outcome>,
@@ -380,17 +412,20 @@ pub struct Publishing {
 
 impl Default for Publishing {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 
 impl Publishing {
-    /// The publishes of an uploader in `attachment`: with none, every
-    /// request is refused ([`Refusal::Attachment`]).
-    pub fn new(attachment: Option<[u8; 16]>) -> Self {
+    /// The publishes of an uploader in `attachment`, whose store holds its
+    /// cuts in cut state `state` (`InPlace::cut_state_id`). With no
+    /// attachment every request is refused ([`Refusal::Attachment`]), and
+    /// with no state every request of an attachment ([`Refusal::State`]).
+    pub fn new(attachment: Option<[u8; 16]>, state: Option<[u8; 16]>) -> Self {
         Self {
             attachment,
-            state: None,
+            state,
+            stopped: false,
             pending: Vec::new(),
             known: VecDeque::new(),
             outcomes: BTreeMap::new(),
@@ -399,15 +434,49 @@ impl Publishing {
         }
     }
 
-    /// The attachment this uploader serves.
+    /// The attachment this uploader serves. A publish pending of another
+    /// attachment ends refused ([`Refusal::Attachment`]): it is not
+    /// carried out on this one (N4 of #122's review).
     pub fn set_attachment(&mut self, attachment: [u8; 16]) {
         self.attachment = Some(attachment);
+        self.end_where(|p| p.request.attachment != attachment, Refusal::Attachment);
     }
 
-    /// The cut state the store holds its cuts in. Until it is known, a
-    /// request of any state is accepted, and waits for a cut of its own.
+    /// The cut state the store holds its cuts in. The driver tells it at
+    /// each check of a cut, where the store's state can be seen; a store's
+    /// state does not change while it runs, so this only confirms the
+    /// state given to [`Publishing::new`]. A publish pending of another
+    /// state ends refused ([`Refusal::State`]): no cut of this store can
+    /// carry it.
     pub fn set_state(&mut self, state: [u8; 16]) {
         self.state = Some(state);
+        self.end_where(|p| p.request.state != state, Refusal::State);
+    }
+
+    /// The uploader publishes nothing more: its lease is lost for good, or
+    /// its store kept a committed cut. Every publish pending ends refused
+    /// ([`Refusal::Stopped`]), and so does every request after. A publish
+    /// whose cut is known ends so too: the uploader takes no more steps.
+    pub fn stop(&mut self) {
+        self.stopped = true;
+        self.end_where(|_| true, Refusal::Stopped);
+    }
+
+    /// Whether [`Publishing::stop`] was called.
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// End every pending publish for which `which` holds, refused `why`.
+    fn end_where(&mut self, which: impl Fn(&Pending) -> bool, why: Refusal) {
+        let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(which);
+        self.pending = kept;
+        for pending in ended {
+            self.figures.refused += 1;
+            self.end(&pending.request.name, Outcome::Refused(why.clone()));
+        }
     }
 
     /// The figures since the uploader began.
@@ -437,13 +506,16 @@ impl Publishing {
     }
 
     fn answer(&mut self, request: Request) -> Answer {
+        if self.stopped {
+            return Answer::Refused(Refusal::Stopped);
+        }
         if !valid_name(&request.name) {
             return Answer::Refused(Refusal::Name);
         }
         if self.attachment != Some(request.attachment) {
             return Answer::Refused(Refusal::Attachment);
         }
-        if self.state.is_some_and(|state| state != request.state) {
+        if self.state != Some(request.state) {
             return Answer::Refused(Refusal::State);
         }
         if request.manifest.len() > MANIFEST_MAX {
@@ -456,25 +528,14 @@ impl Publishing {
                 Answer::Refused(Refusal::Asked)
             };
         }
-        match self.outcomes.get(&request.name) {
-            Some(Outcome::Done(row, commit)) => {
-                // Published by this uploader, or found so: done again
-                // where it carries this request with its manifest.
-                return if request.recorded_in(row, *commit) {
-                    Answer::Done(*commit)
-                } else {
-                    Answer::Refused(Refusal::Taken)
-                };
-            }
-            // Asked again after a refusal: looked up anew.
-            Some(Outcome::Refused(_)) => {
-                self.outcomes.remove(&request.name);
-                self.order.retain(|name| *name != request.name);
-            }
-            None => {}
-        }
         if self.pending.len() >= PENDING_MAX {
             return Answer::Refused(Refusal::Busy);
+        }
+        // Asked again after it ended, done or refused: looked up anew, so
+        // that a name deleted or taken since is seen as it is now (F5 of
+        // #122's review).
+        if self.outcomes.remove(&request.name).is_some() {
+            self.order.retain(|name| *name != request.name);
         }
         self.figures.accepted += 1;
         self.pending.push(Pending {
@@ -580,6 +641,7 @@ impl Publishing {
         let manifest = pending.request.manifest.as_slice();
         let row = SnapRow {
             cut: known.cut,
+            commit: known.commit,
             snap: pending.snap,
             manifest_len: manifest.len() as u32,
             manifest_hash: *blake3::hash(manifest).as_bytes(),
