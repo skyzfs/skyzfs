@@ -1,88 +1,140 @@
-## Second next look at #113: ab34565 (one commit after e88773b)
+## Second next look at #113: ab34565 and 3fe4133 (the two commits after e88773b)
 
-**Verdict: it can merge. Nothing I found blocks it.** The commit does what its note says for the two places it names. A holder's verdict before its first written cut now ends `takeover` and `failed` there, the pool is exported, and the check gives exit 1 with `held_reads` FAIL. No wrong daemon passes through the check's new order, and no right one is failed by it. The new tests fail when the fix is taken away, in the script and in the check.
+The head of this look is `3fe4133`. Where a result is from `ab34565` it says so; nothing I had on `ab34565` changed on `3fe4133` (the files are named by head).
 
-R1 had three places and two are closed. The third is as it was: `hold_idle`, where `edges` waits for the holder to pause, still turns a holder's verdict into the rig's error (R1c below). It was not in Codex's finding, the author's note does not claim it, and I do not hold the merge for it, for the reason I gave at e88773b: the run is red either way, and the same daemon gives its verdict in the other recordings of the job. T1 and T2 are unchanged.
+**Verdict: it can merge. Nothing I found blocks it.**
 
-I formed this from `git diff e88773b ab34565` (four files: `cut-record.sh`, `cut_daemon_check.py` and a test for each) before I read the author's note.
+- **R1 is closed at every place.** A holder that ends with its verdict now reaches the check from all five places a recording can meet it, `hold_idle` in `edges` included, and the check gives exit 1 with `held_reads` FAIL.
+- **T1 and T2 are closed** by the new rule, which asks where a kill can cut a write instead of what the cut leaves. On a page of the file, every shape of what is left is taken, a tear inside the time and inside the pid too. Off a page nothing is taken, and the line that used to read as a start with a wrong time (T2) is now the rig's error.
+- **The page bound holds wherever I could measure it**: 1800 more kills on six mounts here, 505 torn lines, every one ending at a multiple of 4096 of the file.
+- **No wrong daemon passes** through either commit, and no right one is failed: the 42 recordings I have give exit 0 with the same lines on `3fe4133`, and a torn line is judged exactly as a kill at the end of the line before it, in twenty shapes on the recorded `takeover`.
+- **L12 to L14 are held now**, and so is everything else I planted in the two commits but the survivors listed below, none of which changes a verdict.
 
-### Is R1 closed at every place? At two of three
+What is left is small and none of it blocks: one new defect of no weight on the safe side (T3, a torn line that ends in more than 4300 decimal digits is the rig's error), two remarks on the rule's edges, and the survivors.
 
-Where a recording meets a holder that has ended, at `ab34565`:
+I formed this from `git diff e88773b ab34565` and `git diff ab34565 3fe4133` before I read the author's notes on either.
 
-| Place | Called from | A verdict there at e88773b | At ab34565 |
-|---|---|---|---|
-| the stop, `end_daemon` (`cut-record.sh:369`, through `holder_ended` at `:381`) | `end`, every recording that holds cuts | on to the check, exit 1 | the same |
-| asked to leave, `holder_leave` (`:329`, `holder_ended` at `:338`) | `takeover` three times (`:746`, `:772`, `:783`), `failed` once (`:818`) | on to the check, exit 1 | the same |
-| the wait for the first cut, `holder_wrote_one` (`:313`) | `takeover` (`:745`), `failed` (`:817`) | the rig's error after 300 s, exit 2 | **closed**: the recording ends there, the check gives exit 1 |
-| the wait for the pause, `hold_idle` (`:671`) | `edges` (`:704`) | the rig's error after 120 s, exit 2 | **unchanged (R1c)** |
-| no wait: `rec_bound`'s pause (`:656`), `hold_go` (`:687`), `cleanup` (`:214`, with `set +e`) | | nothing to take | the same |
+### 1. The torn-line rule of 3fe4133
 
-The lines `:732` and `:804` of the question are `:745` and `:817` on this head.
+**What it is** (`cut_daemon_check.py:239-296`, `:313-365`). Every line of the log is now looked at, not only one that does not parse. Inside a line, at each multiple of 4096 of the file, the rest of the line must be a whole start line (no leading zero in its time or pid) of a pid not yet started, in time between the last instance's last whole line and the line after. What stands before it must begin as a line does: a time; or a time, a tab and the beginning of the last instance's pid; or the time, that pid and more. A whole time must lie between the same two lines. Two new errors beside it: a pid that writes after its torn line, and a start line later than the line after it.
 
-**The wait for the first cut.** `holder_wrote_one` now looks whether the holder is alive on each turn. One that has ended goes through `holder_ended`, so its own error (2, or 1 with no VERDICT line) is the rig's error with its last lines; 0 before a cut is the rig's error too; a verdict returns 1, and both recordings have `holder_wrote_one || { export_pool; return 0; }`. I took the functions from the script as they are and ran them the way a recording does, the recording's function called plainly under `set -euo pipefail`, then `end_daemon` (`next2_holder_ends.sh`, `next2_holder_ends-ab34565.out`; the same script against e88773b's functions in `next2_holder_ends-e88773b.out`):
+**Is the bound of 4096 safe where the rig writes its log?**
 
-| The holder | e88773b | ab34565 |
+- *Where the log lives.* `skyzfsd serve --request-log "$RDIR/requests.tsv"` (`cut-record.sh:275`), `RDIR=$OUT/NAME` (`:408`), and the workflow gives `$PWD/cut-out` as OUT (`skyzfs-cut-daemon.yml:125`): the checkout on the runner's own disk. The one tear recorded on a runner (run 44183715455, ubuntu-26.04) ends at byte 13389824, which is 3269 times 4096. The jobs do not print the file system or the page size of that directory, so for the hosted images I have that one tear and CLAUDE.md's "4 KiB pages only", not a reading of my own. A line in the job's log with `stat -f -c %T` of OUT and `getconf PAGESIZE` would name both the next time a run is red on this (a suggestion).
+- *Measured here* (`next2_tear_fs.sh`, `next2_tear_fs.out`; `tear_at_kill.py` with one writing thread, 300 kills on each; kernel 6.18, 4 KiB pages):
+
+| The file is on | Torn last lines of 300 | Where they end, modulo 4096 |
 |---|---|---|
-| a verdict before the first cut | exit 2 | the pool exported, on to `end_daemon`, its status read and the check |
-| ended with 0 before the first cut | exit 2 | exit 2, "the holder ended with 0 before it wrote a cut" |
-| ended with 1 and no VERDICT line | exit 2 | exit 2 |
-| ended with 2, its own error | exit 2 | exit 2, with the ERROR line in the message |
-| wrote a cut, then a verdict | on to the check (through `holder_leave`) | the same |
-| wrote a cut and stays | goes on, leaves when asked | the same |
+| ext4, the container's own | 94 | 0, all |
+| tmpfs (`/dev/shm`) | 88 | 0, all |
+| tmpfs mounted with `huge=always` | 0 | none torn |
+| overlay on ext4 | 90 | 0, all |
+| ext4 with 1 KiB blocks, on a loop device | 134 | 0, all |
+| ext4 with `data=journal`, on a loop device | 99 | 0, all |
 
-Three things I checked in the function because they are easy to get wrong:
+  With the 163 of the e88773b look that is 668 torn lines and not one off a page. The tmpfs with huge pages tore none: a write that stays inside one large folio is copied in one piece, so there a tear is rarer and falls on the folio's end, still a multiple of the page. I had no `mkfs.xfs` or `mkfs.btrfs` here, so xfs and btrfs are not measured.
+- *A larger page.* A kernel with 16 KiB or 64 KiB pages cuts at multiples of those, which are multiples of 4096; the rule then also looks at places such a kernel cannot cut, which costs nothing.
+- *Another writer first, or larger writes.* The offset is that of the file from its first byte, whoever wrote the bytes before: each instance appends to the same file and the judge reads the same file. A daemon that wrote several lines in one `write` would be cut on a page all the same. The judge counts bytes from the decoded text (`:324`), which is right for a log of plain ASCII with no carriage return; the 42 recorded logs have no byte above 0x7f, no carriage return and no control byte but tab and newline.
+- *What can still be cut off a page.* I know of one way: a copy that stops short inside a page because the writer's own buffer had to be paged in, with the kill arriving before the retry. The daemon has just formatted the line, so this needs memory pressure at that instant. Such a line is not taken and the recording is the rig's error, exit 2: the safe side. A file system that does not write through the page cache would be another; the rig uses none.
 
-- It is called on the left of `||`, where bash ignores errexit in everything it runs (the script's own comment at the recording loop says so). Nothing in it or in `holder_ended` relies on errexit: every way out is a `return` or `rig_error`'s own `exit 2`. The right side, `{ export_pool; return 0; }`, runs with errexit as the rest of the recording does.
-- A holder that wrote its cut and gave a verdict in the same second is not lost between the two tests of a turn: whichever the wait sees first, the verdict reaches the check, through `holder_leave` or through the early end.
-- After the early end `HOLD_PID` is empty, so `end_daemon` skips its part for the holder and does not wait 720 s for one that is gone. What it then leaves in the work directory (`held.img`, `hold.stop`) is removed by the next recording's `begin_daemon` before its holder starts.
+**Is any shape a kill can leave still exit 2, or read wrongly?**
 
-**R1c: the wait for the pause, a defect, not blocking.** `hold_idle` (`cut-record.sh:671-686`) is byte for byte what it was. Scenario: in `edges` the daemon refuses to read a block of a cut while the holder writes what it holds during `hold_idle`'s first pause. The holder writes its VERDICT and ends with 1; `hold_idle` waits 600 times 0.2 s for `hold.pause.held`, which a dead holder never writes, and says "the holder did not say it had paused in 120 s": the recording is the rig's error, exit 2, and the check never runs on it. Certainty: high, run with a stand-in holder (`next2_holder_ends-ab34565.out`, part 2). The same shape as the fix mends it: look whether the holder is alive inside the wait, take an ended one through `holder_ended`, and end the recording at a verdict. A verdict after `hold_idle` returned (while the cut is held across the write-zeroes, or after `hold_go`) is taken at the stop and reaches the check, so the hole is the first seconds of `edges`.
+- *On a page, every shape is taken* (`next2_torn_rule.py`, `next2_torn_rule-3fe4133.out`, part 1): one digit of the time, four, all but the last, the whole time with and without its tab, one digit of the pid, the whole pid with and without its tab, inside the event's name, a tab before the label, a hex digit a to f, 3916, 8012 and 16204 bytes of a label line, a `barrier` and a `cut` line whole but for the newline. Two kills with a torn line each in one log are both taken (part 4).
+- *One byte off the page, none is taken* (part 2): each is the rig's error. Four digits of the time, off the page, is "a start line later than the line after it" where it was exit 1 with `sessions` and `import_syncs_before_return` FAIL at e88773b. That is T2, closed.
+- *On the recorded `takeover`* (`next2_torn_real.py`, `next2_torn_real-3fe4133.out`). I moved the first kill back to earlier pages of the file: what is left of the line the page falls in, then the next instance's start. Beside each I judged the control, the log ended at the end of the line before, which is a kill between two writes with no torn line. Twenty shapes, the first page found for each in the 400 pages before the recorded tear: in all twenty the torn log and its control give the same exit and the same lines, but for `obs_torn_at_kill`. (Moved back by 95 lines and more, both give exit 1, because the later instances were recorded after writes the shortened log no longer shows; that is my shortening, not the rule.) This is the direct form of "a lost line is a kill a moment earlier".
+- *My fifteen logs of the e88773b look* (`next_torn-3fe4133.out`): those whose tear stayed on the page are exit 0 as before (as recorded, the last hex digit changed to a or f, cut a page earlier). Those I had cut at a place of my choosing (after a tab, in the time, in the pid, a `cut` or `barrier` line) are exit 2 now, as tears no kill leaves. T1's shapes are in the two lists above, on a page.
+- *A whole start line that a page crosses is not taken for a torn one* (part 3), with one exception that the rig does not reach, a remark below.
 
-### The check's new order: no wrong daemon passes, no right one fails
+**T3, a defect of no weight, not blocking, on the safe side.** `torn_line` turns the digits before the first tab of "the rest" into a number at every page inside a line (`cut_daemon_check.py:288`). Scenario: what is left of the torn line ends in more than 4300 decimal digits that begin, at a page of the file, with a digit other than 0, for example a label whose last 4.5 KB are bytes 0x11. At the page before the tear the rest is those digits and the start line, a "start line" with a time of 8204 digits, and Python refuses the conversion: `ValueError: Exceeds the limit (4300 digits)`, which `main` reports as the rig's error, exit 2, where the line should have been taken (`next2_torn_rule-3fe4133.out`, part 7; 4000 such digits are taken, 9000 are not). Certainty: high, run. Weight: none that I can see in this rig. Only `label` lines are longer than a page (1054 of them in the recorded log), their long runs are zero bytes, and a run of zeros is stopped by the rule's "no leading zero" before any conversion; the recorded line ends in 7610 zeros and is taken. A bound on the digits of a start's time (a time has 12 or 13) before the conversion would close it.
 
-`main` now asks first whether `holder.log` has a VERDICT line (`cut_daemon_check.py:1293`). If it has, only `held_lines` runs of the held cuts' lines; if not, the lines run in e88773b's order.
+**Two remarks on the rule.**
 
-- **No wrong daemon passes.** The test in `main` is the same as the one `held_lines` makes (`:1131`), and `held_lines` then puts `held_reads` FAIL and returns 1 before it reads any file of the holder's (`:1132-1135`). So a VERDICT line always ends in exit 1 at least, or in exit 2 where the holder's log has an ERROR line as well (that test comes first, `:1125-1127`). Before the commit a VERDICT line also ended in 1 or 2, never in 0. Plant Z5 (the verdict judged first does not count) is KILLED.
-- **No right daemon fails.** With no VERDICT line the lines and their order are those of e88773b. The head's check on the 42 recordings I have gives exit 0 on each, with the same lines as at e88773b (`next_rejudge-ab34565.out` is identical to `next_rejudge-e88773b.out`), and S0 to S9, the third instance and the fifteen torn logs give what they gave (`next_scenarios-ab34565.out`, `next_third_instance-ab34565.out`, `next_torn-ab34565.out`, each identical to its e88773b file). A right daemon writes no VERDICT: the holder writes one only when a write was refused with "read block B of cut N" and the cut is still the one being uploaded (`cut_hold.py:227-251`).
-- **The early end on recorded data** (`next2_verdict.py`, `next2_verdict-ab34565.out`, `next2_verdict-e88773b.out`; made from `failed` of run 44176849709 on both images: the first instance's part of the request log, its line of `instances.tsv`, the first session's marks and groups, the status read after the export, the holder's log with the verdict alone and none of its other files, no `failure.tsv`):
+- *A whole start line can be read as torn if two instances are 100 s apart.* Where a page falls after the first digit of a whole start line's time, the rest is a start line with a shorter time, and it is taken if that time is not earlier than the last instance's last line: last line at 95 s, start at 196 s, read as a start at 96 s with "1 byte lost" (part 3, the last five lines; the same at 950 s and 1960 s). It needs at least 100 s between one instance's last line and the next one's start while the clock is below 1000 s, 1000 s above that, and the page exactly there. The rig leaves under a second before the two instances that take a device over, and a line taken before any other instance is the rig's error (`torn_detail`), so no recording of this rig can be read wrongly this way.
+- *The bounds on time rest on the log being in the order of its times.* The torn line's time must not be earlier than the line before it. In the 42 recorded logs, 675510 pairs of neighbouring lines, no line carries an earlier time than the line before it.
 
-| Recording | e88773b | ab34565 |
+The rule's premise is as at e88773b and is now written into the function: one writing thread. A pid that writes after its torn line is the rig's error with that reason (`:346-348`).
+
+**A torn `cut` line** is still window B of the stage 2b review's D1 (exit 1 against a right daemon). The author has it on the list for 2d; the new rule neither mends nor worsens it.
+
+### 2. R1: closed at every place
+
+| Place | Called from | A verdict there at e88773b | ab34565 | 3fe4133 |
+|---|---|---|---|---|
+| the stop, `end_daemon` (`cut-record.sh:373`, through `holder_ended` at `:385`) | `end`, every recording that holds cuts | the check, exit 1 | the same | the same |
+| asked to leave, `holder_leave` (`:324`, `holder_ended` at `:333`) | `takeover` (`:752`, `:778`, `:789`), `failed` (`:824`) | the check, exit 1 | the same | the same |
+| the wait for the first cut, `holder_wrote_one` (`:313`) | `takeover` (`:751`), `failed` (`:823`) | the rig's error after 300 s | **the check, exit 1** | the same, through `holder_gone` |
+| the wait for the pause, `hold_idle` (`:676`) | `edges` (`:710`) | the rig's error after 120 s | the rig's error after 120 s | **the check, exit 1** |
+| no wait: `rec_bound`'s pause (`:660`), `hold_go` (`:693`), `cleanup` (`:214`) | | nothing to take | | |
+
+The `:732` and `:804` of the question are `:751` and `:823` on this head.
+
+I took the functions from the script as they are and ran them the way a recording does: the recording's function called plainly under `set -euo pipefail`, the wait in it as the script at hand calls it, then `holder_leave` and `end_daemon` (`next2_holder_ends.sh`; `next2_holder_ends-3fe4133.out`, `-ab34565.out`, `-e88773b.out`).
+
+| The holder | e88773b | ab34565 | 3fe4133 |
+|---|---|---|---|
+| a verdict before the first cut | exit 2 | pool exported, on to the check | the same |
+| ended with 0, or with 1 and no VERDICT line, or with 2, before the first cut | exit 2 | exit 2, saying which | the same |
+| wrote a cut, then a verdict | on to the check | the same | the same |
+| wrote a cut and stays | goes on, leaves when asked | the same | the same |
+| a verdict while `edges` waits for the pause | exit 2 | exit 2 | pool exported, on to the check |
+| ended with 0, 1 and no VERDICT line, or 2 while `edges` waits | exit 2 | exit 2 | exit 2, saying which |
+
+Three things I checked because they are easy to get wrong:
+
+- Both waits are now called on the left of `||`, where bash ignores errexit in everything they run (the script's own comment at the recording loop says so). Nothing in `holder_wrote_one`, `hold_idle`, `holder_gone` or `holder_ended` relies on errexit: every way out is a `return` or `rig_error`'s own `exit 2`, and `z` ends in `rig_error` itself. The right side, `{ export_pool; return 0; }`, runs with errexit as the rest of the recording does.
+- A holder that wrote its cut and gave its verdict in the same second is not lost between the two tests of a turn: whichever the wait sees first, the verdict reaches the check.
+- After an early end `HOLD_PID` is empty, so `end_daemon` skips its part for the holder and does not wait 720 s for one that is gone; what stays in the work directory is removed by the next recording's `begin_daemon`.
+
+A nit: the comment that belongs to `holder_ended` now stands above `holder_gone` (`cut-record.sh:336-349`), and `holder_ended` has none of its own.
+
+### 3. The check after a verdict: no wrong daemon passes, no right one fails
+
+Since `ab34565`, `main` asks first whether `holder.log` has a VERDICT line (`cut_daemon_check.py:1327`). If it has, only `held_lines` runs of the held cuts' lines; if not, the lines run in e88773b's order. `3fe4133` does not touch this.
+
+- **No wrong daemon passes.** The test in `main` is the one `held_lines` makes (`:1165`), and `held_lines` then puts `held_reads` FAIL and returns 1 before it reads any file of the holder's (`:1166-1169`). A VERDICT line therefore ends in exit 1 at least, or in exit 2 where the holder's log has an ERROR line as well (`:1159-1161`). Before the commit it ended in 1 or 2 too, never in 0.
+- **No right daemon fails.** With no VERDICT line the lines and their order are those of e88773b. The head's check on the 42 recordings gives exit 0 on each (`next_rejudge-3fe4133.out`, identical to the files of ab34565 and e88773b), and S0 to S9 and the third instance give what they gave (`next_scenarios-3fe4133.out`, `next_third_instance-3fe4133.out`, identical too). A right daemon writes no VERDICT: the holder writes one only where a write was refused with "read block B of cut N" and the cut is still the one being uploaded (`cut_hold.py:219-251`). I confirm the author's "42 recordings" for `3fe4133`.
+- **The early end on recorded data** (`next2_verdict.py`; `next2_verdict-3fe4133.out`, identical to `-ab34565.out`; `-e88773b.out`). Made from `failed` of run 44176849709 on both images: the first instance's part of the request log, its line of `instances.tsv`, the first session's marks and groups, the status read after the export, the holder's log with the verdict alone, none of its other files and no `failure.tsv`.
+
+| Recording | e88773b | ab34565 and 3fe4133 |
 |---|---|---|
 | early, judged as `failed` | exit 2, "no failure.tsv: the holder did not get as far" | exit 1, `held_reads` FAIL |
 | early, judged as `takeover` | exit 1, `held_reads` FAIL | exit 1, `held_reads` FAIL |
-| early with an ERROR line before the verdict | exit 2 | exit 2, "the holder: ERROR ..." |
-| early with no verdict in the log (the script does not leave this) | exit 2 | exit 2, "no failure.tsv" |
+| early, judged as `edges` | exit 1, `held_reads` FAIL | exit 1, `held_reads` FAIL |
+| early, with an ERROR line before the verdict | exit 2 | exit 2, "the holder: ERROR ..." |
+| early, with no verdict in the log (the script does not leave this) | exit 2 | exit 2, "no failure.tsv" |
 | whole, a verdict as the holder's last line | exit 1 | exit 1 |
 | whole, a verdict and a wrong start of the second instance | exit 1, `instance_2` and `held_reads` FAIL | exit 1, `held_reads` FAIL alone |
 
-So the change in the check is what `failed` needed; `takeover` ended in exit 1 at an early end already, once the script got it that far.
+  So the change in the check is what `failed` needed; `takeover` and `edges` ended in exit 1 at an early end already, once the script got them that far.
 
 Two remarks on what the summary of such a run shows. Neither changes a verdict.
 
-- **After a verdict the instances' lines and the failure line are not written, also where the recording is whole** (the last two rows). A daemon with a second defect in a start has only the first named in that run. The instances' lines do not need a whole recording (at e88773b the early `takeover` has its `instance_1` line); only the failure line does. PLANT_Z4
-- **An early `takeover` also has `ctl_mark-dropped` and `ctl_mark-kept` SAME, "expected: caught; DIFFERS".** It ended before any group was synced with no flush, so the two rules give the design's cuts. Two red control lines beside the verdict that follow from where the recording ended, not from the check or the daemon. The same in e88773b's order.
+- *After a verdict the instances' lines and the failure line are not written, also where the recording is whole* (the last two rows). A daemon with a second defect in a start has only the first named in that run. The instances' lines do not need a whole recording, only the failure line does: with the instances' lines judged after a verdict as well, every test passes (plant Z4).
+- *An early `takeover` also has `ctl_mark-dropped` and `ctl_mark-kept` SAME, "expected: caught; DIFFERS".* It ended before any group was synced with no flush, so the two rules give the design's cuts. Two red control lines beside the verdict that follow from where the recording ended.
 
-### Do the new tests hold the fix? Yes
+### 4. Plants
 
-One plant at a time on `ab34565`, the file restored after each, against the four Python test files and `test_cut_record.sh` (`next2_plants.py`, `next2_plants-ab34565.out`).
+One at a time, the file restored after each, against the four Python test files and `test_cut_record.sh`; both worktrees clean afterwards.
 
-PLANTS_TABLE
+PLANTS
 
-### T1 and T2: unchanged
+### 5. CI and Codex
 
-`torn_line` is not in the diff, and the fifteen torn logs give the exit codes of e88773b (`next_torn-ab34565.out`): a fragment that ends in a hex digit a to f or after a tab is still exit 2 (T1, `cut_daemon_check.py:265`, `<=` where `<` mends it), and a line cut inside its time column is still exit 1 against a right daemon (T2). Both stand as written in `next_look.md`, not blocking.
+CI
 
-### CI and Codex on ab34565
+### 6. What I could only read
 
-CI_TEXT
-
-### What I could only read
-
-- No kernel, no ZFS and no `skyzfsd` ran here. The early end has not run on a kernel anywhere, and cannot with what the tree has: it takes a daemon that refuses to read a held cut, and the daemon's test build has no hook for that (`cut_commands.rs:414` is the only place the refusal is made). What I ran are the script's functions with stand-in holders and the check on recordings cut down by hand.
-- Two steps after the early end rest on the daemon and are read, not run: `zpool export` with a holder gone and cuts held (the pool does go on with a paused holder, which `bound` shows on every green run), and `end_daemon`'s "serve ended with 0 on SIGTERM", which a right daemon gives with cuts held (course (c) of `takeover`) and a daemon that has just refused a read may not. If it does not, the recording is the rig's error after all; the same was true of the path e805d10 opened.
-- shellcheck is not installed here; CI's run of it on this head is green (the `ci` workflow).
+- No kernel module of the rigs, no ZFS and no `skyzfsd` ran here. An early end at a holder's verdict has not run on a kernel anywhere and cannot with what the tree has: it takes a daemon that refuses to read a held cut, and the test build has no hook for that (`cut_commands.rs:414` is the only place the refusal is made). What I ran are the script's functions with stand-in holders and the check on recordings cut down by hand.
+- Two steps after an early end rest on the daemon and are read, not run: `zpool export` with the holder gone and cuts held (a pool does go on with a paused holder, which `bound` shows on every green run), and `end_daemon`'s "serve ended with 0 on SIGTERM", which a right daemon gives with cuts held (course (c) of `takeover`) and a daemon that has just refused a read may not. If it does not, the recording is the rig's error after all; the same is true of the path e805d10 opened.
+- The page bound: measured on this container's kernel (6.18, amd64, 4 KiB pages) and file systems, and seen once on a hosted runner. Not measured: xfs, btrfs, an arm64 kernel, a kernel with larger pages. Why a kill cuts between pages is my reading of how a buffered write behaves, as at e88773b; I could not read the kernel's source from here.
+- That the daemon writes its request log from one thread: read at e88773b (`record.rs`, `serve.rs`), not run; neither commit touches the daemon.
+- shellcheck is not installed here; CI's run of it on `3fe4133` is green (`ci`, `skyzfs-ci`).
 
 ### Evidence
 
-All in `review/m2.t3-2c/` on `skyzfs-review`. New for this look: `next2_holder_ends.sh` with `next2_holder_ends-ab34565.out` and `-e88773b.out`; `next2_verdict.py` with `next2_verdict-ab34565.out` and `-e88773b.out`; `next2_plants.py` with `next2_plants-ab34565.out`; and the reruns `next_scenarios-ab34565.out`, `next_third_instance-ab34565.out`, `next_rejudge-ab34565.out`, `next_torn-ab34565.out`.
+All in `review/m2.t3-2c/` on `skyzfs-review`. New for this look:
+
+- the torn-line rule: `next2_tear_fs.sh`, `next2_tear_fs.out`; `next2_torn_rule.py`, `next2_torn_rule-3fe4133.out`; `next2_torn_real.py`, `next2_torn_real-3fe4133.out`; `next_torn-3fe4133.out`;
+- the holder's end: `next2_holder_ends.sh` with its three outputs; `next2_verdict.py` with its three outputs;
+- plants: `next2_plants.py`, `next2_plants-ab34565.out`, `next2_plants-3fe4133.out`;
+- reruns: `next_scenarios-`, `next_third_instance-` and `next_rejudge-` with `ab34565.out` and `3fe4133.out`, and `next_torn-ab34565.out`.

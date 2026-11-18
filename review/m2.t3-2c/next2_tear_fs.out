@@ -1,0 +1,30 @@
+== root (ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534)
+kernel 6.18.44-fc-v595, page size 4096, the file is on ext4
+300 kills: the file ended with a whole line and had no other broken line 206 times;
+  the last line was cut short 94 times; where it ended, as the file's offset modulo 4096: 0: 94 times
+  a line cut short stood before other lines of the same process 0 times
+== shm (tmpfs rw,relatime,size=16473760k)
+kernel 6.18.44-fc-v595, page size 4096, the file is on tmpfs
+300 kills: the file ended with a whole line and had no other broken line 212 times;
+  the last line was cut short 88 times; where it ended, as the file's offset modulo 4096: 0: 88 times
+  a line cut short stood before other lines of the same process 0 times
+== tmpfs-huge (tmpfs rw,relatime,size=524288k,huge=always)
+kernel 6.18.44-fc-v595, page size 4096, the file is on tmpfs
+300 kills: the file ended with a whole line and had no other broken line 300 times;
+  the last line was cut short 0 times; where it ended, as the file's offset modulo 4096: never
+  a line cut short stood before other lines of the same process 0 times
+== ovl (overlay rw,relatime,lowerdir=...)
+kernel 6.18.44-fc-v595, page size 4096, the file is on overlay
+300 kills: the file ended with a whole line and had no other broken line 210 times;
+  the last line was cut short 90 times; where it ended, as the file's offset modulo 4096: 0: 90 times
+  a line cut short stood before other lines of the same process 0 times
+== ext4-1k (ext4 rw,relatime)
+kernel 6.18.44-fc-v595, page size 4096, the file is on ext4
+300 kills: the file ended with a whole line and had no other broken line 166 times;
+  the last line was cut short 134 times; where it ended, as the file's offset modulo 4096: 0: 134 times
+  a line cut short stood before other lines of the same process 0 times
+== ext4-4k (ext4 rw,relatime,nodioread_nolock,nodelalloc,data=journal)
+kernel 6.18.44-fc-v595, page size 4096, the file is on ext4
+300 kills: the file ended with a whole line and had no other broken line 201 times;
+  the last line was cut short 99 times; where it ended, as the file's offset modulo 4096: 0: 99 times
+  a line cut short stood before other lines of the same process 0 times

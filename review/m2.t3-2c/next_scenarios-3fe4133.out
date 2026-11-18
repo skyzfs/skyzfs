@@ -1,0 +1,82 @@
+== amd
+  the recording: state 1 counted 12 cuts and its holder wrote [1, 8]; state 2 counted 8 and its holder wrote [1, 5, 7, 8]
+  the new state's first written cut is its cut 1 (group 33), 6180 blocks; 1775 of them differ from the image the first state's holder left (what a cut that lacked them would get wrong); whole regions in its map: region 0: 14 of 1024 differ, region 4: 866 of 1024 differ, region 5: 734 of 1024 differ, region 9: 64 of 1024 differ, region 17: 47 of 1024 differ, region 127: 14 of 1024 differ; outside whole regions: 36 blocks, 36 differ
+  S0 as recorded: exit 0
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+  S1 the new state's first cut lacks region 4 (866 blocks that changed): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 866 blocks differ from the reference at its instant, for example block 4254: 454b6f0d17c21e1b wanted, ad7facb2586fc6e9 held, block 4255: 0dcb33ece1188438 wanted, ad7facb2586fc6e9 held, block 4256: 93486a5412d37c4d wanted, ad7facb2586fc6e9 held, block 4257: 1bea91a3de53005f wanted, ad7facb2586fc6e9 held, block 
+  S2 the new state's first cut lacks one block that changed (block 5127): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 1 blocks differ from the reference at its instant, for example block 5127: c6cd3de652020b7a wanted, ad7facb2586fc6e9 held; cut 17 (group 41): 1 blocks differ from the reference at its instant, for example block 5127: c6cd3de652020b7a wanted, ad7facb2586fc6e9 held; cut 19 (group 46): 1 blocks differ from the re
+  S3 the new state's first cut holds only the 102 blocks its own instance wrote (1731 changed blocks of the regions lost): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 1731 blocks differ from the reference at its instant, for example block 49: 56302a1a7f05b638 wanted, ad7facb2586fc6e9 held, block 50: b047c42e277e8371 wanted, ad7facb2586fc6e9 held, block 54: 76c42aab87151ed1 wanted, ad7facb2586fc6e9 held, block 63: 671492fd0ffb9ac2 wanted, 483effec44b0b86e held, block 68: e6d
+  S4 the new state counts on (13..20), the status says cuts 20: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4124) carries the number '13', not 1: a new state counts from 1 again
+      status	FAIL	cuts '20', not '8'
+  S5 the new state counts on, the status says cuts 8: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4124) carries the number '13', not 1: a new state counts from 1 again
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+  S6 the new state counts from 1, the status says cuts 20: exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	FAIL	cuts '20', not '8'
+  S7 the new state begins at 5 (neither rule): exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4124) carries the number '5', not 1: a new state counts from 1 again
+      status	FAIL	cuts '12', not '8'
+  S8 the acknowledged start says taken_up, and nothing else differs: exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
+      instance_2	FAIL	pid 13018 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
+  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4124) carries the number '13', not 1: a new state counts from 1 again
+      status	FAIL	cuts '20', not '8'
+      cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
+      held_content	FAIL	the holder wrote cut 9 in state 2, which has no cut line in that state and has one in the state before: a cut of the state before the start that acknowledged the failure was still held after it, though that start trusts none of the cut state
+      instance_2	FAIL	pid 13018 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
+== arm
+  the recording: state 1 counted 12 cuts and its holder wrote [1, 8]; state 2 counted 8 and its holder wrote [1, 3, 4, 8]
+  the new state's first written cut is its cut 1 (group 33), 6177 blocks; 1792 of them differ from the image the first state's holder left (what a cut that lacked them would get wrong); whole regions in its map: region 0: 14 of 1024 differ, region 4: 864 of 1024 differ, region 5: 743 of 1024 differ, region 9: 71 of 1024 differ, region 17: 53 of 1024 differ, region 127: 14 of 1024 differ; outside whole regions: 33 blocks, 33 differ
+  S0 as recorded: exit 0
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+  S1 the new state's first cut lacks region 4 (864 blocks that changed): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 864 blocks differ from the reference at its instant, for example block 4256: f71cbcda59f069ea wanted, ad7facb2586fc6e9 held, block 4257: 7be3fc9a591d2b33 wanted, ad7facb2586fc6e9 held, block 4258: d93149399f347235 wanted, ad7facb2586fc6e9 held, block 4259: 2a4134e77c62025f wanted, ad7facb2586fc6e9 held, block 
+  S2 the new state's first cut lacks one block that changed (block 5138): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 1 blocks differ from the reference at its instant, for example block 5138: 1e8f4fd0713c9ee2 wanted, ad7facb2586fc6e9 held; cut 15 (group 37): 1 blocks differ from the reference at its instant, for example block 5138: 1e8f4fd0713c9ee2 wanted, ad7facb2586fc6e9 held; cut 16 (group 38): 1 blocks differ from the re
+  S3 the new state's first cut holds only the 99 blocks its own instance wrote (1751 changed blocks of the regions lost): exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      held_content	FAIL	cut 13 (group 33): 1751 blocks differ from the reference at its instant, for example block 49: 8456f44c41c739d9 wanted, ad7facb2586fc6e9 held, block 50: 13522916138f9ae3 wanted, ad7facb2586fc6e9 held, block 54: e3fae29aaf56d022 wanted, ad7facb2586fc6e9 held, block 63: a4d1b30c882fafdf wanted, 483effec44b0b86e held, block 68: f9b
+  S4 the new state counts on (13..20), the status says cuts 20: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4188) carries the number '13', not 1: a new state counts from 1 again
+      status	FAIL	cuts '20', not '8'
+  S5 the new state counts on, the status says cuts 8: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4188) carries the number '13', not 1: a new state counts from 1 again
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+  S6 the new state counts from 1, the status says cuts 20: exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	FAIL	cuts '20', not '8'
+  S7 the new state begins at 5 (neither rule): exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4188) carries the number '5', not 1: a new state counts from 1 again
+      status	FAIL	cuts '12', not '8'
+  S8 the acknowledged start says taken_up, and nothing else differs: exit 1
+      cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+      status	PASS	cuts 8, cut_group 55, cut_opens itself
+      cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
+      instance_2	FAIL	pid 12762 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up
+  S9 the acknowledged start took the state up: it counts on and its holder first writes cut 9 of the first state, held across the failure: exit 1
+      cut_numbers	FAIL	state 2's first cut line (request log line 4188) carries the number '13', not 1: a new state counts from 1 again
+      status	FAIL	cuts '20', not '8'
+      cut_state	FAIL	the request log's cuts lines say ['begun', 'taken_up'], the last status 'taken_up'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 instances, wanted ['begun', 'begun'])
+      held_content	FAIL	the holder wrote cut 9 in state 2, which has no cut line in that state and has one in the state before: a cut of the state before the start that acknowledged the failure was still held after it, though that start trusts none of the cut state
+      instance_2	FAIL	pid 12762 (created the device, acknowledging a failure): its cuts line says ['taken_up']; cut_state 'taken_up'; wanted cut_state begun, intent_state taken_up

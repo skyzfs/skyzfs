@@ -1,0 +1,19 @@
+Y1 the wait does not look whether the holder has ended (as before the commit: 300 s, then the rig's error): KILLED by 1: test_cut_record.sh did not end in 300 s
+Y2 the ended holder's status is not taken (a VERDICT line alone decides): KILLED by 2: test_cut_record.sh: a holder that ended with its error before a cut is the rig's error, test_cut_record.sh: the holder's leave, its stop and an early end all go through holder_ended
+Y3 a holder that ended with 0 before a cut ends the recording for the check too: KILLED by 1: test_cut_record.sh: a holder that ended with 0 before a cut is the rig's error
+Y4 after a verdict before the first cut the wait says "wrote one" (the recording goes on): KILLED by 1: test_cut_record.sh: a verdict before the first cut ends the recording for the check
+Y5 a verdict before the first cut is the rig's error (as before, said at once): KILLED by 1: test_cut_record.sh: a verdict before the first cut ends the recording for the check
+Y6 takeover does not take the wait's 1 (set -e ends the recording with it, and no line): KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y7 failed does not take the wait's 1: KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y8 takeover ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y9 failed goes on after the verdict (the wait's 1 is dropped): KILLED by 1: test_cut_record.sh: the recordings end at a verdict before the first cut
+Y10 the ended holder's status is taken by a bare wait: KILLED by 3: test_cut_record.sh: a holder that ended with its error before a cut is the rig's error, test_cut_record.sh: no bare wait for the holder, test_cut_record.sh: the holder's leave, its stop and an early end all go through holder_ended
+Z1 a verdict is not judged first (the order of e88773b for every recording): KILLED by 1: test_a_verdict_before_the_first_cut
+Z2 every recording with a holder is judged as one that ended at a verdict (no instance or failure line): KILLED by 2: test_an_acknowledged_failure, test_two_instances
+Z3 after a verdict the failure line is judged as well: KILLED by 1: test_a_verdict_before_the_first_cut
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z5 a verdict judged first does not count (rc as it was): KILLED by 1: test_a_verdict_before_the_first_cut
+Z6 held_lines goes on to the held cuts' files after a verdict: KILLED by 2: test_a_held_cut_the_daemon_could_not_read, test_a_verdict_before_the_first_cut
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED
+Z8 a verdict is judged first in takeover only: KILLED by 1: test_a_verdict_before_the_first_cut
+X5b the held cuts are judged before the instances' lines again (with no verdict): SURVIVED

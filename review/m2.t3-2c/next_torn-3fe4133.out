@@ -1,0 +1,73 @@
+as recorded (the killed instance's last line cut, the next start line in the same line): exit 0
+    obs_torn_at_kill	INFO	1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 8012 bytes, then pid 10976's start
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+the cut line taken out, the start line kept: exit 0
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+the cut line on a line of its own, then the start line: exit 2
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    rig_error	ERROR	request log line 43866: a label line whose bytes are not hex
+a line cut in the middle of the second instance's log, the cut last line taken out: exit 2
+    rig_error	ERROR	request log line 43872: not eight to ten columns: '264076591174\t10976\tlabel\t31\twrite\t408\t8\t0cb1ba0000000000881300000000000093020000000000000e201fa029701f3fa8ccfc6a00000000'
+the cut line and the whole line before it taken out (a kill one line earlier): exit 0
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+what is left of the cut line ends in the hex digit a, not 0: exit 0
+    obs_torn_at_kill	INFO	1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 8012 bytes, then pid 10976's start
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+what is left of the cut line ends in the hex digit f: exit 0
+    obs_torn_at_kill	INFO	1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 8012 bytes, then pid 10976's start
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+what is left ends in a tab (the seven columns before the bytes): exit 2
+    rig_error	ERROR	request log line 43866: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t264075526204\t10976\tstart\t0\t-\t-\t-\t64'
+the line cut one page (4096 bytes) earlier: exit 0
+    obs_torn_at_kill	INFO	1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 3916 bytes, then pid 10976's start
+    cuts	PASS	250 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 250 cut lines are numbered 1 to 250
+    held_content	PASS	13 of 250 cuts written and released; 1703936 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers 
+    instance_2	PASS	pid 10976 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 228 at the start,
+    instance_3	PASS	pid 11119 (took the device over): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 237 at the start,
+    instance_4	PASS	pid 11257 (created the device): cut_state taken_up, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 242 at the start, 2
+    34 lines, none FAIL or ERROR
+only four digits of the line's time are left: exit 2
+    rig_error	ERROR	request log line 43866: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t0\t-\t-\t-\t64'
+the time and two digits of the pid are left: exit 2
+    rig_error	ERROR	request log line 43866: a 10976 line with more than eight columns: '263932738825\t99264075526204\t10976\tstart\t0\t-\t-\t-\t64'
+a cut line is cut short instead, within its last column: exit 2
+    rig_error	ERROR	request log line 43866: not eight to ten columns: '263932738825\t9937\tcut\t50\tflush\titself\t229\t7264075526204\t10976\tstart\t0\t-\t-\t-\t64'
+a barrier line is cut short instead, before its last column: exit 2
+    rig_error	ERROR	request log line 43866: not eight to ten columns: '263932738825\t9937\tbarrier\t50\tflush\t-\t-\t264075526204\t10976\tstart\t0\t-\t-\t-\t64'
+as recorded, and the second killed instance's last line whole but for its newline: exit 2
+    rig_error	ERROR	request log line 47433: not eight to ten columns: '270612173042\t10976\tsent\t-\t-\t-\t-\t2270756369200\t11119\tstart\t0\t-\t-\t-\t64'
+a line whole but for its newline before the start of the instance that created the device: exit 2
+    rig_error	ERROR	request log line 48982: not eight to ten columns: '272705151827\t11119\tsent\t-\t-\t-\t-\t1273022764093\t11257\tstart\t0\t-\t-\t-\t64'

@@ -1,4 +1,5 @@
-the line 'holder_wrote_one || { export_pool; return 0; }' is in the script 0 times; hold_idle is called 1 time(s)
+the script calls holder_wrote_one bare 2 time(s) and as 'holder_wrote_one || { export_pool; return 0; }' 0 time(s)
+the script calls hold_idle bare 1 time(s) and as 'hold_idle || { export_pool; return 0; }' 0 time(s)
 1. holder_wrote_one (takeover, failed)
     rig_error: the holder wrote no cut in 300 s: 1	VERDICT cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
 a verdict before the first cut: the recording's subshell ended with 2
@@ -16,3 +17,9 @@ wrote a cut and stays: the recording's subshell ended with 0, having gone on to 
 2. hold_idle (edges)
     rig_error: the holder did not say it had paused in 120 s
 a verdict while the recording waits for the pause: the recording's subshell ended with 2
+    rig_error: the holder did not say it had paused in 120 s
+ended with 0 while the recording waits for the pause: the recording's subshell ended with 2
+    rig_error: the holder did not say it had paused in 120 s
+ended with 1 and no verdict while the recording waits for the pause: the recording's subshell ended with 2
+    rig_error: the holder did not say it had paused in 120 s
+ended with 2 (its own error) while the recording waits for the pause: the recording's subshell ended with 2

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""#113 at ab34565: recordings with a holder's VERDICT, run through a
+"""#113 at ab34565 and at 3fe4133: recordings with a holder's VERDICT, run through a
 head's judge. Made from the recording `failed` of a run's artifact (a
 right daemon's), on copies.
 
   early   what `failed` and `takeover` leave when holder_wrote_one ends
-          them at a verdict before the first cut: the first instance's
+          them at a verdict before the first cut (and `edges`, since
+          3fe4133, when hold_idle ends it; the same files judged under
+          that name): the first instance's
           part of the request log, its line of instances.tsv, the first
           session's marks and groups, a status read after the export
           (the artifact's status-failure.txt, with a time made for it),
@@ -102,7 +104,7 @@ for art in arts:
             d = os.path.join(tmp, n)
             shutil.copytree(src, d)
             return d
-        for name in ('failed', 'takeover'):
+        for name in ('failed', 'takeover', 'edges'):
             d = copy(f'early-{name}')
             early(src, d, f'{t0}\t{VERDICT}\n')
             show(f'early, judged as {name}', *judge(d, name))

@@ -1,0 +1,27 @@
+the script calls holder_wrote_one bare 0 time(s) and as 'holder_wrote_one || { export_pool; return 0; }' 2 time(s)
+the script calls hold_idle bare 0 time(s) and as 'hold_idle || { export_pool; return 0; }' 1 time(s)
+1. holder_wrote_one (takeover, failed)
+    log: rec: the holder ended with a verdict before it wrote a cut: 1	VERDICT cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5
+    export_pool
+a verdict before the first cut: the recording's subshell ended with 0, having gone on to end_daemon, its status read and the check
+    rig_error: the holder ended with 0 before it wrote a cut: 1	left
+ended with 0 before the first cut: the recording's subshell ended with 2
+    rig_error: the holder ended with 1 before it wrote a cut: 1	> t1x1 held
+ended with 1 and no verdict before the first cut: the recording's subshell ended with 2
+    rig_error: the holder ended with 2 before it wrote a cut: 1	ERROR HolderError: x
+ended with 2 (its own error) before the first cut: the recording's subshell ended with 2
+    the recording went on past the wait
+    log: rec: the holder ended with a verdict when asked to leave: 1	VERDICT cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os error 5))
+wrote a cut, then a verdict: the recording's subshell ended with 0, having gone on to end_daemon, its status read and the check
+    the recording went on past the wait
+wrote a cut and stays: the recording's subshell ended with 0, having gone on to end_daemon, its status read and the check
+2. hold_idle (edges)
+    log: rec: the holder ended with a verdict while it was asked to pause: 1	VERDICT cut 1 is still being uploaded after its write was refused (refused: read block 7 of cut 1: Input/output error (os e
+    export_pool
+a verdict while the recording waits for the pause: the recording's subshell ended with 0, having gone on to end_daemon, its status read and the check
+    rig_error: the holder ended with 0 while it was asked to pause: 1	left
+ended with 0 while the recording waits for the pause: the recording's subshell ended with 2
+    rig_error: the holder ended with 1 while it was asked to pause: 1	> t1x1 held
+ended with 1 and no verdict while the recording waits for the pause: the recording's subshell ended with 2
+    rig_error: the holder ended with 2 while it was asked to pause: 1	ERROR HolderError: x
+ended with 2 (its own error) while the recording waits for the pause: the recording's subshell ended with 2

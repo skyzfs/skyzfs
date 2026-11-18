@@ -1,0 +1,58 @@
+1. what is left of the torn line ends on a page of the file
+  one digit of the time: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 1 bytes of pid 9937's line
+  four digits of the time: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the time but its last digit: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 11 bytes of pid 9937's line
+  the whole time, no tab: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 12 bytes of pid 9937's line
+  the time and its tab: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 13 bytes of pid 9937's line
+  one digit of the pid: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 14 bytes of pid 9937's line
+  the whole pid, no tab: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 17 bytes of pid 9937's line
+  the pid and its tab: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 18 bytes of pid 9937's line
+  inside the event's name: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 21 bytes of pid 9937's line
+  a tab before the label: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 43 bytes of pid 9937's line
+  a hex digit a to f: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 48 bytes of pid 9937's line
+  a hex digit 0 to 9: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 44 bytes of pid 9937's line
+  3916 bytes (a page less than the recorded tear): parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 3916 bytes of pid 9937's line
+  8012 bytes (the recorded tear): parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 8012 bytes of pid 9937's line
+  16204 bytes (four pages in the line): parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 16204 bytes of pid 9937's line
+  a whole barrier line but its newline: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 40 bytes of pid 9937's line
+  a whole cut line but its newline: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 35 bytes of pid 9937's line
+  a cut line before its number: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 32 bytes of pid 9937's line
+2. the same, one byte off the page (a kill does not leave this)
+  four digits of the time, +1: the rig's error: request log line 94: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  four digits of the time, -1: the rig's error: request log line 94: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  the time and its tab, +1: the rig's error: request log line 94: a 10976 line with more than eight columns: '263932738825\t264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  the time and its tab, -1: the rig's error: request log line 94: a 10976 line with more than eight columns: '263932738825\t264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  one digit of the pid, +1: the rig's error: request log line 94: a 10976 line with more than eight columns: '263932738825\t9264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  one digit of the pid, -1: the rig's error: request log line 94: a 10976 line with more than eight columns: '263932738825\t9264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  a hex digit a to f, +1: the rig's error: request log line 93: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1b264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  a hex digit a to f, -1: the rig's error: request log line 93: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1b264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+  8012 bytes (the recorded tear), +1: the rig's error: request log line 5: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1b
+  8012 bytes (the recorded tear), -1: the rig's error: request log line 5: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1b
+3. no line is torn: a whole start line that a page of the file crosses
+  the page falls 1 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 2 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 6 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 11 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 12 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 13 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 15 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+  the page falls 20 bytes into the start line: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; no line lost
+   the same with 100 s and more between the last line and the start (the rig leaves seconds)
+  last line at 95000000000, start at 196000000000, the page 1 bytes into the start line: parsed: pid 9937 at 90000000000, pid 10976 at 96000000000; lost 1 bytes of pid 9937's line
+  last line at 95000000000, start at 196000000000, the page 2 bytes into the start line: parsed: pid 9937 at 90000000000, pid 10976 at 196000000000; no line lost
+  last line at 950000000000, start at 1960000000000, the page 1 bytes into the start line: parsed: pid 9937 at 945000000000, pid 10976 at 960000000000; lost 1 bytes of pid 9937's line
+  last line at 263000000000, start at 364000000000, the page 1 bytes into the start line: parsed: pid 9937 at 258000000000, pid 10976 at 364000000000; no line lost
+  last line at 263000000000, start at 293000000000, the page 1 bytes into the start line: parsed: pid 9937 at 258000000000, pid 10976 at 293000000000; no line lost
+4. two kills in one log, each with a torn line
+  a label line torn at the first, a sent line at the second: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204, pid 11111 at 264075555749; lost 8012 bytes of pid 9937's line; lost 29 bytes of pid 10976's line
+5. with no list for torn lines (a recording that kills no daemon is judged the same way: main always gives one)
+  the recorded tear: the rig's error: request log line 5: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1b
+  four digits of the time: the rig's error: request log line 94: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+7. what is left ends in a long run of decimal digits (the label's bytes in hex)
+  zero bytes, as the recorded line has them: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 9049 bytes of pid 9937's line
+  bytes 0x11, 4000 digits: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4049 bytes of pid 9937's line
+  bytes 0x11, 9000 digits: ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 8204 digits; use sys.set_int_max_str_digits() to increase the limit
+  bytes 0x90, 9000 digits: ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 8204 digits; use sys.set_int_max_str_digits() to increase the limit
+6. bytes that are not ASCII before the tear (the offset is counted in bytes, the line is cut in characters)
+  a two-byte character in an earlier line (the tear a byte off the page as the file has it): the rig's error: request log line 5: not eight to ten columns: '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1ba000cb1b
+  a two-byte character in what is left of the torn line, as many characters: parsed: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 8011 bytes of pid 9937's line

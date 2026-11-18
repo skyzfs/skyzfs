@@ -1,0 +1,12 @@
+amd: the third instance starts after cut 2 of the new state, takes it up and says cuts 2: exit 1
+    cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 12788 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 13018 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+    instance_3	FAIL	pid 999999 (took the device over): cuts '2' at the start, with 14 counted before it; wanted cut_state taken_up, intent_state taken_up
+arm: the third instance starts after cut 2 of the new state, takes it up and says cuts 2: exit 1
+    cut_numbers	PASS	the 20 cut lines are numbered 1 to 20 (state 2 counts from 1 again)
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 12534 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 12762 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '128' regions at the start
+    instance_3	FAIL	pid 999999 (took the device over): cuts '2' at the start, with 14 counted before it; wanted cut_state taken_up, intent_state taken_up
