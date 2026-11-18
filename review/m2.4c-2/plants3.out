@@ -1,0 +1,45 @@
+A00 | bins/skyzfsd/src/upload.rs | create takes a clone | KILLED by a_create_refuses_a_clone_under_the_name
+A01 | bins/skyzfsd/src/upload.rs | create takes a head commit of another volume | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A02 | bins/skyzfsd/src/upload.rs | create takes a head commit that has a parent | KILLED by a_create_refuses_a_head_that_only_looks_empty
+T1 | bins/skyzfsd/src/upload.rs | the runtime's drop waits for its blocking work | KILLED by a_runtime_is_dropped_without_waiting_for_its_blocking_work, the_end_does_not_wait_for_work_left_on_the_runtime, work_in_object_storage_ends_at_its_limit_with_blocking_work_left
+A03 | bins/skyzfsd/src/upload.rs | create takes a head commit that has segments | KILLED by a_create_refuses_a_head_that_only_looks_empty
+T2 | bins/skyzfsd/src/upload.rs | the thread drops its runtime after its answer, not before | SURVIVED
+A04 | bins/skyzfsd/src/upload.rs | create takes a head commit that names a group | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A05 | bins/skyzfsd/src/upload.rs | create takes a head commit that counts flushes | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A06 | bins/skyzfsd/src/upload.rs | create takes a head commit written under a lease | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A07 | bins/skyzfsd/src/upload.rs | create takes a head commit of another kind | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A08 | bins/skyzfsd/src/upload.rs | create takes a head commit whose index is not the empty one | KILLED by a_create_refuses_a_head_that_only_looks_empty
+T3 | bins/skyzfsd/src/upload.rs | the limit of the work in object storage is a hundred times longer | KILLED by work_in_object_storage_ends_at_its_limit_with_blocking_work_left
+A09 | bins/skyzfsd/src/upload.rs | the empty index has no shard for a last part shard | KILLED by a_create_makes_the_volume_with_the_empty_commit_and_takes_it_again, a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+T4 | bins/skyzfsd/src/upload.rs | the work in object storage runs on a plain runtime | KILLED by work_in_object_storage_ends_at_its_limit_with_blocking_work_left
+V01 | bins/skyzfsd/src/upload.rs | the create's superblock is written whether one is there or not | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+T5 | bins/skyzfsd/src/upload.rs | create's limit is a hundred times PLACE_LIMIT | SURVIVED
+V02 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of another size or shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+U1 | bins/skyzfsd/src/upload.rs | a create that loses the head's swap ends with the engine's error | KILLED by a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+V03 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of other shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+U2 | bins/skyzfsd/src/upload.rs | no lease check after the lost swap | KILLED by a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since
+V04 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of another size | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+U3 | bins/skyzfsd/src/upload.rs | no check of the volume found after the lost swap | KILLED by a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since
+V05 | bins/skyzfsd/src/upload.rs | a superblock that cannot be written does not refuse the create | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+U3b | bins/skyzfsd/src/upload.rs | a create that loses the head's swap says it made the volume | KILLED by a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+V06 | bins/skyzfsd/src/upload.rs | the refusal over a superblock with no head does not name the object | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+U6 | bins/skyzfsd/src/upload.rs | no lease check before the head is read (the first, as it was) | KILLED by a_create_refuses_a_name_that_is_another_volumes
+V07 | bins/skyzfsd/src/upload.rs | the refusal tells to delete the superblock though the volume's head is made | KILLED by two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+U7 | bins/skyzfsd/src/upload.rs | a lease row refuses nothing | KILLED by a_create_refuses_a_name_that_is_another_volumes, a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since
+V08 | bins/skyzfsd/src/upload.rs | the refusal says a create of that size goes on, over a superblock of other shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+U8 | bins/skyzfsd/src/upload.rs | no check of a volume found under the name (the first, as it was) | KILLED by a_create_refuses_a_clone_under_the_name, a_create_refuses_a_head_that_only_looks_empty, a_create_refuses_a_name_that_is_another_volumes
+Y01 | bins/skyzfsd/src/upload.rs | keys that come with a session token are signed with as fixed keys | KILLED by fixed_keys_sign_only_with_no_session_token
+U4 | bins/skyzfsd/src/upload.rs | an empty AWS_REGION is left to the SDK on the ambient path | KILLED by the_region_is_aws_region_or_the_default
+Y02 | bins/skyzfsd/src/upload.rs | fixed keys sign in us-east-1 whatever AWS_REGION says | KILLED by fixed_keys_sign_only_with_no_session_token
+U4b | bins/skyzfsd/src/upload.rs | the ambient client is given us-east-1 whatever AWS_REGION says | KILLED by the_region_is_aws_region_or_the_default
+Y03 | bins/skyzfsd/src/upload.rs | connect names us-east-1 to the client of fixed keys, whatever the keys' region | SURVIVED
+U5 | bins/skyzfsd/src/upload.rs | connect gives the ambient client no region | SURVIVED
+N02 | bins/skyzfsd/src/upload.rs | the thread posts after the desk is closed | KILLED by nothing_is_posted_once_the_desk_is_closed
+Y04b | bins/skyzfsd/src/upload.rs | an empty AWS_REGION is the region of fixed keys | KILLED by the_region_is_aws_region_or_the_default
+N03 | bins/skyzfsd/src/upload.rs | the status names no holder while the lease is held | KILLED by the_end_at_exit_0_lets_the_lease_go, the_start_takes_a_lease_nobody_holds, the_status_shows_the_uploader_as_it_is
+N04 | bins/skyzfsd/src/upload.rs | the status names no holder while the lease is unsure | KILLED by the_status_shows_the_uploader_as_it_is
+N05 | bins/skyzfsd/src/upload.rs | the start's status names no holder | KILLED by the_start_takes_a_lease_nobody_holds
+U12 | bins/skyzfsd/src/upload.rs | an end with no lease held says it was let go | KILLED by an_end_with_no_lease_held_says_it_was_kept
+U20p | bins/skyzfsd/src/upload.rs | the uploader's commits are fenced by another epoch than the one held, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
+U21 | bins/skyzfsd/src/upload.rs | the uploader's commits carry epoch 0, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
+U26 | bins/skyzfsd/src/upload.rs | the uploader's commits are made as another holder, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
