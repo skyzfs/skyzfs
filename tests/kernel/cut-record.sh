@@ -81,6 +81,20 @@
 # after the export it records what is held beside the status and
 # drains. Its files (DIR/held*.tsv, held-final.txt, status-held.txt,
 # holder.log) are for the check's second stage.
+# With CUT_UPLOAD=1 instead (M2.T3, the daemon's uploads, M2.4c) the
+# volume is made in object storage too (`create --endpoint --bucket
+# --volume`; the endpoint and bucket from SKZ_S3_ENDPOINT and
+# SKZ_S3_BUCKET, the keys from AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY, the volume named cut-NAME), so the daemon holds
+# its cuts and uploads each one itself, and no holder runs (the daemon
+# refuses `release` while it uploads). A watcher (cut_watch.py) stands
+# beside the recording as node B: CUT_NODEB, bins/skyzfs-nodeb, reads
+# head and the cut's row twice a second and fetches each cut head comes
+# to hold. After the export the recording waits up to 300 s for the
+# daemon to upload what it still holds (`upload_state idle` and
+# `cuts_held 0`; DIR/drain.txt says how it ended), then the watcher
+# fetches head once more and ends. Its files (DIR/uploaded*.tsv,
+# rows.tsv, watch.log) are for the check's upload lines.
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -136,6 +150,10 @@ CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
 SERVER=${CUT_SERVER:-log-writes}
 SKYZFSD=${CUT_SKYZFSD:-}
 HOLD=${CUT_HOLD:-0}
+UPLOAD=${CUT_UPLOAD:-0}
+NODEB=${CUT_NODEB:-}
+S3_ENDPOINT=${SKZ_S3_ENDPOINT:-}
+S3_BUCKET=${SKZ_S3_BUCKET:-}
 [ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
 RECS=${*:-$ALL}
 case $SERVER in
@@ -144,6 +162,12 @@ case $SERVER in
             DEV="" ;;
     *) echo "CUT_SERVER is log-writes or daemon, not $SERVER" >&2; exit 64 ;;
 esac
+if [ "$UPLOAD" = 1 ]; then
+    [ "$SERVER" = daemon ] || { echo "CUT_UPLOAD=1 needs CUT_SERVER=daemon" >&2; exit 64; }
+    [ "$HOLD" != 1 ] || { echo "CUT_UPLOAD=1 and CUT_HOLD=1 exclude each other: an uploading daemon refuses the holder's release" >&2; exit 64; }
+    [ -x "$NODEB" ] || { echo "CUT_UPLOAD=1 needs CUT_NODEB, node B's binary" >&2; exit 64; }
+    [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] || { echo "CUT_UPLOAD=1 needs SKZ_S3_ENDPOINT and SKZ_S3_BUCKET" >&2; exit 64; }
+fi
 for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
 
@@ -152,7 +176,7 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # (cut_daemon_check.py's torn_line): say where the logs are written.
 [ "$SERVER" != daemon ] || log "request logs on $(stat -f -c %T "$OUT"), page size $(getconf PAGESIZE)"
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
-VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
@@ -219,6 +243,7 @@ cleanup() {
     set +e
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
+    [ -z "$WATCH_PID" ] || { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
@@ -290,7 +315,7 @@ serve_start() {
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] && [ -n "$kind" ] || rig_error "skyzfsd serve $k was not ready, or did not say how, in 120 s"
     printf '%s\t%s%s\n' "$SERVE_PID" "${kind/ /-}" "${ack:+$'\t'acknowledged}" >> "$RDIR/instances.tsv"
-    if [ "$HOLD" = 1 ]; then
+    if [ "$HOLD" = 1 ] || [ "$UPLOAD" = 1 ]; then
         for _i in $(seq 1 40); do
             timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status-start-$k.txt" 2>&1 \
                 && grep -q '^cut_state ' "$RDIR/status-start-$k.txt" && break
@@ -364,10 +389,50 @@ holder_ended() {
     fi
     [ "$rc" = 0 ] || rig_error "the holder ended with $rc $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
+# Node B's COMMAND on the recording's volume in object storage.
+nodeb() { local c=$1; shift; timeout 300 "$NODEB" "$c" --endpoint "$S3_ENDPOINT" --bucket "$S3_BUCKET" --volume "cut-$NAME" "$@"; }
+# The watcher beside the daemon, node B's side of the uploads.
+watcher_start() {
+    rm -f "${WORK:?}/watch.stop"
+    python3 -I "$HERE/cut_watch.py" "$RDIR" "$NODEB" "$S3_ENDPOINT" "$S3_BUCKET" "cut-$NAME" "$WORK/watch.stop" \
+        2>> "$RDIR/watch.err" &
+    WATCH_PID=$!
+}
+# After the export: wait up to 300 s for the daemon to upload what it
+# holds (DIR/drain.txt), then let the watcher fetch head once more. Its
+# verdict (1 and a VERDICT line: node B could not read head's content)
+# goes to the check; any other end but 0 is the rig's error.
+watcher_end() {
+    local _i st="" rc=0 t0=$SECONDS
+    for _i in $(seq 1 300); do
+        st=$(timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" 2>&1) || st=""
+        grep -q '^upload_state idle$' <<< "$st" && grep -q '^cuts_held 0$' <<< "$st" && break
+        sleep 1
+    done
+    { echo "seconds $((SECONDS - t0))"; printf '%s\n' "$st"; } > "$RDIR/drain.txt"
+    touch "$WORK/watch.stop"
+    for _i in $(seq 1 600); do kill -0 "$WATCH_PID" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$WATCH_PID" 2>/dev/null; then
+        kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null || true; WATCH_PID=""
+        rig_error "the watcher did not end 600 s after the stop: $(tail -n 2 "$RDIR/watch.log" 2>/dev/null)"
+    fi
+    wait "$WATCH_PID" 2>/dev/null || rc=$?
+    WATCH_PID=""
+    if [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/watch.log"; then
+        log "$NAME: the watcher ended with a verdict: $(grep "$(printf '\tVERDICT ')" "$RDIR/watch.log" | tail -n 1)"
+    elif [ "$rc" != 0 ]; then
+        rig_error "the watcher ended with $rc: $(tail -n 2 "$RDIR/watch.log" 2>/dev/null)"
+    fi
+}
 # The volume, served by the daemon with its request log.
 begin_daemon() {
+    local place=()
     rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
-    timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
+    if [ "$UPLOAD" = 1 ]; then
+        nodeb bucket > "$RDIR/bucket.log" 2>&1 || rig_error "node B could not make the bucket: $(tail -n 2 "$RDIR/bucket.log")"
+        place=(--endpoint "$S3_ENDPOINT" --bucket "$S3_BUCKET" --volume "cut-$NAME")
+    fi
+    timeout 90 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" "${place[@]}" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
     serve_start 1
     : > "$RDIR/marks.tsv"
@@ -375,6 +440,7 @@ begin_daemon() {
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
         holder_start
     fi
+    [ "$UPLOAD" != 1 ] || watcher_start
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
 end_daemon() {
@@ -392,6 +458,7 @@ end_daemon() {
         holder_ended "at the stop"
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
     fi
+    [ -z "$WATCH_PID" ] || watcher_end
     # The daemon rewrites its status at most every 100 ms, when a counter
     # changed: a second after the export it holds the last cut. The times
     # around the read bound, with the status's age_ms, when it was written.

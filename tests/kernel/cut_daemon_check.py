@@ -1531,6 +1531,101 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
     return rc, errored
 
 
+def read_uploaded(text):
+    """uploaded.tsv (cut_watch.py) -> [{'number', 'group', 'state', 'head',
+    'blocks', 'asked'}], asked the monotonic time node B's read began."""
+    out = []
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 7 or not all(x.isdigit() for x in (f[0], f[1], f[4], f[5], f[6])) \
+                or not re.fullmatch(r'[0-9a-f]{32}', f[2]) or not re.fullmatch(r'[0-9a-f]{64}', f[3]):
+            raise RigError(f'uploaded.tsv line {k + 1}: not `number group state head blocks ns ns`: {ln!r}')
+        out.append({'number': int(f[0]), 'group': int(f[1]), 'state': f[2], 'head': f[3], 'blocks': int(f[4]),
+                    'asked': int(f[5])})
+    return out
+
+
+# The status's counters of the uploads (status version 15) that a
+# recording with no other writer, one instance and a bound it does not
+# reach leaves at 0 (M2.4c-2's table): a cut lost, a commit given up, a
+# mismatch, a committed cut kept or found committed already.
+UPLOAD_ZERO = ('upload_mismatches', 'upload_abandoned_at_mismatch', 'upload_cuts_lost', 'upload_given_up',
+               'upload_committed_kept', 'upload_found_committed')
+
+
+def upload_lines(put, rdir, records, dcuts, status):
+    """The daemon's uploads (M2.T3 on M2.4c), where the watcher ran beside
+    one instance -> (1 when a line is a verdict against the daemon, else
+    0; whether a line is the rig's ERROR).
+
+    Each cut node B fetched at head (cut_watch.py) is held to the
+    reference's content at its instant, as a holder's written cuts are
+    (held_content: the row's number and group against the cut line's,
+    every block, the last cut fetched the last counted). The status after
+    the drain says the daemon uploads, holds the lease, holds nothing and
+    is idle, uploaded the volume whole once, and counted none of the
+    things no other writer and no bound make (UPLOAD_ZERO)."""
+    rc, errored = 0, False
+    log = read_file(rdir, 'watch.log')
+    err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
+    if err:
+        raise RigError(f"the watcher: {err[0].split(chr(9), 1)[1]}")
+    bad = [ln.split('\tVERDICT ', 1)[1] for ln in log.splitlines() if '\tVERDICT ' in ln]
+    put('upload_reads', 'FAIL' if bad else 'PASS', '; '.join(bad) if bad else
+        "node B read the content of every cut it found at head")
+    if bad:
+        return 1, False
+    bare = [r for r in records if cut_ref.is_write(r) and r.get('hashes') is None]
+    if bare:
+        raise RigError(f'{len(bare)} writes applied with no hashes in the request log: the content of uploaded '
+                       'cuts cannot be judged')
+    got = read_uploaded(read_file(rdir, 'uploaded.tsv')) if os.path.exists(os.path.join(rdir, 'uploaded.tsv')) \
+        else []
+    if not got:
+        put('upload_content', 'FAIL', f"node B found no cut at head; the daemon counted {len(dcuts)}")
+        return 1, False
+    by_number = {int(d['number']): d for d in dcuts if d['number'].isdigit()}
+    written = []
+    for g in got:
+        d = by_number.get(g['number'])
+        # The row says no more than the number and the group: the cut
+        # line says how it opens, and held_content holds the group.
+        written.append({'number': g['number'], 'group': g['group'], 'blocks': g['blocks'], 'asked': g['asked'],
+                        'opens': ('itself' if d['itself'] else 'rewind') if d else 'itself'})
+    states = sorted({g['state'] for g in got})
+    blocks = read_hashes(read_file(rdir, 'uploaded-blocks.tsv'), 'uploaded-blocks.tsv')
+    ok, detail, controls, _ = held_content(records, dcuts, written, blocks)
+    if len(states) != 1:
+        ok, detail = False, f"the rows name {len(states)} cut states ({', '.join(states)}) in one; {detail}"
+    if ok is None:
+        put('upload_content', 'ERROR', detail)
+        errored = True
+    else:
+        put('upload_content', 'PASS' if ok else 'FAIL',
+            f"node B fetched cuts {', '.join(str(g['number']) for g in got)} at head: {detail}")
+        rc = rc if ok else 1
+    for c in CONTENT_CONTROLS:
+        verdict, d = controls[c]
+        good = verdict == CONTENT_EXPECTED[c]
+        put(f'ctl_{c}', verdict.upper(), f"{d} (expected: {CONTENT_EXPECTED[c]}{'' if good else '; DIFFERS'})")
+        rc = rc if good else 1
+    drain = read_file(rdir, 'drain.txt').splitlines()
+    secs = drain[0].split()[-1] if drain and drain[0].startswith('seconds ') else '?'
+    want = {'upload_state': 'idle', 'cuts_held': '0', 'lease': 'held', 'uploaded_whole': '1'}
+    want.update({k: '0' for k in UPLOAD_ZERO})
+    wrong = [f'{k} {status.get(k)!r}, not {v!r}' for k, v in want.items() if status.get(k) != v]
+    n = status.get('uploaded', '')
+    if not n.isdigit() or int(n) < len(got):
+        wrong.append(f'uploaded {n!r}, fewer than the {len(got)} cuts node B fetched')
+    put('upload_status', 'FAIL' if wrong else 'PASS',
+        ('; '.join(wrong) if wrong else ', '.join(f'{k} {v}' for k, v in want.items()))
+        + f"; uploaded {n}, upload_checked {status.get('upload_checked')!r}, upload_rule "
+        f"{status.get('upload_rule')!r}, upload_errors {status.get('upload_errors')!r}, lease_holder "
+        f"{status.get('lease_holder')!r}; the drain took {secs} s")
+    rc = rc if not wrong else 1
+    return rc, errored
+
+
 def main():
     if len(sys.argv) not in (6, 7):
         sys.exit(__doc__)
@@ -1618,6 +1713,12 @@ def main():
                     rc = max(rc, failure_line(put, rdir))
                 v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
                 rc, errored = max(rc, v), errored or e
+        elif os.path.exists(os.path.join(rdir, 'watch.log')):
+            if len(instances) > 1:
+                raise RigError(f'{len(instances)} instances of the daemon in a recording that uploads: the upload '
+                               'lines are of one instance')
+            v, e = upload_lines(put, rdir, records, dcuts, status)
+            rc, errored = max(rc, v), errored or e
         elif len(instances) > 1:
             raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
                            'cuts starts the daemon again')

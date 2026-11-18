@@ -10,6 +10,7 @@ taken in with it.
 import contextlib
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,7 @@ FAILURE = 'cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n'
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
               split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None,
-              failure=FAILURE, tamper_starts=None, tamper_marks=None, held=None):
+              failure=FAILURE, tamper_starts=None, tamper_marks=None, held=None, upload=None, watch_log='1\tstopped\n'):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -52,10 +53,14 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     changes the statuses read at each start; tamper_marks(marks) the
     rig's marks. held: where given, main runs in this process with
     held_lines replaced by held(the real held_lines), and the exit code is
-    its SystemExit's."""
+    its SystemExit's. upload: where given, the daemon uploaded its cuts and
+    the watcher ran (the third stage): its files as node B would leave
+    them for a right daemon that uploaded every cut, with upload(written,
+    blocks, status) -> (written, blocks, status) changing them; watch_log
+    the watcher's log."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
-    text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
+    text, marks = t.request_log(records, read, dev, at, hashes=holder is not None or upload is not None)
     if tamper_log:
         text = tamper_log(text)
     if tamper_marks:
@@ -107,9 +112,37 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     if fn not in holder_left:
                         os.remove(os.path.join(d, fn))
             status = status or held_status(records, read, dev, cs)
+        if upload is not None:
+            written, blocks, _ = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
+            written, blocks, status = upload(written, blocks, (status or held_status(records, read, dev, cs))
+                                             + UPLOADED.format(n=len(written)))
+            watcher_files(d, written, blocks, watch_log)
         return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name, held)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# The status's upload keys after a right daemon's drain (status
+# version 15), with n cuts uploaded.
+UPLOADED = ('upload_state idle\nupload_cut 0\nlease held\nlease_holder runner\nlease_epoch 1\nuploaded {n}\n'
+            'uploaded_whole 1\nupload_mismatches 0\nupload_abandoned_at_mismatch 0\nupload_cuts_lost 0\n'
+            'upload_given_up 0\nupload_committed_kept 0\nupload_found_committed 0\nupload_errors 0\n'
+            'upload_checked matched\nupload_rule delta\ncuts_held 0\n')
+STATE = 'ab' * 16
+
+
+def watcher_files(d, written, blocks, log):
+    """The watcher's files (cut_watch.py) in recording directory d: each
+    cut of written fetched at head, its blocks those that changed."""
+    def w(fn, text):
+        with open(os.path.join(d, fn), 'w') as f:
+            f.write(text)
+    w('watch.log', log)
+    w('uploaded.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x.get('state', STATE)}\t{'cd' * 32}\t{x['blocks']}\t"
+                              f"{x.get('asked', 1)}\t{x.get('asked', 1) + 1}\n" for x in written))
+    w('uploaded-blocks.tsv', ''.join(f'{x["number"]}\t{b}\t{h}\n' for x in written
+                                     for b, h in sorted(blocks[x['number']].items())))
+    w('drain.txt', 'seconds 3\nupload_state idle\ncuts_held 0\n')
 
 
 def held_status(records, read, dev, cs):
@@ -589,6 +622,84 @@ class Main(unittest.TestCase):
                     rc, lines = recording(holder=none, as_name='failed',
                                           held=lambda real: lambda *a, **kw: (0, errored), **kw)
                     self.assertEqual(rc, want, {n: v for n, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+
+    def test_a_right_daemon_that_uploads(self):
+        """The third stage (M2.4c): every cut fetched at head holds the
+        reference's content, the last is the last counted, and the status
+        after the drain is a clean upload's."""
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st))
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        for key in ('cuts', 'status', 'upload_reads', 'upload_content', 'upload_status'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        for c in cdc.CONTENT_CONTROLS:
+            self.assertEqual(lines[f'ctl_{c}'][0], 'CAUGHT', lines[f'ctl_{c}'])
+        self.assertNotIn('held_content', lines)
+
+    def test_node_b_saw_some_cuts(self):
+        """The watcher fetches head twice a second and misses cuts that
+        head held for less: those it fetched are judged, each with what
+        changed since the one before it."""
+        def sparse(written, blocks, st):
+            kept, acc = [], {}
+            for k, x in enumerate(written):
+                acc.update(blocks[x['number']])
+                if k % 3 == 2 or k == len(written) - 1:
+                    blocks[x['number']] = dict(acc)
+                    kept.append(dict(x, blocks=len(acc)))
+                    acc = {}
+            return kept, blocks, st
+        rc, lines = recording(upload=sparse)
+        self.assertEqual((rc, lines['upload_content'][0]), (0, 'PASS'), lines['upload_content'])
+
+    def test_what_an_upload_gets_wrong(self):
+        """Each wrong thing node B or the status could show is a verdict."""
+        def wrong_block(w, b, st):
+            n = w[len(w) // 2]['number']
+            blk = sorted(b[n])[0]
+            b[n][blk] = '0123456789abcdef'
+            return w, b, st
+
+        def wrong_group(w, b, st):
+            w[2] = dict(w[2], group=w[2]['group'] + 1)
+            return w, b, st
+
+        def not_the_last(w, b, st):
+            return w[:-1], b, st
+
+        def two_states(w, b, st):
+            w[-1] = dict(w[-1], state='ef' * 16)
+            return w, b, st
+
+        def status(old, new):
+            return lambda w, b, st: (w, b, st.replace(old, new))
+        for why, upload, key in (('a block of a cut', wrong_block, 'upload_content'),
+                                 ("a row's group", wrong_group, 'upload_content'),
+                                 ('the last cut not uploaded', not_the_last, 'upload_content'),
+                                 ('two cut states', two_states, 'upload_content'),
+                                 ('a mismatch', status('upload_mismatches 0', 'upload_mismatches 1'), 'upload_status'),
+                                 ('a second whole cut', status('uploaded_whole 1', 'uploaded_whole 2'),
+                                  'upload_status'),
+                                 ('the lease lost', status('lease held', 'lease lost'), 'upload_status'),
+                                 ('a cut lost', status('upload_cuts_lost 0', 'upload_cuts_lost 1'), 'upload_status'),
+                                 ('not idle', status('upload_state idle', 'upload_state backoff'), 'upload_status'),
+                                 ('a cut still held', status('cuts_held 0', 'cuts_held 1'), 'upload_status'),
+                                 ('fewer uploaded than fetched', lambda w, b, st: (w, b, re.sub(
+                                     r'^uploaded \d+$', 'uploaded 1', st, flags=re.M)), 'upload_status')):
+            with self.subTest(why):
+                rc, lines = recording(upload=upload)
+                self.assertEqual((rc, lines[key][0]), (1, 'FAIL'), lines[key])
+
+    def test_the_watchers_own_end(self):
+        """A VERDICT in the watcher's log (node B could not read head's
+        content) is one; its ERROR is the rig's; no cut fetched is a
+        verdict."""
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st), watch_log='1\tVERDICT node B could not read head\n')
+        self.assertEqual((rc, lines['upload_reads'][0]), (1, 'FAIL'))
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st), watch_log='1\tERROR node B row failed 3 times\n')
+        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        rc, lines = recording(upload=lambda w, b, st: ([], {}, st))
+        self.assertEqual((rc, lines['upload_content'][0]), (1, 'FAIL'))
+        self.assertIn('node B found no cut at head', lines['upload_content'][1])
 
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the
