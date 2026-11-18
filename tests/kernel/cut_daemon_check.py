@@ -196,7 +196,8 @@ from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
         'bound', 'edges', 'takeover', 'failed',   # these four only where the daemon holds cuts (cut-record.sh)
-        'umoved', 'urow', 'ukill', 'ulease', 'ulost')     # and these where it uploads them
+        'umoved', 'urow', 'ukill', 'ulease', 'ulost',     # these where it uploads them
+        'unostore', 'ukillput', 'ufailed')                # and these by name only
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
 RULES = ('early', 'txg-alone', 'count-repeats', 'previous', 'mark-dropped', 'mark-kept')
 CONTROLS = LISTS + RULES
@@ -215,10 +216,13 @@ CONTROLS = LISTS + RULES
 # before its first run either; its later instance trusts no state, so
 # neither mark rule changes it. The upload courses (stage 3) are new
 # too: none of the three rules' columns is known before their first run,
-# nor the mark rules' for the two with a second instance (ukill takes the
-# device over with a writer on the pool; ulease's second instance is
-# added after a clean end).
-UNKNOWN = {r: ('same', 'caught') for r in ('umoved', 'urow', 'ukill', 'ulease', 'ulost')}
+# nor the mark rules' for those with a second instance (ukill and
+# ukillput take the device over with a writer on the pool; ulease's
+# second instance is added after a clean end, ufailed's acknowledges a
+# failure).
+TWO_STARTS = ('ukill', 'ulease', 'ukillput', 'ufailed')     # the upload courses that serve twice
+UNKNOWN = {r: ('same', 'caught') for r in ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'unostore', 'ukillput',
+                                          'ufailed')}
 EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
                       rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught'),
@@ -227,10 +231,9 @@ EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **
                           takeover=('same', 'caught'), failed=('same', 'caught'), **UNKNOWN),
     'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught'), takeover=('same', 'caught'),
                      failed=('same', 'caught'), **UNKNOWN),
-    'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught', ukill=('same', 'caught'),
-                         ulease=('same', 'caught')),
-    'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught', ukill=('same', 'caught'),
-                      ulease=('same', 'caught')),
+    'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught',
+                         **{r: ('same', 'caught') for r in TWO_STARTS}),
+    'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught', **{r: ('same', 'caught') for r in TWO_STARTS}),
 })
 CLOCK_NS = 10_000_000       # the tick of /proc/uptime, which age_ms is a difference of
 SECTOR = 512
@@ -1564,7 +1567,7 @@ UPLOAD_ZERO = ('upload_mismatches', 'upload_abandoned_at_mismatch', 'upload_cuts
                'upload_committed_kept', 'upload_found_committed')
 # The courses (cut-record.sh): where another writer stops the uploads,
 # the file whose row names the last cut the daemon uploaded before it.
-UPLOAD_COURSES = ('umoved', 'urow', 'ukill', 'ulease', 'ulost')
+UPLOAD_COURSES = ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'unostore', 'ukillput', 'ufailed')
 STOPPED_AT = {'umoved': 'moved-row.txt', 'ulost': 'lost-row.txt'}
 OTHER = 'other-node'
 
@@ -1602,13 +1605,19 @@ def read_row(text, what):
     return got
 
 
-def daemons_fetches(got, text, others):
+def daemons_fetches(got, text, others, offsets=(0,)):
     """The cuts node B fetched that the daemon uploaded -> (written,
-    blocks, skipped, twice): written as held_content takes it, blocks
-    {number: what changed since the daemon's cut fetched before it},
-    skipped the fetches of what another writer put (its head, or its row
-    at head), twice the numbers the daemon's fetches carried more than
-    once (a cut at head under two commits).
+    blocks, skipped, twice, states): written as held_content takes it,
+    blocks {number: what changed since the daemon's cut fetched before
+    it}, skipped the fetches of what another writer put (its head, or its
+    row at head), twice the numbers the daemon's fetches carried more than
+    once (a cut at head under two commits), states the cut states their
+    rows named, in the order first fetched.
+
+    A state begun later counts from 1 again (epochs): the k-th state the
+    rows name is the k-th epoch, and its numbers become places in the
+    whole log by offsets[k], the cut lines before it. A fetch of a state
+    past the last offset is left out (the caller fails it by states).
 
     text: uploaded-blocks.tsv, `fetch number block hash`; each fetch's
     blocks are what changed since the fetch before, whoever's it was, so
@@ -1623,19 +1632,25 @@ def daemons_fetches(got, text, others):
             raise RigError(f'uploaded-blocks.tsv line {k + 1}: fetch {f[0]} is not cut {f[1]} of uploaded.tsv')
         per.setdefault(int(f[0]), {})[int(f[2])] = f[3]
     image, at_last = {}, {}
-    written, blocks, skipped, twice = [], {}, 0, set()
+    written, blocks, skipped, twice, states = [], {}, 0, set(), []
     for k, g in enumerate(got):
         image.update(per.get(k, {}))
         if g['head'] in heads or (g['state'], g['number'], g['group']) in rows:
             skipped += 1
             continue
+        if g['state'] not in states:
+            states.append(g['state'])
+        e = states.index(g['state'])
+        if e >= len(offsets):
+            continue
+        g = dict(g, number=g['number'] + offsets[e])
         if g['number'] in blocks:
             twice.add(g['number'])
             continue
         blocks[g['number']] = {b: h for b, h in image.items() if at_last.get(b, ZERO) != h}
         at_last = dict(image)
         written.append(g)
-    return written, blocks, skipped, twice
+    return written, blocks, skipped, twice, states
 
 
 def at_least(n):
@@ -1684,14 +1699,39 @@ def course_wants(name, rdir, status):
         for fn in ('row1-after.txt', 'row2-after.txt'):
             notes.append(f"{fn.split('-')[0]}: upload_checked {stat(fn).get('upload_checked')!r} once the "
                          "mismatch was counted")
-    elif name == 'ukill':
+    elif name in ('ukill', 'ukillput'):
         rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'kill.tsv').splitlines()).get('killed_rc')
         if rc != '137':
             bad.append(f'the first instance ended with {rc}, not 137 (SIGKILL)')
         hook = [ln for ln in read_file(rdir, 'serve.log').splitlines() if 'test hook --kill-at-upload' in ln]
-        if not hook or 'swap of commit 3 ' not in hook[0]:
-            bad.append(f"the first instance's log says {hook[:1] or 'nothing'} of the kill, not the swap of commit 3")
-        want.update(upload_found_committed='1', uploaded_whole='0', uploaded=at_least(1))
+        point = 'the swap of commit 3 ' if name == 'ukill' else 'segment PUT 5 landed'
+        if not hook or point not in hook[0]:
+            bad.append(f"the first instance's log says {hook[:1] or 'nothing'} of the kill, not {point.strip()}")
+        if name == 'ukill':
+            # Rule (1): the row is the cut it holds; let go, nothing uploaded.
+            want.update(upload_found_committed='1', uploaded_whole='0', uploaded=at_least(1))
+        else:
+            # The cut being uploaded goes up again: whole where it was the
+            # first, which the kill's point does not say.
+            want.update(uploaded_whole=at_least(0), uploaded=at_least(1))
+            notes.append(f"uploaded_whole {status.get('uploaded_whole')!r} after the kill")
+    elif name == 'unostore':
+        down = stat('nostore-status.txt')
+        for k, v in (('lease', ('none',)), ('upload_state', ('no_lease', 'backoff')), ('uploaded', ('0',))):
+            if down.get(k) not in v:
+                bad.append(f"with object storage down, {k} {down.get(k)!r}, not one of {v}")
+        notes.append(f"with object storage down: upload {down.get('upload')!r}, upload_why {down.get('upload_why')!r}, "
+                     f"upload_wait_ms {down.get('upload_wait_ms')!r}; upload_errors {status.get('upload_errors')!r} "
+                     "at the end")
+    elif name == 'ufailed':
+        rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'failure.tsv').splitlines()).get('failed_rc')
+        if rc != '3':
+            bad.append(f'the failed instance ended with {rc}, not 3')
+        st2 = stat('status-start-2.txt')
+        if st2.get('cut_state') != 'begun':
+            bad.append(f"the start that acknowledged the failure says cut_state {st2.get('cut_state')!r}, not begun")
+        # The new state's first cut goes up whole onto the old state's
+        # head (rule 3); the status counts the second instance's.
     elif name == 'ulease':
         rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'lease.tsv').splitlines()).get('refused_rc')
         if rc != '10':
@@ -1755,8 +1795,12 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
         else []
     others = read_others(read_file(rdir, 'others.tsv')) \
         if os.path.exists(os.path.join(rdir, 'others.tsv')) else (set(), set())
-    mine, blocks, skipped, twice = daemons_fetches(got, read_file(rdir, 'uploaded-blocks.tsv') if got else '',
-                                                   others)
+    # Where a later instance began a state (ufailed), its cuts' numbers
+    # are their places in the whole log, as the cut lines' are (epochs).
+    n_epochs = 1 + max((d.get('epoch', 0) for d in dcuts), default=0)
+    offsets = [sum(1 for d in dcuts if d.get('epoch', 0) < e) for e in range(n_epochs)]
+    mine, blocks, skipped, twice, states = daemons_fetches(
+        got, read_file(rdir, 'uploaded-blocks.tsv') if got else '', others, offsets)
     if not mine:
         put('upload_content', 'FAIL', f"node B found no cut of the daemon's at head ({skipped} of another "
             f"writer's); the daemon counted {len(dcuts)}")
@@ -1773,10 +1817,10 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
     if name in STOPPED_AT:
         cut = read_row(read_file(rdir, STOPPED_AT[name]), STOPPED_AT[name])['cut']
         last = cut[1] if cut else None
-    states = sorted({g['state'] for g in mine})
     ok, detail, controls, _ = held_content(records, dcuts, written, blocks, last=last)
-    if len(states) != 1:
-        ok, detail = False, f"the rows name {len(states)} cut states ({', '.join(states)}) in one; {detail}"
+    if len(states) > n_epochs:
+        ok, detail = False, (f"the rows name {len(states)} cut states ({', '.join(states)}), the request log "
+                             f"{n_epochs}; {detail}")
     if twice:
         ok, detail = False, f"cuts {sorted(twice)} were at head under two commits; {detail}"
     if ok is None:
@@ -1901,9 +1945,9 @@ def main():
                 v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
                 rc, errored = max(rc, v), errored or e
         elif os.path.exists(os.path.join(rdir, 'watch.log')):
-            if len(instances) > 1 and name not in ('ukill', 'ulease'):
-                raise RigError(f'{len(instances)} instances of the daemon in a recording that uploads: only ukill '
-                               'and ulease start it again')
+            if len(instances) > 1 and name not in TWO_STARTS:
+                raise RigError(f'{len(instances)} instances of the daemon in a recording that uploads: only '
+                               f"{', '.join(TWO_STARTS)} start it again")
             v, e = upload_lines(put, rdir, records, dcuts, status, name)
             rc, errored = max(rc, v), errored or e
         elif len(instances) > 1:

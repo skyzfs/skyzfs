@@ -890,10 +890,18 @@ class Courses(unittest.TestCase):
         text = (f'0\t1\t0\t{a}\n0\t1\t1\t{b}\n1\t1\t0\t{x}\n1\t1\t5\t{x}\n'
                 f'2\t2\t0\t{a}\n2\t2\t5\t{cdc.ZERO}\n4\t2\t1\t{x}\n')
         others = ({OTHER_HEAD}, {('ff' * 16, 2, 11)})
-        written, blocks, skipped, twice = cdc.daemons_fetches(got, text, others)
+        written, blocks, skipped, twice, states = cdc.daemons_fetches(got, text, others)
         self.assertEqual([w['number'] for w in written], [1, 2])
         self.assertEqual(blocks, {1: {0: a, 1: b}, 2: {}})
-        self.assertEqual((skipped, twice), (2, {2}))
+        self.assertEqual((skipped, twice, states), (2, {2}, [STATE]))
+        # A state begun later: its numbers are places in the whole log.
+        later = got[:1] + [dict(got[2], state='99' * 16, number=1)]
+        written, blocks, _, _, states = cdc.daemons_fetches(later, f'0\t1\t0\t{a}\n1\t1\t3\t{b}\n', (set(), set()),
+                                                            (0, 26))
+        self.assertEqual(([w['number'] for w in written], states), ([1, 27], [STATE, '99' * 16]))
+        self.assertEqual(blocks[27], {3: b})
+        written, _, _, _, states = cdc.daemons_fetches(later, f'0\t1\t0\t{a}\n', (set(), set()))
+        self.assertEqual(([w['number'] for w in written], len(states)), ([1], 2))
         with self.assertRaises(cdc.RigError):
             cdc.daemons_fetches(got, '7\t1\t0\t' + a + '\n', others)
         with self.assertRaises(cdc.RigError):
@@ -968,6 +976,25 @@ class Courses(unittest.TestCase):
         self.assertEqual(self.judge('ulost', lost, dict(good, uploaded='6', lease='held'))[0], ['lease', 'uploaded'])
         moved_on = dict(lost, **{'end-row.txt': row_file((STATE, 6, 41), lease=('other-node', 2))})
         self.assertEqual(len(self.judge('ulost', moved_on, good)[1]), 1)
+
+        put = {'kill.tsv': 'killed_rc\t137\n',
+               'serve.log': 'skyzfsd: test hook --kill-at-upload: killed after segment PUT 5 landed (seg/x)\n'}
+        self.assertEqual(self.judge('ukillput', put, st)[:2], ([], []))
+        self.assertEqual(self.judge('ukillput', put, dict(st, uploaded_whole='0'))[:2], ([], []))
+        self.assertEqual(len(self.judge('ukillput', dict(put, **{'serve.log': hook}), st)[1]), 1)
+
+        down = {'nostore-status.txt': 'lease none\nupload_state backoff\nuploaded 0\nupload_why refused\n'}
+        wrong, bad, notes = self.judge('unostore', down, st)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertIn("upload_why 'refused'", notes[0])
+        self.assertEqual(len(self.judge('unostore', {'nostore-status.txt': 'lease held\nupload_state idle\n'
+                                                     'uploaded 1\n'}, st)[1]), 3)
+
+        failed = {'failure.tsv': 'failed_rc\t3\n', 'status-start-2.txt': 'cut_state begun\n'}
+        self.assertEqual(self.judge('ufailed', failed, st)[:2], ([], []))
+        self.assertEqual(len(self.judge('ufailed', {'failure.tsv': 'failed_rc\t0\n',
+                                                    'status-start-2.txt': 'cut_state taken_up\n'}, st)[1]), 2)
+        self.assertEqual(self.judge('ufailed', failed, dict(st, uploaded_whole='0'))[0], ['uploaded_whole'])
 
     def test_a_course_that_stops_the_uploads(self):
         """umoved from end to end: the cuts before the other writer's head

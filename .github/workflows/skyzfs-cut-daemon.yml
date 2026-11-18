@@ -40,7 +40,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound edges takeover failed; with upload: umoved urow ukill ulease ulost); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound edges takeover failed; with upload: umoved urow ukill ulease ulost, and by name only unostore ukillput ufailed); empty: all"
         default: ""
       hold:
         description: "serve with --hold-cuts and check the held cuts' content (the second stage); ignored with upload"
@@ -177,6 +177,7 @@ jobs:
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
             SKZ_S3_BUCKET="skyzfs-cut-${{ github.run_id }}-${{ github.run_attempt }}" \
             AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
             CUT_CHECK="python3 $PWD/tests/kernel/cut_daemon_check.py" \
             bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
       - name: Summary

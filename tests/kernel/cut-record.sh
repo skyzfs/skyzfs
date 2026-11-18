@@ -157,12 +157,19 @@ UPLOAD=${CUT_UPLOAD:-0}
 NODEB=${CUT_NODEB:-}
 S3_ENDPOINT=${SKZ_S3_ENDPOINT:-}
 S3_BUCKET=${SKZ_S3_BUCKET:-}
+# unostore: the commands that take object storage down and bring it back.
+S3_DOWN=${CUT_S3_DOWN:-}
+S3_UP=${CUT_S3_UP:-}
 [ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
 # Only where the daemon uploads (CUT_UPLOAD=1): the uploader beside
 # another writer, a kill between a commit and its release, and the lease
 # (M2.4c; the courses below).
 UPLOAD_ONLY="umoved urow ukill ulease ulost"
-[ "$UPLOAD" != 1 ] || ALL="$ALL $UPLOAD_ONLY"
+# By name only, until they have run stable: object storage down at the
+# start, a kill inside an upload, a failed volume.
+UPLOAD_NAMED="unostore ukillput ufailed"
+KNOWN=$ALL
+[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED"; }
 RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
@@ -177,7 +184,7 @@ if [ "$UPLOAD" = 1 ]; then
     [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] || { echo "CUT_UPLOAD=1 needs SKZ_S3_ENDPOINT and SKZ_S3_BUCKET" >&2; exit 64; }
 fi
 for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
-for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
+for r in $RECS; do [[ " $KNOWN " == *" $r "* ]] || { echo "no recording $r (there are: $KNOWN)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # A kill -9 cuts a line of the request log on a page of the file
@@ -409,8 +416,9 @@ nodeb() { local c=$1; shift; timeout 300 "$NODEB" "$c" --endpoint "$S3_ENDPOINT"
 # The watcher beside the daemon, node B's side of the uploads.
 watcher_start() {
     rm -f "${WORK:?}/watch.stop"
-    python3 -I "$HERE/cut_watch.py" "$RDIR" "$NODEB" "$S3_ENDPOINT" "$S3_BUCKET" "cut-$NAME" "$WORK/watch.stop" \
-        2>> "$RDIR/watch.err" &
+    rm -f "$WORK/watch.pause"
+    CUT_WATCH_PAUSE="$WORK/watch.pause" python3 -I "$HERE/cut_watch.py" "$RDIR" "$NODEB" "$S3_ENDPOINT" "$S3_BUCKET" \
+        "cut-$NAME" "$WORK/watch.stop" 2>> "$RDIR/watch.err" &
     WATCH_PID=$!
 }
 # After the export: wait up to 300 s for the daemon to upload what it
@@ -1155,6 +1163,52 @@ rec_ulost() {
     nbrow end-row.txt
 }
 
+# unostore (e, by name): object storage is down (CUT_S3_DOWN) when the
+# volume is first served. The serve goes on with no lease, its uploader
+# in its backoff; once the store is back (CUT_S3_UP) it takes the lease
+# and uploads, its first cut whole. The watcher pauses meanwhile.
+unostore_down() {
+    [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "unostore needs CUT_S3_DOWN and CUT_S3_UP"
+    touch "$WORK/watch.pause"
+    bash -c "$S3_DOWN" > "$RDIR/s3-down.log" 2>&1 || rig_error "CUT_S3_DOWN failed: $(tail -n 2 "$RDIR/s3-down.log")"
+}
+rec_unostore() {
+    local _i
+    create_pool
+    load 2
+    sleep 20
+    ustatus nostore-status.txt
+    bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
+    for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
+    rm -f "$WORK/watch.pause"
+    load 1
+    export_pool
+}
+
+# ukillput (f, by name): the daemon kills itself after its fifth segment
+# PUT has landed (--kill-at-upload put:5), inside an upload, with a
+# writer on the pool. The next instance takes over and uploads the cut
+# again; nothing of the first attempt is at head.
+rec_ukillput() { rec_ukill; }
+
+# ufailed (f, by name): the volume fails while it uploads (SIGUSR1, the
+# test build) after the pool's export. The instance ends with 3; one
+# that acknowledges the failure begins a new state, and its first cut
+# goes up whole onto the old state's head.
+rec_ufailed() {
+    create_pool
+    load 2
+    export_pool
+    drain failed-before.txt idle 1
+    kill -USR1 "$SERVE_PID" 2>/dev/null || rig_error "SIGUSR1 to $SERVE_PID failed: the daemon had ended"
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGUSR1"
+    printf 'failed_rc\t%s\n' "$SERVE_RC" > "$RDIR/failure.tsv"
+    serve_start 2 acknowledged
+    import_pool
+    load 2
+    export_pool
+}
+
 rec_full() {
     local k
     create_pool
@@ -1176,6 +1230,8 @@ record() {
     case $1 in
         ulease) PRE_SERVE=ulease_other ;;
         ukill) SERVE_ARGS=(--kill-at-upload swap:3) ;;
+        ukillput) SERVE_ARGS=(--kill-at-upload put:5) ;;
+        unostore) PRE_SERVE=unostore_down ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
     esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi

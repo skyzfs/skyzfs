@@ -19,6 +19,8 @@ does. Until the file STOP exists it loops, twice a second:
   and what changed since the cut fetched before (a block now zeros has
   the hash of zeros) is written as that cut's blocks.
 
+While the file CUT_WATCH_PAUSE names (an environment variable) exists,
+the watcher calls nothing: the rig has object storage down on purpose.
 At STOP it fetches once more, so that the cut head holds at the end is
 in the files, and ends. Out:
 
@@ -182,9 +184,11 @@ def main():
         sys.exit(__doc__)
     out, nodeb, endpoint, bucket, volume, stop = sys.argv[1:]
     w = Watcher(out, nodeb, endpoint, bucket, volume)
+    pause = os.environ.get('CUT_WATCH_PAUSE', '')
     try:
         while not os.path.exists(stop):
-            w.step()
+            if not (pause and os.path.exists(pause)):
+                w.step()
             time.sleep(0.5)
         # The cut head holds at the end, fetched whatever came before.
         for _ in range(TRIES):
