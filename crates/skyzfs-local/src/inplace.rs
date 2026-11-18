@@ -908,14 +908,18 @@ impl<D: Dir> Drop for InPlace<D> {
         // Codex's P2 there). Then the threads end, before the lock is
         // gone.
         loop {
-            // A sync of the map for a header (M2.4d) is waited for as
-            // well, and one due begun, so that a release just before
-            // the drop has its header synced as any other.
+            // On a volume that has not failed, a sync of the map under
+            // way with no write waiting is waited for as well: it may be
+            // a header's (M2.4d), and where another header became due
+            // while it ran, its end begins the next (`intent_synced`), so
+            // that a release just before the drop has its header synced
+            // as any other. A header is due only while a sync is under
+            // way, so this covers it. On a failed volume nothing is synced
+            // any more, and the drop waits for a sync under way no more
+            // than it did before M2.4d (F3 and F4 of #120's review).
             let failed = self.failed;
             let for_map = self.intent.as_ref().is_some_and(|intent| {
-                !intent.waiting.is_empty()
-                    || intent.syncing.is_some()
-                    || (intent.header_due && !failed)
+                !intent.waiting.is_empty() || (intent.syncing.is_some() && !failed)
             });
             let on_threads = self.pool.is_some() && !self.busy.is_empty();
             if !(on_threads || for_map || !self.deferred.is_empty()) {
@@ -995,15 +999,15 @@ struct Intent<F> {
     /// the first page's write to the sync's end.
     syncs: Spent,
     /// A sync of the file under way on its helper, begun on the write
-    /// path: when its first page was written.
+    /// path or for a header (M2.4d): when its first page was written.
     syncing: Option<std::time::Instant>,
     /// The writes and write-zeroes that wait for their regions' bits to
     /// be durable, in the order they came.
     waiting: VecDeque<Waiting>,
     /// How many requests have waited for the map since the start.
     waits: u64,
-    /// How many syncs of the file have begun on the write path since
-    /// the start.
+    /// How many syncs of the file have begun since the start, on the
+    /// write path or for a header (M2.4d).
     begun: u64,
     /// How many commits have been made to the map since the start: each
     /// release of a committed cut, the first or one made again, since
@@ -1453,7 +1457,8 @@ impl<D: Dir> InPlace<D> {
         self.syncing.is_some()
     }
 
-    /// Whether a sync of the intent map is under way on the write path.
+    /// Whether a sync of the intent map is under way, begun on the write
+    /// path or for a header (M2.4d).
     fn intent_syncing(&self) -> bool {
         self.intent
             .as_ref()
@@ -3238,8 +3243,9 @@ impl<D: Dir> InPlace<D> {
     /// of the regions in which nothing changed after the cut's instant
     /// (`intent.rs`). The pages are written without a sync, which begins
     /// after them on the file's helper only where the store is told to
-    /// sync the header ([`HoldCuts::intent_header_sync`]; nothing waits
-    /// for it, and a failure of it fails the volume when it is found). A
+    /// sync the header ([`HoldCuts::intent_header_sync`]; the release
+    /// does not wait for it, a write into a region it cleared does, and
+    /// a failure of it fails the volume when it is found). A
     /// page that cannot be written fails the volume, as on the write
     /// path, and the cut stays held, the one being uploaded still
     /// (review of M2.4b-1): the map in memory names it, and the map on
@@ -3406,16 +3412,29 @@ impl<D: Dir> InPlace<D> {
     /// ([`HoldCuts::intent_header_sync`]; M2.4d), begin a sync of the
     /// map's file on its helper, or, where one is under way, which does
     /// not cover the header, have the next begin when it ends
-    /// ([`InPlace::intent_synced`]). Nothing waits for it: the release
-    /// goes on as without it, and a power cut before it ends costs what
-    /// one before the release would, one whole upload. The sync is not
-    /// made on the queue's thread, as no sync of the map is (the lead's
-    /// ruling on M2.3b); where the design is silent on this, that is the
-    /// conservative reading (M2.4d's report).
+    /// ([`InPlace::intent_synced`]). The release does not wait for it,
+    /// and a power cut before it ends costs what one before the release
+    /// would, one whole upload. A write does wait for it where the
+    /// write's region is clean, as the regions the release has just
+    /// cleared are: one sync of the map runs at a time, so the write
+    /// waits for this one to end and then for a sync of its own. After a
+    /// release, the first writes into its regions can so wait up to one
+    /// sync longer than with the option off, and no figure counts that
+    /// apart (F1 of #120's review): the benchmark reads it in the
+    /// latency of the writes. The sync is made on the file's helper and
+    /// not on the queue's thread, as every sync of the map is (the
+    /// lead's ruling on M2.3b); where the design is silent on this, that
+    /// is the conservative reading (M2.4d's report). Where the file has
+    /// no helper, it is made here, at the release, as the map's syncs
+    /// then are, and that is the one case where the release waits.
     ///
-    /// False where the sync failed at once, which fails the volume as a
-    /// failed write of the map does; true otherwise. A failure found
-    /// later fails the volume when it is found.
+    /// False where the sync failed at once (where the map's file has no
+    /// helper, the sync is made here, on the caller's thread), which fails
+    /// the volume as a failed write of the map does; true otherwise. A
+    /// failure found later fails the volume when it is found. On false,
+    /// [`InPlace::release_cut`] keeps the cut and answers true, as for a
+    /// header it could not write, and [`InPlace::name_committed_cut`]
+    /// answers false.
     fn sync_header(&mut self) -> bool {
         let Some(intent) = &mut self.intent else {
             return true;

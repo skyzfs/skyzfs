@@ -284,8 +284,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       committed the map's header names it, written without a sync: a
       power cut that loses it costs one whole upload. With
       --intent-header-sync (only with --hold-cuts) a sync of the map
-      begins once the header is written, beside the device's requests,
-      and nothing waits for it; one that fails fails the volume. The
+      begins once the header is written, beside the device's requests.
+      The release does not wait for it, but one sync of the map runs at
+      a time: a write into a region the release has just cleared waits
+      for it to end, then for a sync of its own. One that fails fails
+      the volume. The
       status says which (intent_header_sync).
       A volume created with --endpoint (it has the file remote) is
       uploaded: its cuts are held as with --hold-cuts, and a thread
