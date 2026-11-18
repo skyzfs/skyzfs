@@ -769,6 +769,49 @@ mod socket {
         assert_eq!(asked.count.load(Ordering::SeqCst), 1);
         assert!(channel.close());
     }
+
+    /// A peer that sends part of its request and then nothing holds the
+    /// thread no longer than the request's limit either: the read that
+    /// waits for the rest is given the time left, not a read's whole
+    /// limit (F3 of the review of #127).
+    ///
+    /// Mutant: each read given `IO_LIMIT` (the stalled peer holds the
+    /// thread for 10 s).
+    #[test]
+    fn a_request_that_stops_part_way_holds_the_thread_no_longer_than_its_limit() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::answering(
+            UnixListener::bind(&path).expect("bound"),
+            &path,
+            recording(&asked, Reply::Unknown),
+            server::same_user_or_root,
+            quiet(),
+            Duration::from_millis(500),
+        )
+        .expect("open");
+        let mut stalled = UnixStream::connect(&path).expect("connect");
+        stalled
+            .write_all(format!("{HELLO}\nprogress name=").as_bytes())
+            .expect("the first part");
+        std::thread::sleep(Duration::from_millis(100));
+        let began = std::time::Instant::now();
+        let reply = ask(&path, &Request::Cuts, &[], Duration::from_secs(15));
+        let took = began.elapsed();
+        assert_eq!(reply.ok(), Some(Reply::Unknown), "after {took:?}");
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a timeout");
+        let mut rest = Vec::new();
+        assert!(
+            stalled.read_to_end(&mut rest).is_ok(),
+            "the stalled peer's connection was closed"
+        );
+        assert_eq!(asked.count.load(Ordering::SeqCst), 1);
+        assert!(channel.close());
+    }
 }
 
 mod uploader {
