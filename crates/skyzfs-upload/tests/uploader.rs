@@ -287,7 +287,7 @@ impl<R: Remote> Remote for Flaky<R> {
 
     async fn put_sealed(&mut self) -> Result<(), RemoteError> {
         let n = self.puts.fetch_add(1, Ordering::SeqCst) + 1;
-        if n % self.every == 0 {
+        if n.is_multiple_of(self.every) {
             return Err(RemoteError::Store(format!("PUT {n} failed")));
         }
         self.inner.put_sealed().await

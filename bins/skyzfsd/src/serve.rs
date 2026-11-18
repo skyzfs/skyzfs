@@ -181,7 +181,8 @@ use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{
-    CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, Opened, StartError,
+    CutFigures, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, Opened,
+    StartError,
 };
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
@@ -641,12 +642,17 @@ fn hold_cuts_of(
 
 /// The held cuts as the status file says them.
 fn held_shown(store: &Target) -> HeldShown {
-    let state = match store.cuts_at_start() {
+    held_shown_of(store.cuts_at_start(), store.cut_figures())
+}
+
+/// The held cuts as the status file says them, from what the store's
+/// start did with the cut state and the state's figures.
+fn held_shown_of(at_start: Option<&CutsTakenUp>, figures: CutFigures) -> HeldShown {
+    let state = match at_start {
         None => CutStateShown::Off,
         Some(CutsTakenUp::TakenUp) => CutStateShown::TakenUp,
         Some(CutsTakenUp::Begun(_)) => CutStateShown::Begun,
     };
-    let figures = store.cut_figures();
     HeldShown {
         state,
         held: figures.held,
@@ -2153,6 +2159,34 @@ mod tests {
         std::fs::write(&host, "db 7\n").expect("written");
         let why = default_holder(&host, &id).expect_err("refused");
         assert!(why.contains("give --holder"), "{why}");
+    }
+
+    /// The held cuts' figures reach the status each in its own field,
+    /// the cuts replaced among them, with what the start did.
+    #[test]
+    fn the_held_cuts_reach_the_status_each_in_its_field() {
+        let figures = CutFigures {
+            held: 2,
+            copied: 3,
+            bound: 4,
+            abandoned: 5,
+            replaced: 6,
+        };
+        assert_eq!(
+            held_shown_of(Some(&CutsTakenUp::TakenUp), figures),
+            HeldShown {
+                state: CutStateShown::TakenUp,
+                held: 2,
+                copied: 3,
+                bound: 4,
+                abandoned: 5,
+                replaced: Some(6),
+            }
+        );
+        assert_eq!(
+            held_shown_of(None, CutFigures::default()).state,
+            CutStateShown::Off
+        );
     }
 
     /// What the end of the uploader's thread says, for each end.
