@@ -11,7 +11,11 @@
 //!    A renewal comes every third of the lease's time; one that fails on
 //!    the store leaves the uploads going under the epoch last held. A
 //!    lease lost stops the uploads for the rest of the instance, and not
-//!    the serving.
+//!    the serving. A renewal that falls due while a step is under way is
+//!    made beside the step, which goes on meanwhile (F4 of #117's
+//!    review): a step longer than two thirds of the lease, a slow PUT
+//!    or a slow turn of the queue, cannot let the row lapse. Neither the
+//!    step nor the renewal is dropped half done.
 //! 2. **One step of the driver** ([`Driver::step`]), made at the first
 //!    take with a remote fenced by its epoch: a renewal keeps the epoch or
 //!    loses the lease, so the driver is never made again. A step that
@@ -26,6 +30,12 @@
 //!    the fence (`RemoteError::Fenced`) loses the lease. A cut the store
 //!    kept at its release (`Step::Kept`) stops the driver for good.
 //! 3. With no cut to upload, the next turn comes after [`IDLE`].
+//!
+//! [`Uploader::run`] turns it until it is told to stop, and takes it by
+//! value: a turn dropped at the stop can leave the driver half way
+//! through a step (`Driver::step` is not made to be dropped at an
+//! await), so nothing may turn it again (F2 of #117's review). It gives
+//! back the lease's keeper, for the caller to let go.
 
 use std::time::Duration;
 
@@ -162,14 +172,15 @@ where
 
     /// One bounded piece of work; how long to wait before the next turn.
     ///
-    /// The clock is read again after each call that waits on the store or
-    /// object storage: a wait is counted from when that call came back,
-    /// so a step that outlasts the lease's renewal is followed by the
-    /// renewal at once, and a backoff starts at the failure.
+    /// The lease is kept first when its renewal is due, and beside the
+    /// step when it falls due during the step. The clock is read again
+    /// after each call that waits on the store or object storage: a wait
+    /// is counted from when that call came back, so a backoff starts at
+    /// the failure and a slow take's wait at the take's end.
     pub async fn turn(&mut self) -> Duration {
         let mut now = Instant::now();
         if now >= self.lease_at {
-            self.keep_lease(now).await;
+            self.lease_at = Self::keep_lease(&mut self.lease, &mut self.lease_backoff, now).await;
             now = Instant::now();
         }
         let epoch = match self.lease.state() {
@@ -202,21 +213,29 @@ where
         if now < self.step_at {
             return self.next_wait(now, self.step_at);
         }
-        let step = driver.step().await;
+        let (step, ended) = Self::step_keeping(
+            driver,
+            &mut self.lease,
+            &mut self.lease_backoff,
+            &mut self.lease_at,
+        )
+        .await;
         let now = Instant::now();
         let (doing, under_way) = (driver.doing(), driver.under_way());
         match step {
             Ok(Step::Idle) => {
                 self.state = State::Idle;
-                self.next_wait(now, now + IDLE)
+                self.next_wait(now, ended + IDLE)
             }
             Ok(Step::Kept { .. }) => {
                 self.state = State::Stopped;
                 AT_REST
             }
-            Ok(Step::GaveUp { number }) => {
-                self.wait_after(now, format!("commit of cut {number} refused: conflict"))
-            }
+            Ok(Step::GaveUp { number }) => self.wait_after(
+                ended,
+                now,
+                format!("commit of cut {number} refused: conflict"),
+            ),
             Ok(step) => {
                 // Only a cut committed, or found committed, ends the wait:
                 // a read that goes on after a refused commit is not a
@@ -238,34 +257,74 @@ where
                 self.state = State::LeaseLost { holder, epoch };
                 AT_REST
             }
-            Err(e) => self.wait_after(now, e.to_string()),
+            Err(e) => self.wait_after(ended, now, e.to_string()),
         }
     }
 
-    /// Take or renew the lease, and say when to keep it next. `before` is
-    /// when the take was sent. The next renewal is counted from then: the
+    /// One step of the driver, and when it came back, with the lease
+    /// kept beside it each time its renewal falls due while the step goes
+    /// on. The step is polled throughout, and neither it nor a renewal is
+    /// dropped half done: a step that ends during a renewal waits for the
+    /// renewal to end, and its wait is still counted from its own end.
+    ///
+    /// A renewal that loses the lease does not stop the step: the step
+    /// cannot be dropped, and a commit it makes is refused by the fence,
+    /// which is what decides. The next turn finds the lease lost.
+    async fn step_keeping(
+        driver: &mut Driver<L, R>,
+        lease: &mut Keeper<F>,
+        lease_backoff: &mut Backoff,
+        lease_at: &mut Instant,
+    ) -> (Result<Step, RemoteError>, Instant) {
+        let mut step = std::pin::pin!(driver.step());
+        loop {
+            tokio::select! {
+                biased;
+                step = &mut step => return (step, Instant::now()),
+                () = tokio::time::sleep_until(*lease_at) => {}
+            }
+            let mut keep = std::pin::pin!(Self::keep_lease(lease, lease_backoff, Instant::now()));
+            tokio::select! {
+                biased;
+                at = &mut keep => *lease_at = at,
+                step = &mut step => {
+                    let ended = Instant::now();
+                    *lease_at = keep.await;
+                    return (step, ended);
+                }
+            }
+        }
+    }
+
+    /// Take or renew the lease; when to keep it next. `before` is when
+    /// the take was sent. The next renewal is counted from then: the
     /// store set the row's expiry at some time after it, so the renewal
     /// comes a third of the lease after that at the latest. A failed
     /// take's backoff and the rest after a lost lease are counted from
     /// when the take came back.
-    async fn keep_lease(&mut self, before: Instant) {
-        let renew = Duration::from_millis((self.lease.ttl_ms() / 3).max(1));
-        let kept = self.lease.keep().await;
+    async fn keep_lease(
+        lease: &mut Keeper<F>,
+        lease_backoff: &mut Backoff,
+        before: Instant,
+    ) -> Instant {
+        let renew = Duration::from_millis((lease.ttl_ms() / 3).max(1));
+        let kept = lease.keep().await;
         let after = Instant::now();
-        self.lease_at = match kept {
-            LeaseState::None(_) => after + self.lease_backoff.failed(),
+        match kept {
+            LeaseState::None(_) => after + lease_backoff.failed(),
             LeaseState::Held { .. } | LeaseState::Unsure { .. } => {
-                self.lease_backoff.succeeded();
+                lease_backoff.succeeded();
                 before + renew
             }
             LeaseState::Lost { .. } => after + AT_REST,
-        };
+        }
     }
 
-    /// A step failed or a commit was given up: wait.
-    fn wait_after(&mut self, now: Instant, why: String) -> Duration {
+    /// A step failed or a commit was given up, at `ended`: wait, from
+    /// then. `now` is when the turn ends.
+    fn wait_after(&mut self, ended: Instant, now: Instant, why: String) -> Duration {
         let wait = self.backoff.failed();
-        self.step_at = now + wait;
+        self.step_at = ended + wait;
         self.state = State::Backoff { why, wait };
         self.next_wait(now, self.step_at)
     }
@@ -277,24 +336,30 @@ where
     }
 
     /// Turn until `stop` resolves, giving `publish` what the status shows
-    /// after each turn.
+    /// after each turn and sleeping between turns as each turn asks; then
+    /// the lease's keeper, for the caller to let go or keep. A turn under
+    /// way at the stop is dropped, and the uploader with it: nothing can
+    /// turn a driver left half way through a step.
     pub async fn run(
-        &mut self,
+        mut self,
         stop: impl std::future::Future<Output = ()>,
         mut publish: impl FnMut(Shown),
-    ) {
-        let stop = std::pin::pin!(stop);
-        let mut stop = stop;
+    ) -> Keeper<F> {
+        let mut stop = std::pin::pin!(stop);
         loop {
+            // The stop first: once it has come, no other turn begins.
             let wait = tokio::select! {
-                _ = &mut stop => return,
+                biased;
+                () = &mut stop => break,
                 wait = self.turn() => wait,
             };
             publish(self.shown());
             tokio::select! {
-                _ = &mut stop => return,
-                _ = tokio::time::sleep(wait) => {}
+                biased;
+                () = &mut stop => break,
+                () = tokio::time::sleep(wait) => {}
             }
         }
+        self.lease
     }
 }

@@ -273,8 +273,8 @@ fn a_create_refuses_a_head_that_only_looks_empty() {
             commit.encode().expect("encoded").into(),
         ))
         .expect("put");
-        let swapped = block_on(refs.compare_and_swap(vol, "head", Some(at.clone()), Some(hash)))
-            .expect("swapped");
+        let swapped =
+            block_on(refs.compare_and_swap(vol, "head", Some(at), Some(hash))).expect("swapped");
         let skynbd_refs::CasOutcome::Committed(Some(now)) = swapped else {
             panic!("{what}: not swapped: {swapped:?}");
         };

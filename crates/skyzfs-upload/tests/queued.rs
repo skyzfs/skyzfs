@@ -299,3 +299,34 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     assert!(woken.try_recv().is_err(), "no call after the close woke it");
     assert_eq!(desk.answered(), 0);
 }
+
+/// A queue that turns only when woken and never looks on its own answers
+/// every call: a call's wake comes after the call is left (G3 of #117's
+/// review). Twenty thousand calls, each waited for at most ten seconds.
+#[tokio::test]
+async fn a_queue_that_turns_only_when_woken_answers_every_call() {
+    let fx = Fixture::new(56).await;
+    let mut store = fx.start();
+    let (wake, woken) = std::sync::mpsc::channel();
+    let last = wake.clone();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = {
+        let desk = Arc::clone(&desk);
+        std::thread::spawn(move || {
+            while woken.recv().is_ok() && !desk.closed() {
+                desk.answer(&mut store);
+            }
+        })
+    };
+    let mut local = Queued::new(Arc::clone(&desk));
+    for call in 0..20_000 {
+        let answered = tokio::time::timeout(Duration::from_secs(10), local.uploadable()).await;
+        assert!(matches!(answered, Ok(None)), "call {call} was not answered");
+    }
+    assert_eq!(desk.answered(), 20_000);
+    desk.close();
+    let _ = last.send(());
+    queue.join().expect("the queue's thread");
+}

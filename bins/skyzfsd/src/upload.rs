@@ -738,23 +738,32 @@ impl Uploading {
         let (said, ended) = mpsc::channel();
         let local = Queued::new(Arc::clone(&desk));
         let holder = keeper.holder().to_owned();
+        let posted = Arc::clone(&desk);
         let thread = std::thread::Builder::new()
             .name("skyzfsd-upload".into())
             .spawn(move || {
-                let mut uploader = Uploader::new(local, keeper, make);
+                let uploader = Uploader::new(local, keeper, make);
                 let end = runtime.block_on(async {
                     let asked = async {
                         let _ = stopped.wait_for(Option::is_some).await;
                     };
-                    uploader
-                        .run(asked, |s| publish(shown_of(&s, &holder)))
+                    // Once the desk is closed the turns' figures are not
+                    // what happened (a cut counted lost, or committed and
+                    // gone, where the daemon was only stopping): the
+                    // status keeps the last figures from before the close.
+                    let mut keeper = uploader
+                        .run(asked, |s| {
+                            if !posted.closed() {
+                                publish(shown_of(&s, &holder));
+                            }
+                        })
                         .await;
                     let release = stopped.borrow().unwrap_or(false);
                     if !release {
                         return Ended::Kept;
                     }
-                    let held = uploader.lease().state().epoch().is_some();
-                    match tokio::time::timeout(RELEASE_LIMIT, uploader.lease().release()).await {
+                    let held = keeper.state().epoch().is_some();
+                    match tokio::time::timeout(RELEASE_LIMIT, keeper.release()).await {
                         Ok(Ok(())) if held => Ended::Released,
                         Ok(Ok(())) => Ended::Kept,
                         Ok(Err(why)) => Ended::NotReleased(why),

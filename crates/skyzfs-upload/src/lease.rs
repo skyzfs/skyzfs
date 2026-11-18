@@ -434,14 +434,33 @@ mod tests {
         assert_eq!(w.row().await, Some(("b".into(), 2)));
     }
 
-    /// The refs object, where another holder takes the lease and lets it
-    /// expire between this holder's read of the row and its take: the
-    /// race the renewal's second check is for.
+    /// The refs object, where another holder takes the lease between
+    /// this holder's read of the row and its take, and the clock then
+    /// moves on by `jump` (past the other's expiry, or not): the race the
+    /// renewal's second check is for. With `read_as`, the read names that
+    /// holder in place of the row's: a row deleted and taken anew under
+    /// another name at the same epoch, which the refs store's own calls
+    /// cannot make.
     struct Racing {
         inner: ObjectRefStore<FaultStore<MemoryStore>>,
         other: ObjectRefStore<FaultStore<MemoryStore>>,
         now: Arc<AtomicU64>,
         armed: std::sync::atomic::AtomicBool,
+        jump: u64,
+        read_as: Option<&'static str>,
+    }
+
+    impl Racing {
+        fn new(w: &World, jump: u64, read_as: Option<&'static str>) -> Self {
+            Self {
+                inner: w.refs(),
+                other: w.refs(),
+                now: Arc::clone(&w.now),
+                armed: std::sync::atomic::AtomicBool::new(false),
+                jump,
+                read_as,
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -521,9 +540,15 @@ mod tests {
             if self.armed.swap(false, Ordering::SeqCst) {
                 let taken = self.other.lease_acquire(vol, "b", TTL).await.unwrap();
                 assert!(matches!(taken, LeaseOutcome::Acquired(_)), "{taken:?}");
-                self.now.fetch_add(2 * TTL, Ordering::SeqCst);
+                self.now.fetch_add(self.jump, Ordering::SeqCst);
             }
-            row
+            match (row, self.read_as) {
+                (Ok(Some(lease)), Some(holder)) => Ok(Some(skynbd_refs::Lease {
+                    holder: holder.into(),
+                    ..lease
+                })),
+                (row, _) => row,
+            }
         }
     }
 
@@ -534,13 +559,7 @@ mod tests {
     #[tokio::test]
     async fn a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost() {
         let w = World::new();
-        let racing = Racing {
-            inner: w.refs(),
-            other: w.refs(),
-            now: Arc::clone(&w.now),
-            armed: std::sync::atomic::AtomicBool::new(false),
-        };
-        let mut k = Keeper::new(racing, w.vol, "a", TTL);
+        let mut k = Keeper::new(Racing::new(&w, 2 * TTL, None), w.vol, "a", TTL);
         assert!(held(1)(k.keep().await));
         // This holder's lease runs out (an outage), and the race is armed.
         w.pass(2 * TTL);
@@ -562,5 +581,89 @@ mod tests {
         // And never taken again.
         assert_eq!(k.keep().await.clone(), state);
         assert_eq!(w.row().await, Some(("a".into(), 3)));
+    }
+
+    /// The race again, with the other holder's lease still live at this
+    /// holder's take (K5 of #117's review): the take finds it held, and
+    /// the lease is lost to that holder, not unsure.
+    #[tokio::test]
+    async fn a_lease_another_holder_took_between_the_read_and_the_take_is_lost_to_it() {
+        let w = World::new();
+        let mut k = Keeper::new(Racing::new(&w, 0, None), w.vol, "a", TTL);
+        assert!(held(1)(k.keep().await));
+        w.pass(2 * TTL);
+        k.refs.armed.store(true, Ordering::SeqCst);
+        assert_eq!(
+            k.keep().await,
+            &LeaseState::Lost {
+                holder: "b".into(),
+                epoch: 2
+            }
+        );
+        assert_eq!(w.row().await, Some(("b".into(), 2)));
+    }
+
+    /// A row that names another holder at this holder's epoch is not this
+    /// holder's (K2 of #117's review): the renewal compares the holder as
+    /// well as the epoch, and takes nothing.
+    #[tokio::test]
+    async fn a_row_of_another_name_at_this_holders_epoch_is_lost() {
+        let w = World::new();
+        let mut k = Keeper::new(Racing::new(&w, 0, Some("b")), w.vol, "a", TTL);
+        assert!(held(1)(k.keep().await));
+        let LeaseState::Held { expires_at_ms, .. } = k.state().clone() else {
+            panic!("held")
+        };
+        w.pass(TTL / 3);
+        assert_eq!(
+            k.keep().await,
+            &LeaseState::Lost {
+                holder: "b".into(),
+                epoch: 1
+            }
+        );
+        let row = w.refs().lease_get(w.vol).await.unwrap().expect("the row");
+        assert_eq!(row.expires_at_ms, expires_at_ms, "nothing taken");
+    }
+
+    /// A commit the fence refused loses a held lease at once, naming the
+    /// row's holder, and nothing is taken after (K8 of #117's review).
+    #[tokio::test]
+    async fn a_fenced_commit_loses_a_held_lease_at_once() {
+        let w = World::new();
+        let mut k = w.keeper("a");
+        assert!(held(1)(k.keep().await));
+        k.fenced("b".into(), 2);
+        let lost = LeaseState::Lost {
+            holder: "b".into(),
+            epoch: 2,
+        };
+        assert_eq!(k.state(), &lost);
+        assert_eq!(k.state().epoch(), None, "no epoch to upload under");
+        w.pass(TTL / 3);
+        assert_eq!(k.keep().await, &lost);
+        assert_eq!(w.row().await, Some(("a".into(), 1)), "nothing taken");
+    }
+
+    /// An unsure lease is let go at a release as a held one is (K9 of
+    /// #117's review): the row may still be this holder's.
+    #[tokio::test]
+    async fn an_unsure_lease_is_let_go_at_a_release() {
+        let w = World::new();
+        let mut k = w.keeper("a");
+        k.keep().await;
+        w.store.arm(FaultOp::Any, "", 0).await;
+        assert!(matches!(
+            k.keep().await,
+            LeaseState::Unsure { epoch: 1, .. }
+        ));
+        w.store.disarm().await;
+        k.release().await.unwrap();
+        assert_eq!(k.state(), &LeaseState::None("released".into()));
+        let row = w.refs().lease_get(w.vol).await.unwrap().expect("the row");
+        assert_eq!(
+            (row.holder.as_str(), row.epoch, row.expires_at_ms),
+            ("a", 1, 0)
+        );
     }
 }

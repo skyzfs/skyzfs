@@ -7,11 +7,12 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore};
+use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore, RefValue};
 use skynbd_store::FaultOp;
+use skynbd_types::VolumeId;
 use skyzfs_local::inplace::InPlace;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
@@ -222,6 +223,8 @@ struct Refusing<R> {
     inner: R,
     refuse: Arc<AtomicBool>,
     commits: Arc<AtomicU64>,
+    /// When each commit was sent.
+    sent: Arc<Mutex<Vec<tokio::time::Instant>>>,
 }
 
 impl<R: Remote> Remote for Refusing<R> {
@@ -248,6 +251,10 @@ impl<R: Remote> Remote for Refusing<R> {
         row: Vec<u8>,
     ) -> Result<(), RemoteError> {
         self.commits.fetch_add(1, Ordering::SeqCst);
+        self.sent
+            .lock()
+            .expect("sent")
+            .push(tokio::time::Instant::now());
         if self.refuse.load(Ordering::SeqCst) {
             return Err(RemoteError::Conflict);
         }
@@ -270,12 +277,19 @@ async fn a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_ever
     let clock = Clock::new();
     let refuse = Arc::new(AtomicBool::new(true));
     let commits = Arc::new(AtomicU64::new(0));
+    let sent = Arc::new(Mutex::new(Vec::new()));
     let make = {
-        let (mut fenced, refuse, commits) = (fenced(&fx, &clock), refuse.clone(), commits.clone());
+        let (mut fenced, refuse, commits, sent) = (
+            fenced(&fx, &clock),
+            refuse.clone(),
+            commits.clone(),
+            sent.clone(),
+        );
         move |epoch| Refusing {
             inner: fenced(epoch),
             refuse: refuse.clone(),
             commits: commits.clone(),
+            sent: sent.clone(),
         }
     };
     let mut up = Uploader::with_slices(store, keeper(&fx, &clock), make, 16);
@@ -314,6 +328,18 @@ async fn a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_ever
         tries <= 12,
         "{tries} commits in ten minutes: the whole cut went up at every cycle"
     );
+    // Both waits of a cycle are waited, not only announced (G8 of #117's
+    // review): from one commit to the next, the wait after the refusal
+    // and the wait after the give-up.
+    let sent = sent.lock().expect("sent").clone();
+    for (k, pair) in sent.windows(2).enumerate() {
+        let (refused, given_up) = (waits[2 * k].1, waits[2 * k + 1].1);
+        assert!(
+            pair[1] - pair[0] >= refused + given_up,
+            "commit {k}: {:?} from the last, for waits of {refused:?} and {given_up:?}",
+            pair[1] - pair[0]
+        );
+    }
     assert_eq!(fx.uploaded().await.group, None, "nothing landed");
 
     // The store accepts commits again: the next try lands, and the wait is
@@ -497,88 +523,648 @@ where
     }
 }
 
+/// The lease's way to the refs object, apart from the uploads': its own
+/// store over the same objects, which can fail on its own, and a refs
+/// clock that is tokio's time. Each take can be held for a while of
+/// tokio's time first, the renewal's read can be told that the row is
+/// gone, and the time at which each take reached the refs object is
+/// recorded.
+#[derive(Clone)]
+struct Leasing {
+    refs: LeaseRefs,
+    /// The lease's own store: arm it to fail the lease's way alone.
+    faults: Store,
+    started: tokio::time::Instant,
+    take_ms: Arc<AtomicU64>,
+    gone: Arc<AtomicBool>,
+    takes: Arc<Mutex<Vec<Duration>>>,
+}
+
+impl Leasing {
+    fn apart(fx: &Fixture) -> Self {
+        let faults = skynbd_store::FaultStore::new(fx.store.inner().clone());
+        let started = tokio::time::Instant::now();
+        let refs = Arc::new(
+            ObjectRefStore::new(faults.clone()).with_clock(Arc::new(move || {
+                1_000_000 + u64::try_from(started.elapsed().as_millis()).expect("ms")
+            })),
+        );
+        Self {
+            refs,
+            faults,
+            started,
+            take_ms: Arc::new(AtomicU64::new(0)),
+            gone: Arc::new(AtomicBool::new(false)),
+            takes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn keeper(&self, fx: &Fixture) -> Keeper<Leasing> {
+        Keeper::new(self.clone(), fx.vol, HOLDER, TTL)
+    }
+
+    /// Tokio's time since the way was made.
+    fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// When each take reached the refs object.
+    fn takes(&self) -> Vec<Duration> {
+        self.takes.lock().expect("takes").clone()
+    }
+
+    /// The row's expiry for a take that reached the refs object at `at`.
+    fn expiry(at: Duration) -> u64 {
+        1_000_000 + u64::try_from(at.as_millis()).expect("ms") + TTL
+    }
+}
+
+#[async_trait::async_trait]
+impl RefStore for Leasing {
+    async fn get(&self, vol: VolumeId, name: &str) -> skynbd_refs::Result<Option<RefValue>> {
+        self.refs.get(vol, name).await
+    }
+    async fn compare_and_swap(
+        &self,
+        vol: VolumeId,
+        name: &str,
+        expected: Option<RefValue>,
+        new_commit: Option<skynbd_types::CommitHash>,
+    ) -> skynbd_refs::Result<skynbd_refs::CasOutcome> {
+        self.refs
+            .compare_and_swap(vol, name, expected, new_commit)
+            .await
+    }
+    async fn list(&self, vol: VolumeId) -> skynbd_refs::Result<Vec<(String, RefValue)>> {
+        self.refs.list(vol).await
+    }
+    fn watch(&self) -> tokio::sync::broadcast::Receiver<skynbd_refs::RefEvent> {
+        self.refs.watch()
+    }
+    async fn transact(
+        &self,
+        vol: VolumeId,
+        ops: Vec<skynbd_refs::RefOp>,
+    ) -> skynbd_refs::Result<skynbd_refs::TxnOutcome> {
+        self.refs.transact(vol, ops).await
+    }
+    async fn transact_as(
+        &self,
+        vol: VolumeId,
+        ops: Vec<skynbd_refs::RefOp>,
+        holder: &str,
+        epoch: u64,
+    ) -> skynbd_refs::Result<skynbd_refs::TxnOutcome> {
+        self.refs.transact_as(vol, ops, holder, epoch).await
+    }
+    async fn pins(&self, vol: VolumeId, name: &str) -> skynbd_refs::Result<Vec<String>> {
+        self.refs.pins(vol, name).await
+    }
+    async fn meta_get(&self, vol: VolumeId, key: &str) -> skynbd_refs::Result<Option<Vec<u8>>> {
+        self.refs.meta_get(vol, key).await
+    }
+    async fn meta_list(
+        &self,
+        vol: VolumeId,
+        prefix: &str,
+    ) -> skynbd_refs::Result<Vec<(String, Vec<u8>)>> {
+        self.refs.meta_list(vol, prefix).await
+    }
+    async fn lease_acquire(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        ttl_ms: u64,
+    ) -> skynbd_refs::Result<LeaseOutcome> {
+        let ms = self.take_ms.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        self.takes.lock().expect("takes").push(self.elapsed());
+        self.refs.lease_acquire(vol, holder, ttl_ms).await
+    }
+    async fn lease_release(&self, vol: VolumeId, holder: &str) -> skynbd_refs::Result<()> {
+        self.refs.lease_release(vol, holder).await
+    }
+    async fn lease_get(&self, vol: VolumeId) -> skynbd_refs::Result<Option<skynbd_refs::Lease>> {
+        let row = self.refs.lease_get(vol).await?;
+        Ok(row.filter(|_| !self.gone.load(Ordering::SeqCst)))
+    }
+}
+
+const SECOND: Duration = Duration::from_secs(1);
+
+/// The renewals came every third of the lease from the first take, none
+/// late: the takes reached the refs object at 0, 10, 20 s and so on.
+fn on_time(takes: &[Duration], case: &str) {
+    let third = Duration::from_millis(TTL / 3);
+    for (i, at) in takes.iter().enumerate() {
+        let due = third * u32::try_from(i).expect("few takes");
+        assert_eq!(*at, due, "{case}: take {i} of {takes:?}");
+    }
+}
+
+/// How many takes fall due before `ended`: the first at 0, then one
+/// every third of the lease.
+fn due_before(ended: Duration) -> usize {
+    let ms = u64::try_from(ended.as_millis()).expect("ms");
+    usize::try_from(ms.div_ceil(TTL / 3)).expect("few")
+}
+
+/// A step that takes longer than two thirds of the lease, begun one
+/// second after the take, does not delay the renewal: the renewal is
+/// made beside it, every third of the lease (F4 of #117's review, its
+/// scenario C1). The step's backoff is still counted from its failure.
+/// At 1415db1 a step of 15 s put the renewal 16 s after the take.
 #[tokio::test(start_paused = true)]
-async fn after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure(
-) {
-    let mut fx = Fixture::new(48).await;
-    let store = one_cut(&mut fx);
-    let clock = Clock::new();
+async fn a_step_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal() {
+    for (seed, secs) in [(48, 5), (50, 15), (52, 19), (53, 21), (54, 25)] {
+        let case = format!("a step of {secs} s");
+        let mut fx = Fixture::new(seed).await;
+        let delay = Arc::new(AtomicU64::new(0));
+        let slow = Slow {
+            inner: one_cut(&mut fx),
+            delay: Arc::clone(&delay),
+        };
+        let clock = Clock::new();
+        let way = Leasing::apart(&fx);
+        // The uploads' way to object storage fails; the lease's does not.
+        fx.store.arm(FaultOp::Any, "", 0).await;
+        let mut up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
+
+        let wait = up.turn().await;
+        assert_eq!(wait, SECOND, "{case}: the first failure's backoff");
+        tokio::time::advance(wait).await;
+
+        // The store's answer to the check takes `secs`, then the check
+        // fails on object storage.
+        delay.store(secs * 1000, Ordering::SeqCst);
+        let wait = up.turn().await;
+        let ended = Duration::from_secs(1 + secs);
+        assert_eq!(way.elapsed(), ended, "{case}: the turn ends with its step");
+        assert!(
+            matches!(&up.shown().state, State::Backoff { why, wait }
+                if why.contains("injected") && *wait == 2 * SECOND),
+            "{case}: {:?}",
+            up.shown().state
+        );
+        on_time(&way.takes(), &case);
+        // The take, and each renewal that fell due before the step's end
+        // (one due at its very end is the next turn's, at once).
+        assert_eq!(
+            way.takes().len(),
+            due_before(ended),
+            "{case}: every renewal due during the step was made beside it: {:?}",
+            way.takes()
+        );
+        let due = Duration::from_secs(ended.as_secs().div_ceil(10) * 10);
+        assert_eq!(
+            wait,
+            (2 * SECOND).min(due - ended),
+            "{case}: the backoff from the failure, or the renewal if sooner"
+        );
+
+        // Nothing steps before the backoff is over, counted from the
+        // failure; then the cut goes up, and the renewals stay on time.
+        delay.store(0, Ordering::SeqCst);
+        fx.store.disarm().await;
+        tokio::time::advance(wait).await;
+        loop {
+            let wait = up.turn().await;
+            if !matches!(up.shown().state, State::Backoff { .. }) {
+                break;
+            }
+            assert!(way.elapsed() < ended + 2 * SECOND, "{case}");
+            tokio::time::advance(wait).await;
+        }
+        assert_eq!(way.elapsed(), ended + 2 * SECOND, "{case}: the next step");
+        until_idle(&mut up, 100).await;
+        fx.assert_uploaded(7, &case).await;
+        while way.elapsed() < Duration::from_secs(60) {
+            let wait = up.turn().await;
+            tokio::time::advance(wait).await;
+        }
+        on_time(&way.takes(), &case);
+        assert!(way.takes().len() >= 6, "{case}: {:?}", way.takes());
+    }
+}
+
+/// An idle uploader's check of the store that takes 5 to 25 s, begun a
+/// quarter second before the renewal is due, does not delay the renewal
+/// (the review's scenario C2, where at 1415db1 a check of 21 s let the
+/// row pass its expiry).
+#[tokio::test(start_paused = true)]
+async fn an_idle_check_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal() {
+    for (seed, secs) in [(49, 5), (55, 15), (56, 19), (57, 21), (58, 25)] {
+        let case = format!("a check of {secs} s");
+        let fx = Fixture::new(seed).await;
+        let delay = Arc::new(AtomicU64::new(0));
+        let slow = Slow {
+            inner: fx.start(),
+            delay: Arc::clone(&delay),
+        };
+        let clock = Clock::new();
+        let way = Leasing::apart(&fx);
+        let mut up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
+        let begin = Duration::from_millis(TTL / 3) - IDLE;
+        while way.elapsed() < begin {
+            let wait = up.turn().await;
+            assert_eq!((up.shown().state, wait), (State::Idle, IDLE), "{case}");
+            tokio::time::advance(wait).await;
+        }
+        delay.store(secs * 1000, Ordering::SeqCst);
+        let wait = up.turn().await;
+        let ended = begin + Duration::from_secs(secs);
+        assert_eq!(way.elapsed(), ended, "{case}");
+        assert_eq!((up.shown().state, wait), (State::Idle, IDLE), "{case}");
+        assert_eq!(
+            way.takes().len(),
+            due_before(ended),
+            "{case}: {:?}",
+            way.takes()
+        );
+        assert_eq!(
+            expires(&up),
+            Leasing::expiry(*way.takes().last().expect("a take")),
+            "{case}: the last renewal holds"
+        );
+        delay.store(0, Ordering::SeqCst);
+        while way.elapsed() < Duration::from_secs(70) {
+            let wait = up.turn().await;
+            tokio::time::advance(wait).await;
+        }
+        on_time(&way.takes(), &case);
+    }
+}
+
+/// A step that ends while a renewal beside it is under way waits for the
+/// renewal: neither is dropped half done. The step's backoff is counted
+/// from the step's end, not the renewal's.
+#[tokio::test(start_paused = true)]
+async fn a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end() {
+    let mut fx = Fixture::new(59).await;
     let delay = Arc::new(AtomicU64::new(0));
     let slow = Slow {
-        inner: store,
+        inner: one_cut(&mut fx),
         delay: Arc::clone(&delay),
     };
-    // The uploads' way to object storage fails; the lease's, a way of
-    // its own to the same objects, does not.
-    let apart = clock.refs_on(skynbd_store::FaultStore::new(fx.store.inner().clone()));
-    let lease = Keeper::new(apart, fx.vol, HOLDER, TTL);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
     fx.store.arm(FaultOp::Any, "", 0).await;
-    let mut up = Uploader::with_slices(slow, lease, fenced(&fx, &clock), 16);
-
+    let mut up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
     let wait = up.turn().await;
-    assert_eq!(wait, Duration::from_secs(1), "the first failure's backoff");
-    assert_eq!(expires(&up), 1_000_000 + TTL, "the lease taken");
+    assert_eq!(wait, SECOND);
     tokio::time::advance(wait).await;
 
-    // The next check takes twenty seconds, past the renewal due ten
-    // seconds after the take, and fails.
-    delay.store(20_000, Ordering::SeqCst);
-    clock.pass(21_000);
+    // A step from 1 s to 12 s; the renewal due at 10 s takes 3 s.
+    delay.store(11_000, Ordering::SeqCst);
+    way.take_ms.store(3_000, Ordering::SeqCst);
     let wait = up.turn().await;
+    assert_eq!(way.elapsed(), Duration::from_secs(13), "the renewal's end");
+    assert_eq!(
+        way.takes(),
+        [Duration::ZERO, Duration::from_secs(13)],
+        "the renewal reached the refs object"
+    );
+    assert_eq!(expires(&up), Leasing::expiry(Duration::from_secs(13)));
     assert!(
-        matches!(&up.shown().state, State::Backoff { why, wait }
-            if why.contains("injected") && *wait == Duration::from_secs(2)),
+        matches!(up.shown().state, State::Backoff { wait, .. } if wait == 2 * SECOND),
         "{:?}",
         up.shown().state
     );
-    assert_eq!(wait, Duration::ZERO, "the renewal is overdue: at once");
-
-    // The renewal comes first; the step waits out the backoff counted
-    // from the failure, not from the turn's start.
-    delay.store(0, Ordering::SeqCst);
-    fx.store.disarm().await;
-    let wait = up.turn().await;
-    assert_eq!(expires(&up), 1_000_000 + 21_000 + TTL, "the lease kept");
-    assert!(
-        matches!(up.shown().state, State::Backoff { .. }),
-        "no step before the backoff is over: {:?}",
-        up.shown().state
-    );
-    assert_eq!(
-        wait,
-        Duration::from_secs(2),
-        "the backoff, from the failure"
-    );
-    tokio::time::advance(wait).await;
-
-    until_idle(&mut up, 100).await;
-    fx.assert_uploaded(7, "after the backoff").await;
+    // The step failed at 12 s: its backoff of 2 s is over at 14 s.
+    assert_eq!(wait, SECOND, "the backoff from the step's end");
 }
 
+/// A turned uploader whose lease's way fails, and whose uploads' way
+/// works, goes on uploading under the epoch last held (G1 of #117's
+/// review): unsure is not lost.
 #[tokio::test(start_paused = true)]
-async fn after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once() {
-    let fx = Fixture::new(49).await;
+async fn the_uploads_go_on_while_the_lease_is_unsure() {
+    let mut fx = Fixture::new(60).await;
+    let store = fx.start();
     let clock = Clock::new();
-    let delay = Arc::new(AtomicU64::new(0));
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
+    assert_eq!(up.turn().await, IDLE);
+    assert!(matches!(
+        up.shown().lease,
+        LeaseState::Held { epoch: 1, .. }
+    ));
+
+    way.faults.arm(FaultOp::Any, "", 0).await;
+    while !matches!(up.shown().lease, LeaseState::Unsure { .. }) {
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 10, 0x10);
+        fx.group(store, 7);
+    }
+    let mut leases = Vec::new();
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        leases.push(up.shown().lease);
+        if up.shown().state == State::Idle {
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    assert!(
+        leases
+            .iter()
+            .all(|l| matches!(l, LeaseState::Unsure { epoch: 1, .. })),
+        "unsure throughout: {leases:?}"
+    );
+    fx.assert_uploaded(7, "while unsure").await;
+    assert_eq!(up.shown().figures.uploaded, 1);
+}
+
+/// A renewal that finds no row at all loses the lease, naming nobody, and
+/// does not take it again (G5 of #117's review): somebody removed the
+/// row, and a take would make it anew at epoch 1 for a volume that
+/// somebody else may now hold under a new row.
+#[tokio::test(start_paused = true)]
+async fn a_renewal_that_finds_the_row_gone_loses_the_lease_and_takes_nothing() {
+    let fx = Fixture::new(61).await;
+    let store = fx.start();
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
+    up.turn().await;
+    way.gone.store(true, Ordering::SeqCst);
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        if matches!(up.shown().state, State::LeaseLost { .. }) {
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(
+        up.shown().state,
+        State::LeaseLost {
+            holder: String::new(),
+            epoch: 0
+        }
+    );
+    assert_eq!(way.elapsed(), Duration::from_millis(TTL / 3));
+    assert_eq!(way.takes(), [Duration::ZERO], "no take after the first");
+}
+
+/// Count the turns of `run` and keep what it publishes.
+#[derive(Clone, Default)]
+struct Published(Arc<Mutex<Vec<(Duration, skyzfs_upload::uploader::Shown)>>>);
+
+impl Published {
+    fn post(&self, at: Duration, shown: skyzfs_upload::uploader::Shown) {
+        let mut all = self.0.lock().expect("published");
+        assert!(all.len() < 10_000, "run turns without waiting");
+        all.push((at, shown));
+    }
+
+    fn all(&self) -> Vec<(Duration, skyzfs_upload::uploader::Shown)> {
+        self.0.lock().expect("published").clone()
+    }
+}
+
+/// `run` publishes what the status shows after each turn, sleeps between
+/// turns as each asks, and at the stop gives back the lease's keeper,
+/// still held, for the caller to let go (G2 and F2 of #117's review).
+#[tokio::test(start_paused = true)]
+async fn run_publishes_each_turn_sleeps_between_them_and_gives_back_the_lease() {
+    let mut fx = Fixture::new(62).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
+    let published = Published::default();
+    let post = published.clone();
+    let at = way.clone();
+    let mut keeper = up
+        .run(tokio::time::sleep(Duration::from_secs(10)), |shown| {
+            post.post(at.elapsed(), shown)
+        })
+        .await;
+    assert_eq!(
+        way.elapsed(),
+        Duration::from_secs(10),
+        "stopped at the stop"
+    );
+    let all = published.all();
+    let idle: Vec<Duration> = all
+        .iter()
+        .filter(|(_, shown)| shown.state == State::Idle)
+        .map(|(at, _)| *at)
+        .collect();
+    // The cut goes up at once, then one idle check every quarter second.
+    assert_eq!(idle.first(), Some(&Duration::ZERO), "{all:?}");
+    assert_eq!(idle.len(), 40, "{idle:?}");
+    for pair in idle.windows(2) {
+        assert_eq!(pair[1] - pair[0], IDLE, "{idle:?}");
+    }
+    assert!(all.iter().any(|(_, s)| s.figures.uploaded == 1));
+    fx.assert_uploaded(7, "under run").await;
+
+    assert!(matches!(keeper.state(), LeaseState::Held { epoch: 1, .. }));
+    keeper.release().await.expect("let go");
+    let row = clock
+        .refs(&fx)
+        .lease_get(fx.vol)
+        .await
+        .expect("the row")
+        .expect("a row");
+    assert_eq!(
+        (row.holder.as_str(), row.epoch, row.expires_at_ms),
+        (HOLDER, 1, 0)
+    );
+}
+
+/// `run` stops during a turn: a step that would take an hour is dropped
+/// at the stop, with the uploader, and the keeper comes back held.
+#[tokio::test(start_paused = true)]
+async fn run_stops_during_a_turn() {
+    let mut fx = Fixture::new(63).await;
+    let delay = Arc::new(AtomicU64::new(3_600_000));
     let slow = Slow {
-        inner: fx.start(),
-        delay: Arc::clone(&delay),
+        inner: one_cut(&mut fx),
+        delay,
     };
-    let mut up = Uploader::with_slices(slow, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
+    let published = Published::default();
+    let post = published.clone();
+    let keeper = up
+        .run(tokio::time::sleep(Duration::from_secs(5)), |shown| {
+            post.post(Duration::ZERO, shown)
+        })
+        .await;
+    assert_eq!(way.elapsed(), Duration::from_secs(5));
+    assert!(published.all().is_empty(), "no turn ended");
+    assert!(matches!(keeper.state(), LeaseState::Held { epoch: 1, .. }));
+    assert_eq!(fx.uploaded().await.group, None);
+}
 
+/// A cut found committed by the check ends the wait (G7 of #117's
+/// review): after two failures (waits of 1 and 2 s) the check finds cut
+/// 2 committed by an instance that died before its reply, and the next
+/// failure waits 1 s again.
+#[tokio::test(start_paused = true)]
+async fn a_cut_found_committed_ends_the_wait() {
+    let mut fx = Fixture::new(64).await;
+    let driver = committed_unheard(&mut fx).await;
+    fx.died(driver);
+    let store = fx.start();
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    fx.store.arm(FaultOp::Any, "", 0).await;
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 64);
+    for want in [1, 2] {
+        let wait = up.turn().await;
+        assert!(
+            matches!(up.shown().state, State::Backoff { wait, .. } if wait == want * SECOND),
+            "{:?}",
+            up.shown().state
+        );
+        tokio::time::advance(wait).await;
+    }
+    fx.store.disarm().await;
+    up.turn().await;
+    assert_eq!(up.shown().figures.found_committed, 1);
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 30, 0x30);
+        fx.group(store, 9);
+    }
+    fx.store.arm(FaultOp::Any, "", 0).await;
     let wait = up.turn().await;
-    assert_eq!((up.shown().state, wait), (State::Idle, IDLE));
+    assert!(
+        matches!(up.shown().state, State::Backoff { wait, .. } if wait == SECOND),
+        "the wait starts again: {:?}",
+        up.shown().state
+    );
+    assert_eq!(wait, SECOND);
+}
+
+/// A cut committed and gone from the store before its release
+/// ([`skyzfs_upload::Step::UploadedNotHeld`]) ends the wait too.
+#[tokio::test(start_paused = true)]
+async fn a_cut_committed_and_gone_before_its_release_ends_the_wait() {
+    let mut fx = Fixture::new(65).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 64);
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    {
+        let store = up.driver().expect("the driver").local();
+        for block in 0..OVER {
+            fx.write(store, 100 + block, 0x22);
+        }
+        fx.group(store, 8);
+    }
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        if up.shown().state == State::Working(Doing::Committing, Some(2)) {
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(up.shown().state, State::Working(Doing::Committing, Some(2)));
+    // The head swap lands and its reply is lost: a wait of 1 s.
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, skynbd_store::FaultWhen::After)
+        .await;
+    let wait = up.turn().await;
+    assert!(
+        matches!(up.shown().state, State::Backoff { wait, .. } if wait == SECOND),
+        "{:?}",
+        up.shown().state
+    );
+    fx.store.disarm().await;
+    fx.assert_uploaded(8, "cut 2's swap landed").await;
+    // The bound takes cut 2, and cut 3 takes its map.
+    {
+        let store = up.driver().expect("the driver").local();
+        for block in 0..OVER {
+            fx.write(store, 100 + block, 0x33);
+        }
+        fx.group(store, 9);
+    }
     tokio::time::advance(wait).await;
-
-    // A check that finds nothing, after twenty seconds: the renewal,
-    // due ten seconds after the take, is overdue.
-    delay.store(20_000, Ordering::SeqCst);
-    clock.pass(20_250);
+    up.turn().await;
+    assert_eq!(
+        up.shown().figures.uploaded,
+        2,
+        "cut 2 counted uploaded, not held"
+    );
+    fx.store.arm(FaultOp::Any, "", 0).await;
     let wait = up.turn().await;
-    assert_eq!((up.shown().state, wait), (State::Idle, Duration::ZERO));
+    assert!(
+        matches!(up.shown().state, State::Backoff { wait, .. } if wait == SECOND),
+        "the wait starts again: {:?}",
+        up.shown().state
+    );
+    assert_eq!(wait, SECOND);
+}
 
-    delay.store(0, Ordering::SeqCst);
+/// A first take that fails after 5 s is tried again 1 s after it failed,
+/// not 1 s after it was sent (G9 of #117's review, the review's C4).
+#[tokio::test(start_paused = true)]
+async fn a_slow_first_take_that_fails_is_tried_again_a_second_after_it_failed() {
+    let mut fx = Fixture::new(66).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    way.faults.arm(FaultOp::Any, "", 0).await;
+    way.take_ms.store(5_000, Ordering::SeqCst);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
     let wait = up.turn().await;
-    assert_eq!(expires(&up), 1_000_000 + 20_250 + TTL, "the lease kept");
-    assert_eq!((up.shown().state, wait), (State::Idle, IDLE));
+    assert_eq!(way.elapsed(), Duration::from_secs(5));
+    assert!(matches!(up.shown().state, State::NoLease(_)));
+    assert_eq!(wait, SECOND, "a second after the failure");
+    way.faults.disarm().await;
+    way.take_ms.store(0, Ordering::SeqCst);
+    tokio::time::advance(wait).await;
+    up.turn().await;
+    assert_eq!(
+        way.takes(),
+        [Duration::from_secs(5), Duration::from_secs(6)]
+    );
+    assert!(matches!(
+        up.shown().lease,
+        LeaseState::Held { epoch: 1, .. }
+    ));
+}
+
+/// A renewal that takes 4 s in the middle of a backoff is followed by
+/// a wait of 6 s, what is left of the third of the lease, and not 10 s.
+#[tokio::test(start_paused = true)]
+async fn a_slow_renewal_during_a_backoff_is_followed_by_what_is_left_of_the_wait() {
+    let mut fx = Fixture::new(67).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    fx.store.arm(FaultOp::Any, "", 0).await;
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
+    // Failures at 0, 1, 3, 7 and 15 s: the last waits 16 s, to 31 s.
+    loop {
+        let wait = up.turn().await;
+        if way.elapsed() + wait == Duration::from_secs(20) {
+            tokio::time::advance(wait).await;
+            break;
+        }
+        assert!(way.elapsed() < Duration::from_secs(20));
+        tokio::time::advance(wait).await;
+    }
+    assert!(
+        matches!(up.shown().state, State::Backoff { wait, .. } if wait == 16 * SECOND),
+        "{:?}",
+        up.shown().state
+    );
+    way.take_ms.store(4_000, Ordering::SeqCst);
+    let wait = up.turn().await;
+    assert_eq!(way.elapsed(), Duration::from_secs(24));
+    assert_eq!(expires(&up), Leasing::expiry(Duration::from_secs(24)));
+    assert_eq!(wait, Duration::from_secs(6), "to the next renewal, at 30 s");
 }
