@@ -37,9 +37,13 @@
 //!    driver for good.
 //!
 //!    **A publish** (M2.5) takes its step before the cut's when it has
-//!    one ([`Driver::step_publish`]), with a wait of its own (F3 of #122's
-//!    review): a publish whose step fails takes no step for one second,
-//!    doubling to five minutes at each failure of it in a row
+//!    one ([`Driver::step_publish`]), but never twice running while the
+//!    cut's step is due: when both are due they take turns, so a cut's
+//!    step waits for one publish's step at most, however many publishes
+//!    pend and however slowly their steps fail (F1 of the review of
+//!    #126). A publish has a wait of its own (F3 of #122's review): a
+//!    publish whose step fails takes no step for one second, doubling to
+//!    five minutes at each failure of it
 //!    ([`crate::publish::Publishing::wait_after`]). The wait is that
 //!    publish's alone (D2 of the review of #122): the other publishes
 //!    step meanwhile, oldest first, and a publish that ends, however it
@@ -201,6 +205,9 @@ pub struct Uploader<L, R, F, M> {
     lease_at: Instant,
     /// When the driver may next take a cut's step.
     step_at: Instant,
+    /// The last step taken was a publish's: if the cut's step is due, it
+    /// comes next ([module docs](self)).
+    published_last: bool,
     /// The publishes asked before the driver is made, which it then takes
     /// ([`Uploader::publishing`]).
     publishing: Option<Publishing>,
@@ -235,6 +242,7 @@ where
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
             step_at: now,
+            published_last: false,
             publishing: Some(Publishing::default()),
         }
     }
@@ -375,10 +383,14 @@ where
             driver.publishing().stop();
             return AT_REST;
         }
-        let publish = driver.publish_due();
+        // A publish and the cut take turns while both are due: several
+        // publishes whose steps fail slowly, each with its own wait,
+        // would otherwise always have one due (F1 of the review of #126).
+        let publish = driver.publish_due() && !(self.published_last && now >= self.step_at);
         if !publish && now < self.step_at {
             return self.next_wait(now, self.step_at);
         }
+        self.published_last = publish;
         let (step, ended) = Self::step_keeping(
             driver,
             publish,
