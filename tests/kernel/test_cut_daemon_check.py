@@ -1514,6 +1514,72 @@ class TwoInstances(unittest.TestCase):
         b = next(r['i'] for r in recs if 'instance' in r['flags'])
         self.assertLess(dcuts[self.k - 1]['prefix'], b)
 
+    def killed_at_the_mark(self, stored, other=True):
+        """The log killed after the `applied` line of the first uberblock
+        write of cut k's group, before its answer (the review of #115,
+        F2). The next instance takes the state up, is handed another flush
+        first (other), and then the write again. stored: the state had
+        stored the mark, and that flush carries cut k; else it has no cut,
+        and the group's own flush does."""
+        lines = self.text.splitlines()
+        cuts = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut']
+        ci = cuts[self.k - 1]
+        wi = next(i for i in range(cuts[self.k - 2], ci) if lines[i].split('\t')[2] == 'label') - 1
+        self.assertEqual([ln.split('\t')[2] for ln in lines[wi:wi + 4]], ['recv', 'label', 'applied', 'commit'])
+        first, rest = lines[:wi + 3], lines[wi:]
+        ns = int(first[-1].split('\t')[0])
+
+        def moved(ln):
+            f = ln.split('\t')
+            f[1] = PID2
+            return '\t'.join(f)
+        second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up']
+        cut = lines[ci].split('\t')
+        if other:
+            second += [f'{ns + 3}\t{PID2}\trecv\t9\tflush\t0\t0\t-', f'{ns + 4}\t{PID2}\tbarrier\t9\tflush\t-\t-\t-']
+            if stored:
+                second.append('\t'.join([str(ns + 5), PID2, 'cut', '9'] + cut[4:]))
+        second += [moved(ln) for j, ln in enumerate(rest, wi) if not (stored and other and j == ci)]
+        return '\n'.join(first + second) + '\n'
+
+    def test_a_kill_before_the_state_stored_the_mark(self):
+        """Killed after a marking write's `applied` line, before the state
+        stored the mark: the next instance, handed another flush first,
+        cuts nothing there and cuts at the group's own flush after the
+        write comes again. The first `applied` line is taken out (window
+        M), and the daemon is right; as the log stood, the reference kept
+        the mark over the take-over and cut at the other flush (the review
+        of #115, F2: its scenario M1)."""
+        text = self.killed_at_the_mark(stored=False)
+        inst, recs, dcuts, ref = self.judge(text)
+        self.assertEqual([n['shape'] for n in self.unstored], ['M'])
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertTrue(ok, detail)
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        self.assertIn('1 writes killed after their applied line', cdc.unstored_detail(self.unstored))
+        self.assertIn('taken as a write not applied', cdc.unstored_detail(self.unstored))
+        inst = cdc.parse_log(text)
+        recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: True}), cdc.read_marks(self.marks))
+        rread = cdc.read_of(recs, self.dev)
+        rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+        self.assertFalse(cdc.compare(dcuts, cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev, rcs)))[0])
+        # with no other flush first (M0) the daemon is right either way
+        self.judge(self.killed_at_the_mark(stored=False, other=False))
+        self.assertEqual([n['shape'] for n in self.unstored], ['M'])
+
+    def test_a_kill_after_the_state_stored_the_mark(self):
+        """Killed after the state stored the mark, before the write's
+        answer: the other flush carries the cut, and the line stands."""
+        inst, recs, dcuts, ref = self.judge(self.killed_at_the_mark(stored=True))
+        self.assertEqual(self.unstored, [])
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertTrue(ok, detail)
+        # one that then cuts nothing at either flush is a verdict
+        lines = self.killed_at_the_mark(stored=False).splitlines()
+        j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [PID2, 'cut'])
+        _, _, dcuts, ref = self.judge('\n'.join(lines[:j] + lines[j + 1:]) + '\n')
+        self.assertFalse(cdc.compare(dcuts, ref)[0])
+
     def test_a_cut_line_that_is_not_cut_again(self):
         """The barrier and cut line of window C kept where the next
         instance does not cut the same number, and window B's barrier kept
@@ -1595,6 +1661,19 @@ class TwoInstances(unittest.TestCase):
         out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10'), barrier(2)), inst(PID2, ('recv', 1, '0', '0')),
                                            inst('9999', cut(1, '6', '12'))])
         self.assertEqual((notes, out[0]['lines'][-1]['event']), ([], 'barrier'))
+        # window M: an instance that ends on a write's applied line, the
+        # write applied again by the next before any cut (F2), and not where
+        # the next applies other content there or acknowledged a failure
+        def w(i, ev, tag, h=None, at='464'):
+            return {'event': ev, 'tag': tag, 'op': 'write', 'sector': at, 'sectors': '8', 'result': '-',
+                    'extra': [h] if h else [], 'line': i}
+        died = {'pid': PID, 'lines': [w(1, 'recv', '3'), w(2, 'applied', '3', 'ab' * 8)]}
+        for h, at, acked, want in (('ab' * 8, '464', (), ['M']), ('cd' * 8, '464', (), []), ('ab' * 8, '976', (), []),
+                                   ('ab' * 8, '464', {PID2}, [])):
+            with self.subTest(h=h, at=at, acked=acked):
+                nxt = {'pid': PID2, 'lines': [w(3, 'recv', '5', at=at), w(4, 'applied', '5', h)]}
+                out, notes = cdc.unstored_at_kill([died, nxt], acked)
+                self.assertEqual(([n['shape'] for n in notes], len(out[0]['lines'])), (want, 2 - len(want)))
 
     def test_what_the_first_instance_did_not_finish(self):
         """A write received and not applied, and a write-zeroes behind a

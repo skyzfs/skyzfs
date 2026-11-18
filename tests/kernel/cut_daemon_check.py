@@ -993,6 +993,26 @@ def held_content(records, dcuts, written, blocks, final=None):
     return ok, '; '.join(bad + notes), controls, wrong_blocks
 
 
+def reapplied(inst, later):
+    """Whether the write whose `applied` line ends instance inst is applied
+    again in instance later (the same range, the same hashes) before any
+    cut line there."""
+    last = inst['lines'][-1]
+    recv = next((ln for ln in reversed(inst['lines']) if ln['event'] == 'recv' and ln['tag'] == last['tag']), None)
+    if recv is None or recv['op'] != 'write':
+        return False
+    rng = {}
+    for ln in later['lines']:
+        if ln['event'] == 'cut':
+            return False
+        if ln['event'] == 'recv':
+            rng[ln['tag']] = (ln['op'], ln['sector'], ln['sectors'])
+        elif ln['event'] == 'applied' and rng.get(ln['tag']) == (recv['op'], recv['sector'], recv['sectors']) \
+                and ln['extra'][:1] == last['extra'][:1]:
+            return True
+    return False
+
+
 def unstored_at_kill(instances, acked=frozenset()):
     """The instances, with what a kill left of a cut that the state never
     stored taken out -> (instances, [note]).
@@ -1020,6 +1040,16 @@ def unstored_at_kill(instances, acked=frozenset()):
     The next cut line of the same state is the first in a later instance;
     there is none where a start that acknowledged a failure comes first,
     as it begins a state of its own.
+    A write is answered with its `commit` line, after the store applied
+    it (`applied`) and stored the mark an uberblock write sets
+    (inplace.rs; the review of #115, F2). An instance that ends with an
+    `applied` line was killed before the answer, and the mark may not
+    have been stored: where the next instance takes the state up and
+    applies the same write again (the same range and hashes: the kernel
+    handed it over) before any cut line, the first `applied` line is
+    taken out (window M), and the write is placed where it was applied
+    again. A next instance that cuts first had the mark from the state,
+    and the line is kept.
     A note: {'line', 'pid', 'shape', 'number', 'group'}."""
     out, notes, last = [], [], 0
     for k, inst in enumerate(instances):
@@ -1042,6 +1072,11 @@ def unstored_at_kill(instances, acked=frozenset()):
                 notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'B', 'number': None,
                               'group': None})
                 lines = lines[:-1]
+            elif lines and lines[-1]['event'] == 'applied' and k + 1 < len(instances) \
+                    and instances[k + 1]['pid'] not in acked and reapplied(dict(inst, lines=lines), instances[k + 1]):
+                notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'M', 'number': None,
+                              'group': None})
+                lines = lines[:-1]
             elif len(tail) == 2 and [ln['event'] for ln in tail] == ['barrier', 'cut'] \
                     and tail[0]['tag'] == tail[1]['tag']:
                 if again is not None and again['sectors'] == tail[1]['sectors']:
@@ -1059,11 +1094,18 @@ def unstored_detail(notes):
     # Most flushes carry no cut, and every flush writes its barrier and
     # then syncs: a kill on a barrier line says a cut was not stored only
     # where the flush carried one (the review of #115, F1).
-    return (f'{len(notes)} flushes killed after their barrier and before their answer; a cut such a flush carried '
+    flushes = [n for n in notes if n['shape'] != 'M']
+    writes = len(notes) - len(flushes)
+    return (f'{len(flushes)} flushes killed after their barrier and before their answer; a cut such a flush carried '
             'was not stored'
+            + (f'; {writes} writes killed after their applied line and before their answer, applied again by the '
+               'next instance before it cut: a mark such a write set was not stored' if writes else '')
             + ''.join(f"; line {n['line']}: pid {n['pid']}'s barrier with no cut line, taken as a flush with no "
                       'barrier (whether or not it carried a cut)'
                       if n['shape'] == 'B' else
+                      f"; line {n['line']}: pid {n['pid']}'s applied line with no answer, taken as a write not "
+                      'applied (the next instance applied it again)'
+                      if n['shape'] == 'M' else
                       f"; line {n['line']}: pid {n['pid']}'s cut {n['number']} (group {n['group']}), cut again "
                       'by the next instance: no cut' for n in notes))
 
