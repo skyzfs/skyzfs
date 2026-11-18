@@ -1,0 +1,35 @@
+R1 TB_SKZ_UPLOAD value not checked: KILLED; PR's tests that died: none; probe: changed: D1 TB_SKZ_UPLOAD=0                                   rc=64  unknown topology: no-such-topology
+R2 the four settings not checked: KILLED; PR's tests that died: none; probe: changed: B1 upload + daemon, without TB_S3_ENDPOINT           rc=64  unknown topology: no-such-topology
+R3 TB_S3_SECRET left out of the check: KILLED; PR's tests that died: none; probe: changed: B1 upload + daemon, without TB_S3_SECRET             rc=1   TMP
+R4 upload with the releaser let through: KILLED; PR's tests that died: none; probe: changed: C1 upload + releaser (hold-cuts, hooks)              rc=64  unknown topology: no-such-topology
+R5 upload without a daemon let through: KILLED; PR's tests that died: none; probe: changed: A1 upload, no daemon (zfs-slog)                      rc=64  not enough space under TMP: 4
+R6 upload without a daemon exits 0: KILLED; PR's tests that died: none; probe: changed: A1 upload, no daemon (zfs-slog)                      rc=0   TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-
+R7 TB_SKZ_UPLOAD_WAIT_S not checked: KILLED; PR's tests that died: none; probe: changed: E1 wait abc                                          rc=64  unknown topology: no-such-topology
+U1 the keys not handed to the daemon: SURVIVED; PR's tests that died: none; probe: unchanged
+U2 the create names no place: KILLED; PR's tests that died: copy_limit; probe: unchanged
+U3 one volume name for every create: KILLED; PR's tests that died: copy_limit; probe: unchanged
+U4 no upload line in .skzinfo: SURVIVED; PR's tests that died: none; probe: unchanged
+W1 the wait never runs: KILLED; PR's tests that died: copy_limit; probe: unchanged
+W2 no sync before the wait: KILLED; PR's tests that died: copy_limit; probe: unchanged
+W3 the wait on every daemon row: KILLED; PR's tests that died: copy_limit; probe: unchanged
+W4 the wait ends at uploaded 2: KILLED; PR's tests that died: copy_limit; probe: unchanged
+W5 a run-out wait fails the row: KILLED; PR's tests that died: copy_limit; probe: unchanged
+W6 the wait off by one second (gt): SURVIVED; PR's tests that died: none; probe: unchanged
+T1 cuts_abandoned shown at the end, not over the window: SURVIVED; PR's tests that died: none; probe: unchanged
+T2 mismatches shown at the end: SURVIVED; PR's tests that died: none; probe: unchanged
+T3 errors shown at the end: SURVIVED; PR's tests that died: none; probe: unchanged
+T4 abandoned and mismatches swapped: SURVIVED; PR's tests that died: none; probe: unchanged
+T5 the abandoned column reads abandoned_at_mismatch: KILLED; PR's tests that died: embedded; probe: unchanged
+T6 lost shown at the end: KILLED; PR's tests that died: embedded; probe: unchanged
+T7 held at the start, not the end: KILLED; PR's tests that died: embedded; probe: unchanged
+T8 first upload column empty: KILLED; PR's tests that died: embedded; probe: unchanged
+T9 replaced shown at the end: KILLED; PR's tests that died: embedded; probe: unchanged
+T10 the delta for a gauge-like reading: negative allowed through as n/a: SURVIVED; PR's tests that died: none; probe: unchanged
+I1 named at end from the start: SURVIVED; PR's tests that died: none; probe: unchanged
+I2 longest map sync from the start: SURVIVED; PR's tests that died: none; probe: unchanged
+I3 header sync said from the start: SURVIVED; PR's tests that died: none; probe: unchanged
+I4 waits at the end: KILLED; PR's tests that died: embedded; probe: unchanged
+I5 header ms each from the map ns: KILLED; PR's tests that died: embedded; probe: unchanged
+I6 rows with no map kept (filter on intent_state): SURVIVED; PR's tests that died: none; probe: unchanged
+I7 named at end from regions: KILLED; PR's tests that died: embedded; probe: unchanged
+I8 ms each divides by zero when no syncs: SURVIVED; PR's tests that died: none; probe: unchanged

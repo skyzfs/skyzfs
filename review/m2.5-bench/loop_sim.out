@@ -1,0 +1,51 @@
+## a refused upload row (row 2)
+step rc=1
+--- summary
+--- minio calls
+minio.sh usage TMP/minio b
+--- log tail
+::group::sequence 1: m1 (TB_TOPOLOGIES=zfs-slog)
+row ran: m1
+::endgroup::
+::group::sequence 2: up1 (TB_TOPOLOGIES=zfs-skyzfsd TB_SKZ_UPLOAD=1 TB_REFUSE=1)
+refused before anything ran
+::endgroup::
+tee: TMP/out/2/minio.txt: No such file or directory
+
+## control: no refusal
+step rc=0
+--- summary
+MinIO after each upload row, then started anew: its data in MiB, the objects in the bucket, uploads not finished, and the work disk's free MiB.
+- row 2 (up1): minio_mib 1 objects 1 unfinished_uploads 0 work_free_mib N
+- row 4 (up2): minio_mib 1 objects 1 unfinished_uploads 0 work_free_mib N
+--- minio calls
+minio.sh usage TMP/minio b
+minio.sh down TMP/minio
+minio.sh up TMP/minio b
+minio.sh usage TMP/minio b
+minio.sh down TMP/minio
+minio.sh up TMP/minio b
+--- log tail
+row ran: up1
+::endgroup::
+::group::sequence 3: m2 (TB_TOPOLOGIES=zfs-slog)
+row ran: m2
+::endgroup::
+::group::sequence 4: up2 (TB_TOPOLOGIES=zfs-skyzfsd TB_SKZ_UPLOAD=1)
+row ran: up2
+::endgroup::
+
+## control: a refused row without uploads
+step rc=1
+--- summary
+Sequence 2 (x) failed with 64 (its settings were refused before anything ran, so it has no verdict; the reason is the last line of its group in the job's log); the rows after it ran, each marked "after failed row".
+--- minio calls
+--- log tail
+::group::sequence 2: x (TB_TOPOLOGIES=zfs-skyzfsd TB_REFUSE=1)
+refused before anything ran
+::endgroup::
+::error::sequence 2 (x) failed with 64
+::group::sequence 3: m2 (TB_TOPOLOGIES=zfs-slog)
+row ran: m2
+::endgroup::
+rows that failed: 2

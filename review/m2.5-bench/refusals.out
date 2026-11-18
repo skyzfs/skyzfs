@@ -1,0 +1,29 @@
+A1 upload, no daemon (zfs-slog)                      rc=64  TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-slog
+A2 upload, no daemon, no settings                    rc=64  TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-slog
+A3 upload, thin topology (nocache)                   rc=64  TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: nocache
+A4 upload, daemon named as zfs-skyzfsdx              rc=64  unknown topology: zfs-skyzfsdx
+B0 upload + daemon, the four: past the checks        rc=64  unknown topology: no-such-topology
+B1 upload + daemon, without TB_S3_ENDPOINT           rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_ENDPOINT (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B2 upload + daemon, TB_S3_ENDPOINT empty             rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_ENDPOINT (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B1 upload + daemon, without TB_S3_BUCKET             rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_BUCKET (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B2 upload + daemon, TB_S3_BUCKET empty               rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_BUCKET (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B1 upload + daemon, without TB_S3_KEY_ID             rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_KEY_ID (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B2 upload + daemon, TB_S3_KEY_ID empty               rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_KEY_ID (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B1 upload + daemon, without TB_S3_SECRET             rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_SECRET (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+B2 upload + daemon, TB_S3_SECRET empty               rc=64  TB_SKZ_UPLOAD=1 needs TB_S3_SECRET (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)
+C1 upload + releaser (hold-cuts, hooks)              rc=64  TB_SKZ_UPLOAD=1 and TB_SKZ_RELEASE: a daemon that uploads lets its cuts go itself
+C2 upload + releaser, no hold-cuts                   rc=64  TB_SKZ_RELEASE needs --hold-cuts in TB_SKYZFSD_ARGS (''): without it the daemon holds no cut
+D1 TB_SKZ_UPLOAD=0                                   rc=64  TB_SKZ_UPLOAD is 1 or unset, not: 0
+D2 TB_SKZ_UPLOAD=yes                                 rc=64  TB_SKZ_UPLOAD is 1 or unset, not: yes
+D3 TB_SKZ_UPLOAD=0, no daemon                        rc=64  TB_SKZ_UPLOAD is 1 or unset, not: 0
+E1 wait abc                                          rc=64  TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: abc
+E2 wait -5                                           rc=64  TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: -5
+E3 wait 0 (no wait): past the checks                 rc=64  unknown topology: no-such-topology
+E4 wait 30 without upload: past the checks           rc=64  unknown topology: no-such-topology
+F1 upload, zfs-slog and zfs-skyzfsd in one row       rc=64  unknown topology: no-such-topology
+F2 no upload, the settings given                     rc=64  unknown topology: no-such-topology
+F3 releaser alone (as before)                        rc=64  unknown topology: no-such-topology
+F4 upload + header sync args                         rc=64  unknown topology: no-such-topology
+F5 upload + copy repeat                              rc=64  unknown topology: no-such-topology
+F6 upload + hooks build, no releaser                 rc=64  unknown topology: no-such-topology
+served: nothing
