@@ -1,0 +1,19 @@
+again U2 a cut line cut again by a later instance is kept (window C never): KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+again U7 window C by the group alone (any number): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+again U10 window C whatever flush the barrier before the cut line is of: KILLED by 1: test_the_kill_window_by_hand
+again U15 window C where the cut line ends the instance, whatever stands before it: KILLED by 1: test_the_kill_window_by_hand
+again U18 the last instance's barrier at the end of the log is taken out too: KILLED by 5: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_a_kill_after_the_state_stored_the_mark, test_a_kill_before_the_state_stored_the_cut, test_a_kill_before_the_state_stored_the_mark
+again H7 a block that is not of the cut's map counts: KILLED by 1: test_held_across_start
+again L1 any write that differs counts, whatever was written after it: KILLED by 1: test_held_across_start
+again L2 the first write to a block decides, not the last: KILLED by 1: test_held_across_start
+again L5 a write-zeroes leaves zeros, which are known: KILLED by 1: test_held_across_start
+again L6 a write of no known content is passed over (the write before it decides): KILLED by 1: test_held_across_start
+again L7 a block once not known stays so, whatever is written after: KILLED by 1: test_held_across_start
+again L9 no block counts: KILLED by 1: test_held_across_start
+again O4 first_commit: a line that is not a time and a text is the rig's error: KILLED by 1: test_the_first_of_several_and_only_a_release
+again O4 releases: a line that is not a time and a text is the rig's error: SURVIVED
+again F4 first_commit: the last release answered, not the first: KILLED by 1: test_the_first_of_several_and_only_a_release
+again F6 first_commit: a line that is not a time and a text ends the reading: KILLED by 1: test_the_first_of_several_and_only_a_release
+again F7 first_commit: no release answered is time 0 (a commit before every start): KILLED by 3: test_instance_lines_and_the_commit, test_the_first_of_several_and_only_a_release, test_the_first_release_answered
+again F6 releases: a line that is not a time and a text ends the reading: SURVIVED
+again S2m releases: the release asked first is the one answered, whatever tag the answer carries: SURVIVED

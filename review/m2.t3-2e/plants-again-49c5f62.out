@@ -1,0 +1,21 @@
+2b K2 cut_line_missing: the next instance's number is not looked at: KILLED by 1: test_a_missing_cut_line_by_hand
+2b K5 main does not ask cut_line_missing: a lost line is a verdict: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+2c F6 main does not judge the failure: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+2c F7 main judges the failure and drops the verdict: KILLED by 1: test_the_failure_and_later_states
+2c F8 main judges a failure in every recording that held cuts: KILLED by 8: test_a_cut_held_across_the_take_over, test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_the_second_stage, test_the_second_stage_knows_the_recording
+2c I4 the acknowledged start's count is held to the cuts before it: KILLED by 4: test_a_third_instance_takes_the_new_state_up, test_instance_lines, test_instance_lines_and_the_commit, test_the_second_instance_begins
+2b B3 skz_release_line does not cut the last line: KILLED by 1: test_skz_store.sh: FAIL   the last line is cut at 300 characters: got '414', want '312'
+2b B4 skz_release_line does not squeeze the last line's blanks: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 	# a  
+2b B4 (as #115 has it) skz_release_line leaves the blanks at the ends of the last line: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0  # a l
+2b B4 (as #115 has it) only the blank at the beginning is taken: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 # a li
+2b B4 (as #115 has it) only the blank at the end is taken: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0  # a l
+2c B1 no bound on the digits (torn_line as 3fe4133 had it): KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start
+2c B2 the start's time is not held to the next line's digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c B3 the torn line's own time is not held to the next line's digits: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+2c B5 a start as long as the next line's time is skipped (> to >=): KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib, test_a_torn_line_only_before_a_take_over
+2c B6 a torn line's time as long as the next line's is skipped (> to >=): KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib, test_a_torn_line_only_before_a_take_over
+2c B10 a candidate with too long a time ends the search (continue to return None): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P16 a start line later than the line after it is let through: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P19 what is left must hold the whole time and its tab: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P2 a page is 8192 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+2c P2 (16384) a page is 16384 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib

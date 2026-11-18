@@ -40,3 +40,20 @@ G5 every later start must hold nothing: KILLED by 3: test_a_third_instance_takes
 T1 parse_log takes a time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
 T2 parse_log refuses a time of more than 12 digits: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_time_of_more_than_20_digits
 T3 parse_log refuses a time of 20 digits: KILLED by 1: test_a_time_of_more_than_20_digits
+T4 the start check converts a next line's time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T5 a torn line's time may begin with zeros again: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+T6 torn_line takes a next line's time of any length: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+T7 torn_line refuses where the next line's time has more than 12 digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+H3 the writes before the cut's instant count too: SURVIVED
+H4 the writes after the next start count too: KILLED by 1: test_held_across_start
+H6 only a block whose last content is the cut's counts: KILLED by 1: test_held_across_start
+H7 a block that is not of the cut's map counts: NOT APPLIED (found [0, 1] times)
+L1 any write that differs counts, whatever was written after it (as at afd217a): NOT APPLIED (found [0] times)
+L2 the first write to a block decides, not the last: NOT APPLIED (found [0] times)
+L3 a block whose last content is not known counts: KILLED by 1: test_held_across_start
+L4 a write-zeroes is not looked at (the write before it decides): KILLED by 1: test_held_across_start
+L5 a write-zeroes leaves zeros, which are known: NOT APPLIED (found [0] times)
+L6 a write of no known content is passed over (the write before it decides): NOT APPLIED (found [0] times)
+L7 a block once not known stays so, whatever is written after: NOT APPLIED (found [0] times)
+L8 a write-zeroes is read as a write with hashes: SURVIVED
+L9 no block counts: KILLED by 1: test_held_across_start

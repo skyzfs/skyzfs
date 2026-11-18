@@ -1,0 +1,44 @@
+2b: 62 plants on 49c5f62: 42 killed, 1 survived, 19 not applied (62 results before)
+   survived before and now: I12 the last cut written is held to the count of cut lines, not the last line's number
+2b-next: 20 plants on 49c5f62: 16 killed, 0 survived, 4 not applied (20 results before)
+   KILLED -> NOT APPLIED: F4 the last release answered, not the first
+   KILLED -> NOT APPLIED: F6 a line that is not a time and a text ends the reading
+   KILLED -> NOT APPLIED: F7 no release answered is time 0 (a commit before every start)
+2c: 162 plants on 49c5f62: 120 killed, 7 survived, 35 not applied (162 results before)
+   survived before and now: A7 lost_at_kill reads the place in the whole log, not the number the line carries
+   survived before and now: K9 the reason is matched whatever number follows "cut" (the cut asked for or not)
+   survived before and now: W4 a VERDICT line is a verdict whatever the holder's status
+   survived before and now: Z4 after a verdict the instances' lines are judged as well (the failure line is not)
+   survived before and now: Z7 a verdict is judged first in failed only (takeover in the order of e88773b)
+   survived before and now: P7 the start may be of a pid already started (the author's survivor)
+   survived before and now: P11 the start may be later than the line after it (the author's survivor)
+again: 21 plants on 49c5f62: 21 killed, 0 survived, 0 not applied (21 results before)
+head2: 59 plants on 49c5f62: 40 killed, 3 survived, 16 not applied (59 results before)
+   KILLED -> NOT APPLIED: U2 a cut line cut again by the next instance is kept (shape C as before)
+   SURVIVED -> NOT APPLIED: U4 a next instance that acknowledged a failure can count past one more too
+   KILLED -> NOT APPLIED: U5 past one more is n + 1 (the next number itself)
+   KILLED -> NOT APPLIED: U6 shape C by the number alone (any group)
+   KILLED -> NOT APPLIED: U7 shape C by the group alone (any number)
+   KILLED -> NOT APPLIED: U8 shape C before a start that acknowledged a failure too
+   SURVIVED -> NOT APPLIED: U10 shape C whatever flush the barrier before the cut line is of
+   SURVIVED -> KILLED: U11 the count before the kill is not begun again at a start that acknowledged a failure
+   SURVIVED -> KILLED: U14 main does not say which starts acknowledged a failure
+   SURVIVED -> NOT APPLIED: U15 shape C where the cut line ends the instance, whatever stands before it
+   KILLED -> NOT APPLIED: U16 shape C looks at the next instance's last cut, not its first
+   KILLED -> NOT APPLIED: U18 the last instance's barrier at the end of the log is taken out too
+   SURVIVED -> KILLED: H8 a cut held across a start with no block from a copy meets the floor
+   SURVIVED -> KILLED: H10 a take-over that shows nothing is no error of the rig (the exit)
+   SURVIVED -> KILLED: A6 a failure that carries nothing is no error of the rig (the exit)
+   SURVIVED -> KILLED: T5 a torn line's time may begin with zeros again
+   SURVIVED -> NOT APPLIED: H7 a block that is not of the cut's map counts
+   KILLED -> NOT APPLIED: L1 any write that differs counts, whatever was written after it (as at afd217a)
+   KILLED -> NOT APPLIED: L2 the first write to a block decides, not the last
+   KILLED -> NOT APPLIED: L5 a write-zeroes leaves zeros, which are known
+   KILLED -> NOT APPLIED: L6 a write of no known content is passed over (the write before it decides)
+   SURVIVED -> NOT APPLIED: L7 a block once not known stays so, whatever is written after
+   survived before and now: H2 the writes up to the last start before the cut's write count, not up to the first after its instant
+   survived before and now: H3 the writes before the cut's instant count too
+   survived before and now: L8 a write-zeroes is read as a write with hashes
+look: 31 plants on 49c5f62: 29 killed, 1 survived, 1 not applied (31 results before)
+   KILLED -> NOT APPLIED: O4 a line that is not a time and a text is the rig's error
+   survived before and now: O9 the commit is held to the start, at or after (> to >=) and a commit at the start's own time

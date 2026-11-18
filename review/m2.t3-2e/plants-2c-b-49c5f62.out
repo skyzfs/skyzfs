@@ -29,3 +29,49 @@ Y7 failed does not take the wait's 1: KILLED by 1: test_cut_record.sh: FAIL the 
 Y8 takeover ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
 Y9 failed goes on after the verdict (the wait's 1 is dropped): KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
 Y10 the ended holder's status is taken by a bare wait: NOT APPLIED (found [0] times)
+Z1 a verdict is not judged first (the order of e88773b for every recording): KILLED by 1: test_a_verdict_before_the_first_cut
+Z2 every recording with a holder is judged as one that ended at a verdict (no instance or failure line): KILLED by 7: test_a_cut_line_torn_at_the_take_over, test_a_failed_instance_line_is_a_verdict, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_an_acknowledged_failure, test_the_failure_and_later_states
+Z3 after a verdict the failure line is judged as well: KILLED by 1: test_a_verdict_before_the_first_cut
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z5 a verdict judged first does not count (rc as it was): KILLED by 1: test_a_verdict_before_the_first_cut
+Z6 held_lines goes on to the held cuts' files after a verdict: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED
+Z8 a verdict is judged first in takeover only: KILLED by 1: test_a_verdict_before_the_first_cut
+X5b the held cuts are judged before the instances' lines again (with no verdict): KILLED by 1: test_the_failure_and_later_states
+P1 the start may follow at any byte of the line, not at a page of the file: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start
+P2 a page is 8192 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+P3 a page is 2048 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P4 the pages are counted from the line's beginning, not the file's: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib, test_a_torn_line_only_before_a_take_over
+P5 the file's offset counts no newlines: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib, test_a_torn_line_only_before_a_take_over
+P6 the start line may carry a leading zero: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P7 the start may be of a pid already started (the author's survivor): SURVIVED
+P8 what is left may carry any whole pid: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P9 what is left may carry any digits where its pid is cut: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P10 the start may be earlier than the last whole line: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P11 the start may be later than the line after it (the author's survivor): SURVIVED
+P12 the torn line's own time is not held to the lines around it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P13 the torn line may be earlier than the last whole line: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P14 the torn line may be later than the start: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P15 the torn line's daemon may write after it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P16 a start line later than the line after it is let through: NOT APPLIED (found [0] times)
+P17 only a line that does not parse is looked at (as e88773b): KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib
+P18 the last instance's start, not its last whole line, bounds the times: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P19 what is left must hold the whole time and its tab: NOT APPLIED (found [0] times)
+U1 hold_idle does not look whether the holder has ended (as before: 120 s, then the rig's error): KILLED by 1: test_cut_record.sh did not end in 300 s
+U2 after a verdict hold_idle says the holder is idle (the recording goes on): KILLED by 1: test_cut_record.sh: FAIL a verdict while the holder is asked to pause ends the recording for the che
+U3 edges does not take hold_idle's 1: KILLED by 1: test_cut_record.sh: FAIL edges ends at a verdict while the holder is asked to pause: got '0', want '
+U4 edges ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: FAIL edges ends at a verdict while the holder is asked to pause: got '0', want '
+U5 a holder that ended with 0 while the recording waits ends it for the check too: KILLED by 2: test_cut_record.sh: FAIL a holder that ended with 0 before a cut is the rig's error: got '0 ended ea, test_cut_record.sh: FAIL a holder that ended with 0 while asked to pause is the rig's error: got '0 
+U6 the gone holder's status is not taken (a VERDICT line alone decides): KILLED by 3: test_cut_record.sh: FAIL a holder that ended with its error before a cut is the rig's error: got '2 , test_cut_record.sh: FAIL a holder that ended with its error while asked to pause is the rig's error:, test_cut_record.sh: FAIL the holder's leave, its stop and an early end all go through holder_ended: 
+U7 the wait for the first cut does not look whether the holder has ended (300 s, then the rig's error): KILLED by 1: test_cut_record.sh did not end in 300 s
+U8 after a verdict before the first cut the wait says "wrote one": KILLED by 1: test_cut_record.sh: FAIL a verdict before the first cut ends the recording for the check: got '0 wro
+B1 no bound on the digits (torn_line as 3fe4133 had it: T3 as it was): NOT APPLIED (found [1, 0] times)
+B2 the start's time is not held to the next line's digits: NOT APPLIED (found [0] times)
+B3 the torn line's own time is not held to the next line's digits: NOT APPLIED (found [0] times)
+B4 the torn line's own time is counted with its leading zeros: NOT APPLIED (found [0] times)
+B5 a start as long as the next line's time is skipped (> to >=): NOT APPLIED (found [0] times)
+B6 a torn line's time as long as the next line's is skipped (> to >=): NOT APPLIED (found [0] times)
+B7 a next line's time of any length is taken (no bound of 20): KILLED by 1: test_a_torn_line_not_followed_by_a_start
+B8 no torn line where the next line's time has more than 12 digits (13 after 1000 s): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+B9 no torn line where the next line's time has more than 11 digits: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_tear_on_a_page_of_4_kib, test_a_torn_line_only_before_a_take_over
+B10 a candidate with too long a time ends the search (continue to return None): NOT APPLIED (found [0] times)

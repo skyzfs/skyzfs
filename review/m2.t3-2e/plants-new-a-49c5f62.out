@@ -1,0 +1,24 @@
+R1a window C only where the next cut line is of the same group (as before #116): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+R1b the next cut line is looked for in the next instance only: KILLED by 1: test_the_kill_window_by_hand
+R1c a start that acknowledged a failure does not end the search: KILLED by 2: test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+R1d a start that acknowledged a failure is passed over, and the search goes on: KILLED by 1: test_the_kill_window_by_hand
+R1e the last cut line of the later instance, not its first: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+R1f window C whatever number the next cut line carries: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1g window C with no cut line after it: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1h window C takes out the cut line and leaves the barrier: KILLED by 2: test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1i window B: the next cut one past, not two, keeps the barrier: KILLED by 4: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1j window B: the barrier is never kept: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+M1 window M: whatever the request that ends the instance was: SURVIVED
+M2 window M: a cut line before the write comes again does not keep the line: KILLED by 1: test_a_kill_after_the_state_stored_the_mark
+M3 window M: any write applied by the next instance counts as the same: KILLED by 1: test_the_kill_window_by_hand
+M4 window M: the same range, whatever its content: KILLED by 1: test_the_kill_window_by_hand
+M5 window M: the same content, wherever: KILLED by 1: test_the_kill_window_by_hand
+M6 window M before a start that acknowledged a failure too: KILLED by 1: test_the_kill_window_by_hand
+M7 window M: the applied line is not taken out: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+M8 window M: never: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+M9 window M: an instance that ends on any line of the write: KILLED by 1: test_the_kill_window_by_hand
+M10 window M: the write applied again after the next instance cut counts too (the cut line ends nothing): KILLED by 1: test_a_kill_after_the_state_stored_the_mark
+M11 the line counts a killed write among the flushes: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M12 the line does not say how many writes: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M13 the line calls a killed write a cut that was cut again: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M14 window M is looked at before window B: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand

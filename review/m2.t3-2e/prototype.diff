@@ -1,0 +1,42 @@
+--- a/tests/kernel/cut_daemon_check.py	2026-11-18 03:54:31.581925882 +0000
++++ b/tests/kernel/cut_daemon_check.py	2026-11-18 04:19:23.070127853 +0000
+@@ -1001,16 +1001,22 @@
+     recv = next((ln for ln in reversed(inst['lines']) if ln['event'] == 'recv' and ln['tag'] == last['tag']), None)
+     if recv is None or recv['op'] != 'write':
+         return False
+-    rng = {}
++    rng, waiting, again = {}, set(), False
+     for ln in later['lines']:
+         if ln['event'] == 'cut':
+-            return False
++            # a flush received before the write was applied again took the
++            # state's mark: stored
++            return again and ln['tag'] not in waiting
+         if ln['event'] == 'recv':
+             rng[ln['tag']] = (ln['op'], ln['sector'], ln['sectors'])
++            if ln['op'] == 'flush' and not again:
++                waiting.add(ln['tag'])
++        elif ln['event'] == 'commit' and ln['tag'] in waiting and rng.get(ln['tag'], ('',))[0] == 'flush':
++            waiting.discard(ln['tag'])
+         elif ln['event'] == 'applied' and rng.get(ln['tag']) == (recv['op'], recv['sector'], recv['sectors']) \
+                 and ln['extra'][:1] == last['extra'][:1]:
+-            return True
+-    return False
++            again = True
++    return again
+ 
+ 
+ def unstored_at_kill(instances, acked=frozenset()):
+@@ -1216,9 +1222,9 @@
+             # held (the review of #113, G3).
+             bad.append(f"cuts_held {st.get('cuts_held')!r} at a start that acknowledged a failure, wanted '0'")
+         if k and not begun[k]:
+-            counted = [int(d['number']) for d in dcuts if lo < d['prefix'] < bounds[k - 1]['i']
+-                       and d['number'].isdigit()]
+-            gone = [n for t, n in released if t < inst['ns']]
++            counted = [int(d.get('local', d['number'])) for d in dcuts if lo < d['prefix'] < bounds[k - 1]['i']
++                       and d.get('local', d['number']).isdigit()]
++            gone = [n for t, n in released if instances[j]['ns'] <= t < inst['ns']]
+             held = st.get('cuts_held', '')
+             if counted and max(counted) > max(gone, default=0) and not (held.isdigit() and int(held) >= 1):
+                 bad.append(f'cuts_held {held!r} at a start that took the state up, wanted at least 1: cut '

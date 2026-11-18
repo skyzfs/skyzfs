@@ -1,0 +1,30 @@
+art116-ubuntu-26.04/takeover:
+   the holder left at 284.990 s; the cut held from then on is cut 9 (group 17, 285.902 s), slot 17, sector 392
+   the kill: the second start is at 286.572 s, after 25 cuts since the holder left, the last of group 89 (72 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 288.105 s (after the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 0
+art116-ubuntu-26.04-arm/takeover:
+   the holder left at 425.807 s; the cut held from then on is cut 9 (group 17, 426.665 s), slot 17, sector 392
+   the kill: the second start is at 427.325 s, after 19 cuts since the holder left, the last of group 71 (54 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 428.338 s (after the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 0
+art115c-ubuntu-26.04/takeover:
+   the holder left at 359.199 s; the cut held from then on is cut 10 (group 17, 359.855 s), slot 17, sector 392
+   the kill: the second start is at 362.990 s, after 134 cuts since the holder left, the last of group 416 (399 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 360.408 s (before the second start), by the uberblock of cut 41 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art115c-ubuntu-26.04-arm/takeover:
+   the holder left at 569.121 s; the cut held from then on is cut 9 (group 17, 569.967 s), slot 17, sector 392
+   the kill: the second start is at 573.113 s, after 130 cuts since the holder left, the last of group 404 (387 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 570.773 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 1150976
+art113/amd/takeover:
+   the holder left at 226.257 s; the cut held from then on is cut 9 (group 17, 226.950 s), slot 17, sector 392
+   the kill: the second start is at 230.119 s, after 174 cuts since the holder left, the last of group 536 (519 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 227.489 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art113/arm/takeover:
+   the holder left at 366.295 s; the cut held from then on is cut 9 (group 17, 367.079 s), slot 17, sector 392
+   the kill: the second start is at 370.241 s, after 97 cuts since the holder left, the last of group 305 (288 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 367.859 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 409600

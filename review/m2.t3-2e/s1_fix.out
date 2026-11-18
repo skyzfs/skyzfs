@@ -1,0 +1,22 @@
+The wait of 92256f8 (40 groups with nwritten > 0 after g0) read against the kstat copies of the recordings (txgs-1.txt).
+g0 is taken as 16, the group before the held cut's (the log of the run at 49c5f62 says 91 - 75 and 73 - 57).
+art116-ubuntu-26.04: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+art116-ubuntu-26.04-arm: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+art116n-ubuntu-26.04: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+art116n-ubuntu-26.04-arm: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+art115c-ubuntu-26.04: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+art115c-ubuntu-26.04-arm: the 32nd written group after g0 is 110, the 40th 134; the first written group after 17 in slot 17 is 110, the 32th
+
+The run on 92256f8 (44237460823), by ring.py:
+art116n-ubuntu-26.04/takeover:
+   the holder left at 260.903 s; the cut held from then on is cut 9 (group 17, 261.727 s), slot 17, sector 392
+   the kill: the second start is at 262.919 s, after 54 cuts since the holder left, the last of group 176 (159 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 262.307 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art116n-ubuntu-26.04-arm/takeover:
+   the holder left at 446.426 s; the cut held from then on is cut 10 (group 17, 447.276 s), slot 17, sector 392
+   the kill: the second start is at 448.439 s, after 45 cuts since the holder left, the last of group 149 (132 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 448.029 s (before the second start), by the uberblock of cut 41 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art116n-ubuntu-26.04: 14 of 14 recordings exit 0; held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+art116n-ubuntu-26.04-arm: 14 of 14 recordings exit 0; held_across_start	INFO	cut 10, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made

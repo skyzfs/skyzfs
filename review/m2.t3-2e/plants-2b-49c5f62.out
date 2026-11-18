@@ -46,3 +46,17 @@ N4 a noflush-begin with no end is no error: KILLED by 1: test_groups_synced_with
 N5 main does not take the groups out of the kstats: KILLED by 1: test_a_group_synced_with_no_flush
 N6 nothing is left out of the kstats: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
 E1 takeover expects mark-dropped the same: KILLED by 1: test_two_instances
+E2 takeover expects mark-kept same or caught: KILLED by 5: test_a_cut_held_across_the_take_over, test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_two_instances
+E3 life expects mark-dropped same or caught: KILLED by 1: test_two_instances
+H1 the leave file is not looked at: KILLED by 1: test_cut_hold.py did not end in 300 s
+H2 the holder leaves and says nothing in its log: KILLED by 2: test_pause_then_leave, test_the_program_ends_at_a_leave
+H3 the loop says it was stopped when it left: main goes on to record and drain: KILLED by 2: test_pause_then_leave, test_the_program_ends_at_a_leave
+H4 main drains after a leave (it does not exit there): KILLED by 1: test_the_program_ends_at_a_leave
+H5 the holder steps while paused: KILLED by 1: test_pause_then_leave
+H6 the holder leaves only when it is not paused: KILLED by 1: test_cut_hold.py did not end in 300 s
+B1 skz_release_line counts every line, comments too: KILLED by 3: test_skz_store.sh: FAIL skzrel counts the releases and says it runs: got 'skzrel 4 1 # 125 cut 3 go, test_skz_store.sh: FAIL   and that it ended: got 'skzrel 4 0', want 'skzrel 2 0', test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 2 0 # a li
+B2 skz_release_line says the releaser runs whenever it was given a pid: KILLED by 1: test_skz_store.sh: FAIL   and that it ended: got 'skzrel 2 1', want 'skzrel 2 0'
+B3 skz_release_line does not cut the last line: NOT APPLIED (found [0] times)
+B4 skz_release_line does not squeeze the last line's blanks: NOT APPLIED (found [0] times)
+B5 the snapshot does not call skz_release_line: KILLED by 1: test_skz_store.sh: FAIL the snapshot writes the releaser's line: 'skz_release_line "$OUT/skz-releas
+H7 a pause does not write what is held: KILLED by 1: test_pause_then_leave

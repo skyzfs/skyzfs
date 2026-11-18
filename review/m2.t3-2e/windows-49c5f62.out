@@ -1,0 +1,17 @@
+Ma (RIGHT): passed; shapes ['M']; cuts as the reference; cut_numbers PASS
+Mb (RIGHT): passed; shapes []; cuts as the reference; cut_numbers PASS
+Mc (RIGHT): FAILED; shapes ['M']; cuts DIFFER: cut 13: the daemon's is group 26 (itself) at record 730, the reference's group 26 (itself) at record 735; cut_numbers PASS
+Md (RIGHT): passed; shapes ['M']; cuts as the reference; cut_numbers PASS
+Me (RIGHT): FAILED; shapes []; cuts DIFFER: cut 12: the daemon's is group 22 (itself) at record 726, the reference's group 26 (itself) at record 726; cut_numbers PASS
+Mf (RIGHT): passed; shapes ['M']; cuts as the reference; cut_numbers PASS
+Mg (RIGHT): FAILED; shapes []; cuts DIFFER: cut 13: the daemon's is group 26 (itself) at record 738, the reference's group 26 (itself) at record 732; cut_numbers PASS
+Mh (RIGHT): passed; shapes []; cuts as the reference; cut_numbers PASS
+Mw (WRONG): the log is Ma's
+Ca (RIGHT): passed; shapes ['C']; cuts as the reference; cut_numbers PASS
+Cb (WRONG): FAILED; shapes ['C']; cuts DIFFER: cut 13: the daemon's is group 35 (itself) at record 773, the reference's group 26 (itself) at record 733; cut_numbers PASS
+Cc (RIGHT): passed; shapes ['C']; cuts as the reference; cut_numbers PASS
+Cd (RIGHT): passed; shapes []; cuts as the reference; cut_numbers PASS
+Ce (WRONG): FAILED; shapes ['C']; cuts DIFFER: cut 13: the daemon's is group 35 (itself) at record 773, the reference's group 26 (itself) at record 733; cut_numbers PASS
+Cf (WRONG): the log is Cc's
+Cg (RIGHT): passed; shapes ['C']; cuts as the reference; cut_numbers PASS
+Ch (WRONG): FAILED; shapes ['C']; cuts DIFFER: cut 13: the daemon's is group 35 (itself) at record 775, the reference's group 26 (itself) at record 735; cut_numbers PASS

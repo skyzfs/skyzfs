@@ -1,0 +1,23 @@
+taken-over as takeover: exit 1
+   held_across_start: ERROR: no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+   ctl_mark-kept: SAME: the rule mark-kept gives the design's 26 cuts here (expected: caught; DIFFERS)
+taken-over as None: exit 1
+   ctl_mark-dropped: CAUGHT: the reference by the rule mark-dropped: cut 13: the daemon's is group 26 (itself) at record 733, the reference's group 35 (itself) at record 773 (expected: same; DIFFERS)
+added as takeover: exit 1
+   cuts: FAIL: cut 13: the daemon's is group 26 (itself) at record 733, the reference's group 35 (itself) at record 773
+   status: FAIL: cuts '26', not '25'
+   held_across_start: ERROR: no cut was written by a later instance than the one that counted it with a block from an earlier instance's copy: the recording is there to show copies surviving a start
+   ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 25 cuts here (expected: caught; DIFFERS)
+   ctl_mark-kept: MISSED: the reference by the rule mark-kept: 26 cuts, each at the same barrier with the same group and the same answer to itself (expected: caught; DIFFERS)
+added as None: exit 1
+   cuts: FAIL: cut 13: the daemon's is group 26 (itself) at record 733, the reference's group 35 (itself) at record 773
+   status: FAIL: cuts '26', not '25'
+   ctl_mark-kept: MISSED: the reference by the rule mark-kept: 26 cuts, each at the same barrier with the same group and the same answer to itself (expected: same; DIFFERS)
+failed, the first cut of the new state holds nothing new: exit 1
+   held_content: FAIL: cut 14 (group 35): 108 blocks differ from the reference at its instant, for example block 4: 7a964bb7e11228fc wanted, 45a725a14ebd88ec held, block 5: 00163fd53cfca0e1 wanted, 8ba36cfed9e9cf68 held, bl
+   carried_across_failure: ERROR: cut 14, the first written of the new state: 0 of its 5 blocks differ from the image the holders of the state before left
+   ctl_content_early: MISSED: cut 14: as the reference (expected: caught; DIFFERS)
+failed, no cut of the new state written: exit 1
+   held_content: FAIL: the last cut written is 13, the last counted 26; 5416 blocks of the image after the drain differ from what the maps wrote, for example [4, 5, 6, 7, 8]; 13 of 26 cuts written and released; 45038 blocks
+   carried_across_failure: ERROR: no cut of the new state was written
+failed, a right recording: exit 0

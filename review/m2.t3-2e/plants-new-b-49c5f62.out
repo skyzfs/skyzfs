@@ -1,0 +1,26 @@
+R2a a write received before a write-zeroes and applied after it in the log is known: KILLED by 1: test_held_across_start
+R2b the write received after the write-zeroes is the one not known: KILLED by 1: test_held_across_start
+R2c every write after a write-zeroes that left the block unplaced is not known: KILLED by 1: test_held_across_start
+R2d every block of the write-zeroes is unplaced, not its ambiguous set: SURVIVED
+S2a cuts_held 0 will do: KILLED by 1: test_instance_lines
+S2b held is wanted though the newest cut was released: KILLED by 1: test_instance_lines
+S2c a release answered after the start counts as before it: KILLED by 1: test_instance_lines
+S2d a status with no cuts_held line will do: KILLED by 1: test_instance_lines
+S2e only at a take-over, not at a start that created the device: SURVIVED
+S2f only at a start that created the device: KILLED by 1: test_instance_lines
+S2g the cuts counted before the start, of whatever state: SURVIVED
+S2h a release the daemon refused counts as answered: SURVIVED
+S2i no release is read: KILLED by 1: test_instance_lines
+S2j the rule is never asked: KILLED by 1: test_instance_lines
+S2k any release before the start will do, of whatever cut: KILLED by 1: test_instance_lines
+S2l the PASS line does not show cuts_held: SURVIVED
+G2a a cut written across the start with no block from a copy meets the floor: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3a held_across_start under its floor is not the rig's error: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3b carried_across_failure under its floor is not the rig's error: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3c main: an ERROR line with no verdict ends 0: KILLED by 1: test_a_failed_cuts_with_what_the_check_cannot_place
+G3d main: an ERROR line with a verdict ends 2: KILLED by 4: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_two_instances
+G3e main drops held_lines' ERROR (the whole recording): SURVIVED
+G3f main drops held_lines' ERROR (a holder that ended with a verdict): SURVIVED
+G3g held_across_start under its floor reads INFO: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3h carried_across_failure under its floor reads INFO: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3i carried_across_failure: a cut with no block that differs meets the floor: KILLED by 1: test_carried_across_failure_must_show_something

@@ -1,0 +1,63 @@
+amd autotrim: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd bound: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd config: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd edges: exit 0 here, 31 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd failed: exit 0 here, 33 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    carried_across_failure	INFO	cut 13, the first written of the new state: 1775 of its 6180 blocks differ from the image the holders of the state before left
+amd full: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd life: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd multihost: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd rewind: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd rewindf: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd rewindsync: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd slog: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd stray: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+amd takeover: exit 0 here, 35 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+    obs_noflush_groups	INFO	groups [602, 606, 615] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+arm autotrim: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm bound: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm config: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm edges: exit 0 here, 31 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm failed: exit 0 here, 33 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    carried_across_failure	INFO	cut 13, the first written of the new state: 1792 of its 6177 blocks differ from the image the holders of the state before left
+arm full: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm life: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm multihost: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm rewind: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm rewindf: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm rewindsync: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm slog: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm stray: exit 0 here, 30 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+arm takeover: exit 0 here, 35 lines, NOT the run's lines
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+    obs_noflush_groups	INFO	groups [362, 366, 375] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+rc=0
