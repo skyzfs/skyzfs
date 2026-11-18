@@ -971,7 +971,15 @@ mod uploader {
         let desk = Desk::new(|| {});
         let mut handler =
             handler::uploader(A, tx, desk, Duration::from_millis(50)).expect("a handler");
-        let reply = handler(&Request::Cuts, Vec::new());
+        // On a thread of its own, so that a handler that waits for the
+        // store with no limit fails the test and does not hang it.
+        let (done, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(handler(&Request::Cuts, Vec::new()));
+        });
+        let reply = answer
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the handler answers within its limit, not when the store does");
         let Reply::Refused(Code::NoAnswer, why) = reply else {
             panic!("{reply:?}");
         };
