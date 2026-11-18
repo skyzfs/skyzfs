@@ -269,5 +269,19 @@ is "a status ahead of its row (a cut held, or abandoned): the judge's, no look a
 is "a status older than its row five times is the rig's error" "$(looked 0 1 5)" \
     "2 rig error: the row or the status moved on after the look before step five times in a row"
 
+# bound's volume is written through at its create (--zero-fill), so that
+# it has no holes and its first writes are copied; boundsparse's is not
+# (M2.4e). The course's settings, as record() has them, then the create.
+course=$(sed -n '/^record() {$/,/^}$/p' "$SCRIPT" | sed -n '/^    case \$1 in$/,/^    esac$/p')
+is "record() sets the courses' settings" "$(grep -c 'CREATE_ARGS' <<< "$course")" 1
+args_for() { ( CREATE_ARGS=(); set -- "$1"; eval "$course"; echo "${CREATE_ARGS[*]}" ) 2>&1; }
+is "bound: --zero-fill" "$(args_for bound)" "--zero-fill"
+is "boundsparse: sparse" "$(args_for boundsparse)" ""
+is "life: sparse" "$(args_for life)" ""
+is "the create takes the course's arguments" \
+    "$(grep -c '"$SKYZFSD" create --dir "$VOL" .*"${CREATE_ARGS\[@\]}"' "$SCRIPT")" 1
+is "boundsparse is a course of the held cuts, and does what bound does" \
+    "$(grep -cx 'HELD_ONLY="bound boundsparse edges takeover failed"' "$SCRIPT")$(grep -cx 'rec_boundsparse() { rec_bound; }' "$SCRIPT")" 11
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

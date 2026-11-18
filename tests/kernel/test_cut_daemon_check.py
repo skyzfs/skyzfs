@@ -739,6 +739,30 @@ class HeldLines(HeldFixture):
         rc, lines = self.lines(name='bound', status={'cut_state': 'begun', 'cuts_abandoned': '2'})
         self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
 
+    def test_boundsparse_must_copy_no_hole(self):
+        """M2.4e: on a sparse volume a daemon that keeps the image's holes
+        copies no write into one, so nothing reaches the bound; a daemon
+        from before (no cut_holes) is asked nothing."""
+        def st(**kw):
+            return {'cut_state': 'begun', 'cuts_abandoned': '0', 'cut_copied_bytes': '0',
+                    'cut_bound_bytes': '268435456', 'cut_holes': 'held', 'cut_hole_chunks': '6000', **kw}
+        rc, lines = self.lines(name='boundsparse', status=st())
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'PASS'))
+        rc, lines = self.lines(name='boundsparse', status=st(cut_copied_bytes='4096'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='boundsparse', status=st(cuts_abandoned='1'))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        rc, lines = self.lines(name='boundsparse', status=st(cut_copied_bytes=''))
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+        older = st(cuts_abandoned='3', cut_copied_bytes='300000000')
+        del older['cut_holes'], older['cut_hole_chunks']
+        rc, lines = self.lines(name='boundsparse', status=older)
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (0, 'INFO'))
+        self.assertIn('keeps no holes', lines['cuts_abandoned'][1])
+        # bound itself: as before, on its zero-filled volume
+        rc, lines = self.lines(name='bound', status=st())
+        self.assertEqual((rc[0], lines['cuts_abandoned'][0]), (1, 'FAIL'))
+
     def test_edges_must_send_write_zeroes_and_a_discard(self):
         with self.assertRaises(RigError):
             self.lines(name='edges')
