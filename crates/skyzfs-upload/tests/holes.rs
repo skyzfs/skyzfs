@@ -169,9 +169,7 @@ async fn a_whole_cut_writes_every_run_of_its_holes_over_what_object_storage_held
         slices.iter().all(|&(_, zeroes)| zeroes > 0),
         "each slice has runs of zeros: {slices:?}"
     );
-    let uploaded = fx
-        .assert_uploaded(7, "onto old bytes in every block")
-        .await;
+    let uploaded = fx.assert_uploaded(7, "onto old bytes in every block").await;
     for block in 0..BLOCKS {
         let at = (block * BLOCK) as usize;
         let old = old_byte(block);
