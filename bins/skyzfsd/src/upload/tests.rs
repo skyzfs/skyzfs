@@ -70,7 +70,10 @@ impl World {
 }
 
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
-    runtime().expect("a runtime").block_on(future)
+    runtime()
+        .expect("a runtime")
+        .block_on(future)
+        .expect("the runtime runs")
 }
 
 /// `create`'s volume: the superblock of the size asked with shards of
@@ -1044,7 +1047,7 @@ fn uploading(world: &World) -> Up {
 
 /// [`uploading`], with the lease taken at the start only if `take`, and
 /// `before` given the runtime before the thread takes it over.
-fn uploading_with(world: &World, take: bool, before: impl FnOnce(&tokio::runtime::Runtime)) -> Up {
+fn uploading_with(world: &World, take: bool, before: impl FnOnce(&Runtime)) -> Up {
     world.place(SIZE).expect("made");
     let mut at = start(world.keeper("node-a"), false);
     if take {
@@ -1161,10 +1164,7 @@ fn the_end_does_not_wait_for_work_left_on_the_runtime() {
     let world = World::new();
     let (began, begun) = mpsc::channel();
     let (up, posts, queue, _) = uploading_with(&world, true, move |runtime| {
-        runtime.spawn_blocking(move || {
-            let _ = began.send(());
-            std::thread::sleep(Duration::from_secs(5));
-        });
+        leave_blocking_work(runtime, began);
     });
     begun
         .recv_timeout(Duration::from_secs(10))
@@ -1178,6 +1178,66 @@ fn the_end_does_not_wait_for_work_left_on_the_runtime() {
         at.elapsed()
     );
     queue.join().expect("the queue's thread ended at the close");
+}
+
+/// Leave 5 s of blocking work on `runtime`, as a name lookup of the
+/// HTTP client that hangs, and say when it has begun.
+fn leave_blocking_work(runtime: &Runtime, began: mpsc::Sender<()>) {
+    runtime
+        .block_on(async move {
+            drop(tokio::task::spawn_blocking(move || {
+                let _ = began.send(());
+                std::thread::sleep(Duration::from_secs(5));
+            }));
+        })
+        .expect("the runtime runs");
+}
+
+/// The daemon's runtime is dropped without waiting for the work left on
+/// its blocking pool (Codex on #118): a plain runtime's drop waits for
+/// it, and with it `create`, a serve that ends after the lease's take,
+/// and the uploader's end.
+#[test]
+fn a_runtime_is_dropped_without_waiting_for_its_blocking_work() {
+    let runtime = runtime().expect("a runtime");
+    let (began, begun) = mpsc::channel();
+    leave_blocking_work(&runtime, began);
+    begun
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the blocking work began");
+    let at = std::time::Instant::now();
+    drop(runtime);
+    assert!(
+        at.elapsed() < Duration::from_secs(2),
+        "the drop took {:?}",
+        at.elapsed()
+    );
+}
+
+/// `create`'s work in object storage ends at its limit, even where it
+/// leaves blocking work on its runtime, as a name lookup that hangs
+/// (Codex on #118): the limit's refusal is said, at the limit.
+#[test]
+fn work_in_object_storage_ends_at_its_limit_with_blocking_work_left() {
+    let at = std::time::Instant::now();
+    let ended = within(Duration::from_secs(1), async {
+        let (began, begun) = tokio::sync::oneshot::channel();
+        drop(tokio::task::spawn_blocking(move || {
+            let _ = began.send(());
+            std::thread::sleep(Duration::from_secs(5));
+        }));
+        let _ = begun.await;
+        std::future::pending::<Result<(), String>>().await
+    });
+    assert_eq!(
+        ended,
+        Err("object storage did not answer within 1 s".to_owned())
+    );
+    assert!(
+        at.elapsed() < Duration::from_secs(3),
+        "the work ended after {:?}",
+        at.elapsed()
+    );
 }
 
 /// An end asked to let the lease go, where this daemon holds none (the

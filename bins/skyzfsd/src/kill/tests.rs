@@ -90,7 +90,10 @@ fn taken(said: &Said) -> Vec<String> {
 }
 
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
-    runtime().expect("a runtime").block_on(future)
+    runtime()
+        .expect("a runtime")
+        .block_on(future)
+        .expect("the runtime runs")
 }
 
 /// `put:N` falls once the Nth PUT of a segment has landed: other PUTs

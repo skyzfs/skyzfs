@@ -139,11 +139,43 @@ pub fn engine_config(epoch: u64) -> EngineConfig {
     }
 }
 
-/// A runtime of one thread, for `create` and for the uploader's thread.
-pub fn runtime() -> io::Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
+/// A runtime of one thread, for `create`, the lease at the start and the
+/// uploader's thread.
+pub fn runtime() -> io::Result<Runtime> {
+    let inner = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
+        .build()?;
+    Ok(Runtime { inner: Some(inner) })
+}
+
+/// A runtime whose drop does not wait for the work left on its blocking
+/// pool, where the HTTP client looks names up. A plain runtime's drop
+/// waits for it, so a lookup that hangs would hold `create` past
+/// [`PLACE_LIMIT`] (Codex on #118), a serve that ends after the lease's
+/// take past its end, and the uploader's end past its limit (F2 of
+/// #118's review). The work left ends with the process.
+pub struct Runtime {
+    /// `None` only in `drop`.
+    inner: Option<tokio::runtime::Runtime>,
+}
+
+impl Runtime {
+    /// Run `future` to its end on the runtime. The error is only for a
+    /// runtime shut down, which nothing but its drop does.
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> io::Result<F::Output> {
+        match &self.inner {
+            Some(runtime) => Ok(runtime.block_on(future)),
+            None => Err(io::Error::other("the runtime has been shut down")),
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.inner.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// The bucket of `remote` and its refs. With fixed keys in the
@@ -217,20 +249,32 @@ pub fn region(env: impl Fn(&str) -> Option<String>) -> String {
 }
 
 /// [`place`] in the bucket `remote` names, within [`PLACE_LIMIT`]:
-/// what `create` calls.
+/// what `create` calls. The making of the client counts in the limit
+/// too, and what the work leaves on the runtime at the limit, a name
+/// lookup that hangs, is not waited for ([`Runtime`]; Codex on #118).
 pub fn place_within(remote: &Remote, size: u64) -> Result<Placed, String> {
-    let runtime = runtime().map_err(|e| format!("a runtime for object storage: {e}"))?;
-    runtime.block_on(async {
+    within(PLACE_LIMIT, async {
         let (objects, refs) = connect(remote).await;
-        tokio::time::timeout(PLACE_LIMIT, place(objects, refs, remote, size))
-            .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "object storage did not answer within {} s",
-                    PLACE_LIMIT.as_secs()
-                ))
-            })
+        place(objects, refs, remote, size).await
     })
+}
+
+/// `work` on a runtime of its own, ended at `limit`, with no wait for
+/// what it leaves on the runtime ([`Runtime`]).
+fn within<T>(
+    limit: Duration,
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let runtime = runtime().map_err(|e| format!("a runtime for object storage: {e}"))?;
+    runtime
+        .block_on(async { tokio::time::timeout(limit, work).await })
+        .map_err(|e| format!("a runtime for object storage: {e}"))?
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "object storage did not answer within {} s",
+                limit.as_secs()
+            ))
+        })
 }
 
 /// What [`place`] did.
@@ -505,7 +549,7 @@ impl AtStart {
 /// The lease at the start: the runtime and the lease's keeper that the
 /// uploader's thread takes over afterwards.
 pub struct Start<R> {
-    runtime: tokio::runtime::Runtime,
+    runtime: Runtime,
     keeper: Keeper<R>,
     serve_without_upload: bool,
     limit: Duration,
@@ -517,11 +561,7 @@ impl<R: RefStore> Start<R> {
     /// The lease kept by `keeper`, taken on `runtime` within
     /// [`LEASE_LIMIT`]. With `serve_without_upload`, another holder's
     /// lease does not refuse the volume.
-    pub fn new(
-        runtime: tokio::runtime::Runtime,
-        keeper: Keeper<R>,
-        serve_without_upload: bool,
-    ) -> Self {
+    pub fn new(runtime: Runtime, keeper: Keeper<R>, serve_without_upload: bool) -> Self {
         Self {
             runtime,
             keeper,
@@ -548,24 +588,25 @@ impl<R: RefStore> Start<R> {
             .block_on(async move { tokio::time::timeout(limit, keeper.keep()).await.cloned() });
         self.spent += began.elapsed();
         let found = match taken {
-            Ok(LeaseState::Held { epoch, .. } | LeaseState::Unsure { epoch, .. }) => {
+            Ok(Ok(LeaseState::Held { epoch, .. } | LeaseState::Unsure { epoch, .. })) => {
                 AtStart::Taken { epoch }
             }
-            Ok(LeaseState::Lost { holder, epoch }) if !self.serve_without_upload => {
+            Ok(Ok(LeaseState::Lost { holder, epoch })) if !self.serve_without_upload => {
                 return Err(format!(
                     "another holder has the volume's lease in object storage: {holder} at \
                      epoch {epoch}. Nothing was served, and this refusal did not fail the volume. \
                      --serve-without-upload serves it with no upload"
                 ));
             }
-            Ok(LeaseState::Lost { holder, epoch }) => AtStart::Another { holder, epoch },
-            Ok(LeaseState::None(why)) => {
+            Ok(Ok(LeaseState::Lost { holder, epoch })) => AtStart::Another { holder, epoch },
+            Ok(Ok(LeaseState::None(why))) => {
                 AtStart::Unreached(format!("object storage could not be reached: {why}"))
             }
-            Err(_) => AtStart::Unreached(format!(
+            Ok(Err(_)) => AtStart::Unreached(format!(
                 "object storage did not answer within {} ms",
                 limit.as_millis()
             )),
+            Err(e) => AtStart::Unreached(format!("the uploader's runtime: {e}")),
         };
         self.found = Some(found);
         Ok(())
@@ -608,7 +649,7 @@ impl<R: RefStore> Start<R> {
     }
 
     /// The runtime and the keeper, for the uploader's thread.
-    pub fn into_parts(self) -> (tokio::runtime::Runtime, Keeper<R>) {
+    pub fn into_parts(self) -> (Runtime, Keeper<R>) {
         (self.runtime, self.keeper)
     }
 }
@@ -636,7 +677,7 @@ impl Uploads {
         serve_without_upload: bool,
     ) -> io::Result<Self> {
         let runtime = runtime()?;
-        let (objects, refs) = runtime.block_on(connect(remote));
+        let (objects, refs) = runtime.block_on(connect(remote))?;
         let keeper = Keeper::new(
             Arc::clone(&refs),
             remote.id,
@@ -869,7 +910,7 @@ impl Uploading {
     /// the epoch held, on `runtime`. `publish` is given what the status
     /// shows after each turn.
     pub fn start<F, M, R>(
-        runtime: tokio::runtime::Runtime,
+        runtime: Runtime,
         keeper: Keeper<F>,
         make: M,
         desk: Arc<Desk>,
@@ -919,12 +960,13 @@ impl Uploading {
                         )),
                     }
                 });
-                // The runtime's drop would wait for its blocking pool,
-                // where the HTTP client looks names up, and the join in
-                // `finish` with it, so `end`'s limit would not hold (F2
-                // of #118's review). Its tasks are left to the process's
-                // end instead.
-                runtime.shutdown_background();
+                let end = end
+                    .unwrap_or_else(|e| Ended::NotReleased(format!("the uploader's runtime: {e}")));
+                // Dropped before the answer: the drop does not wait for
+                // the runtime's blocking pool ([`Runtime`]), so neither
+                // does the join in `finish`, and `end`'s limit holds (F2
+                // of #118's review).
+                drop(runtime);
                 let _ = said.send(end);
             })?;
         Ok(Self {
