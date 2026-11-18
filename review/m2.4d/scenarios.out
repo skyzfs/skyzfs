@@ -1,0 +1,15 @@
+# on the simulated disk: fail
+test inplace::tests::cuts::review_m24d_r3_a_header_due_on_a_failed_volume_does_not_hold_the_drop ... ok
+test inplace::tests::cuts::review_m24d_r4_a_header_sync_with_no_helper_is_made_at_the_release ... ok
+test inplace::tests::cuts::review_m24d_r5_a_header_sync_that_fails_at_once_keeps_the_cut ... ok
+test inplace::tests::cuts::review_m24d_r1_a_write_behind_a_header_sync_waits_for_a_sync_of_its_own ... ok
+test inplace::tests::cuts::review_m24d_r6_random_programs_keep_the_newest_released_cut_as_the_base ... ok
+test inplace::tests::cuts::review_m24d_r2_a_header_due_while_a_write_waits_is_covered_by_the_writes_sync ... ok
+test inplace::tests::cuts::review_m24d_changed_r7_the_drop_of_a_failed_store_waits_for_the_maps_sync_with_the_option_off ... FAILED
+---- inplace::tests::cuts::review_m24d_changed_r7_the_drop_of_a_failed_store_waits_for_the_maps_sync_with_the_option_off stdout ----
+thread 'inplace::tests::cuts::review_m24d_changed_r7_the_drop_of_a_failed_store_waits_for_the_maps_sync_with_the_option_off' (2694) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:5117:5:
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 276 filtered out; finished in 0.62s
+# on real files, with the test hooks: ok
+review_m24d_r8: RAN
+test review_m24d_r8_the_end_of_a_header_sync_wakes_the_owner_on_real_files ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.21s

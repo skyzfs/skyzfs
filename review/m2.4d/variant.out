@@ -1,0 +1,4 @@
+# every store of the cut tests syncs the header at a release: fail
+test result: FAILED. 82 passed; 2 failed; 0 ignored; 0 measured; 192 filtered out; finished in 6.19s
+FAILED inplace::tests::cuts::a_write_into_a_clean_region_begins_only_once_its_bit_is_synced
+FAILED inplace::tests::cuts::writes_into_clean_regions_while_the_map_syncs_share_the_next_sync
