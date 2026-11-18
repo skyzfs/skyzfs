@@ -288,8 +288,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       for it to end, then for a sync of its own. One that fails fails
       the volume. With --no-intent-header-sync (only with --hold-cuts)
       the header is written without a sync: a power cut that loses it
-      costs one whole upload. The status says which
-      (intent_header_sync).
+      costs one whole upload. The status says which (intent_header_sync).
       A volume created with --endpoint (it has the file remote) is
       uploaded: its cuts are held as with --hold-cuts, and a thread
       uploads each to the volume in object storage and lets it go. The
