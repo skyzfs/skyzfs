@@ -82,6 +82,8 @@ use tokio::time::Instant;
 use skynbd_types::{CommitHash, SnapId, VolumeId};
 use skyzfs_local::inplace::CommittedCut;
 
+use crate::backoff::Backoff;
+
 /// The largest ZFS manifest a request carries: 1 MiB. Its format is the
 /// agent's (M2.6); the daemon stores it as it came.
 pub const MANIFEST_MAX: usize = 1 << 20;
@@ -452,6 +454,10 @@ struct Pending {
     /// it may have landed: it ends once looked up.
     lapse: Option<Lapse>,
     stage: Stage,
+    /// The waits after its steps that failed ([`Publishing::wait_after`]).
+    errors: Backoff,
+    /// Before when it takes no step: set after a step of it failed.
+    retry_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,12 +595,23 @@ impl Publishing {
         if request.expiry.is_zero() || request.expiry > EXPIRY_MAX {
             return Answer::Refused(Refusal::Expiry(request.expiry));
         }
-        if let Some(pending) = self.pending.iter().find(|p| p.request.name == request.name) {
-            return if pending.request == request {
-                Answer::Accepted
-            } else {
-                Answer::Refused(Refusal::Asked)
-            };
+        if let Some(pending) = self
+            .pending
+            .iter_mut()
+            .find(|p| p.request.name == request.name)
+        {
+            if pending.request != request {
+                return Answer::Refused(Refusal::Asked);
+            }
+            // Withdrawn while a transaction of it may have landed, and so
+            // still pending until it is looked up: the same request asked
+            // again undoes the withdrawal, so that `Accepted` is true (D1
+            // of the review of #122). A publish whose time is up stays so:
+            // asked again while it pends, a publish keeps its deadline.
+            if pending.lapse == Some(Lapse::Withdrawn) {
+                pending.lapse = None;
+            }
+            return Answer::Accepted;
         }
         if self.pending.len() >= PENDING_MAX {
             return Answer::Refused(Refusal::Busy);
@@ -614,6 +631,8 @@ impl Publishing {
             asked,
             lapse: None,
             stage: Stage::Look,
+            errors: Backoff::new(),
+            retry_at: None,
         });
         Answer::Accepted
     }
@@ -693,13 +712,45 @@ impl Publishing {
     }
 
     /// The publish that has work for the driver: to be looked up, made,
-    /// or looked up again. The oldest asked first.
+    /// or looked up again, and whose own wait after a step that failed
+    /// has passed ([`Publishing::wait_after`]). The oldest asked first, so
+    /// that a publish that cannot be made holds up no other (D2 of the
+    /// review of #122).
     pub(crate) fn next(&self) -> Option<(String, Stage)> {
+        let now = Instant::now();
+        self.pending
+            .iter()
+            .filter(|p| p.stage != Stage::Wait && p.retry_at.is_none_or(|at| at <= now))
+            .min_by_key(|p| p.asked)
+            .map(|p| (p.request.name.clone(), p.stage))
+    }
+
+    /// When the first publish with work may take its step: now where one
+    /// has no wait, and none where no publish has work (they wait for a
+    /// cut, or none pends).
+    pub fn due_at(&self) -> Option<Instant> {
         self.pending
             .iter()
             .filter(|p| p.stage != Stage::Wait)
-            .min_by_key(|p| p.asked)
-            .map(|p| (p.request.name.clone(), p.stage))
+            .map(|p| p.retry_at.unwrap_or(p.asked))
+            .min()
+    }
+
+    /// A step of the publish of `name` that ended at `ended` failed on
+    /// object storage: it takes no step for its wait, one second doubling
+    /// to five minutes at each failure of it in a row
+    /// ([`crate::backoff`]). The wait is the publish's own: the other
+    /// publishes step meanwhile, and a publish that ends, however it
+    /// ends, takes its wait with it. A lookup that succeeds does not
+    /// reset it, since the lookup can succeed while the transaction
+    /// cannot be made (F3 of the review of #122). The wait, where the
+    /// publish still pends.
+    pub fn wait_after(&mut self, name: &str, ended: Instant) -> Option<Duration> {
+        let i = self.at(name)?;
+        let pending = &mut self.pending[i];
+        let wait = pending.errors.failed();
+        pending.retry_at = Some(ended + wait);
+        Some(wait)
     }
 
     fn at(&mut self, name: &str) -> Option<usize> {
