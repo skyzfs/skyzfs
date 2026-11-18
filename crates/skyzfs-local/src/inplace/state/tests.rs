@@ -2565,6 +2565,39 @@ fn a_write_into_a_hole_before_the_instant_reads_as_written() {
     assert_eq!(world.state.read(1, 16), Some(Read::Image), "data");
 }
 
+/// Once the set is dropped no cut reads by it, also a cut made whole
+/// again later: after a mismatch lets every held cut go, the next cut
+/// counts the whole volume as changed with a `lo` that is not 0, and a
+/// block of a hole that was written and uploaded before the drop reads
+/// from the image, though the dropped set still names its chunk. Each
+/// of the two conditions that keep it so (the set holds, the cut's `lo`
+/// is 0) covers the other: planted together they are caught here.
+#[test]
+fn a_cut_made_whole_after_the_drop_reads_the_holes_written_before_it() {
+    let steps = [
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Release,
+        Step::Write(16, 1),
+        Step::Cut,
+        Step::Flushed,
+    ];
+    let mut world = run_in(true, &steps, 0, 64, None).expect("runs");
+    assert_eq!(world.state.figures().holes, Holes::Dropped);
+    assert_ne!(world.disk.image[1], 0, "block 1 was written");
+    assert_eq!(world.state.abandon_all(), [2]);
+    let number = world.state.freeze(&marked(3), true);
+    world.state.flushed(number);
+    assert!(world.state.is_whole_cut(number));
+    assert_eq!(world.state.held().first().map(|c| c.lo), Some(1));
+    assert_eq!(world.state.read(number, 1), Some(Read::Image));
+    assert_eq!(world.state.read(number, 2), Some(Read::Image));
+    let slice = world.state.slice_from(number, 0, 64).expect("held");
+    assert!(slice.zeroes.is_empty(), "{slice:?}");
+    assert_eq!(slice.blocks, (0..64).collect::<Vec<u64>>());
+}
+
 /// The bit that says a block of a hole was written is the block's bit
 /// in the open map, stored before the write is begun, so a death
 /// between the bit and the write, or between the write and its answer,

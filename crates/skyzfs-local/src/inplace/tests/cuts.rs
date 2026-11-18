@@ -1613,6 +1613,55 @@ fn a_volume_made_zero_filled_has_no_holes_and_copies_as_before() {
     }
 }
 
+/// The image's holes are taken in whole blocks of the volume (M2.4e):
+/// on a file system of 512-byte blocks, one sector of data inside block
+/// 16, written there before the store started, makes block 16 data, and
+/// with it its chunk, and the first cut reads the sector. Block 16 is
+/// the first of its chunk, so that the hole after the sector would hold
+/// the whole chunk if a block were taken for a hole in part. An answer
+/// of the file system that goes back before the offset asked gives no
+/// set: the first cut then reads every block of the image, as before
+/// M2.4e.
+#[test]
+fn the_holes_are_whole_blocks_and_an_answer_that_goes_back_gives_none() {
+    for back in [false, true] {
+        let disk = created(64, 0);
+        disk.set_block_size_of(crate::store::HOME_NAME, Some(512))
+            .unwrap();
+        // A write of one sector writes no more than it: the disk's
+        // write unit is a sector while it is made.
+        disk.set_write_unit(512);
+        let mut home = disk.open(crate::store::HOME_NAME).unwrap();
+        home.write_at(16 * BLOCK + 512, &[0x5A; 512]).unwrap();
+        drop(home);
+        disk.set_write_unit(BLOCK);
+        disk.set_seek_data_back(back);
+        let mut store = start_on(&disk, 0, &region(), ON_CALLER);
+        let figures = store.cut_figures();
+        group(&mut store, 100, 7, 70);
+        let runs = zero_runs(&mut store, 1);
+        if back {
+            assert_eq!(figures.holes, CutHoles::None);
+            assert_eq!(figures.hole_chunks, 0);
+            assert!(runs.is_empty(), "{runs:?}");
+        } else {
+            assert_eq!(figures.holes, CutHoles::Held);
+            assert!(figures.hole_chunks > 0, "{figures:?}");
+            assert!(!runs.is_empty());
+            assert!(
+                runs.iter()
+                    .all(|&(first, n)| !(first..first + n).contains(&16)),
+                "block 16 in a run of zeros: {runs:?}"
+            );
+        }
+        let (blocks, _) = sliced(&mut store, 1, 16);
+        let block = &blocks[16].1;
+        assert_eq!(blocks[16].0, 16);
+        assert!(block[..512].iter().all(|&b| b == 0), "back {back}");
+        assert!(block[512..1024].iter().all(|&b| b == 0x5A), "back {back}");
+    }
+}
+
 /// A slice of a held cut reads each run of the image, and each run of
 /// copies in adjacent slots, in one read (M2.4, as M2.2d writes them):
 /// 16 blocks unchanged since the cut and 16 written over it in one

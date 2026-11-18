@@ -432,6 +432,7 @@ struct State {
     no_holes: bool,
     /// The system has no call that finds a file's data and holes.
     no_seek_data: bool,
+    seek_data_back: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
     /// Files, by inode, that lie on a file system of their own, with
@@ -690,6 +691,7 @@ impl SimDisk {
                 direct_refused_of: None,
                 no_holes: false,
                 no_seek_data: false,
+                seek_data_back: false,
                 block_size: Some(SECTOR),
                 block_sizes_of: BTreeMap::new(),
                 page_size: SECTOR,
@@ -1040,6 +1042,15 @@ impl SimDisk {
     /// ([`File::data_from`]). It can, unless this says otherwise.
     pub fn set_seek_data(&self, supported: bool) {
         self.lock().no_seek_data = !supported;
+    }
+
+    /// Whether the system answers [`File::data_from`] wrongly: asked
+    /// from an offset past 0, with a range that begins a block of the
+    /// file's file system before that offset and ends where the true
+    /// one does. No file system answers so; a caller must not go back
+    /// on it, nor take it for the file's data.
+    pub fn set_seek_data_back(&self, on: bool) {
+        self.lock().seek_data_back = on;
     }
 
     /// Whether the file system can deallocate a range of a file
@@ -2063,7 +2074,11 @@ impl File for SimFile {
         if start >= inode.len {
             return Ok(None);
         }
-        Ok(Some((start, ((last + 1) * unit).min(inode.len))))
+        let end = ((last + 1) * unit).min(inode.len);
+        if state.seek_data_back && offset > 0 {
+            return Ok(Some((offset.saturating_sub(unit), end)));
+        }
+        Ok(Some((start, end)))
     }
 }
 
@@ -2123,6 +2138,10 @@ mod tests {
         let mut buf = vec![0xEE; (4 * B) as usize];
         f.read_at(5 * B, &mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0));
+        disk.set_seek_data_back(true);
+        assert_eq!(f.data_from(0).unwrap(), Some((2 * B, 5 * B)));
+        assert_eq!(f.data_from(5 * B).unwrap(), Some((4 * B, 10 * B)));
+        disk.set_seek_data_back(false);
         disk.set_seek_data(false);
         assert_eq!(
             f.data_from(0).unwrap_err().kind(),

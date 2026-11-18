@@ -405,17 +405,14 @@ impl Taken {
         }
         let (blocks, records) = (size / BLOCK_SIZE, records_for(bound));
         let words = words_for(blocks, records);
-        // A state of version 2 is kept at its own length, shorter by the
-        // hole set (M2.4e): a start takes it up as it was.
+        // A named state of version 2 is kept at its own length, shorter
+        // by the hole set (M2.4e): a start takes it up as it was. A
+        // region in memory is the tests' (the daemon names its region),
+        // and is kept only at the length of this version.
         let old_words = words_of(OLDEST_READ, blocks, records);
         let mut found_version = None;
         let (region, kept) = match &hold.region {
-            super::CutRegion::Memory(region)
-                if region.words() >= words
-                    || (region.words() >= old_words
-                        && region.load(at::MAGIC) == MAGIC
-                        && region.load(at::VERSION) == OLDEST_READ) =>
-            {
+            super::CutRegion::Memory(region) if region.words() >= words => {
                 (StoreRegion::Memory(region.clone()), true)
             }
             super::CutRegion::Memory(_) => (StoreRegion::Memory(MemRegion::new(words)), false),
