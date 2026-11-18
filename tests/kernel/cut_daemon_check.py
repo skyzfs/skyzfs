@@ -1771,6 +1771,34 @@ def course_wants(name, rdir, status):
     return want, bad, notes
 
 
+BALANCE = ('cuts', 'uploaded', 'upload_found_committed', 'upload_committed_gone', 'upload_committed_kept',
+           'cuts_replaced', 'cuts_abandoned', 'cuts_held')
+
+
+def upload_balance(start, end):
+    """The cuts the store counted against where they went, over one
+    daemon's life (status.rs, `cuts_replaced`): between the look at its
+    start and the one after the drain, the change in `cuts` equals the
+    change in the cuts committed and let go (`uploaded` +
+    `upload_found_committed` - `upload_committed_gone` -
+    `upload_committed_kept`), plus those replaced, abandoned and held.
+    -> (True or False, detail)."""
+    missing = sorted({k for k in BALANCE for st in (start, end) if not (st.get(k) or '').isdigit()})
+    if missing:
+        return False, f"the status has no {', '.join(missing)} (a daemon before cuts_replaced?)"
+    d = {k: int(end[k]) - int(start[k]) for k in BALANCE}
+    committed = d['uploaded'] + d['upload_found_committed'] - d['upload_committed_gone'] - d['upload_committed_kept']
+    rest = committed + d['cuts_replaced'] + d['cuts_abandoned'] + d['cuts_held']
+    detail = (f"cuts {d['cuts']} = committed and let go {committed} + replaced {d['cuts_replaced']} + abandoned "
+              f"{d['cuts_abandoned']} + held {d['cuts_held']:+d}"
+              + ('' if rest == d['cuts'] else f": the right side is {rest}")
+              + f"; at the start upload_state {start.get('upload_state')!r}, after the drain "
+              f"{end.get('upload_state')!r}")
+    if rest != d['cuts']:
+        detail = detail.replace(' = ', ' != ', 1)
+    return rest == d['cuts'], detail
+
+
 def upload_lines(put, rdir, records, dcuts, status, name='life'):
     """The daemon's uploads (M2.T3 on M2.4c), where the watcher ran beside
     the recording -> (1 when a line is a verdict against the daemon, else
@@ -1861,6 +1889,11 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
         f"{status.get('upload_rule')!r}, upload_errors {status.get('upload_errors')!r}, lease_holder "
         f"{status.get('lease_holder')!r}; the drain took {secs} s")
     rc = rc if not wrong else 1
+    # The balance over the last instance, from its start to the drain.
+    k = max(int(m.group(1)) for m in (re.fullmatch(r'status-start-(\d+)\.txt', f) for f in os.listdir(rdir)) if m)
+    ok, detail = upload_balance(read_status(read_file(rdir, f'status-start-{k}.txt')), status)
+    put('upload_balance', 'PASS' if ok else 'FAIL', f'serve {k}: {detail}')
+    rc = rc if ok else 1
     if name in UPLOAD_COURSES:
         put('upload_course', 'FAIL' if cbad else 'PASS', '; '.join(cbad + notes) if cbad or notes else name)
         rc = rc if not cbad else 1

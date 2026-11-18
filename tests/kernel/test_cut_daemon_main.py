@@ -116,7 +116,7 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
         if upload is not None:
             written, blocks, _ = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
             got = upload(written, blocks, (status or held_status(records, read, dev, cs))
-                         + UPLOADED.format(n=len(written)))
+                         + UPLOADED.format(n=len(written), r=len(cs) - len(written)))
             written, blocks, status = got[:3]
             watcher_files(d, written, blocks, watch_log)
             # A course's own files (cut-record.sh), where upload gives them.
@@ -133,7 +133,10 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
 UPLOADED = ('upload_state idle\nupload_cut 0\nlease held\nlease_holder runner\nlease_epoch 1\nuploaded {n}\n'
             'uploaded_whole 1\nupload_mismatches 0\nupload_abandoned_at_mismatch 0\nupload_cuts_lost 0\n'
             'upload_given_up 0\nupload_committed_kept 0\nupload_found_committed 0\nupload_errors 0\n'
-            'upload_checked matched\nupload_rule delta\ncuts_held 0\n')
+            'upload_checked matched\nupload_rule delta\ncuts_held 0\nupload_committed_gone 0\n'
+            'cuts_replaced {r}\n')
+# The look at the daemon's start: nothing counted yet.
+STARTED = ''.join(f'{k} 0\n' for k in cdc.BALANCE) + 'upload_state unchecked\ncut_state begun\n'
 STATE = 'ab' * 16
 
 
@@ -152,6 +155,7 @@ def watcher_files(d, written, blocks, log):
     w('uploaded-blocks.tsv', ''.join(f'{k}\t{x["number"]}\t{b}\t{h}\n' for k, x in enumerate(written)
                                      for b, h in sorted(blocks[x.get('key', x['number'])].items())))
     w('drain.txt', 'seconds 3\nupload_state idle\ncuts_held 0\n')
+    w('status-start-1.txt', STARTED)
     w('rows.tsv', f"5\t{'cd' * 32} 7\t{STATE} 1 4\trunner 1 99\n")
 
 
@@ -697,7 +701,14 @@ class Main(unittest.TestCase):
                                  ('not idle', status('upload_state idle', 'upload_state backoff'), 'upload_status'),
                                  ('a cut still held', status('cuts_held 0', 'cuts_held 1'), 'upload_status'),
                                  ('fewer uploaded than fetched', lambda w, b, st: (w, b, re.sub(
-                                     r'^uploaded \d+$', 'uploaded 1', st, flags=re.M)), 'upload_status')):
+                                     r'^uploaded \d+$', 'uploaded 1', st, flags=re.M)), 'upload_status'),
+                                 ('a cut that went nowhere', lambda w, b, st: (w, b, re.sub(
+                                     r'^cuts (\d+)$', lambda m: f'cuts {int(m.group(1)) + 1}', st, flags=re.M)),
+                                  'upload_balance'),
+                                 ('a cut counted twice', status('cuts_replaced 0', 'cuts_replaced 1'),
+                                  'upload_balance'),
+                                 ('a daemon before cuts_replaced', status('cuts_replaced 0\n', ''),
+                                  'upload_balance')):
             with self.subTest(why):
                 rc, lines = recording(upload=upload)
                 self.assertEqual((rc, lines[key][0]), (1, 'FAIL'), lines[key])
@@ -926,7 +937,7 @@ class Courses(unittest.TestCase):
     def test_each_courses_files(self):
         """Each course's files and status as a right daemon leaves them
         pass, and each thing it could get wrong is named."""
-        st = cdc.read_status(UPLOADED.format(n=5))
+        st = cdc.read_status(UPLOADED.format(n=5, r=0))
         cut = (STATE, 5, 40)
         moved = {'moved-row.txt': row_file(cut), 'moved-status.txt': 'uploaded 5\n',
                  'end-row.txt': row_file(cut, head=OTHER_HEAD), 'others.tsv': f'head\t{OTHER_HEAD}\n'}
@@ -1007,6 +1018,27 @@ class Courses(unittest.TestCase):
         self.assertEqual(self.judge('ufailed', took, dict(delta, upload_rule='whole'))[0], ['upload_rule'])
         self.assertEqual(len(self.judge('ufailed', dict(failed, **{'serve-2.log': 'nothing\n'}), st)[1]), 1)
 
+    def test_the_balance_over_one_daemon(self):
+        """The balance is of changes from the start's look: a daemon that
+        took a state up starts with cuts, abandoned and held cuts
+        counted, and a cut held at its start that it found committed
+        counts there."""
+        start = dict.fromkeys(cdc.BALANCE, '0')
+        start.update(cuts='7', cuts_abandoned='2', cuts_held='1')
+        end = dict(start, cuts='12', uploaded='3', upload_found_committed='1', cuts_replaced='2', cuts_held='0')
+        ok, detail = cdc.upload_balance(start, end)
+        self.assertTrue(ok, detail)
+        self.assertIn('cuts 5 = committed and let go 4 + replaced 2 + abandoned 0 + held -1', detail)
+        for why, more in (('a cut gone', dict(cuts_replaced='1')), ('a kept commit', dict(upload_committed_kept='1')),
+                          ('a gone commit', dict(upload_committed_gone='1')),
+                          ('one more abandoned', dict(cuts_abandoned='3'))):
+            with self.subTest(why):
+                ok, detail = cdc.upload_balance(start, dict(end, **more))
+                self.assertFalse(ok)
+                self.assertIn(' != ', detail)
+        self.assertEqual(cdc.upload_balance(start, {k: v for k, v in end.items() if k != 'cuts_replaced'}),
+                         (False, 'the status has no cuts_replaced (a daemon before cuts_replaced?)'))
+
     def test_a_course_that_stops_the_uploads(self):
         """umoved from end to end: the cuts before the other writer's head
         are judged, its head is skipped, and the last fetched is the last
@@ -1033,6 +1065,9 @@ class Courses(unittest.TestCase):
                         .replace('upload_abandoned_at_mismatch 0', 'upload_abandoned_at_mismatch 2')
                         .replace('upload_checked matched', 'upload_checked head_moved'))
                 st = re.sub(r'uploaded \d+', f'uploaded {m + 1}', st)
+                # The cuts after the move went nowhere but to the abandoned.
+                cuts = int(re.search(r'^cuts (\d+)$', st, flags=re.M).group(1))
+                st = st.replace('cuts_abandoned 0', f'cuts_abandoned {cuts - m - 1}')
                 files = {'moved-row.txt': row_file(cut), 'moved-status.txt': f'uploaded {m + 1}\n',
                          'end-row.txt': row_file(cut, head=OTHER_HEAD) if not more else
                          row_file((STATE, fetched[-1]['number'], fetched[-1]['group']), head='dd' * 32),
