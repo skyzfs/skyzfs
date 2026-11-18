@@ -230,6 +230,8 @@ pub struct MemRegion(Arc<Mutex<Mem>>);
 struct Mem {
     words: Vec<u64>,
     stores: u64,
+    /// The loads made so far.
+    loads: u64,
     /// The stores left before the death, if one is to come.
     left: Option<u64>,
 }
@@ -266,6 +268,11 @@ impl MemRegion {
         self.mem().stores
     }
 
+    /// The loads made so far: what a reading of the state costs.
+    pub fn loads(&self) -> u64 {
+        self.mem().loads
+    }
+
     /// A region of its own holding what this one holds now: a file
     /// that a power cut left as it was then.
     #[cfg(test)]
@@ -283,7 +290,9 @@ impl Region for MemRegion {
     }
 
     fn load(&self, at: usize) -> u64 {
-        self.mem().words.get(at).copied().unwrap_or(0)
+        let mut mem = self.mem();
+        mem.loads += 1;
+        mem.words.get(at).copied().unwrap_or(0)
     }
 
     fn store(&mut self, at: usize, value: u64) {
@@ -1477,17 +1486,24 @@ impl<R: Region> CutState<R> {
     }
 
     /// The end of the run of hole chunks that holds `block`, in blocks,
-    /// within the volume: `block` itself where its chunk is no hole.
-    fn hole_run_end(&self, block: u64) -> u64 {
+    /// looked for no further than `stop` (at most the volume's end):
+    /// `block` itself where its chunk is no hole, and `stop` where the
+    /// run goes on to it. A slice ends a run at the next block of the
+    /// cut's map, so it reads the hole set up to there and no further,
+    /// and the slices of one cut read it once over (Codex on #125).
+    fn hole_run_end(&self, block: u64, stop: u64) -> u64 {
         let Some(base) = self.holes_base else {
             return block;
         };
         if !self.in_hole(block) {
             return block;
         }
+        let stop = stop.min(self.blocks);
         let chunks = hole_chunks(self.blocks);
+        // The chunks up to the one that holds the block before `stop`.
+        let last = stop.div_ceil(HOLE_BLOCKS).min(chunks);
         let mut chunk = block / HOLE_BLOCKS;
-        while chunk < chunks {
+        while chunk < last {
             let word = self.load(base + HOLE_HEADER + (chunk / 64) as usize);
             let left = 64 - chunk % 64;
             let ones = u64::from((word >> (chunk % 64)).trailing_ones());
@@ -1497,7 +1513,7 @@ impl<R: Region> CutState<R> {
             }
             chunk += left;
         }
-        (chunk.min(chunks) * HOLE_BLOCKS).min(self.blocks)
+        (chunk.min(chunks) * HOLE_BLOCKS).min(stop)
     }
 
     /// Whether `cut` reads `block` as zeros where its map does not hold
@@ -2490,9 +2506,7 @@ impl<R: Region> CutState<R> {
                     next
                 }
             };
-            let end = next_mapped.map_or(self.hole_run_end(block), |next| {
-                next.min(self.hole_run_end(block))
-            });
+            let end = self.hole_run_end(block, next_mapped.unwrap_or(self.blocks));
             slice.zeroes.push((block, end - block));
             block = end;
         }

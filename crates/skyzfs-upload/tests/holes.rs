@@ -130,6 +130,63 @@ async fn a_whole_cut_writes_its_holes_over_what_object_storage_held() {
     assert_eq!((figures.blocks, figures.zero_blocks), (read, BLOCKS - read));
 }
 
+/// The first cut, whole, goes up onto a commit of another writer's
+/// that holds other bytes in every block (the review of #125, G2). The
+/// blocks written lie apart, so that each slice of eight blocks holds
+/// several runs of zeros, and the last slice is a run alone, from after
+/// the last uberblock slot to the volume's end. Every block of every
+/// run is written over: the last block of a run, a slice's runs after
+/// its first, and the runs of a slice that has no block. Mutants: each
+/// of those left out, and object storage keeps old bytes there.
+#[tokio::test]
+async fn a_whole_cut_writes_every_run_of_its_holes_over_what_object_storage_held() {
+    let mut fx = Fixture::sparse(34).await;
+    fx.move_head_everywhere().await;
+    let mut store = fx.start();
+    // Twelve blocks, apart from one another and from the four slots of
+    // group 7 (blocks 39, 103, 167 and 231), all below the last slot:
+    // sixteen blocks to read, two slices of eight.
+    let written = [2, 5, 9, 14, 20, 27, 50, 70, 120, 140, 180, 200];
+    for (i, &block) in written.iter().enumerate() {
+        fx.write(&mut store, block, 0x40 + i as u8);
+    }
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 8);
+    let steps = up.run().await.expect("the upload");
+    let slices: Vec<(u64, u64)> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Read { blocks, zeroes, .. } => Some((*blocks, *zeroes)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        slices.iter().map(|&(blocks, _)| blocks).collect::<Vec<_>>(),
+        [8, 8, 0],
+        "the slices as (blocks, zeros): {slices:?}"
+    );
+    assert!(
+        slices.iter().all(|&(_, zeroes)| zeroes > 0),
+        "each slice has runs of zeros: {slices:?}"
+    );
+    let uploaded = fx
+        .assert_uploaded(7, "onto old bytes in every block")
+        .await;
+    for block in 0..BLOCKS {
+        let at = (block * BLOCK) as usize;
+        let old = old_byte(block);
+        assert!(
+            uploaded.content[at..at + BLOCK as usize]
+                .iter()
+                .any(|&byte| byte != old),
+            "block {block} still holds the old bytes"
+        );
+    }
+    let read = (written.len() as u64) + SLOTS;
+    let figures = up.figures();
+    assert_eq!((figures.blocks, figures.zero_blocks), (read, BLOCKS - read));
+}
+
 /// A reboot loses the cut state and the intent map: the next start
 /// begins a state with nothing known and records the image's holes anew,
 /// where nothing was written up to then; its first cut, whole, goes up
