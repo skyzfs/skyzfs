@@ -1763,15 +1763,17 @@ def course_wants(name, rdir, status):
             bad.append(f'served with --serve-without-upload, uploaded {n!r} cuts')
         want.update(lease_epoch=at_least(1))
         notes.append(f"lease_epoch {status.get('lease_epoch')!r} after the other holder let go")
-        # Node B's side: head was none at every look before the release.
+        # Node B's side: before the release, head stayed where it was at
+        # node B's first look (none, or the create's own commit, which
+        # names no cut) and the row named no cut.
         until = int(read_file(rdir, 'release-ns.txt').split()[0])
         before = [r for r in rows if len(r) == 4 and int(r[0]) < until]
         if not before:
             bad.append('node B read nothing before the other holder let the lease go')
-        moved = [r[1] for r in before if r[1] != 'none']
+        moved = [r for r in before if r[1] != before[0][1] or r[2] != 'none']
         if moved:
-            bad.append(f"node B read head {moved[0]} before the other holder let the lease go: the daemon "
-                       "uploaded without the lease")
+            bad.append(f"node B read head {moved[0][1]} and the row {moved[0][2]} before the other holder let the "
+                       f"lease go, head {before[0][1]} at its first look: the daemon uploaded without the lease")
     elif name == 'ulost':
         before, end = row('lost-row.txt'), row('end-row.txt')
         took = read_file(rdir, 'other-lease.txt').split()

@@ -1014,6 +1014,15 @@ class Courses(unittest.TestCase):
         early = dict(lease, **{'rows.tsv': lease_rows.replace('4\tnone\tnone', f"4\t{'cd' * 32} 6\t{STATE} 1 9")})
         self.assertEqual(len(self.judge('ulease', early, good)[1]), 1)
         self.assertEqual(len(self.judge('ulease', dict(lease, **{'release-ns.txt': '2\n'}), good)[1]), 1)
+        # Head at the create's own commit, which names no cut (run
+        # 44272704862), is no upload; a head that moves from it, or a row
+        # that names a cut under it, is.
+        made = f"{'ab' * 32} 0"
+        at_made = dict(lease, **{'rows.tsv': lease_rows.replace('\tnone\tnone\t', f'\t{made}\tnone\t')})
+        self.assertEqual(self.judge('ulease', at_made, good)[:2], ([], []))
+        for planted in (lease_rows.replace('4\tnone\tnone', f"4\t{'cd' * 32} 1\tnone"),
+                        lease_rows.replace('4\tnone\tnone', f'4\tnone\t{STATE} 1 9')):
+            self.assertEqual(len(self.judge('ulease', dict(lease, **{'rows.tsv': planted}), good)[1]), 1, planted)
         for fn, body in (('lease.tsv', 'refused_rc\t0\n'), ('status-start-1.txt', 'upload_state idle\nlease held\n'),
                          ('without-status.txt', 'uploaded 1\n')):
             self.assertTrue(self.judge('ulease', dict(lease, **{fn: body}), good)[1], fn)
