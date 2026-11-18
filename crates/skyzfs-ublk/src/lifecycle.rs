@@ -457,6 +457,11 @@ pub enum LockError {
 pub enum OpenError {
     /// It is marked as failed.
     MarkedFailed,
+    /// It opened, and the daemon refuses to serve it for a reason of its
+    /// own, said here: another holder has the volume's lease in object
+    /// storage (M2.4c). What the open wrote stays (its start token); no
+    /// device is touched. [`Stop::Refused`].
+    Refused(String),
     /// Anything else: it may pass.
     Other(String),
 }
@@ -515,6 +520,11 @@ pub enum Stop {
     /// marked. A waiting device of the volume was deleted. Exit status
     /// 4.
     Failed(String),
+    /// The store opened and the daemon refused to serve it, and why
+    /// ([`OpenError::Refused`]): another holder has the volume's lease in
+    /// object storage. No device was touched, and the volume has not
+    /// failed. Exit status 10.
+    Refused(String),
     /// Something else went wrong. No device was deleted. Exit status 1.
     Error(String),
 }
@@ -761,6 +771,10 @@ fn open<C: Control, R: Records, V: Volume>(
             Err((OpenError::Other(e), _)) => {
                 return Err(Stop::Error(format!("opening the store: {e}")))
             }
+            // Before the failure note is removed: a start refused here
+            // changes no note, and the next start judges the failure as
+            // this one did.
+            Err((OpenError::Refused(why), _)) => return Err(Stop::Refused(why)),
             Err((OpenError::MarkedFailed, lock)) => (Reason::Marked, lock),
         };
         // The log's own marker, and no failure note of this boot: if

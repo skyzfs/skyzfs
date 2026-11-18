@@ -181,7 +181,7 @@ use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{
-    CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, StartError,
+    CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, Opened, StartError,
 };
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
@@ -201,6 +201,8 @@ use crate::cli::{Exit, Serve};
 use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
 use crate::delay::Delayed;
 use crate::timing::{TimedControl, TimedVolume};
+use crate::upload::{Ended, Leased, Uploading, Uploads, END_LIMIT, RELEASE_LIMIT};
+use skyzfs_upload::Desk;
 
 /// The store that serves the volume: the in-place store, on the
 /// queue's thread. (Until M1.3t a choice between it and the log store
@@ -586,6 +588,9 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         cuts: Some(store.cuts()),
         held: Some(held_shown(store)),
         intent: Some(intent_shown(store)),
+        // The uploader's thread posts its own (`Board::post_upload`),
+        // which the board keeps.
+        upload: None,
     }
 }
 
@@ -617,11 +622,16 @@ fn intent_at_start_shown(at_start: Option<&IntentAtStart>, regions: u64) -> (Cut
     }
 }
 
-/// The held cuts' options of a start that holds cuts, with their state
-/// at `path` and the region of the intent map that `--intent-region-mib`
-/// gives, if any.
-fn hold_cuts_of(serve: &Serve, path: std::path::PathBuf, boot: [u8; 16]) -> Option<HoldCuts> {
-    serve.hold_cuts.then(|| HoldCuts {
+/// The held cuts' options of a start that holds cuts (`--hold-cuts`, or
+/// a volume that `uploads`), with their state at `path` and the region of
+/// the intent map that `--intent-region-mib` gives, if any.
+fn hold_cuts_of(
+    serve: &Serve,
+    uploads: bool,
+    path: std::path::PathBuf,
+    boot: [u8; 16],
+) -> Option<HoldCuts> {
+    (serve.hold_cuts || uploads).then(|| HoldCuts {
         region: CutRegion::Named(path),
         boot,
         bound: None,
@@ -721,8 +731,75 @@ pub fn serve(serve: &Serve) -> Exit {
     }
 }
 
+/// Where the host's name is read, for the lease's holder unless
+/// `--holder` is given: the kernel's name of the host (of its UTS
+/// namespace), what `hostname` prints. `$HOSTNAME` is a shell's, and not
+/// always in a daemon's environment.
+const HOSTNAME: &str = "/proc/sys/kernel/hostname";
+
+/// Whose the lease in object storage is: `--holder`, or the host's name.
+fn holder_of(serve: &Serve) -> Result<String, String> {
+    if let Some(holder) = &serve.holder {
+        return Ok(holder.clone());
+    }
+    let read = std::fs::read_to_string(HOSTNAME).map_err(|e| {
+        format!("the host's name ({HOSTNAME}), the lease's holder unless --holder is given: {e}")
+    })?;
+    let name = read.trim_end_matches('\n');
+    crate::cli::check_holder(name).map_err(|why| {
+        format!("{why}: the host's name cannot name the lease's holder; give --holder")
+    })?;
+    Ok(name.to_owned())
+}
+
+/// The uploads of the volume in `serve.dir`, if it has a place in object
+/// storage (the file `remote`, M2.4c): read before anything is touched,
+/// so that a file that cannot be read, or options of a lease for a
+/// volume with no place, refuse the serve with nothing to undo.
+fn uploads_of(serve: &Serve) -> Result<Option<Uploads>, String> {
+    let Some(remote) = crate::remote::read(&serve.dir)? else {
+        if serve.holder.is_some() || serve.lease_ttl_s.is_some() || serve.serve_without_upload {
+            return Err(format!(
+                "{} has no place in object storage (it was created without --endpoint): \
+                 --holder, --lease-ttl-s and --serve-without-upload are for a volume that has",
+                serve.dir.display()
+            ));
+        }
+        if serve.hooks.kill_at.is_some() {
+            return Err(format!(
+                "{} has no place in object storage: --kill-at-upload would never be reached",
+                serve.dir.display()
+            ));
+        }
+        return Ok(None);
+    };
+    let ttl = serve
+        .lease_ttl_s
+        .unwrap_or(crate::upload::DEFAULT_LEASE_TTL_S);
+    Uploads::new(&remote, holder_of(serve)?, ttl, serve.serve_without_upload)
+        .map(Some)
+        .map_err(|e| format!("the uploader's runtime: {e}"))
+}
+
+/// What the end of the uploader's thread says.
+fn upload_ended_said(ended: &Ended) -> String {
+    match ended {
+        Ended::Released => "lease: let go".into(),
+        Ended::Kept => "lease: kept until its time runs out".into(),
+        Ended::NotReleased(why) => {
+            format!("lease: not let go ({why}): it is kept until its time runs out")
+        }
+        Ended::NoAnswer => format!(
+            "lease: the uploader's thread did not end within {} ms, and the lease is kept \
+             until its time runs out",
+            (RELEASE_LIMIT + END_LIMIT).as_millis()
+        ),
+    }
+}
+
 fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
+    let mut uploads = uploads_of(serve)?;
     // The test build's record of the requests (`--request-log`): opened
     // before the volume or a device is touched, so that a path that
     // cannot be written refuses the serve with nothing to undo.
@@ -786,7 +863,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // open maps it, allocated and locked, under the volume's lock and
     // before a device is touched, and is refused where it cannot.
     let cuts_path = records.volume_run_dir().join(CUTS_STATE);
-    options.hold_cuts = hold_cuts_of(serve, cuts_path.clone(), boot);
+    options.hold_cuts = hold_cuts_of(serve, uploads.is_some(), cuts_path.clone(), boot);
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -811,8 +888,22 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         acknowledge_failure: serve.acknowledge_failure,
         async_delete_asserted: serve.async_delete_asserted,
     };
-    let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
+    // The lease in object storage is taken under the volume's lock, after
+    // the store's open and before a device is looked for (M2.4c).
+    let started = {
+        let mut leased = Leased::new(&mut volume, Opened::<FsDir>::share_lock, || {
+            uploads
+                .as_mut()
+                .map_or(Ok(()), |uploads| uploads.start().take())
+        });
+        lifecycle::start(&mut kernel, &mut records, &mut leased, &wanted)
+    };
+    let mut ready = match started {
         Ok(ready) => ready,
+        Err(Stop::Refused(why)) => {
+            say(why);
+            return Ok(Exit::LeaseHeld);
+        }
         Err(Stop::Unsupported(why)) => return Err(not_served(&why)),
         Err(Stop::Held) => {
             say("another instance or a live server holds the volume");
@@ -831,6 +922,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }
     if let Some(reason) = ready.acknowledged {
         say(format_args!("a failure was acknowledged: {reason}"));
+    }
+    // What the start's take of the lease found, and how long it took: said
+    // on a line of its own, and in no figure of the start's line.
+    let mut lease_time = Duration::ZERO;
+    if let Some((found, spent)) = uploads.as_ref().and_then(|u| u.started().found()) {
+        say(found.said(spent));
+        lease_time = spent;
     }
     // The main thread holds the volume's lock from here until this
     // function returns, by a hold of its own on the lock the store
@@ -961,6 +1059,18 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // until the queue's thread has had its first turn: on an idle
     // device, the first request.
     board.post_store(store_shown(&served, Default::default()));
+    // The upload as the start's lease left it, before the uploader's
+    // first turn; with another holder's lease, all there is to show.
+    if let Some(shown) = uploads.as_ref().and_then(|u| u.started().shown()) {
+        board.post_upload(shown);
+    }
+    let mut uploads = uploads.filter(|u| u.started().found().is_some_and(|(f, _)| f.uploads()));
+    // The uploader's calls on the store, answered on the queue's thread
+    // between its turns (M2.4c, decision 8).
+    let desk = uploads.as_ref().map(|_| {
+        let wake = wake.clone();
+        Desk::new(move || wake.wake())
+    });
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let hold = serve.hooks.hold;
@@ -971,9 +1081,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let size = shape.size;
     // The test build's commands about held cuts, on `SIGUSR2`.
     #[cfg(feature = "test-hooks")]
-    let mut commands = crate::cut_commands::Commands::new(records.volume_run_dir().to_owned());
+    let mut commands = crate::cut_commands::Commands::new(records.volume_run_dir().to_owned())
+        .uploading(uploads.is_some());
     let body = {
         let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
+        let desk = desk.clone();
         queue_body(move |queue| {
             let again = wake.clone();
             // Next to the kernel: the one commit sent with no
@@ -1000,6 +1112,16 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                     #[cfg(feature = "test-hooks")]
                     if commands.turn(flags.command.swap(false, Ordering::SeqCst), pump.target()) {
                         again.wake();
+                    }
+                }
+                // The uploader's call, if one waits, answered from the
+                // store; at the queue's end the desk is closed and a call
+                // that waits is dropped, with the upload under way.
+                if let Some(desk) = &desk {
+                    if ended {
+                        desk.close();
+                    } else {
+                        desk.answer(pump.target());
                     }
                 }
             })
@@ -1092,6 +1214,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         || flags.failed.load(Ordering::SeqCst),
         START_LIMIT,
     );
+    // The uploader's thread, once the device serves. Dropped at any end
+    // but exit 0, which lets the lease go: the drop keeps it.
+    let mut uploading: Option<Uploading> = None;
     let failed_at_start = match waited {
         StartWait::Answered(Ok(())) => false,
         StartWait::Answered(Err(e)) => {
@@ -1195,7 +1320,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // device's open and the queue's fetches; `start` is the start, or
         // the end of the recovery.
         let ms = |d: Duration| d.as_millis();
-        let devices = to_device.saturating_sub(volume.lock + volume.position + volume.recovery);
+        let devices =
+            to_device.saturating_sub(volume.lock + volume.position + volume.recovery + lease_time);
         say(format_args!(
             "serving device {number} ({}) after {} ms: lock {} ms, position {} ms, recovery {} ms \
          of a log of {log_bytes} bytes and {log_records} operations, devices {} ms (live {} ms, \
@@ -1216,7 +1342,20 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // Nothing is posted from here: the queue's thread is running and
         // the board holds its counters. (The publishing thread writes the
         // file once when it starts, whatever is posted then, and after
-        // that whenever the queue's thread posts a change.)
+        // that whenever the queue's thread posts a change.) The
+        // uploader's thread, from here on, posts what the status shows of
+        // the upload.
+        if let (Some(begun), Some(desk)) = (uploads.take(), desk) {
+            let board = board.clone();
+            let kill = serve.hooks.kill_at;
+            match begun.begin(desk, move |shown| board.post_upload(shown), kill) {
+                Ok(thread) => uploading = Some(thread),
+                Err(e) => say(format_args!(
+                    "warning: the uploader's thread could not start ({e}): the volume is served \
+                     with no upload, and its lease is kept until its time runs out"
+                )),
+            }
+        }
     }
 
     #[derive(PartialEq)]
@@ -1338,7 +1477,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if flags.failed.load(Ordering::SeqCst) {
         return Ok(failed_at_end(&mut kernel, &mut records, number, identity));
     }
-    ended(number, why == Why::Stop, stopped?)
+    let exit = ended(number, why == Why::Stop, stopped?)?;
+    // The lease is let go at exit 0 and kept at every other (decision 4).
+    if let Some(thread) = uploading.take() {
+        let release = exit == Exit::Done;
+        say(upload_ended_said(
+            &thread.end(release, RELEASE_LIMIT + END_LIMIT),
+        ));
+    }
+    Ok(exit)
 }
 
 /// The body of the queue's thread, as the binding takes it: for every
@@ -1853,6 +2000,84 @@ fn not_served(why: &skyzfs_ublk::features::Unsupported) -> String {
 mod tests {
     use super::*;
 
+    fn serving(dir: &Path, extra: &str) -> Serve {
+        let line = format!("serve --dir {} {extra}", dir.display());
+        match crate::cli::parse(line.split_whitespace().map(String::from)) {
+            Ok(crate::cli::Command::Serve(serve)) => serve,
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+
+    /// The place is the file `remote` in the volume's directory (M2.4c):
+    /// with none, nothing is uploaded and the options of a lease are
+    /// refused; a file that cannot be read refuses the serve, naming it;
+    /// with one, the uploads are made, and nothing asked of object
+    /// storage until the lease is taken.
+    #[test]
+    fn the_uploads_come_from_the_file_remote_and_the_lease_options_need_one() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let dir = keep.path();
+        assert!(uploads_of(&serving(dir, "")).expect("no place").is_none());
+        for extra in [
+            "--holder node-a",
+            "--lease-ttl-s 5",
+            "--serve-without-upload",
+        ] {
+            let refused = uploads_of(&serving(dir, extra))
+                .err()
+                .expect("refused with no place");
+            assert!(refused.contains("no place in object storage"), "{refused}");
+        }
+        #[cfg(feature = "test-hooks")]
+        {
+            let refused = uploads_of(&serving(dir, "--kill-at-upload put:1"))
+                .err()
+                .expect("a kill point never reached");
+            assert!(refused.contains("--kill-at-upload"), "{refused}");
+        }
+        std::fs::write(dir.join(crate::remote::REMOTE), "skyzfs-remote 2\n").expect("written");
+        let refused = uploads_of(&serving(dir, ""))
+            .err()
+            .expect("an unreadable place");
+        assert!(refused.contains(crate::remote::REMOTE), "{refused}");
+        assert!(refused.contains("version"), "{refused}");
+
+        let remote =
+            crate::remote::Remote::new("http://127.0.0.1:1", "volumes", "pg-1").expect("a place");
+        crate::remote::write(dir, &remote).expect("written");
+        let uploads = uploads_of(&serving(dir, "--holder node-a --lease-ttl-s 5"))
+            .expect("read")
+            .expect("uploads");
+        assert!(uploads.started().found().is_none(), "nothing taken yet");
+        assert!(uploads.started().shown().is_none());
+    }
+
+    /// The lease's holder is `--holder`, or else the host's name as the
+    /// kernel has it.
+    #[test]
+    fn the_holder_is_the_option_or_the_hosts_name() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let given = serving(keep.path(), "--holder node-a");
+        assert_eq!(holder_of(&given), Ok("node-a".to_owned()));
+        let host = std::fs::read_to_string(HOSTNAME).expect("the host's name");
+        assert_eq!(
+            holder_of(&serving(keep.path(), "")),
+            Ok(host.trim_end_matches('\n').to_owned())
+        );
+    }
+
+    /// What the end of the uploader's thread says, for each end.
+    #[test]
+    fn the_uploaders_end_is_said() {
+        assert_eq!(upload_ended_said(&Ended::Released), "lease: let go");
+        assert_eq!(
+            upload_ended_said(&Ended::Kept),
+            "lease: kept until its time runs out"
+        );
+        assert!(upload_ended_said(&Ended::NotReleased("refused".into())).contains("(refused)"));
+        assert!(upload_ended_said(&Ended::NoAnswer).contains("6000 ms"));
+    }
+
     /// A start refused for the kernel says what was not done and that a
     /// waiting device of the volume is left as it is. The option is said
     /// to let a start go on only when the release is all that lacks;
@@ -1902,14 +2127,18 @@ mod tests {
         let path = std::path::PathBuf::from("/run/v/cuts");
         let boot = [7; 16];
         let given = parsed("serve --dir /v/a --hold-cuts --intent-region-mib 64");
-        let hold = hold_cuts_of(&given, path.clone(), boot).expect("cuts are held");
+        let hold = hold_cuts_of(&given, false, path.clone(), boot).expect("cuts are held");
         assert_eq!(hold.intent_region, Some(64 << 20));
         assert_eq!(hold.boot, boot);
         assert!(matches!(&hold.region, CutRegion::Named(at) if *at == path));
         let default = parsed("serve --dir /v/a --hold-cuts");
-        let hold = hold_cuts_of(&default, path.clone(), boot).expect("cuts are held");
+        let hold = hold_cuts_of(&default, false, path.clone(), boot).expect("cuts are held");
         assert_eq!(hold.intent_region, None, "the store's default");
-        assert!(hold_cuts_of(&parsed("serve --dir /v/a"), path, boot).is_none());
+        assert!(hold_cuts_of(&parsed("serve --dir /v/a"), false, path.clone(), boot).is_none());
+        // A volume that uploads holds its cuts, given --hold-cuts or not
+        // (M2.4c).
+        let hold = hold_cuts_of(&parsed("serve --dir /v/a"), true, path, boot);
+        assert_eq!(hold.map(|hold| hold.intent_region), Some(None));
     }
 
     /// The status says how many regions the map named at the start: a

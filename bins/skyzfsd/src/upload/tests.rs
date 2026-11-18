@@ -1,0 +1,704 @@
+//! The daemon's side of the uploader, against a store in memory: the
+//! volume `create` makes or takes, the lease at the start, what the
+//! status shows, and the thread's end.
+
+use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
+
+use bytes::Bytes;
+use skynbd_engine::{keys, Engine, EngineConfig};
+use skynbd_format::{Commit, CommitKind, Superblock};
+use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
+use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore, Result as StoreResult};
+use skyzfs_blk::Buf;
+use skyzfs_local::inplace::CutSlice;
+use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
+use skyzfs_ublk::status::{CheckedShown, LeaseShown, RuleShown, UploadShown, UploadStateShown};
+use skyzfs_upload::{
+    Checked, Desk, Doing, EngineRemote, Figures, Keeper, LeaseState, Mismatch, Released,
+    RemoteError, Rule, Shown, State, Store, Uploadable,
+};
+
+use super::*;
+use crate::remote::Remote;
+
+const SIZE: u64 = 64 << 20;
+const TTL: u64 = 30_000;
+
+fn remote() -> Remote {
+    Remote::new("http://127.0.0.1:9000", "volumes", "pg-data").expect("a place")
+}
+
+type Mem = Arc<MemoryStore>;
+
+/// A store in memory, its refs with a clock the test moves, and the
+/// clock.
+struct World {
+    store: Mem,
+    now: Arc<AtomicU64>,
+}
+
+impl World {
+    fn new() -> Self {
+        Self {
+            store: Arc::new(MemoryStore::new()),
+            now: Arc::new(AtomicU64::new(1_000_000)),
+        }
+    }
+
+    fn refs(&self) -> Arc<ObjectRefStore<Mem>> {
+        let now = Arc::clone(&self.now);
+        Arc::new(
+            ObjectRefStore::new(Arc::clone(&self.store))
+                .with_clock(Arc::new(move || now.load(Ordering::SeqCst))),
+        )
+    }
+
+    fn keeper(&self, holder: &str) -> Keeper<Arc<ObjectRefStore<Mem>>> {
+        Keeper::new(self.refs(), remote().id, holder, TTL)
+    }
+
+    fn place(&self, size: u64) -> std::result::Result<Placed, String> {
+        block_on(place(Arc::clone(&self.store), self.refs(), &remote(), size))
+    }
+
+    fn get(&self, key: &str) -> Bytes {
+        block_on(self.store.get(key, None)).expect("there")
+    }
+}
+
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    runtime().expect("a runtime").block_on(future)
+}
+
+/// `create`'s volume: the superblock of the size asked with shards of
+/// 128 MiB, and head the empty commit; a second create of the name finds
+/// it so and takes it.
+#[test]
+fn a_create_makes_the_volume_with_the_empty_commit_and_takes_it_again() {
+    let world = World::new();
+    assert_eq!(world.place(SIZE), Ok(Placed::Made));
+    let vol = remote().id;
+    let superblock = Superblock::decode(&world.get(&keys::superblock(vol, 0))).expect("decoded");
+    assert_eq!(
+        (superblock.size, superblock.shard_bytes),
+        (SIZE, SHARD_BYTES)
+    );
+    let head = block_on(world.refs().get(vol, "head"))
+        .expect("read")
+        .expect("a head");
+    let commit = Commit::decode(&world.get(&keys::commit(vol, &head.commit))).expect("decoded");
+    assert!(commit.parent.is_none() && commit.segments.is_empty() && commit.group.is_none());
+    assert_eq!(world.place(SIZE), Ok(Placed::Found));
+    let again = block_on(world.refs().get(vol, "head"))
+        .expect("read")
+        .expect("a head");
+    assert_eq!(again.commit, head.commit, "taken as it was");
+}
+
+/// A name whose volume holds data, is of another size, has shards of
+/// another size or has been served is refused, and nothing is written.
+#[test]
+fn a_create_refuses_a_name_that_is_another_volumes() {
+    let vol = remote().id;
+
+    let world = World::new();
+    world.place(SIZE).expect("made");
+    let mut engine = block_on(Engine::open(
+        Arc::clone(&world.store),
+        world.refs(),
+        vol,
+        engine_config(0),
+    ))
+    .expect("opened");
+    engine.write(0, &[7u8; 4096]).expect("written");
+    block_on(engine.commit(CommitKind::Import)).expect("committed");
+    let refused = world.place(SIZE).expect_err("holds data");
+    assert!(refused.contains("holds data"), "{refused}");
+
+    let world = World::new();
+    world.place(SIZE).expect("made");
+    let refused = world.place(2 * SIZE).expect_err("another size");
+    assert!(
+        refused.contains(&format!("holds {SIZE} bytes, not {}", 2 * SIZE)),
+        "{refused}"
+    );
+
+    let world = World::new();
+    block_on(Engine::create_volume(
+        Arc::clone(&world.store),
+        world.refs(),
+        vol,
+        SIZE,
+        EngineConfig::default(),
+    ))
+    .expect("made with the engine's default shards");
+    let refused = world.place(SIZE).expect_err("other shards");
+    assert!(refused.contains("not made by skyzfsd"), "{refused}");
+
+    let world = World::new();
+    world.place(SIZE).expect("made");
+    block_on(world.refs().lease_acquire(vol, "node-a", TTL)).expect("taken");
+    let refused = world.place(SIZE).expect_err("served");
+    assert!(
+        refused.contains("has been served: its lease names node-a at epoch 1"),
+        "{refused}"
+    );
+
+    // A served name is refused before anything is made: no head.
+    let world = World::new();
+    block_on(world.refs().lease_acquire(vol, "node-a", TTL)).expect("taken");
+    world.place(SIZE).expect_err("served");
+    assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
+}
+
+/// A store that never answers.
+#[derive(Clone)]
+struct Stalled;
+
+#[async_trait::async_trait]
+impl ObjectStore for Stalled {
+    async fn put(&self, _: &str, _: Bytes) -> StoreResult<()> {
+        std::future::pending().await
+    }
+    async fn get(&self, _: &str, _: Option<Range<u64>>) -> StoreResult<Bytes> {
+        std::future::pending().await
+    }
+    async fn exists(&self, _: &str) -> StoreResult<bool> {
+        std::future::pending().await
+    }
+    async fn list(&self, _: &str) -> StoreResult<Vec<String>> {
+        std::future::pending().await
+    }
+    async fn delete(&self, _: &str) -> StoreResult<()> {
+        std::future::pending().await
+    }
+    async fn get_versioned(&self, _: &str) -> StoreResult<(Bytes, String)> {
+        std::future::pending().await
+    }
+    async fn put_if(
+        &self,
+        _: &str,
+        _: Bytes,
+        _: skynbd_store::Precondition,
+    ) -> StoreResult<String> {
+        std::future::pending().await
+    }
+}
+
+fn start<R: RefStore>(keeper: Keeper<R>, serve_without_upload: bool) -> Start<R> {
+    Start::new(runtime().expect("a runtime"), keeper, serve_without_upload)
+}
+
+/// A lease nobody holds is taken at epoch 1, and the status shows it
+/// held before the uploader's first turn.
+#[test]
+fn the_start_takes_a_lease_nobody_holds() {
+    let world = World::new();
+    let mut at = start(world.keeper("node-a"), false);
+    assert_eq!(at.found(), None);
+    assert_eq!(at.take(), Ok(()));
+    let (found, _) = at.found().expect("taken");
+    assert_eq!(found, &AtStart::Taken { epoch: 1 });
+    assert!(found.uploads());
+    let shown = at.shown().expect("shown");
+    assert_eq!(
+        (shown.state, shown.lease, shown.epoch),
+        (UploadStateShown::Idle, LeaseShown::Held, 1)
+    );
+    assert_eq!(shown.expires_unix_ms, 1_000_000 + TTL);
+    // The keeper goes on to the thread holding it.
+    let (_, keeper) = at.into_parts();
+    assert_eq!(keeper.state().epoch(), Some(1));
+}
+
+/// Another holder's lease refuses the volume, naming the holder; with
+/// `--serve-without-upload` the volume is served with no uploader, and
+/// the status says the lease is held by that holder.
+#[test]
+fn another_holders_lease_refuses_the_start_unless_the_operator_says_otherwise() {
+    let world = World::new();
+    block_on(world.keeper("node-b").keep());
+
+    let mut at = start(world.keeper("node-a"), false);
+    let refused = at.take().expect_err("refused");
+    assert!(
+        refused.contains(
+            "another holder has the volume's lease in object storage: node-b at \
+             epoch 1"
+        ),
+        "{refused}"
+    );
+    assert!(refused.contains("--serve-without-upload"), "{refused}");
+    assert_eq!(at.found(), None);
+
+    let mut at = start(world.keeper("node-a"), true);
+    assert_eq!(at.take(), Ok(()));
+    let (found, _) = at.found().expect("found");
+    assert_eq!(
+        found,
+        &AtStart::Another {
+            holder: "node-b".into(),
+            epoch: 1
+        }
+    );
+    assert!(!found.uploads(), "no uploader");
+    let shown = at.shown().expect("shown");
+    assert_eq!(shown.said(), "no lease: held by node-b at epoch 1");
+    assert_eq!(shown.lease, LeaseShown::None);
+    // Nothing was taken: the row is node-b's still.
+    let lease = block_on(world.refs().lease_get(remote().id))
+        .expect("read")
+        .expect("a row");
+    assert_eq!((lease.holder.as_str(), lease.epoch), ("node-b", 1));
+}
+
+/// Object storage out of reach, or silent past the limit: the volume is
+/// served, with no lease yet, and the status says why.
+#[test]
+fn a_store_out_of_reach_or_silent_serves_with_no_lease_yet() {
+    let failing = FaultStore::new(MemoryStore::new());
+    block_on(failing.arm(FaultOp::Any, "", 0));
+    let keeper = Keeper::new(
+        Arc::new(ObjectRefStore::new(failing)),
+        remote().id,
+        "node-a",
+        TTL,
+    );
+    let mut at = start(keeper, false);
+    assert_eq!(at.take(), Ok(()));
+    let (found, _) = at.found().expect("found");
+    assert!(
+        matches!(found, AtStart::Unreached(why) if why.starts_with("object storage could not be reached")),
+        "{found:?}"
+    );
+    assert!(found.uploads(), "the uploader takes it later");
+    let shown = at.shown().expect("shown");
+    assert_eq!(shown.state, UploadStateShown::NoLease);
+    assert!(
+        shown
+            .said()
+            .starts_with("no lease: object storage could not"),
+        "{}",
+        shown.said()
+    );
+
+    let keeper = Keeper::new(
+        Arc::new(ObjectRefStore::new(Stalled)),
+        remote().id,
+        "node-a",
+        TTL,
+    );
+    let mut at = start(keeper, false).with_limit(Duration::from_millis(50));
+    assert_eq!(at.take(), Ok(()));
+    let (found, spent) = at.found().expect("found");
+    assert_eq!(
+        found,
+        &AtStart::Unreached("object storage did not answer within 50 ms".into())
+    );
+    assert!(spent >= Duration::from_millis(50), "{spent:?}");
+    assert!(spent < LEASE_LIMIT, "{spent:?}");
+}
+
+/// The lock, the open store, and whether the open store was dropped.
+#[derive(Debug, PartialEq, Eq)]
+struct FakeLock(u32);
+
+struct FakeOpen {
+    lock: u32,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Drop for FakeOpen {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct FakeVolume {
+    fails: bool,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Volume for FakeVolume {
+    type Lock = FakeLock;
+    type Open = FakeOpen;
+
+    fn lock(&mut self) -> std::result::Result<FakeLock, LockError> {
+        Ok(FakeLock(7))
+    }
+
+    fn open(
+        &mut self,
+        lock: FakeLock,
+        _: bool,
+    ) -> std::result::Result<(FakeOpen, u64), (OpenError, FakeLock)> {
+        if self.fails {
+            return Err((OpenError::Other("no".into()), lock));
+        }
+        Ok((
+            FakeOpen {
+                lock: lock.0,
+                dropped: Arc::clone(&self.dropped),
+            },
+            SIZE,
+        ))
+    }
+}
+
+/// The take follows a successful open only. A take that refuses drops
+/// the open store and hands the lock back with the refusal.
+#[test]
+fn the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back() {
+    let share: fn(&FakeOpen) -> FakeLock = |open| FakeLock(open.lock);
+    let dropped = Arc::new(AtomicU64::new(0));
+    let takes = AtomicU64::new(0);
+
+    let mut volume = FakeVolume {
+        fails: false,
+        dropped: Arc::clone(&dropped),
+    };
+    let mut leased = Leased::new(&mut volume, share, || {
+        takes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let lock = leased.lock().expect("locked");
+    let (open, size) = leased.open(lock, false).map_err(|e| e.0).expect("open");
+    assert_eq!((open.lock, size), (7, SIZE));
+    assert_eq!(takes.load(Ordering::SeqCst), 1);
+    drop(open);
+
+    let mut leased = Leased::new(&mut volume, share, || Err("leased".to_string()));
+    let lock = leased.lock().expect("locked");
+    let before = dropped.load(Ordering::SeqCst);
+    match leased.open(lock, false) {
+        Err((OpenError::Refused(why), lock)) => {
+            assert_eq!((why.as_str(), lock), ("leased", FakeLock(7)));
+        }
+        Err((other, _)) => panic!("refused otherwise: {other:?}"),
+        Ok(_) => panic!("opened"),
+    }
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        before + 1,
+        "the open dropped"
+    );
+
+    let mut failing = FakeVolume {
+        fails: true,
+        dropped,
+    };
+    let takes = AtomicU64::new(0);
+    let mut leased = Leased::new(&mut failing, share, || {
+        takes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let lock = leased.lock().expect("locked");
+    assert!(matches!(
+        leased.open(lock, false),
+        Err((OpenError::Other(_), _))
+    ));
+    assert_eq!(
+        takes.load(Ordering::SeqCst),
+        0,
+        "no take after a failed open"
+    );
+}
+
+/// Each state, lease and figure of the uploader as the status file
+/// holds it.
+#[test]
+fn the_status_shows_the_uploader_as_it_is() {
+    let shown = |state: State, lease: LeaseState, figures: Figures| {
+        shown_of(&Shown {
+            state,
+            lease,
+            figures,
+        })
+    };
+    let held = LeaseState::Held {
+        epoch: 4,
+        expires_at_ms: 99,
+    };
+
+    let s = shown(
+        State::NoLease("nope".into()),
+        LeaseState::None("nope".into()),
+        Figures::default(),
+    );
+    assert_eq!(
+        (s.state, s.lease, s.said()),
+        (
+            UploadStateShown::NoLease,
+            LeaseShown::None,
+            "no lease: nope".to_string()
+        )
+    );
+
+    let s = shown(
+        State::LeaseLost {
+            holder: "node-b".into(),
+            epoch: 5,
+        },
+        LeaseState::Lost {
+            holder: "node-b".into(),
+            epoch: 5,
+        },
+        Figures::default(),
+    );
+    assert_eq!(
+        (s.state, s.lease, s.epoch),
+        (UploadStateShown::LeaseLost, LeaseShown::Lost, 5)
+    );
+    assert_eq!(s.said(), "lease lost to node-b at epoch 5");
+
+    let s = shown(State::Idle, held.clone(), Figures::default());
+    assert_eq!(
+        (s.state, s.lease, s.epoch, s.expires_unix_ms),
+        (UploadStateShown::Idle, LeaseShown::Held, 4, 99)
+    );
+
+    for (doing, state) in [
+        (Doing::Checking, UploadStateShown::Checking),
+        (Doing::Reading, UploadStateShown::Reading),
+        (Doing::Syncing, UploadStateShown::Syncing),
+        (Doing::Committing, UploadStateShown::Committing),
+        (Doing::Stopped, UploadStateShown::Stopped),
+    ] {
+        let s = shown(
+            State::Working(doing, Some(12)),
+            held.clone(),
+            Figures::default(),
+        );
+        assert_eq!((s.state, s.cut), (state, 12), "{doing:?}");
+    }
+    let s = shown(
+        State::Working(Doing::Checking, None),
+        held.clone(),
+        Figures::default(),
+    );
+    assert_eq!(s.cut, 0);
+
+    let s = shown(
+        State::Backoff {
+            why: "commit of cut 3 refused: conflict".into(),
+            wait: Duration::from_millis(1500),
+        },
+        held.clone(),
+        Figures::default(),
+    );
+    assert_eq!(s.said(), "commit of cut 3 refused: conflict, retry in 2 s");
+    assert_eq!(s.wait_ms, 1500);
+
+    let s = shown(State::Stopped, held.clone(), Figures::default());
+    assert_eq!(s.state, UploadStateShown::Stopped);
+
+    let s = shown(
+        State::Idle,
+        LeaseState::Unsure {
+            epoch: 4,
+            why: "timed out".into(),
+        },
+        Figures::default(),
+    );
+    assert_eq!((s.lease, s.epoch), (LeaseShown::Unsure, 4));
+    assert_eq!(s.why.said(), "the lease's last renewal failed: timed out");
+
+    let figures = Figures {
+        uploaded: 1,
+        uploaded_whole: 2,
+        blocks: 3,
+        found_committed: 4,
+        not_held: 5,
+        named: 6,
+        kept: 7,
+        mismatches: 8,
+        abandoned_at_mismatch: 9,
+        lost: 10,
+        gave_up: 11,
+        errors: 12,
+        last_error: Some(RemoteError::Volume("gone".into())),
+        checked: Checked::Mismatched(Mismatch::HeadMoved),
+        last_rule: Some(Rule::Whole),
+    };
+    let s = shown(State::Idle, held.clone(), figures);
+    let f = s.figures;
+    assert_eq!(
+        [
+            f.uploaded,
+            f.uploaded_whole,
+            f.blocks,
+            f.found_committed,
+            f.not_held,
+            f.named,
+            f.kept,
+            f.mismatches,
+            f.abandoned_at_mismatch,
+            f.lost,
+            f.gave_up,
+            f.errors
+        ],
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    );
+    assert_eq!(
+        (s.checked, s.rule),
+        (CheckedShown::HeadMoved, RuleShown::Whole)
+    );
+    assert!(
+        s.last_error.said().contains("gone"),
+        "{}",
+        s.last_error.said()
+    );
+    for (mismatch, checked) in [
+        (Mismatch::NoRow, CheckedShown::NoRow),
+        (Mismatch::NotTheBase, CheckedShown::NotTheBase),
+        (Mismatch::Unreadable, CheckedShown::Unreadable),
+    ] {
+        let figures = Figures {
+            checked: Checked::Mismatched(mismatch),
+            last_rule: Some(Rule::Delta),
+            ..Figures::default()
+        };
+        let s = shown(State::Idle, held.clone(), figures);
+        assert_eq!((s.checked, s.rule), (checked, RuleShown::Delta));
+    }
+    let s = shown(
+        State::Idle,
+        held,
+        Figures {
+            checked: Checked::Matched,
+            ..Figures::default()
+        },
+    );
+    assert_eq!(
+        (s.checked, s.rule, s.last_error.said()),
+        (CheckedShown::Matched, RuleShown::None, String::new())
+    );
+}
+
+/// A store that holds no cut: what the queue's thread answers from when
+/// nothing is held.
+struct Empty;
+
+impl Store for Empty {
+    fn uploadable(&mut self) -> Option<Uploadable> {
+        None
+    }
+    fn read(&mut self, _: u64, _: u64, _: &mut Buf) -> std::io::Result<CutSlice> {
+        Err(std::io::Error::other("no cut"))
+    }
+    fn sync_copies(&mut self, _: u64) -> std::io::Result<()> {
+        Err(std::io::Error::other("no cut"))
+    }
+    fn release(&mut self, _: u64) -> Released {
+        Released::Gone
+    }
+    fn name_committed(&mut self, _: u64, _: u64) -> bool {
+        false
+    }
+    fn abandon_all(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+}
+
+/// The queue's thread: answers after each wake until the desk closes.
+fn queue_thread(desk: Arc<Desk>, woken: mpsc::Receiver<()>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut store = Empty;
+        loop {
+            let _ = woken.recv_timeout(Duration::from_millis(5));
+            if desk.closed() {
+                return;
+            }
+            desk.answer(&mut store);
+        }
+    })
+}
+
+/// The uploader's thread over a volume made by `create`, with the lease
+/// taken at the start: what it posts, and its end.
+fn uploading(
+    world: &World,
+) -> (
+    Uploading,
+    mpsc::Receiver<UploadShown>,
+    std::thread::JoinHandle<()>,
+) {
+    world.place(SIZE).expect("made");
+    let mut at = start(world.keeper("node-a"), false);
+    at.take().expect("taken");
+    let (runtime, keeper) = at.into_parts();
+    let (wake, woken) = mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), woken);
+    let (store, refs) = (Arc::clone(&world.store), world.refs());
+    let make = move |epoch| {
+        EngineRemote::new(
+            Arc::clone(&store),
+            Arc::new(ActingRefStore::new(Arc::clone(&refs), "node-a", epoch)),
+            remote().id,
+            engine_config(epoch),
+        )
+    };
+    let (posted, posts) = mpsc::channel();
+    let up = Uploading::start(runtime, keeper, make, desk, move |shown| {
+        let _ = posted.send(shown);
+    })
+    .expect("started");
+    (up, posts, queue)
+}
+
+/// The first post that is idle with the lease held.
+fn idle_and_held(posts: &mpsc::Receiver<UploadShown>) -> UploadShown {
+    loop {
+        let shown = posts
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a post within 10 s");
+        if shown.state == UploadStateShown::Idle && shown.lease == LeaseShown::Held {
+            return shown;
+        }
+    }
+}
+
+/// At exit 0 the lease is let go: its row says it expired, the holder and
+/// epoch kept, and the queue's thread ends with the desk closed.
+#[test]
+fn the_end_at_exit_0_lets_the_lease_go() {
+    let world = World::new();
+    let (up, posts, queue) = uploading(&world);
+    let shown = idle_and_held(&posts);
+    assert_eq!(shown.epoch, 1);
+    assert_eq!(up.end(true, RELEASE_LIMIT), Ended::Released);
+    queue.join().expect("the queue's thread ended at the close");
+    let lease = block_on(world.refs().lease_get(remote().id))
+        .expect("read")
+        .expect("a row");
+    assert_eq!((lease.holder.as_str(), lease.epoch), ("node-a", 1));
+    assert_eq!(lease.expires_at_ms, 0, "let go");
+}
+
+/// At any other end the lease is kept, asked for or not (an early return
+/// drops the thread's handle).
+#[test]
+fn any_other_end_keeps_the_lease() {
+    for asked in [true, false] {
+        let world = World::new();
+        let (up, posts, queue) = uploading(&world);
+        idle_and_held(&posts);
+        if asked {
+            assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
+        } else {
+            drop(up);
+        }
+        queue.join().expect("the queue's thread ended at the close");
+        let lease = block_on(world.refs().lease_get(remote().id))
+            .expect("read")
+            .expect("a row");
+        assert_eq!(lease.holder, "node-a");
+        assert!(lease.expires_at_ms > 0, "kept, asked: {asked}");
+    }
+}

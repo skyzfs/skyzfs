@@ -49,6 +49,7 @@ skyzfs-mapped = { path = "crates/skyzfs-mapped" }
 skyzfs-ublk = { path = "crates/skyzfs-ublk" }
 skyzfs-ublk-sys = { path = "crates/skyzfs-ublk-sys" }
 skyzfs-uberblock = { path = "crates/skyzfs-uberblock" }
+skyzfs-upload = { path = "crates/skyzfs-upload" }
 
 # Core dependencies (design §11). Heavier deps (aws-sdk-s3, axum, redb,
 # tokio-rustls, moka) enter with the milestone that needs them (M1+), not
