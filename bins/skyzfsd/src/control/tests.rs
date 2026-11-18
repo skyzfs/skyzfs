@@ -36,7 +36,9 @@ fn the_lines_are_version_1s_words() {
     assert_eq!(Request::Cuts.line(), "cuts");
     assert_eq!(
         publish(None).line(),
-        format!("publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 manifest=5")
+        format!(
+            "publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 manifest=5"
+        )
     );
     assert_eq!(
         publish(Some(Duration::from_secs(90))).line(),
@@ -299,7 +301,10 @@ fn a_publish_hands_its_manifest_to_the_handler() {
     assert_eq!(reply.ok(), Some(Reply::Accepted));
     assert_eq!(written, format!("{HELLO}\naccepted\n"));
     assert_eq!(asked.count.load(Ordering::SeqCst), 1);
-    assert_eq!(asked.manifest.lock().map(|m| m.clone()).ok(), Some(b"hello".to_vec()));
+    assert_eq!(
+        asked.manifest.lock().map(|m| m.clone()).ok(),
+        Some(b"hello".to_vec())
+    );
 }
 
 /// Mutant: a request taken without the greeting, or one cut short
@@ -324,7 +329,10 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
         (format!("{HELLO}\ncuts please\n"), Code::Malformed),
         (format!("{HELLO}\n\u{7f}\u{0}\n"), Code::Malformed),
         (format!("{HELLO}\n{}\n", over.line()), Code::Manifest),
-        (format!("{HELLO}\n{}\n", expiry(Duration::ZERO)), Code::Expiry),
+        (
+            format!("{HELLO}\n{}\n", expiry(Duration::ZERO)),
+            Code::Expiry,
+        ),
         (
             format!("{HELLO}\n{}\n", expiry(EXPIRY_MAX + Duration::from_secs(1))),
             Code::Expiry,
@@ -390,12 +398,18 @@ mod socket {
         assert_eq!(reply, Reply::Pending);
         let reply = ask(&path, &publish(None), b"12345", IO_LIMIT).expect("asked");
         assert_eq!(reply, Reply::Pending);
-        assert_eq!(asked.manifest.lock().map(|m| m.clone()).ok(), Some(b"12345".to_vec()));
+        assert_eq!(
+            asked.manifest.lock().map(|m| m.clone()).ok(),
+            Some(b"12345".to_vec())
+        );
         let mut raw = UnixStream::connect(&path).expect("connect");
         raw.write_all(b"hello\n").expect("write");
         let mut back = String::new();
         raw.read_to_string(&mut back).expect("read");
-        assert!(back.starts_with(&format!("{HELLO}\nrefused version ")), "{back}");
+        assert!(
+            back.starts_with(&format!("{HELLO}\nrefused version ")),
+            "{back}"
+        );
         assert_eq!(
             channel.figures(),
             ChannelFigures {
@@ -416,15 +430,95 @@ mod socket {
         let dir = dir();
         let path = dir.path().join(SOCKET);
         let asked = Arc::new(Asked::default());
-        let channel =
-            Channel::open_checked(&path, recording(&asked, Reply::Accepted), |_| false)
-                .expect("open");
+        let channel = Channel::open_checked(
+            &path,
+            recording(&asked, Reply::Accepted),
+            |_| false,
+            quiet(),
+        )
+        .expect("open");
         let reply = ask(&path, &publish(None), b"12345", IO_LIMIT).expect("asked");
         assert!(matches!(reply, Reply::Refused(Code::Peer, _)), "{reply:?}");
         assert_eq!(asked.count.load(Ordering::SeqCst), 0);
         assert_eq!(channel.figures().peer, 1);
         assert_eq!(channel.figures().answered, 0);
         assert!(channel.close());
+    }
+
+    /// A post that goes nowhere.
+    fn quiet() -> super::super::server::Post {
+        Box::new(|_| {})
+    }
+
+    /// The channel posts its figures after each connection it counts,
+    /// for the status (M2.5-2): an answer, a malformed request, and a
+    /// peer refused. Mutant: a count not posted.
+    #[test]
+    fn the_channel_posts_its_figures_after_each_connection() {
+        use std::io::{Read as _, Write as _};
+        let wait = Duration::from_secs(10);
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let (posted, posts) = std::sync::mpsc::channel();
+        let channel = Channel::open_checked(
+            &path,
+            recording(&asked, Reply::Accepted),
+            super::super::server::same_user_or_root,
+            Box::new(move |figures| {
+                let _ = posted.send(figures);
+            }),
+        )
+        .expect("open");
+        ask(&path, &Request::Cuts, &[], IO_LIMIT).expect("answered");
+        let first = posts.recv_timeout(wait).expect("a post");
+        assert_eq!(
+            first,
+            ChannelFigures {
+                answered: 1,
+                peer: 0,
+                malformed: 0
+            }
+        );
+        let mut stream = UnixStream::connect(&path).expect("connect");
+        stream
+            .write_all(format!("{HELLO}\nnonsense\n").as_bytes())
+            .expect("write");
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).expect("read");
+        assert!(answer.contains("refused malformed"), "{answer:?}");
+        let second = posts.recv_timeout(wait).expect("a post");
+        assert_eq!(
+            second,
+            ChannelFigures {
+                answered: 2,
+                peer: 0,
+                malformed: 1
+            }
+        );
+        assert_eq!(channel.figures(), second);
+        assert!(channel.close());
+
+        let (posted, posts) = std::sync::mpsc::channel();
+        let refusing = Channel::open_checked(
+            &path,
+            recording(&asked, Reply::Accepted),
+            |_| false,
+            Box::new(move |figures| {
+                let _ = posted.send(figures);
+            }),
+        )
+        .expect("open");
+        ask(&path, &Request::Cuts, &[], IO_LIMIT).expect("answered");
+        assert_eq!(
+            posts.recv_timeout(wait).expect("a post"),
+            ChannelFigures {
+                answered: 0,
+                peer: 1,
+                malformed: 0
+            }
+        );
+        assert!(refusing.close());
     }
 
     /// The check itself: this test's own user passes it.
@@ -473,7 +567,10 @@ mod socket {
         });
         let manifest = vec![0u8; 4 * MANIFEST_MAX];
         let reply = ask(&path, &over, &manifest, IO_LIMIT).expect("asked");
-        assert!(matches!(reply, Reply::Refused(Code::Manifest, _)), "{reply:?}");
+        assert!(
+            matches!(reply, Reply::Refused(Code::Manifest, _)),
+            "{reply:?}"
+        );
         assert_eq!(asked.count.load(Ordering::SeqCst), 0);
         assert!(channel.close());
     }
@@ -616,10 +713,12 @@ mod uploader {
     #[test]
     fn an_uploader_that_does_not_answer_in_time_reads_no_answer() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler =
-            handler::uploader(A, tx, Duration::from_millis(50)).expect("a handler");
+        let mut handler = handler::uploader(A, tx, Duration::from_millis(50)).expect("a handler");
         let reply = handler(&Request::Cuts, Vec::new());
-        assert!(matches!(reply, Reply::Refused(Code::NoAnswer, _)), "{reply:?}");
+        assert!(
+            matches!(reply, Reply::Refused(Code::NoAnswer, _)),
+            "{reply:?}"
+        );
         drop(rx);
     }
 
@@ -651,7 +750,10 @@ mod uploader {
             tx.try_send(Control::Cuts(reply)).expect("room");
         }
         let reply = handler(&Request::Cuts, Vec::new());
-        assert!(matches!(reply, Reply::Refused(Code::NoAnswer, _)), "{reply:?}");
+        assert!(
+            matches!(reply, Reply::Refused(Code::NoAnswer, _)),
+            "{reply:?}"
+        );
         drop(rx);
     }
 

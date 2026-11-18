@@ -491,6 +491,8 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         ("put:1", KillAt::Put(1)),
         ("swap:1", KillAt::Swap(1)),
         ("swap:12", KillAt::Swap(12)),
+        ("manifest:1", KillAt::Manifest(1)),
+        ("publish:2", KillAt::Publish(2)),
     ] {
         let Ok(Command::Serve(serve)) = kill(spec) else {
             panic!("{spec:?}: {:?}", kill(spec));
@@ -498,7 +500,18 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         assert_eq!(serve.hooks.kill_at, Some(want), "{spec:?}");
     }
     for bad in [
-        "put:0", "put", "swap:", "swap:x", "commit:1", "put:1:2", ":1", "put:-1",
+        "put:0",
+        "put",
+        "swap:",
+        "swap:x",
+        "commit:1",
+        "put:1:2",
+        ":1",
+        "put:-1",
+        "manifest:0",
+        "publish:",
+        "publish:x",
+        "snap:1",
     ] {
         assert!(matches!(kill(bad), Err(UsageError::Value(..))), "{bad:?}");
     }
@@ -821,7 +834,8 @@ fn the_channels_commands_name_a_volume_and_a_request() {
     ] {
         assert_eq!(plain(line).map(|c| c.name()), Ok(name));
     }
-    let full = format!("publish --dir /v/a --name t --attachment {a} --state {s} --after 3 --group 41");
+    let full =
+        format!("publish --dir /v/a --name t --attachment {a} --state {s} --after 3 --group 41");
     let long = "n".repeat(129);
     for bad in [
         "cuts".to_string(),

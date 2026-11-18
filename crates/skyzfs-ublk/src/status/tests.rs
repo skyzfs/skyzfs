@@ -94,6 +94,12 @@ fn sample() -> Status {
                 }),
             }),
             upload: Some(sample_upload()),
+            channel: Some(ChannelShown {
+                state: ChannelStateShown::NoUpload,
+                answered: 70,
+                peer: 71,
+                malformed: 72,
+            }),
         },
     }
 }
@@ -109,6 +115,7 @@ fn sample_upload() -> UploadShown {
         expires_unix_ms: 45,
         figures: UploadFigures {
             zero_blocks: Some(62),
+            not_offered: Some(64),
             ..UploadFigures::of(std::array::from_fn(|i| 50 + i as u64))
         },
         checked: CheckedShown::NotTheBase,
@@ -116,6 +123,25 @@ fn sample_upload() -> UploadShown {
         why: Text::new("the why"),
         holder: Text::new("node-a"),
         last_error: Text::new("object storage: gone"),
+        publish: Some(sample_publish()),
+    }
+}
+
+/// The publishes, with every field set apart.
+fn sample_publish() -> PublishShown {
+    PublishShown {
+        accepted: 65,
+        published: 66,
+        found: 67,
+        refused: 68,
+        expired: 69,
+        withdrawn: 73,
+        pending: 74,
+        oldest_ms: 75,
+        last_cut: 76,
+        last_group: 77,
+        oldest: Text::new("snap-old"),
+        last: Text::new("snap-last"),
     }
 }
 
@@ -124,8 +150,8 @@ fn sample_upload() -> UploadShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 1032);
-    assert_eq!(&bytes[..8], b"SKYZST17");
+    assert_eq!(bytes.len(), 1408);
+    assert_eq!(&bytes[..8], b"SKYZST18");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -191,6 +217,21 @@ fn the_file_has_the_documented_layout() {
         (1008, 1),
         (1016, 63),
         (1024, 62),
+        (1032, 64),
+        (1040, 65),
+        (1048, 66),
+        (1056, 67),
+        (1064, 68),
+        (1072, 69),
+        (1080, 73),
+        (1088, 74),
+        (1096, 75),
+        (1104, 76),
+        (1112, 77),
+        (1376, 2),
+        (1384, 70),
+        (1392, 71),
+        (1400, 72),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -201,6 +242,8 @@ fn the_file_has_the_documented_layout() {
         (584, "the why"),
         (712, "node-a"),
         (840, "object storage: gone"),
+        (1120, "snap-old"),
+        (1248, "snap-last"),
     ] {
         assert_eq!(
             &bytes[at..at + text.len()],
@@ -295,6 +338,7 @@ fn as_of(version: u32) -> Status {
     status.shown.held = None;
     status.shown.intent = None;
     status.shown.upload = None;
+    status.shown.channel = None;
     if version < 10 {
         status.counters.commands_aborted = 0;
         status.counters.commands_failed = 0;
@@ -381,7 +425,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 10] = [
+    let versions: [(&[u8; 8], usize); 11] = [
+        (b"SKYZST18", 1408),
         (b"SKYZST17", 1032),
         (b"SKYZST16", 1008),
         (b"SKYZST15", 976),
@@ -570,9 +615,169 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
         .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
 }
 
+/// What a file before the eighteenth version does not say: the cuts not
+/// offered, the publishes and the channel (M2.5-2).
+fn without_publishes(status: &mut Status) {
+    if let Some(upload) = &mut status.shown.upload {
+        upload.figures.not_offered = None;
+        upload.publish = None;
+    }
+    status.shown.channel = None;
+}
+
+/// A file of the seventeenth version (1032 bytes, `SKYZST17`): this
+/// version's fields up to the publishes, at the same places.
+fn seventeenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..1032].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST17");
+    bytes
+}
+
+/// A file of the seventeenth version is still read, with the image's
+/// holes and without the cuts not offered, the publishes or the channel
+/// (M2.5-2), whose keys `status` does not print for it.
+#[test]
+fn a_file_of_the_seventeenth_version_is_read_without_the_publishes() {
+    let read = decode(&seventeenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 17;
+    without_publishes(&mut expected);
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "upload_zero_blocks"), Some("62"));
+    assert_eq!(value(&lines, "cut_hole_chunks"), Some("63"));
+    assert!(!lines.iter().any(|(key, _)| key.starts_with("publish")
+        || key.starts_with("control")
+        || *key == "upload_not_offered"));
+}
+
+/// The publishes and the channel are printed from an eighteenth file:
+/// every key, whether or not the daemon uploads or has a channel; a
+/// name not set is printed as `none`, and a state this version does
+/// not know as unsaid.
+#[test]
+fn status_prints_the_publishes_and_the_channel() {
+    let lines_of = |status: &Status| {
+        let read = decode(&encode(status)).expect("a status");
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(&sample());
+    for (key, value_) in [
+        ("upload_not_offered", "64"),
+        ("publish_accepted", "65"),
+        ("publish_published", "66"),
+        ("publish_found", "67"),
+        ("publish_refused", "68"),
+        ("publish_expired", "69"),
+        ("publish_withdrawn", "73"),
+        ("publish_pending", "74"),
+        ("publish_oldest", "snap-old"),
+        ("publish_oldest_ms", "75"),
+        ("publish_last", "snap-last"),
+        ("publish_last_cut", "76"),
+        ("publish_last_group", "77"),
+        ("control", "no_upload"),
+        ("control_answered", "70"),
+        ("control_peer", "71"),
+        ("control_malformed", "72"),
+    ] {
+        assert_eq!(value(&lines, key), Some(value_), "{key}");
+    }
+    // The publishes after the uploader's other keys, the channel after
+    // them.
+    let at = |key: &str| lines.iter().position(|(k, _)| *k == key).expect(key);
+    assert!(at("upload_last_error") < at("publish_accepted"));
+    assert!(at("publish_last_group") < at("control"));
+    // A daemon that does not upload and has no channel: zeros, every key.
+    let mut quiet = sample();
+    quiet.shown.upload = Some(UploadShown::default());
+    quiet.shown.channel = None;
+    let lines = lines_of(&quiet);
+    for (key, value_) in [
+        ("upload_not_offered", "0"),
+        ("publish_pending", "0"),
+        ("publish_oldest", "none"),
+        ("publish_last", "none"),
+        ("control", "none"),
+        ("control_answered", "0"),
+    ] {
+        assert_eq!(value(&lines, key), Some(value_), "{key}");
+    }
+    for (state, said) in [
+        (ChannelStateShown::Uploads, "uploads"),
+        (ChannelStateShown::NoUpload, "no_upload"),
+        (ChannelStateShown::Failed, "failed"),
+    ] {
+        let mut status = sample();
+        status.shown.channel = Some(ChannelShown {
+            state,
+            ..ChannelShown::default()
+        });
+        assert_eq!(value(&lines_of(&status), "control"), Some(said));
+    }
+    let mut bytes = encode(&sample());
+    bytes[1376..1384].copy_from_slice(&9u64.to_le_bytes());
+    let read = decode(&bytes).expect("a status");
+    assert_eq!(
+        read.shown.channel.map(|c| c.state),
+        Some(ChannelStateShown::Unsaid)
+    );
+}
+
+/// The channel's post is kept by the store's and by the uploader's, and
+/// a change of it alone is written.
+#[test]
+fn the_channels_post_is_kept_and_written_on_its_own() {
+    let board = Board::new();
+    let channel = ChannelShown {
+        state: ChannelStateShown::Uploads,
+        answered: 1,
+        peer: 0,
+        malformed: 0,
+    };
+    board.post_channel(channel);
+    board.post_store(StoreShown::default());
+    board.post_upload(sample_upload());
+    assert_eq!(board.lock().store.channel, Some(channel));
+    let (written, wrote) = mpsc::channel();
+    let board = Arc::new(board);
+    let publisher = std::thread::spawn({
+        let board = board.clone();
+        move || {
+            board.publish_with_store(Pace::new(1), |_, shown, _| {
+                let _ = written.send(shown.channel);
+                Ok(())
+            })
+        }
+    });
+    let wait = Duration::from_secs(20);
+    assert_eq!(wrote.recv_timeout(wait), Ok(Some(channel)));
+    let more = ChannelShown {
+        answered: 2,
+        ..channel
+    };
+    board.post_channel(more);
+    assert_eq!(wrote.recv_timeout(wait), Ok(Some(more)));
+    board.stop();
+    publisher.join().expect("the publisher");
+}
+
 /// What a file before the seventeenth version does not say: the image's
 /// holes and the blocks uploaded as zeros (M2.4e).
 fn without_holes(status: &mut Status) {
+    without_publishes(status);
     if let Some(held) = &mut status.shown.held {
         held.holes = None;
     }
@@ -901,6 +1106,7 @@ fn a_file_of_the_twelfth_version_is_read_without_held_cuts() {
     let mut expected = sample();
     expected.version = 12;
     expected.shown.upload = None;
+    expected.shown.channel = None;
     expected.shown.held = None;
     expected.shown.intent = None;
     assert_eq!(read, expected);
@@ -1013,6 +1219,7 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     let mut expected = sample();
     expected.version = 11;
     expected.shown.upload = None;
+    expected.shown.channel = None;
     expected.shown.held = None;
     expected.shown.intent = None;
     if let Some(Cuts {
@@ -1504,6 +1711,23 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "upload_checked",
             "upload_rule",
             "upload_last_error",
+            "upload_not_offered",
+            "publish_accepted",
+            "publish_published",
+            "publish_found",
+            "publish_refused",
+            "publish_expired",
+            "publish_withdrawn",
+            "publish_pending",
+            "publish_oldest",
+            "publish_oldest_ms",
+            "publish_last",
+            "publish_last_cut",
+            "publish_last_group",
+            "control",
+            "control_answered",
+            "control_peer",
+            "control_malformed",
             "pid",
             "counters"
         ]
@@ -1914,7 +2138,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut seventeenth = encode(&sample()).to_vec();
+    let mut eighteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1926,6 +2150,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("15", b"SKYZST15"),
         ("16", b"SKYZST16"),
         ("17", b"SKYZST17"),
+        ("18", b"SKYZST18"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -1937,7 +2162,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "14" => fourteenth_file(),
             "15" => fifteenth_file(),
             "16" => sixteenth_file(),
-            _ => std::mem::take(&mut seventeenth),
+            "17" => seventeenth_file(),
+            _ => std::mem::take(&mut eighteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1952,7 +2178,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 17);
+    assert_eq!(VERSION, 18);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

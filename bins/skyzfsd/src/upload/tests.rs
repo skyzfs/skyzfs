@@ -15,7 +15,9 @@ use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore, Result as Stor
 use skyzfs_blk::Buf;
 use skyzfs_local::inplace::CutSlice;
 use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
-use skyzfs_ublk::status::{CheckedShown, LeaseShown, RuleShown, UploadShown, UploadStateShown};
+use skyzfs_ublk::status::{
+    CheckedShown, LeaseShown, PublishShown, RuleShown, Text, UploadShown, UploadStateShown,
+};
 use skyzfs_upload::{
     Checked, Desk, Doing, EngineRemote, Figures, Keeper, LeaseState, Mismatch, Released,
     RemoteError, Rule, Shown, State, Store, Uploadable,
@@ -863,6 +865,73 @@ fn the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back() {
     );
 }
 
+/// The publishes and the cuts not offered, as the status file holds
+/// them (M2.5-2): the figures, the pending and the oldest of them with
+/// its age, and the last published or found with its cut. With nothing
+/// asked, every field is zero and the names are empty.
+#[test]
+fn the_status_shows_the_publishes() {
+    let shown = |figures: Figures, publishes: skyzfs_upload::PublishesShown| {
+        shown_of(
+            &Shown {
+                state: State::Idle,
+                lease: LeaseState::None("none".into()),
+                figures,
+                publishes,
+            },
+            "node-a",
+        )
+    };
+    let publishes = skyzfs_upload::PublishesShown {
+        pending: 2,
+        oldest: Some(("snap-a".into(), Duration::from_millis(1500))),
+        figures: skyzfs_upload::PublishFigures {
+            accepted: 3,
+            published: 4,
+            found: 5,
+            refused: 6,
+            expired: 7,
+            withdrawn: 8,
+            last: Some((
+                "snap-b".into(),
+                skyzfs_local::inplace::CommittedCut {
+                    state: [1; 16],
+                    number: 9,
+                    group: 10,
+                },
+                [2; 32],
+            )),
+        },
+        ended: Vec::new(),
+    };
+    let figures = Figures {
+        not_offered: 11,
+        ..Figures::default()
+    };
+    let s = shown(figures, publishes);
+    assert_eq!(s.figures.not_offered, Some(11));
+    assert_eq!(
+        s.publish,
+        Some(PublishShown {
+            accepted: 3,
+            published: 4,
+            found: 5,
+            refused: 6,
+            expired: 7,
+            withdrawn: 8,
+            pending: 2,
+            oldest_ms: 1500,
+            last_cut: 9,
+            last_group: 10,
+            oldest: Text::new("snap-a"),
+            last: Text::new("snap-b"),
+        })
+    );
+    let s = shown(Figures::default(), Default::default());
+    assert_eq!(s.figures.not_offered, Some(0));
+    assert_eq!(s.publish, Some(PublishShown::default()));
+}
+
 /// Each state, lease and figure of the uploader as the status file
 /// holds it.
 #[test]
@@ -1123,6 +1192,7 @@ fn uploading_with(world: &World, take: bool, before: impl FnOnce(&Runtime)) -> U
         attachment: None,
         state: None,
         inbox,
+        told: Box::new(|_, _| {}),
     };
     uploading_from(world, take, before, publishes)
 }
@@ -1423,20 +1493,25 @@ fn the_region_is_aws_region_or_the_default() {
 /// The uploader's thread answers the channel's requests from its inbox,
 /// for the attachment and the cut state it was given: a publish of
 /// another attachment is refused, one of this attachment and state is
-/// taken.
+/// taken. A publish that ends (here, withdrawn) is told.
 ///
 /// Mutant: the attachment or the state not given to the uploader (the
-/// first publish is refused), or the inbox not read (no answer).
+/// first publish is refused), the inbox not read (no answer), or an
+/// ended publish not told.
 #[test]
 fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
     use skyzfs_upload::{Answer, Control, Progress, Refusal};
     let world = World::new();
     let (requests, inbox) = tokio::sync::mpsc::channel(4);
+    let (told, tellings) = mpsc::channel();
     let publishes = Publishes {
         attachment: Some([0xa1; 16]),
         state: Some([0x5e; 16]),
         inbox,
+        told: Box::new(move |name, progress| {
+            let _ = told.send((name.to_owned(), progress.clone()));
+        }),
     };
     let (up, posts, queue, _) = uploading_from(&world, true, |_| {}, publishes);
     idle_and_held(&posts);
@@ -1472,16 +1547,25 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     let (reply, answer) = tokio::sync::oneshot::channel();
     let mut other = ask([0xa2; 16]);
     other.name = "u".into();
-    requests.blocking_send(Control::Ask(other, reply)).expect("sent");
-    assert_eq!(
-        within(answer),
-        Some(Answer::Refused(Refusal::Attachment))
-    );
+    requests
+        .blocking_send(Control::Ask(other, reply))
+        .expect("sent");
+    assert_eq!(within(answer), Some(Answer::Refused(Refusal::Attachment)));
     let (reply, answer) = tokio::sync::oneshot::channel();
     requests
         .blocking_send(Control::Progress("t".into(), reply))
         .expect("sent");
     assert_eq!(within(answer), Some(Progress::Pending));
+    assert!(tellings.try_recv().is_err(), "nothing ended yet");
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests
+        .blocking_send(Control::Withdraw("t".into(), reply))
+        .expect("sent");
+    assert_eq!(within(answer), Some(Progress::Withdrawn));
+    assert_eq!(
+        tellings.recv_timeout(Duration::from_secs(10)),
+        Ok(("t".to_owned(), Progress::Withdrawn))
+    );
     assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
     queue.join().expect("the queue's thread");
 }

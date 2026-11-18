@@ -158,14 +158,13 @@ fn commit<R: skyzfs_upload::Remote>(
     group: u64,
     expected: Option<&[u8]>,
     row: &[u8],
-) -> std::result::Result<(), RemoteError> {
+) -> std::result::Result<CommitHash, RemoteError> {
     block_on(async {
         remote.observe().await?;
         remote.write(0, &[group as u8; 4096])?;
         remote
             .commit(group, expected.map(<[u8]>::to_vec), row.to_vec())
             .await
-            .map(|_| ())
     })
 }
 
@@ -245,4 +244,165 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
         .position(|s| s.starts_with("put_if") && s.contains("refs"))
         .unwrap_or_else(|| panic!("no swap: {said:?}"));
     assert!(kill < swap, "the kill before the swap: {said:?}");
+}
+
+/// `manifest:N` falls once the Nth PUT of a snapshot's framed manifest
+/// (a key under `snap/`) has landed: not at a segment's PUT, nor at the
+/// ZFS manifest's, nor at one that failed, and it falls once.
+#[test]
+fn manifest_n_falls_once_the_nth_framed_manifest_put_has_landed() {
+    let (inner, said) = log();
+    let faults = FaultStore::new(inner);
+    let store = KillStore::new(faults.clone(), Some(KillAt::Manifest(2)), noted(&said));
+    let put = |key: &str| block_on(store.put(key, Bytes::from_static(b"x")));
+    put("vols/a/seg/1").expect("a segment");
+    put("vols/a/skyzfs/manifest/1").expect("a ZFS manifest");
+    put("vols/a/snap/1").expect("the first framed manifest");
+    block_on(faults.arm(FaultOp::Put, "snap/2", 0));
+    assert!(put("vols/a/snap/2").is_err(), "a PUT that failed");
+    block_on(faults.disarm());
+    put("vols/a/seg/2").expect("another segment");
+    put("vols/a/snap/3").expect("the second framed manifest");
+    put("vols/a/snap/4").expect("a third");
+    assert_eq!(
+        taken(&said),
+        [
+            "put vols/a/seg/1",
+            "put vols/a/skyzfs/manifest/1",
+            "put vols/a/snap/1",
+            "put vols/a/seg/2",
+            "put vols/a/snap/3",
+            "kill after the framed manifest PUT 2 landed (vols/a/snap/3), before its ref \
+             was made",
+            "put vols/a/snap/4",
+        ]
+    );
+
+    let (inner, said) = log();
+    for kill in [Some(KillAt::Put(1)), Some(KillAt::Publish(1))] {
+        let store = KillStore::new(inner.clone(), kill, noted(&said));
+        block_on(store.put("vols/a/snap/1", Bytes::new())).expect("a manifest");
+    }
+    assert_eq!(
+        taken(&said),
+        ["put vols/a/snap/1", "put vols/a/snap/1"],
+        "no kill"
+    );
+}
+
+/// A snapshot of the cut `number` on `commit`, named `name`.
+fn publish<R: skyzfs_upload::Remote>(
+    remote: &mut R,
+    commit: CommitHash,
+    name: &str,
+    number: u64,
+) -> std::result::Result<(), RemoteError> {
+    let manifest = b"a ZFS manifest";
+    let snap = skynbd_types::SnapId(ulid::Ulid::from(u128::from(number)));
+    let row = skyzfs_upload::publish::SnapRow {
+        cut: skyzfs_local::inplace::CommittedCut {
+            state: [1; 16],
+            number,
+            group: 7,
+        },
+        commit,
+        snap,
+        manifest_len: manifest.len() as u32,
+        manifest_hash: *blake3::hash(manifest).as_bytes(),
+    };
+    let snapshot = Snapshot {
+        name,
+        snap,
+        row: &row,
+        manifest,
+    };
+    block_on(remote.publish(commit, &snapshot))
+}
+
+/// Through the remote the uploader makes: `manifest:N` falls after the
+/// Nth publish's framed manifest landed and before its ref's
+/// transaction; `publish:N` once the Nth publish's transaction has
+/// landed, and not at one that was refused.
+#[test]
+fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction() {
+    let (store, said) = log();
+    let (remote, refs, epoch) = placed(&store);
+    let mut make = maker(
+        store.clone(),
+        Arc::clone(&refs),
+        "node-a".into(),
+        remote.id,
+        Some(KillAt::Manifest(2)),
+        noted(&said),
+    );
+    let mut up = make(epoch);
+    let made = commit(&mut up, 7, None, b"row 7").expect("the commit");
+    taken(&said);
+    publish(&mut up, made, "first", 1).expect("the first publish");
+    let first = taken(&said);
+    assert!(
+        first.iter().all(|s| !s.starts_with("kill")),
+        "no kill at the first: {first:?}"
+    );
+    publish(&mut up, made, "second", 2).expect("the second publish");
+    let second = taken(&said);
+    let kill = second
+        .iter()
+        .position(|s| s.starts_with("kill after the framed manifest PUT 2 landed"))
+        .unwrap_or_else(|| panic!("no kill: {second:?}"));
+    assert!(
+        second[kill - 1].starts_with("put ") && second[kill - 1].contains("/snap/"),
+        "{second:?}"
+    );
+    assert!(
+        second[..kill]
+            .iter()
+            .any(|s| s.starts_with("put ") && s.contains("/skyzfs/manifest/")),
+        "the ZFS manifest before it: {second:?}"
+    );
+    assert!(
+        second[kill + 1..]
+            .iter()
+            .any(|s| s.starts_with("put_if") && s.contains("refs")),
+        "the ref's transaction after it: {second:?}"
+    );
+
+    let (store, said) = log();
+    let (remote, refs, epoch) = placed(&store);
+    let mut make = maker(
+        store.clone(),
+        Arc::clone(&refs),
+        "node-a".into(),
+        remote.id,
+        Some(KillAt::Publish(2)),
+        noted(&said),
+    );
+    let mut up = make(epoch);
+    let made = commit(&mut up, 7, None, b"row 7").expect("the commit");
+    publish(&mut up, made, "first", 1).expect("the first publish");
+    taken(&said);
+    assert_eq!(
+        publish(&mut up, made, "first", 1),
+        Err(RemoteError::Conflict),
+        "a publish refused"
+    );
+    let refused = taken(&said);
+    assert!(
+        refused.iter().all(|s| !s.starts_with("kill")),
+        "no kill at a refused publish: {refused:?}"
+    );
+    publish(&mut up, made, "second", 2).expect("the second publish");
+    let second = taken(&said);
+    let n = second.len();
+    assert!(n >= 2, "{second:?}");
+    assert_eq!(
+        second[n - 1],
+        "kill after the transaction of publish 2 (second) landed, before the uploader knew it"
+    );
+    assert!(
+        second[n - 2].starts_with("put_if") && second[n - 2].contains("refs"),
+        "the transaction landed first: {second:?}"
+    );
+    let made = block_on(refs.get(remote.id, "snap/second")).expect("read");
+    assert!(made.is_some(), "the ref is in the refs");
 }

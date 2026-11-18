@@ -19,6 +19,12 @@
 //! own, and one request per connection: the daemon answers and closes.
 //! A connection that sends nothing for [`IO_LIMIT`] is closed.
 //!
+//! `status` says what the channel is (`control`: `uploads` where the
+//! uploader answers it, `no_upload` where every request is refused
+//! `no-upload`, `failed` where the socket could not be made) and what it
+//! has done (`control_answered`, `control_peer`, `control_malformed`:
+//! [`ChannelFigures`]), as of its last connection.
+//!
 //! # The protocol, version 1
 //!
 //! Lines end with `\n` and are UTF-8, at most [`LINE_MAX`] bytes. The
@@ -241,7 +247,10 @@ impl Code {
     }
 
     fn from_word(word: &str) -> Option<Self> {
-        CODES.iter().find(|(_, w)| *w == word).map(|(code, _)| *code)
+        CODES
+            .iter()
+            .find(|(_, w)| *w == word)
+            .map(|(code, _)| *code)
     }
 
     /// The code of a publish's refusal.
@@ -464,8 +473,8 @@ impl Reply {
             "done" => {
                 let p = pairs(rest, &["commit"])?;
                 let text = take(&p, "commit")?;
-                let commit =
-                    unhex(text).ok_or_else(|| format!("`commit` is not 64 hex digits: `{text}`"))?;
+                let commit = unhex(text)
+                    .ok_or_else(|| format!("`commit` is not 64 hex digits: `{text}`"))?;
                 Ok(Reply::Done(commit))
             }
             other => Err(format!("`{other}` is not an answer")),
@@ -640,7 +649,7 @@ pub mod handler;
 #[cfg(target_os = "linux")]
 pub mod server;
 #[cfg(target_os = "linux")]
-pub use server::{Channel, ChannelFigures};
+pub use server::{Channel, ChannelFigures, Post};
 
 #[cfg(test)]
 mod tests;

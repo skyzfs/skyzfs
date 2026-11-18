@@ -2262,12 +2262,18 @@ async fn a_request_is_judged_against_the_stores_cut_state_when_it_is_asked() {
     let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
     *up.publishing() = Publishing::new(Some(ATTACHMENT), None);
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(up.control(Control::Ask(asked(state, "t", 0, 1), reply)).await);
+    assert!(
+        up.control(Control::Ask(asked(state, "t", 0, 1), reply))
+            .await
+    );
     assert_eq!(answer.await.ok(), Some(Answer::Accepted));
     let mut other = state;
     other[0] ^= 1;
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(!up.control(Control::Ask(asked(other, "u", 0, 1), reply)).await);
+    assert!(
+        !up.control(Control::Ask(asked(other, "u", 0, 1), reply))
+            .await
+    );
     assert_eq!(answer.await.ok(), Some(Answer::Refused(Refusal::State)));
     assert_eq!(up.publishing().progress("t"), Progress::Pending);
 }

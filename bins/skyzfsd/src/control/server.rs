@@ -36,6 +36,20 @@ struct Counts {
     malformed: AtomicU64,
 }
 
+impl Counts {
+    fn figures(&self) -> ChannelFigures {
+        ChannelFigures {
+            answered: self.answered.load(Ordering::Relaxed),
+            peer: self.peer.load(Ordering::Relaxed),
+            malformed: self.malformed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// What the channel's thread is given after each connection it counts:
+/// its figures, for the status (M2.5-2).
+pub type Post = Box<dyn Fn(ChannelFigures) + Send>;
+
 /// The channel's socket, answered on a thread of its own until
 /// [`Channel::close`].
 pub struct Channel {
@@ -73,15 +87,22 @@ impl Channel {
     /// Make the socket at `path` and answer it with `handler`, for a peer
     /// of the daemon's own user or root.
     pub fn open(path: &Path, handler: Handler) -> io::Result<Self> {
-        Self::open_checked(path, handler, same_user_or_root)
+        Self::open_checked(path, handler, same_user_or_root, Box::new(|_| {}))
     }
 
-    /// As [`Channel::open`], with `allowed` saying which peers' users may
-    /// ask (the tests refuse one).
+    /// As [`Channel::open`], with `post` given the figures after each
+    /// connection the thread counts.
+    pub fn open_posting(path: &Path, handler: Handler, post: Post) -> io::Result<Self> {
+        Self::open_checked(path, handler, same_user_or_root, post)
+    }
+
+    /// As [`Channel::open_posting`], with `allowed` saying which peers'
+    /// users may ask (the tests refuse one).
     pub fn open_checked(
         path: &Path,
         mut handler: Handler,
         allowed: fn(u32) -> bool,
+        post: Post,
     ) -> io::Result<Self> {
         remove_stale(path)?;
         let listener = UnixListener::bind(path)?;
@@ -95,7 +116,7 @@ impl Channel {
                 let stop = Arc::clone(&stop);
                 let counts = Arc::clone(&counts);
                 move || {
-                    serve(&listener, &mut handler, allowed, &stop, &counts);
+                    serve(&listener, &mut handler, allowed, &stop, &counts, &post);
                     let _ = ended_tx.send(());
                 }
             })?;
@@ -115,11 +136,7 @@ impl Channel {
 
     /// What it has done so far.
     pub fn figures(&self) -> ChannelFigures {
-        ChannelFigures {
-            answered: self.counts.answered.load(Ordering::Relaxed),
-            peer: self.counts.peer.load(Ordering::Relaxed),
-            malformed: self.counts.malformed.load(Ordering::Relaxed),
-        }
+        self.counts.figures()
     }
 
     /// Stop answering and remove the socket. Whether the thread ended
@@ -160,6 +177,7 @@ fn serve(
     allowed: fn(u32) -> bool,
     stop: &AtomicBool,
     counts: &Counts,
+    post: &Post,
 ) {
     loop {
         let accepted = listener.accept();
@@ -180,6 +198,7 @@ fn serve(
             Ok(uid) if allowed(uid) => {}
             _ => {
                 counts.peer.fetch_add(1, Ordering::Relaxed);
+                post(counts.figures());
                 let refusal = Reply::Refused(Code::Peer, "this daemon answers its own user".into());
                 let _ = stream.write_all(format!("{HELLO}\n{}\n", refusal.line()).as_bytes());
                 continue;
@@ -192,6 +211,7 @@ fn serve(
             if matches!(reply, Reply::Refused(Code::Malformed | Code::Version, _)) {
                 counts.malformed.fetch_add(1, Ordering::Relaxed);
             }
+            post(counts.figures());
         }
     }
 }

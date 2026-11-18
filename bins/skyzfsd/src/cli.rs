@@ -136,7 +136,8 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
                  [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
                  [--commit-delay-ms N] [--request-log PATH] [--request-log-content hash|whole]
                  [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
-                 [--refuse-one-fetch start|recovery] [--kill-at-upload put:N|swap:N]";
+                 [--refuse-one-fetch start|recovery]
+                 [--kill-at-upload put:N|swap:N|manifest:N|publish:N]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -590,6 +591,12 @@ pub enum KillAt {
     /// `swap:N`: once the Nth commit of a cut has landed (head and the
     /// cut's row swapped), before the cut is let go.
     Swap(u64),
+    /// `manifest:N`: once the Nth publish's framed manifest has landed,
+    /// before the transaction that makes its ref.
+    Manifest(u64),
+    /// `publish:N`: once the Nth publish's transaction has landed, before
+    /// the uploader knows it.
+    Publish(u64),
 }
 
 /// `--refuse-one-fetch`: at which start tag 0's first fetch is sent with
@@ -925,15 +932,23 @@ fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
     }
 }
 
-/// `--kill-at-upload`: `put:N` or `swap:N`, N from 1.
+/// `--kill-at-upload`: `put:N`, `swap:N`, `manifest:N` or `publish:N`, N
+/// from 1.
 fn kill_at(text: &str) -> Result<KillAt, UsageError> {
     let name = "--kill-at-upload";
-    let bad = || UsageError::Value(name.into(), "expected put:N or swap:N, N from 1");
+    let bad = || {
+        UsageError::Value(
+            name.into(),
+            "expected put:N, swap:N, manifest:N or publish:N, N from 1",
+        )
+    };
     let (kind, n) = text.split_once(':').ok_or_else(bad)?;
     let n = number(name, n).ok().filter(|&n| n >= 1).ok_or_else(bad)?;
     match kind {
         "put" => Ok(KillAt::Put(n)),
         "swap" => Ok(KillAt::Swap(n)),
+        "manifest" => Ok(KillAt::Manifest(n)),
+        "publish" => Ok(KillAt::Publish(n)),
         _ => Err(bad()),
     }
 }

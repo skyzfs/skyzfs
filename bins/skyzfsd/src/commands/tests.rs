@@ -1230,7 +1230,10 @@ mod channel {
         let output = ask(&publish(&volume, None), |_, request, bytes| {
             assert!(matches!(request, Request::Publish(p) if p.manifest == 0));
             assert!(bytes.is_empty());
-            Ok(Reply::Refused(Code::Taken, "the name names another commit".into()))
+            Ok(Reply::Refused(
+                Code::Taken,
+                "the name names another commit".into(),
+            ))
         });
         assert_eq!(output.exit, Exit::Error);
         assert_eq!(output.out, "refused taken the name names another commit\n");
@@ -1239,7 +1242,11 @@ mod channel {
             Err(io::Error::from(io::ErrorKind::ConnectionRefused))
         });
         assert_eq!(output.exit, Exit::Error);
-        assert!(output.err.contains("no answer from the daemon's channel"), "{}", output.err);
+        assert!(
+            output.err.contains("no answer from the daemon's channel"),
+            "{}",
+            output.err
+        );
     }
 
     /// Mutant: a manifest over the limit sent (the daemon would refuse it

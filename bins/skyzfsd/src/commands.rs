@@ -714,10 +714,7 @@ pub fn create_warning(dir: &Path, run_dir: &Path, boot: &[u8; 16]) -> Option<Str
 /// and one over `MANIFEST_MAX` is not sent. Exit 0 for an answer, 1 for a
 /// refusal or no answer: either way the request was not carried out (the
 /// line printed says which refusal).
-pub fn ask(
-    ask: &Ask,
-    asker: impl FnOnce(&Path, &Request, &[u8]) -> io::Result<Reply>,
-) -> Output {
+pub fn ask(ask: &Ask, asker: impl FnOnce(&Path, &Request, &[u8]) -> io::Result<Reply>) -> Output {
     use skyzfs_upload::publish::MANIFEST_MAX;
     let socket = match records::volume_run_dir(&ask.volume.run_dir, &ask.volume.dir) {
         Ok(dir) => dir.join(crate::control::SOCKET),
