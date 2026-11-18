@@ -789,6 +789,7 @@ fn start_holding(
             boot,
             bound: None,
             intent_region: None,
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };

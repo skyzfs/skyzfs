@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 976
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1008
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,14 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's fifteenth version (M2.4c). It adds the uploader
+//! This is the file's sixteenth version (M2.4d). It adds, after the
+//! fifteenth's fields, whether the intent map's header is synced at each
+//! release (`serve --intent-header-sync`) and the syncs begun for a
+//! header with no write waiting, with their time. Nothing is dropped or
+//! moved. The fifteenth (`SKYZST15`, 976 bytes) is still read, without
+//! them.
+//!
+//! The fifteenth version (M2.4c) added the uploader
 //! after the fourteenth's fields: what it is doing, the volume's lease,
 //! the driver's figures, its last check and the rule of the last cut
 //! uploaded, and three short texts (why it waits or has no lease, the
@@ -126,6 +133,8 @@
 //! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error or commit given up the uploader waits after |
 //! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost. A holder's name means one daemon (`--holder`, or the host's name and its machine id): a copy of a volume's files, a cloned VM image among them, must not be served under the same name |
 //! | 840 | 128 | `upload_last_error`: the last step that failed on object storage |
+//! | 976 | 8 | `intent_header_sync`: whether the intent map's header is synced at each release of a committed cut and where a committed cut is named (`serve --intent-header-sync`, M2.4d): 1 on; any other value, off. Off, the header is written without a sync, and a power cut that loses it costs one whole upload. On, a sync of the map's file begins on its helper once the header is written, and nothing waits for it |
+//! | 984 | 24 | the syncs of the map begun for a header with no write waiting, since this daemon started serving: how many, their summed time from begin to end, the longest. None where `intent_header_sync` is off. A header written while a sync for the writes that wait is under way is synced by the next, which is counted with the write path's (offset 392) when writes wait for it too |
 //! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
@@ -178,10 +187,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST15";
+const MAGIC: &[u8; 8] = b"SKYZST16";
 /// The version this crate writes.
-pub const VERSION: u32 = 15;
-const LEN: usize = 976;
+pub const VERSION: u32 = 16;
+const LEN: usize = 1008;
+
+/// The fifteenth version, still read: up to the header's sync, at the
+/// same places.
+const FIFTEENTH_MAGIC: &[u8; 8] = b"SKYZST15";
+const FIFTEENTH_LEN: usize = 976;
 
 /// The fourteenth version, still read: up to the uploader, at the same
 /// places.
@@ -612,6 +626,20 @@ pub struct IntentShown {
     pub syncs: Spent,
     /// The writes and write-zeroes that waited for a sync of the map.
     pub waits: u64,
+    /// The header's sync at each release (M2.4d). `None` in a file of a
+    /// version before the sixteenth.
+    pub header: Option<HeaderSyncShown>,
+}
+
+/// Whether the intent map's header is synced at each release, and the
+/// syncs begun for it (`serve --intent-header-sync`, M2.4d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HeaderSyncShown {
+    /// Whether it is synced.
+    pub on: bool,
+    /// The syncs of the map begun for a header with no write waiting,
+    /// with their time from begin to end.
+    pub syncs: Spent,
 }
 
 /// The held cuts, as the status file says them (`serve --hold-cuts`).
@@ -880,6 +908,18 @@ fn encode(status: &Status) -> [u8; LEN] {
         bytes[at..at + TEXT].copy_from_slice(&text.0);
     }
     bytes[968..976].copy_from_slice(&held.replaced.unwrap_or(0).to_le_bytes());
+    let header = intent.header.unwrap_or_default();
+    for (i, field) in [
+        u64::from(header.on),
+        header.syncs.count,
+        header.syncs.sum_ns,
+        header.syncs.max_ns,
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[976 + 8 * i..984 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
     bytes
 }
 
@@ -914,6 +954,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        16
+    } else if is(FIFTEENTH_LEN, FIFTEENTH_MAGIC) {
         15
     } else if is(FOURTEENTH_LEN, FOURTEENTH_MAGIC) {
         14
@@ -995,6 +1037,14 @@ fn decode(bytes: &[u8]) -> Option<Status> {
                 max_ns: field(408),
             },
             waits: field(416),
+            header: (version >= 16).then(|| HeaderSyncShown {
+                on: field(976) == 1,
+                syncs: Spent {
+                    count: field(984),
+                    sum_ns: field(992),
+                    max_ns: field(1000),
+                },
+            }),
         });
         let upload = (version >= 15).then(|| UploadShown {
             state: UploadStateShown::of(field(424)),
@@ -1692,6 +1742,18 @@ pub fn report(
                 ("intent_waits", intent.waits),
             ] {
                 lines.push((key, value.to_string()));
+            }
+            // From a file of the sixteenth version on (M2.4d).
+            if let Some(header) = intent.header {
+                let on = if header.on { "on" } else { "off" };
+                lines.push(("intent_header_sync", on.to_string()));
+                for (key, value) in [
+                    ("intent_header_syncs", header.syncs.count),
+                    ("intent_header_sync_ns", header.syncs.sum_ns),
+                    ("intent_header_sync_max_ns", header.syncs.max_ns),
+                ] {
+                    lines.push((key, value.to_string()));
+                }
             }
         }
         // The uploader, from a file that has it, after the intent map:

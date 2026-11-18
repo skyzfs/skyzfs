@@ -907,10 +907,15 @@ impl<D: Dir> Drop for InPlace<D> {
         // Codex's P2 there). Then the threads end, before the lock is
         // gone.
         loop {
-            let for_map = self
-                .intent
-                .as_ref()
-                .is_some_and(|intent| !intent.waiting.is_empty());
+            // A sync of the map for a header (M2.4d) is waited for as
+            // well, and one due begun, so that a release just before
+            // the drop has its header synced as any other.
+            let failed = self.failed;
+            let for_map = self.intent.as_ref().is_some_and(|intent| {
+                !intent.waiting.is_empty()
+                    || intent.syncing.is_some()
+                    || (intent.header_due && !failed)
+            });
             let on_threads = self.pool.is_some() && !self.busy.is_empty();
             if !(on_threads || for_map || !self.deferred.is_empty()) {
                 break;
@@ -1006,6 +1011,21 @@ struct Intent<F> {
     /// request whose bit is gone with no commit counted since it was set
     /// has lost it to the disk.
     commits: u64,
+    /// Whether the header is synced at each release of a committed cut
+    /// and where a committed cut is named ([`HoldCuts::intent_header_sync`]).
+    header_sync: bool,
+    /// The syncs begun for a header written at a release or a naming,
+    /// with no write waiting (M2.4d): each with its time from its begin
+    /// to its end. A sync begun for the writes that wait, which covers a
+    /// header written before it began as well, is in [`Intent::syncs`].
+    header_syncs: Spent,
+    /// Whether the sync under way was begun for a header
+    /// ([`Intent::header_syncs`]).
+    syncing_header: bool,
+    /// A header was written while a sync was under way, which does not
+    /// cover it: the next sync begins when that one ends, writes waiting
+    /// or not ([`InPlace::intent_synced`]).
+    header_due: bool,
 }
 
 /// A request that waits for the intent map, with the syncs begun and
@@ -1062,6 +1082,14 @@ pub struct IntentFigures {
     /// The writes and write-zeroes that waited for a sync of the map
     /// since the start: those into a region whose bit was not durable.
     pub waits: u64,
+    /// Whether the header is synced at each release
+    /// ([`HoldCuts::intent_header_sync`]).
+    pub header_sync: bool,
+    /// The syncs begun for a header written at a release or where a
+    /// committed cut was named, with no write waiting, since the start,
+    /// with their time from begin to end (M2.4d). Always none where
+    /// `header_sync` is off.
+    pub header_syncs: Spent,
 }
 
 /// What [`InPlace::read_cut_from`] read of a held cut.
@@ -2335,6 +2363,7 @@ impl<D: Dir> InPlace<D> {
                     start,
                     bound,
                     intent_region_blocks,
+                    intent_header_sync,
                 },
             acknowledged,
             taken_over,
@@ -2417,7 +2446,7 @@ impl<D: Dir> InPlace<D> {
         self.cuts
             .restore(cut_state.count(), cut_state.newest_cut(), cut_state.mark());
         self.state = Some(cut_state);
-        self.keep_intent(shape, start, found_map, map_file)
+        self.keep_intent(shape, start, found_map, map_file, intent_header_sync)
             .map_err(|e| StartError::Intent(e.to_string()))
     }
 
@@ -2455,13 +2484,15 @@ impl<D: Dir> InPlace<D> {
     /// Keep the intent map from this start on: the one found, under
     /// this start's token `start`, or a new one with every region named
     /// in a new file. Its pages are written and synced before the start
-    /// serves.
+    /// serves. `header_sync`: whether the header is synced at each
+    /// release ([`HoldCuts::intent_header_sync`]).
     fn keep_intent(
         &mut self,
         shape: intent::Shape,
         start: [u8; 16],
         found: Result<intent::IntentMap, intent::Distrust>,
         file: Option<D::File>,
+        header_sync: bool,
     ) -> io::Result<()> {
         let (map, file) = match (found, file) {
             (Ok(mut map), Some(file)) => {
@@ -2502,6 +2533,10 @@ impl<D: Dir> InPlace<D> {
             begun: 0,
             commits: 0,
             waits: 0,
+            header_sync,
+            header_syncs: Spent::default(),
+            syncing_header: false,
+            header_due: false,
         });
         self.write_intent(true)
     }
@@ -2591,6 +2626,10 @@ impl<D: Dir> InPlace<D> {
         };
         intent.syncing = Some(std::time::Instant::now());
         intent.begun += 1;
+        // This sync covers every header written so far. Begun with no
+        // write waiting, it is a header's (M2.4d), and counted apart.
+        intent.header_due = false;
+        intent.syncing_header = intent.waiting.is_empty();
         let written = intent
             .map
             .write_begin()
@@ -2653,7 +2692,11 @@ impl<D: Dir> InPlace<D> {
         };
         intent.map.synced(result.is_ok());
         if let Some(began) = intent.syncing.take() {
-            intent.syncs.add(began.elapsed());
+            if std::mem::take(&mut intent.syncing_header) {
+                intent.header_syncs.add(began.elapsed());
+            } else {
+                intent.syncs.add(began.elapsed());
+            }
         }
         if result.is_err() {
             if !self.failed {
@@ -2691,11 +2734,17 @@ impl<D: Dir> InPlace<D> {
         for Request { id, op } in ready {
             self.resume(id, op);
         }
-        let next = self
-            .intent
-            .as_ref()
-            .is_some_and(|intent| !intent.waiting.is_empty() && intent.syncing.is_none());
-        if next && !self.failed {
+        // The next sync: for the writes that wait, which covers a header
+        // written while this one was under way too, or for that header
+        // alone.
+        let (waits, header) = self.intent.as_ref().map_or((false, false), |intent| {
+            let idle = intent.syncing.is_none();
+            (
+                idle && !intent.waiting.is_empty(),
+                idle && intent.header_due,
+            )
+        });
+        if (waits || header) && !self.failed {
             self.begin_intent_sync();
         }
         self.run_deferred();
@@ -2730,6 +2779,8 @@ impl<D: Dir> InPlace<D> {
                 region_bytes: shape.region_blocks * skyzfs_blk::BLOCK_SIZE,
                 syncs: intent.syncs,
                 waits: intent.waits,
+                header_sync: intent.header_sync,
+                header_syncs: intent.header_syncs,
             }
         })
     }
@@ -3111,11 +3162,14 @@ impl<D: Dir> InPlace<D> {
     /// After it the intent map names the cut as its base (the cut
     /// state's id, the cut's number and its group), and clears the bits
     /// of the regions in which nothing changed after the cut's instant
-    /// (`intent.rs`). The pages are written without a sync; one that
-    /// cannot be written fails the volume, as on the write path, and the
-    /// cut stays held, the one being uploaded still (review of M2.4b-1):
-    /// the map in memory names it, and the map on the disk may, page by
-    /// page. **So true does not say that the cut is gone.** A caller
+    /// (`intent.rs`). The pages are written without a sync, which begins
+    /// after them on the file's helper only where the store is told to
+    /// sync the header ([`HoldCuts::intent_header_sync`]; nothing waits
+    /// for it, and a failure of it fails the volume when it is found). A
+    /// page that cannot be written fails the volume, as on the write
+    /// path, and the cut stays held, the one being uploaded still
+    /// (review of M2.4b-1): the map in memory names it, and the map on
+    /// the disk may, page by page. **So true does not say that the cut is gone.** A caller
     /// looks at [`InPlace::is_failed`], or at the held cuts, before it
     /// takes the next cut; else it finds the same one again, and only
     /// the cut being uploaded can be let go (F2 of that review; the
@@ -3197,10 +3251,12 @@ impl<D: Dir> InPlace<D> {
     /// as a delta, not whole, unless that cut holds the whole volume:
     /// where cut `number` held it (the first of a state, the first after
     /// a mismatch), the cut that took its map holds it too, its `lo`
-    /// unmoved, and goes up whole. The header is written without a sync, as
-    /// at a release: a death before this call, or a power cut that loses
-    /// the header, leaves the map naming the cut before, and the check
-    /// then finds a mismatch (Q8 stays strict): one whole upload.
+    /// unmoved, and goes up whole. The header is written as at a release,
+    /// without a sync unless the store is told to sync it
+    /// ([`HoldCuts::intent_header_sync`]): a death before this call, or a
+    /// power cut that loses the header, leaves the map naming the cut
+    /// before, and the check then finds a mismatch (Q8 stays strict): one
+    /// whole upload.
     pub fn name_committed_cut(&mut self, number: u64, group: u64) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
@@ -3230,7 +3286,7 @@ impl<D: Dir> InPlace<D> {
             self.settle_failed();
             return false;
         }
-        true
+        self.sync_header()
     }
 
     /// Cut `number` of group `group` is committed in object storage:
@@ -3268,7 +3324,38 @@ impl<D: Dir> InPlace<D> {
             self.settle_failed();
             return false;
         }
-        true
+        self.sync_header()
+    }
+
+    /// The header was just written at a release or where a committed
+    /// cut was named: where the store is told to sync it
+    /// ([`HoldCuts::intent_header_sync`]; M2.4d), begin a sync of the
+    /// map's file on its helper, or, where one is under way, which does
+    /// not cover the header, have the next begin when it ends
+    /// ([`InPlace::intent_synced`]). Nothing waits for it: the release
+    /// goes on as without it, and a power cut before it ends costs what
+    /// one before the release would, one whole upload. The sync is not
+    /// made on the queue's thread, as no sync of the map is (the lead's
+    /// ruling on M2.3b); where the design is silent on this, that is the
+    /// conservative reading (M2.4d's report).
+    ///
+    /// False where the sync failed at once, which fails the volume as a
+    /// failed write of the map does; true otherwise. A failure found
+    /// later fails the volume when it is found.
+    fn sync_header(&mut self) -> bool {
+        let Some(intent) = &mut self.intent else {
+            return true;
+        };
+        if !intent.header_sync {
+            return true;
+        }
+        if intent.syncing.is_some() {
+            intent.header_due = true;
+            return true;
+        }
+        let failed = self.failed;
+        self.begin_intent_sync();
+        failed || !self.failed
     }
 }
 

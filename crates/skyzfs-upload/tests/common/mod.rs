@@ -131,6 +131,7 @@ impl Fixture {
                 boot: BOOT,
                 bound: Some(BOUND),
                 intent_region: Some(INTENT_REGION),
+                intent_header_sync: false,
             }),
             ..OpenOptions::default()
         };

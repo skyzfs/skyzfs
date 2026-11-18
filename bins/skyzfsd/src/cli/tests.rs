@@ -126,6 +126,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         in_place_io: skyzfs_local::inplace::IoMode::default(),
         hold_cuts: false,
         intent_region_mib: None,
+        intent_header_sync: false,
         holder: None,
         lease_ttl_s: None,
         serve_without_upload: false,
@@ -414,6 +415,31 @@ fn the_intent_region_is_a_power_of_two_of_mib_with_held_cuts() {
     let help = HELP.split_whitespace().collect::<Vec<_>>().join(" ");
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(help.contains(&said), "the help does not say {said:?}");
+}
+
+/// `--intent-header-sync` (M2.4d) has the intent map's header synced at
+/// each release; off unless given, and only with `--hold-cuts`, as
+/// `--intent-region-mib` is. The help names it.
+#[test]
+fn the_header_sync_is_off_unless_given_with_held_cuts() {
+    assert!(!serve("serve --dir /v/a --hold-cuts").intent_header_sync);
+    assert!(serve("serve --dir /v/a --hold-cuts --intent-header-sync").intent_header_sync);
+    assert_eq!(
+        plain("serve --dir /v/a --intent-header-sync"),
+        Err(UsageError::Value(
+            "--intent-header-sync".into(),
+            "only with --hold-cuts"
+        ))
+    );
+    assert!(
+        matches!(
+            plain("serve --dir /v/a --hold-cuts --intent-header-sync 1"),
+            Err(UsageError::Unknown(..) | UsageError::Value(..))
+        ),
+        "a flag takes no value"
+    );
+    assert!(USAGE.contains("[--intent-header-sync]"), "{USAGE}");
+    assert!(HELP.contains("--intent-header-sync"), "{HELP}");
 }
 
 /// The default and the bound of `--io-threads` are the store's own

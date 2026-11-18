@@ -24,13 +24,17 @@
 //!   regions in which nothing changed after *C*'s instant
 //!   ([`IntentMap::clear`]); a block in the open map or in a held cut
 //!   newer than *C* is such a change (`state.rs`). The header names *C*
-//!   as the base ([`IntentMap::commit`]). Neither is synced: a clear
+//!   as the base ([`IntentMap::commit`]). Neither needs a sync: a clear
 //!   that a power cut loses names a region too many, which costs an
 //!   upload and no block, and a base that a power cut loses is an older
 //!   committed cut, or none, which names more than *C* would (none: the
 //!   whole volume). What the regions not named hold is the newest
 //!   committed cut's content whichever base the header names, since
-//!   commits only move forward.
+//!   commits only move forward. A store told to sync the header
+//!   ([`super::HoldCuts::intent_header_sync`], M2.4d) begins a sync of
+//!   the file on its helper once they are written; nothing waits for
+//!   it, and it narrows the window in which a power cut costs a whole
+//!   upload to the sync's own time.
 //!
 //! What the disk holds of a page is known only once a sync after its
 //! write has ended. A bit the disk holds for certain is **durable**

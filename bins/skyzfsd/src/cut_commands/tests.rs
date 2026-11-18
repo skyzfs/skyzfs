@@ -508,6 +508,7 @@ fn held_cuts_store_on(disk: SimDisk) -> Store {
             boot: [7; 16],
             bound: None,
             intent_region: None,
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };

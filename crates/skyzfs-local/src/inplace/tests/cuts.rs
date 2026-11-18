@@ -931,6 +931,19 @@ fn start_as(
     io: IoMode,
     coming: Coming,
 ) -> InPlace<SimDisk> {
+    start_syncing_header(disk, mutants, region, io, coming, false)
+}
+
+/// As [`start_as`], and with `header_sync` the intent map's header is
+/// synced at each release (M2.4d).
+fn start_syncing_header(
+    disk: &SimDisk,
+    mutants: u128,
+    region: &state::MemRegion,
+    io: IoMode,
+    coming: Coming,
+    header_sync: bool,
+) -> InPlace<SimDisk> {
     let options = OpenOptions {
         io,
         acknowledge_failure: coming.acknowledging,
@@ -939,6 +952,7 @@ fn start_as(
             boot: coming.boot,
             bound: Some(TEST_BOUND),
             intent_region: Some(TEST_INTENT_REGION),
+            intent_header_sync: header_sync,
         }),
         ..OpenOptions::default()
     };
@@ -2095,6 +2109,7 @@ fn a_region_that_cannot_be_had_refuses_the_open() {
             boot: state::tests::BOOT,
             bound: Some(TEST_BOUND),
             intent_region: Some(TEST_INTENT_REGION),
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };
@@ -2689,6 +2704,7 @@ fn holding(region: &state::MemRegion, acknowledge: bool) -> OpenOptions {
             boot: state::tests::BOOT,
             bound: Some(TEST_BOUND),
             intent_region: Some(TEST_INTENT_REGION),
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     }
@@ -3137,6 +3153,7 @@ fn a_store_given_no_region_keeps_the_map_in_regions_of_the_default() {
             boot: state::tests::BOOT,
             bound: Some(TEST_BOUND),
             intent_region: None,
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };
@@ -3803,6 +3820,7 @@ fn a_start_refused_for_direct_io_creates_no_map() {
             boot: state::tests::BOOT,
             bound: Some(TEST_BOUND),
             intent_region: Some(TEST_INTENT_REGION),
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };
@@ -4026,6 +4044,7 @@ fn a_start_that_cannot_keep_the_map_is_refused() {
             boot: state::tests::BOOT,
             bound: Some(TEST_BOUND),
             intent_region: Some(TEST_INTENT_REGION),
+            intent_header_sync: false,
         }),
         ..OpenOptions::default()
     };
@@ -4520,4 +4539,200 @@ fn a_death_after_the_commit_leaves_the_cut_to_release_or_named_as_committed() {
         }
     }
     assert!(deaths > 0);
+}
+
+// ---- the intent map's header synced at a release (M2.4d) ----
+
+/// Cut 1 (block 5 at 0x55, group 7) held and being uploaded, on a store
+/// that takes the device over and syncs the map's header at each
+/// release, or not.
+fn one_cut(
+    disk: &SimDisk,
+    region: &state::MemRegion,
+    io: IoMode,
+    header_sync: bool,
+) -> InPlace<SimDisk> {
+    let mut store = start_syncing_header(disk, 0, region, io, TAKING_OVER, header_sync);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    store
+}
+
+/// One poll, which waits for nothing: it sees the end of a sync of the
+/// map that has ended (with no delay, the simulated disk's begun syncs
+/// end at the first look, unless it holds them).
+fn settle_map(store: &mut InPlace<SimDisk>) {
+    let mut done = Vec::new();
+    store.poll(&mut done);
+    assert!(done.is_empty(), "{:?}", ended(&done));
+}
+
+/// The header that names the cut a release lets go is synced only when
+/// the store is told to (`serve --intent-header-sync`, M2.4d, for the
+/// lead's Q7 of M2.4b): one sync of the map, begun on its helper and
+/// counted apart from the write path's, and a power cut after it keeps
+/// the base, so the start after a restart of the machine takes the map
+/// up naming cut 1. Off, as built in M2.3, the release syncs nothing,
+/// and the power cut that loses everything no sync covered leaves the
+/// map as the start wrote it, naming no cut: it is begun anew, and the
+/// next cut is the whole volume. The defects, planted by hand: the sync
+/// not begun, and the sync counted as the write path's.
+#[test]
+fn a_release_syncs_the_header_only_when_told_to() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        for header_sync in [false, true] {
+            let case = format!("{io:?}, header sync {header_sync}");
+            let disk = created(91, 0);
+            let region = region();
+            let mut store = one_cut(&disk, &region, io, header_sync);
+            let id = store.cut_state_id().expect("a cut state");
+            let before = intent_of(&store);
+            let syncs = disk.syncs_of(intent::INTENT_NAME);
+            assert!(store.release_cut(1), "{case}");
+            settle_map(&mut store);
+            let after = intent_of(&store);
+            let once = u64::from(header_sync);
+            assert_eq!(after.header_sync, header_sync, "{case}");
+            assert_eq!(
+                after.header_syncs.count,
+                before.header_syncs.count + once,
+                "{case}"
+            );
+            assert_eq!(after.syncs, before.syncs, "{case}: none of the write path");
+            assert_eq!(after.waits, before.waits, "{case}");
+            assert_eq!(disk.syncs_of(intent::INTENT_NAME) - syncs, once, "{case}");
+            drop(store);
+            disk.power_cut(crate::sim::LoseAll);
+            let store = start_as(&disk, 0, &region, io, AFTER_A_REBOOT);
+            let one = CommittedCut {
+                state: id,
+                number: 1,
+                group: 7,
+            };
+            assert_eq!(store.committed_cut(), header_sync.then_some(one), "{case}");
+            assert_eq!(
+                matches!(store.intent_at_start(), Some(IntentAtStart::TakenUp { .. })),
+                header_sync,
+                "{case}: {:?}",
+                store.intent_at_start()
+            );
+        }
+    }
+}
+
+/// A header written while a sync of the map is under way, which does
+/// not cover it, is synced by the next one, which begins when that one
+/// ends though no write waits: here cut 1's release begins a sync the
+/// disk holds, cut 2's release writes the header that names cut 2 and
+/// begins no second sync beside the first, and once the disk lets the
+/// first end, a second follows. A power cut then keeps cut 2 as the
+/// base. Settled by polls, or by the store's drop, which waits for both
+/// (on a thread of the test's, so that a drop that does not end fails
+/// the test and does not hang it). The defects, planted by hand: the
+/// header due not synced after the sync under way, and the drop that
+/// does not wait for a header's sync.
+#[test]
+fn a_header_written_while_the_map_syncs_is_synced_after_it() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        for by_drop in [false, true] {
+            let case = format!("{io:?}, settled by the drop {by_drop}");
+            let disk = created(92, 0);
+            let region = region();
+            let mut store = one_cut(&disk, &region, io, true);
+            write(&mut store, 6, 0x66).unwrap();
+            group(&mut store, 200, 8, 80);
+            let id = store.cut_state_id().expect("a cut state");
+            let syncs = disk.syncs_of(intent::INTENT_NAME);
+            disk.hold_syncs_of(intent::INTENT_NAME);
+            assert!(store.release_cut(1), "{case}");
+            assert!(store.release_cut(2), "{case}");
+            settle_map(&mut store);
+            assert_eq!(
+                disk.syncs_of(intent::INTENT_NAME) - syncs,
+                1,
+                "{case}: one sync at a time"
+            );
+            disk.release_syncs();
+            if by_drop {
+                let (tell, dropped) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    drop(store);
+                    let _ = tell.send(());
+                });
+                assert_eq!(
+                    dropped.recv_timeout(DRAIN),
+                    Ok(()),
+                    "{case}: the drop did not end"
+                );
+            } else {
+                settle_map(&mut store);
+                settle_map(&mut store);
+                assert_eq!(intent_of(&store).header_syncs.count, 2, "{case}");
+                drop(store);
+            }
+            assert_eq!(disk.syncs_of(intent::INTENT_NAME) - syncs, 2, "{case}");
+            disk.power_cut(crate::sim::LoseAll);
+            let store = start_as(&disk, 0, &region, io, AFTER_A_REBOOT);
+            let two = CommittedCut {
+                state: id,
+                number: 2,
+                group: 8,
+            };
+            assert_eq!(store.committed_cut(), Some(two), "{case}");
+        }
+    }
+}
+
+/// Where a committed cut the store no longer holds is named
+/// ([`InPlace::name_committed_cut`]), the header is synced as at a
+/// release when the store is told to, and only then does a power cut
+/// keep it. The defect, planted by hand: the naming syncs nothing.
+#[test]
+fn naming_a_committed_cut_syncs_the_header_only_when_told_to() {
+    for header_sync in [false, true] {
+        let case = format!("header sync {header_sync}");
+        let disk = created(93, 0);
+        let region = region();
+        let mut store = one_cut(&disk, &region, ON_CALLER, header_sync);
+        let id = store.cut_state_id().expect("a cut state");
+        assert_eq!(store.abandon_all_cuts(), [1], "{case}");
+        assert!(store.name_committed_cut(1, 7), "{case}");
+        settle_map(&mut store);
+        assert_eq!(
+            intent_of(&store).header_syncs.count,
+            u64::from(header_sync),
+            "{case}"
+        );
+        drop(store);
+        disk.power_cut(crate::sim::LoseAll);
+        let store = start_as(&disk, 0, &region, ON_CALLER, AFTER_A_REBOOT);
+        let one = CommittedCut {
+            state: id,
+            number: 1,
+            group: 7,
+        };
+        assert_eq!(store.committed_cut(), header_sync.then_some(one), "{case}");
+    }
+}
+
+/// A header's sync that fails fails the volume, as a sync of the map
+/// for a write does, and the next write fails with it. The release let
+/// the cut go when it wrote the header, before the sync ended, as it
+/// does with no sync: the disk then holds the header as written or as
+/// it was, and a start that acknowledges the failure takes the map up
+/// as after a power cut. The defect, planted by hand: a header's sync
+/// whose failure is not looked at.
+#[test]
+fn a_header_sync_that_fails_fails_the_volume() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(94, 0);
+        let mut store = one_cut(&disk, &region(), io, true);
+        disk.fail_sync_of(intent::INTENT_NAME);
+        assert!(store.release_cut(1), "{case}");
+        assert_eq!(phases(&store), [], "{case}: let go at the write");
+        settle_map(&mut store);
+        assert!(store.is_failed(), "{case}");
+        assert_eq!(write(&mut store, 6, 0x66), Err(BlkError::Failed), "{case}");
+    }
 }
