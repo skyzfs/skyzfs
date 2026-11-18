@@ -57,8 +57,10 @@ fn run(command: &Command) -> Output {
                 return failed(format!("reading /dev/urandom for the volume's id: {e}"));
             }
             // Without the boot id there is no warning of a failure
-            // note; the volume is made all the same.
-            commands::create(create, id, Now::read().ok().map(|now| now.boot))
+            // note; the volume is made all the same. A place in object
+            // storage is made there first (M2.4c).
+            let boot = Now::read().ok().map(|now| now.boot);
+            commands::create_placed(create, id, boot, skyzfsd::upload::place_within)
         }
         // `serve` prints for itself: see `main`.
         Command::Serve(_) => failed("serve is run by main".into()),

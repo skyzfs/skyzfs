@@ -35,9 +35,13 @@ pub mod commands;
 pub mod cut_commands;
 pub mod delay;
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
+pub mod kill;
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
 pub mod record;
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
 pub mod refuse;
+pub mod remote;
 #[cfg(target_os = "linux")]
 pub mod serve;
 pub mod timing;
+pub mod upload;

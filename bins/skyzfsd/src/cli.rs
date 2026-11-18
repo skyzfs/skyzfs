@@ -1,10 +1,12 @@
 //! The command line of `skyzfsd`, and its exit statuses.
 //!
 //! ```text
-//! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+//! skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
+//!                [--endpoint URL --bucket BUCKET --volume NAME]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--io-threads N] [--hold-cuts]
-//!                [--intent-region-mib N]
+//!                [--intent-region-mib N] [--holder NAME] [--lease-ttl-s N]
+//!                [--serve-without-upload]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -54,6 +56,7 @@
 
 use std::path::PathBuf;
 
+use crate::remote::Remote;
 use skyzfs_local::inplace::IoMode;
 use skyzfs_ublk::features::ASYNC_DELETE_OPTION;
 use std::process::ExitCode;
@@ -82,6 +85,9 @@ pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
 /// the merged daemon; it is that one constant, and the help says it
 /// (a test holds the two together).
 pub const DEFAULT_IO_THREADS: u16 = io_threads(IoMode::DEFAULT_THREADS);
+/// The longest holder's name `--holder` takes, in bytes: what the
+/// status file's text holds.
+pub const MAX_HOLDER: usize = 128;
 /// A region of the intent map unless `--intent-region-mib` is given, in
 /// MiB: the store's default.
 pub const DEFAULT_INTENT_REGION_MIB: u64 = skyzfs_local::inplace::DEFAULT_INTENT_REGION >> 20;
@@ -104,8 +110,10 @@ const MIB: u64 = 1 << 20;
 /// What is printed with a usage error ([`usage`]).
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
+                 [--endpoint URL --bucket BUCKET --volume NAME]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                 [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                  [--kernel-has-async-delete]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
@@ -122,7 +130,7 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
                  [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
                  [--commit-delay-ms N] [--request-log PATH] [--request-log-content hash|whole]
                  [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
-                 [--refuse-one-fetch start|recovery]";
+                 [--refuse-one-fetch start|recovery] [--kill-at-upload put:N|swap:N]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -173,7 +181,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
   checks it before a delete needs it, and a delete it does not know
   fails and leaves the device.
 
-  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
+                 [--endpoint URL --bucket BUCKET --volume NAME]
       Make a new, empty volume in DIR. DIR is made if it is missing
       (its parent must exist) and must hold no volume and no file but
       what an interrupted create leaves (lock, home.new, home.img,
@@ -188,9 +197,28 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       each block allocates it.
       If a volume in DIR failed in this boot, create warns: the note
       of that failure stays, and counts for the new volume.
+      --endpoint URL --bucket BUCKET --volume NAME (all three or none)
+      make the volume NAME in object storage first, empty, and write
+      its place in the file remote in DIR: serve then uploads the
+      pool's cuts to it. NAME is 1 to 63 characters of A-Z, a-z, 0-9,
+      '.', '-' and '_', beginning with a letter or a digit. Where the
+      volume NAME is there already, create takes it only as a create
+      leaves it (the same size, empty, not a clone, never served), and
+      otherwise refuses (status 1) and makes nothing in DIR; a create
+      of the name under way, or one that stopped before the volume's
+      head, counts as a volume of its size, and the refusal names the
+      object whose deletion frees the name. The keys
+      are AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY where both are
+      set and AWS_SESSION_TOKEN is not, else the AWS SDK's own chain
+      (which takes all three); they are never written. The region is
+      AWS_REGION, or us-east-1 where it is unset. The line
+      printed names the volume in object storage. A volume created
+      without these options is served with no upload, and cannot be
+      given a place later.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                 [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
@@ -246,6 +274,28 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A start with another size than the map's counts the whole volume
       once. A start that cannot write and sync the map is refused
       (exit 1); a write that cannot fails the volume.
+      A volume created with --endpoint (it has the file remote) is
+      uploaded: its cuts are held as with --hold-cuts, and a thread
+      uploads each to the volume in object storage and lets it go. The
+      upload holds the volume's lease there, as NAME (--holder; unless
+      given, the host's name, a colon and /etc/machine-id, and a start
+      with no machine id is refused), for N seconds (--lease-ttl-s, 3
+      to 3600, 30 unless given), renewed every third of that. A NAME
+      must mean one daemon: the lease cannot tell two of one name
+      apart. Never serve a copy of a volume's files under the name of
+      the original, a copy in a cloned VM image included (a clone
+      copies the machine id): give the copy its own --holder. The
+      lease is taken after the store opens and before a device is
+      added or taken over, within 10 s. Where another holder has it,
+      serve refuses (status 10) and adds or takes over no device;
+      --serve-without-upload serves the volume all the same, with no
+      upload. Where object
+      storage cannot be reached in time, the volume is served and the
+      lease taken when it can. A lease lost while serving stops the
+      uploads, and the volume is served on. SIGTERM lets the lease go;
+      any other end keeps it until its time runs out. status shows the
+      upload. The three options are refused (status 1) for a volume
+      with no file remote.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -282,7 +332,10 @@ for the next server, which is handed again what was not answered;
 of the queue, or the start had no answer within 30 s; the volume is not
 failed; a device this serve added is deleted, and one it took over is
 left waiting for the next server, as after a kill. A supervisor should
-retry the serve once; a second 9 is for a person.
+retry the serve once; a second 9 is for a person;
+10 refused, another holder has the volume's lease in object storage:
+no device was added or taken over, and the refusal does not fail the
+volume.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -326,6 +379,13 @@ pub enum Exit {
     /// server, as after a kill. Retry the serve once; a second 9 is for
     /// a person.
     NotStarted,
+    /// 10: `serve` refused: another holder has the volume's lease in
+    /// object storage (M2.4c), and `--serve-without-upload` was not
+    /// given. The store was opened and closed again; no device was added
+    /// or taken over, and the refusal does not fail the volume (an
+    /// acknowledging start has deleted the failed volume's waiting device
+    /// before the open, as every acknowledging start does).
+    LeaseHeld,
 }
 
 impl Exit {
@@ -342,6 +402,7 @@ impl Exit {
             Exit::BrokenRule => 7,
             Exit::CommitRefused => 8,
             Exit::NotStarted => 9,
+            Exit::LeaseHeld => 10,
         }
     }
 
@@ -372,6 +433,9 @@ pub enum UsageError {
     /// A required option is missing.
     #[error("{0}: required")]
     Missing(&'static str),
+    /// A value of an option that is refused, and why.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// `create`: make a new, empty volume.
@@ -389,6 +453,9 @@ pub struct Create {
     /// `--zero-fill`: write the new image with zeros, so that no write
     /// of the in-place store to it allocates.
     pub zero_fill: bool,
+    /// `--endpoint --bucket --volume`: the volume's place in object
+    /// storage (M2.4c), made there and written in the file `remote`.
+    pub remote: Option<Remote>,
 }
 
 /// `serve`: serve the volume until SIGTERM.
@@ -420,6 +487,16 @@ pub struct Serve {
     /// `--intent-region-mib`: the size of a region of the intent map,
     /// in MiB, where it is given (only with `--hold-cuts`; M2.3).
     pub intent_region_mib: Option<u64>,
+    /// `--holder`: whose the lease in object storage is, where given
+    /// (the host's name and the machine's id otherwise; M2.4c).
+    pub holder: Option<String>,
+    /// `--lease-ttl-s`: the lease's time in seconds, where given
+    /// ([`MIN_LEASE_TTL_S`](crate::upload::MIN_LEASE_TTL_S) to
+    /// [`MAX_LEASE_TTL_S`](crate::upload::MAX_LEASE_TTL_S)).
+    pub lease_ttl_s: Option<u64>,
+    /// `--serve-without-upload`: serve a volume whose lease another
+    /// holder has, with no upload.
+    pub serve_without_upload: bool,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -452,6 +529,20 @@ pub struct Hooks {
     /// The start at which tag 0's first fetch is sent with no buffer,
     /// for the driver to refuse.
     pub refuse_fetch: Option<FetchRefusal>,
+    /// Where the uploader's thread kills the daemon ([`crate::kill`]).
+    pub kill_at: Option<KillAt>,
+}
+
+/// `--kill-at-upload`: the point of an upload at which the uploader's
+/// thread kills the daemon, as `kill -9` would ([`crate::kill`]). N
+/// counts from 1, over the serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillAt {
+    /// `put:N`: once the Nth PUT of a segment has landed.
+    Put(u64),
+    /// `swap:N`: once the Nth commit of a cut has landed (head and the
+    /// cut's row swapped), before the cut is let go.
+    Swap(u64),
 }
 
 /// `--refuse-one-fetch`: at which start tag 0's first fetch is sent with
@@ -566,6 +657,9 @@ const CREATE: &[Opt] = &[
     opt("--run-dir", true, false),
     opt("--base-pattern", true, true),
     opt("--zero-fill", false, false),
+    opt("--endpoint", true, false),
+    opt("--bucket", true, false),
+    opt("--volume", true, false),
 ];
 
 const SERVE: &[Opt] = &[
@@ -578,6 +672,9 @@ const SERVE: &[Opt] = &[
     opt("--io-threads", true, false),
     opt("--hold-cuts", false, false),
     opt("--intent-region-mib", true, false),
+    opt("--holder", true, false),
+    opt("--lease-ttl-s", true, false),
+    opt("--serve-without-upload", false, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -588,6 +685,7 @@ const SERVE: &[Opt] = &[
     opt("--request-log-content", true, true),
     opt("--refuse-one-commit", true, true),
     opt("--refuse-one-fetch", true, true),
+    opt("--kill-at-upload", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -739,6 +837,52 @@ fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
     }
 }
 
+/// `--kill-at-upload`: `put:N` or `swap:N`, N from 1.
+fn kill_at(text: &str) -> Result<KillAt, UsageError> {
+    let name = "--kill-at-upload";
+    let bad = || UsageError::Value(name.into(), "expected put:N or swap:N, N from 1");
+    let (kind, n) = text.split_once(':').ok_or_else(bad)?;
+    let n = number(name, n).ok().filter(|&n| n >= 1).ok_or_else(bad)?;
+    match kind {
+        "put" => Ok(KillAt::Put(n)),
+        "swap" => Ok(KillAt::Swap(n)),
+        _ => Err(bad()),
+    }
+}
+
+/// `--endpoint --bucket --volume`: all three or none.
+fn remote(given: &Given) -> Result<Option<Remote>, UsageError> {
+    match (
+        given.get("--endpoint"),
+        given.get("--bucket"),
+        given.get("--volume"),
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(endpoint), Some(bucket), Some(name)) => Remote::new(endpoint, bucket, name)
+            .map(Some)
+            .map_err(|e| UsageError::Refused(e.to_string())),
+        _ => Err(UsageError::Refused(
+            "--endpoint, --bucket and --volume: all three or none".into(),
+        )),
+    }
+}
+
+/// Whether `holder` can name the lease's holder: 1 to [`MAX_HOLDER`]
+/// bytes with no space or control character. Also the rule for the
+/// default holder (the host's name and the machine's id) when
+/// `--holder` is not given.
+pub fn check_holder(holder: &str) -> Result<(), String> {
+    if holder.is_empty()
+        || holder.len() > MAX_HOLDER
+        || holder.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!(
+            "the holder {holder:?}: 1 to {MAX_HOLDER} bytes with no space or control character"
+        ));
+    }
+    Ok(())
+}
+
 fn run_dir(given: &Given) -> PathBuf {
     given
         .get("--run-dir")
@@ -778,6 +922,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 run_dir: run_dir(&given),
                 base_pattern: given.number("--base-pattern")?,
                 zero_fill: given.flag("--zero-fill"),
+                remote: remote(&given)?,
             }))
         }
         "serve" => {
@@ -808,6 +953,15 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     return Err(UsageError::Value(name(), "out of range"));
                 }
             }
+            let holder = given.get("--holder").map(str::to_owned);
+            if let Some(holder) = &holder {
+                check_holder(holder).map_err(UsageError::Refused)?;
+            }
+            let lease_ttl_s = given.number("--lease-ttl-s")?;
+            let ttls = crate::upload::MIN_LEASE_TTL_S..=crate::upload::MAX_LEASE_TTL_S;
+            if lease_ttl_s.is_some_and(|s| !ttls.contains(&s)) {
+                return Err(UsageError::Value("--lease-ttl-s".into(), "out of range"));
+            }
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -818,6 +972,9 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 in_place_io,
                 hold_cuts,
                 intent_region_mib,
+                holder,
+                lease_ttl_s,
+                serve_without_upload: given.flag("--serve-without-upload"),
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {
@@ -832,6 +989,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                         .get("--refuse-one-fetch")
                         .map(refuse_fetch)
                         .transpose()?,
+                    kill_at: given.get("--kill-at-upload").map(kill_at).transpose()?,
                 },
             }))
         }

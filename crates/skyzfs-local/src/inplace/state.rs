@@ -675,6 +675,15 @@ pub struct Figures {
     /// The cuts abandoned at the bound or let go at a copy that could
     /// not be made.
     pub abandoned: u64,
+    /// The cuts replaced by a newer cut before they were uploaded: the
+    /// cut that waits when a newer cut's flush completes
+    /// ([`CutState::flushed`]), and a cut whose flush is still under way
+    /// at the next cut's instant ([`CutState::freeze`]); the newer cut
+    /// takes the map either way. A flush completed by a start's sync
+    /// counts in the instance that the start opened. Counted since this
+    /// instance of the state was opened, in memory only: not kept across
+    /// a start, unlike `abandoned`.
+    pub replaced: u64,
 }
 
 /// A record, as read from the region.
@@ -745,6 +754,9 @@ pub struct CutState<R: Region> {
     /// Under [`Mutants::COPY_UNRECORDED`]: records kept in memory only,
     /// by word.
     volatile: BTreeMap<usize, u64>,
+    /// The cuts replaced since this instance was opened
+    /// ([`Figures::replaced`]).
+    replaced: u64,
 }
 
 impl<R: Region> std::fmt::Debug for CutState<R> {
@@ -1013,6 +1025,7 @@ impl<R: Region> CutState<R> {
             by_block: BTreeMap::new(),
             free_records: (0..capacity).rev().collect(),
             volatile: BTreeMap::new(),
+            replaced: 0,
         }
     }
 
@@ -1386,6 +1399,7 @@ impl<R: Region> CutState<R> {
         {
             self.give(flushing, Heir::Open);
             self.free_unneeded(None);
+            self.replaced += 1;
         }
         let number = self.count() + 1;
         let lo = self.next_lo();
@@ -1433,6 +1447,7 @@ impl<R: Region> CutState<R> {
             {
                 self.give(waiting, Heir::Cut(number));
                 self.free_unneeded(Some(waiting.cut.number));
+                self.replaced += 1;
             }
         }
         number
@@ -1467,6 +1482,7 @@ impl<R: Region> CutState<R> {
                         .has(Mutants::REPLACED_COPIES_FREED)
                         .then_some(waiting.cut.number),
                 );
+                self.replaced += 1;
             }
             None if !uploading => self.set_phase(number, Phase::Uploading),
             None => self.set_phase(number, Phase::Waiting),
@@ -1827,6 +1843,7 @@ impl<R: Region> CutState<R> {
             copied: self.copied(),
             bound: self.bound(),
             abandoned: self.abandoned(),
+            replaced: self.replaced,
         }
     }
 

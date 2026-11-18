@@ -27,8 +27,8 @@ fn serve(line: &str) -> Serve {
 /// 1 for anything else, 2 for usage, 3 for a volume that failed while
 /// serving, 4 for one refused because it failed in this boot, 5 for one
 /// another instance holds, 6 for a detach of a device a client holds,
-/// 7 for a kernel driver that broke its rule. The help's table names
-/// each.
+/// 7 for a kernel driver that broke its rule, 10 for a lease another
+/// holder has. The help's table names each.
 #[test]
 fn the_exit_statuses_are_the_agreed_numbers() {
     let all = [
@@ -42,6 +42,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::BrokenRule, 7),
         (Exit::CommitRefused, 8),
         (Exit::NotStarted, 9),
+        (Exit::LeaseHeld, 10),
     ];
     let table = HELP
         .split_once("Exit statuses:")
@@ -58,6 +59,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
     assert!(HELP.contains("8 the kernel's driver refused an answer of serve's"));
     assert!(HELP.contains("9 serve gave the device's start up"));
     assert!(HELP.contains("retry the serve once; a second 9 is for a person"));
+    assert!(HELP.contains("10 refused, another holder has the volume's lease"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a
@@ -71,6 +73,7 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
         run_dir: DEFAULT_RUN_DIR.into(),
         base_pattern: None,
         zero_fill: false,
+        remote: None,
     });
     assert_eq!(plain("create --dir /v/a --size 67108864"), Ok(want.clone()));
     assert_eq!(plain("create --size=67108864 --dir=/v/a"), Ok(want));
@@ -123,6 +126,9 @@ fn serve_has_the_agreed_defaults_and_options() {
         in_place_io: skyzfs_local::inplace::IoMode::default(),
         hold_cuts: false,
         intent_region_mib: None,
+        holder: None,
+        lease_ttl_s: None,
+        serve_without_upload: false,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -168,6 +174,106 @@ fn serve_has_the_agreed_defaults_and_options() {
         );
     }
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
+}
+
+/// `create --endpoint URL --bucket BUCKET --volume NAME`: all three or
+/// none, each a value the file `remote` can hold, and the name one the
+/// provisioner takes. The id is the name's.
+#[test]
+fn create_takes_a_place_in_object_storage_whole_or_not_at_all() {
+    let line = "create --dir /v/a --size 1048576 --endpoint http://h:9000 --bucket b --volume pg-1";
+    match plain(line) {
+        Ok(Command::Create(Create {
+            remote: Some(remote),
+            ..
+        })) => {
+            assert_eq!(
+                remote,
+                Remote::new("http://h:9000", "b", "pg-1").expect("a place")
+            );
+            assert_eq!(remote.id, crate::remote::volume_id("pg-1"));
+        }
+        other => panic!("{other:?}"),
+    }
+    for partial in [
+        "--endpoint http://h",
+        "--bucket b",
+        "--volume v",
+        "--endpoint http://h --bucket b",
+        "--bucket b --volume v",
+        "--endpoint http://h --volume v",
+    ] {
+        assert_eq!(
+            plain(&format!("create --dir /v/a --size 1048576 {partial}")),
+            Err(UsageError::Refused(
+                "--endpoint, --bucket and --volume: all three or none".into()
+            )),
+            "{partial}"
+        );
+    }
+    for bad in [
+        "--endpoint http://h --bucket b --volume -v",
+        "--endpoint http://h --bucket b --volume a/b",
+        "--endpoint=http://h --bucket=b --volume=",
+        &format!("--endpoint http://h --bucket b --volume {}", "v".repeat(64)),
+        &format!(
+            "--endpoint http://h --bucket {} --volume v",
+            "b".repeat(256)
+        ),
+    ] {
+        assert!(
+            matches!(
+                plain(&format!("create --dir /v/a --size 1048576 {bad}")),
+                Err(UsageError::Refused(_) | UsageError::Value(..))
+            ),
+            "{bad}"
+        );
+    }
+    assert!(USAGE.contains("[--endpoint URL --bucket BUCKET --volume NAME]"));
+}
+
+/// `serve --holder NAME --lease-ttl-s N --serve-without-upload`: the
+/// holder is one word of at most 128 bytes, the lease's time 3 to 3600
+/// seconds. Whether the volume has a place is known only to the serve.
+#[test]
+fn serve_takes_the_lease_options() {
+    let given = serve("serve --dir /v/a --holder node-a --lease-ttl-s 60 --serve-without-upload");
+    assert_eq!(
+        (
+            given.holder.as_deref(),
+            given.lease_ttl_s,
+            given.serve_without_upload
+        ),
+        (Some("node-a"), Some(60), true)
+    );
+    for ttl in ["3", "3600"] {
+        assert!(
+            plain(&format!("serve --dir /v/a --lease-ttl-s {ttl}")).is_ok(),
+            "{ttl}"
+        );
+    }
+    for ttl in ["0", "2", "3601", "x"] {
+        assert!(
+            matches!(
+                plain(&format!("serve --dir /v/a --lease-ttl-s {ttl}")),
+                Err(UsageError::Value(name, _)) if name == "--lease-ttl-s"
+            ),
+            "{ttl}"
+        );
+    }
+    assert!(plain(&format!("serve --dir /v/a --holder {}", "h".repeat(128))).is_ok());
+    assert!(matches!(
+        plain(&format!("serve --dir /v/a --holder {}", "h".repeat(129))),
+        Err(UsageError::Refused(_))
+    ));
+    assert!(matches!(
+        parse_with(
+            ["serve", "--dir", "/v/a", "--holder", "a b"].map(String::from),
+            false
+        ),
+        Err(UsageError::Refused(_))
+    ));
+    assert!(USAGE.contains("[--holder NAME] [--lease-ttl-s N] [--serve-without-upload]"));
 }
 
 /// There is no choice of a store (M1.3t-d): `--store` is not an
@@ -327,13 +433,14 @@ fn the_io_threads_default_is_the_stores() {
 /// covers a byte or a flush; the boot id comes from a file; the commits
 /// are delayed; the requests are written down; one request's commit is
 /// sent with no buffer, for the driver to refuse; one first fetch is
-/// sent with no buffer, at a start or at a take-over.
+/// sent with no buffer, at a start or at a take-over; the uploader's
+/// thread kills the daemon at a segment's PUT or at a commit's swap.
 #[test]
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
          --boot-id-file /tmp/boot --commit-delay-ms 20 --request-log /tmp/requests.tsv \
-         --refuse-one-commit write:8192 --refuse-one-fetch recovery",
+         --refuse-one-commit write:8192 --refuse-one-fetch recovery --kill-at-upload put:3",
     )
     .hooks;
     assert_eq!(
@@ -350,8 +457,26 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             request_log_whole: false,
             refuse: Some(Held::Write(8192)),
             refuse_fetch: Some(FetchRefusal::Recovery),
+            kill_at: Some(KillAt::Put(3)),
         }
     );
+    let kill = |spec: &str| hooked(&format!("serve --dir /v/a --kill-at-upload {spec}"));
+    for (spec, want) in [
+        ("put:1", KillAt::Put(1)),
+        ("swap:1", KillAt::Swap(1)),
+        ("swap:12", KillAt::Swap(12)),
+    ] {
+        let Ok(Command::Serve(serve)) = kill(spec) else {
+            panic!("{spec:?}: {:?}", kill(spec));
+        };
+        assert_eq!(serve.hooks.kill_at, Some(want), "{spec:?}");
+    }
+    for bad in [
+        "put:0", "put", "swap:", "swap:x", "commit:1", "put:1:2", ":1", "put:-1",
+    ] {
+        assert!(matches!(kill(bad), Err(UsageError::Value(..))), "{bad:?}");
+    }
+    assert_eq!(serve("serve --dir /v/a").hooks.kill_at, None);
     let fetch = |spec: &str| hooked(&format!("serve --dir /v/a --refuse-one-fetch {spec}"));
     assert!(matches!(
         fetch("start"),
@@ -459,6 +584,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --request-log /tmp/r.tsv",
         "serve --dir /v/a --refuse-one-commit flush",
         "serve --dir /v/a --refuse-one-fetch start",
+        "serve --dir /v/a --kill-at-upload swap:1",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(

@@ -260,6 +260,29 @@ fn release_lets_only_the_cut_being_uploaded_go() {
     );
 }
 
+/// In a daemon that uploads, `release` is refused whatever the cut, and
+/// lets nothing go: the uploader lets a cut go once it is committed.
+/// `held` and `write` are answered as before.
+#[test]
+fn release_is_refused_in_a_daemon_that_uploads() {
+    let mut rig = Rig::new();
+    rig.commands = Commands::new(rig.dir.path().to_owned()).uploading(true);
+    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[1])]);
+    rig.send("r release 3", &mut stand);
+    assert_eq!(
+        rig.reply(),
+        "r refused: the daemon uploads its cuts, and its uploader lets each go once it is \
+         committed\n"
+    );
+    assert!(stand.released.is_empty());
+    rig.send("s held", &mut stand);
+    assert_eq!(rig.reply(), "3 103 uploading itself 1\ns ok\n");
+    let image = rig.image(4);
+    rig.send(&format!("t write 3 {}", image.display()), &mut stand);
+    rig.finish(&mut stand);
+    assert_eq!(rig.reply(), "t ok 1 blocks\n");
+}
+
 /// The write puts each block of the map at its offset, as the cut reads
 /// it, leaves every other block of the file as it was, lists the map in
 /// `PATH.blocks`, and answers only when it is done, a slice a turn.

@@ -33,11 +33,29 @@
 //! are errors. `create` replaces nothing, and a `create` that fails
 //! after it made the directory removes the directory again if it is
 //! empty, so that it leaves nothing behind.
+//!
+//! # A place in object storage
+//!
+//! `create --endpoint --bucket --volume` makes the volume in object
+//! storage first ([`create_placed`], with
+//! [`place`](crate::upload::place)), then the local volume, then the
+//! file [`REMOTE`](crate::remote::REMOTE) beside it. A place refused
+//! makes nothing local. The file comes after the volume file, which the
+//! store's create writes last: a create that fails between the two
+//! (a write of the file that fails, or a kill) leaves a volume with no
+//! place, which `serve` serves with no upload. The create says so where
+//! it can; after a kill only the missing file shows it. That order is
+//! this module's reading (the store's create removes, as an interrupted
+//! create's leftovers, only files under its own names, and a place made
+//! before it would be a stranger in the directory to it).
 
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
+
+use crate::remote::Remote;
+use crate::upload::Placed;
 
 use skyzfs_blk::Base;
 use skyzfs_local::fs::FsDir;
@@ -404,21 +422,75 @@ fn hex(bytes: &[u8; 16]) -> String {
 /// ([`skyzfs_local::volume::Volume::identity`], random at create): what
 /// tells this volume from another made later in the same directory.
 pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
-    let (made, write_unit) = match in_directory(&create.dir, |dir| make(create, dir, id)) {
+    create_placed(create, id, boot, |_, _| {
+        Err("this create was given no way to object storage".into())
+    })
+}
+
+/// [`create`], where `place` makes the volume in object storage, or takes
+/// it as a create left it, or says why not (see the module's
+/// documentation): called first, for a create with a place only. A
+/// place refused is exit 1, and nothing local is made.
+pub fn create_placed(
+    create: &Create,
+    id: [u8; 16],
+    boot: Option<[u8; 16]>,
+    place: impl FnOnce(&Remote, u64) -> Result<Placed, String>,
+) -> Output {
+    create_with(create, id, boot, place, crate::remote::write)
+}
+
+/// [`create_placed`], with the file `remote` written by `write`.
+fn create_with(
+    create: &Create,
+    id: [u8; 16],
+    boot: Option<[u8; 16]>,
+    place: impl FnOnce(&Remote, u64) -> Result<Placed, String>,
+    write: impl FnOnce(&Path, &Remote) -> io::Result<()>,
+) -> Output {
+    let shown = create.dir.display();
+    let placed = match &create.remote {
+        None => None,
+        Some(remote) => match place(remote, create.size) {
+            Ok(placed) => Some((remote, placed)),
+            Err(why) => {
+                return Output::error(format_args!(
+                    "{shown}: not created: {remote}: {why}. Nothing was made in {shown}"
+                ))
+            }
+        },
+    };
+    let made = in_directory(&create.dir, |dir| {
+        let made = make(create, dir, id)?;
+        if let Some((remote, _)) = placed {
+            write(&create.dir, remote).map_err(|e| {
+                Output::error(format_args!(
+                    "{shown}: the volume was made, but its place in object storage could not be \
+                     written in {} ({e}): it would be served with no upload. Remove {shown} and \
+                     create it again",
+                    create.dir.join(crate::remote::REMOTE).display()
+                ))
+            })?;
+        }
+        Ok(made)
+    });
+    let (made, write_unit) = match made {
         Ok(made) => made,
         Err(output) => return output,
     };
-    let shown = create.dir.display();
     let mut warning = boot
         .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
         .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
     if let Some(note) = write_unit_note(write_unit, system_write_unit()) {
         let _ = writeln!(warning, "skyzfsd: {shown}: {note}");
     }
+    let in_storage = placed.map_or_else(String::new, |(remote, placed)| {
+        format!(", in object storage {remote} ({})", placed.said())
+    });
     Output {
         exit: Exit::Done,
         out: format!(
-            "created {shown}: {} bytes, volume {}, identity {}\n",
+            "created {shown}: {} bytes, volume {}, identity {}{in_storage}\n",
             create.size,
             hex(&id),
             hex(&made)

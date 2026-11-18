@@ -14,6 +14,8 @@ use skyzfs_ublk::pump::Counters;
 use skyzfs_ublk::status::{Status, StoreShown};
 
 use super::*;
+use crate::remote::Remote;
+use crate::upload::Placed;
 
 /// The first phase of a start on the volume in `dir`, as the daemon's
 /// lifecycle takes it: the lock, then the open.
@@ -501,7 +503,163 @@ fn creating(dir: &Path, run_dir: &Path, size: u64, base_pattern: Option<u64>) ->
         run_dir: run_dir.into(),
         base_pattern,
         zero_fill: false,
+        remote: None,
     }
+}
+
+fn placed_at(dir: &Path, run_dir: &Path) -> Create {
+    Create {
+        remote: Some(Remote::new("http://127.0.0.1:9000", "volumes", "pg-1").expect("a place")),
+        ..creating(dir, run_dir, 8 << 20, None)
+    }
+}
+
+/// `create --endpoint --bucket --volume`: the place is made first, with
+/// the volume's size; then the volume, and its place in the file
+/// `remote` beside it, which `serve` reads. The line names the place.
+/// A create with no place asks nothing of object storage and writes no
+/// file.
+#[test]
+fn create_with_a_place_makes_it_first_and_writes_it_beside_the_volume() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    let asked = placed_at(&dir, &run_dir);
+    let mut asked_for = None;
+    let output = create_placed(&asked, *b"0123456789abcdef", Some(BOOT), |remote, size| {
+        assert!(!dir.exists(), "the place comes first");
+        asked_for = Some((remote.clone(), size));
+        Ok(Placed::Made)
+    });
+    assert_eq!(
+        (output.exit, output.err.as_str()),
+        (Exit::Done, ""),
+        "{output:?}"
+    );
+    let remote = asked.remote.clone().expect("a place");
+    assert_eq!(asked_for, Some((remote.clone(), 8 << 20)));
+    assert_eq!(crate::remote::read(&dir), Ok(Some(remote.clone())));
+    assert!(!dir.join(crate::remote::REMOTE_NEW).exists());
+    assert!(
+        output
+            .out
+            .ends_with(&format!(", in object storage {remote} (made)\n")),
+        "{}",
+        output.out
+    );
+    open(&dir).expect("the store opens what create made");
+
+    // Taken where a create left it: said so.
+    let again = keep.path().join("again");
+    let output = create_placed(
+        &placed_at(&again, &run_dir),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| Ok(Placed::Found),
+    );
+    assert_eq!(output.exit, Exit::Done);
+    assert!(output.out.ends_with("(found empty)\n"), "{}", output.out);
+
+    // No place: nothing asked, no file.
+    let plain = keep.path().join("plain");
+    let output = create_placed(
+        &creating(&plain, &run_dir, 8 << 20, None),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| panic!("asked of object storage"),
+    );
+    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(crate::remote::read(&plain), Ok(None));
+}
+
+/// A place refused (the name is another volume's, or object storage
+/// cannot be reached) is exit 1, says why, and makes nothing local: not
+/// the directory, nor a volume in one that exists.
+#[test]
+fn create_with_a_place_refused_makes_nothing() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    let output = create_placed(
+        &placed_at(&dir, &run_dir),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| Err("it holds data".into()),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert!(output.err.contains("not created"), "{}", output.err);
+    assert!(output.err.contains("it holds data"), "{}", output.err);
+    assert!(output.out.is_empty());
+    assert!(!dir.exists());
+
+    std::fs::create_dir(&dir).expect("the directory");
+    let output = create_placed(
+        &placed_at(&dir, &run_dir),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| Err("no answer".into()),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert_eq!(std::fs::read_dir(&dir).expect("listed").count(), 0);
+
+    // `create` alone has no way to object storage: a place is refused.
+    let output = create(&placed_at(&dir, &run_dir), *b"0123456789abcdef", Some(BOOT));
+    assert_eq!(output.exit, Exit::Error);
+    assert_eq!(std::fs::read_dir(&dir).expect("listed").count(), 0);
+}
+
+/// A local create refused after the place was made (the directory holds
+/// a volume) writes no file `remote` and leaves the volume there as it
+/// was. The place stays, empty, for the next create of the name.
+#[test]
+fn create_with_a_place_refused_locally_writes_no_place() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    let first = create(
+        &creating(&dir, &run_dir, 8 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(first.exit, Exit::Done);
+    let output = create_placed(
+        &placed_at(&dir, &run_dir),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| Ok(Placed::Made),
+    );
+    assert_eq!(output.exit, Exit::Error, "{output:?}");
+    assert_eq!(crate::remote::read(&dir), Ok(None));
+    let volume = skyzfs_local::volume::Volume::read(&FsDir::new(&dir).expect("dir")).expect("read");
+    assert_eq!(volume.id, [1; 16]);
+}
+
+/// A file `remote` that cannot be written fails the create, which says
+/// that the volume was made with no place and what to do; the volume is
+/// left, as after any create that fails once its volume file is made.
+#[test]
+fn create_whose_place_cannot_be_written_says_so() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    let output = create_with(
+        &placed_at(&dir, &run_dir),
+        *b"0123456789abcdef",
+        Some(BOOT),
+        |_, _| Ok(Placed::Made),
+        |_, _| Err(io::Error::other("no space")),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert!(
+        output.err.contains("would be served with no upload") && output.err.contains("no space"),
+        "{}",
+        output.err
+    );
+    assert!(
+        output.err.contains("could not be written in")
+            && output.err.contains(" and create it again")
+            && !output.err.contains("  "),
+        "one line, its words one space apart (F4 of #118's review): {:?}",
+        output.err
+    );
+    assert_eq!(crate::remote::read(&dir), Ok(None));
+    open(&dir).expect("the volume is there");
 }
 
 /// `create` makes a volume of the size asked for that the store opens,

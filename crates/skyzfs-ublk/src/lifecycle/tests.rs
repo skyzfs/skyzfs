@@ -1277,6 +1277,40 @@ fn an_error_that_may_pass_stops_the_daemon_and_leaves_the_device() {
     assert_eq!(untouched(world, 0, |s| matches!(s, Stop::Error(_))), Ok(()));
 }
 
+/// The daemon refuses the store it opened (M2.4c: another holder has the
+/// volume's lease in object storage): the start stops with the refusal,
+/// and no device and no record is touched, whatever the device's state.
+#[test]
+fn a_refusal_after_the_open_stops_the_daemon_and_leaves_the_device() {
+    for state in [DeviceState::Waiting, DeviceState::Live, DeviceState::Dead] {
+        let mut world = World::new().attached(4, state, EARLIER);
+        world.opens.push_back(OpenError::Refused("leased".into()));
+        assert_eq!(
+            untouched(world, 0, |s| *s == Stop::Refused("leased".into())),
+            Ok(()),
+            "{state:?}"
+        );
+    }
+}
+
+/// A refusal after an open that acknowledged a failure leaves the
+/// failure note: the next start judges the failure as this one did.
+#[test]
+fn a_refusal_after_an_acknowledging_open_keeps_the_failure_note() {
+    let mut world = failed_world(false);
+    world.opens.push_back(OpenError::Refused("leased".into()));
+    let note = world.failure;
+    assert!(matches!(note, Ok(Some(_))), "the world has a note");
+    let outcome = run_as(world, &ACKNOWLEDGING, 0);
+    assert_eq!(rules(&outcome), Ok(()));
+    assert_eq!(outcome.result.err(), Some(Stop::Refused("leased".into())));
+    assert_eq!(outcome.world.failure, note, "the note stays");
+    assert!(!any(&outcome.world, |e| matches!(
+        e,
+        Event::RemoveFailure | Event::Add(..) | Event::BeginRecovery(_)
+    )));
+}
+
 #[test]
 fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
     for state in [DeviceState::Waiting, DeviceState::Dead, DeviceState::Live] {
