@@ -32,9 +32,10 @@
 //!   committed cut's content whichever base the header names, since
 //!   commits only move forward. A store told to sync the header
 //!   ([`super::HoldCuts::intent_header_sync`], M2.4d) begins a sync of
-//!   the file on its helper once they are written; nothing waits for
-//!   it, and it narrows the window in which a power cut costs a whole
-//!   upload to the sync's own time.
+//!   the file on its helper once they are written. The release does not
+//!   wait for it (a write into a clean region does, as for any sync of
+//!   the map under way), and it narrows the window in which a power cut
+//!   costs a whole upload to the sync's own time.
 //!
 //! What the disk holds of a page is known only once a sync after its
 //! write has ended. A bit the disk holds for certain is **durable**
