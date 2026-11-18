@@ -47,6 +47,7 @@ UPLOAD_PATHS = (
     'crates/skynbd-types/',
     'Cargo.toml',
     'Cargo.lock',
+    'rust-toolchain.toml',
     'tests/lib/',
     'tests/kernel/cut_watch.py',
     'tests/kernel/cut-record.sh',

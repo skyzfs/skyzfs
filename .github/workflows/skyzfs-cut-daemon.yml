@@ -34,7 +34,7 @@ name: skyzfs-cut-daemon
 # files to a testing branch (ubuntu-26.04), and by dispatch (all four
 # images by default). A pull request that changes the uploader, the
 # daemon that drives it, the skynbd crates its commit and row rest on,
-# the build's manifests, tests/lib, the rig's upload files or this
+# the build's manifests and toolchain, tests/lib, the rig's upload files or this
 # workflow also runs the upload stage's courses (a) to (d) on
 # ubuntu-26.04 (UPLOAD_PATHS in tests/kernel/cut_plan.py); (e) to
 # (g) run by dispatch only. tests/kernel/cut_plan.py makes the jobs.

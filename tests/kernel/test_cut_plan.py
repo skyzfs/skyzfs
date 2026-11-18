@@ -19,7 +19,7 @@ def stages(jobs):
 
 class Plan(unittest.TestCase):
     def test_a_pull_request_that_touches_no_upload_path(self):
-        jobs = cut_plan.plan('pull_request', '', '', '', '', ['crates/skyzfs-uberblock/src/lib.rs', 'rust-toolchain.toml',
+        jobs = cut_plan.plan('pull_request', '', '', '', '', ['crates/skyzfs-uberblock/src/lib.rs',
                                                              'tests/kernel/replay_check.py'])
         self.assertEqual(stages(jobs), [('ubuntu-26.04', '1', '0', '', 'ubuntu-26.04'),
                                         ('ubuntu-26.04-arm', '1', '0', '', 'ubuntu-26.04-arm')])
@@ -29,7 +29,7 @@ class Plan(unittest.TestCase):
                      'crates/skyzfs-ublk/src/a.rs', 'crates/skyzfs-blk/src/lib.rs', 'bins/skyzfs-nodeb/src/main.rs',
                      'crates/skynbd-engine/src/lib.rs', 'crates/skynbd-refs/src/s3.rs', 'crates/skynbd-store/Cargo.toml',
                      'crates/skynbd-format/src/x.rs', 'crates/skynbd-types/src/lib.rs', 'Cargo.toml', 'Cargo.lock',
-                     'tests/lib/gnu-dd.sh', 'tests/kernel/cut_watch.py', 'tests/kernel/cut-record.sh',
+                     'rust-toolchain.toml', 'tests/lib/gnu-dd.sh', 'tests/kernel/cut_watch.py', 'tests/kernel/cut-record.sh',
                      'tests/kernel/cut_daemon_check.py', 'tests/kernel/cut_plan.py', 'tests/kernel/cut_summary.py',
                      '.github/workflows/skyzfs-cut-daemon.yml'):
             jobs = cut_plan.plan('pull_request', '', '', '', '', ['README.md', path])
@@ -41,7 +41,7 @@ class Plan(unittest.TestCase):
         for path in ('crates/skyzfs-ublk-sys/src/lib.rs', 'crates/skyzfs-uploader/x', 'bins/skyzfsd-extra/a',
                      'tests/kernel/cut_watch.py.orig', '.github/workflows/skyzfs-cut-rig.yml',
                      'crates/skynbd-nbd/src/lib.rs', 'crates/skynbd-engine-x/a', 'crates/Cargo.toml',
-                     'tests/libx/a.sh', 'tests/kernel/cut_plan.pyc', 'rust-toolchain.toml'):
+                     'tests/libx/a.sh', 'tests/kernel/cut_plan.pyc', 'crates/rust-toolchain.toml'):
             self.assertFalse(cut_plan.touches_upload([path]), path)
 
     def test_a_dispatch(self):
