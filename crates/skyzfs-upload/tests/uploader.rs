@@ -216,12 +216,167 @@ async fn a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing() {
     assert!(matches!(up.shown().state, State::LeaseLost { .. }));
 }
 
+/// A conflict from the read after a refused commit, which no remote
+/// returns, is waited after as an error: the uploader never turns twice
+/// in a row without a wait for a conflict.
+#[tokio::test(start_paused = true)]
+async fn a_conflict_right_after_a_refused_commit_is_waited_after() {
+    let mut fx = Fixture::new(63).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let refuse = Arc::new(AtomicBool::new(true));
+    let commits = Arc::new(AtomicU64::new(0));
+    let make = {
+        let (mut fenced, refuse, commits) = (fenced(&fx, &clock), refuse.clone(), commits.clone());
+        move |epoch| Refusing {
+            inner: fenced(epoch),
+            refuse: refuse.clone(),
+            observe_refused: true,
+            commits: commits.clone(),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        }
+    };
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), make, 16);
+    // Turn until the commit is refused, which waits nothing.
+    let mut refused = None;
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        if commits.load(Ordering::SeqCst) == 1 {
+            refused = Some((up.shown().state, wait));
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(
+        refused,
+        Some((State::Working(Doing::Committing, Some(1)), Duration::ZERO)),
+        "the refusal"
+    );
+    // The read after it is refused too: an error, waited after.
+    let wait = up.turn().await;
+    assert!(
+        matches!(&up.shown().state, State::Backoff { why, wait }
+            if why.starts_with("the commit was refused") && *wait == SECOND),
+        "{:?}",
+        up.shown().state
+    );
+    assert_eq!(wait, SECOND, "the read's conflict waits");
+    assert_eq!(commits.load(Ordering::SeqCst), 1, "no commit sent again");
+}
+
+/// A remote whose every `every`th PUT of sealed segments fails, the
+/// segments staying in the engine for the next.
+struct Flaky<R> {
+    inner: R,
+    every: u64,
+    puts: Arc<AtomicU64>,
+}
+
+impl<R: Remote> Remote for Flaky<R> {
+    async fn observe(&mut self) -> Result<Observed, RemoteError> {
+        self.inner.observe().await
+    }
+
+    fn write(&mut self, offset: u64, data: &[u8]) -> Result<(), RemoteError> {
+        self.inner.write(offset, data)
+    }
+
+    fn write_zeroes(&mut self, offset: u64, len: u64) -> Result<(), RemoteError> {
+        self.inner.write_zeroes(offset, len)
+    }
+
+    async fn put_sealed(&mut self) -> Result<(), RemoteError> {
+        let n = self.puts.fetch_add(1, Ordering::SeqCst) + 1;
+        if n % self.every == 0 {
+            return Err(RemoteError::Store(format!("PUT {n} failed")));
+        }
+        self.inner.put_sealed().await
+    }
+
+    async fn commit(
+        &mut self,
+        group: u64,
+        expected: Option<Vec<u8>>,
+        row: Vec<u8>,
+    ) -> Result<(), RemoteError> {
+        self.inner.commit(group, expected, row).await
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard()
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset()
+    }
+}
+
+/// An error's wait starts again at any step that succeeds (the lead's
+/// decision on F3 of #117's review): with every 20th PUT failing, a cut
+/// goes up waiting a second at each failure, and no longer.
+#[tokio::test(start_paused = true)]
+async fn a_put_that_fails_now_and_then_waits_a_second_each_time_and_the_cut_goes_up() {
+    let mut fx = Fixture::new(62).await;
+    let mut store = fx.start();
+    for block in 10..50u8 {
+        fx.write(&mut store, u64::from(block), block);
+    }
+    fx.group(&mut store, 7);
+    let clock = Clock::new();
+    let puts = Arc::new(AtomicU64::new(0));
+    let make = {
+        let (mut fenced, puts) = (fenced(&fx, &clock), puts.clone());
+        move |epoch| Flaky {
+            inner: fenced(epoch),
+            every: 20,
+            puts: puts.clone(),
+        }
+    };
+    // One block a slice: two PUTs a slice, so that a cut makes several
+    // dozen.
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), make, 1);
+
+    let began = tokio::time::Instant::now();
+    let (mut waits, mut last) = (Vec::new(), None);
+    for _ in 0..1000 {
+        let wait = up.turn().await;
+        let state = up.shown().state;
+        if let State::Backoff { why, wait: w } = &state {
+            assert!(why.contains("failed"), "{why}");
+            if last.as_ref() != Some(&state) {
+                waits.push(*w);
+            }
+        }
+        if state == State::Idle && up.shown().figures.uploaded == 1 {
+            break;
+        }
+        last = Some(state);
+        tokio::time::advance(wait.max(Duration::from_millis(1))).await;
+    }
+    fx.assert_uploaded(7, "with every 20th PUT failing").await;
+    let puts = puts.load(Ordering::SeqCst);
+    let failed = puts / 20;
+    assert!(failed >= 3, "{puts} PUTs: too few to fail more than twice");
+    assert_eq!(waits.len() as u64, failed, "one wait a failure: {waits:?}");
+    assert!(waits.iter().all(|w| *w == SECOND), "{waits:?}");
+    // Bounded: the waits of the failures, and the turns' own millisecond.
+    let took = began.elapsed();
+    assert!(
+        took <= Duration::from_secs(failed + 1),
+        "{took:?} for {failed} failed PUTs"
+    );
+}
+
 /// A remote whose commits are refused with a conflict while `refuse` is
 /// set, landing nothing: what a fencing store with no lease row did in
 /// the review's S9.
 struct Refusing<R> {
     inner: R,
     refuse: Arc<AtomicBool>,
+    /// Whether the read of the row and head is refused too, with a
+    /// conflict, once a commit has been sent and while `refuse` is set:
+    /// what no remote does.
+    observe_refused: bool,
     commits: Arc<AtomicU64>,
     /// When each commit was sent.
     sent: Arc<Mutex<Vec<tokio::time::Instant>>>,
@@ -229,6 +384,12 @@ struct Refusing<R> {
 
 impl<R: Remote> Remote for Refusing<R> {
     async fn observe(&mut self) -> Result<Observed, RemoteError> {
+        if self.observe_refused
+            && self.commits.load(Ordering::SeqCst) > 0
+            && self.refuse.load(Ordering::SeqCst)
+        {
+            return Err(RemoteError::Conflict);
+        }
         self.inner.observe().await
     }
 
@@ -288,6 +449,7 @@ async fn a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_ever
         move |epoch| Refusing {
             inner: fenced(epoch),
             refuse: refuse.clone(),
+            observe_refused: false,
             commits: commits.clone(),
             sent: sent.clone(),
         }
@@ -308,35 +470,36 @@ async fn a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_ever
                 panic!("{why}")
             };
             if waits.last() != Some(&(kind, w)) {
+                // The turn that announces a wait also asks for it: it
+                // returns a wait, not a turn at once (G8).
+                assert!(!wait.is_zero(), "{kind} {w:?} announced, none asked");
                 waits.push((kind, w));
             }
         }
         tokio::time::advance(wait.max(Duration::from_millis(1))).await;
     }
     let secs: Vec<u64> = waits.iter().map(|(_, w)| w.as_secs()).collect();
-    let kinds: Vec<&str> = waits.iter().map(|(kind, _)| *kind).collect();
-    // A commit refused (an error), then the same commit given up after
-    // the row and head were read again, each doubling the wait.
-    assert_eq!(&secs[..8], [1, 2, 4, 8, 16, 32, 64, 128], "{waits:?}");
-    assert_eq!(
-        &kinds[..4],
-        ["refused", "given up", "refused", "given up"],
+    // A commit refused is read again at once and given up: one wait a
+    // cycle, at the give-up, doubling (the lead's decision on F3 of
+    // #117's review). The refusal itself waits nothing.
+    assert_eq!(&secs[..9], [1, 2, 4, 8, 16, 32, 64, 128, 256], "{waits:?}");
+    assert!(
+        waits.iter().all(|(kind, _)| *kind == "given up"),
         "{waits:?}"
     );
     let tries = commits.load(Ordering::SeqCst);
     assert!(
-        tries <= 12,
+        tries <= 11,
         "{tries} commits in ten minutes: the whole cut went up at every cycle"
     );
-    // Both waits of a cycle are waited, not only announced (G8 of #117's
-    // review): from one commit to the next, the wait after the refusal
-    // and the wait after the give-up.
+    // Each wait is waited, not only announced (G8 of #117's review): from
+    // one commit to the next, the whole wait of the give-up between them.
     let sent = sent.lock().expect("sent").clone();
     for (k, pair) in sent.windows(2).enumerate() {
-        let (refused, given_up) = (waits[2 * k].1, waits[2 * k + 1].1);
+        let given_up = waits[k].1;
         assert!(
-            pair[1] - pair[0] >= refused + given_up,
-            "commit {k}: {:?} from the last, for waits of {refused:?} and {given_up:?}",
+            pair[1] - pair[0] >= given_up,
+            "commit {k}: {:?} from the last, for a wait of {given_up:?}",
             pair[1] - pair[0]
         );
     }
@@ -832,6 +995,33 @@ async fn a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from
     );
     // The step failed at 12 s: its backoff of 2 s is over at 14 s.
     assert_eq!(wait, SECOND, "the backoff from the step's end");
+}
+
+/// The same for a step that finds nothing to do: the idle wait is counted
+/// from the step's end, not from the end of the renewal it waited for.
+#[tokio::test(start_paused = true)]
+async fn an_idle_step_that_ends_during_a_renewal_counts_its_wait_from_its_own_end() {
+    let fx = Fixture::new(61).await;
+    let delay = Arc::new(AtomicU64::new(0));
+    let slow = Slow {
+        inner: fx.start(),
+        delay: Arc::clone(&delay),
+    };
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
+    let wait = up.turn().await;
+    assert_eq!(wait, IDLE);
+    tokio::time::advance(wait).await;
+
+    // An idle step from 0.25 s to 12 s; the renewal due at 10 s takes 3 s.
+    delay.store(11_750, Ordering::SeqCst);
+    way.take_ms.store(3_000, Ordering::SeqCst);
+    let wait = up.turn().await;
+    assert_eq!(way.elapsed(), Duration::from_secs(13), "the renewal's end");
+    assert_eq!(up.shown().state, State::Idle);
+    // Idle at 12 s: the next step was due at 12.25 s, already past.
+    assert_eq!(wait, Duration::ZERO, "the idle wait from the step's end");
 }
 
 /// A turned uploader whose lease's way fails, and whose uploads' way

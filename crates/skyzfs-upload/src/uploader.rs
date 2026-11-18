@@ -18,17 +18,23 @@
 //!    step nor the renewal is dropped half done.
 //! 2. **One step of the driver** ([`Driver::step`]), made at the first
 //!    take with a remote fenced by its epoch: a renewal keeps the epoch or
-//!    loses the lease, so the driver is never made again. A step that
-//!    fails on object storage, and a commit given up (a conflict, or a row
-//!    or head that moved), put the uploader in the backoff
-//!    ([`crate::backoff`]): one second, doubling to five minutes, reset
-//!    when a cut is committed or found committed. A step that only goes on
-//!    (a check, a slice read) does not reset it: the reading of "reset on
-//!    a success" that keeps the rule's point. So a store that refuses every
-//!    commit does not have the whole cut uploaded again at every cycle
-//!    (the lead's decision on G7 of #114's review). A commit refused by
-//!    the fence (`RemoteError::Fenced`) loses the lease. A cut the store
-//!    kept at its release (`Step::Kept`) stops the driver for good.
+//!    loses the lease, so the driver is never made again. Two waits, each
+//!    one second doubling to five minutes ([`crate::backoff`]); the lead's
+//!    decision on F3 of #117's review:
+//!    - **A step that fails on object storage** (a PUT, a read) waits,
+//!      and the driver makes the same step again after it: nothing of the
+//!      cut is lost. That wait is reset by any step that succeeds, so a
+//!      store that fails now and then costs a second for each failure.
+//!    - **A commit refused** (a conflict) is followed at once by a step
+//!      that reads the row and head again, and that step gives the cut up
+//!      (or finds that it landed). The wait comes at the give-up, once a
+//!      cycle, and is reset only when a cut is committed or found
+//!      committed: a store that refuses every commit does not have the
+//!      whole cut uploaded again at every cycle (G7 of #114's review).
+//!
+//!    A commit refused by the fence (`RemoteError::Fenced`) loses the
+//!    lease. A cut the store kept at its release (`Step::Kept`) stops the
+//!    driver for good.
 //! 3. With no cut to upload, the next turn comes after [`IDLE`].
 //!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
@@ -106,8 +112,13 @@ pub struct Uploader<L, R, F, M> {
     local: Option<L>,
     driver: Option<Driver<L, R>>,
     slice_blocks: usize,
-    /// For the driver's steps.
-    backoff: Backoff,
+    /// After a step that failed on object storage.
+    errors: Backoff,
+    /// After a commit given up.
+    refused: Backoff,
+    /// A commit was refused, and the step after it, which reads the row
+    /// and head again, has not ended yet.
+    rereading: bool,
     /// For the first take of the lease.
     lease_backoff: Backoff,
     state: State,
@@ -139,7 +150,9 @@ where
             local: Some(local),
             driver: None,
             slice_blocks: blocks,
-            backoff: Backoff::new(),
+            errors: Backoff::new(),
+            refused: Backoff::new(),
+            rereading: false,
             lease_backoff: Backoff::new(),
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
@@ -222,6 +235,10 @@ where
         .await;
         let now = Instant::now();
         let (doing, under_way) = (driver.doing(), driver.under_way());
+        if step.is_ok() {
+            self.errors.succeeded();
+        }
+        let rereading = std::mem::take(&mut self.rereading);
         match step {
             Ok(Step::Idle) => {
                 self.state = State::Idle;
@@ -231,23 +248,27 @@ where
                 self.state = State::Stopped;
                 AT_REST
             }
-            Ok(Step::GaveUp { number }) => self.wait_after(
-                ended,
-                now,
-                format!("commit of cut {number} refused: conflict"),
-            ),
+            Ok(Step::GaveUp { number }) => {
+                let wait = self.refused.failed();
+                self.wait_after(
+                    wait,
+                    ended,
+                    now,
+                    format!("commit of cut {number} refused: conflict"),
+                )
+            }
             Ok(step) => {
-                // Only a cut committed, or found committed, ends the wait:
-                // a read that goes on after a refused commit is not a
-                // success, or the whole cut would go up again at every
-                // cycle.
+                // Only a cut committed, or found committed, ends the wait
+                // of a refusal: a read that goes on after a refused commit
+                // is not a success, or the whole cut would go up again at
+                // every cycle.
                 if matches!(
                     step,
                     Step::Uploaded { .. }
                         | Step::UploadedNotHeld { .. }
                         | Step::FoundCommitted { .. }
                 ) {
-                    self.backoff.succeeded();
+                    self.refused.succeeded();
                 }
                 self.state = State::Working(doing, under_way);
                 Duration::ZERO
@@ -257,7 +278,22 @@ where
                 self.state = State::LeaseLost { holder, epoch };
                 AT_REST
             }
-            Err(e) => self.wait_after(ended, now, e.to_string()),
+            // A commit refused: the next step reads the row and head
+            // again at once, and the wait comes at its give-up. Only at
+            // the commit, where the driver stays to read them, and only
+            // once in a row: a conflict anywhere else, or from that read
+            // (which does not return one), is an error like any other, so
+            // that no conflict makes the uploader turn twice without a
+            // wait.
+            Err(RemoteError::Conflict) if doing == Doing::Committing && !rereading => {
+                self.rereading = true;
+                self.state = State::Working(doing, under_way);
+                Duration::ZERO
+            }
+            Err(e) => {
+                let wait = self.errors.failed();
+                self.wait_after(wait, ended, now, e.to_string())
+            }
         }
     }
 
@@ -320,10 +356,15 @@ where
         }
     }
 
-    /// A step failed or a commit was given up, at `ended`: wait, from
-    /// then. `now` is when the turn ends.
-    fn wait_after(&mut self, ended: Instant, now: Instant, why: String) -> Duration {
-        let wait = self.backoff.failed();
+    /// A step failed or a commit was given up, at `ended`: wait `wait`,
+    /// from then. `now` is when the turn ends.
+    fn wait_after(
+        &mut self,
+        wait: Duration,
+        ended: Instant,
+        now: Instant,
+        why: String,
+    ) -> Duration {
         self.step_at = ended + wait;
         self.state = State::Backoff { why, wait };
         self.next_wait(now, self.step_at)
