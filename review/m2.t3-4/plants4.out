@@ -1,0 +1,72 @@
+P01 a path that begins like a listed file counts: KILLED by 1: test_paths_that_only_look_alike
+P02 a directory's name without its slash counts as a prefix: KILLED by 1: test_paths_that_only_look_alike
+P03 every changed path must be an upload path: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P12 a pull request runs the held cuts' stage on one image: KILLED by 3: test_a_pull_request_that_touches_no_upload_path, test_a_pull_request_that_touches_the_uploader, test_the_command
+P13 the upload job takes the place of the held cuts' jobs: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P14 the pull request's upload job also holds cuts: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P15 the pull request's upload job leaves out ulost: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P15b the pull request's upload job runs every recording (empty list): KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P16 a dispatch with upload also holds cuts: KILLED by 1: test_a_dispatch
+P17 a dispatch uploads whatever its input says: KILLED by 1: test_a_dispatch
+P17b a dispatch never uploads: KILLED by 1: test_a_dispatch
+P17c a dispatch drops its recordings: NOT APPLIED (found [0] times)
+P17d a dispatch runs its first image alone: NOT APPLIED (found [0] times)
+P18 a push runs on arm64: KILLED by 1: test_a_push
+P18b a push does not hold cuts: KILLED by 1: test_a_push
+P19 the upload job runs on arm64: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P20 the command does not read the changed paths: KILLED by 1: test_the_command
+P21 the upload job has the held cuts' job's label: KILLED by 3: test_a_dispatch, test_a_pull_request_that_touches_the_uploader, test_the_command
+P22 an event with no plan runs nothing: KILLED by 1: test_another_event
+P23 upload is written true or false, not 1 or 0: KILLED by 4: test_a_dispatch, test_a_pull_request_that_touches_no_upload_path, test_a_pull_request_that_touches_the_uploader, test_a_push
+P24 a pull request always gets the upload job: KILLED by 1: test_a_pull_request_that_touches_no_upload_path
+P04 the plan does not know the path crates/skyzfs-upload/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P05 the plan does not know the path bins/skyzfsd/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P06 the plan does not know the path crates/skyzfs-local/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P07 the plan does not know the path crates/skyzfs-ublk/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P08 the plan does not know the path bins/skyzfs-nodeb/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P09 the plan does not know the path tests/kernel/cut_watch.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P10 the plan does not know the path tests/kernel/cut-record.sh: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P11 the plan does not know the path tests/kernel/cut_daemon_check.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P11b the plan does not know the path .github/workflows/skyzfs-cut-daemon.yml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+R51 before_other: a status older than its row is taken: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R52 before_other: a status whose cut group is not the row's, either way, means look again: KILLED by 1: test_cut_record.sh: FAIL a status ahead of its row (a cut held, or abandoned): the judge's, no look 
+R53 before_other: a status ahead of its row means look again, one behind does not: KILLED by 3: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status ahead of its row (a cut held, or abandoned): the judge's, no look , test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R58 before_other: a status at its row's group means look again too: KILLED by 4: test_cut_record.sh: FAIL a cut the watcher fetched: got '2 rig error: the row or the status moved on, test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '2 rig error: , test_cut_record.sh: FAIL a pool not imported is not synced: got '2 rig error: the row or the status , test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '2 rig error: t
+R70 before_other: no wait before the look again on a stale status: SURVIVED
+R71 before_other: the wait is taken and the look kept: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R60 other_act: no control: KILLED by 3: test_cut_record.sh: FAIL an act on the row as read: got '0 acted on ab 1 40 after 0 agains, 0 contro, test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '0 acted on ab 3 40 after, test_cut_record.sh: FAIL an act that does not check the row it was given is the rig's error: got '0 
+R61 other_act: a control that did not end with 6 is no error: KILLED by 1: test_cut_record.sh: FAIL an act that does not check the row it was given is the rig's error: got '0 
+R62 other_act: the control acts on the row as read: KILLED by 2: test_cut_record.sh: FAIL an act on the row as read: got '2 rig error: node B's act at step on the ro, test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '2 rig error: node B's ac
+R63 other_act: the control may end with any failure: SURVIVED
+R64 other_act: the control is not written to guard-controls.txt: SURVIVED
+R65 other_act: one control, before the first act alone: KILLED by 1: test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '0 acted on ab 3 40 after
+R66 other_act: the control is on the number one past and the row's group, as before: SURVIVED
+R67 other_act: the control is on group 1: SURVIVED
+P50 a path that ends like a listed file counts: KILLED by 1: test_paths_that_only_look_alike
+P51 a listed directory anywhere in the path counts: SURVIVED
+P52 a listed file counts as a directory too: SURVIVED
+P54 every crate starts the upload job: KILLED by 2: test_a_pull_request_that_touches_no_upload_path, test_paths_that_only_look_alike
+P55 every file of tests/kernel starts the upload job: KILLED by 2: test_a_pull_request_that_touches_no_upload_path, test_paths_that_only_look_alike
+P17e a dispatch drops its recordings: KILLED by 1: test_a_dispatch
+P17f a dispatch runs its first image alone: KILLED by 1: test_a_dispatch
+P60 the plan without crates/skyzfs-blk/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P61 the plan without crates/skynbd-engine/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P62 the plan without crates/skynbd-refs/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P63 the plan without crates/skynbd-store/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P64 the plan without crates/skynbd-format/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P65 the plan without crates/skynbd-types/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P66 the plan without Cargo.toml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P67 the plan without Cargo.lock: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P68 the plan without tests/lib/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P69 the plan without tests/kernel/cut_plan.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P70 the plan without tests/kernel/cut_summary.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P71 the plan without rust-toolchain.toml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P72 the plan without crates/skyzfs-upload/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P73 the plan without bins/skyzfsd/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P74 the plan without crates/skyzfs-local/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P75 the plan without crates/skyzfs-ublk/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P76 the plan without bins/skyzfs-nodeb/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P77 the plan without tests/kernel/cut_watch.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P78 the plan without tests/kernel/cut-record.sh: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P79 the plan without tests/kernel/cut_daemon_check.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P80 the plan without .github/workflows/skyzfs-cut-daemon.yml: KILLED by 1: test_a_pull_request_that_touches_the_uploader

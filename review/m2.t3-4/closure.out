@@ -1,0 +1,47 @@
+workflow pull_request paths: tests/kernel/cut* tests/kernel/test_cut* tests/kernel/replay_check.py bins/skyzfs-nodeb/** tests/lib/** bins/skyzfsd/** crates/skyzfs-upload/** crates/skyzfs-local/** crates/skyzfs-uberblock/** crates/skyzfs-ublk/** crates/skyzfs-ublk-sys/** crates/skyzfs-blk/** crates/skynbd-engine/** crates/skynbd-refs/** crates/skynbd-store/** crates/skynbd-format/** crates/skynbd-types/** Cargo.lock Cargo.toml rust-toolchain.toml .github/workflows/skyzfs-cut-daemon.yml
+UPLOAD_PATHS: crates/skyzfs-upload/ bins/skyzfsd/ crates/skyzfs-local/ crates/skyzfs-ublk/ crates/skyzfs-blk/ bins/skyzfs-nodeb/ crates/skynbd-engine/ crates/skynbd-refs/ crates/skynbd-store/ crates/skynbd-format/ crates/skynbd-types/ Cargo.toml Cargo.lock rust-toolchain.toml tests/lib/ tests/kernel/cut_watch.py tests/kernel/cut-record.sh tests/kernel/cut_daemon_check.py tests/kernel/cut_plan.py tests/kernel/cut_summary.py .github/workflows/skyzfs-cut-daemon.yml
+
+skyzfs-upload: built from 11 workspace crates; 2 more through dev-dependencies
+  crates/skynbd-engine/              plan yes  workflow yes
+  crates/skynbd-format/              plan yes  workflow yes
+  crates/skynbd-refs/                plan yes  workflow yes
+  crates/skynbd-store/               plan yes  workflow yes
+  crates/skynbd-tree/                plan NO   workflow NO
+  crates/skynbd-types/               plan yes  workflow yes
+  crates/skyzfs-blk/                 plan yes  workflow yes
+  crates/skyzfs-local/               plan yes  workflow yes
+  crates/skyzfs-mapped/              plan NO   workflow NO
+  crates/skyzfs-uberblock/           plan NO   workflow yes
+  crates/skyzfs-upload/              plan yes  workflow yes
+  crates/skyzfs-ublk-sys/            plan NO   workflow yes  (dev only)
+  crates/skyzfs-ublk/                plan yes  workflow yes  (dev only)
+
+skyzfsd: built from 14 workspace crates; 0 more through dev-dependencies
+  bins/skyzfsd/                      plan yes  workflow yes
+  crates/skynbd-engine/              plan yes  workflow yes
+  crates/skynbd-format/              plan yes  workflow yes
+  crates/skynbd-refs/                plan yes  workflow yes
+  crates/skynbd-store/               plan yes  workflow yes
+  crates/skynbd-tree/                plan NO   workflow NO
+  crates/skynbd-types/               plan yes  workflow yes
+  crates/skyzfs-blk/                 plan yes  workflow yes
+  crates/skyzfs-local/               plan yes  workflow yes
+  crates/skyzfs-mapped/              plan NO   workflow NO
+  crates/skyzfs-uberblock/           plan NO   workflow yes
+  crates/skyzfs-ublk-sys/            plan NO   workflow yes
+  crates/skyzfs-ublk/                plan yes  workflow yes
+  crates/skyzfs-upload/              plan yes  workflow yes
+
+skyzfs-nodeb: built from 7 workspace crates; 0 more through dev-dependencies
+  bins/skyzfs-nodeb/                 plan yes  workflow yes
+  crates/skynbd-engine/              plan yes  workflow yes
+  crates/skynbd-format/              plan yes  workflow yes
+  crates/skynbd-refs/                plan yes  workflow yes
+  crates/skynbd-store/               plan yes  workflow yes
+  crates/skynbd-tree/                plan NO   workflow NO
+  crates/skynbd-types/               plan yes  workflow yes
+
+workspace crates the lists name that no root is built from:
+
+UPLOAD_PATHS entries the workflow does not start on:
+(end)
