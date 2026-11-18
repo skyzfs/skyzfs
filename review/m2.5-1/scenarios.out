@@ -1,0 +1,75 @@
+test review_m25_r10_a_name_deleted_and_asked_again_is_looked_up_not_remembered ... r10: the ref is gone; the same request asked again answers Done([123, 117, ..]) (Done names the first commit: true)
+r10: a new snapshot of the name asked: Refused(Taken)
+thread 'review_m25_r10_a_name_deleted_and_asked_again_is_looked_up_not_remembered' panicked at crates/skyzfs-upload/tests/publish.rs:1272:5:
+assertion `left == right` failed: the name is free in object storage
+  left: Refused(Taken)
+ right: Accepted
+test review_m25_r1_head_moved_after_a_lost_reply_and_snap_t_names_cut_1s_commit_or_nothing ... r1: steps [Uploaded { number: 1, rule: Whole, blocks: 256 }, Published { name: "t", number: 1, commit: [13, 95, ..], found: false }]
+r1: snap/t names 0d5fac254ae4 (cut 1's commit: false, the other writer's: true), a commit of group None; its row names cut 1 of group 7; the commit holds the volume at that cut's instant: false
+r1: progress Done([13, 95, ..])
+thread 'review_m25_r1_head_moved_after_a_lost_reply_and_snap_t_names_cut_1s_commit_or_nothing' panicked at crates/skyzfs-upload/tests/publish.rs:820:9:
+assertion `left == right` failed: snap/t names another commit than cut 1's
+  left: "0d5fac254ae4"
+ right: "c6ff459d8016"
+test review_m25_r2_head_moved_before_a_restart_and_snap_t_names_cut_1s_commit_or_nothing ... r2: steps [PublishLooked { name: "t" }, FoundCommitted { number: 1 }, Published { name: "t", number: 1, commit: [168, 32, ..], found: false }]
+r2: snap/t names a820a868e223 (cut 1's commit: false, the other writer's: true), a commit of group None; its row names cut 1 of group 7; the commit holds the volume at that cut's instant: false
+r2: progress Done([168, 32, ..])
+thread 'review_m25_r2_head_moved_before_a_restart_and_snap_t_names_cut_1s_commit_or_nothing' panicked at crates/skyzfs-upload/tests/publish.rs:853:9:
+assertion `left == right` failed: snap/t names another commit than cut 1's
+  left: "a820a868e223"
+ right: "3ebd1c2051ef"
+test review_m25_r3_a_request_of_another_cut_state_asked_before_the_first_check_does_not_pend_for_ever ... r3: the stale request, asked before any cut: Accepted
+r3: five cuts later: progress Pending; the stale request asked again: Refused(State); the name asked with the store's state: Refused(Asked); pending 1
+thread 'review_m25_r3_a_request_of_another_cut_state_asked_before_the_first_check_does_not_pend_for_ever' panicked at crates/skyzfs-upload/tests/publish.rs:901:5:
+assertion `left != right` failed: a request no cut of this store can carry pends for ever
+  left: Pending
+ right: Pending
+test review_m25_r4_the_operations_of_each_step_of_the_matrixs_run ... r4:  0.. 1 PublishLooked { name: "t" }: ["get_versioned refs"]
+r4:  1.. 9 Began { number: 1, rule: Whole }: ["get_versioned refs", "get_versioned refs", "get sb", "get_versioned refs", "get ?", "get commit", "get node", "get emap"]
+r4:  9.. 9 Read { number: 1, blocks: 16 }: []
+r4:  9.. 9 Read { number: 1, blocks: 16 }: []
+r4:  9.. 9 Read { number: 1, blocks: 16 }: []
+r4:  9..10 Read { number: 1, blocks: 16 }: ["put seg"]
+r4: 10..11 Read { number: 1, blocks: 16 }: ["put seg"]
+r4: 11..12 Read { number: 1, blocks: 16 }: ["put seg"]
+r4: 12..13 Read { number: 1, blocks: 16 }: ["put seg"]
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..13 Read { number: 1, blocks: 16 }: []
+r4: 13..23 Uploaded { number: 1, rule: Whole, blocks: 256 }: ["put seg", "get node", "put node", "put node", "put node", "put node", "put node", "put commit", "get_versioned refs", "put_if refs"]
+r4: 23..27 Published { name: "t", number: 1, commit: [222, 55, ..], found: false }: ["put ?", "put ?", "get_versioned refs", "put_if refs"]
+r4: 27..27 Idle: []
+test review_m25_r5_a_failure_at_any_operation_of_a_publish_on_an_older_cut ... r5: Retry Before: 5 points, the ref left by 0, published on cuts [1, 1, 1, 1, 1]
+r5: Retry After: 5 points, the ref left by 1, published on cuts [1, 1, 1, 1, 1]
+r5: Restart Before: 5 points, the ref left by 0, published on cuts [3, 3, 3, 3, 3]
+r5: Restart After: 5 points, the ref left by 1, published on cuts [3, 3, 3, 3, 1]
+test review_m25_r6_a_lost_reply_and_then_a_failed_lookup ... ok
+test review_m25_r7_a_cut_taken_after_its_commit_carries_its_publish ... r7: steps [PublishLooked { name: "t" }, UploadedNotHeld { number: 2, named: true }, Published { name: "t", number: 2, commit: [141, 154, ..], found: false }, Began { number: 3, rule: Delta }, Uploaded { number: 3, rule: Delta, blocks: 76 }]
+test review_m25_r8_a_ref_made_anew_by_another_beside_a_row_left_behind_is_not_ours ... r8: the row left behind by the delete: true
+r8: steps [Published { name: "t", number: 1, commit: [163, 74, ..], found: true }]; snap/t names cut 2's commit: true, cut 1's: false
+thread 'review_m25_r8_a_ref_made_anew_by_another_beside_a_row_left_behind_is_not_ours' panicked at crates/skyzfs-upload/tests/publish.rs:1164:5:
+assertion `left == right` failed
+  left: [Published { name: "t", number: 1, commit: [163, 74, ..], found: true }]
+ right: [PublishRefused { name: "t", why: Taken }]
+test review_m25_r9_a_name_taken_between_the_lookup_and_the_transaction ... r9: steps [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }, PublishRefused { name: "t", why: Taken }], errors 1
+test result: FAILED. 5 passed; 5 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.14s
+test review_m25_u1_a_publish_asked_before_the_lease_is_made_once_it_is_held ... ok
+test review_m25_u2_a_publish_after_another_took_the_lease_is_fenced_and_lands_nothing ... u2: the operations of the fenced publish: ["get_versioned refs", "put ?", "put ?", "get_versioned refs"]
+u2: after the lease is lost for good: progress Pending; asked again: Accepted; a new name: Accepted
+test review_m25_u3_a_publish_that_cannot_be_made_does_not_stop_the_cuts ... u3: in 600 s with every PUT of the ZFS manifest failing: 1259 turns, 659 waits after an error, the longest 1s; errors 600; head's group Some(7) (cut 2 is group 8); cuts uploaded 1; state Backoff { why: "object storage: store: backend error: injected fault (poisoned)", wait: 1s }
+thread 'review_m25_u3_a_publish_that_cannot_be_made_does_not_stop_the_cuts' panicked at crates/skyzfs-upload/tests/uploader.rs:1809:5:
+assertion `left == right` failed: cut 2 did not go up in ten minutes
+  left: Some(7)
+ right: Some(8)
+test review_m25_u4_a_publish_refused_again_and_again_is_waited_after ... u4: 2000 turns asked for 0ns of waiting in all; the publish was sent 1000 times; head's group Some(7); state Working(Committing, Some(2))
+thread 'review_m25_u4_a_publish_refused_again_and_again_is_waited_after' panicked at crates/skyzfs-upload/tests/uploader.rs:1917:5:
+1000 publishes sent with 0ns of waiting between them
+test review_m25_u5_what_a_publish_does_after_the_store_kept_its_cut ... u5: the store kept cut 1, committed: state Stopped; kept 1; progress of t Pending; snap/t false; a step of the driver alone would be Ok(Published { name: "t", number: 1, commit: [108, 36, ..], found: false })
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.02s
+# failing at the head: r1, r10, r2, r3, r8, u3, u4
