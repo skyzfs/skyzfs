@@ -194,7 +194,7 @@ check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "d
 # 8. TB_SKZ_UPLOAD: the wait for the first upload before the windows
 # (skz_first_upload), on a status that changes with the clock. The clock
 # moves 10 s a call; the status reads uploaded 0 until UP_AT s.
-first_upload() { # up_at wait_s -> rc; the row's line in $OUT/t.skzinfo
+first_upload() { # up_at wait_s [under] -> rc; the row's line in $OUT/t.skzinfo
     echo "$1" > "$tt/up_at"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
     # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_first_upload
     (
@@ -206,7 +206,7 @@ first_upload() { # up_at wait_s -> rc; the row's line in $OUT/t.skzinfo
         }
         sleep() { :; }
         date() { local n; n=$(( $(cat "$tt/clock") + 10 )); echo "$n" > "$tt/clock"; echo "$n"; }
-        skz_first_upload
+        skz_first_upload "${3:-}"
     ) 2> /dev/null
 }
 setup
@@ -219,9 +219,17 @@ check "no upload in the limit: the row says so, and the run goes on" \
 # The wait comes after the pool's import and a sync: a cut is taken at
 # a flush, and none comes while the image is copied on.
 check "the wait follows the import and a sync, on the daemon's upload rows only" \
-    'awk "/^    zpool import -N/ { i = NR } /^        lim 120 zpool sync/ { y = NR } /^        skz_first_upload\$/ { w = NR }
-          /if \\[ \"\\\$1\" = skyzfsd \\] && \\[ \"\\\$SKZ_UPLOAD\" = 1 \\]/ { c = NR }
+    'awk "/^    zpool import -N/ { i = NR } /^        lim 120 zpool sync/ && !y { y = NR } /^        skz_first_upload\$/ { w = NR }
+          /if \\[ \"\\\$1\" = skyzfsd \\] && \\[ \"\\\$SKZ_UPLOAD\" = 1 \\]/ && !c { c = NR }
           END { exit !(i && c > i && y == c + 1 && w == y + 1) }" "$script"'
 check "the wait is called nowhere else" '[ "$(grep -c "^ *skz_first_upload$" "$script")" = 1 ]'
+first_upload 100 3600 under; rc=$?
+check "the seed under the workload: the row says when, and that the workload ran" \
+    '[ "$rc" = 0 ] && grep -qE "^first_upload after [0-9]+ s under the workload \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
+first_upload 100000 3600 under; rc=$?
+check "a seed that never lands under the workload says so" \
+    'grep -qx "first_upload NONE in 3600 s under the workload (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
+check "with no wait, the watcher runs in the background and the teardown stops it" \
+    'grep -q "( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload under ) &" "$script" && grep -q "kill \"\$SKZ_SEED_WATCH\"" "$script"'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

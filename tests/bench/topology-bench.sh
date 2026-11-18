@@ -263,7 +263,9 @@
 #                           first upload before its first window, with
 #                           the pool imported, synced and idle:
 #                           TB_SKZ_UPLOAD_WAIT_S (default 900; 0 does not
-#                           wait). The time it took, or
+#                           wait: the seed then runs under the workload,
+#                           as in production, and a watcher beside it
+#                           records when it commits, for up to 3600 s). The time it took, or
 #                           that it did not land, is in the row's
 #                           .skzinfo (first_upload) and the uploader's
 #                           table. The summary has a table of what the
@@ -683,13 +685,15 @@ if drows:
         print('\nWhat the uploader did in the window (TB_SKZ_UPLOAD), from the daemon\'s status at its two ends: '
               'cuts taken, uploaded (of them whole), blocks uploaded, replaced before their upload, abandoned at a '
               'mismatch, mismatches and errors over the window; the uploads lost (a cut that went before its '
-              'commit, its writes dropped) over the window; at its end the cuts held, the cut being uploaded '
+              'commit, its writes dropped) over the window; the blocks written as zeros with nothing read (status '
+              'version 17, M2.4e: not in blocks; n/a for an older daemon) over the window; at its end the image\'s '
+              'holes (held, dropped or none, with their 64 KiB chunks), the cuts held, the cut being uploaded '
               'and the newest, the uploader\'s state and the lease; and the first upload before the windows '
               '(TB_SKZ_UPLOAD_WAIT_S: how long it took with the pool idle, or NONE). Cuts taken = uploaded + '
               'replaced + abandoned + the change in held, where nothing was found committed or kept.\n')
         print('| workload | daemon row | tps | cuts | uploaded (whole) | blocks | replaced | abandoned | mismatches | '
-              'errors | lost | held at end | uploading / newest | state | lease | first upload |')
-        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+              'errors | lost | zero blocks | holes | held at end | uploading / newest | state | lease | first upload |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r in ups:
             sb, sa = r['skyzfsd']['before'], r['skyzfsd']['after']
             def d(key):
@@ -698,7 +702,8 @@ if drows:
             tps = f"{r['tps']:.0f}" if r.get('tps') is not None else 'n/a'
             print(f"| {r['workload']} | {label(r)} | {tps} | {d('cuts')} | {d('uploaded')} ({d('uploaded_whole')}) | "
                   f"{d('upload_blocks')} | {d('cuts_replaced')} | {d('cuts_abandoned')} | {d('upload_mismatches')} | "
-                  f"{d('upload_errors')} | {d('upload_cuts_lost')} | {sa.get('cuts_held', 'n/a')} | "
+                  f"{d('upload_errors')} | {d('upload_cuts_lost')} | {d('upload_zero_blocks')} | "
+                  f"{sa.get('cut_holes', 'n/a')} ({sa.get('cut_hole_chunks', 'n/a')}) | {sa.get('cuts_held', 'n/a')} | "
                   f"{sa.get('upload_cut', 'n/a')} / {sa.get('cuts', 'n/a')} | {sa.get('upload_state', 'n/a')} | "
                   f"{sa.get('lease', 'n/a')} | {r['skyzfsd'].get('info', {}).get('first_upload', 'not waited for')} |")
     # The intent map in the window (M2.3; the header's own syncs since
@@ -1256,7 +1261,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""; PR_PID=""
-SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_SEED_WATCH=""; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -1280,6 +1285,9 @@ teardown_topology() {
     fi
     if [ -n "$SKZ_SAMPLER" ]; then
         kill "$SKZ_SAMPLER" 2>/dev/null; SKZ_SAMPLER=""
+    fi
+    if [ -n "$SKZ_SEED_WATCH" ]; then
+        kill "$SKZ_SEED_WATCH" 2>/dev/null; SKZ_SEED_WATCH=""
     fi
     # A trace or recording still running after an early exit: stopped,
     # so that nothing writes into the output once the job is done.
@@ -1843,18 +1851,19 @@ skz_settle() {
 # uploaded and every region stays named in the intent map: a window
 # then measures neither an upload nor the map. What happened is the
 # row's `first_upload` line, and a wait that ran out is no failure.
-skz_first_upload() {
-    local t0 up st lost
+skz_first_upload() { # [under]: "under" says that the workload runs meanwhile
+    local t0 up st lost how=""
+    [ "${1:-}" != under ] || how=" under the workload"
     t0=$(date +%s)
     while :; do
         up=$(skz_stat uploaded); st=$(skz_stat upload_state); lost=$(skz_stat upload_cuts_lost)
         if [[ $up =~ ^[0-9]+$ ]] && [ "$up" -ge 1 ]; then
-            echo "first_upload after $(( $(date +%s) - t0 )) s (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+            echo "first_upload after $(( $(date +%s) - t0 )) s$how (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
             log "skyzfsd: the first upload committed after $(( $(date +%s) - t0 )) s (cuts lost ${lost:-n/a})"
             return 0
         fi
         if [ $(( $(date +%s) - t0 )) -ge "$SKZ_UPLOAD_WAIT_S" ]; then
-            echo "first_upload NONE in $SKZ_UPLOAD_WAIT_S s (state ${st:-n/a}, uploading cut $(skz_stat upload_cut) of $(skz_stat cuts), cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
+            echo "first_upload NONE in $SKZ_UPLOAD_WAIT_S s$how (state ${st:-n/a}, uploading cut $(skz_stat upload_cut) of $(skz_stat cuts), cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
             log "skyzfsd: no upload committed in $SKZ_UPLOAD_WAIT_S s (state ${st:-n/a}, cuts lost ${lost:-n/a}); the windows begin all the same"
             return 0
         fi
@@ -2115,6 +2124,11 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
     if [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ] && [ "$SKZ_UPLOAD_WAIT_S" -gt 0 ]; then
         lim 120 zpool sync "$ZFS_POOL"
         skz_first_upload
+    elif [ "$1" = skyzfsd ] && [ "$SKZ_UPLOAD" = 1 ]; then
+        # The seed under the workload: watched, not waited for.
+        lim 120 zpool sync "$ZFS_POOL"
+        ( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload under ) &
+        SKZ_SEED_WATCH=$!
     fi
     FS_DEV=$dev
 }

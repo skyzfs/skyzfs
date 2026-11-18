@@ -62,10 +62,11 @@ class Embedded(unittest.TestCase):
         devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
         before = (devs + 'skz cuts 10\nskz uploaded 3\nskz uploaded_whole 1\nskz upload_blocks 900\nskz cuts_replaced 6\n'
                   'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 1\n'
-                  'skz upload_cuts_lost 2\n')
+                  'skz upload_cuts_lost 2\nskz upload_zero_blocks 100\n')
         after = (devs + 'skz cuts 40\nskz uploaded 9\nskz uploaded_whole 1\nskz upload_blocks 1500\nskz cuts_replaced 30\n'
                  'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 2\n'
-                 'skz upload_cut 39\nskz upload_state putting\nskz lease held\nskz upload_cuts_lost 5\n')
+                 'skz upload_cut 39\nskz upload_state putting\nskz lease held\nskz upload_cuts_lost 5\n'
+                 'skz upload_zero_blocks 8292\nskz cut_holes dropped\nskz cut_hole_chunks 0\n')
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n'
@@ -82,7 +83,7 @@ class Embedded(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr[-2000:])
             rows = [ln for ln in p.stdout.splitlines() if ln.startswith('| tpcb | ') and '(whole)' not in ln
                     and ' / 40 |' in ln]
-            self.assertEqual(rows, ['| tpcb | zfs-skyzfsd [x] | 812 | 30 | 6 (0) | 600 | 24 | 0 | 0 | 0 | 3 | 2 | 39 / 40 | '
+            self.assertEqual(rows, ['| tpcb | zfs-skyzfsd [x] | 812 | 30 | 6 (0) | 600 | 24 | 0 | 0 | 0 | 3 | 8192 | dropped (0) | 2 | 39 / 40 | '
                                     'putting | held | after 40 s (uploaded 1, cuts lost 0) |'], p.stdout[-3000:])
             # a row without uploads
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
