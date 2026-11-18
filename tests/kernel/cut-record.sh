@@ -774,7 +774,8 @@ rec_takeover() {
     w=$!
     # The kill waits for 40 groups that wrote after the holder left,
     # whatever the runner's speed: the held cut's own slot of the
-    # uberblock ring is written again some 32 such groups after it, and
+    # uberblock ring (txg mod 31) is written again 31 such groups after
+    # it while they come at an even step (31 is prime), and
     # held_across_start's floor needs a block of the held cut changed
     # before the kill (the review of #115, S1; at 3 s the slowest run
     # went 95 cuts past it). Groups that wrote nothing write no

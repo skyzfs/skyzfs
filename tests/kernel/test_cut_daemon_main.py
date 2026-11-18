@@ -7,12 +7,15 @@ and each session's kstat as the reference's own cuts give it) and runs
 the check as cut-record.sh does. Written by the review of #99 (S2) and
 taken in with it.
 """
+import contextlib
+import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,7 +31,7 @@ FAILURE = 'cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n'
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
               split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None,
-              failure=FAILURE, tamper_starts=None, tamper_marks=None):
+              failure=FAILURE, tamper_starts=None, tamper_marks=None, held=None):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -47,7 +50,9 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     the holder's log in place of a right one's; holder_left: where given,
     only these of the holder's files are left. tamper_starts(starts)
     changes the statuses read at each start; tamper_marks(marks) the
-    rig's marks."""
+    rig's marks. held: where given, main runs in this process with
+    held_lines replaced by held(the real held_lines), and the exit code is
+    its SystemExit's."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
     text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
@@ -102,7 +107,7 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     if fn not in holder_left:
                         os.remove(os.path.join(d, fn))
             status = status or held_status(records, read, dev, cs)
-        return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name)
+        return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name, held)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -114,7 +119,7 @@ def held_status(records, read, dev, cs):
             f"\nage_ms 0\ncut_state begun\ncuts_abandoned 0\n")
 
 
-def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name):
+def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name, held=None):
     log = os.path.join(d, 'requests.tsv')
     with open(log, 'w') as f:
         f.write(text)
@@ -136,14 +141,32 @@ def run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, a
             groups = tamper_kstat(k, groups)
         with open(os.path.join(d, f'txgs-{k}.txt'), 'w') as f:
             f.write(''.join(f'{g} 0 C 0 0 1\n' for g in groups))
-    p = subprocess.run([sys.executable, '-I', '-B', cdc.__file__, as_name or name, d, log, '-', str(dev)],
-                       capture_output=True, text=True)
+    argv = [cdc.__file__, as_name or name, d, log, '-', str(dev)]
+    if held is None:
+        rc = subprocess.run([sys.executable, '-I', '-B'] + argv, capture_output=True, text=True).returncode
+    else:
+        with mock.patch.object(cdc, 'held_lines', held(cdc.held_lines)), mock.patch.object(sys, 'argv', argv), \
+                contextlib.redirect_stdout(io.StringIO()), self_exit() as code:
+            cdc.main()
+        rc = code[0]
     lines = {}
     with open(os.path.join(d, 'results.tsv')) as f:
         for ln in f:
             key, verdict, detail = ln.rstrip('\n').split('\t', 2)
             lines[key] = (verdict, detail)
-    return p.returncode, lines
+    return rc, lines
+
+
+@contextlib.contextmanager
+def self_exit():
+    """Catches main's SystemExit -> [its code]."""
+    code = [None]
+    try:
+        yield code
+    except SystemExit as e:
+        code[0] = e.code
+    if code[0] is None:
+        raise AssertionError('main did not exit')
 
 
 def without_cut(k):
@@ -545,6 +568,27 @@ class Main(unittest.TestCase):
                 self.assertNotIn('rig_error', lines)
                 self.assertEqual((rc, lines['held_reads'][0]), (1, 'FAIL'))
                 self.assertIn('read block 7 of cut 1', lines['held_reads'][1])
+
+    def test_a_floor_not_met_ends_as_the_rigs_error(self):
+        """main passes held_lines' ERROR flag on (either floor:
+        held_across_start, carried_across_failure) and ends with 2 where
+        nothing else failed, on both of its calls: after a holder's
+        VERDICT and after the instances' lines (the review of #116,
+        question 4, plants G3e and G3f). held_lines is replaced, so that
+        the flag alone differs."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace(f'cuts {len(cs)}\n', f'cuts {len(cs) - k}\n')
+        log = '1\t> t1 held\n2\t< t1 ok (0 lines)\n3\tVERDICT nothing to read\n'
+        for why, kw in (('the instances', {'split': (k, 'acknowledged'), 'status': status}),
+                        ("the holder's verdict", {'holder_log': log, 'holder_left': ('holder.log',)})):
+            for errored, want in ((False, 0), (True, 2)):
+                with self.subTest(why, errored=errored):
+                    rc, lines = recording(holder=none, as_name='failed',
+                                          held=lambda real: lambda *a, **kw: (0, errored), **kw)
+                    self.assertEqual(rc, want, {n: v for n, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
 
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the
