@@ -181,8 +181,8 @@ use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{
-    CutFigures, CutHoles, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart,
-    IntentFigures, OpenOptions, Opened, StartError,
+    CutFigures, CutHoles, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, IntentFigures,
+    OpenOptions, Opened, StartError,
 };
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
