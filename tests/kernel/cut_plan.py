@@ -18,8 +18,10 @@ suffix).
 - A push (a testing branch): ubuntu-26.04, the held cuts' stage.
 - A pull request: ubuntu-26.04 and ubuntu-26.04-arm, the held cuts'
   stage; and where it changes the uploader, the daemon that drives it,
-  the rig's upload files or this workflow (UPLOAD_PATHS; the lead's
-  decision on the review of #119, G7), one job more on ubuntu-26.04
+  the crates the uploader's commit and row rest on, the build's
+  manifests, the rig's upload files or this workflow (UPLOAD_PATHS; the
+  lead's decisions on the reviews of #119, G7 and F4), one job more on
+  ubuntu-26.04
   with courses (a) to (d) (PR_UPLOAD_RECORDINGS). Courses (e) to (g)
   run by dispatch only.
 """
@@ -34,10 +36,23 @@ UPLOAD_PATHS = (
     'bins/skyzfsd/',
     'crates/skyzfs-local/',
     'crates/skyzfs-ublk/',
+    'crates/skyzfs-blk/',
     'bins/skyzfs-nodeb/',
+    # The commit, the row's transaction, the object store's client and
+    # the formats the uploader and node B run on.
+    'crates/skynbd-engine/',
+    'crates/skynbd-refs/',
+    'crates/skynbd-store/',
+    'crates/skynbd-format/',
+    'crates/skynbd-types/',
+    'Cargo.toml',
+    'Cargo.lock',
+    'tests/lib/',
     'tests/kernel/cut_watch.py',
     'tests/kernel/cut-record.sh',
     'tests/kernel/cut_daemon_check.py',
+    'tests/kernel/cut_plan.py',
+    'tests/kernel/cut_summary.py',
     '.github/workflows/skyzfs-cut-daemon.yml',
 )
 

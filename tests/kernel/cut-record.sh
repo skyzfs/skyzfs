@@ -1041,6 +1041,9 @@ before_other() {
         if [[ $cg =~ ^[0-9]+$ ]] && [ "$cg" -lt "$g" ]; then
             log "$NAME: the status before $1 was older than its row (cut group $cg, the row's $g): again"
             printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "status at group $cg" >> "$RDIR/looks-again.txt"
+            # The daemon rewrites its status within 100 ms; with the
+            # pool exported there is no sync to wait for, so wait here.
+            sleep 1
             continue
         fi
         now=""
@@ -1107,12 +1110,13 @@ other_act() {
         before_other "$1"
         read -r st n g <<< "$(rowcut "$1-row.txt")"
         # The guard's control (the review of #119, F2): the same act on
-        # a row node B did not read (the number one past) must end with
-        # 6 and change nothing, whether or not the daemon cuts meanwhile.
+        # a row node B did not read must end with 6 and change nothing,
+        # whether or not the daemon cuts meanwhile. Its group is 0, which
+        # no cut has, so that it cannot meet the daemon's next row.
         rc=0
-        "$2" "$st" $((n + 1)) "$g" || rc=$?
-        [ "$rc" = 6 ] || rig_error "node B's act at $1 on the row $st:$((n + 1)):$g, which it did not read, ended with $rc, not 6: the guard is not wired"
-        printf '%s\t%s\n' "$1" "$st:$((n + 1)):$g" >> "$RDIR/guard-controls.txt"
+        "$2" "$st" "$n" 0 || rc=$?
+        [ "$rc" = 6 ] || rig_error "node B's act at $1 on the row $st:$n:0, which it did not read, ended with $rc, not 6: the guard is not wired"
+        printf '%s\t%s\n' "$1" "$st:$n:0" >> "$RDIR/guard-controls.txt"
         rc=0
         "$2" "$st" "$n" "$g" || rc=$?
         [ "$rc" = 6 ] || return 0

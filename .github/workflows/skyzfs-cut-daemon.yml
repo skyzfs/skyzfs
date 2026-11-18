@@ -33,8 +33,10 @@ name: skyzfs-cut-daemon
 # code (ubuntu-26.04 and ubuntu-26.04-arm), on a push of the rig's
 # files to a testing branch (ubuntu-26.04), and by dispatch (all four
 # images by default). A pull request that changes the uploader, the
-# daemon that drives it, the rig's upload files or this workflow also
-# runs the upload stage's courses (a) to (d) on ubuntu-26.04; (e) to
+# daemon that drives it, the skynbd crates its commit and row rest on,
+# the build's manifests, tests/lib, the rig's upload files or this
+# workflow also runs the upload stage's courses (a) to (d) on
+# ubuntu-26.04 (UPLOAD_PATHS in tests/kernel/cut_plan.py); (e) to
 # (g) run by dispatch only. tests/kernel/cut_plan.py makes the jobs.
 on:
   workflow_dispatch:
@@ -70,6 +72,11 @@ on:
       - crates/skyzfs-ublk/**
       - crates/skyzfs-ublk-sys/**
       - crates/skyzfs-blk/**
+      - crates/skynbd-engine/**
+      - crates/skynbd-refs/**
+      - crates/skynbd-store/**
+      - crates/skynbd-format/**
+      - crates/skynbd-types/**
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
