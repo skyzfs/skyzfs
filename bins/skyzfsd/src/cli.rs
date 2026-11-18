@@ -273,19 +273,24 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A volume created with --endpoint (it has the file remote) is
       uploaded: its cuts are held as with --hold-cuts, and a thread
       uploads each to the volume in object storage and lets it go. The
-      upload holds the volume's lease there, as NAME (--holder; the
-      host's name unless given), for N seconds (--lease-ttl-s, 3 to
-      3600, 30 unless given), renewed every third of that. The lease is
-      taken after the store opens and before a device is touched,
-      within 10 s. Where another holder has it, serve refuses (status
-      10) and touches no device; --serve-without-upload serves the
-      volume all the same, with no upload. Where object storage cannot
-      be reached in time, the volume is served and the lease taken
-      when it can. A lease lost while serving stops the uploads, and
-      the volume is served on. SIGTERM lets the lease go; any other
-      end keeps it until its time runs out. status shows the upload.
-      The three options are refused (status 1) for a volume with no
-      file remote.
+      upload holds the volume's lease there, as NAME (--holder; unless
+      given, the host's name, a colon and /etc/machine-id, and a start
+      with no machine id is refused), for N seconds (--lease-ttl-s, 3
+      to 3600, 30 unless given), renewed every third of that. A NAME
+      must mean one daemon: the lease cannot tell two of one name
+      apart. Never serve a copy of a volume's files under the name of
+      the original, a copy in a cloned VM image included (a clone
+      copies the machine id): give the copy its own --holder. The
+      lease is taken after the store opens and before a device is
+      touched, within 10 s. Where another holder has it, serve
+      refuses (status 10) and touches no device; --serve-without-upload
+      serves the volume all the same, with no upload. Where object
+      storage cannot be reached in time, the volume is served and the
+      lease taken when it can. A lease lost while serving stops the
+      uploads, and the volume is served on. SIGTERM lets the lease go;
+      any other end keeps it until its time runs out. status shows the
+      upload. The three options are refused (status 1) for a volume
+      with no file remote.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -475,7 +480,7 @@ pub struct Serve {
     /// in MiB, where it is given (only with `--hold-cuts`; M2.3).
     pub intent_region_mib: Option<u64>,
     /// `--holder`: whose the lease in object storage is, where given
-    /// (the host's name otherwise; M2.4c).
+    /// (the host's name and the machine's id otherwise; M2.4c).
     pub holder: Option<String>,
     /// `--lease-ttl-s`: the lease's time in seconds, where given
     /// ([`MIN_LEASE_TTL_S`](crate::upload::MIN_LEASE_TTL_S) to
@@ -856,7 +861,8 @@ fn remote(given: &Given) -> Result<Option<Remote>, UsageError> {
 
 /// Whether `holder` can name the lease's holder: 1 to [`MAX_HOLDER`]
 /// bytes with no space or control character. Also the rule for the
-/// host's name when `--holder` is not given.
+/// default holder (the host's name and the machine's id) when
+/// `--holder` is not given.
 pub fn check_holder(holder: &str) -> Result<(), String> {
     if holder.is_empty()
         || holder.len() > MAX_HOLDER

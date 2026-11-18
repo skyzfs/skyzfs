@@ -737,19 +737,63 @@ pub fn serve(serve: &Serve) -> Exit {
 /// always in a daemon's environment.
 const HOSTNAME: &str = "/proc/sys/kernel/hostname";
 
-/// Whose the lease in object storage is: `--holder`, or the host's name.
+/// Where the machine's id is read, for the lease's holder unless
+/// `--holder` is given: machine-id(5), 32 hexadecimal digits written once
+/// when the system is installed.
+const MACHINE_ID: &str = "/etc/machine-id";
+
+/// Whose the lease in object storage is: `--holder`, or
+/// [`default_holder`].
 fn holder_of(serve: &Serve) -> Result<String, String> {
-    if let Some(holder) = &serve.holder {
-        return Ok(holder.clone());
+    match &serve.holder {
+        Some(holder) => Ok(holder.clone()),
+        None => default_holder(Path::new(HOSTNAME), Path::new(MACHINE_ID)),
     }
-    let read = std::fs::read_to_string(HOSTNAME).map_err(|e| {
-        format!("the host's name ({HOSTNAME}), the lease's holder unless --holder is given: {e}")
+}
+
+/// The lease's holder unless `--holder` is given:
+/// `<host's name>:<machine id>`, read from `hostname` and `machine_id`.
+///
+/// A holder's name must mean one daemon: the lease cannot tell two
+/// daemons of one name apart, and both would upload (#117's review, N1).
+/// A host's name alone is not unique to a node, so the machine's id is
+/// added (the lead's decision in M2.4c-2). A start with no machine id,
+/// or one that is not 32 hexadecimal digits ("uninitialized" while the
+/// system first boots) or all zeros, is refused until `--holder` is
+/// given: the conservative reading, since a name made up here could not
+/// be the same at the next start. A machine id does not tell apart two
+/// copies of one image (a cloned VM copies it): the usage and the
+/// status say that such copies must not be served under one name.
+fn default_holder(hostname: &Path, machine_id: &Path) -> Result<String, String> {
+    let read = std::fs::read_to_string(hostname).map_err(|e| {
+        format!(
+            "the host's name ({}), part of the lease's holder unless --holder is given: {e}",
+            hostname.display()
+        )
     })?;
     let name = read.trim_end_matches('\n');
-    crate::cli::check_holder(name).map_err(|why| {
-        format!("{why}: the host's name cannot name the lease's holder; give --holder")
+    let read = std::fs::read_to_string(machine_id).map_err(|e| {
+        format!(
+            "the machine's id ({}), part of the lease's holder unless --holder is given: {e}; \
+             give --holder, a name that means this daemon alone",
+            machine_id.display()
+        )
     })?;
-    Ok(name.to_owned())
+    let id = read.trim_end_matches('\n');
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) || id.bytes().all(|b| b == b'0')
+    {
+        return Err(format!(
+            "the machine's id ({}) is {id:?}, not 32 hexadecimal digits that are not all zero: \
+             the lease's holder cannot be made from it; give --holder, a name that means this \
+             daemon alone",
+            machine_id.display()
+        ));
+    }
+    let holder = format!("{name}:{id}");
+    crate::cli::check_holder(&holder).map_err(|why| {
+        format!("{why}: the host's name and the machine's id cannot name the lease's holder; give --holder")
+    })?;
+    Ok(holder)
 }
 
 /// The uploads of the volume in `serve.dir`, if it has a place in object
@@ -2052,18 +2096,62 @@ mod tests {
         assert!(uploads.started().shown().is_none());
     }
 
-    /// The lease's holder is `--holder`, or else the host's name as the
-    /// kernel has it.
+    /// The lease's holder is `--holder`, or else the host's name and the
+    /// machine's id as the system has them.
     #[test]
-    fn the_holder_is_the_option_or_the_hosts_name() {
+    fn the_holder_is_the_option_or_the_hosts_name_and_machine_id() {
         let keep = tempfile::tempdir().expect("a directory");
         let given = serving(keep.path(), "--holder node-a");
         assert_eq!(holder_of(&given), Ok("node-a".to_owned()));
         let host = std::fs::read_to_string(HOSTNAME).expect("the host's name");
-        assert_eq!(
-            holder_of(&serving(keep.path(), "")),
-            Ok(host.trim_end_matches('\n').to_owned())
-        );
+        match std::fs::read_to_string(MACHINE_ID) {
+            Ok(id) => assert_eq!(
+                holder_of(&serving(keep.path(), "")),
+                Ok(format!(
+                    "{}:{}",
+                    host.trim_end_matches('\n'),
+                    id.trim_end_matches('\n')
+                ))
+            ),
+            Err(_) => assert!(holder_of(&serving(keep.path(), "")).is_err()),
+        }
+    }
+
+    /// The default holder from given files: the host's name, a colon and
+    /// the machine's id; refused, naming --holder, where the id is
+    /// missing or is not one.
+    #[test]
+    fn the_default_holder_needs_a_machine_id() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let (host, id) = (keep.path().join("hostname"), keep.path().join("machine-id"));
+        std::fs::write(&host, "db-7\n").expect("written");
+        let id_hex = "0123456789abcdef0123456789ABCDEF";
+        std::fs::write(&id, format!("{id_hex}\n")).expect("written");
+        assert_eq!(default_holder(&host, &id), Ok(format!("db-7:{id_hex}")));
+
+        let refused = |content: Option<&str>| {
+            match content {
+                Some(c) => std::fs::write(&id, c).expect("written"),
+                None => std::fs::remove_file(&id).expect("removed"),
+            }
+            let why = default_holder(&host, &id).expect_err("refused");
+            assert!(why.contains("give --holder"), "{why}");
+            assert!(why.contains("machine-id"), "{why}");
+            why
+        };
+        refused(Some(""));
+        refused(Some("uninitialized\n"));
+        refused(Some(&"0".repeat(32)));
+        refused(Some(&"0123456789abcdef".repeat(2)[..31]));
+        refused(Some(&format!("{}g\n", &id_hex[..31])));
+        refused(Some(&format!("{id_hex}0\n")));
+        assert!(refused(None).contains("No such file"));
+
+        // A host's name the holder's rule refuses is refused with it.
+        std::fs::write(&id, format!("{id_hex}\n")).expect("written");
+        std::fs::write(&host, "db 7\n").expect("written");
+        let why = default_holder(&host, &id).expect_err("refused");
+        assert!(why.contains("give --holder"), "{why}");
     }
 
     /// What the end of the uploader's thread says, for each end.
