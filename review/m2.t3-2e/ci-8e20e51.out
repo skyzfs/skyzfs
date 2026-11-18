@@ -1,0 +1,13 @@
+The cut rig on the daemon on 8e20e51 (44242112345), by ring.py and the recordings' own results:
+art116c-ubuntu-26.04/takeover:
+   the holder left at 835.330 s; the cut held from then on is cut 9 (group 17, 836.212 s), slot 17, sector 392
+   the kill: the second start is at 837.407 s, after 51 cuts since the holder left, the last of group 167 (150 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 836.842 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art116c-ubuntu-26.04-arm/takeover:
+   the holder left at 382.425 s; the cut held from then on is cut 9 (group 17, 383.260 s), slot 17, sector 392
+   the kill: the second start is at 384.431 s, after 48 cuts since the holder left, the last of group 158 (141 groups after the held cut); the cuts under the writer are [3] groups apart
+   the slot is written again at 383.976 s (before the second start), by the uberblock of cut 40 (group 110, 93 groups and 31 cuts after the held cut)
+   cut_copied_bytes at the second start: 16384
+art116c-ubuntu-26.04: 14 of 14 recordings exit 0; held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made; cuts_held at the starts: 0 2 1 1 ; 
+art116c-ubuntu-26.04-arm: 14 of 14 recordings exit 0; held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made; cuts_held at the starts: 0 2 2 1 ; 

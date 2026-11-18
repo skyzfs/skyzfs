@@ -1,0 +1,39 @@
+2b: 62 plants on 8e20e51: 42 killed, 1 survived, 19 not applied (62 results on 49c5f62)
+   survived before and now: I12 the last cut written is held to the count of cut lines, not the last line's number
+2b-next: 20 plants on 8e20e51: 16 killed, 0 survived, 4 not applied (20 results on 49c5f62)
+2c: 162 plants on 8e20e51: 120 killed, 7 survived, 35 not applied (162 results on 49c5f62)
+   survived before and now: A7 lost_at_kill reads the place in the whole log, not the number the line carries
+   survived before and now: K9 the reason is matched whatever number follows "cut" (the cut asked for or not)
+   survived before and now: W4 a VERDICT line is a verdict whatever the holder's status
+   survived before and now: Z4 after a verdict the instances' lines are judged as well (the failure line is not)
+   survived before and now: Z7 a verdict is judged first in failed only (takeover in the order of e88773b)
+   survived before and now: P7 the start may be of a pid already started (the author's survivor)
+   survived before and now: P11 the start may be later than the line after it (the author's survivor)
+again: 21 plants on 8e20e51: 21 killed, 0 survived, 0 not applied (21 results on 49c5f62)
+head2: 59 plants on 8e20e51: 40 killed, 3 survived, 16 not applied (59 results on 49c5f62)
+   survived before and now: H2 the writes up to the last start before the cut's write count, not up to the first after its instant
+   survived before and now: H3 the writes before the cut's instant count too
+   survived before and now: L8 a write-zeroes is read as a write with hashes
+look: 31 plants on 8e20e51: 29 killed, 1 survived, 1 not applied (31 results on 49c5f62)
+   survived before and now: O9 the commit is held to the start, at or after (> to >=) and a commit at the start's own time
+the 69 of the review at 49c5f62: 69 plants on 8e20e51: 56 killed, 3 survived, 10 not applied (69 results on 49c5f62)
+   KILLED -> NOT APPLIED: M2 window M: a cut line before the write comes again does not keep the line
+   KILLED -> NOT APPLIED: M3 window M: any write applied by the next instance counts as the same
+   KILLED -> NOT APPLIED: M4 window M: the same range, whatever its content
+   KILLED -> NOT APPLIED: M5 window M: the same content, wherever
+   KILLED -> NOT APPLIED: M10 window M: the write applied again after the next instance cut counts too (the cut line ends nothing)
+   KILLED -> NOT APPLIED: S2c a release answered after the start counts as before it
+   SURVIVED -> NOT APPLIED: S2e only at a take-over, not at a start that created the device
+   KILLED -> NOT APPLIED: S2f only at a start that created the device
+   SURVIVED -> NOT APPLIED: S2g the cuts counted before the start, of whatever state
+   SURVIVED -> KILLED: S2h a release the daemon refused counts as answered
+   KILLED -> NOT APPLIED: S2j the rule is never asked
+   SURVIVED -> KILLED: G3e main drops held_lines' ERROR (the whole recording)
+   SURVIVED -> KILLED: G3f main drops held_lines' ERROR (a holder that ended with a verdict)
+   SURVIVED -> KILLED: again O4 releases: a line that is not a time and a text is the rig's error
+   SURVIVED -> KILLED: again F6 releases: a line that is not a time and a text ends the reading
+   SURVIVED -> KILLED: again S2m releases: the release asked first is the one answered, whatever tag the answer carries
+   survived before and now: M1 window M: whatever the request that ends the instance was
+   survived before and now: R2d every block of the write-zeroes is unplaced, not its ambiguous set
+   survived before and now: S2l the PASS line does not show cuts_held
+in all: 424 plants: 324 killed, 15 survived, 85 not applied
