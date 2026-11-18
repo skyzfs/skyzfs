@@ -66,6 +66,7 @@ fn sample() -> Status {
                 copied: 31,
                 bound: 32,
                 abandoned: 33,
+                replaced: Some(46),
             }),
             intent: Some(IntentShown {
                 state: CutStateShown::TakenUp,
@@ -80,7 +81,26 @@ fn sample() -> Status {
                 },
                 waits: 41,
             }),
+            upload: Some(sample_upload()),
         },
+    }
+}
+
+/// The uploader, with every field set apart: committing cut 42.
+fn sample_upload() -> UploadShown {
+    UploadShown {
+        state: UploadStateShown::Committing,
+        cut: 42,
+        wait_ms: 43,
+        lease: LeaseShown::Held,
+        epoch: 44,
+        expires_unix_ms: 45,
+        figures: UploadFigures::of(std::array::from_fn(|i| 50 + i as u64)),
+        checked: CheckedShown::NotTheBase,
+        rule: RuleShown::Whole,
+        why: Text::new("the why"),
+        holder: Text::new("node-a"),
+        last_error: Text::new("object storage: gone"),
     }
 }
 
@@ -89,8 +109,8 @@ fn sample() -> Status {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 424);
-    assert_eq!(&bytes[..8], b"SKYZST14");
+    assert_eq!(bytes.len(), 976);
+    assert_eq!(&bytes[..8], b"SKYZST15");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -137,12 +157,35 @@ fn the_file_has_the_documented_layout() {
         (400, 39),
         (408, 40),
         (416, 41),
+        (424, 7),
+        (432, 42),
+        (440, 43),
+        (448, 1),
+        (456, 44),
+        (464, 45),
     ]);
+    fields.extend((0..12).map(|i| (472 + 8 * i, 50 + i as u64)));
+    fields.extend([(568, 3), (576, 2), (968, 46)]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
     }
     assert_eq!(bytes[280..284], (-28i32).to_le_bytes());
     assert_eq!(bytes[284..288], [0; 4]);
+    for (at, text) in [
+        (584, "the why"),
+        (712, "node-a"),
+        (840, "object storage: gone"),
+    ] {
+        assert_eq!(
+            &bytes[at..at + text.len()],
+            text.as_bytes(),
+            "the text at {at}"
+        );
+        assert!(
+            bytes[at + text.len()..at + 128].iter().all(|b| *b == 0),
+            "padded at {at}"
+        );
+    }
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -225,6 +268,7 @@ fn as_of(version: u32) -> Status {
     status.shown.cuts = None;
     status.shown.held = None;
     status.shown.intent = None;
+    status.shown.upload = None;
     if version < 10 {
         status.counters.commands_aborted = 0;
         status.counters.commands_failed = 0;
@@ -438,6 +482,11 @@ fn a_file_of_the_thirteenth_version_is_read_without_the_intent_map() {
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 13;
+    // The cuts replaced came with the fifteenth version.
+    if let Some(held) = &mut expected.shown.held {
+        held.replaced = None;
+    }
+    expected.shown.upload = None;
     expected.shown.intent = None;
     assert_eq!(read, expected);
     let lines = report(
@@ -449,6 +498,219 @@ fn a_file_of_the_thirteenth_version_is_read_without_the_intent_map() {
     );
     assert_eq!(value(&lines, "cuts_held"), Some("2"));
     assert!(!lines.iter().any(|(key, _)| key.starts_with("intent_")));
+}
+
+/// A file of the fourteenth version (424 bytes, `SKYZST14`): this
+/// version's fields up to the uploader, at the same places.
+fn fourteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..424].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST14");
+    bytes
+}
+
+/// A file of the fourteenth version is still read, with the intent map
+/// and without the uploader, whose keys `status` does not print for it.
+#[test]
+fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
+    let read = decode(&fourteenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 14;
+    // The cuts replaced came with the fifteenth version.
+    if let Some(held) = &mut expected.shown.held {
+        held.replaced = None;
+    }
+    expected.shown.upload = None;
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "intent_named"), Some("36"));
+    assert!(!lines
+        .iter()
+        .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
+}
+
+/// The uploader is printed from a fifteenth file, every key whether or
+/// not the daemon uploads, with its state in words as the lead's
+/// decisions on M2.4c give them; an empty text is printed as `none`, and
+/// a code this version does not know as unsaid.
+#[test]
+fn status_prints_the_uploader() {
+    let lines_of = |upload: UploadShown| {
+        let mut status = sample();
+        status.shown.upload = Some(upload);
+        let read = decode(&encode(&status)).expect("a status");
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(sample_upload());
+    for (key, said) in [
+        ("upload", "committing cut 42"),
+        ("upload_state", "committing"),
+        ("upload_cut", "42"),
+        ("upload_wait_ms", "43"),
+        ("upload_why", "the why"),
+        ("lease", "held"),
+        ("lease_holder", "node-a"),
+        ("lease_epoch", "44"),
+        ("lease_expires_unix_ms", "45"),
+        ("uploaded", "50"),
+        ("uploaded_whole", "51"),
+        ("upload_blocks", "52"),
+        ("upload_found_committed", "53"),
+        ("upload_committed_gone", "54"),
+        ("upload_committed_named", "55"),
+        ("upload_committed_kept", "56"),
+        ("upload_mismatches", "57"),
+        ("upload_abandoned_at_mismatch", "58"),
+        ("upload_cuts_lost", "59"),
+        ("upload_given_up", "60"),
+        ("upload_errors", "61"),
+        ("upload_checked", "not_the_base"),
+        ("upload_rule", "whole"),
+        ("upload_last_error", "object storage: gone"),
+    ] {
+        assert_eq!(value(&lines, key), Some(said), "{key}");
+    }
+    let off = lines_of(UploadShown::default());
+    assert_eq!(
+        value(&off, "upload"),
+        Some("off: this daemon does not upload")
+    );
+    assert_eq!(value(&off, "upload_state"), Some("off"));
+    assert_eq!(value(&off, "lease"), Some("none"));
+    assert_eq!(value(&off, "lease_holder"), Some("none"));
+    assert_eq!(value(&off, "upload_last_error"), Some("none"));
+    assert_eq!(value(&off, "uploaded"), Some("0"));
+    for (upload, said) in [
+        (
+            UploadShown {
+                state: UploadStateShown::NoLease,
+                why: Text::new("held by node-b at epoch 3"),
+                ..UploadShown::default()
+            },
+            "no lease: held by node-b at epoch 3",
+        ),
+        (
+            UploadShown {
+                state: UploadStateShown::LeaseLost,
+                lease: LeaseShown::Lost,
+                holder: Text::new("node-b"),
+                epoch: 4,
+                ..UploadShown::default()
+            },
+            "lease lost to node-b at epoch 4",
+        ),
+        (
+            UploadShown {
+                state: UploadStateShown::LeaseLost,
+                lease: LeaseShown::Lost,
+                epoch: 5,
+                ..UploadShown::default()
+            },
+            "lease lost at epoch 5",
+        ),
+        (
+            UploadShown {
+                state: UploadStateShown::Backoff,
+                why: Text::new("commit of cut 3 refused: conflict"),
+                wait_ms: 4000,
+                ..UploadShown::default()
+            },
+            "commit of cut 3 refused: conflict, retry in 4 s",
+        ),
+        (
+            UploadShown {
+                state: UploadStateShown::Checking,
+                ..UploadShown::default()
+            },
+            "checking",
+        ),
+        (
+            UploadShown {
+                state: UploadStateShown::Stopped,
+                ..UploadShown::default()
+            },
+            "stopped: the store kept a committed cut, and nothing more is uploaded by this \
+             instance",
+        ),
+    ] {
+        assert_eq!(value(&lines_of(upload), "upload"), Some(said));
+    }
+    let mut bytes = encode(&sample());
+    for at in [424, 448, 568, 576] {
+        bytes[at..at + 8].copy_from_slice(&99u64.to_le_bytes());
+    }
+    let read = decode(&bytes)
+        .expect("a status")
+        .shown
+        .upload
+        .expect("upload");
+    assert_eq!(read.state, UploadStateShown::Unsaid);
+    assert_eq!(read.lease, LeaseShown::Unsaid);
+    assert_eq!(read.checked, CheckedShown::Unsaid);
+    assert_eq!(read.rule, RuleShown::Unsaid);
+    assert_eq!(read.said(), "unsaid");
+}
+
+/// A text is cut to 128 bytes at a character's boundary, and a line's
+/// end or any other control character in it is a space, so that
+/// `status` prints it on its line.
+#[test]
+fn a_text_is_cut_at_a_character_and_kept_on_one_line() {
+    // 127 bytes, then a character of two: it does not fit whole.
+    let long = format!("{}é", "a".repeat(127));
+    let text = Text::new(&long);
+    assert_eq!(text.said(), "a".repeat(127));
+    let exact = "b".repeat(128);
+    assert_eq!(Text::new(&exact).said(), exact);
+    assert_eq!(
+        Text::new("one\ntwo\tthree\0four").said(),
+        "one two three four"
+    );
+    assert_eq!(Text::new("").said(), "");
+    assert_eq!(Text::of(&[0xff; 128]).said(), "\u{fffd}".repeat(128));
+}
+
+/// The uploader's thread posts its state apart from the queue's: a post
+/// of the store keeps it, and a change of it alone is written.
+#[test]
+fn the_uploaders_post_is_kept_by_the_stores_and_written_on_its_own() {
+    let board = Board::new();
+    let upload = sample_upload();
+    board.post_upload(upload);
+    board.post_store(StoreShown::default());
+    assert_eq!(board.lock().store.upload, Some(upload));
+    let (written, wrote) = mpsc::channel();
+    let board = Arc::new(board);
+    let publisher = std::thread::spawn({
+        let board = board.clone();
+        move || {
+            board.publish_with_store(Pace::new(1), |_, shown, _| {
+                let _ = written.send(shown.upload);
+                Ok(())
+            })
+        }
+    });
+    let wait = Duration::from_secs(20);
+    assert_eq!(wrote.recv_timeout(wait), Ok(Some(upload)));
+    let idle = UploadShown {
+        state: UploadStateShown::Idle,
+        ..upload
+    };
+    board.post_upload(idle);
+    assert_eq!(wrote.recv_timeout(wait), Ok(Some(idle)));
+    board.stop();
+    publisher.join().expect("the publisher");
 }
 
 /// The intent map is printed from a fourteenth file, every key whether
@@ -517,6 +779,7 @@ fn a_file_of_the_twelfth_version_is_read_without_held_cuts() {
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 12;
+    expected.shown.upload = None;
     expected.shown.held = None;
     expected.shown.intent = None;
     assert_eq!(read, expected);
@@ -557,12 +820,28 @@ fn status_prints_the_held_cuts() {
         ("cut_copied_bytes", "31"),
         ("cut_bound_bytes", "32"),
         ("cuts_abandoned", "33"),
+        ("cuts_replaced", "46"),
     ] {
         assert_eq!(value(&lines, key), Some(said), "{key}");
     }
-    let off = lines_of(HeldShown::default());
+    // A daemon that holds no cut says 0 replaced; a file before the
+    // fifteenth version does not say it, and the key is not printed.
+    let off = lines_of(HeldShown {
+        replaced: Some(0),
+        ..HeldShown::default()
+    });
     assert_eq!(value(&off, "cut_state"), Some("off"));
     assert_eq!(value(&off, "cuts_held"), Some("0"));
+    assert_eq!(value(&off, "cuts_replaced"), Some("0"));
+    let older = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&decode(&fourteenth_file()).expect("a status")),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&older, "cuts_abandoned"), Some("33"));
+    assert_eq!(value(&older, "cuts_replaced"), None);
     let begun = lines_of(HeldShown {
         state: CutStateShown::Begun,
         ..HeldShown::default()
@@ -589,6 +868,7 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 11;
+    expected.shown.upload = None;
     expected.shown.held = None;
     expected.shown.intent = None;
     if let Some(Cuts {
@@ -1038,6 +1318,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "cut_copied_bytes",
             "cut_bound_bytes",
             "cuts_abandoned",
+            "cuts_replaced",
             "intent_state",
             "intent_region_bytes",
             "intent_regions",
@@ -1047,6 +1328,31 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "intent_sync_ns",
             "intent_sync_max_ns",
             "intent_waits",
+            // The upload (v15), after the intent map.
+            "upload",
+            "upload_state",
+            "upload_cut",
+            "upload_wait_ms",
+            "upload_why",
+            "lease",
+            "lease_holder",
+            "lease_epoch",
+            "lease_expires_unix_ms",
+            "uploaded",
+            "uploaded_whole",
+            "upload_blocks",
+            "upload_found_committed",
+            "upload_committed_gone",
+            "upload_committed_named",
+            "upload_committed_kept",
+            "upload_mismatches",
+            "upload_abandoned_at_mismatch",
+            "upload_cuts_lost",
+            "upload_given_up",
+            "upload_errors",
+            "upload_checked",
+            "upload_rule",
+            "upload_last_error",
             "pid",
             "counters"
         ]
@@ -1457,7 +1763,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut fourteenth = encode(&sample()).to_vec();
+    let mut fifteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1466,6 +1772,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("12", b"SKYZST12"),
         ("13", b"SKYZST13"),
         ("14", b"SKYZST14"),
+        ("15", b"SKYZST15"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -1474,7 +1781,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "11" => eleventh_file(),
             "12" => twelfth_file(),
             "13" => thirteenth_file(),
-            _ => std::mem::take(&mut fourteenth),
+            "14" => fourteenth_file(),
+            _ => std::mem::take(&mut fifteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1489,7 +1797,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 14);
+    assert_eq!(VERSION, 15);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

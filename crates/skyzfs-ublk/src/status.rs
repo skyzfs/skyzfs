@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 424
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 976
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,13 +18,24 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's fourteenth version (M2.3b). It adds the intent
+//! This is the file's fifteenth version (M2.4c). It adds the uploader
+//! after the fourteenth's fields: what it is doing, the volume's lease,
+//! the driver's figures, its last check and the rule of the last cut
+//! uploaded, and three short texts (why it waits or has no lease, the
+//! lease's holder, the last error on object storage). A daemon that does
+//! not upload writes them as zeros (`upload_state` off). After the texts
+//! it adds one figure of the held cuts, the cuts replaced before their
+//! upload (`cuts_replaced`), which a reader of an older file does not
+//! get. Nothing is dropped or moved. The fourteenth (`SKYZST14`, 424 bytes) is still
+//! read, without the uploader.
+//!
+//! The fourteenth version (M2.3b) added the intent
 //! map after the thirteenth's fields: what the start did with the map,
 //! the size of a region, the regions, those named now and those the
 //! start's map named, the map's syncs on the write path with their
 //! time, and the requests that waited for one. Nothing is dropped or
 //! moved. The thirteenth (`SKYZST13`, 352
-//! bytes) is still read, without the intent map.
+//! bytes) is still read, without the intent map or the uploader.
 //!
 //! The thirteenth version (M2.2b) added the held cuts after the
 //! twelfth's fields: whether the store holds cuts and what its start
@@ -65,7 +76,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST14` |
+//! | 0 | 8 | magic `SKYZST15` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -103,6 +114,19 @@
 //! | 384 | 8 | `intent_named_at_start`: the regions the map named when the start took it up (every region where it began one) |
 //! | 392 | 24 | the map's syncs on the write path since this daemon started serving: how many, their summed time from the first page's write to the sync's end, the longest. A sync runs on the map's file's helper, not on the queue's thread, and covers every bit set since the one before it began |
 //! | 416 | 8 | `intent_waits`: the writes and write-zeroes that waited for a sync of the map since this daemon started serving, those into a region whose bit was not durable. Only they and the requests behind them (one that overlaps them, a flush) waited |
+//! | 424 | 8 | `upload_state`: what the uploader is doing (M2.4c). 0 off: this daemon does not upload; 1 no lease yet; 2 the lease is lost, for the rest of this instance; 3 idle: no cut to upload; 4 checking a cut against head's row; 5 reading one; 6 syncing the copies it was read from; 7 committing it; 8 waiting after an error or a commit given up; 9 stopped: the store kept a committed cut. Any other value is read as "not said" |
+//! | 432 | 8 | `upload_cut`: the cut under way, while checking, reading, syncing or committing; 0 otherwise |
+//! | 440 | 8 | `upload_wait_ms`: while waiting (state 8), the wait as it began |
+//! | 448 | 8 | `lease`: 0 none held; 1 held; 2 held, and the last renewal failed on object storage (the uploads go on under its epoch); 3 lost. Any other value is read as "not said" |
+//! | 456 | 8 | `lease_epoch`: the epoch held, or, when lost, the epoch of the holder that has it (0 where not known) |
+//! | 464 | 8 | `lease_expires_unix_ms`: while held, when the lease expires by the refs object's clock, in milliseconds since the Unix epoch |
+//! | 472 | 96 | the uploader's figures since this daemon started serving: cuts uploaded, among them those of the whole volume, their blocks, cuts found committed already, cuts committed that had gone before their release, among them those the intent map names now, cuts committed that the store kept, mismatches, the cuts they abandoned, cuts lost before their commit, commits given up, steps that failed on object storage |
+//! | 568 | 8 | `upload_checked`: what the last check found: 0 no check yet; 1 matched; a mismatch: 2 no row, 3 the row names another cut, 4 head's commit is not the row's, 5 the row cannot be read. Any other value is read as "not said" |
+//! | 576 | 8 | `upload_rule`: how the last cut uploaded went up: 0 none yet; 1 a delta onto the cut the row named; 2 the whole volume. Any other value is read as "not said" |
+//! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error or commit given up the uploader waits after |
+//! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost. A holder's name means one daemon (`--holder`, or the host's name and its machine id): a copy of a volume's files, a cloned VM image among them, must not be served under the same name |
+//! | 840 | 128 | `upload_last_error`: the last step that failed on object storage |
+//! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -154,10 +178,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST14";
+const MAGIC: &[u8; 8] = b"SKYZST15";
 /// The version this crate writes.
-pub const VERSION: u32 = 14;
-const LEN: usize = 424;
+pub const VERSION: u32 = 15;
+const LEN: usize = 976;
+
+/// The fourteenth version, still read: up to the uploader, at the same
+/// places.
+const FOURTEENTH_MAGIC: &[u8; 8] = b"SKYZST14";
+const FOURTEENTH_LEN: usize = 424;
 
 /// The thirteenth version: the fourteenth without its intent map
 /// (offset 352), which is read as absent.
@@ -246,6 +275,320 @@ pub struct StoreShown {
     /// The intent map. `None` in a file of a version before the
     /// fourteenth.
     pub intent: Option<IntentShown>,
+    /// The uploader. `None` in a file of a version before the
+    /// fifteenth. Posted by the uploader's thread
+    /// ([`Board::post_upload`]), not with the rest.
+    pub upload: Option<UploadShown>,
+}
+
+/// The longest of the status file's texts, in bytes.
+pub const TEXT: usize = 128;
+
+/// A short text in the status file: UTF-8, padded with zeros.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Text([u8; TEXT]);
+
+impl Default for Text {
+    fn default() -> Self {
+        Self([0; TEXT])
+    }
+}
+
+impl Text {
+    /// `text`, cut at a character's boundary to [`TEXT`] bytes, with each
+    /// control character (a line's end among them) made a space: `status`
+    /// prints one line per key.
+    pub fn new(text: &str) -> Self {
+        let mut bytes = [0; TEXT];
+        let mut at = 0;
+        for c in text.chars() {
+            let c = if c.is_control() { ' ' } else { c };
+            let len = c.len_utf8();
+            if at + len > TEXT {
+                break;
+            }
+            c.encode_utf8(&mut bytes[at..at + len]);
+            at += len;
+        }
+        Self(bytes)
+    }
+
+    /// The text, up to its first zero; a byte that is not UTF-8 is read
+    /// as the replacement character.
+    pub fn said(&self) -> String {
+        let end = self.0.iter().position(|b| *b == 0).unwrap_or(TEXT);
+        String::from_utf8_lossy(&self.0[..end]).into_owned()
+    }
+
+    fn of(bytes: &[u8]) -> Self {
+        let mut text = [0; TEXT];
+        text.copy_from_slice(&bytes[..TEXT]);
+        Self(text)
+    }
+}
+
+impl std::fmt::Debug for Text {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.said())
+    }
+}
+
+/// An enum the status file holds as a code: what each value is and what
+/// `status` prints of it, and a value of the file this version does not
+/// know (`Unsaid`).
+macro_rules! coded {
+    (
+        $(#[$meta:meta])*
+        $name:ident {
+            $($(#[$vmeta:meta])* $variant:ident = $code:literal, $word:literal;)*
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant,)*
+            /// The file holds a value this version does not know.
+            Unsaid,
+        }
+
+        impl $name {
+            fn code(self) -> u64 {
+                match self {
+                    $(Self::$variant => $code,)*
+                    Self::Unsaid => u64::MAX,
+                }
+            }
+
+            fn of(code: u64) -> Self {
+                match code {
+                    $($code => Self::$variant,)*
+                    _ => Self::Unsaid,
+                }
+            }
+
+            /// What `status` prints of it.
+            pub fn said(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word,)*
+                    Self::Unsaid => "unsaid",
+                }
+            }
+        }
+    };
+}
+
+coded! {
+    /// What the uploader is doing (M2.4c).
+    UploadStateShown {
+        /// This daemon does not upload.
+        #[default]
+        Off = 0, "off";
+        /// No lease is held yet: nothing is uploaded.
+        NoLease = 1, "no_lease";
+        /// The lease is lost: nothing more is uploaded by this instance.
+        LeaseLost = 2, "lease_lost";
+        /// No cut to upload.
+        Idle = 3, "idle";
+        /// Checking a cut against head's row.
+        Checking = 4, "checking";
+        /// Reading a cut.
+        Reading = 5, "reading";
+        /// Syncing the copies a cut was read from.
+        Syncing = 6, "syncing";
+        /// Committing a cut.
+        Committing = 7, "committing";
+        /// Waiting after a step that failed or a commit given up.
+        Backoff = 8, "backoff";
+        /// The store kept a committed cut: nothing more is uploaded by
+        /// this instance.
+        Stopped = 9, "stopped";
+    }
+}
+
+coded! {
+    /// The volume's lease, as the uploader holds it.
+    LeaseShown {
+        /// None held.
+        #[default]
+        None = 0, "none";
+        /// Held.
+        Held = 1, "held";
+        /// Held, and the last renewal failed on object storage: the
+        /// uploads go on under its epoch.
+        Unsure = 2, "unsure";
+        /// Lost, for the rest of this instance.
+        Lost = 3, "lost";
+    }
+}
+
+coded! {
+    /// What the uploader's last check found.
+    CheckedShown {
+        /// No check yet.
+        #[default]
+        Unchecked = 0, "unchecked";
+        /// The row and head held what the cut was made against.
+        Matched = 1, "matched";
+        /// A cut of part of the volume, and no row.
+        NoRow = 2, "no_row";
+        /// The row names another cut than the intent map's.
+        NotTheBase = 3, "not_the_base";
+        /// Head's commit is not the row's.
+        HeadMoved = 4, "head_moved";
+        /// The row cannot be read.
+        Unreadable = 5, "unreadable";
+    }
+}
+
+coded! {
+    /// How the last cut uploaded went up.
+    RuleShown {
+        /// None yet.
+        #[default]
+        None = 0, "none";
+        /// A delta onto the cut the row named.
+        Delta = 1, "delta";
+        /// The whole volume.
+        Whole = 2, "whole";
+    }
+}
+
+/// The uploader's figures since this daemon started serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UploadFigures {
+    /// Cuts committed.
+    pub uploaded: u64,
+    /// Among them, those that held the whole volume.
+    pub uploaded_whole: u64,
+    /// Their blocks.
+    pub blocks: u64,
+    /// Cuts the check found committed already.
+    pub found_committed: u64,
+    /// Cuts committed that had gone from the store before their release.
+    pub not_held: u64,
+    /// Among them, those the intent map names now.
+    pub named: u64,
+    /// Cuts committed that the store kept.
+    pub kept: u64,
+    /// Mismatches.
+    pub mismatches: u64,
+    /// The cuts they abandoned.
+    pub abandoned_at_mismatch: u64,
+    /// Cuts lost before their commit.
+    pub lost: u64,
+    /// Commits given up.
+    pub gave_up: u64,
+    /// Steps that failed on object storage.
+    pub errors: u64,
+}
+
+impl UploadFigures {
+    fn fields(&self) -> [u64; 12] {
+        [
+            self.uploaded,
+            self.uploaded_whole,
+            self.blocks,
+            self.found_committed,
+            self.not_held,
+            self.named,
+            self.kept,
+            self.mismatches,
+            self.abandoned_at_mismatch,
+            self.lost,
+            self.gave_up,
+            self.errors,
+        ]
+    }
+
+    fn of(f: [u64; 12]) -> Self {
+        Self {
+            uploaded: f[0],
+            uploaded_whole: f[1],
+            blocks: f[2],
+            found_committed: f[3],
+            not_held: f[4],
+            named: f[5],
+            kept: f[6],
+            mismatches: f[7],
+            abandoned_at_mismatch: f[8],
+            lost: f[9],
+            gave_up: f[10],
+            errors: f[11],
+        }
+    }
+}
+
+/// The uploader, as the status file says it (M2.4c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UploadShown {
+    /// What it is doing.
+    pub state: UploadStateShown,
+    /// The cut under way; 0 where none is.
+    pub cut: u64,
+    /// While waiting, the wait as it began.
+    pub wait_ms: u64,
+    /// The lease.
+    pub lease: LeaseShown,
+    /// The epoch held, or the one of the holder that has the lease when
+    /// it is lost (0 where not known).
+    pub epoch: u64,
+    /// While held, when the lease expires by the refs object's clock,
+    /// in milliseconds since the Unix epoch.
+    pub expires_unix_ms: u64,
+    /// The figures.
+    pub figures: UploadFigures,
+    /// What the last check found.
+    pub checked: CheckedShown,
+    /// How the last cut uploaded went up.
+    pub rule: RuleShown,
+    /// Why there is no lease, or what the uploader waits after.
+    pub why: Text,
+    /// The holder the lease row names.
+    pub holder: Text,
+    /// The last step that failed on object storage.
+    pub last_error: Text,
+}
+
+impl UploadShown {
+    /// The state in words, as `status` prints it under `upload`: "no
+    /// lease: why", "lease lost to H at epoch E", "why, retry in N s".
+    pub fn said(&self) -> String {
+        let cut = |doing: &str| {
+            if self.cut == 0 {
+                doing.to_string()
+            } else {
+                format!("{doing} cut {}", self.cut)
+            }
+        };
+        match self.state {
+            UploadStateShown::Off => "off: this daemon does not upload".to_string(),
+            UploadStateShown::NoLease => format!("no lease: {}", self.why.said()),
+            UploadStateShown::LeaseLost => {
+                let holder = self.holder.said();
+                if holder.is_empty() {
+                    format!("lease lost at epoch {}", self.epoch)
+                } else {
+                    format!("lease lost to {holder} at epoch {}", self.epoch)
+                }
+            }
+            UploadStateShown::Idle => "idle".to_string(),
+            UploadStateShown::Checking => cut("checking"),
+            UploadStateShown::Reading => cut("reading"),
+            UploadStateShown::Syncing => cut("syncing the copies of"),
+            UploadStateShown::Committing => cut("committing"),
+            UploadStateShown::Backoff => format!(
+                "{}, retry in {} s",
+                self.why.said(),
+                self.wait_ms.div_ceil(1000)
+            ),
+            UploadStateShown::Stopped => {
+                "stopped: the store kept a committed cut, and nothing more is uploaded by this \
+                 instance"
+                    .to_string()
+            }
+            UploadStateShown::Unsaid => "unsaid".to_string(),
+        }
+    }
 }
 
 /// The intent map, as the status file says it (`serve --hold-cuts`,
@@ -285,6 +628,10 @@ pub struct HeldShown {
     /// The cuts abandoned at the bound or let go at a copy that could
     /// not be made.
     pub abandoned: u64,
+    /// The cuts replaced before they were uploaded, since this daemon
+    /// started serving. `None` in a file of a version before the
+    /// fifteenth.
+    pub replaced: Option<u64>,
 }
 
 /// Whether the store holds cuts, and what its start did with the state
@@ -462,6 +809,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     let cuts = shown.cuts.unwrap_or_default();
     let held = shown.held.unwrap_or_default();
     let intent = shown.intent.unwrap_or_default();
+    let upload = shown.upload.unwrap_or_default();
     let fields = [
         status.written_ms,
         c.reads,
@@ -504,11 +852,34 @@ fn encode(status: &Status) -> [u8; LEN] {
         intent.syncs.sum_ns,
         intent.syncs.max_ns,
         intent.waits,
+        upload.state.code(),
+        upload.cut,
+        upload.wait_ms,
+        upload.lease.code(),
+        upload.epoch,
+        upload.expires_unix_ms,
     ];
+    let figures = upload.figures.fields();
+    let last = [upload.checked.code(), upload.rule.code()];
     let pump = pump_fields(&shown.pump);
-    for (i, field) in fields.iter().chain(&pump).chain(&after).enumerate() {
+    for (i, field) in fields
+        .iter()
+        .chain(&pump)
+        .chain(&after)
+        .chain(&figures)
+        .chain(&last)
+        .enumerate()
+    {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
+    for (at, text) in [
+        (584, upload.why),
+        (712, upload.holder),
+        (840, upload.last_error),
+    ] {
+        bytes[at..at + TEXT].copy_from_slice(&text.0);
+    }
+    bytes[968..976].copy_from_slice(&held.replaced.unwrap_or(0).to_le_bytes());
     bytes
 }
 
@@ -543,6 +914,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        15
+    } else if is(FOURTEENTH_LEN, FOURTEENTH_MAGIC) {
         14
     } else if is(THIRTEENTH_LEN, THIRTEENTH_MAGIC) {
         13
@@ -608,6 +981,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             copied: field(328),
             bound: field(336),
             abandoned: field(344),
+            replaced: (version >= 15).then(|| field(968)),
         });
         let intent = (version >= 14).then(|| IntentShown {
             state: CutStateShown::of(field(352)),
@@ -622,6 +996,20 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             },
             waits: field(416),
         });
+        let upload = (version >= 15).then(|| UploadShown {
+            state: UploadStateShown::of(field(424)),
+            cut: field(432),
+            wait_ms: field(440),
+            lease: LeaseShown::of(field(448)),
+            epoch: field(456),
+            expires_unix_ms: field(464),
+            figures: UploadFigures::of(std::array::from_fn(|i| field(472 + 8 * i))),
+            checked: CheckedShown::of(field(568)),
+            rule: RuleShown::of(field(576)),
+            why: Text::of(&bytes[584..]),
+            holder: Text::of(&bytes[712..]),
+            last_error: Text::of(&bytes[840..]),
+        });
         let shown = StoreShown {
             zeroes: ZeroesShown::of(field(136)),
             pump: pump_of(&pump),
@@ -629,6 +1017,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             cuts: Some(cuts),
             held,
             intent,
+            upload,
         };
         (field(112), field(120), field(128), shown)
     } else {
@@ -645,6 +1034,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             cuts: None,
             held: None,
             intent: None,
+            upload: None,
         };
         (
             field(tenth::FAILURES),
@@ -916,11 +1306,26 @@ impl Board {
     }
 
     /// Put the store's and the pump's state up, as [`Board::post`] does
-    /// the counters.
-    pub fn post_store(&self, shown: StoreShown) {
+    /// the counters. The uploader's part is not the queue thread's: what
+    /// [`Board::post_upload`] put up is kept, whatever `shown` holds.
+    pub fn post_store(&self, mut shown: StoreShown) {
         let mut posted = self.lock();
+        shown.upload = posted.store.upload;
         if posted.store != shown {
             posted.store = shown;
+            if posted.awaits_change || posted.every_post_wakes {
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    /// Put the uploader's state up, from its own thread, as
+    /// [`Board::post_store`] does the store's: a change of it is written
+    /// as a change of the counters is.
+    pub fn post_upload(&self, upload: UploadShown) {
+        let mut posted = self.lock();
+        if posted.store.upload != Some(upload) {
+            posted.store.upload = Some(upload);
             if posted.awaits_change || posted.every_post_wakes {
                 self.changed.notify_all();
             }
@@ -1268,6 +1673,9 @@ pub fn report(
             ] {
                 lines.push((key, value.to_string()));
             }
+            if let Some(replaced) = held.replaced {
+                lines.push(("cuts_replaced", replaced.to_string()));
+            }
         }
         // The intent map, from a file that has it, after the held cuts:
         // every key, as for them.
@@ -1285,6 +1693,47 @@ pub fn report(
             ] {
                 lines.push((key, value.to_string()));
             }
+        }
+        // The uploader, from a file that has it, after the intent map:
+        // every key, whether or not the daemon uploads.
+        if let Some(upload) = shown.upload {
+            let text = |text: Text| {
+                let said = text.said();
+                if said.is_empty() {
+                    "none".to_string()
+                } else {
+                    said
+                }
+            };
+            lines.push(("upload", upload.said()));
+            lines.push(("upload_state", upload.state.said().to_string()));
+            lines.push(("upload_cut", upload.cut.to_string()));
+            lines.push(("upload_wait_ms", upload.wait_ms.to_string()));
+            lines.push(("upload_why", text(upload.why)));
+            lines.push(("lease", upload.lease.said().to_string()));
+            lines.push(("lease_holder", text(upload.holder)));
+            lines.push(("lease_epoch", upload.epoch.to_string()));
+            lines.push(("lease_expires_unix_ms", upload.expires_unix_ms.to_string()));
+            let f = &upload.figures;
+            for (key, value) in [
+                ("uploaded", f.uploaded),
+                ("uploaded_whole", f.uploaded_whole),
+                ("upload_blocks", f.blocks),
+                ("upload_found_committed", f.found_committed),
+                ("upload_committed_gone", f.not_held),
+                ("upload_committed_named", f.named),
+                ("upload_committed_kept", f.kept),
+                ("upload_mismatches", f.mismatches),
+                ("upload_abandoned_at_mismatch", f.abandoned_at_mismatch),
+                ("upload_cuts_lost", f.lost),
+                ("upload_given_up", f.gave_up),
+                ("upload_errors", f.errors),
+            ] {
+                lines.push((key, value.to_string()));
+            }
+            lines.push(("upload_checked", upload.checked.said().to_string()));
+            lines.push(("upload_rule", upload.rule.said().to_string()));
+            lines.push(("upload_last_error", text(upload.last_error)));
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);
         if live {

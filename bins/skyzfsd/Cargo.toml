@@ -13,11 +13,16 @@ repository.workspace = true
 # `serve --refuse-one-fetch` sends one first fetch with no buffer, through
 # the binding's own fetches (`refuse-fetch`).
 # The request log hashes each block a write covers whole (`sha2`).
+# `serve --kill-at-upload` wraps the uploader's objects (`async-trait`,
+# `bytes`) and kills the daemon (`rustix/process`).
 test-hooks = [
     "skyzfs-local/test-hooks",
     "rustix/time",
+    "rustix/process",
     "skyzfs-ublk-sys/refuse-fetch",
     "dep:sha2",
+    "dep:async-trait",
+    "dep:bytes",
 ]
 
 [dependencies]
@@ -26,12 +31,29 @@ skyzfs-local = { workspace = true }
 skyzfs-ublk = { workspace = true }
 skyzfs-ublk-sys = { workspace = true }
 skyzfs-uberblock = { workspace = true }
+skyzfs-upload = { workspace = true }
+# The volume in object storage (M2.4c): its objects, refs and lease. The
+# s3 graph is in the workspace build already (skynbd-refs's tests enable
+# it).
+skynbd-engine = { workspace = true }
+skynbd-types = { workspace = true }
+skynbd-format = { workspace = true }
+skynbd-refs = { workspace = true }
+skynbd-store = { workspace = true, features = ["s3"] }
+# A volume's id is the hash of its name (the `remote` file).
+blake3 = { workspace = true }
+ulid = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 thiserror = { workspace = true }
 sha2 = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 
 # statfs, for the rule that the daemon's files are on no ZFS pool.
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
 tempfile = { workspace = true }

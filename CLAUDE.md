@@ -360,6 +360,28 @@ there, and the user decides when it merges.
   `start` on a 4096-byte boundary, with one writer thread. Ubuntu 26.04 and
   26.04-arm on a pull request. Exit codes and `recordings.tsv` as the
   cut rig's.
+- **The daemon uploads** (M2.4c). `skyzfsd create --endpoint E --bucket B
+  --volume NAME` makes the volume in object storage (within 30 s, or finds
+  it exactly so and takes it) and writes the file `remote` in the volume's
+  directory; `serve` takes no store option, and a volume with no `remote`
+  uploads nothing. Credentials only from the environment
+  (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, else the
+  ambient chain), never on a command line. A serve takes the volume's
+  lease at its start (10 s limit): another holder's lease ends it with
+  **exit 10** and writes only `volume.start` (no status file), unless
+  `--serve-without-upload` serves without uploading; a store that does not
+  answer is served and the uploader takes the lease later. `--holder`
+  (default `<hostname>:<machine-id>`; a start with no machine id is
+  refused) must name one daemon only: never serve a copy of a volume's
+  files, a cloned VM image included, under the original's name.
+  `--lease-ttl-s` is 3 to 3600, 30 by default. The lease is let go at exit
+  0 and kept at any other exit. Status version 15 has the `upload_*` and
+  `lease_*` keys and `cuts_replaced`; cuts taken = uploaded + replaced +
+  abandoned + held over a window of one serve. The test-hooks build
+  refuses `release` in a daemon that uploads, and has `serve
+  --kill-at-upload put:N|swap:N` (SIGKILL after the Nth segment PUT, or
+  after the Nth commit's swap and before its release, with one line on
+  stderr), which the upload courses use instead of timing.
 - **The node B rig.** `skyzfs-nodeb-rig.yml` (M2.T2) runs MinIO on the
   runner and, for the `life` and `slog` recordings, puts a reference
   cut into object storage through the engine (`bins/skyzfs-nodeb`, the

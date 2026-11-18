@@ -40,6 +40,12 @@
 //!   it from now on, not that it went: where the map's pages cannot be
 //!   written, the volume fails and the cut stays held, the one being
 //!   uploaded still (`InPlace::release_cut`). A `held` after says which.
+//!   **Refused in a daemon that uploads** (M2.4c, the lead's decision 7):
+//!   there the uploader lets each cut go once its commit has landed, and
+//!   a release by hand would let a cut go that was never uploaded. In a
+//!   daemon that does not upload (a volume with no place in object
+//!   storage) it stays, until the rig drives the uploader against an
+//!   object store of its own and it goes.
 //!
 //! Anything else, or a command the store cannot carry out, is answered
 //! `TOKEN refused: REASON` (`- refused: …` when the line has no token).
@@ -241,13 +247,25 @@ pub struct Commands {
     /// The volume's run directory.
     dir: PathBuf,
     job: Option<Job>,
+    /// The daemon uploads its cuts: `release` is refused.
+    uploading: bool,
 }
 
 impl Commands {
     /// The commands read from and answered in `dir`, the volume's run
     /// directory.
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, job: None }
+        Self {
+            dir,
+            job: None,
+            uploading: false,
+        }
+    }
+
+    /// The same, in a daemon that uploads its cuts when `uploading`:
+    /// `release` is then refused (the module's documentation).
+    pub fn uploading(self, uploading: bool) -> Self {
+        Self { uploading, ..self }
     }
 
     /// After a turn of the queue: read the command if `asked` (a
@@ -289,6 +307,10 @@ impl Commands {
                 "held cuts are off: the daemon was started without --hold-cuts",
             ),
             Ok(Command::Held) => held(&token, cuts),
+            Ok(Command::Release { .. }) if self.uploading => refused(
+                &token,
+                "the daemon uploads its cuts, and its uploader lets each go once it is committed",
+            ),
             Ok(Command::Release { number }) => release(&token, number, cuts),
             Ok(Command::Write { number, path }) => match begin(&token, number, path, cuts) {
                 Ok(job) => {

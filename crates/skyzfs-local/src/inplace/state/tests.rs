@@ -1823,6 +1823,47 @@ fn a_failed_run_in_the_middle_of_a_change_keeps_what_an_older_cut_reads() {
     }
 }
 
+/// A cut replaced before its upload is counted, in both ways a newer cut
+/// takes its map: the cut that waits when a newer cut's flush completes,
+/// and a cut whose flush is still under way at the next instant. A
+/// release, and a flush with none waiting, replace nothing.
+#[test]
+fn the_cuts_replaced_before_their_upload_are_counted() {
+    let bound = 64 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let mut state = CutState::begin(region, SIZE, bound, OWNER, Mutants(0));
+    let replaced = |state: &CutState<MemRegion>| state.figures().replaced;
+    // Cut 1 is uploaded; cut 2 waits; cut 3's flush completes and
+    // replaces it.
+    assert_eq!(state.freeze(&marked(1), true), 1);
+    state.flushed(1);
+    assert_eq!(state.freeze(&marked(2), true), 2);
+    state.flushed(2);
+    assert_eq!(replaced(&state), 0, "nothing waited");
+    assert_eq!(state.freeze(&marked(3), true), 3);
+    assert_eq!(replaced(&state), 0, "nothing replaced at the instant");
+    state.flushed(3);
+    assert_eq!(replaced(&state), 1, "cut 2 replaced by cut 3");
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert_eq!(held, [1, 3]);
+    // Cut 4's flush is under way at cut 5's instant: cut 5 takes its
+    // map.
+    assert_eq!(state.freeze(&marked(4), true), 4);
+    assert_eq!(state.freeze(&marked(5), true), 5);
+    assert_eq!(replaced(&state), 2, "cut 4 replaced by cut 5");
+    let held: Vec<u64> = state.held().iter().map(|c| c.number).collect();
+    assert_eq!(held, [1, 3, 5]);
+    // Releases let cuts go, uploaded; cut 5's flush completes while cut 3
+    // is being uploaded, and none waits: no replacement.
+    assert!(state.release(1));
+    state.flushed(5);
+    assert!(state.release(3));
+    assert!(state.release(5));
+    assert_eq!(replaced(&state), 2);
+    let figures = state.figures();
+    assert_eq!((figures.held, figures.abandoned), (0, 0));
+}
+
 /// A cut abandoned at the bound while a change is planned takes with it
 /// the copies planned for it (M2.2d), as M2.2c freed their records with
 /// the cut: no copy stays that no held cut reads. Cut 1, the whole

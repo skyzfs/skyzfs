@@ -4303,15 +4303,26 @@ dependencies = [
 name = "skyzfsd"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
+ "blake3",
+ "bytes",
  "rustix 1.1.4",
  "sha2 0.10.9",
+ "skynbd-engine",
+ "skynbd-format",
+ "skynbd-refs",
+ "skynbd-store",
+ "skynbd-types",
  "skyzfs-blk",
  "skyzfs-local",
  "skyzfs-uberblock",
  "skyzfs-ublk",
  "skyzfs-ublk-sys",
+ "skyzfs-upload",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]
