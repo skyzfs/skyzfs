@@ -1539,6 +1539,40 @@ class TwoInstances(unittest.TestCase):
         self.assertEqual([n['shape'] for n in cdc.unstored_at_kill(
             cdc.parse_log(split_log(self.text, self.k, shape='B')), {PID2})[1]], ['B'])
 
+    def test_the_kill_window_by_hand(self):
+        """unstored_at_kill on instances made by hand (the review of #115,
+        G4): an acknowledged start says nothing of the barrier before it,
+        and begins its own count; a cut line is shape C only right behind
+        its own flush's barrier."""
+        def inst(pid, *lines):
+            return {'pid': pid, 'lines': [{'event': e, 'tag': tag, 'sectors': n, 'result': g, 'line': i}
+                                          for i, (e, tag, n, g) in enumerate(lines)]}
+        cut = lambda tag, n, g: ('cut', tag, n, g)    # noqa: E731
+        barrier = lambda tag: ('barrier', tag, '-', '-')    # noqa: E731
+        first = inst(PID, cut(1, '4', '10'), cut(2, '5', '11'), barrier(3))
+        # an acknowledged next start whose first cut is two past the last:
+        # it counts from 1, so this is no count past one more (U4)
+        _, notes = cdc.unstored_at_kill([first, inst(PID2, cut(1, '7', '12'))], {PID2})
+        self.assertEqual([n['shape'] for n in notes], ['B'])
+        # an acknowledged start that counted nothing and was killed at a
+        # barrier: the next counts on from its 0, and a first cut 2 is past
+        # one more, the barrier kept for that error (U11)
+        out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10')), inst(PID2, barrier(1)),
+                                           inst('9999', cut(1, '2', '12'))], {PID2})
+        self.assertEqual((notes, [ln['event'] for ln in out[1]['lines']]), ([], ['barrier']))
+        # the cut line behind another flush's barrier, or behind no barrier,
+        # is kept though the next instance cuts the same number at the same
+        # group (U10, U15)
+        for why, tail in (("another flush's barrier", [barrier(3), cut(2, '5', '11')]),
+                          ('a receipt', [('recv', 2, '0', '0'), cut(2, '5', '11')])):
+            with self.subTest(why):
+                out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10'), *tail),
+                                                   inst(PID2, cut(1, '5', '11'))])
+                self.assertEqual((notes, len(out[0]['lines'])), ([], 3))
+        out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10'), barrier(2), cut(2, '5', '11')),
+                                           inst(PID2, cut(1, '5', '11'))])
+        self.assertEqual(([n['shape'] for n in notes], len(out[0]['lines'])), (['C'], 1))
+
     def test_what_the_first_instance_did_not_finish(self):
         """A write received and not applied, and a write-zeroes behind a
         flush with no barrier, when the instance ended: the kernel hands

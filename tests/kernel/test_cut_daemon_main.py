@@ -320,6 +320,25 @@ class Main(unittest.TestCase):
         self.assertEqual([key for key, (v, _) in lines.items() if v in ('FAIL', 'ERROR')], ['instance_2'])
         self.assertEqual(rc, 1)
 
+    def test_an_acknowledged_start_cuts_nothing_again(self):
+        """main hands unstored_at_kill the starts that acknowledged a
+        failure (the review of #115, G4: plant U14): such a start counts
+        from 1, and its first cut, here made to carry the number and group
+        of the cut line that ends the instance before, is no cut again."""
+        def same_group(text):
+            lines = text.splitlines()
+            cuts = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut']
+            last = lines[cuts[0]].split('\t')
+            self.assertEqual(lines[cuts[0] - 1].split('\t')[2], 'barrier')
+            j = next(i for i in cuts if lines[i].split('\t')[1] == t.PID2)
+            first = lines[j].split('\t')
+            self.assertEqual(first[6], last[6])
+            lines[j] = '\t'.join(first[:7] + last[7:])
+            return '\n'.join(lines) + '\n'
+        rc, lines = recording(holder=lambda written, blocks, final: None, split=(1, 'acknowledged'), as_name='failed',
+                              tamper_split=same_group)
+        self.assertTrue(lines['obs_unstored_at_kill'][1].startswith('0 flushes'), lines['obs_unstored_at_kill'])
+
     def test_a_group_synced_with_no_flush(self):
         """A group the pool committed with no flush (zfs_nocacheflush,
         between the marks noflush-begin and noflush-end) is cut by neither
