@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use skynbd_store::{FaultOp, FaultWhen};
-use skyzfs_local::inplace::CommittedCut;
+use skyzfs_local::inplace::{CommittedCut, CutPhase};
 use skyzfs_upload::{row, Checked, Doing, Driver, Mismatch, Rule, Step};
 
 /// The steps of a run that are not reads.
@@ -684,6 +684,73 @@ async fn a_cut_the_bound_takes_after_the_check_found_it_committed_is_named() {
     assert_eq!(
         (figures.found_committed, figures.not_held, figures.named),
         (0, 1, 1)
+    );
+}
+
+/// The store's intent map, as its file is called in the volume's
+/// directory (`skyzfs_local`'s `intent::INTENT_NAME`, which is the
+/// crate's own).
+const INTENT_NAME: &str = "intent.map";
+
+/// A release whose write of the intent map fails after a commit that
+/// landed (F2 of the review of M2.4b-1): the volume fails, the map may
+/// name the cut from now on, and the cut stays held. The store would
+/// offer it again, and the check would find it committed again, for
+/// ever. The driver says the cut is kept and stops, for good: only the
+/// cut being uploaded can be let go, so no later cut can leave from this
+/// instance. Once at the driver's own commit, once at a check that found
+/// the commit landed before a death. The defects, planted by hand: a
+/// kept cut taken as let go, or as gone; the driver that goes on after
+/// it; and a stop that holds for one step.
+#[tokio::test]
+async fn a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver() {
+    async fn stopped(up: &mut Up, number: u64, case: &str) {
+        assert!(up.local().is_failed(), "{case}");
+        let held: Vec<(u64, CutPhase)> = up
+            .local()
+            .held_cuts()
+            .iter()
+            .map(|cut| (cut.number, cut.phase))
+            .collect();
+        assert_eq!(held, [(number, CutPhase::Uploading)], "{case}: kept");
+        assert_eq!(up.doing(), Doing::Stopped, "{case}");
+        assert_eq!(up.under_way(), None, "{case}");
+        for _ in 0..3 {
+            assert_eq!(up.step().await, Ok(Step::Idle), "{case}");
+        }
+        assert_eq!(up.run().await, Ok(Vec::new()), "{case}");
+        assert_eq!(up.figures().kept, 1, "{case}");
+    }
+
+    let case = "at its commit";
+    let mut fx = Fixture::new(18).await;
+    let mut store = fx.start();
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 64);
+    step_until(&mut up, Doing::Committing).await;
+    fx.disk.fail_write_of(INTENT_NAME);
+    assert_eq!(up.step().await, Ok(Step::Kept { number: 1 }), "{case}");
+    fx.assert_uploaded(7, case).await;
+    stopped(&mut up, 1, case).await;
+    assert_eq!(
+        (up.figures().uploaded, up.figures().found_committed),
+        (1, 0),
+        "{case}"
+    );
+
+    let case = "at a check that found it committed";
+    let mut fx = Fixture::new(19).await;
+    let up = committed_unheard(&mut fx).await;
+    fx.died(up);
+    let store = fx.start();
+    fx.disk.fail_write_of(INTENT_NAME);
+    let mut up = fx.driver(store, 64);
+    assert_eq!(up.step().await, Ok(Step::Kept { number: 2 }), "{case}");
+    stopped(&mut up, 2, case).await;
+    assert_eq!(
+        (up.figures().uploaded, up.figures().found_committed),
+        (0, 0),
+        "{case}"
     );
 }
 

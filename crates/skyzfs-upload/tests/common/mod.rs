@@ -32,7 +32,7 @@ use skyzfs_local::inplace::{
 };
 use skyzfs_local::sim::SimDisk;
 use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC};
-use skyzfs_upload::{row, Doing, Driver, EngineRemote, Local, Uploadable, ROW_KEY};
+use skyzfs_upload::{row, Doing, Driver, EngineRemote, Local, Released, Uploadable, ROW_KEY};
 
 pub const KIB: u64 = 1 << 10;
 pub const BLOCK: u64 = 4 * KIB;
@@ -328,7 +328,7 @@ impl Local for Racing {
         self.store.sync_copies(number).await
     }
 
-    async fn release(&mut self, number: u64) -> bool {
+    async fn release(&mut self, number: u64) -> Released {
         for (i, (block, byte)) in std::mem::take(&mut self.at_release).into_iter().enumerate() {
             run(
                 &mut self.store,

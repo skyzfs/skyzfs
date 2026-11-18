@@ -3566,10 +3566,11 @@ fn a_request_deferred_behind_a_write_that_waits_for_the_map_is_answered_at_a_fai
 
 /// A write of the map that fails when a commit clears bits fails the
 /// volume, as a failed write of the store does (G4 of the review of
-/// #106), and the cut is not let go: the map may not name it, and the
-/// uploader's check at the next start finds it held (review of
-/// M2.4b-1). It was the cut being uploaded, as `release_cut` says. The
-/// defect, planted by hand: the cut let go all the same.
+/// #106), and the cut is not let go (review of M2.4b-1): the map on the
+/// disk may name it or not, page by page. `release_cut` says true: it
+/// was the cut being uploaded, and the map may name it from now on.
+/// What finds the kept cut after is the next test's. The defect,
+/// planted by hand: the cut let go all the same.
 #[test]
 fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
     for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
@@ -3587,6 +3588,75 @@ fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
             .map(|cut| (cut.number, cut.phase))
             .collect();
         assert_eq!(held, [(1, CutPhase::Uploading)], "{io:?}");
+    }
+}
+
+/// What finds a cut kept at a failed write of the map (F1 of the review
+/// of M2.4b-1). In the usual course the failure is marked on the disk:
+/// a start that does not acknowledge it is refused, and the one that
+/// does begins a new cut state and holds no cut. The map it takes up
+/// names the cut released before, so the uploader's check finds a row
+/// the map does not name: a mismatch, and one whole upload. Only where
+/// the failure was never marked (a death before the marker; here the
+/// planted defect that leaves the marker out) does the next start take
+/// the state up and hold the cut, which a release then lets go.
+#[test]
+fn a_cut_kept_at_a_failed_write_of_the_map_is_held_again_only_where_no_marker_was_written() {
+    for marked in [true, false] {
+        let case = if marked { "marked" } else { "never marked" };
+        let mutants = if marked { 0 } else { Mutants::FAIL_UNMARKED };
+        let disk = created(79, 0);
+        let region = region();
+        let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1), "{case}");
+        let id = store.cut_state_id().expect("a cut state");
+        let one = CommittedCut {
+            state: id,
+            number: 1,
+            group: 7,
+        };
+        write(&mut store, 6, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        disk.fail_write_of(intent::INTENT_NAME);
+        assert!(store.release_cut(2), "{case}");
+        assert!(store.is_failed(), "{case}");
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        // The drop waits for the marker's thread.
+        drop(store);
+        disk.kill();
+        disk.clear_faults();
+        if marked {
+            assert!(
+                matches!(
+                    opened(&disk, false, ON_CALLER),
+                    Err(OpenError::MarkedFailed)
+                ),
+                "{case}"
+            );
+            let acknowledging = Coming {
+                acknowledging: true,
+                ..TAKING_OVER
+            };
+            let store = start_as(&disk, 0, &region, ON_CALLER, acknowledging);
+            assert_ne!(store.cut_state_id(), Some(id), "{case}: a new state");
+            assert_eq!(phases(&store), [], "{case}");
+            assert_eq!(store.committed_cut(), Some(one), "{case}");
+        } else {
+            let mut store = start_on(&disk, 0, &region, ON_CALLER);
+            assert_eq!(store.cut_state_id(), Some(id), "{case}: taken up");
+            assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+            assert_eq!(store.committed_cut(), Some(one), "{case}");
+            assert!(store.release_cut(2), "{case}");
+            assert_eq!(phases(&store), [], "{case}");
+            let two = CommittedCut {
+                number: 2,
+                group: 8,
+                ..one
+            };
+            assert_eq!(store.committed_cut(), Some(two), "{case}");
+        }
     }
 }
 

@@ -43,6 +43,6 @@ pub mod row;
 
 pub use check::{judge, Mismatch, Rule, Verdict};
 pub use driver::{Checked, Doing, Driver, Figures, Step, SLICE_BLOCKS};
-pub use local::{Local, Uploadable};
+pub use local::{Local, Released, Uploadable};
 pub use remote::{EngineRemote, Observed, Remote, RemoteError};
 pub use row::{Row, RowError, ROW_KEY};

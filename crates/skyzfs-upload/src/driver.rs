@@ -28,6 +28,16 @@
 //! committed cut instead, so that the cut that took its map goes up as a
 //! delta onto it.
 //!
+//! A cut committed that the store cannot let go stops the driver, for
+//! good: the intent map's pages could not be written, the volume has
+//! failed, and the cut stays held as the one being uploaded. The store
+//! would offer it again and the check find it committed again, and only
+//! the cut being uploaded can be let go, so no later cut can leave from
+//! this instance (F2 of the review of M2.4b-1). A failure of the volume
+//! that leaves the release alone stops nothing: design §5.2 has the
+//! instance that saw it still upload a cut whose flush had completed.
+//! Whether that instance stays up for it is M2.5's.
+//!
 //! A death at any point leaves the cut held, with head and the row as
 //! they were or as the commit made them: the next instance's check finds
 //! which.
@@ -35,7 +45,7 @@
 use skyzfs_blk::{Buf, BLOCK_SIZE, BLOCK_USIZE};
 
 use crate::check::{judge, Mismatch, Rule, Verdict};
-use crate::local::{Local, Uploadable};
+use crate::local::{Local, Released, Uploadable};
 use crate::remote::{Remote, RemoteError};
 use crate::row::{self, Row};
 
@@ -97,6 +107,15 @@ pub enum Step {
         /// a row the map does not name: a mismatch, and one whole upload.
         named: bool,
     },
+    /// The cut is committed, by this driver or found so, but the store
+    /// kept it ([`Released::Kept`]): the intent map's pages could not be
+    /// written, and the volume has failed. The driver stops, for good
+    /// ([`Doing::Stopped`]): every step after this one is
+    /// [`Step::Idle`].
+    Kept {
+        /// The cut.
+        number: u64,
+    },
     /// The row or head did not hold what the held cuts were made
     /// against: every held cut is abandoned, and the next cut holds the
     /// whole volume.
@@ -134,6 +153,8 @@ pub enum Doing {
     /// Commits the cut, or reads the row and head again before it makes
     /// a commit that failed again.
     Committing,
+    /// Nothing, for good: the store kept a cut committed ([`Step::Kept`]).
+    Stopped,
 }
 
 /// What the last check found, for the status.
@@ -166,6 +187,9 @@ pub struct Figures {
     pub not_held: u64,
     /// Among them, those the intent map names now as the committed cut.
     pub named: u64,
+    /// The cuts committed that the store kept ([`Step::Kept`]): one at
+    /// most, since the driver stops at it.
+    pub kept: u64,
     /// The mismatches.
     pub mismatches: u64,
     /// The cuts they abandoned.
@@ -211,6 +235,8 @@ enum Stage {
         upload: Upload,
         failed: Option<bool>,
     },
+    /// The store kept a cut committed: nothing more is done.
+    Stopped,
 }
 
 /// The upload driver ([module docs](self)).
@@ -257,7 +283,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
     /// The cut under way, from its check to its commit.
     pub fn under_way(&self) -> Option<u64> {
         match &self.stage {
-            Stage::Check => None,
+            Stage::Check | Stage::Stopped => None,
             Stage::Read(upload) | Stage::Sync(upload) | Stage::Commit { upload, .. } => {
                 Some(upload.cut.number)
             }
@@ -271,6 +297,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Stage::Read(_) => Doing::Reading,
             Stage::Sync(_) => Doing::Syncing,
             Stage::Commit { .. } => Doing::Committing,
+            Stage::Stopped => Doing::Stopped,
         }
     }
 
@@ -283,6 +310,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Stage::Read(upload) => self.read(upload).await,
             Stage::Sync(upload) => self.sync(upload).await,
             Stage::Commit { upload, failed } => self.commit(upload, failed).await,
+            Stage::Stopped => (Stage::Stopped, Ok(Step::Idle)),
         };
         self.stage = stage;
         if let Err(e) = &result {
@@ -317,7 +345,8 @@ impl<L: Local, R: Remote> Driver<L, R> {
         match judge(&cut, &row, seen.head_group) {
             Verdict::Committed => {
                 self.figures.checked = Checked::Matched;
-                (Stage::Check, Ok(self.found_committed(&cut).await))
+                let step = self.found_committed(&cut).await;
+                (Self::after(&step), Ok(step))
             }
             Verdict::Mismatch(why) => {
                 let abandoned = self.local.abandon_all().await;
@@ -348,11 +377,28 @@ impl<L: Local, R: Remote> Driver<L, R> {
     /// The row names `cut`: let it go.
     async fn found_committed(&mut self, cut: &Uploadable) -> Step {
         let number = cut.number;
-        if self.local.release(number).await {
-            self.figures.found_committed += 1;
-            Step::FoundCommitted { number }
-        } else {
-            self.not_held(cut).await
+        match self.local.release(number).await {
+            Released::LetGo => {
+                self.figures.found_committed += 1;
+                Step::FoundCommitted { number }
+            }
+            Released::Kept => self.kept(number),
+            Released::Gone => self.not_held(cut).await,
+        }
+    }
+
+    /// The store kept cut `number`, committed: stop.
+    fn kept(&mut self, number: u64) -> Step {
+        self.figures.kept += 1;
+        Step::Kept { number }
+    }
+
+    /// The stage after a step that ends a cut: the check of the next, or
+    /// nothing more after [`Step::Kept`].
+    fn after(step: &Step) -> Stage {
+        match step {
+            Step::Kept { .. } => Stage::Stopped,
+            _ => Stage::Check,
         }
     }
 
@@ -439,7 +485,8 @@ impl<L: Local, R: Remote> Driver<L, R> {
             };
             if Row::of(seen.row.as_deref()) == Row::Named(upload.cut.row()) {
                 self.remote.reset();
-                return (Stage::Check, Ok(self.uploaded(&upload).await));
+                let step = self.uploaded(&upload).await;
+                return (Self::after(&step), Ok(step));
             }
             if conflict || seen.row != upload.expected || !seen.current {
                 self.remote.reset();
@@ -462,7 +509,10 @@ impl<L: Local, R: Remote> Driver<L, R> {
             .commit(upload.cut.group, upload.expected.clone(), row)
             .await
         {
-            Ok(()) => (Stage::Check, Ok(self.uploaded(&upload).await)),
+            Ok(()) => {
+                let step = self.uploaded(&upload).await;
+                (Self::after(&step), Ok(step))
+            }
             Err(e) => {
                 let conflict = e == RemoteError::Conflict;
                 (
@@ -485,14 +535,14 @@ impl<L: Local, R: Remote> Driver<L, R> {
         if upload.rule == Rule::Whole {
             self.figures.uploaded_whole += 1;
         }
-        if self.local.release(number).await {
-            Step::Uploaded {
+        match self.local.release(number).await {
+            Released::LetGo => Step::Uploaded {
                 number,
                 rule: upload.rule,
                 blocks: upload.blocks,
-            }
-        } else {
-            self.not_held(&upload.cut).await
+            },
+            Released::Kept => self.kept(number),
+            Released::Gone => self.not_held(&upload.cut).await,
         }
     }
 

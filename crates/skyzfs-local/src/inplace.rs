@@ -3098,8 +3098,9 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// Held cut `number`, the one being uploaded, is committed in object
-    /// storage: let it go. Whether it was that cut; false changes
-    /// nothing. Called only after the commit (M2.4); the test-hooks
+    /// storage: let it go. True where it was that cut: the intent map may
+    /// name it from then on. False where it was not, and nothing
+    /// changed. Called only after the commit (M2.4); the test-hooks
     /// build's `release` command calls it without one.
     ///
     /// After it the intent map names the cut as its base (the cut
@@ -3107,14 +3108,31 @@ impl<D: Dir> InPlace<D> {
     /// of the regions in which nothing changed after the cut's instant
     /// (`intent.rs`). The pages are written without a sync; one that
     /// cannot be written fails the volume, as on the write path, and the
-    /// cut stays held (review of M2.4b-1).
+    /// cut stays held, the one being uploaded still (review of M2.4b-1):
+    /// the map in memory names it, and the map on the disk may, page by
+    /// page. **So true does not say that the cut is gone.** A caller
+    /// looks at [`InPlace::is_failed`], or at the held cuts, before it
+    /// takes the next cut; else it finds the same one again, and only
+    /// the cut being uploaded can be let go (F2 of that review; the
+    /// uploader's `Released::Kept`).
     ///
     /// The intent map names the cut before the cut state lets it go, so
-    /// that a death between, or a failed write of the map's pages, leaves
-    /// the cut held for the uploader's check to find in the row, and
-    /// never a cut gone that the map does not name: the regions it clears
-    /// are those in which nothing changed after the cut's instant, the
-    /// same whether the cut is held or not.
+    /// that a death between leaves the cut held for the uploader's check
+    /// to find in the row, and never a cut gone that the map does not
+    /// name: the regions it clears are those in which nothing changed
+    /// after the cut's instant, the same whether the cut is held or not.
+    ///
+    /// **A cut kept at a failed write of the map** is found again only
+    /// by a start that takes the cut state up, which is where the
+    /// failure was never marked on the disk (a death before the marker):
+    /// its check finds the cut in the row and lets it go. In the usual
+    /// course the failure is marked, the start that acknowledges it
+    /// begins a new cut state and holds no cut, and the check finds a
+    /// row that the map does not name: a mismatch, and one whole upload
+    /// (F1 of that review). While the map's file refuses, the instance
+    /// that saw the failure cannot let the cut go, so no later cut
+    /// leaves from it; whether it stays up to upload at all is M2.5's
+    /// (design §5.2).
     pub fn release_cut(&mut self, number: u64) -> bool {
         let Some(group) = self
             .held_cuts()
@@ -3125,8 +3143,9 @@ impl<D: Dir> InPlace<D> {
             return false;
         };
         if !self.intent_committed(number, group) {
-            // The volume has failed, and the cut stays held for the next
-            // start's check, which finds it in the row.
+            // The volume has failed, and the cut stays held: true all the
+            // same, since the map may name it from now on (see the doc
+            // for what finds it after).
             return true;
         }
         self.state

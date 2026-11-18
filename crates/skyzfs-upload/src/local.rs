@@ -44,6 +44,24 @@ impl Uploadable {
     }
 }
 
+/// What [`Local::release`] did with a cut committed in object storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Released {
+    /// The cut is let go, and the intent map names it as committed.
+    LetGo,
+    /// The cut was the one being uploaded, but the intent map's pages
+    /// could not be written: the volume has failed, the map may name the
+    /// cut from now on, and the cut stays held, the one being uploaded
+    /// still (F2 of the review of M2.4b-1). The store will offer it
+    /// again, and only the cut being uploaded can be let go, so no later
+    /// cut can leave from this instance.
+    Kept,
+    /// It was not the cut being uploaded, and nothing changed: the bound,
+    /// or a failed read or sync of the copies, took it after its commit
+    /// had landed.
+    Gone,
+}
+
 /// The store, as the uploader reaches it. Each call is answered where the
 /// store lives; none waits on object storage.
 // The uploader runs on one thread's runtime (M2.4c), so its futures need
@@ -66,8 +84,8 @@ pub trait Local {
     async fn sync_copies(&mut self, number: u64) -> io::Result<()>;
 
     /// Cut `number` is committed in object storage: let it go
-    /// (`InPlace::release_cut`). Whether it was the cut being uploaded.
-    async fn release(&mut self, number: u64) -> bool;
+    /// (`InPlace::release_cut`), and say whether it went ([`Released`]).
+    async fn release(&mut self, number: u64) -> Released;
 
     /// Cut `number`, of transaction group `group`, is committed in object
     /// storage, but [`Local::release`] found it gone: the bound took it
@@ -108,8 +126,17 @@ impl<D: Dir> Local for InPlace<D> {
             .unwrap_or_else(|| Err(io::Error::other("the sync of the copies did not end")))
     }
 
-    async fn release(&mut self, number: u64) -> bool {
-        self.release_cut(number)
+    async fn release(&mut self, number: u64) -> Released {
+        if !self.release_cut(number) {
+            return Released::Gone;
+        }
+        // True from `release_cut` says that it was the cut being
+        // uploaded, not that it went: a failed write of the map keeps it.
+        if self.held_cuts().iter().any(|cut| cut.number == number) {
+            Released::Kept
+        } else {
+            Released::LetGo
+        }
     }
 
     async fn name_committed(&mut self, number: u64, group: u64) -> bool {
