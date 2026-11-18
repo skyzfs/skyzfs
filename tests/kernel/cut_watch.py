@@ -36,8 +36,11 @@ in the files, and ends. Out:
 - OUT/watch.log: what it did, and a line `VERDICT ...` where node B
   could not read the content of the cut head named (`get` exit 4: the
   bucket does not hold what the commit needs). The watcher then ends
-  with 1. Any other failure of node B three times in a row, or of the
-  watcher's own files, ends it with 2, the rig's error.
+  with 1. Any other failure of one of node B's commands three times in a
+  row (each command counted on its own, so that a `row` that works does
+  not hide a `get` that fails), a last look that could not fetch what
+  head holds, or a failure of the watcher's own files, ends it with 2,
+  the rig's error.
 """
 import hashlib
 import os
@@ -113,7 +116,8 @@ class Watcher:
         self.image = os.path.join(out, 'watch.img')
         self.last = None        # (head, row) of the last cut fetched
         self.blocks = {}        # its blocks that are not zeros
-        self.failures = 0
+        self.failures = {}      # node B's command -> its failures in a row
+        self.settled = False    # the last look found nothing left to fetch
         self.fetched = 0        # lines of uploaded.tsv
 
     def log(self, text):
@@ -132,12 +136,12 @@ class Watcher:
         if rc == 4 and cmd == 'get':
             raise Verdict(f'node B could not read head: {err}')
         if rc != 0:
-            self.failures += 1
+            self.failures[cmd] = self.failures.get(cmd, 0) + 1
             self.log(f'node B {cmd} ended with {rc}: {err}')
-            if self.failures >= TRIES:
+            if self.failures[cmd] >= TRIES:
                 raise RigError(f'node B {cmd} failed {TRIES} times in a row: {err}')
             return None
-        self.failures = 0
+        self.failures[cmd] = 0
         return out
 
     def row(self):
@@ -150,12 +154,19 @@ class Watcher:
         return got
 
     def step(self):
-        """One look -> True where a cut was fetched."""
+        """One look -> True where a cut was fetched. settled says whether
+        the look left nothing to fetch: the row names no cut, its cut was
+        fetched before, or now."""
+        self.settled = False
         before = self.row()
-        if before is None or row_cut(before['row']) is None or before['head'] == 'none':
+        if before is None:
+            return False
+        if row_cut(before['row']) is None or before['head'] == 'none':
+            self.settled = True
             return False
         key = (before['head'], before['row'])
         if key == self.last:
+            self.settled = True
             return False
         t0 = time.monotonic_ns()
         if self.node_b('get', '--ref', 'head', '--out', self.image) is None:
@@ -176,7 +187,17 @@ class Watcher:
         self.log(f'fetched cut {number} (group {group}, state {state}): {len(blocks)} blocks, {len(diff)} changed')
         self.last, self.blocks = key, blocks
         self.fetched += 1
+        self.settled = True
         return True
+
+    def finish(self):
+        """The last look, at STOP: the cut head holds at the end is in the
+        files, whatever came before, or the rig's error."""
+        for _ in range(TRIES):
+            self.step()
+            if self.settled:
+                return
+        raise RigError(f'the last look did not fetch what head holds in {TRIES} tries')
 
 
 def main():
@@ -190,11 +211,7 @@ def main():
             if not (pause and os.path.exists(pause)):
                 w.step()
             time.sleep(0.5)
-        # The cut head holds at the end, fetched whatever came before.
-        for _ in range(TRIES):
-            w.step()
-            if w.last is not None and w.failures == 0:
-                break
+        w.finish()
         w.log('stopped')
     except Verdict as e:
         w.log(f'VERDICT {e}')

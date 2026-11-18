@@ -147,6 +147,46 @@ class Steps(unittest.TestCase):
         with self.assertRaises(cw.RigError):
             self.w.step()
 
+    def test_a_fetch_that_keeps_failing(self):
+        """A get that fails each time is the rig's error at the third,
+        though the row read before each works (review of #119)."""
+        self.put('row.txt', row_text(1, 10))
+        self.put('head.img', b'\1' * 4096)
+        self.put('get-rc', '2')
+        self.assertFalse(self.w.step())
+        self.assertFalse(self.w.step())
+        with self.assertRaises(cw.RigError):
+            self.w.step()
+
+    def test_the_last_look(self):
+        """At STOP: a cut already fetched, or no cut named, ends it; a
+        fetch that fails three times is the rig's error."""
+        self.put('row.txt', 'head\tnone\nrow\tnone\nlease\tnone\n')
+        self.w.finish()
+        self.put('row.txt', row_text(1, 10))
+        self.put('head.img', b'\1' * 4096)
+        self.w.finish()
+        self.assertTrue(self.read('uploaded.tsv').startswith('1\t10\t'))
+        self.w.finish()                         # the same cut: nothing to fetch
+        self.assertEqual(len(self.read('uploaded.tsv').splitlines()), 1)
+        self.put('row.txt', row_text(2, 11, head='ef' * 32))
+        self.put('get-rc', '2')
+        with self.assertRaises(cw.RigError):
+            self.w.finish()
+        self.assertEqual(len(self.read('uploaded.tsv').splitlines()), 1)
+        # Looks that never settle (head moved under each read): the
+        # rig's error after three, not a quiet end.
+        looks = []
+
+        def moving():
+            looks.append(1)
+            self.w.settled = False
+            return False
+        self.w.step = moving
+        with self.assertRaises(cw.RigError):
+            self.w.finish()
+        self.assertEqual(len(looks), cw.TRIES)
+
 
 if __name__ == '__main__':
     unittest.main()
