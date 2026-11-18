@@ -801,13 +801,14 @@ fn queue_thread(desk: Arc<Desk>, woken: mpsc::Receiver<()>) -> std::thread::Join
 }
 
 /// The uploader's thread over a volume made by `create`, with the lease
-/// taken at the start: what it posts, and its end.
+/// taken at the start: what it posts, its end, and its desk.
 fn uploading(
     world: &World,
 ) -> (
     Uploading,
     mpsc::Receiver<UploadShown>,
     std::thread::JoinHandle<()>,
+    Arc<Desk>,
 ) {
     world.place(SIZE).expect("made");
     let mut at = start(world.keeper("node-a"), false);
@@ -818,6 +819,7 @@ fn uploading(
         let _ = wake.send(());
     });
     let queue = queue_thread(Arc::clone(&desk), woken);
+    let asked = Arc::clone(&desk);
     let (store, refs) = (Arc::clone(&world.store), world.refs());
     let make = move |epoch| {
         EngineRemote::new(
@@ -832,7 +834,7 @@ fn uploading(
         let _ = posted.send(shown);
     })
     .expect("started");
-    (up, posts, queue)
+    (up, posts, queue, asked)
 }
 
 /// The first post that is idle with the lease held.
@@ -852,7 +854,7 @@ fn idle_and_held(posts: &mpsc::Receiver<UploadShown>) -> UploadShown {
 #[test]
 fn the_end_at_exit_0_lets_the_lease_go() {
     let world = World::new();
-    let (up, posts, queue) = uploading(&world);
+    let (up, posts, queue, _) = uploading(&world);
     let shown = idle_and_held(&posts);
     assert_eq!(shown.epoch, 1);
     assert_eq!(
@@ -875,7 +877,7 @@ fn the_end_at_exit_0_lets_the_lease_go() {
 fn any_other_end_keeps_the_lease() {
     for asked in [true, false] {
         let world = World::new();
-        let (up, posts, queue) = uploading(&world);
+        let (up, posts, queue, _) = uploading(&world);
         idle_and_held(&posts);
         if asked {
             assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
@@ -889,4 +891,29 @@ fn any_other_end_keeps_the_lease() {
         assert_eq!(lease.holder, "node-a");
         assert!(lease.expires_at_ms > 0, "kept, asked: {asked}");
     }
+}
+
+/// Once the desk is closed the thread posts nothing more (N5 of #117's
+/// review): the uploader still turns until it is told to stop, and its
+/// figures after the close (a cut counted lost, or committed and gone)
+/// are not what happened. An idle uploader turns four times a second, so
+/// without the rule two seconds hold about eight posts; one may be a
+/// turn that read the desk open just before the close.
+#[test]
+fn nothing_is_posted_once_the_desk_is_closed() {
+    let world = World::new();
+    let (up, posts, queue, desk) = uploading(&world);
+    idle_and_held(&posts);
+    desk.close();
+    queue.join().expect("the queue's thread ended at the close");
+    let before: Vec<UploadShown> = posts.try_iter().collect();
+    std::thread::sleep(Duration::from_secs(2));
+    let after: Vec<UploadShown> = posts.try_iter().collect();
+    assert!(
+        after.len() <= 1,
+        "{} posts after the close, {} before",
+        after.len(),
+        before.len()
+    );
+    assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
 }
