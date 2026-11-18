@@ -304,10 +304,11 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     assert_eq!(after.release(1).await, Released::Gone);
     assert!(!after.name_committed(1, 7).await);
     assert!(after.abandon_all().await.is_empty());
+    let count = tokio::time::timeout(Duration::from_secs(5), desk.cuts_now()).await;
     assert_eq!(
-        desk.cuts_now().await,
-        None,
-        "the count: the store is no longer served"
+        count,
+        Ok(None),
+        "the count, at once: the store is no longer served"
     );
     assert!(woken.try_recv().is_err(), "no call after the close woke it");
     assert_eq!(desk.answered(), 0);
@@ -439,7 +440,9 @@ async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
         let _ = wake.send(());
     });
     let queue = queue_thread(Arc::clone(&desk), store, woken);
-    let now = desk.cuts_now().await;
+    let now = tokio::time::timeout(Duration::from_secs(5), desk.cuts_now())
+        .await
+        .expect("the queue's thread gives the count at its next turn, with no call waiting");
     assert_eq!(
         now,
         Some(CutsNow {
