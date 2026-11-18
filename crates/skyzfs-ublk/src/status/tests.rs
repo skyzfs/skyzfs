@@ -67,6 +67,10 @@ fn sample() -> Status {
                 bound: 32,
                 abandoned: 33,
                 replaced: Some(46),
+                holes: Some(HolesShown {
+                    state: CutHolesShown::Held,
+                    chunks: 63,
+                }),
             }),
             intent: Some(IntentShown {
                 state: CutStateShown::TakenUp,
@@ -103,7 +107,10 @@ fn sample_upload() -> UploadShown {
         lease: LeaseShown::Held,
         epoch: 44,
         expires_unix_ms: 45,
-        figures: UploadFigures::of(std::array::from_fn(|i| 50 + i as u64)),
+        figures: UploadFigures {
+            zero_blocks: Some(62),
+            ..UploadFigures::of(std::array::from_fn(|i| 50 + i as u64))
+        },
         checked: CheckedShown::NotTheBase,
         rule: RuleShown::Whole,
         why: Text::new("the why"),
@@ -117,8 +124,8 @@ fn sample_upload() -> UploadShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 1008);
-    assert_eq!(&bytes[..8], b"SKYZST16");
+    assert_eq!(bytes.len(), 1032);
+    assert_eq!(&bytes[..8], b"SKYZST17");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -181,6 +188,9 @@ fn the_file_has_the_documented_layout() {
         (984, 47),
         (992, 48),
         (1000, 49),
+        (1008, 1),
+        (1016, 63),
+        (1024, 62),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -371,7 +381,10 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 7] = [
+    let versions: [(&[u8; 8], usize); 10] = [
+        (b"SKYZST17", 1032),
+        (b"SKYZST16", 1008),
+        (b"SKYZST15", 976),
         (b"SKYZST14", 424),
         (b"SKYZST13", 352),
         (b"SKYZST12", 312),
@@ -498,7 +511,9 @@ fn a_file_of_the_thirteenth_version_is_read_without_the_intent_map() {
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 13;
-    // The cuts replaced came with the fifteenth version.
+    // The cuts replaced came with the fifteenth version, the image's
+    // holes with the seventeenth.
+    without_holes(&mut expected);
     if let Some(held) = &mut expected.shown.held {
         held.replaced = None;
     }
@@ -532,7 +547,8 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
     let mut expected = sample();
     expected.version = 14;
     // The cuts replaced came with the fifteenth version, the header's
-    // sync with the sixteenth.
+    // sync with the sixteenth, the image's holes with the seventeenth.
+    without_holes(&mut expected);
     if let Some(held) = &mut expected.shown.held {
         held.replaced = None;
     }
@@ -554,6 +570,49 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
         .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
 }
 
+/// What a file before the seventeenth version does not say: the image's
+/// holes and the blocks uploaded as zeros (M2.4e).
+fn without_holes(status: &mut Status) {
+    if let Some(held) = &mut status.shown.held {
+        held.holes = None;
+    }
+    if let Some(upload) = &mut status.shown.upload {
+        upload.figures.zero_blocks = None;
+    }
+}
+
+/// A file of the sixteenth version (1008 bytes, `SKYZST16`): this
+/// version's fields up to the image's holes, at the same places.
+fn sixteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..1008].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST16");
+    bytes
+}
+
+/// A file of the sixteenth version is still read, with the header's
+/// sync and without the image's holes or the blocks uploaded as zeros
+/// (M2.4e), whose keys `status` does not print for it.
+#[test]
+fn a_file_of_the_sixteenth_version_is_read_without_the_holes() {
+    let read = decode(&sixteenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 16;
+    without_holes(&mut expected);
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "intent_header_sync_max_ns"), Some("49"));
+    assert_eq!(value(&lines, "upload_errors"), Some("61"));
+    for key in ["cut_holes", "cut_hole_chunks", "upload_zero_blocks"] {
+        assert_eq!(value(&lines, key), None, "{key}");
+    }
+}
+
 /// A file of the fifteenth version (976 bytes, `SKYZST15`): this
 /// version's fields up to the header's sync, at the same places.
 fn fifteenth_file() -> Vec<u8> {
@@ -573,6 +632,7 @@ fn a_file_of_the_fifteenth_version_is_read_without_the_header_sync() {
     if let Some(intent) = &mut expected.shown.intent {
         intent.header = None;
     }
+    without_holes(&mut expected);
     assert_eq!(read, expected);
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
@@ -646,6 +706,7 @@ fn status_prints_the_uploader() {
         ("upload_cuts_lost", "59"),
         ("upload_given_up", "60"),
         ("upload_errors", "61"),
+        ("upload_zero_blocks", "62"),
         ("upload_checked", "not_the_base"),
         ("upload_rule", "whole"),
         ("upload_last_error", "object storage: gone"),
@@ -898,6 +959,8 @@ fn status_prints_the_held_cuts() {
         ("cut_bound_bytes", "32"),
         ("cuts_abandoned", "33"),
         ("cuts_replaced", "46"),
+        ("cut_holes", "held"),
+        ("cut_hole_chunks", "63"),
     ] {
         assert_eq!(value(&lines, key), Some(said), "{key}");
     }
@@ -910,6 +973,19 @@ fn status_prints_the_held_cuts() {
     assert_eq!(value(&off, "cut_state"), Some("off"));
     assert_eq!(value(&off, "cuts_held"), Some("0"));
     assert_eq!(value(&off, "cuts_replaced"), Some("0"));
+    // A daemon that holds no cut, or whose state has no hole set, says
+    // so with no chunk (M2.4e).
+    assert_eq!(value(&off, "cut_holes"), Some("none"));
+    assert_eq!(value(&off, "cut_hole_chunks"), Some("0"));
+    let dropped = lines_of(HeldShown {
+        holes: Some(HolesShown {
+            state: CutHolesShown::Dropped,
+            chunks: 9,
+        }),
+        ..HeldShown::default()
+    });
+    assert_eq!(value(&dropped, "cut_holes"), Some("dropped"));
+    assert_eq!(value(&dropped, "cut_hole_chunks"), Some("9"));
     let older = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
         Some(&decode(&fourteenth_file()).expect("a status")),
@@ -919,6 +995,7 @@ fn status_prints_the_held_cuts() {
     );
     assert_eq!(value(&older, "cuts_abandoned"), Some("33"));
     assert_eq!(value(&older, "cuts_replaced"), None);
+    assert_eq!(value(&older, "cut_holes"), None);
     let begun = lines_of(HeldShown {
         state: CutStateShown::Begun,
         ..HeldShown::default()
@@ -930,6 +1007,13 @@ fn status_prints_the_held_cuts() {
     assert_eq!(
         read.shown.held.map(|held| held.state),
         Some(CutStateShown::Unsaid)
+    );
+    let mut bytes = encode(&sample());
+    bytes[1008..1016].copy_from_slice(&3u64.to_le_bytes());
+    let read = decode(&bytes).expect("a status");
+    assert_eq!(
+        read.shown.held.and_then(|held| held.holes).map(|h| h.state),
+        Some(CutHolesShown::Unsaid)
     );
 }
 
@@ -1396,6 +1480,8 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "cut_bound_bytes",
             "cuts_abandoned",
             "cuts_replaced",
+            "cut_holes",
+            "cut_hole_chunks",
             "intent_state",
             "intent_region_bytes",
             "intent_regions",
@@ -1431,6 +1517,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "upload_cuts_lost",
             "upload_given_up",
             "upload_errors",
+            "upload_zero_blocks",
             "upload_checked",
             "upload_rule",
             "upload_last_error",
@@ -1844,7 +1931,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut sixteenth = encode(&sample()).to_vec();
+    let mut seventeenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1855,6 +1942,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("14", b"SKYZST14"),
         ("15", b"SKYZST15"),
         ("16", b"SKYZST16"),
+        ("17", b"SKYZST17"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -1865,7 +1953,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "13" => thirteenth_file(),
             "14" => fourteenth_file(),
             "15" => fifteenth_file(),
-            _ => std::mem::take(&mut sixteenth),
+            "16" => sixteenth_file(),
+            _ => std::mem::take(&mut seventeenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1880,7 +1969,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 16);
+    assert_eq!(VERSION, 17);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

@@ -31,6 +31,36 @@ const OWNER: Owner = Owner {
 /// a map's words, so that programs change the same blocks often.
 const STARTS: [u64; 12] = [0, 1, 2, 62, 63, 64, 65, 126, 127, 128, 190, 197];
 
+/// The chunks of [`HOLE_BLOCKS`] blocks that are holes of the image when
+/// a world with holes begins (M2.4e): of the thirteen, the first, the
+/// last (eight blocks inside the volume), runs of two and three, and
+/// chunks next to the edges of a map's words. Every start of
+/// [`STARTS`] but 190 lies in one or next to one.
+const HOLE_CHUNKS: [u64; 8] = [0, 2, 3, 5, 7, 8, 9, 12];
+/// Blocks that are zeros in a world with holes but lie in a chunk of
+/// data, so that the set does not name them: a range that covers a
+/// chunk in part names none of it.
+const PART_HOLE: (u64, u64) = (100, 8);
+/// The content of block `b` of a world with holes, where it is data.
+const DATA: u64 = 1 << 40;
+
+/// The ranges of blocks that a world with holes gives its state's
+/// begin.
+fn hole_ranges() -> Vec<(u64, u64)> {
+    let mut ranges: Vec<(u64, u64)> = HOLE_CHUNKS
+        .iter()
+        .map(|&chunk| (chunk * HOLE_BLOCKS, HOLE_BLOCKS))
+        .collect();
+    ranges.push(PART_HOLE);
+    ranges
+}
+
+/// Whether block `block` is zeros in a world with holes when it begins.
+fn zero_at_begin(block: u64) -> bool {
+    HOLE_CHUNKS.contains(&(block / HOLE_BLOCKS))
+        || (PART_HOLE.0..PART_HOLE.0 + PART_HOLE.1).contains(&block)
+}
+
 /// The home image and the copies file, one word for each block: what a
 /// death leaves as it was.
 #[derive(Debug, Clone, Default)]
@@ -83,6 +113,11 @@ enum Step {
     Fail,
     /// The cut being uploaded is uploaded and let go.
     Release,
+    /// The pool's history went back past the cuts (a mismatch, D7):
+    /// every held cut is let go, and the next cut counts the whole
+    /// volume as changed (`abandon_all`). Only in the programs of
+    /// [`program_with_mismatches`] (the review of #125, G1).
+    Mismatch,
 }
 
 /// The rules of D7, independently of the state: the held cuts as
@@ -182,6 +217,14 @@ impl Rules {
             None => self.open_lo = lo,
         }
     }
+
+    /// A mismatch lets every held cut go, oldest first, each as at the
+    /// bound: the open map ends with the lowest `lo`.
+    fn mismatch(&mut self) {
+        while !self.held.is_empty() {
+            self.abandon();
+        }
+    }
 }
 
 /// A program's run: the state, the disk under it and the models.
@@ -200,6 +243,10 @@ struct World {
     touched: Vec<bool>,
     /// For each block, the epochs in which it was written or zeroed.
     changes: Vec<BTreeSet<u64>>,
+    /// The epochs that count the whole volume as changed: the first, of
+    /// a state begun with nothing known, and the open epoch at each
+    /// mismatch.
+    whole: BTreeSet<u64>,
     /// The image the next upload goes onto: `None` where nothing was
     /// uploaded or a hole was.
     uploaded: Vec<Option<u64>>,
@@ -209,26 +256,65 @@ struct World {
     failed: bool,
     next_value: u64,
     deaths: u64,
+    /// Whether the state began with the image's holes (M2.4e).
+    holes: bool,
 }
 
 impl World {
-    fn new(mutants: u128, bound_blocks: u64) -> Self {
+    /// A world whose state begins with the holes of an image of data
+    /// and holes (`holes`), or of an image of zeros with none. With
+    /// holes the first and last blocks of every chunk, and of the zeros
+    /// in a chunk of data, are read back, touched or not: a block of
+    /// data that read as a hole's zeros would read 0, not its data.
+    fn begun(mutants: u128, bound_blocks: u64, holes: bool) -> Self {
         let bound = bound_blocks * BLOCK_SIZE;
         let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
-        let state = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(mutants));
+        let (state, image) = if holes {
+            let state = CutState::begin_with(
+                region.clone(),
+                SIZE,
+                bound,
+                OWNER,
+                Mutants(mutants),
+                None,
+                Some(&hole_ranges()),
+            );
+            let image = (0..BLOCKS)
+                .map(|block| {
+                    if zero_at_begin(block) {
+                        0
+                    } else {
+                        DATA + block
+                    }
+                })
+                .collect();
+            (state, image)
+        } else {
+            let state = CutState::begin(region.clone(), SIZE, bound, OWNER, Mutants(mutants));
+            (state, vec![0; BLOCKS as usize])
+        };
         Self {
             region,
             state,
             disk: Disk {
-                image: vec![0; BLOCKS as usize],
+                image,
                 copies: BTreeMap::new(),
             },
             mutants: Mutants(mutants),
             bound,
             snaps: BTreeMap::new(),
             discarded: vec![false; BLOCKS as usize],
-            touched: vec![false; BLOCKS as usize],
+            touched: (0..BLOCKS)
+                .map(|block| {
+                    let edge = matches!(block % HOLE_BLOCKS, 0 | 15)
+                        || block + 1 == BLOCKS
+                        || block == PART_HOLE.0
+                        || block + 1 == PART_HOLE.0 + PART_HOLE.1;
+                    holes && edge
+                })
+                .collect(),
             changes: vec![BTreeSet::new(); BLOCKS as usize],
+            whole: BTreeSet::from([1]),
             uploaded: vec![None; BLOCKS as usize],
             rules: Rules::default(),
             flushing: VecDeque::new(),
@@ -236,6 +322,7 @@ impl World {
             failed: false,
             next_value: 1,
             deaths: 0,
+            holes,
         }
     }
 
@@ -289,7 +376,41 @@ impl World {
                 self.adopt();
             }
         }
+        self.check_holes()?;
         self.check_content()
+    }
+
+    /// The hole set holds while a cut may read by it, and is dropped
+    /// once none can: a held cut has `lo` 0, or none is held and the
+    /// next cut's `lo` is 0 (M2.4e). A world without holes has none.
+    fn check_holes(&self) -> Result<(), String> {
+        let held = self.state.held();
+        let needed = held.iter().any(|c| c.lo == 0)
+            || (held.is_empty() && self.state.load(at::OPEN_LO) == 0);
+        let want = match (self.holes, needed) {
+            (false, _) => Holes::None,
+            (true, true) => Holes::Held,
+            (true, false) => Holes::Dropped,
+        };
+        let figures = self.state.figures();
+        if figures.holes != want {
+            return Err(format!(
+                "the hole set is {:?}, and {want:?} with {held:?} held",
+                figures.holes
+            ));
+        }
+        let chunks = if self.holes {
+            HOLE_CHUNKS.len() as u64
+        } else {
+            0
+        };
+        if figures.hole_chunks != chunks {
+            return Err(format!(
+                "the hole set names {} chunks, not {chunks}",
+                figures.hole_chunks
+            ));
+        }
+        Ok(())
     }
 
     fn apply(&mut self, step: Step, value: u64) -> Result<(), String> {
@@ -376,6 +497,19 @@ impl World {
                 }
                 self.rules.release();
             }
+            Step::Mismatch => {
+                if self.failed {
+                    return Ok(());
+                }
+                let epoch = self.state.count() + 1;
+                let abandoned = self.state.abandon_all();
+                self.whole.insert(epoch);
+                self.rules.mismatch();
+                self.abandoned += abandoned.len() as u64;
+                // A flush under way still completes; its cut is not held,
+                // and the state passes it by.
+                self.flushing.clear();
+            }
         }
         Ok(())
     }
@@ -413,6 +547,7 @@ impl World {
             .ok_or_else(|| format!("cut {number} is not held"))?;
         Ok(match read {
             Read::Unchanged => self.uploaded[block as usize],
+            Read::Zero => Some(0),
             Read::Image => Some(self.disk.image[block as usize]),
             Read::Copy(slot) => Some(*self.disk.copies.get(&slot).ok_or_else(|| {
                 format!("cut {number}, block {block}: slot {slot} never written")
@@ -420,11 +555,57 @@ impl World {
         })
     }
 
-    /// Upload cut `number` onto the image.
+    /// Upload cut `number` onto the image, as the uploader reads it: in
+    /// slices of a few blocks ([`CutState::slice_from`]), each block
+    /// read and each run of zeros written as zeros. The slices hold the
+    /// cut's map, every block once and in order; a block named for a
+    /// read does not read as a hole's zeros, and every block of a run
+    /// does.
     fn upload(&mut self, number: u64) -> Result<(), String> {
-        for block in self.state.map(number) {
-            let read = self.read(number, block)?;
-            self.uploaded[block as usize] = read;
+        let mut covered = Vec::new();
+        let mut from = 0;
+        loop {
+            let slice = self
+                .state
+                .slice_from(number, from, 7)
+                .ok_or_else(|| format!("cut {number} is not held"))?;
+            let mut pieces: Vec<(u64, u64, bool)> = slice
+                .blocks
+                .iter()
+                .map(|&block| (block, 1, false))
+                .collect();
+            pieces.extend(slice.zeroes.iter().map(|&(first, n)| (first, n, true)));
+            pieces.sort_unstable();
+            for (first, n, zeros) in pieces {
+                if n == 0 {
+                    return Err(format!("cut {number}: an empty run at {first}"));
+                }
+                for block in first..first + n {
+                    let read = self.state.read(number, block);
+                    if zeros != (read == Some(Read::Zero)) {
+                        return Err(format!(
+                            "cut {number}, block {block}: in a run of zeros {zeros}, reads {read:?}"
+                        ));
+                    }
+                    self.uploaded[block as usize] = self.read(number, block)?;
+                    covered.push(block);
+                }
+            }
+            match slice.next {
+                Some(next) if next <= from => {
+                    return Err(format!(
+                        "cut {number}: the slice from {from} goes on from {next}"
+                    ));
+                }
+                Some(next) => from = next,
+                None => break,
+            }
+        }
+        let map = self.state.map(number);
+        if covered != map {
+            return Err(format!(
+                "cut {number}: its slices hold {covered:?}, and its map is {map:?}"
+            ));
         }
         Ok(())
     }
@@ -463,7 +644,8 @@ impl World {
                     .iter()
                     .any(|c| c.number > cut.number && c.lo <= cut.lo);
             let let_go = cut.phase == Phase::Uploading
-                || (cut.phase == Phase::Flushing && step == Step::Cut);
+                || (cut.phase == Phase::Flushing && step == Step::Cut)
+                || step == Step::Mismatch;
             let at_bound = matches!(step, Step::Write(..) | Step::Zero(..))
                 && before[..i]
                     .iter()
@@ -475,8 +657,9 @@ impl World {
                 ));
             }
         }
-        // The cuts abandoned: in a change, the oldest cuts held before
-        // it that are lost, each once; in any other step, none. This
+        // The cuts abandoned: in a change or a mismatch, the oldest cuts
+        // held before it that are lost, each once; in any other step,
+        // none. This
         // world's copier never refuses, so a change abandons only at the
         // bound, oldest first. A refused copy lets go the newest cuts
         // instead, which this check would have to know if the world
@@ -486,7 +669,7 @@ impl World {
             .iter()
             .take_while(|cut| !after.iter().any(|c| c.number == cut.number))
             .count() as u64;
-        let abandoned = if matches!(step, Step::Write(..) | Step::Zero(..)) {
+        let abandoned = if matches!(step, Step::Write(..) | Step::Zero(..) | Step::Mismatch) {
             lost_oldest
         } else {
             0
@@ -559,7 +742,7 @@ impl World {
     /// The blocks written or zeroed in the epochs `(lo, number]`, or
     /// every block if the whole volume counts as changed in them.
     fn model_map(&self, lo: u64, number: u64) -> Vec<u64> {
-        if lo < 1 && number >= 1 {
+        if self.whole.range(lo + 1..=number).next().is_some() {
             return (0..BLOCKS).collect();
         }
         (0..BLOCKS)
@@ -666,6 +849,26 @@ fn program(seed: u64, len: usize) -> Vec<Step> {
         .collect()
 }
 
+/// A program of `len` steps from `seed` as [`program`] makes it, with
+/// about one step in twelve a mismatch in its place (the review of
+/// #125, G1): every held cut let go while the hole set may hold.
+fn program_with_mismatches(seed: u64, len: usize) -> Vec<Step> {
+    let mut x = seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1;
+    program(seed, len)
+        .into_iter()
+        .map(|step| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if x.is_multiple_of(12) {
+                Step::Mismatch
+            } else {
+                step
+            }
+        })
+        .collect()
+}
+
 /// Run `steps` with a death at store `death` (counted from the
 /// program's first step), if one is given.
 fn run(
@@ -674,7 +877,18 @@ fn run(
     bound_blocks: u64,
     death: Option<u64>,
 ) -> Result<World, String> {
-    let mut world = World::new(mutants, bound_blocks);
+    run_in(false, steps, mutants, bound_blocks, death)
+}
+
+/// The same in a world with holes, or not.
+fn run_in(
+    holes: bool,
+    steps: &[Step],
+    mutants: u128,
+    bound_blocks: u64,
+    death: Option<u64>,
+) -> Result<World, String> {
+    let mut world = World::begun(mutants, bound_blocks, holes);
     let base = world.region.stores();
     if let Some(death) = death {
         world.region.die_at(death);
@@ -690,10 +904,15 @@ fn run(
 
 /// The stores a run of `steps` makes with no death.
 fn stores_of(steps: &[Step], mutants: u128, bound_blocks: u64) -> u64 {
-    let world = World::new(mutants, bound_blocks);
+    stores_in(false, steps, mutants, bound_blocks)
+}
+
+/// The same in a world with holes, or not.
+fn stores_in(holes: bool, steps: &[Step], mutants: u128, bound_blocks: u64) -> u64 {
+    let world = World::begun(mutants, bound_blocks, holes);
     let base = world.region.stores();
     drop(world);
-    match run(steps, mutants, bound_blocks, None) {
+    match run_in(holes, steps, mutants, bound_blocks, None) {
         Ok(world) => world.region.stores() - base,
         Err(_) => 0,
     }
@@ -724,11 +943,13 @@ fn caught(mutants: u128, seeds: u64, bound_blocks: u64, deaths: bool) -> Option<
 /// the held cuts are those the rules hold.
 #[test]
 fn every_held_cut_reads_as_the_volume_at_its_instant() {
-    for bound in [2, 64] {
-        for seed in 0..300 {
-            let steps = program(seed, 80);
-            if let Err(e) = run(&steps, 0, bound, None) {
-                panic!("bound {bound}, seed {seed}: {e}");
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in 0..300 {
+                let steps = program(seed, 80);
+                if let Err(e) = run_in(holes, &steps, 0, bound, None) {
+                    panic!("holes {holes}, bound {bound}, seed {seed}: {e}");
+                }
             }
         }
     }
@@ -736,17 +957,22 @@ fn every_held_cut_reads_as_the_volume_at_its_instant() {
 
 /// Programs of `seeds` seeds with the daemon lost at every store of the
 /// region, each in a run of its own: the next instance takes up the
-/// state, and does again the step the death interrupted. The runs.
+/// state, and does again the step the death interrupted. With and
+/// without the image's holes (M2.4e). The runs.
 fn deaths_at_every_store(seeds: std::ops::Range<u64>) -> u64 {
     let mut runs = 0;
-    for bound in [2, 64] {
-        for seed in seeds.clone() {
-            let steps = program(seed, 50);
-            let stores = stores_of(&steps, 0, bound);
-            for death in 0..stores {
-                runs += 1;
-                if let Err(e) = run(&steps, 0, bound, Some(death)) {
-                    panic!("bound {bound}, seed {seed}, death at store {death}: {e}");
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in seeds.clone() {
+                let steps = program(seed, 50);
+                let stores = stores_in(holes, &steps, 0, bound);
+                for death in 0..stores {
+                    runs += 1;
+                    if let Err(e) = run_in(holes, &steps, 0, bound, Some(death)) {
+                        panic!(
+                            "holes {holes}, bound {bound}, seed {seed}, death at store {death}: {e}"
+                        );
+                    }
                 }
             }
         }
@@ -1168,19 +1394,23 @@ fn a_new_states_first_cut_holds_the_whole_volume() {
 }
 
 /// The locked region for a TiB at 4 KiB blocks with the default bound:
-/// 130 MiB of maps and their summaries, 16 MiB of records, and a header.
+/// 130 MiB of maps and their summaries, 16 MiB of records, 2 MiB of the
+/// hole set (a bit for 64 KiB, M2.4e), and a header. A state of version
+/// 2 has no hole set.
 #[test]
-fn the_state_of_a_tebibyte_takes_146_mib() {
+fn the_state_of_a_tebibyte_takes_148_mib() {
     const MIB: u64 = 1 << 20;
     let size = 1u64 << 40;
     let blocks = size / BLOCK_SIZE;
     let bound = default_bound(size);
     assert_eq!(bound, 4 << 30);
-    let maps = words_for(blocks, 0) as u64 * 8;
+    let maps = words_of(2, blocks, 0) as u64 * 8;
+    let old = words_of(2, blocks, records_for(bound)) as u64 * 8;
     let all = words_for(blocks, records_for(bound)) as u64 * 8;
     assert_eq!(maps / MIB, 130, "maps: {maps} bytes");
-    assert_eq!((all - maps) / MIB, 16, "records: {} bytes", all - maps);
-    assert!(all - 146 * MIB < 4096, "header: {} bytes", all - 146 * MIB);
+    assert_eq!((old - maps) / MIB, 16, "records: {} bytes", old - maps);
+    assert_eq!(all - old, 2 * MIB + 16, "the hole set: {} bytes", all - old);
+    assert!(all - 148 * MIB < 4096, "header: {} bytes", all - 148 * MIB);
 }
 
 /// A copy record's epochs are stored before its block. A free slot
@@ -2327,4 +2557,856 @@ fn a_death_in_a_release_leaves_the_cut_being_uploaded_or_gone() {
         );
     }
     assert!(deaths > 0);
+}
+
+// ---- the image's holes (M2.4e) ----
+
+/// A world with holes that holds cut 1, the whole volume, flushed: the
+/// one being uploaded.
+fn whole_cut_held(bound_blocks: u64) -> World {
+    run_in(true, &[Step::Cut, Step::Flushed], 0, bound_blocks, None).expect("runs")
+}
+
+/// A write into a hole under a held cut that holds the whole volume
+/// makes no copy, and the cut reads zeros there; a write into a chunk
+/// of data copies, as before M2.4e, and so does a write into a hole
+/// where the state has no hole set.
+#[test]
+fn a_write_into_a_hole_under_a_held_whole_cut_makes_no_copy() {
+    let mut world = whole_cut_held(64);
+    assert_eq!(world.state.figures().holes, Holes::Held);
+    world.step(Step::Write(0, 2)).expect("written");
+    world.step(Step::Write(33, 1)).expect("written");
+    assert_eq!(world.state.figures().copied, 0, "copies for holes");
+    for block in [0, 1, 33] {
+        assert_eq!(
+            world.state.read(1, block),
+            Some(Read::Zero),
+            "block {block}"
+        );
+    }
+    world.step(Step::Write(64, 1)).expect("written");
+    assert_eq!(world.state.figures().copied, BLOCK_SIZE, "a copy for data");
+    assert!(matches!(world.state.read(1, 64), Some(Read::Copy(_))));
+    // Zeros that the set does not name, in a chunk of data, are copied.
+    world.step(Step::Write(PART_HOLE.0, 1)).expect("written");
+    assert_eq!(world.state.figures().copied, 2 * BLOCK_SIZE);
+
+    let mut world = run_in(false, &[Step::Cut, Step::Flushed], 0, 64, None).expect("runs");
+    assert_eq!(world.state.figures().holes, Holes::None);
+    world.step(Step::Write(0, 1)).expect("written");
+    assert_eq!(world.state.figures().copied, BLOCK_SIZE, "no set, a copy");
+}
+
+/// A write into a hole before the cut's instant is in the cut's map
+/// and reads as written; the rest of its chunk, which nothing wrote,
+/// reads as zeros. The cut that follows reads the block from the image
+/// it is uploaded onto.
+#[test]
+fn a_write_into_a_hole_before_the_instant_reads_as_written() {
+    let steps = [Step::Write(1, 1), Step::Cut, Step::Flushed];
+    let world = run_in(true, &steps, 0, 64, None).expect("runs");
+    assert_eq!(world.state.read(1, 1), Some(Read::Image));
+    assert_eq!(world.disk.image[1], 1, "the write's content");
+    for block in [0, 2, 15] {
+        assert_eq!(
+            world.state.read(1, block),
+            Some(Read::Zero),
+            "block {block}"
+        );
+    }
+    assert_eq!(world.state.read(1, 16), Some(Read::Image), "data");
+}
+
+/// Once the set is dropped no cut reads by it, also a cut made whole
+/// again later: after a mismatch lets every held cut go, the next cut
+/// counts the whole volume as changed with a `lo` that is not 0, and a
+/// block of a hole that was written and uploaded before the drop reads
+/// from the image, though the dropped set still names its chunk. Each
+/// of the two conditions that keep it so (the set holds, the cut's `lo`
+/// is 0) covers the other: planted together they are caught here.
+#[test]
+fn a_cut_made_whole_after_the_drop_reads_the_holes_written_before_it() {
+    let steps = [
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Release,
+        Step::Write(16, 1),
+        Step::Cut,
+        Step::Flushed,
+    ];
+    let mut world = run_in(true, &steps, 0, 64, None).expect("runs");
+    assert_eq!(world.state.figures().holes, Holes::Dropped);
+    assert_ne!(world.disk.image[1], 0, "block 1 was written");
+    assert_eq!(world.state.abandon_all(), [2]);
+    let number = world.state.freeze(&marked(3), true);
+    world.state.flushed(number);
+    assert!(world.state.is_whole_cut(number));
+    assert_eq!(world.state.held().first().map(|c| c.lo), Some(1));
+    assert_eq!(world.state.read(number, 1), Some(Read::Image));
+    assert_eq!(world.state.read(number, 2), Some(Read::Image));
+    let slice = world.state.slice_from(number, 0, 64).expect("held");
+    assert!(slice.zeroes.is_empty(), "{slice:?}");
+    assert_eq!(slice.blocks, (0..64).collect::<Vec<u64>>());
+}
+
+/// A mismatch while the hole set holds (the review of #125, G1): every
+/// held cut is let go, and their maps go to the open map with the
+/// lowest `lo`, 0, so the set stays held and the next cut, whole and
+/// with `lo` 0, reads by it. Its map still holds every block written
+/// since the state began: block 1, written into a hole before the
+/// mismatch, reads as written, and the rest of its chunk as zeros; so
+/// do blocks 33 and 49, written into holes under the cuts let go. A
+/// write into a hole after the mismatch makes no copy for the new cut.
+/// The defects this catches: the open map cleared before the open epoch
+/// is marked whole (the new cut would read block 1 as a hole's zeros),
+/// and the set dropped at the mismatch (the write after it would be
+/// copied).
+#[test]
+fn a_mismatch_while_the_holes_are_held_keeps_them_and_the_writes_before_it() {
+    // Chunks 0, 2 and 3 (blocks 0 to 15 and 32 to 63) are holes, and
+    // chunk 1 (16 to 31) is data.
+    let steps = [
+        Step::Write(1, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Write(33, 1),
+        Step::Cut,
+        Step::Write(49, 1),
+        Step::Mismatch,
+        Step::Write(50, 1),
+        Step::Cut,
+        Step::Flushed,
+    ];
+    let mut world = run_in(true, &steps, 0, 64, None).expect("runs");
+    assert_eq!(world.state.figures().abandoned, 2);
+    assert_eq!(world.state.figures().holes, Holes::Held);
+    let held = world.state.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let (number, lo) = (held[0].number, held[0].lo);
+    assert_eq!((number, lo), (3, 0));
+    assert!(world.state.is_whole_cut(number));
+    for block in [1, 16, 31, 33, 49, 50] {
+        assert_eq!(
+            world.state.read(number, block),
+            Some(Read::Image),
+            "block {block}, written or data"
+        );
+    }
+    for block in [0, 2, 15, 32, 34, 47, 48, 51, 63] {
+        assert_eq!(
+            world.state.read(number, block),
+            Some(Read::Zero),
+            "block {block}, a hole's"
+        );
+    }
+    assert_eq!(world.state.figures().copied, 0);
+    world.step(Step::Write(40, 1)).expect("written");
+    assert_eq!(
+        world.state.figures().copied,
+        0,
+        "a write into a hole after it"
+    );
+    assert_eq!(world.state.read(number, 40), Some(Read::Zero));
+    world.step(Step::Release).expect("released");
+    assert_eq!(world.state.figures().holes, Holes::Dropped);
+}
+
+/// Over random programs with mismatches, with and without the image's
+/// holes, the bound at 2 blocks and at 64, every held cut reads as the
+/// volume at its instant and the hole set holds exactly while a cut may
+/// read by it (the review of #125, G1).
+#[test]
+fn every_held_cut_reads_as_the_volume_at_its_instant_through_mismatches() {
+    let mut mismatches = 0;
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in 0..200 {
+                let steps = program_with_mismatches(seed, 80);
+                mismatches += steps.iter().filter(|s| **s == Step::Mismatch).count();
+                if let Err(e) = run_in(holes, &steps, 0, bound, None) {
+                    panic!("holes {holes}, bound {bound}, seed {seed}: {e}");
+                }
+            }
+        }
+    }
+    assert!(mismatches > 1000, "{mismatches} mismatches");
+}
+
+/// The same with the daemon lost at every store of the region, a
+/// mismatch's stores included: four programs for each bound.
+#[test]
+fn a_death_at_any_store_through_mismatches_leaves_every_held_cut_whole() {
+    let mut runs = 0;
+    for holes in [false, true] {
+        for bound in [2, 64] {
+            for seed in 0..4 {
+                let steps = program_with_mismatches(seed, 50);
+                assert!(steps.contains(&Step::Mismatch), "seed {seed}");
+                let stores = stores_in(holes, &steps, 0, bound);
+                for death in 0..stores {
+                    runs += 1;
+                    if let Err(e) = run_in(holes, &steps, 0, bound, Some(death)) {
+                        panic!(
+                            "holes {holes}, bound {bound}, seed {seed}, death at store {death}: {e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(runs > 500, "{runs} runs");
+}
+
+/// A copier for changes made while no cut is held: none needs a copy.
+struct NoCopies;
+
+impl Copier for NoCopies {
+    fn read_image(&mut self, _: u64, _: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::other("no copy is needed while no cut is held"))
+    }
+
+    fn write_copies(&mut self, _: u32, _: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("no copy is needed while no cut is held"))
+    }
+}
+
+/// The slices of the first cut over a large hole that blocks were
+/// written into read the hole set once over, and not once for each gap
+/// between those blocks (Codex on #125): a run of zeros ends at the next
+/// block of the cut's map, and the look into the hole set for the run's
+/// end stops there too. Before, each run's end was looked for to the
+/// end of the hole, twice, which over a sparse 1 TiB volume made the
+/// first upload's slicing cost the gaps times the volume, on the
+/// store's queue thread.
+#[test]
+fn the_slices_of_a_large_hole_read_the_hole_set_once_over() {
+    // 4 GiB: a hole set of 1024 words, an open map of 16384.
+    const LARGE: u64 = 1 << 20;
+    const APART: u64 = 512;
+    let bound = 64 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(LARGE, records_for(bound)));
+    let mut state = CutState::begin_with(
+        region.clone(),
+        LARGE * BLOCK_SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&[(0, LARGE)]),
+    );
+    for block in (APART / 2..LARGE).step_by(APART as usize) {
+        state.change(block, 1, &mut NoCopies).expect("the change");
+    }
+    let number = state.freeze(&marked(1), true);
+    state.flushed(number);
+    let before = region.loads();
+    let (mut from, mut zeroes, mut blocks, mut slices) = (Some(0), 0, 0, 0);
+    while let Some(at) = from {
+        let slice = state.slice_from(number, at, usize::MAX).expect("held");
+        zeroes += slice.zeroes.iter().map(|&(_, count)| count).sum::<u64>();
+        blocks += slice.blocks.len() as u64;
+        slices += 1;
+        from = slice.next;
+    }
+    let loads = region.loads() - before;
+    assert_eq!(blocks, LARGE / APART);
+    assert_eq!(zeroes + blocks, LARGE);
+    assert!(slices > 1, "the runs fill more than one slice");
+    // One pass over the open map's words and the hole set's, with room
+    // for the few loads each block of the map takes.
+    let once = LARGE / 64 + hole_words(LARGE) as u64;
+    assert!(loads <= 4 * once, "{loads} loads for {once} words");
+}
+
+/// The slices of the first cut over a sparse volume, a chunk of data in
+/// every MiB and nothing written before the cut, read the open map's
+/// summary and the hole set once over, in slices of 64 blocks as the
+/// uploader takes them (F4 of the review of #125, Codex's P2 at
+/// `af7b524`). Before, each slice looked for the next block of the map
+/// from its first run to the volume's end: over 64 GiB, 37.6 million
+/// loads, and about two minutes at a TiB, on the store's queue thread.
+/// Counts of loads rather than times, so that the bounds hold on any
+/// machine: one in proportion to a pass, and one on how the cost grows
+/// with the volume.
+#[test]
+fn the_slices_of_a_sparse_volume_read_the_map_and_hole_set_once_over() {
+    // 64 GiB: a summary of 4096 words, a hole set of 16384.
+    const LARGE: u64 = 1 << 24;
+    let (loads, once) = sparse_slicing(LARGE);
+    assert!(loads <= 8 * once, "{loads} loads for {once}");
+    // A quarter of the volume costs about a quarter: the code at
+    // `af7b524` made 3.1 million loads at 16 GiB, a twelfth.
+    let (quarter, _) = sparse_slicing(LARGE / 4);
+    assert!(
+        loads <= 5 * quarter,
+        "{loads} loads at 64 GiB, {quarter} at 16 GiB"
+    );
+}
+
+/// [`Maps::first_in`] gives the first block of the maps in a range, or
+/// none, over ranges that span several words of a map's summary. The
+/// state calls it on one stretch of [`RUN_LOOK`] blocks, which a single
+/// word of the summary covers, so no other test reaches past the first
+/// word (F4g, a plant for F4 of the review of #125).
+#[test]
+fn the_first_block_in_a_range_is_found_over_several_words_of_the_summary() {
+    const BLOCKS: u64 = 5 * RUN_LOOK + 100;
+    let mut region = MemRegion::new(Maps::words(BLOCKS));
+    let maps = Maps::new(0, BLOCKS, Mutants(0));
+    let in_first = [5, RUN_LOOK + 70, 3 * RUN_LOOK + 1];
+    let in_second = [2 * RUN_LOOK + 9, BLOCKS - 1];
+    for block in in_first {
+        maps.insert(&mut region, 0, block);
+    }
+    for block in in_second {
+        maps.insert(&mut region, 1, block);
+    }
+    let first: BTreeSet<u64> = in_first.into_iter().collect();
+    let both: BTreeSet<u64> = in_first.into_iter().chain(in_second).collect();
+    let froms = [
+        0,
+        5,
+        6,
+        RUN_LOOK,
+        RUN_LOOK + 71,
+        2 * RUN_LOOK + 9,
+        2 * RUN_LOOK + 10,
+        3 * RUN_LOOK + 2,
+        BLOCKS - 1,
+        BLOCKS,
+    ];
+    for from in froms {
+        for length in [0, 1, 64, RUN_LOOK, 3 * RUN_LOOK, BLOCKS, BLOCKS + 10] {
+            let until = from + length;
+            let end = until.min(BLOCKS).max(from);
+            for (named, set) in [(&[0][..], &first), (&[0, 1][..], &both)] {
+                assert_eq!(
+                    maps.first_in(&region, named, from, until),
+                    set.range(from..end).next().copied(),
+                    "maps {named:?}, {from}..{until}"
+                );
+            }
+        }
+    }
+}
+
+/// A run of zeros is not cut where a look for its end stops, every
+/// [`RUN_LOOK`] blocks, and it ends at the next block of the cut's map
+/// however many stretches away that lies: at the first block of one,
+/// at its last, or with none to the volume's end (F4 of the review of
+/// #125).
+#[test]
+fn a_run_of_zeros_goes_on_over_the_looks_to_the_next_block_of_the_map() {
+    const BLOCKS: u64 = 4 * RUN_LOOK;
+    let bound = 64 * BLOCK_SIZE;
+    let written = [
+        None,
+        Some(RUN_LOOK - 1),
+        Some(RUN_LOOK + 5),
+        Some(2 * RUN_LOOK),
+        Some(BLOCKS - 1),
+    ];
+    for written in written {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+        let mut state = CutState::begin_with(
+            region,
+            BLOCKS * BLOCK_SIZE,
+            bound,
+            OWNER,
+            Mutants(0),
+            None,
+            Some(&[(0, BLOCKS)]),
+        );
+        if let Some(block) = written {
+            state.change(block, 1, &mut NoCopies).expect("the change");
+        }
+        let number = state.freeze(&marked(1), true);
+        state.flushed(number);
+        let slice = state.slice_from(number, 7, 64).expect("held");
+        let (zeroes, blocks) = match written {
+            None => (vec![(7, BLOCKS - 7)], vec![]),
+            Some(block) if block + 1 == BLOCKS => (vec![(7, block - 7)], vec![block]),
+            Some(block) => (
+                vec![(7, block - 7), (block + 1, BLOCKS - block - 1)],
+                vec![block],
+            ),
+        };
+        assert_eq!(slice.zeroes, zeroes, "written {written:?}");
+        assert_eq!(slice.blocks, blocks, "written {written:?}");
+        assert_eq!(slice.next, None, "written {written:?}");
+    }
+}
+
+/// The loads that the slices of the first cut over a volume of `large`
+/// blocks take, a chunk of data in every MiB, in slices of 64 blocks;
+/// and what they would be at a few loads for each block read and each
+/// run, and one pass over the open map's summary and the hole set.
+fn sparse_slicing(large: u64) -> (u64, u64) {
+    const MIB: u64 = (1 << 20) / BLOCK_SIZE;
+    const SLICE: usize = 64;
+    let bound = 64 * BLOCK_SIZE;
+    let holes: Vec<(u64, u64)> = (0..large / MIB)
+        .map(|mib| (mib * MIB + HOLE_BLOCKS, MIB - HOLE_BLOCKS))
+        .collect();
+    let region = MemRegion::new(words_for(large, records_for(bound)));
+    let mut state = CutState::begin_with(
+        region.clone(),
+        large * BLOCK_SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&holes),
+    );
+    let number = state.freeze(&marked(1), true);
+    state.flushed(number);
+    let before = region.loads();
+    let (mut from, mut zeroes, mut runs, mut blocks) = (Some(0), 0, 0, 0);
+    while let Some(at) = from {
+        let slice = state.slice_from(number, at, SLICE).expect("held");
+        assert!(slice.blocks.len() <= SLICE);
+        zeroes += slice.zeroes.iter().map(|&(_, count)| count).sum::<u64>();
+        runs += slice.zeroes.len() as u64;
+        blocks += slice.blocks.len() as u64;
+        from = slice.next;
+    }
+    let loads = region.loads() - before;
+    assert_eq!(blocks, large / MIB * HOLE_BLOCKS);
+    assert_eq!(runs, large / MIB);
+    assert_eq!(zeroes + blocks, large);
+    let once = blocks + runs + large / 64 / 64 + hole_words(large) as u64;
+    (loads, once)
+}
+
+/// The bit that says a block of a hole was written is the block's bit
+/// in the open map, stored before the write is begun, so a death
+/// between the bit and the write, or between the write and its answer,
+/// leaves a state in which the next cut reads the block from the image:
+/// as written where the write landed, or as zeros where it did not,
+/// and either is right for a write not acknowledged. Without the bit
+/// the cut would read zeros over the data the write left.
+#[test]
+fn a_death_between_a_holes_bit_and_its_write_reads_the_image() {
+    for landed in [false, true] {
+        let mut world = run_in(true, &[], 0, 64, None).expect("runs");
+        world
+            .state
+            .change(5, 1, &mut world.disk)
+            .expect("the change");
+        // The daemon dies before or after the write lands, and before
+        // the write is answered.
+        if landed {
+            world.disk.image[5] = 77;
+        }
+        let mut state = CutState::restore(
+            world.region.clone(),
+            SIZE,
+            64 * BLOCK_SIZE,
+            OWNER,
+            Mutants(0),
+        )
+        .map_err(|(e, _)| e)
+        .expect("taken up");
+        let number = state.freeze(&marked(1), true);
+        state.flushed(number);
+        assert_eq!(state.read(number, 5), Some(Read::Image), "landed {landed}");
+        assert_eq!(state.read(number, 4), Some(Read::Zero), "landed {landed}");
+        let slice = state.slice_from(number, 0, 64).expect("held");
+        assert_eq!(slice.zeroes.first(), Some(&(0, 5)), "landed {landed}");
+        assert_eq!(slice.blocks.first(), Some(&5), "landed {landed}");
+    }
+}
+
+/// A cut that holds the whole volume from the state's beginning reads
+/// its holes as runs of zeros and the rest as blocks, in slices: the
+/// runs end at a chunk of data or at a block of the cut's map, and a
+/// block written after the instant is in a run.
+#[test]
+fn a_whole_cut_slices_its_holes_as_runs_of_zeros() {
+    let steps = [
+        Step::Write(1, 1),
+        Step::Write(64, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Write(33, 1),
+    ];
+    let world = run_in(true, &steps, 0, 64, None).expect("runs");
+    let slice = world.state.slice_from(1, 0, 1000).expect("held");
+    let blocks: Vec<u64> = std::iter::once(1)
+        .chain(16..32)
+        .chain(64..80)
+        .chain(96..112)
+        .chain(160..192)
+        .collect();
+    assert_eq!(slice.blocks, blocks);
+    assert_eq!(
+        slice.zeroes,
+        vec![(0, 1), (2, 14), (32, 32), (80, 16), (112, 48), (192, 8)]
+    );
+    assert_eq!(slice.next, None);
+    // From inside a run, and with a limit that ends inside the data.
+    let slice = world.state.slice_from(1, 40, 3).expect("held");
+    assert_eq!(slice.zeroes, vec![(40, 24)]);
+    assert_eq!(slice.blocks, vec![64, 65, 66]);
+    assert_eq!(slice.next, Some(67));
+    // The cut after it, made against it, has no runs.
+    let mut world = world;
+    world.step(Step::Release).expect("released");
+    world.step(Step::Cut).expect("cut");
+    let slice = world.state.slice_from(2, 0, 1000).expect("held");
+    assert_eq!((slice.blocks, slice.zeroes), (vec![33], vec![]));
+}
+
+/// A slice names at most [`SLICE_ZERO_RUNS`] runs: a volume of
+/// alternating chunks of holes and data, 300 of each, is read in two
+/// slices of runs.
+#[test]
+fn a_slice_names_at_most_its_runs_of_zeros() {
+    const CHUNKS: u64 = 600;
+    let blocks = CHUNKS * HOLE_BLOCKS;
+    let size = blocks * BLOCK_SIZE;
+    let bound = 64 * BLOCK_SIZE;
+    let holes: Vec<(u64, u64)> = (0..CHUNKS)
+        .step_by(2)
+        .map(|chunk| (chunk * HOLE_BLOCKS, HOLE_BLOCKS))
+        .collect();
+    let region = MemRegion::new(words_for(blocks, records_for(bound)));
+    let mut state =
+        CutState::begin_with(region, size, bound, OWNER, Mutants(0), None, Some(&holes));
+    assert_eq!(state.figures().hole_chunks, CHUNKS / 2);
+    let number = state.freeze(&marked(1), true);
+    let first = state.slice_from(number, 0, usize::MAX).expect("held");
+    assert_eq!(first.zeroes.len(), SLICE_ZERO_RUNS);
+    assert_eq!(
+        first.blocks.len() as u64,
+        (SLICE_ZERO_RUNS as u64 - 1) * HOLE_BLOCKS
+    );
+    let next = first.next.expect("more");
+    assert_eq!(next, (2 * SLICE_ZERO_RUNS as u64 - 1) * HOLE_BLOCKS);
+    let second = state.slice_from(number, next, usize::MAX).expect("held");
+    assert_eq!(
+        second.zeroes.len() as u64,
+        CHUNKS / 2 - SLICE_ZERO_RUNS as u64
+    );
+    assert_eq!(second.next, None);
+}
+
+/// The hole set holds while a cut with `lo` 0 is held, is still held
+/// when such a cut is abandoned at the bound and its map goes to the
+/// cut that waits, and is dropped once the first cut is uploaded; the
+/// cut after it reads by its own map. A death at any store of these
+/// steps leaves the same (the world checks the set after every step).
+#[test]
+fn the_hole_set_holds_until_the_first_whole_cut_is_uploaded() {
+    // A bound of one block: block 16's copy is cut 1's, and block 17's
+    // abandons cut 1, whose map and `lo` 0 go to cut 2.
+    let abandoning = [
+        Step::Cut,
+        Step::Flushed,
+        Step::Write(16, 1),
+        Step::Cut,
+        Step::Flushed,
+        Step::Write(17, 1),
+    ];
+    let world = run_in(true, &abandoning, 0, 1, None).expect("runs");
+    assert_eq!(world.abandoned, 1, "the bound let no cut go");
+    assert_eq!(
+        world
+            .state
+            .held()
+            .first()
+            .map(|c| (c.number, c.lo, c.phase)),
+        Some((2, 0, Phase::Uploading))
+    );
+    assert_eq!(world.state.figures().holes, Holes::Held);
+    assert_eq!(world.state.read(2, 0), Some(Read::Zero));
+    let mut steps = abandoning.to_vec();
+    steps.extend([Step::Release, Step::Write(0, 1), Step::Cut, Step::Flushed]);
+    let world = run_in(true, &steps, 0, 1, None).expect("runs");
+    assert_eq!(world.state.figures().holes, Holes::Dropped);
+    assert_eq!(world.state.figures().hole_chunks, HOLE_CHUNKS.len() as u64);
+    assert_eq!(
+        world.state.held().first().map(|c| (c.number, c.lo)),
+        Some((3, 2))
+    );
+    assert_eq!(world.state.read(3, 1), Some(Read::Unchanged));
+    let stores = stores_in(true, &steps, 0, 1);
+    for death in 0..stores {
+        if let Err(e) = run_in(true, &steps, 0, 1, Some(death)) {
+            panic!("death at store {death}: {e}");
+        }
+    }
+}
+
+/// A death at any store of a begin with holes leaves no state, or one
+/// whose hole set is whole: the set is stored before the magic.
+#[test]
+fn a_daemon_lost_inside_a_begin_with_holes_leaves_the_set_whole_or_no_state() {
+    quiet_deaths();
+    let bound = 2 * BLOCK_SIZE;
+    let mut deaths = 0;
+    for death in 0u64.. {
+        let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+        region.die_at(death);
+        let done = catch_unwind(AssertUnwindSafe(|| {
+            drop(CutState::begin_with(
+                region.clone(),
+                SIZE,
+                bound,
+                OWNER,
+                Mutants(0),
+                None,
+                Some(&hole_ranges()),
+            ));
+        }));
+        region.revive();
+        match done {
+            Ok(()) => break,
+            Err(payload) => {
+                if payload.downcast_ref::<Lost>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        deaths += 1;
+        if let Ok(mut state) = CutState::restore(region.clone(), SIZE, bound, OWNER, Mutants(0)) {
+            let figures = state.figures();
+            assert_eq!(
+                (figures.holes, figures.hole_chunks),
+                (Holes::Held, HOLE_CHUNKS.len() as u64),
+                "a death at store {death}"
+            );
+            let number = state.freeze(&marked(1), true);
+            let zeros = (0..BLOCKS)
+                .filter(|&b| state.read(number, b) == Some(Read::Zero))
+                .count() as u64;
+            assert_eq!(zeros, 7 * HOLE_BLOCKS + 8, "a death at store {death}");
+        }
+    }
+    assert!(deaths > 0);
+}
+
+/// Only whole chunks are holes: a range that covers a chunk in part
+/// names none of it, ranges past the volume are cut at its end, and the
+/// last chunk, shorter than the others, is a hole where all of it is.
+#[test]
+fn a_chunk_is_a_hole_only_where_all_of_it_is() {
+    let bits = hole_bits(BLOCKS, &[(1, 40), (64, 15), (192, 100), (500, 3)]);
+    let chunks: Vec<u64> = (0..hole_chunks(BLOCKS))
+        .filter(|&c| (bits[(c / 64) as usize] >> (c % 64)) & 1 == 1)
+        .collect();
+    assert_eq!(chunks, vec![1, 12]);
+    assert_eq!(hole_words(BLOCKS), 1);
+}
+
+/// A region of version 2, as the code of version 2 wrote it
+/// (`state/region-v2.txt`), is read as it was written: the same held
+/// cuts, the same reads of every block and the same figures, with no
+/// hole set; and it goes on as a state of version 2.
+#[test]
+fn a_region_of_version_2_is_read_as_it_was_written() {
+    let text = include_str!("region-v2.txt");
+    let mut region = None;
+    let mut cuts = Vec::new();
+    let mut reads = BTreeMap::new();
+    let (mut figures, mut count) = (None, None);
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let f: Vec<&str> = line.split(' ').collect();
+        let n = |i: usize| f[i].parse::<u64>().expect("a number");
+        match f[0] {
+            "len" => region = Some(MemRegion::new(n(1) as usize)),
+            "w" => {
+                let value = u64::from_str_radix(f[2], 16).expect("hex");
+                region
+                    .as_mut()
+                    .expect("len first")
+                    .store(n(1) as usize, value);
+            }
+            "cut" => cuts.push((n(1), n(2), f[3].to_owned(), f[4] == "true")),
+            "r" => {
+                let read = match f[3] {
+                    "i" => Read::Image,
+                    copy => Read::Copy(copy[1..].parse().expect("a slot")),
+                };
+                reads.insert((n(1), n(2)), read);
+            }
+            "figures" => figures = Some((n(1), n(2), n(3), n(4))),
+            "count" => count = Some(n(1)),
+            other => panic!("a line {other}"),
+        }
+    }
+    let region = region.expect("a region");
+    let bound = 64 * BLOCK_SIZE;
+    assert_eq!(region.words(), words_of(2, BLOCKS, records_for(bound)));
+    assert_eq!(region.load(at::VERSION), 2);
+    // Read as it is, with nothing finished: as the code of version 2
+    // left it.
+    let state = CutState::view(region.clone(), SIZE, bound, OWNER, Mutants(0))
+        .map_err(|(e, _)| e)
+        .expect("version 2 is read");
+    let held: Vec<(u64, u64, String, bool)> = state
+        .held()
+        .iter()
+        .map(|c| (c.number, c.lo, format!("{:?}", c.phase), c.itself))
+        .collect();
+    assert_eq!(held, cuts);
+    for (number, ..) in &cuts {
+        for block in 0..BLOCKS {
+            let want = reads
+                .get(&(*number, block))
+                .copied()
+                .unwrap_or(Read::Unchanged);
+            assert_eq!(
+                state.read(*number, block),
+                Some(want),
+                "cut {number}, block {block}"
+            );
+        }
+    }
+    let f = state.figures();
+    assert_eq!(Some((f.held, f.copied, f.bound, f.abandoned)), figures);
+    assert_eq!((f.holes, f.hole_chunks), (Holes::None, 0));
+    assert_eq!(Some(state.count()), count);
+    assert_eq!(state.mark(), Some(marked(9)));
+    // It goes on: taken up, cut 5's flush is the start's sync; cut 4 is
+    // uploaded, and cut 5 is next, with its map.
+    let mut state = state.take_up(*b"a later start...");
+    assert!(state.release(4));
+    assert_eq!(
+        state.held().first().map(|c| (c.number, c.phase)),
+        Some((5, Phase::Uploading))
+    );
+    assert_eq!(state.map(5), vec![1, 129]);
+    assert_eq!(region.load(at::VERSION), 2, "still of version 2");
+    assert_eq!(state.slice_from(5, 0, 10).map(|s| s.zeroes), Some(vec![]));
+}
+
+/// A state begun in a region of a version 2 state's length is of
+/// version 2, with no hole set whatever the image's holes; one begun
+/// in a region of version 3's length has the set.
+#[test]
+fn a_state_begun_in_a_region_of_version_2s_length_is_of_version_2() {
+    let bound = 2 * BLOCK_SIZE;
+    let region = MemRegion::new(words_of(2, BLOCKS, records_for(bound)));
+    let state = CutState::begin_with(
+        region.clone(),
+        SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&hole_ranges()),
+    );
+    assert_eq!(region.load(at::VERSION), 2);
+    assert_eq!(state.figures().holes, Holes::None);
+    let mut state = CutState::restore(region, SIZE, bound, OWNER, Mutants(0))
+        .map_err(|(e, _)| e)
+        .expect("read");
+    let number = state.freeze(&marked(1), true);
+    assert!((0..BLOCKS).all(|b| state.read(number, b) == Some(Read::Image)));
+
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let state = CutState::begin_with(
+        region.clone(),
+        SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&hole_ranges()),
+    );
+    assert_eq!(region.load(at::VERSION), VERSION);
+    assert_eq!(state.figures().holes, Holes::Held);
+}
+
+/// A state begun from an intent map, with only what it names counted as
+/// changed, has no hole set whatever holes it is given: its first cut
+/// is uploaded onto the newest committed cut, not as the whole volume.
+#[test]
+fn a_state_begun_from_an_intent_map_has_no_hole_set() {
+    let bound = 2 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(BLOCKS, records_for(bound)));
+    let state = CutState::begin_with(
+        region,
+        SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        Some(&[(0, 64)]),
+        Some(&hole_ranges()),
+    );
+    assert_eq!(state.figures().holes, Holes::None);
+}
+
+/// The words of the state of version 2 in `state/region-v2.txt`.
+fn region_v2_words() -> Vec<u64> {
+    let mut words = Vec::new();
+    for line in include_str!("region-v2.txt")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let f: Vec<&str> = line.split(' ').collect();
+        match f[0] {
+            "len" => words = vec![0; f[1].parse().expect("a length")],
+            "w" => {
+                let at: usize = f[1].parse().expect("a word's place");
+                words[at] = u64::from_str_radix(f[2], 16).expect("hex");
+            }
+            _ => {}
+        }
+    }
+    words
+}
+
+/// A named region that holds a state of version 2, at that version's
+/// length, is opened at its own length and kept, with every word as it
+/// was, so that the start can take it up (M2.4e). A file of version 2 at
+/// another length, and no file, are made at this version's length; the
+/// version found is said either way.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_named_region_of_version_2_is_kept_at_its_own_length() {
+    let old = region_v2_words();
+    let bound = 64 * BLOCK_SIZE;
+    let records = records_for(bound);
+    assert_eq!(old.len(), words_of(2, BLOCKS, records));
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join("cuts");
+    let hold = crate::inplace::HoldCuts {
+        region: crate::inplace::CutRegion::Named(path.clone()),
+        boot: BOOT,
+        bound: Some(bound),
+        intent_region: None,
+        intent_header_sync: false,
+    };
+    let open = || Taken::open(&hold, SIZE, OWNER.volume, None, [9; 16]).expect("the region");
+    let bytes: Vec<u8> = old.iter().flat_map(|word| word.to_le_bytes()).collect();
+
+    std::fs::write(&path, &bytes).expect("the file");
+    let taken = open();
+    assert!(taken.kept);
+    assert_eq!(taken.found_version, Some(2));
+    assert_eq!(taken.region.words(), old.len());
+    for (at, &word) in old.iter().enumerate() {
+        assert_eq!(taken.region.load(at), word, "word {at}");
+    }
+    drop(taken);
+
+    std::fs::write(&path, &bytes[..bytes.len() - 8]).expect("the file");
+    let taken = open();
+    assert!(!taken.kept);
+    assert_eq!(taken.found_version, Some(2));
+    assert_eq!(taken.region.words(), words_for(BLOCKS, records));
+    drop(taken);
+
+    std::fs::remove_file(&path).expect("removed");
+    let taken = open();
+    assert!(!taken.kept);
+    assert_eq!(taken.found_version, None);
+    assert_eq!(taken.region.words(), words_for(BLOCKS, records));
 }

@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1008
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1032
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,14 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's sixteenth version (M2.4d). It adds, after the
+//! This is the file's seventeenth version (M2.4e). It adds, after the
+//! sixteenth's fields, the image's holes as the cut state holds them
+//! (whether the set holds or was dropped, and its hole chunks) and the
+//! uploader's blocks written as zeros with nothing read. Nothing is
+//! dropped or moved. The sixteenth (`SKYZST16`, 1008 bytes) is still
+//! read, without them.
+//!
+//! The sixteenth version (M2.4d) added, after the
 //! fifteenth's fields, whether the intent map's header is synced at each
 //! release (`serve --intent-header-sync`) and the syncs begun for a
 //! header with no write waiting, with their time. Nothing is dropped or
@@ -136,6 +143,9 @@
 //! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
 //! | 976 | 8 | `intent_header_sync`: whether the intent map's header is synced at each release of a committed cut and where a committed cut is named (`serve --intent-header-sync`, M2.4d): 1 on; any other value, off. Off, the header is written without a sync, and a power cut that loses it costs one whole upload. On, a sync of the map's file begins on its helper once the header is written. The release does not wait for it; a write into a clean region waits for it as for any sync of the map under way |
 //! | 984 | 24 | the syncs of the map begun for a header with no write waiting, since this daemon started serving: how many, their summed time from begin to end, the longest. None where `intent_header_sync` is off. A header written while a sync for the writes that wait is under way is synced by the next, which is counted with the write path's (offset 392) when writes wait for it too |
+//! | 1008 | 8 | `cut_holes`: the image's holes as the cut state holds them (M2.4e): 0 none (the store holds no cut, the state began from an intent map that named what changed, the image's file system could not say where its holes are, or the state is of an earlier version); 1 the set holds: the first cut held holds the whole volume, and a block of a hole chunk that nothing wrote since the state began reads as zeros in it, with no copy made at a write there; 2 the set was dropped, once that cut was uploaded or let go. Any other value is read as "not said" |
+//! | 1016 | 8 | `cut_hole_chunks`: the chunks of 64 KiB the set named as holes when the cut state began. The count is kept once the set is dropped (`cut_holes` 2): it is what the state's first cut could read as zeros, not what it reads now. 0 where `cut_holes` is 0, no set having been taken. A volume whose image has no holes (made with `create --zero-fill`, or written through) has none, and its first cut copies every block written under it, as before M2.4e |
+//! | 1024 | 8 | `upload_zero_blocks`: among the blocks of the cuts committed, those written as zeros with nothing read: blocks of a hole chunk that nothing wrote up to the cut's instant. Not in `upload_blocks` |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -187,10 +197,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST16";
+const MAGIC: &[u8; 8] = b"SKYZST17";
 /// The version this crate writes.
-pub const VERSION: u32 = 16;
-const LEN: usize = 1008;
+pub const VERSION: u32 = 17;
+const LEN: usize = 1032;
+
+/// The sixteenth version, still read: up to the image's holes, at the
+/// same places.
+const SIXTEENTH_MAGIC: &[u8; 8] = b"SKYZST16";
+const SIXTEENTH_LEN: usize = 1008;
 
 /// The fifteenth version, still read: up to the header's sync, at the
 /// same places.
@@ -494,6 +509,10 @@ pub struct UploadFigures {
     pub gave_up: u64,
     /// Steps that failed on object storage.
     pub errors: u64,
+    /// Among the blocks of the cuts committed, those written as zeros
+    /// with nothing read (M2.4e). `None` in a file of a version before
+    /// the seventeenth.
+    pub zero_blocks: Option<u64>,
 }
 
 impl UploadFigures {
@@ -528,6 +547,7 @@ impl UploadFigures {
             lost: f[9],
             gave_up: f[10],
             errors: f[11],
+            zero_blocks: None,
         }
     }
 }
@@ -660,6 +680,68 @@ pub struct HeldShown {
     /// started serving. `None` in a file of a version before the
     /// fifteenth.
     pub replaced: Option<u64>,
+    /// The image's holes as the cut state holds them (M2.4e). `None` in
+    /// a file of a version before the seventeenth.
+    pub holes: Option<HolesShown>,
+}
+
+/// The image's holes as the cut state holds them (M2.4e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HolesShown {
+    /// Whether the set holds.
+    pub state: CutHolesShown,
+    /// The chunks of [`HOLE_CHUNK_BYTES`] it named as holes when the cut
+    /// state began: kept once the set is dropped, and 0 where none was
+    /// taken.
+    pub chunks: u64,
+}
+
+/// The size of a hole chunk, as `cut_hole_chunks` counts them: 64 KiB.
+pub const HOLE_CHUNK_BYTES: u64 = skyzfs_local::inplace::HOLE_BLOCKS * skyzfs_blk::BLOCK_SIZE;
+
+/// Whether the cut state holds the image's holes (M2.4e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CutHolesShown {
+    /// It holds none.
+    #[default]
+    None,
+    /// The set holds: a block of a hole chunk that nothing wrote reads
+    /// as zeros in the first cut.
+    Held,
+    /// The set was dropped once the first cut was uploaded or let go.
+    Dropped,
+    /// The file holds a value this version does not know.
+    Unsaid,
+}
+
+impl CutHolesShown {
+    fn code(self) -> u64 {
+        match self {
+            Self::None => 0,
+            Self::Held => 1,
+            Self::Dropped => 2,
+            Self::Unsaid => u64::MAX,
+        }
+    }
+
+    fn of(code: u64) -> Self {
+        match code {
+            0 => Self::None,
+            1 => Self::Held,
+            2 => Self::Dropped,
+            _ => Self::Unsaid,
+        }
+    }
+
+    /// What `status` prints of it.
+    pub fn said(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Held => "held",
+            Self::Dropped => "dropped",
+            Self::Unsaid => "unsaid",
+        }
+    }
 }
 
 /// Whether the store holds cuts, and what its start did with the state
@@ -920,6 +1002,17 @@ fn encode(status: &Status) -> [u8; LEN] {
     {
         bytes[976 + 8 * i..984 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
+    let holes = held.holes.unwrap_or_default();
+    for (i, field) in [
+        holes.state.code(),
+        holes.chunks,
+        upload.figures.zero_blocks.unwrap_or(0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[1008 + 8 * i..1016 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
     bytes
 }
 
@@ -954,6 +1047,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        17
+    } else if is(SIXTEENTH_LEN, SIXTEENTH_MAGIC) {
         16
     } else if is(FIFTEENTH_LEN, FIFTEENTH_MAGIC) {
         15
@@ -1024,6 +1119,10 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             bound: field(336),
             abandoned: field(344),
             replaced: (version >= 15).then(|| field(968)),
+            holes: (version >= 17).then(|| HolesShown {
+                state: CutHolesShown::of(field(1008)),
+                chunks: field(1016),
+            }),
         });
         let intent = (version >= 14).then(|| IntentShown {
             state: CutStateShown::of(field(352)),
@@ -1053,7 +1152,10 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             lease: LeaseShown::of(field(448)),
             epoch: field(456),
             expires_unix_ms: field(464),
-            figures: UploadFigures::of(std::array::from_fn(|i| field(472 + 8 * i))),
+            figures: UploadFigures {
+                zero_blocks: (version >= 17).then(|| field(1024)),
+                ..UploadFigures::of(std::array::from_fn(|i| field(472 + 8 * i)))
+            },
             checked: CheckedShown::of(field(568)),
             rule: RuleShown::of(field(576)),
             why: Text::of(&bytes[584..]),
@@ -1726,6 +1828,11 @@ pub fn report(
             if let Some(replaced) = held.replaced {
                 lines.push(("cuts_replaced", replaced.to_string()));
             }
+            // From a file of the seventeenth version on (M2.4e).
+            if let Some(holes) = held.holes {
+                lines.push(("cut_holes", holes.state.said().to_string()));
+                lines.push(("cut_hole_chunks", holes.chunks.to_string()));
+            }
         }
         // The intent map, from a file that has it, after the held cuts:
         // every key, as for them.
@@ -1792,6 +1899,10 @@ pub fn report(
                 ("upload_errors", f.errors),
             ] {
                 lines.push((key, value.to_string()));
+            }
+            // From a file of the seventeenth version on (M2.4e).
+            if let Some(zero_blocks) = f.zero_blocks {
+                lines.push(("upload_zero_blocks", zero_blocks.to_string()));
             }
             lines.push(("upload_checked", upload.checked.said().to_string()));
             lines.push(("upload_rule", upload.rule.said().to_string()));

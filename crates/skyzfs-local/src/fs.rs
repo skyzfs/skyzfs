@@ -708,6 +708,30 @@ impl File for FsFile {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn data_from(&self, offset: u64) -> io::Result<Option<(u64, u64)>> {
+        use rustix::fs::{seek, SeekFrom};
+        use rustix::io::Errno;
+        // The descriptor's offset moves; every read and write here
+        // names its own, so nothing else depends on it.
+        let start = match retried(|| seek(&self.file, SeekFrom::Data(offset))) {
+            Ok(start) => start,
+            // No data at or after `offset`, or `offset` at or past the
+            // end.
+            Err(Errno::NXIO) => return Ok(None),
+            // A kernel before the call (3.1) takes it for a bad whence.
+            Err(Errno::INVAL) => return Err(io::ErrorKind::Unsupported.into()),
+            Err(e) => return Err(e.into()),
+        };
+        let end = match retried(|| seek(&self.file, SeekFrom::Hole(start))) {
+            Ok(end) => end,
+            // The file shrank between the two calls: the rest is gone.
+            Err(Errno::NXIO) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some((start, end)))
+    }
+
     fn preallocate(&mut self, len: u64) -> io::Result<()> {
         let old = self.file.metadata()?.len();
         if len < old {
@@ -785,6 +809,37 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// A real file's ranges: what was written lies in a range of data,
+    /// what was never written before it reads as zeros where it is a
+    /// hole, and nothing lies at or past the end. A file system without
+    /// holes may call the whole file data, so the test asks no more.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_written_range_is_data_and_nothing_lies_past_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let mut f = dir.create("f").unwrap();
+        const M: u64 = 1 << 20;
+        f.extend(8 * M).unwrap();
+        f.write_at(4 * M, &vec![7u8; 4096]).unwrap();
+        let mut at = 0;
+        let mut covered = false;
+        while let Some((start, end)) = f.data_from(at).unwrap() {
+            assert!(start >= at && end > start && end <= 8 * M, "{start} {end}");
+            if start <= 4 * M && end >= 4 * M + 4096 {
+                covered = true;
+            }
+            // What lies between `at` and `start` is a hole.
+            let mut buf = vec![0xEEu8; (start - at).min(M) as usize];
+            f.read_at(at, &mut buf).unwrap();
+            assert!(buf.iter().all(|&b| b == 0), "a hole at {at} holds data");
+            at = end;
+        }
+        assert!(covered, "the written range is not data");
+        assert_eq!(f.data_from(8 * M).unwrap(), None);
+        assert_eq!(f.data_from(9 * M).unwrap(), None);
     }
 
     /// A call that a signal interrupts is made again, and any other

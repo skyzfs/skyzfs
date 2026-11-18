@@ -111,6 +111,10 @@ pub enum Step {
         number: u64,
         /// The blocks read.
         blocks: u64,
+        /// The blocks written as zeros with nothing read: holes of the
+        /// image when the cut state began that nothing wrote up to the
+        /// cut's instant (M2.4e).
+        zeroes: u64,
     },
     /// The copies the cut was read from are durable.
     CopiesSynced {
@@ -241,6 +245,10 @@ pub struct Figures {
     pub uploaded_whole: u64,
     /// Their blocks, read and written.
     pub blocks: u64,
+    /// Their blocks written as zeros with nothing read: holes of the image
+    /// when the cut state began that nothing wrote up to the cut's instant
+    /// (M2.4e). Not in `blocks`.
+    pub zero_blocks: u64,
     /// The cuts the check found committed already, let go with nothing
     /// uploaded.
     pub found_committed: u64,
@@ -288,6 +296,8 @@ struct Upload {
     copied: bool,
     /// The blocks read so far.
     blocks: u64,
+    /// The blocks written as zeros so far, with nothing read.
+    zeroes: u64,
 }
 
 /// Where the driver stands.
@@ -539,6 +549,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
                     from: 0,
                     copied: false,
                     blocks: 0,
+                    zeroes: 0,
                 };
                 let began = Step::Began {
                     number: cut.number,
@@ -619,14 +630,16 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Ok(slice) => slice,
             Err(e) => return (Stage::Check, Ok(self.lost(number, e.to_string()))),
         };
-        if let Err(e) = write_slice(&mut self.remote, &slice.blocks, &self.buf) {
+        if let Err(e) = write_slice(&mut self.remote, &slice.blocks, &slice.zeroes, &self.buf) {
             // Not reached for a cut of this volume: the engine refuses only
             // a write past its end. Its writes are dropped with the cut.
             self.remote.discard();
             return (Stage::Check, Err(e));
         }
         let blocks = slice.blocks.len() as u64;
+        let zeroes = slice.zeroes.iter().map(|&(_, count)| count).sum::<u64>();
         upload.blocks += blocks;
+        upload.zeroes += zeroes;
         upload.copied |= slice.copied;
         let next = match slice.next {
             Some(from) => {
@@ -642,7 +655,14 @@ impl<L: Local, R: Remote> Driver<L, R> {
         // The slice is in the engine whatever its PUTs do: a failure here
         // goes on from the next slice, after the PUTs made again.
         let put = self.remote.put_sealed().await;
-        (next, put.map(|()| Step::Read { number, blocks }))
+        (
+            next,
+            put.map(|()| Step::Read {
+                number,
+                blocks,
+                zeroes,
+            }),
+        )
     }
 
     async fn sync(&mut self, upload: Upload) -> (Stage, Result<Step, RemoteError>) {
@@ -722,6 +742,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
         let number = upload.cut.number;
         self.figures.uploaded += 1;
         self.figures.blocks += upload.blocks;
+        self.figures.zero_blocks += upload.zeroes;
         self.figures.last_rule = Some(upload.rule);
         if upload.rule == Rule::Whole {
             self.figures.uploaded_whole += 1;
@@ -753,10 +774,17 @@ fn head_of(cut: &Uploadable, seen: &Observed) -> Option<CommitHash> {
     (seen.head_group == Some(cut.group)).then_some(seen.head)
 }
 
-/// Write the blocks of a slice into the engine, a block of `buf` each in
-/// order: each run of adjacent blocks in one write, and each run of
-/// all-zero blocks as one zero extent.
-fn write_slice<R: Remote>(remote: &mut R, blocks: &[u64], buf: &[u8]) -> Result<(), RemoteError> {
+/// Write a slice into the engine: its blocks, a block of `buf` each in
+/// order, each run of adjacent blocks in one write and each run of all-zero
+/// blocks as one zero extent; then its runs of zeros (`(first, count)`),
+/// each as one zero extent. The two never share a block (the store reads
+/// no block it names as zeros), so their order does not matter.
+fn write_slice<R: Remote>(
+    remote: &mut R,
+    blocks: &[u64],
+    zeroes: &[(u64, u64)],
+    buf: &[u8],
+) -> Result<(), RemoteError> {
     let data = |i: usize| &buf[i * BLOCK_USIZE..(i + 1) * BLOCK_USIZE];
     let zero = |i: usize| data(i).iter().all(|&byte| byte == 0);
     let mut i = 0;
@@ -772,6 +800,9 @@ fn write_slice<R: Remote>(remote: &mut R, blocks: &[u64], buf: &[u8]) -> Result<
             remote.write(offset, &buf[i * BLOCK_USIZE..end * BLOCK_USIZE])?;
         }
         i = end;
+    }
+    for &(first, count) in zeroes {
+        remote.write_zeroes(first * BLOCK_SIZE, count * BLOCK_SIZE)?;
     }
     Ok(())
 }

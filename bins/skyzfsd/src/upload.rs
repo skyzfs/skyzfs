@@ -915,6 +915,7 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
         lost: f.lost,
         gave_up: f.gave_up,
         errors: f.errors,
+        zero_blocks: Some(f.zero_blocks),
     };
     out.checked = match f.checked {
         Checked::Unchecked => CheckedShown::Unchecked,
