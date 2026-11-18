@@ -7,6 +7,12 @@
 //!                   --snapshot T [--hole OFF:LEN]...
 //! skyzfs-nodeb refs --endpoint URL --bucket B --volume NAME
 //! skyzfs-nodeb get  --endpoint URL --bucket B --volume NAME --ref REF --out FILE
+//! skyzfs-nodeb row  --endpoint URL --bucket B --volume NAME
+//! skyzfs-nodeb bucket --endpoint URL --bucket B --volume NAME
+//! skyzfs-nodeb lease --endpoint URL --bucket B --volume NAME --holder H --ttl-s N
+//! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
+//! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--expect-row ROW]
+//! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row STATE:NUMBER:GROUP|none|hex:BYTES [--expect-row ROW]
 //! ```
 //!
 //! The keys are `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The
@@ -21,8 +27,43 @@
 //!   the ref `snap/T`. The volume must not exist yet.
 //! - `refs`: lists the volume's refs, one per line: name, commit, generation.
 //! - `get`: reads the ref's content into FILE, sparse where it is zeros.
+//! - `row` (M2.T3, the daemon's uploads): head's commit and generation,
+//!   `head HEX GEN` or `head none`, then the cut's row that the daemon's
+//!   uploader writes with each head swap (the meta row `skyzfs/cut`,
+//!   `skyzfs-upload`'s row.rs): `row STATE NUMBER GROUP` for a row of
+//!   version 1, `row none`, or `row unreadable HEX`. The two are read
+//!   one after the other, not together: a reader that wants them to
+//!   agree reads them again around what it does. Then the volume's
+//!   lease: `lease HOLDER EPOCH EXPIRES_UNIX_MS` or `lease none`.
 //!
-//! Exit 0: done. Exit 3: `get` found no such ref. Exit 4: `get` found
+//! `bucket` makes the bucket where it is not there (`put` does it too),
+//! for a daemon's `create` that puts the volume there.
+//!
+//! Another writer, for the rig's courses on the daemon's uploads (each
+//! acts on the volume as the daemon's uploader would not, with the
+//! refs object unfenced, as `put` does):
+//! - `lease`: takes the volume's lease as HOLDER for N seconds, as any
+//!   holder takes it (`RefStore::lease_acquire`): `lease acquired
+//!   HOLDER EPOCH EXPIRES` (exit 0), or `lease held HOLDER EPOCH
+//!   EXPIRES` when another's has not run out (exit 5);
+//! - `release`: lets HOLDER's lease go;
+//! - `move-head`: opens the volume at head, writes one 4 KiB block of
+//!   0x5a bytes at OFFSET (a multiple of 4096), sets the commit's group
+//!   to G or none, and commits: head moves, the row does not;
+//!   `head HEX`;
+//! - `set-row`: puts the cut's row (version 1, from a state of 32 hex
+//!   digits, a number and a group), deletes it (`none`), or puts BYTES
+//!   as they are (`hex:...`, a row the uploader cannot read); head
+//!   does not move.
+//!
+//! With `--expect-row ROW` (as `--row` writes it, `none` for no row),
+//! `move-head` and `set-row` act only while the row is ROW, in the same
+//! transaction as their write: a daemon that committed a cut since the
+//! caller read the row moved the row with its head, and the command
+//! changes nothing, prints `row moved`, and ends with 6. The caller reads
+//! again and acts on what it finds (the review of #119, G2).
+//!
+//! Exit 0: done. Exit 6: `--expect-row` did not hold. Exit 3: `get` found no such ref. Exit 4: `get` found
 //! the ref and the bucket does not hold its content: an object it needs
 //! is not there, does not decode, or is corrupt. For the rig that is a
 //! verdict against what put the volume there, not its own error. Exit
@@ -35,7 +76,7 @@ use std::sync::Arc;
 
 use skynbd_engine::{Engine, EngineConfig, EngineError};
 use skynbd_format::CommitKind;
-use skynbd_refs::{ObjectRefStore, RefStore};
+use skynbd_refs::{LeaseOutcome, ObjectRefStore, RefOp, RefStore, TxnOutcome};
 use skynbd_store::{ObjectStore, S3Store};
 use skynbd_types::VolumeId;
 
@@ -56,6 +97,12 @@ struct Args {
     reference: String,
     snapshot: String,
     holes: Vec<(u64, u64)>,
+    holder: String,
+    ttl_s: String,
+    at: String,
+    group: String,
+    row: String,
+    expect_row: Option<String>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -76,6 +123,12 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--ref" => a.reference = v,
             "--snapshot" => a.snapshot = v,
             "--hole" => a.holes.push(parse_hole(&v)?),
+            "--holder" => a.holder = v,
+            "--ttl-s" => a.ttl_s = v,
+            "--at" => a.at = v,
+            "--group" => a.group = v,
+            "--row" => a.row = v,
+            "--expect-row" => a.expect_row = Some(v),
             _ => return Err(format!("unknown option {k}")),
         }
     }
@@ -91,7 +144,11 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     let need: &[(&str, &String)] = match a.cmd.as_str() {
         "put" => &[("--image", &a.image), ("--snapshot", &a.snapshot)],
         "get" => &[("--ref", &a.reference), ("--out", &a.out)],
-        "refs" => &[],
+        "refs" | "row" | "bucket" => &[],
+        "lease" => &[("--holder", &a.holder), ("--ttl-s", &a.ttl_s)],
+        "release" => &[("--holder", &a.holder)],
+        "move-head" => &[("--at", &a.at), ("--group", &a.group)],
+        "set-row" => &[("--row", &a.row)],
         c => return Err(format!("unknown command {c}")),
     };
     for (name, v) in need {
@@ -250,6 +307,254 @@ async fn list(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// The cut's row among the refs object's meta rows, and the length of
+/// its version 1 (`skyzfs-upload`'s `ROW_KEY` and `ROW_LEN`: version u16,
+/// the cut state's name 16 bytes, the cut's number and group u64, all
+/// little endian).
+const ROW_KEY: &str = "skyzfs/cut";
+const ROW_LEN: usize = 34;
+
+fn row_line(bytes: Option<&[u8]>) -> String {
+    let Some(b) = bytes else {
+        return "row\tnone".to_string();
+    };
+    if b.len() != ROW_LEN || b[..2] != 1u16.to_le_bytes() {
+        return format!("row\tunreadable\t{}", hex(b));
+    }
+    let mut n = [0u8; 8];
+    let mut g = [0u8; 8];
+    n.copy_from_slice(&b[18..26]);
+    g.copy_from_slice(&b[26..34]);
+    format!(
+        "row\t{}\t{}\t{}",
+        hex(&b[2..18]),
+        u64::from_le_bytes(n),
+        u64::from_le_bytes(g)
+    )
+}
+
+async fn row(a: &Args) -> Result<(), String> {
+    let (_, refs) = open(a).await?;
+    let vol = volume_id(&a.volume);
+    match refs
+        .get(vol, "head")
+        .await
+        .map_err(|e| format!("refs: {e}"))?
+    {
+        Some(v) => println!("head\t{}\t{}", hex(&v.commit), v.generation),
+        None => println!("head\tnone"),
+    }
+    let b = refs
+        .meta_get(vol, ROW_KEY)
+        .await
+        .map_err(|e| format!("meta {ROW_KEY}: {e}"))?;
+    println!("{}", row_line(b.as_deref()));
+    match refs
+        .lease_get(vol)
+        .await
+        .map_err(|e| format!("lease: {e}"))?
+    {
+        Some(l) => println!("lease\t{}\t{}\t{}", l.holder, l.epoch, l.expires_at_ms),
+        None => println!("lease\tnone"),
+    }
+    Ok(())
+}
+
+fn number(name: &str, v: &str) -> Result<u64, String> {
+    v.parse().map_err(|_| format!("{name} {v}: not a number"))
+}
+
+/// `--row`'s value -> the bytes to put, or None to delete the row.
+fn row_bytes(v: &str) -> Result<Option<Vec<u8>>, String> {
+    if v == "none" {
+        return Ok(None);
+    }
+    if let Some(h) = v.strip_prefix("hex:") {
+        return unhex(h).map(Some);
+    }
+    let f: Vec<&str> = v.split(':').collect();
+    let [state, n, g] = f[..] else {
+        return Err(format!(
+            "--row {v}: expected STATE:NUMBER:GROUP, none or hex:BYTES"
+        ));
+    };
+    let state = unhex(state)?;
+    if state.len() != 16 {
+        return Err(format!("--row {v}: the state is 16 bytes"));
+    }
+    let mut b = 1u16.to_le_bytes().to_vec();
+    b.extend_from_slice(&state);
+    b.extend_from_slice(&number("--row's number", n)?.to_le_bytes());
+    b.extend_from_slice(&number("--row's group", g)?.to_le_bytes());
+    Ok(Some(b))
+}
+
+fn unhex(h: &str) -> Result<Vec<u8>, String> {
+    if !h.len().is_multiple_of(2) || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{h}: not hex"));
+    }
+    (0..h.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).map_err(|e| format!("{h}: {e}")))
+        .collect()
+}
+
+async fn bucket(a: &Args) -> Result<(), String> {
+    let (store, _) = open(a).await?;
+    store
+        .ensure_bucket()
+        .await
+        .map_err(|e| format!("bucket: {e}"))?;
+    println!("bucket\t{}", a.bucket);
+    Ok(())
+}
+
+async fn lease(a: &Args) -> Result<u8, String> {
+    let (_, refs) = open(a).await?;
+    let ttl = number("--ttl-s", &a.ttl_s)?;
+    let got = refs
+        .lease_acquire(volume_id(&a.volume), &a.holder, ttl.saturating_mul(1000))
+        .await
+        .map_err(|e| format!("lease: {e}"))?;
+    let (word, l, code) = match got {
+        LeaseOutcome::Acquired(l) => ("acquired", l, 0),
+        LeaseOutcome::Held(l) => ("held", l, 5),
+    };
+    println!(
+        "lease\t{word}\t{}\t{}\t{}",
+        l.holder, l.epoch, l.expires_at_ms
+    );
+    Ok(code)
+}
+
+async fn release(a: &Args) -> Result<(), String> {
+    let (_, refs) = open(a).await?;
+    refs.lease_release(volume_id(&a.volume), &a.holder)
+        .await
+        .map_err(|e| format!("release: {e}"))?;
+    println!("released\t{}", a.holder);
+    Ok(())
+}
+
+async fn move_head(a: &Args) -> Result<u8, String> {
+    let at = number("--at", &a.at)?;
+    if !at.is_multiple_of(BLOCK as u64) {
+        return Err(format!("--at {at}: not a multiple of {BLOCK}"));
+    }
+    let group = match a.group.as_str() {
+        "none" => None,
+        g => Some(number("--group", g)?),
+    };
+    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
+    let (store, refs) = open(a).await?;
+    let moved = move_head_on(store, refs, volume_id(&a.volume), at, group, expect).await?;
+    Ok(report(moved, |head| println!("head\t{}", hex(&head))))
+}
+
+/// `Some(x)` -> print it and 0; `None` (the expected row did not hold)
+/// -> `row moved` and 6.
+fn report<T>(got: Option<T>, print: impl FnOnce(T)) -> u8 {
+    match got {
+        Some(x) => {
+            print(x);
+            0
+        }
+        None => {
+            println!("row\tmoved");
+            6
+        }
+    }
+}
+
+/// The meta op that holds the row at EXPECT and leaves it as it is.
+fn row_held(expect: Option<Vec<u8>>) -> Result<RefOp, String> {
+    let value = expect
+        .clone()
+        .ok_or("--expect-row none: move-head keeps a row it can name")?;
+    Ok(RefOp::MetaCas {
+        key: ROW_KEY.to_string(),
+        expected: expect,
+        value,
+    })
+}
+
+/// move-head on a volume's store and refs -> head's new commit, or None
+/// where `expect` (the row's bytes, `Some(None)` for no row) did not hold.
+async fn move_head_on<S: ObjectStore + Clone + 'static>(
+    store: S,
+    refs: Arc<ObjectRefStore<S>>,
+    vol: VolumeId,
+    at: u64,
+    group: Option<u64>,
+    expect: Option<Option<Vec<u8>>>,
+) -> Result<Option<[u8; 32]>, String> {
+    let ops = expect.map(row_held).transpose()?;
+    let mut eng = Engine::open(store, refs, vol, EngineConfig::default())
+        .await
+        .map_err(|e| format!("open the volume: {e}"))?;
+    eng.write(at, &[0x5a; BLOCK])
+        .map_err(|e| format!("write at {at}: {e}"))?;
+    eng.set_group(group);
+    let guarded = ops.is_some();
+    let done = match ops {
+        Some(op) => eng.commit_with(CommitKind::Flush, vec![op]).await,
+        None => eng.commit(CommitKind::Flush).await,
+    };
+    match done {
+        Ok(head) => Ok(Some(head)),
+        // The row, or head with it (a daemon's commit moves both): what
+        // the caller read is gone.
+        Err(EngineError::OpConflict { .. }) => Ok(None),
+        Err(EngineError::Conflict) if guarded => Ok(None),
+        Err(e) => Err(format!("commit: {e}")),
+    }
+}
+
+async fn set_row(a: &Args) -> Result<u8, String> {
+    let bytes = row_bytes(&a.row)?;
+    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
+    let (_, refs) = open(a).await?;
+    let set = set_row_on(&refs, volume_id(&a.volume), bytes, expect).await?;
+    Ok(report(set.then_some(()), |()| {
+        println!("row\tset\t{}", a.row)
+    }))
+}
+
+/// set-row on a volume's refs -> whether it was set (false where
+/// `expect`, the row's bytes or `Some(None)` for no row, did not hold).
+async fn set_row_on<S: ObjectStore + Clone + 'static>(
+    refs: &ObjectRefStore<S>,
+    vol: VolumeId,
+    bytes: Option<Vec<u8>>,
+    expect: Option<Option<Vec<u8>>>,
+) -> Result<bool, String> {
+    let key = ROW_KEY.to_string();
+    let ops = match (bytes, expect) {
+        (Some(value), None) => vec![RefOp::MetaPut { key, value }],
+        (None, None) => vec![RefOp::MetaDelete { key }],
+        (Some(value), Some(expected)) => vec![RefOp::MetaCas {
+            key,
+            expected,
+            value,
+        }],
+        // The row held, then deleted, in one transaction.
+        (None, Some(expected)) => vec![
+            row_held(expected)?,
+            RefOp::MetaDelete {
+                key: ROW_KEY.to_string(),
+            },
+        ],
+    };
+    match refs
+        .transact(vol, ops)
+        .await
+        .map_err(|e| format!("set the row: {e}"))?
+    {
+        TxnOutcome::Committed => Ok(true),
+        TxnOutcome::Conflict { .. } => Ok(false),
+    }
+}
+
 /// What `get` found.
 #[derive(Debug, PartialEq, Eq)]
 enum Got {
@@ -359,13 +664,19 @@ async fn main() -> ExitCode {
     let a = match parse(&argv) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get (see the source's header)");
+            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get|row|bucket|lease|release|move-head|set-row (see the source's header)");
             return ExitCode::from(2);
         }
     };
     let r = match a.cmd.as_str() {
         "put" => put(&a).await.map(|()| 0),
         "refs" => list(&a).await.map(|()| 0),
+        "row" => row(&a).await.map(|()| 0),
+        "bucket" => bucket(&a).await.map(|()| 0),
+        "lease" => lease(&a).await,
+        "release" => release(&a).await.map(|()| 0),
+        "move-head" => move_head(&a).await,
+        "set-row" => set_row(&a).await,
         _ => get(&a).await,
     };
     match r {
@@ -400,6 +711,130 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_row_is_read_as_the_uploader_writes_it() {
+        assert_eq!(row_line(None), "row\tnone");
+        let mut b = 1u16.to_le_bytes().to_vec();
+        b.extend_from_slice(&[0xab; 16]);
+        b.extend_from_slice(&7u64.to_le_bytes());
+        b.extend_from_slice(&4242u64.to_le_bytes());
+        assert_eq!(
+            row_line(Some(&b)),
+            format!("row\t{}\t7\t4242", "ab".repeat(16))
+        );
+        let mut v2 = b.clone();
+        v2[0] = 2;
+        assert!(row_line(Some(&v2)).starts_with("row\tunreadable\t02"));
+        assert!(row_line(Some(&b[..33])).starts_with("row\tunreadable\t"));
+    }
+
+    #[test]
+    fn a_row_is_put_as_the_uploader_reads_it() {
+        let b = row_bytes(&format!("{}:7:4242", "ab".repeat(16)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row_line(Some(&b)),
+            format!("row\t{}\t7\t4242", "ab".repeat(16))
+        );
+        assert_eq!(row_bytes("none"), Ok(None));
+        assert_eq!(row_bytes("hex:0200ff"), Ok(Some(vec![2, 0, 0xff])));
+        assert!(row_bytes("ab:7:1").is_err());
+        assert!(row_bytes(&format!("{}:x:1", "ab".repeat(16))).is_err());
+        assert!(row_bytes("hex:0g").is_err());
+    }
+
+    /// The other writer acts only on the row it read (the review of #119,
+    /// G2): a row that moved since leaves the volume as it is.
+    #[tokio::test]
+    async fn the_other_writer_acts_on_the_row_it_read() {
+        let (store, refs, vol, _) = put_small("expect-row").await;
+        let row = |n: u64, g: u64| row_bytes(&format!("{}:{n}:{g}", "ab".repeat(16))).unwrap();
+        let read = || async { refs.meta_get(vol, ROW_KEY).await.expect("meta_get") };
+        // No row yet: expecting none sets it; expecting a row does not.
+        assert_eq!(
+            set_row_on(&refs, vol, row(1, 4), Some(row(9, 9))).await,
+            Ok(false)
+        );
+        assert_eq!(read().await, None);
+        assert_eq!(
+            set_row_on(&refs, vol, row(1, 4), Some(None)).await,
+            Ok(true)
+        );
+        assert_eq!(read().await, row(1, 4));
+        // The row as read: set; a stale one: nothing changes.
+        assert_eq!(
+            set_row_on(&refs, vol, row(2, 5), row(1, 4).map(Some)).await,
+            Ok(true)
+        );
+        assert_eq!(
+            set_row_on(&refs, vol, row(3, 6), row(1, 4).map(Some)).await,
+            Ok(false)
+        );
+        assert_eq!(read().await, row(2, 5));
+        // Unguarded, as before.
+        assert_eq!(set_row_on(&refs, vol, row(4, 7), None).await, Ok(true));
+        assert_eq!(read().await, row(4, 7));
+        // move-head: head moves with the row as read, and the row stays.
+        let head = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        let moved = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(1000),
+            row(4, 7).map(Some),
+        )
+        .await
+        .expect("move-head");
+        let now = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        assert!(moved.is_some_and(|h| h == now) && now != head);
+        assert_eq!(read().await, row(4, 7));
+        // A stale row: head stays.
+        let stale = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(1001),
+            row(3, 6).map(Some),
+        )
+        .await
+        .expect("move-head");
+        assert_eq!(stale, None);
+        assert_eq!(
+            refs.get(vol, "head")
+                .await
+                .expect("get")
+                .expect("head")
+                .commit,
+            now
+        );
+        // Deleting under a guard: the row held, then gone.
+        assert_eq!(
+            set_row_on(&refs, vol, None, row(3, 6).map(Some)).await,
+            Ok(false)
+        );
+        assert_eq!(
+            set_row_on(&refs, vol, None, row(4, 7).map(Some)).await,
+            Ok(true)
+        );
+        assert_eq!(read().await, None);
+        assert!(move_head_on(store, refs, vol, 0, None, Some(None))
+            .await
+            .is_err());
+    }
+
+    #[test]
     fn holes_must_be_sector_aligned() {
         assert_eq!(parse_hole("4096:8192"), Ok((4096, 8192)));
         assert!(parse_hole("100:512").is_err());
@@ -418,6 +853,24 @@ mod tests {
         assert!(parse(&args(&format!("get {base} --ref snap/t --out o"))).is_ok());
         assert!(parse(&args(&format!("get {base} --out o"))).is_err());
         assert!(parse(&args(&format!("refs {base}"))).is_ok());
+        assert!(parse(&args(&format!("row {base}"))).is_ok());
+        assert!(parse(&args(&format!("lease {base} --holder h --ttl-s 5"))).is_ok());
+        assert!(parse(&args(&format!("lease {base} --holder h"))).is_err());
+        assert!(parse(&args(&format!("release {base}"))).is_err());
+        assert!(parse(&args(&format!("move-head {base} --at 0 --group none"))).is_ok());
+        assert!(parse(&args(&format!("move-head {base} --at 0"))).is_err());
+        assert!(parse(&args(&format!("set-row {base} --row none"))).is_ok());
+        let a = parse(&args(&format!(
+            "set-row {base} --row none --expect-row none"
+        )))
+        .expect("parse");
+        assert_eq!(a.expect_row.as_deref(), Some("none"));
+        assert_eq!(
+            parse(&args(&format!("set-row {base} --row none")))
+                .expect("parse")
+                .expect_row,
+            None
+        );
         assert!(parse(&args("refs --endpoint http://x --bucket b")).is_err());
         assert!(parse(&args(&format!("copy {base}"))).is_err());
         assert!(parse(&args(&format!("refs {base} --nope 1"))).is_err());

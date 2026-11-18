@@ -81,6 +81,23 @@
 # after the export it records what is held beside the status and
 # drains. Its files (DIR/held*.tsv, held-final.txt, status-held.txt,
 # holder.log) are for the check's second stage.
+# With CUT_UPLOAD=1 instead (M2.T3, the daemon's uploads, M2.4c) the
+# volume is made in object storage too (`create --endpoint --bucket
+# --volume`; the endpoint and bucket from SKZ_S3_ENDPOINT and
+# SKZ_S3_BUCKET, the keys from AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY, the volume named cut-NAME), so the daemon holds
+# its cuts and uploads each one itself, and no holder runs (the daemon
+# refuses `release` while it uploads). A watcher (cut_watch.py) stands
+# beside the recording as node B: CUT_NODEB, bins/skyzfs-nodeb, reads
+# head and the cut's row twice a second and fetches each cut head comes
+# to hold. After the export the recording waits up to 300 s for the
+# daemon to upload what it still holds (`upload_state idle` and
+# `cuts_held 0`; DIR/drain.txt says how it ended), then the watcher
+# fetches head once more and ends. Its files (DIR/uploaded*.tsv,
+# rows.tsv, watch.log) are for the check's upload lines.
+# The recordings umoved, urow, ukill, ulease and ulost are made only
+# then: the uploader beside another writer, a kill between a commit and
+# its cut's release, and the lease (the upload courses, below rec_failed).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -136,7 +153,23 @@ CHECK=${CUT_CHECK:-python3 $HERE/cut_check.py}
 SERVER=${CUT_SERVER:-log-writes}
 SKYZFSD=${CUT_SKYZFSD:-}
 HOLD=${CUT_HOLD:-0}
+UPLOAD=${CUT_UPLOAD:-0}
+NODEB=${CUT_NODEB:-}
+S3_ENDPOINT=${SKZ_S3_ENDPOINT:-}
+S3_BUCKET=${SKZ_S3_BUCKET:-}
+# unostore: the commands that take object storage down and bring it back.
+S3_DOWN=${CUT_S3_DOWN:-}
+S3_UP=${CUT_S3_UP:-}
 [ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
+# Only where the daemon uploads (CUT_UPLOAD=1): the uploader beside
+# another writer, a kill between a commit and its release, and the lease
+# (M2.4c; the courses below).
+UPLOAD_ONLY="umoved urow ukill ulease ulost"
+# By name only, until they have run stable: object storage down at the
+# start, a kill inside an upload, a failed volume.
+UPLOAD_NAMED="unostore ukillput ufailed"
+KNOWN=$ALL
+[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED"; }
 RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
@@ -144,15 +177,25 @@ case $SERVER in
             DEV="" ;;
     *) echo "CUT_SERVER is log-writes or daemon, not $SERVER" >&2; exit 64 ;;
 esac
+if [ "$UPLOAD" = 1 ]; then
+    [ "$SERVER" = daemon ] || { echo "CUT_UPLOAD=1 needs CUT_SERVER=daemon" >&2; exit 64; }
+    [ "$HOLD" != 1 ] || { echo "CUT_UPLOAD=1 and CUT_HOLD=1 exclude each other: an uploading daemon refuses the holder's release" >&2; exit 64; }
+    [ -x "$NODEB" ] || { echo "CUT_UPLOAD=1 needs CUT_NODEB, node B's binary" >&2; exit 64; }
+    [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] || { echo "CUT_UPLOAD=1 needs SKZ_S3_ENDPOINT and SKZ_S3_BUCKET" >&2; exit 64; }
+fi
 for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
-for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
+for r in $RECS; do [[ " $KNOWN " == *" $r "* ]] || { echo "no recording $r (there are: $KNOWN)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # A kill -9 cuts a line of the request log on a page of the file
 # (cut_daemon_check.py's torn_line): say where the logs are written.
 [ "$SERVER" != daemon ] || log "request logs on $(stat -f -c %T "$OUT"), page size $(getconf PAGESIZE)"
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
-VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
+# The upload courses': extra options of the next serve, a function run
+# between the create and the first serve, the uploader's rest (drain), a
+# writer in the background.
+SERVE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
@@ -219,6 +262,9 @@ cleanup() {
     set +e
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
+    [ -z "$WATCH_PID" ] || { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
+    [ -z "$WRITER" ] || { touch "$WORK/writer.stop"; kill "$WRITER" 2>/dev/null; }
+    [ -z "$SERVE_PID" ] || kill -CONT "$SERVE_PID" 2>/dev/null
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
@@ -279,6 +325,7 @@ serve_start() {
     local hold=()
     [ "$HOLD" != 1 ] || hold=(--hold-cuts)
     [ -z "$ack" ] || hold+=(--acknowledge-failure)
+    hold+=("${SERVE_ARGS[@]}")
     "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$slog" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do
@@ -290,7 +337,7 @@ serve_start() {
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] && [ -n "$kind" ] || rig_error "skyzfsd serve $k was not ready, or did not say how, in 120 s"
     printf '%s\t%s%s\n' "$SERVE_PID" "${kind/ /-}" "${ack:+$'\t'acknowledged}" >> "$RDIR/instances.tsv"
-    if [ "$HOLD" = 1 ]; then
+    if [ "$HOLD" = 1 ] || [ "$UPLOAD" = 1 ]; then
         for _i in $(seq 1 40); do
             timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status-start-$k.txt" 2>&1 \
                 && grep -q '^cut_state ' "$RDIR/status-start-$k.txt" && break
@@ -364,17 +411,71 @@ holder_ended() {
     fi
     [ "$rc" = 0 ] || rig_error "the holder ended with $rc $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
+# Node B's COMMAND on the recording's volume in object storage.
+nodeb() { local c=$1; shift; timeout 300 "$NODEB" "$c" --endpoint "$S3_ENDPOINT" --bucket "$S3_BUCKET" --volume "cut-$NAME" "$@"; }
+# The watcher beside the daemon, node B's side of the uploads.
+watcher_start() {
+    rm -f "${WORK:?}/watch.stop"
+    CUT_WATCH_PAUSE="$WORK/watch.pause" python3 -I "$HERE/cut_watch.py" "$RDIR" "$NODEB" "$S3_ENDPOINT" "$S3_BUCKET" \
+        "cut-$NAME" "$WORK/watch.stop" 2>> "$RDIR/watch.err" &
+    WATCH_PID=$!
+}
+# After the export: wait up to 300 s for the daemon to upload what it
+# holds (drain), then let the watcher fetch head once more. Its
+# verdict (1 and a VERDICT line: node B could not read head's content)
+# goes to the check; any other end but 0 is the rig's error.
+watcher_end() {
+    local _i rc=0
+    drain drain.txt
+    touch "$WORK/watch.stop"
+    for _i in $(seq 1 600); do kill -0 "$WATCH_PID" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$WATCH_PID" 2>/dev/null; then
+        kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null || true; WATCH_PID=""
+        rig_error "the watcher did not end 600 s after the stop: $(tail -n 2 "$RDIR/watch.log" 2>/dev/null)"
+    fi
+    wait "$WATCH_PID" 2>/dev/null || rc=$?
+    WATCH_PID=""
+    if [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/watch.log"; then
+        log "$NAME: the watcher ended with a verdict: $(grep "$(printf '\tVERDICT ')" "$RDIR/watch.log" | tail -n 1)"
+    elif [ "$rc" != 0 ]; then
+        rig_error "the watcher ended with $rc: $(tail -n 2 "$RDIR/watch.log" 2>/dev/null)"
+    fi
+}
+# FILE [STATE [HELD]]: up to 300 s for the uploader to come to rest, its
+# status then in DIR/FILE with a first line `seconds N`: `upload_state`
+# STATE (DRAIN_STATE, idle unless a course says otherwise) and, unless
+# HELD (DRAIN_HELD) is empty, no cut held. One that does not is the
+# check's to judge.
+drain() {
+    local _i st="" t0=$SECONDS want=${2:-$DRAIN_STATE} held=${3-$DRAIN_HELD}
+    for _i in $(seq 1 300); do
+        st=$(timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" 2>&1) || st=""
+        grep -qx "upload_state $want" <<< "$st" && { [ -z "$held" ] || grep -qx 'cuts_held 0' <<< "$st"; } && break
+        sleep 1
+    done
+    { echo "seconds $((SECONDS - t0))"; printf '%s\n' "$st"; } > "$RDIR/$1"
+}
 # The volume, served by the daemon with its request log.
 begin_daemon() {
+    local place=()
     rm -rf "${VOL:?}" "$VOL.ready"; mkdir -p "$RUN"
-    timeout 60 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" > "$RDIR/create.log" 2>&1 \
+    if [ "$UPLOAD" = 1 ]; then
+        nodeb bucket > "$RDIR/bucket.log" 2>&1 || rig_error "node B could not make the bucket: $(tail -n 2 "$RDIR/bucket.log")"
+        place=(--endpoint "$S3_ENDPOINT" --bucket "$S3_BUCKET" --volume "cut-$NAME")
+    fi
+    timeout 90 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" "${place[@]}" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
+    # A course's PRE_SERVE may pause the watcher (unostore): the pause
+    # holds until the course lifts it, past the watcher's start.
+    rm -f "${WORK:?}/watch.pause"
+    [ -z "$PRE_SERVE" ] || "$PRE_SERVE"
     serve_start 1
     : > "$RDIR/marks.tsv"
     if [ "$HOLD" = 1 ]; then
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
         holder_start
     fi
+    [ "$UPLOAD" != 1 ] || watcher_start
     log "$NAME: recording through skyzfsd on $DEV ($VDEV_MB MiB)"
 }
 end_daemon() {
@@ -392,6 +493,7 @@ end_daemon() {
         holder_ended "at the stop"
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
     fi
+    [ -z "$WATCH_PID" ] || watcher_end
     # The daemon rewrites its status at most every 100 ms, when a counter
     # changed: a second after the export it holds the last cut. The times
     # around the read bound, with the status's age_ms, when it was written.
@@ -876,6 +978,341 @@ rec_failed() {
         || rig_error "the instances were $(cut -f 2,3 "$RDIR/instances.tsv" | tr '\n' ' '), not added, then added acknowledging the failure"
 }
 
+# The upload courses (CUT_UPLOAD=1 only; M2.4c, design §5.2 and the
+# notes' "M2.4's shape"). Another writer is node B with the commands of
+# bins/skyzfs-nodeb: what it puts at head or in the cut's row goes to
+# DIR/others.tsv (`head HEX`, `row STATE NUMBER GROUP`), so that the
+# check judges the content only of the cuts the daemon uploaded. The
+# check judges each course from the files named below and the status at
+# the end; a count the daemon does not reach in time is the check's
+# verdict, not the rig's error.
+
+# The status into DIR/FILE, and the value of KEY in it.
+ustatus() {
+    timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/$1" 2>&1 \
+        || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/$1")"
+}
+skey() { sed -n "s/^$2 //p" "$RDIR/$1" | head -n 1; }
+# Node B's row of the volume (head, the cut's row, the lease) into DIR/FILE.
+nbrow() { nodeb row > "$RDIR/$1" 2> "$RDIR/$1.err" || rig_error "node B row failed: $(tail -n 2 "$RDIR/$1.err")"; }
+# The cut the row in DIR/FILE names: `STATE NUMBER GROUP`, or nothing.
+rowcut() { awk -F '\t' '$1 == "row" && NF == 4 && $3 ~ /^[0-9]+$/ { print $2, $3, $4 }' "$RDIR/$1"; }
+# FILE KEY N SECONDS: write 1 MiB and sync the pool, so that it cuts,
+# until the status's KEY is at least N, for up to SECONDS; the status
+# then in DIR/FILE. 1 when it was not, which the check judges.
+nudge_until() {
+    local t0=$SECONDS v="" k=0
+    while [ $((SECONDS - t0)) -lt "$4" ]; do
+        ustatus "$1"; v=$(skey "$1" "$2")
+        [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge "$3" ] && return 0
+        k=$((k + 1))
+        dd if=/dev/urandom of="$MNT/n$((k % 8))" bs=64K count=16 status=none
+        z 60 zpool sync "$POOL"
+        sleep 1
+    done
+    log "$NAME: the status's $2 was ${v:-nothing}, not at least $3, $4 s on"
+    return 1
+}
+# The volume's state and its newest uploaded cut before another writer
+# acts: DIR/STEP-status.txt after a sync of the pool (where it is
+# imported) and a drain, DIR/STEP-row.txt. Then up to 120 s for the
+# watcher to have fetched that cut under that head: a commit, the row's
+# read and the other writer's act can all fall between two of its looks
+# (run 44253158409, umoved), and the cuts after it are not the daemon's
+# to upload. Every 5 s node B reads the row again (DIR/STEP-now.txt):
+# where head or the row has moved on, the daemon cut after the look (a
+# sync of data the pool still held: run 44280164949, urow), the watcher
+# can no longer fetch that cut under that head, and the look is taken
+# again, up to five times, each a line in DIR/looks-again.txt. The
+# status is read before the row, and the daemon rewrites it at most once
+# in 100 ms: just after a sync it can still say idle, nothing held, one
+# upload before the row's (the review of #119, F1). Where its cut_group
+# is older than the row's group, the look is taken again too.
+before_other() {
+    local st n g h cg now _i _k
+    for _k in 1 2 3 4 5; do
+        if zpool list -H "$POOL" > /dev/null 2>&1; then z 60 zpool sync "$POOL"; fi
+        drain "$1-status.txt" idle 1
+        nbrow "$1-row.txt"
+        read -r st n g <<< "$(rowcut "$1-row.txt")"
+        [ -n "$st" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
+        h=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-row.txt")
+        cg=$(skey "$1-status.txt" cut_group)
+        if [[ $cg =~ ^[0-9]+$ ]] && [ "$cg" -lt "$g" ]; then
+            log "$NAME: the status before $1 was older than its row (cut group $cg, the row's $g): again"
+            printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "status at group $cg" >> "$RDIR/looks-again.txt"
+            continue
+        fi
+        now=""
+        for _i in $(seq 1 240); do
+            awk -F '\t' -v n="$n" -v g="$g" -v s="$st" -v h="$h" '$1 == n && $2 == g && $3 == s && $4 == h { f = 1 }
+                END { exit !f }' "$RDIR/uploaded.tsv" 2>/dev/null && return 0
+            if [ $((_i % 10)) = 0 ]; then
+                nbrow "$1-now.txt"
+                now="$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-now.txt") $(rowcut "$1-now.txt")"
+                [ "$now" = "$h $st $n $g" ] || break
+                now=""
+            fi
+            sleep 0.5
+        done
+        [ -n "$now" ] || rig_error "the watcher had not fetched cut $n (group $g) under head $h 120 s after $1's row named it"
+        log "$NAME: the daemon cut after the look before $1 (cut $n, then $now): again"
+        printf '%s\t%s\t%s\n' "$1" "$h $st $n $g" "$now" >> "$RDIR/looks-again.txt"
+    done
+    rig_error "the row or the status moved on after the look before $1 five times in a row"
+}
+
+# umoved (b): another writer moves head. The uploader finds head's group
+# not the row's (head_moved), abandons what it holds and counts it, and
+# never moves head back: nothing it holds afterwards is uploaded, and
+# head stays where the other writer put it.
+rec_umoved() {
+    create_pool
+    load 2
+    other_act moved act_move
+    nudge_until moved-after.txt upload_mismatches 1 120 || true
+    load 2
+    export_pool
+    nbrow end-row.txt
+}
+
+# urow (b): another writer puts a row of another state on head's group,
+# then one of the daemon's own state with a higher number than it
+# committed (the notes' Q8). Each is a mismatch (not_the_base), and the
+# next cut is whole: it uploads, so the daemon's state is at head again.
+rec_urow() {
+    create_pool
+    load 2
+    other_act row1 act_row1
+    nudge_until row1-after.txt upload_mismatches 1 120 || true
+    nudge_until row1-whole.txt uploaded_whole 2 120 || true
+    load 1
+    other_act row2 act_row2
+    nudge_until row2-after.txt upload_mismatches 2 120 || true
+    nudge_until row2-whole.txt uploaded_whole 3 120 || true
+    load 1
+    export_pool
+    nbrow end-row.txt
+}
+# STEP ACT: the other writer's act on the row it read. before_other STEP
+# reads the row once the daemon is at rest; ACT STATE NUMBER GROUP acts
+# on that row with node B's --expect-row and returns 6 where the row had
+# moved since (the daemon cut between the look and the act, which made
+# the act land on a group that was no longer head's: the review of #119,
+# G2). Then both are done again, up to five times; each time is a line
+# in DIR/acts-again.txt.
+other_act() {
+    local st n g rc _i
+    for _i in 1 2 3 4 5; do
+        before_other "$1"
+        read -r st n g <<< "$(rowcut "$1-row.txt")"
+        # The guard's control (the review of #119, F2): the same act on
+        # a row node B did not read (the number one past) must end with
+        # 6 and change nothing, whether or not the daemon cuts meanwhile.
+        rc=0
+        "$2" "$st" $((n + 1)) "$g" || rc=$?
+        [ "$rc" = 6 ] || rig_error "node B's act at $1 on the row $st:$((n + 1)):$g, which it did not read, ended with $rc, not 6: the guard is not wired"
+        printf '%s\t%s\n' "$1" "$st:$((n + 1)):$g" >> "$RDIR/guard-controls.txt"
+        rc=0
+        "$2" "$st" "$n" "$g" || rc=$?
+        [ "$rc" = 6 ] || return 0
+        log "$NAME: the daemon cut between the look before $1 and node B's act: again"
+        printf '%s\n' "$1" >> "$RDIR/acts-again.txt"
+    done
+    rig_error "node B's act at $1 found the row moved five times in a row"
+}
+# node B's COMMAND ARGS on the row STATE:NUMBER:GROUP, its output in
+# DIR/FILE: 0, or 6 where the row had moved; anything else is the rig's
+# error.
+guarded() { # file row command args...
+    local f=$1 row=$2 rc=0
+    shift 2
+    nodeb "$@" --expect-row "$row" > "$RDIR/$f" 2>&1 || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 6 ] || rig_error "node B $1 failed: $(tail -n 2 "$RDIR/$f")"
+    return "$rc"
+}
+# umoved's act: head moves to a commit of node B's, with a group the
+# daemon never made; the row stays.
+act_move() {
+    guarded moved.txt "$1:$2:$3" move-head --at 0 --group $(($3 + 1000)) || return 6
+    awk -F '\t' '$1 == "head" { print "head\t" $2 }' "$RDIR/moved.txt" >> "$RDIR/others.tsv"
+}
+# urow's acts: a row of another state on head's group, then one of the
+# daemon's state with a number five past the one it committed.
+act_row1() { other_row "$(printf '%032x' $((0x5eed)))" "$2" "$3" "$1:$2:$3"; }
+act_row2() { other_row "$1" $(($2 + 5)) "$3" "$1:$2:$3"; }
+other_row() { # state number group expected-row
+    guarded set-row.txt "$4" set-row --row "$1:$2:$3" || return 6
+    printf 'row\t%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RDIR/others.tsv"
+}
+
+# ukill (c): the daemon kills itself after the third commit's swap has
+# landed and before its cut is let go (--kill-at-upload swap:3, the test
+# hooks' build), with a writer on the pool. The next instance takes the
+# device over and the state up; its uploader finds the row naming the
+# cut it holds (rule 1), lets it go and uploads nothing for it.
+rec_ukill() {
+    local k
+    create_pool
+    rm -f "$WORK/writer.stop"
+    ( k=0
+      while [ ! -e "$WORK/writer.stop" ] && [ "$k" -lt 2000 ]; do
+          k=$((k + 1))
+          dd if=/dev/urandom of="$MNT/k$((k % 40))" bs=64K count=16 status=none
+          zpool sync "$POOL"
+      done
+      echo "$k files" ) > "$RDIR/kill-writer.log" 2>&1 &
+    WRITER=$!
+    for k in $(seq 1 1200); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done
+    kill -0 "$SERVE_PID" 2>/dev/null && rig_error "the daemon had not killed itself 300 s on: $(tail -n 2 "$RDIR/serve.log")"
+    serve_end 5 || rig_error "the daemon's pid went away and serve_end did not see it end"
+    printf 'killed_rc\t%s\n' "$SERVE_RC" > "$RDIR/kill.tsv"
+    SERVE_ARGS=()
+    serve_start 2
+    sleep 3
+    touch "$WORK/writer.stop"
+    for k in $(seq 1 300); do kill -0 "$WRITER" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$WRITER" 2>/dev/null; then
+        kill -9 "$WRITER" 2>/dev/null
+        rig_error "the writer did not end 300 s after the take-over"
+    fi
+    wait "$WRITER" || rig_error "the writer failed across the kill: $(tail -n 2 "$RDIR/kill-writer.log")"
+    WRITER=""
+    # The balance's start look (upload_balance), with nothing moving:
+    # a look while the cut found committed is let go can catch the
+    # uploader's count before the store's.
+    drain balance-start.txt idle 1
+    load 1
+    export_pool
+}
+
+# ulease (d): another holder has the lease when the volume is first
+# served. A serve is refused with 10 and writes nothing; one with
+# --serve-without-upload serves and uploads nothing. Once the other has
+# let go, the next serve takes the lease and uploads the pool's cuts,
+# its first one whole.
+ulease_other() {
+    nodeb lease --holder other-node --ttl-s 3600 > "$RDIR/other-lease.txt" 2>&1 \
+        || rig_error "node B could not take the lease: $(tail -n 2 "$RDIR/other-lease.txt")"
+    local rc=0
+    # Without the request log: a refused start is no instance. One that
+    # served instead is stopped at the limit. What the start wrote under
+    # the volume's and the run's directories goes to DIR/refused-wrote.txt.
+    touch "$WORK/refused.before"
+    sleep 1
+    timeout 60 "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" > "$RDIR/serve-refused.out" \
+        2> "$RDIR/serve-refused.log" || rc=$?
+    printf 'refused_rc\t%s\n' "$rc" > "$RDIR/lease.tsv"
+    find "$VOL" "$RUN" -newer "$WORK/refused.before" > "$RDIR/refused-wrote.txt" 2>&1 || true
+    SERVE_ARGS=(--serve-without-upload)
+}
+rec_ulease() {
+    create_pool
+    load 2
+    export_pool
+    ustatus without-status.txt
+    kill -TERM "$SERVE_PID" 2>/dev/null || true
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
+    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve.log")"
+    timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach-1.log" 2>&1 \
+        || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach-1.log")"
+    # Until here head is none at every look of node B's (rows.tsv): the
+    # time, on the clock of its lines, that the check reads them up to.
+    python3 -I -c 'import time; print(time.monotonic_ns())' > "$RDIR/release-ns.txt"
+    nodeb release --holder other-node > "$RDIR/other-release.txt" 2>&1 \
+        || rig_error "node B could not let the lease go: $(tail -n 2 "$RDIR/other-release.txt")"
+    SERVE_ARGS=()
+    serve_start 2
+    drain balance-start.txt idle 1
+    import_pool
+    load 2
+    export_pool
+}
+
+# ulost (d): the daemon's lease runs out while it is stopped (SIGSTOP,
+# a TTL of 3 s), and another holder takes it. Once going again the
+# daemon goes on serving and uploads nothing more: head and the row stay
+# what they were.
+rec_ulost() {
+    create_pool
+    load 2
+    export_pool
+    before_other lost
+    kill -STOP "$SERVE_PID" || rig_error "SIGSTOP to $SERVE_PID failed"
+    sleep 8
+    nodeb lease --holder other-node --ttl-s 3600 > "$RDIR/other-lease.txt" 2>&1 || true
+    kill -CONT "$SERVE_PID" || rig_error "SIGCONT to $SERVE_PID failed"
+    grep -q '^lease	acquired	' "$RDIR/other-lease.txt" \
+        || rig_error "node B did not take the lease 8 s into the stop: $(tail -n 2 "$RDIR/other-lease.txt")"
+    import_pool
+    load 2
+    export_pool
+    nbrow end-row.txt
+}
+
+# unostore (e, by name): object storage is down (CUT_S3_DOWN) when the
+# volume is first served. The serve goes on with no lease, its uploader
+# in its backoff; once the store is back (CUT_S3_UP) it takes the lease
+# and uploads, its first cut whole. The watcher pauses meanwhile.
+unostore_down() {
+    [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "unostore needs CUT_S3_DOWN and CUT_S3_UP"
+    touch "$WORK/watch.pause"
+    bash -c "$S3_DOWN" > "$RDIR/s3-down.log" 2>&1 || rig_error "CUT_S3_DOWN failed: $(tail -n 2 "$RDIR/s3-down.log")"
+}
+rec_unostore() {
+    local _i
+    create_pool
+    load 2
+    sleep 20
+    ustatus nostore-status.txt
+    bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
+    for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
+    rm -f "$WORK/watch.pause"
+    load 1
+    export_pool
+}
+
+# ukillput (f, by name): the daemon kills itself after its fifth segment
+# PUT has landed (--kill-at-upload put:5), inside an upload, with a
+# writer on the pool. The next instance takes over and uploads the cut
+# again; nothing of the first attempt is at head.
+rec_ukillput() { rec_ukill; }
+
+# ufailed (f, by name): the volume fails (SIGUSR1, the test build)
+# after the pool's export, once node B has fetched the old state's last
+# cut. Before the failure, RAW_BLOCKS blocks are written to the device
+# itself at 2 MiB, in the area between the front labels and the first
+# metaslab that ZFS leaves alone (as rec_edges uses it; the end of the
+# device can fall inside the last metaslab): the intent map names them,
+# no cut of the old state holds them, and nothing writes them again. The
+# instance ends with 3; one that acknowledges the failure begins a new
+# state, and its cuts must hold those blocks, whether the first goes up
+# whole or as a delta onto the map's base.
+RAW_BLOCKS=16
+raw_write() {
+    local at=$(((2 << 20) >> 12))
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cut_daemon_check as c
+sys.stdout.buffer.write(b"".join(c.raw_block(k) for k in range(int(sys.argv[2]))))' "$HERE" "$RAW_BLOCKS" > "$WORK/raw.img"
+    "$DD" if="$WORK/raw.img" of="$DEV" bs=4K seek="$at" oflag=direct conv=notrunc,fsync status=none \
+        || rig_error "the write of $RAW_BLOCKS blocks to $DEV at block $at failed"
+    printf 'raw\t%s\t%s\n' "$at" "$RAW_BLOCKS" > "$RDIR/raw.tsv"
+}
+rec_ufailed() {
+    create_pool
+    load 2
+    export_pool
+    before_other failed
+    raw_write
+    kill -USR1 "$SERVE_PID" 2>/dev/null || rig_error "SIGUSR1 to $SERVE_PID failed: the daemon had ended"
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGUSR1"
+    printf 'failed_rc\t%s\n' "$SERVE_RC" > "$RDIR/failure.tsv"
+    serve_start 2 acknowledged
+    drain balance-start.txt idle 1
+    import_pool
+    load 2
+    export_pool
+}
+
 rec_full() {
     local k
     create_pool
@@ -894,6 +1331,13 @@ rec_full() {
 # not the worst so far.
 record() {
     WORST=0
+    case $1 in
+        ulease) PRE_SERVE=ulease_other ;;
+        ukill) SERVE_ARGS=(--kill-at-upload swap:3) ;;
+        ukillput) SERVE_ARGS=(--kill-at-upload put:5) ;;
+        unostore) PRE_SERVE=unostore_down ;;
+        ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
+    esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
     "rec_$1"
     end

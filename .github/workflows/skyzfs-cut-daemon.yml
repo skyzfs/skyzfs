@@ -18,10 +18,24 @@ name: skyzfs-cut-daemon
 # at the cut's instant (`held_content`), from the request log's hashes of
 # each block. The input `hold` turns it off.
 #
+# Its third stage (M2.4c, the daemon's uploads), by dispatch with
+# `upload`: each job runs an object store (MinIO), the volume is made
+# there too, and the daemon uploads its own cuts (no holder: it refuses
+# `release` while it uploads). A watcher (tests/kernel/cut_watch.py)
+# stands beside the recording as node B (bins/skyzfs-nodeb): it fetches
+# each cut head comes to hold, and the check holds each one to the
+# reference's content at its instant and reads the status's upload
+# counters after a drain (`upload_*` lines). `daemon_ref` builds the
+# daemon from another commit (a pull request's head before it merges, or
+# a negative control) under this checkout's rig.
+#
 # Runs on a pull request that touches the rig's files or the daemon's
 # code (ubuntu-26.04 and ubuntu-26.04-arm), on a push of the rig's
 # files to a testing branch (ubuntu-26.04), and by dispatch (all four
-# images by default).
+# images by default). A pull request that changes the uploader, the
+# daemon that drives it, the rig's upload files or this workflow also
+# runs the upload stage's courses (a) to (d) on ubuntu-26.04; (e) to
+# (g) run by dispatch only. tests/kernel/cut_plan.py makes the jobs.
 on:
   workflow_dispatch:
     inputs:
@@ -29,19 +43,28 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full, and with hold: bound edges takeover failed); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound edges takeover failed; with upload: umoved urow ukill ulease ulost, and by name only unostore ukillput ufailed); empty: all"
         default: ""
       hold:
-        description: "serve with --hold-cuts and check the held cuts' content (the second stage)"
+        description: "serve with --hold-cuts and check the held cuts' content (the second stage); ignored with upload"
         type: boolean
         default: true
+      upload:
+        description: "make the volume in object storage (MinIO) and check what the daemon uploads (the third stage, M2.4c)"
+        type: boolean
+        default: false
+      daemon_ref:
+        description: "build skyzfsd from this commit (40 hex digits) and not from the checkout, under the checkout's rig. Empty: the checkout"
+        default: ""
   pull_request:
     paths:
       - tests/kernel/cut*
       - tests/kernel/test_cut*
       - tests/kernel/replay_check.py
+      - bins/skyzfs-nodeb/**
       - tests/lib/**
       - bins/skyzfsd/**
+      - crates/skyzfs-upload/**
       - crates/skyzfs-local/**
       - crates/skyzfs-uberblock/**
       - crates/skyzfs-ublk/**
@@ -56,6 +79,7 @@ on:
     paths:
       - tests/kernel/cut_daemon_check.py
       - tests/kernel/cut_hold.py
+      - tests/kernel/cut_watch.py
       - tests/kernel/cut-record.sh
       - .github/workflows/skyzfs-cut-daemon.yml
 
@@ -75,16 +99,45 @@ jobs:
       - run: python3 tests/kernel/test_cut_daemon_check.py -v
       - run: python3 tests/kernel/test_cut_daemon_main.py -v
       - run: python3 tests/kernel/test_cut_hold.py -v
+      - run: python3 tests/kernel/test_cut_watch.py -v
+      - run: python3 tests/kernel/test_cut_plan.py -v
       - run: bash tests/kernel/test_cut_record.sh
 
+  plan:
+    name: which jobs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IMAGES: ${{ inputs.images || '' }}
+          UPLOAD: ${{ inputs.upload }}
+          HOLD: ${{ inputs.hold }}
+          RECORDINGS: ${{ inputs.recordings || '' }}
+          BASE: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          : > "$RUNNER_TEMP/changed.txt"
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only --no-renames "$BASE...$HEAD" > "$RUNNER_TEMP/changed.txt"
+          fi
+          m=$(python3 tests/kernel/cut_plan.py "$EVENT" "$IMAGES" "$UPLOAD" "$HOLD" "$RECORDINGS" "$RUNNER_TEMP/changed.txt")
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          { echo "## Jobs"; echo; echo '```'; python3 -m json.tool <<< "$m"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   record:
-    name: record through skyzfsd and check, ${{ matrix.image }}
+    name: record through skyzfsd and check, ${{ matrix.label }}
+    needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        image: ${{ fromJSON(inputs.images || (github.event_name == 'push' && '["ubuntu-26.04"]') || '["ubuntu-26.04","ubuntu-26.04-arm"]') }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
       - name: Package mirrors
@@ -107,20 +160,56 @@ jobs:
             exit 2
           fi
           uname -r; sudo zfs version
+      # minio/minio was removed from Docker Hub (Sept 2026); pgsty/minio
+      # is the community fork, pinned as in e2e.yml and the node B rig.
+      - name: Start MinIO
+        if: matrix.upload == '1'
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && exit 0 || sleep 1
+          done
+          { echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo
+            echo "MinIO did not answer in 60 s."; docker logs minio 2>&1 | tail -n 20; } > cut-out/summary.md
+          exit 2
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cut-daemon-${{ matrix.image }}
       - name: Build skyzfsd with its test hooks
-        run: cargo build --release --locked -p skyzfsd --features test-hooks
+        env:
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+        run: |
+          if [ -z "$DAEMON_REF" ]; then
+            cargo build --release --locked -p skyzfsd --features test-hooks
+            echo "SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          else
+            [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+            git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+            (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+            echo "SKYZFSD=$RUNNER_TEMP/daemon-src/target/release/skyzfsd" >> "$GITHUB_ENV"
+            { echo "## The daemon"; echo; echo "Built from $DAEMON_REF (input daemon_ref), not the checkout."; echo; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Build skyzfs-nodeb
+        if: matrix.upload == '1'
+        run: cargo build --locked -p skyzfs-nodeb
       - name: Record through skyzfsd and check
         env:
-          RECORDINGS: ${{ inputs.recordings || '' }}
-          HOLD: ${{ (github.event_name != 'workflow_dispatch' || inputs.hold) && '1' || '0' }}
+          RECORDINGS: ${{ matrix.recordings }}
+          HOLD: ${{ matrix.hold }}
+          UPLOAD: ${{ matrix.upload }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
           for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
-          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$PWD/target/release/skyzfsd" CUT_HOLD="$HOLD" \
+          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD="$HOLD" CUT_UPLOAD="$UPLOAD" \
+            CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
+            SKZ_S3_BUCKET="skyzfs-cut-${{ github.run_id }}-${{ github.run_attempt }}" \
+            AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
             CUT_CHECK="python3 $PWD/tests/kernel/cut_daemon_check.py" \
             bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
       - name: Summary
@@ -128,11 +217,11 @@ jobs:
         run: |
           sudo chmod -R a+rX cut-out 2>/dev/null || true
           if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
+          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.label }}" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
             || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: cut-daemon-${{ matrix.image }}
+          name: cut-daemon-${{ matrix.label }}
           path: cut-out/
           retention-days: 90

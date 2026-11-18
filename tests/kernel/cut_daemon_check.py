@@ -195,7 +195,9 @@ import cut_ref  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
-        'bound', 'edges', 'takeover', 'failed')   # the last four only where the daemon holds cuts (cut-record.sh)
+        'bound', 'edges', 'takeover', 'failed',   # these four only where the daemon holds cuts (cut-record.sh)
+        'umoved', 'urow', 'ukill', 'ulease', 'ulost',     # these where it uploads them
+        'unostore', 'ukillput', 'ufailed')                # and these by name only
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
 RULES = ('early', 'txg-alone', 'count-repeats', 'previous', 'mark-dropped', 'mark-kept')
 CONTROLS = LISTS + RULES
@@ -212,17 +214,26 @@ CONTROLS = LISTS + RULES
 # hold a mark across a take-over and one across a created device.
 # failed (stage 2c) is new: its columns for the three rules are not known
 # before its first run either; its later instance trusts no state, so
-# neither mark rule changes it.
+# neither mark rule changes it. The upload courses (stage 3) are new
+# too: none of the three rules' columns is known before their first run,
+# nor the mark rules' for those with a second instance (ukill and
+# ukillput take the device over with a writer on the pool; ulease's
+# second instance is added after a clean end, ufailed's acknowledges a
+# failure).
+TWO_STARTS = ('ukill', 'ulease', 'ukillput', 'ufailed')     # the upload courses that serve twice
+UNKNOWN = {r: ('same', 'caught') for r in ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'unostore', 'ukillput',
+                                          'ufailed')}
 EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
                       rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught'),
-                      failed=('same', 'caught')),
+                      failed=('same', 'caught'), **UNKNOWN),
     'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught'),
-                          takeover=('same', 'caught'), failed=('same', 'caught')),
+                          takeover=('same', 'caught'), failed=('same', 'caught'), **UNKNOWN),
     'previous': dict({r: 'same' for r in RECS}, multihost=('same', 'caught'), takeover=('same', 'caught'),
-                     failed=('same', 'caught')),
-    'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught'),
-    'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught'),
+                     failed=('same', 'caught'), **UNKNOWN),
+    'mark-dropped': dict({r: 'same' for r in RECS}, takeover='caught',
+                         **{r: ('same', 'caught') for r in TWO_STARTS}),
+    'mark-kept': dict({r: 'same' for r in RECS}, takeover='caught', **{r: ('same', 'caught') for r in TWO_STARTS}),
 })
 CLOCK_NS = 10_000_000       # the tick of /proc/uptime, which age_ms is a difference of
 SECTOR = 512
@@ -884,7 +895,7 @@ def held_by_epoch(written, text, dcuts, starts):
     return out, blocks, stale
 
 
-def held_content(records, dcuts, written, blocks, final=None):
+def held_content(records, dcuts, written, blocks, final=None, last=None):
     """The cuts the holder wrote, each against the reference's content at
     its instant -> (ok, detail, controls {name: (verdict, detail)}, every
     block held wrong). ok is None, not False, where the only thing wrong
@@ -895,7 +906,9 @@ def held_content(records, dcuts, written, blocks, final=None):
 
     written: read_held; blocks: {number: {block: hash}} of each cut's map
     as the rig's image held it after the write; final: {block: hash} of
-    the image's blocks that are not zeros after the drain."""
+    the image's blocks that are not zeros after the drain; last: the
+    number the last cut written must have, where not the last counted (an
+    upload course whose daemon stops uploading on purpose)."""
     by_number = {}
     for k, d in enumerate(dcuts):
         if d['number'] != '-':
@@ -966,7 +979,8 @@ def held_content(records, dcuts, written, blocks, final=None):
         if n == mid:
             ctl['content_early'] = held_compare(early, image)[3]
             ctl['content_stale'] = held_compare(model, prev_image)[3]
-    last = int(dcuts[-1]['number']) if dcuts and dcuts[-1]['number'] != '-' else len(dcuts)
+    if last is None:
+        last = int(dcuts[-1]['number']) if dcuts and dcuts[-1]['number'] != '-' else len(dcuts)
     if written[-1]['number'] != last:
         bad.append(f"the last cut written is {written[-1]['number']}, the last counted {last}")
         definite = True
@@ -1531,6 +1545,441 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
     return rc, errored
 
 
+def read_uploaded(text):
+    """uploaded.tsv (cut_watch.py) -> [{'number', 'group', 'state', 'head',
+    'blocks', 'asked'}], asked the monotonic time node B's read began."""
+    out = []
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 7 or not all(x.isdigit() for x in (f[0], f[1], f[4], f[5], f[6])) \
+                or not re.fullmatch(r'[0-9a-f]{32}', f[2]) or not re.fullmatch(r'[0-9a-f]{64}', f[3]):
+            raise RigError(f'uploaded.tsv line {k + 1}: not `number group state head blocks ns ns`: {ln!r}')
+        out.append({'number': int(f[0]), 'group': int(f[1]), 'state': f[2], 'head': f[3], 'blocks': int(f[4]),
+                    'asked': int(f[5])})
+    return out
+
+
+# The status's counters of the uploads (status version 15) that a
+# recording with no other writer, one instance and a bound it does not
+# reach leaves at 0 (M2.4c-2's table): a cut lost, a commit given up, a
+# mismatch, a committed cut kept or found committed already.
+UPLOAD_ZERO = ('upload_mismatches', 'upload_abandoned_at_mismatch', 'upload_cuts_lost', 'upload_given_up',
+               'upload_committed_kept', 'upload_found_committed')
+# The courses (cut-record.sh): where another writer stops the uploads,
+# the file whose row names the last cut the daemon uploaded before it.
+UPLOAD_COURSES = ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'unostore', 'ukillput', 'ufailed')
+STOPPED_AT = {'umoved': 'moved-row.txt', 'ulost': 'lost-row.txt'}
+OTHER = 'other-node'
+
+
+def read_others(text):
+    """others.tsv -> (heads, rows) another writer put: head's commits in
+    hex, and rows as (state, number, group)."""
+    heads, rows = set(), set()
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) == 2 and f[0] == 'head' and re.fullmatch(r'[0-9a-f]{64}', f[1]):
+            heads.add(f[1])
+        elif len(f) == 4 and f[0] == 'row' and f[2].isdigit() and f[3].isdigit():
+            rows.add((f[1], int(f[2]), int(f[3])))
+        else:
+            raise RigError(f'others.tsv line {k + 1}: {ln!r}')
+    return heads, rows
+
+
+def read_row(text, what):
+    """node B's `row` output -> {'head': hex or None, 'cut': (state,
+    number, group) or None, 'lease': (holder, epoch) or None}."""
+    got = {}
+    for ln in text.splitlines():
+        f = ln.split('\t')
+        if f[0] == 'head':
+            got['head'] = f[1] if len(f) == 3 else None
+        elif f[0] == 'row':
+            got['cut'] = (f[1], int(f[2]), int(f[3])) if len(f) == 4 and f[2].isdigit() and f[3].isdigit() \
+                else None
+        elif f[0] == 'lease':
+            got['lease'] = (f[1], int(f[2])) if len(f) == 4 and f[2].isdigit() else None
+    if set(got) != {'head', 'cut', 'lease'}:
+        raise RigError(f'{what}: not what node B row prints: {text!r}')
+    return got
+
+
+def daemons_fetches(got, text, others, offsets=(0,)):
+    """The cuts node B fetched that the daemon uploaded -> (written,
+    blocks, skipped, twice, states): written as held_content takes it,
+    blocks {number: what changed since the daemon's cut fetched before
+    it}, skipped the fetches of what another writer put (its head, or its
+    row at head), twice the numbers the daemon's fetches carried more than
+    once (a cut at head under two commits), states the cut states their
+    rows named, in the order first fetched.
+
+    A state begun later counts from 1 again (epochs): the k-th state the
+    rows name is the k-th epoch, and its numbers become places in the
+    whole log by offsets[k], the cut lines before it. A fetch of a state
+    past the last offset is left out (the caller fails it by states).
+
+    text: uploaded-blocks.tsv, `fetch number block hash`; each fetch's
+    blocks are what changed since the fetch before, whoever's it was, so
+    the image is followed through every fetch."""
+    heads, rows = others
+    per = {}
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 4 or not all(x.isdigit() for x in f[:3]) or not re.fullmatch(r'[0-9a-f]{16}', f[3]):
+            raise RigError(f'uploaded-blocks.tsv line {k + 1}: {ln!r}')
+        if int(f[0]) >= len(got) or int(f[1]) != got[int(f[0])]['number']:
+            raise RigError(f'uploaded-blocks.tsv line {k + 1}: fetch {f[0]} is not cut {f[1]} of uploaded.tsv')
+        per.setdefault(int(f[0]), {})[int(f[2])] = f[3]
+    image, at_last = {}, {}
+    written, blocks, skipped, twice, states = [], {}, 0, set(), []
+    for k, g in enumerate(got):
+        image.update(per.get(k, {}))
+        if g['head'] in heads or (g['state'], g['number'], g['group']) in rows:
+            skipped += 1
+            continue
+        if g['state'] not in states:
+            states.append(g['state'])
+        e = states.index(g['state'])
+        if e >= len(offsets):
+            continue
+        g = dict(g, number=g['number'] + offsets[e])
+        if g['number'] in blocks:
+            twice.add(g['number'])
+            continue
+        blocks[g['number']] = {b: h for b, h in image.items() if at_last.get(b, ZERO) != h}
+        at_last = dict(image)
+        written.append(g)
+    return written, blocks, skipped, twice, states
+
+
+def at_least(n):
+    return lambda v: v.isdigit() and int(v) >= n
+
+
+def course_wants(name, rdir, status):
+    """What the status after the drain must say in recording name, and
+    the course's own findings -> ({key: str or predicate}, [problems],
+    [notes])."""
+    # The holder the row names (M2.4c-2's table), as node B last read it.
+    rows = [ln.split('\t') for ln in read_file(rdir, 'rows.tsv').splitlines()]
+    if not rows or len(rows[-1]) != 4:
+        raise RigError(f"rows.tsv: no line `ns head row lease` at its end: {rows[-1:] or 'nothing'}")
+    lease = rows[-1][3].split()
+    holder = lease[0]
+    want = {'upload_state': 'idle', 'cuts_held': '0', 'lease': 'held', 'lease_holder': holder,
+            'uploaded_whole': '1', 'lease_epoch': '1'}
+    want.update({k: '0' for k in UPLOAD_ZERO})
+    bad, notes = [], []
+    # Node B's own read of the lease: a holder, and the status's epoch.
+    if holder == 'none' or len(lease) < 2:
+        bad.append(f"node B read no lease in the bucket at its last look ({rows[-1][3]!r})")
+    elif status.get('lease_epoch') != lease[1]:
+        bad.append(f"the status says lease_epoch {status.get('lease_epoch')!r}, the bucket's lease {lease[1]}")
+
+    def row(fn):
+        return read_row(read_file(rdir, fn), fn)
+
+    def stat(fn):
+        return read_status(read_file(rdir, fn))
+
+    if name == 'umoved':
+        before, end = row('moved-row.txt'), row('end-row.txt')
+        heads, _ = read_others(read_file(rdir, 'others.tsv'))
+        n = stat('moved-status.txt').get('uploaded', '?')
+        want.update(upload_mismatches=at_least(1), upload_abandoned_at_mismatch=at_least(1),
+                    upload_checked='head_moved', uploaded=n)
+        if end['head'] not in heads:
+            bad.append(f"head is {end['head']} at the end, not the other writer's {sorted(heads)}: the uploader "
+                       "moved it")
+        if end['cut'] != before['cut']:
+            bad.append(f"the row is {end['cut']} at the end, {before['cut']} before the other writer")
+    elif name == 'urow':
+        first = row('row1-row.txt')
+        _, rows = read_others(read_file(rdir, 'others.tsv'))
+        end = row('end-row.txt')
+        want.update(upload_mismatches='2', upload_abandoned_at_mismatch=at_least(0), uploaded_whole='3',
+                    upload_checked='matched')
+        if end['cut'] is None or end['cut'] in rows or end['cut'][0] != first['cut'][0]:
+            bad.append(f"the row at the end is {end['cut']}, not a cut of the daemon's state {first['cut'][0]}")
+        for fn in ('row1-after.txt', 'row2-after.txt'):
+            notes.append(f"{fn.split('-')[0]}: upload_checked {stat(fn).get('upload_checked')!r} once the "
+                         "mismatch was counted")
+    elif name in ('ukill', 'ukillput'):
+        rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'kill.tsv').splitlines()).get('killed_rc')
+        if rc != '137':
+            bad.append(f'the first instance ended with {rc}, not 137 (SIGKILL)')
+        hook = [ln for ln in read_file(rdir, 'serve.log').splitlines() if 'test hook --kill-at-upload' in ln]
+        point = 'the swap of commit 3 ' if name == 'ukill' else 'segment PUT 5 landed'
+        if not hook or point not in hook[0]:
+            bad.append(f"the first instance's log says {hook[:1] or 'nothing'} of the kill, not {point.strip()}")
+        if name == 'ukill':
+            # Rule (1): the row is the cut it holds; let go, nothing uploaded.
+            want.update(upload_found_committed='1', uploaded_whole='0', uploaded=at_least(1))
+        else:
+            # The cut being uploaded goes up again: whole where it was the
+            # first, which the kill's point does not say.
+            want.update(uploaded_whole=at_least(0), uploaded=at_least(1))
+            notes.append(f"uploaded_whole {status.get('uploaded_whole')!r} after the kill")
+    elif name == 'unostore':
+        down = stat('nostore-status.txt')
+        for k, v in (('lease', ('none',)), ('upload_state', ('no_lease', 'backoff')), ('uploaded', ('0',))):
+            if down.get(k) not in v:
+                bad.append(f"with object storage down, {k} {down.get(k)!r}, not one of {v}")
+        notes.append(f"with object storage down: upload {down.get('upload')!r}, upload_why {down.get('upload_why')!r}, "
+                     f"upload_wait_ms {down.get('upload_wait_ms')!r}; upload_errors {status.get('upload_errors')!r} "
+                     "at the end")
+    elif name == 'ufailed':
+        rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'failure.tsv').splitlines()).get('failed_rc')
+        if rc != '3':
+            bad.append(f'the failed instance ended with {rc}, not 3')
+        st2 = stat('status-start-2.txt')
+        if st2.get('cut_state') != 'begun':
+            bad.append(f"the start that acknowledged the failure says cut_state {st2.get('cut_state')!r}, not begun")
+        # The status counts the second instance's. Its new state's first
+        # cut holds the whole volume (rule 3) only where the start began
+        # the intent map anew; one that took the map up counts only the
+        # map's regions as changed (M2.3), and that cut goes up as a delta
+        # onto the base the map names (rule 2). The start's log says which.
+        log2 = read_file(rdir, 'serve-2.log')
+        if 'intent map: taken up' in log2:
+            want.update(uploaded_whole='0', uploaded=at_least(1), upload_rule='delta', upload_checked='matched')
+            notes.append('the start that acknowledged the failure took the intent map up: the new state\'s first '
+                         'cut went up as a delta onto the map\'s base')
+        elif 'intent map: begun anew' not in log2:
+            bad.append('serve-2.log says neither that the intent map was taken up nor that it was begun anew')
+    elif name == 'ulease':
+        rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'lease.tsv').splitlines()).get('refused_rc')
+        if rc != '10':
+            bad.append(f'the serve while another held the lease ended with {rc}, not 10')
+        wrote = [ln for ln in read_file(rdir, 'refused-wrote.txt').splitlines() if ln.strip()]
+        notes.append(f"the refused start wrote {len(wrote)} paths ({', '.join(os.path.basename(x) for x in wrote[:4])})")
+        without = stat('status-start-1.txt')
+        for k, v in (('upload_state', ('off', 'no_lease')), ('lease', ('none', 'lost'))):
+            if without.get(k) not in v:
+                bad.append(f"served with --serve-without-upload, {k} {without.get(k)!r}, not one of {v}")
+        n = stat('without-status.txt').get('uploaded')
+        if n != '0':
+            bad.append(f'served with --serve-without-upload, uploaded {n!r} cuts')
+        want.update(lease_epoch=at_least(1))
+        notes.append(f"lease_epoch {status.get('lease_epoch')!r} after the other holder let go")
+        # Node B's side: before the release, head stayed where it was at
+        # node B's first look (none, or the create's own commit, which
+        # names no cut) and the row named no cut.
+        until = int(read_file(rdir, 'release-ns.txt').split()[0])
+        before = [r for r in rows if len(r) == 4 and int(r[0]) < until]
+        if not before:
+            bad.append('node B read nothing before the other holder let the lease go')
+        moved = [r for r in before if r[1] != before[0][1] or r[2] != 'none']
+        if moved:
+            bad.append(f"node B read head {moved[0][1]} and the row {moved[0][2]} before the other holder let the "
+                       f"lease go, head {before[0][1]} at its first look: the daemon uploaded without the lease")
+    elif name == 'ulost':
+        before, end = row('lost-row.txt'), row('end-row.txt')
+        took = read_file(rdir, 'other-lease.txt').split()
+        n = stat('lost-status.txt').get('uploaded', '?')
+        want.update(upload_state='lease_lost', lease='lost', lease_holder=OTHER, cuts_held=at_least(0),
+                    lease_epoch=took[3] if len(took) > 3 and took[:2] == ['lease', 'acquired'] else '?', uploaded=n)
+        if (end['head'], end['cut']) != (before['head'], before['cut']):
+            bad.append(f"head and the row are {end['head']} {end['cut']} at the end, {before['head']} "
+                       f"{before['cut']} when the lease was lost")
+        if end['lease'] is None or end['lease'][0] != OTHER:
+            bad.append(f"the lease at the end is {end['lease']}, not {OTHER}'s")
+    return want, bad, notes
+
+
+def raw_block(k):
+    """Block k of those ufailed writes to the device itself before the
+    failure (cut-record.sh raw_write)."""
+    return (f'ufailed raw block {k}\n'.encode() * 256)[:BLOCK]
+
+
+def raw_held(rdir):
+    """ufailed's blocks written outside the pool before the failure, in
+    the last image node B fetched -> (how many of them it holds, how
+    many were written), or None where the course wrote none (raw.tsv)."""
+    if not os.path.exists(os.path.join(rdir, 'raw.tsv')):
+        return None
+    f = read_file(rdir, 'raw.tsv').split()
+    if len(f) != 3 or f[0] != 'raw' or not (f[1].isdigit() and f[2].isdigit()):
+        raise RigError(f'raw.tsv: {f}')
+    at, n = int(f[1]), int(f[2])
+    image = {}
+    for ln in read_file(rdir, 'uploaded-blocks.tsv').splitlines():
+        x = ln.split('\t')
+        if len(x) == 4:
+            image[int(x[2])] = x[3]
+    held = sum(1 for k in range(n) if image.get(at + k) == hashlib.sha256(raw_block(k)).digest()[:8].hex())
+    return held, n
+
+
+def at_rest(st):
+    """A status look the balance can start from: the uploader idle with
+    nothing held, or nothing counted yet."""
+    return (st.get('upload_state') == 'idle' and st.get('cuts_held') == '0') or \
+        all(st.get(k) == '0' for k in BALANCE)
+
+
+BALANCE = ('cuts', 'uploaded', 'upload_found_committed', 'upload_committed_gone', 'upload_committed_kept',
+           'cuts_replaced', 'cuts_abandoned', 'cuts_held')
+
+
+def upload_balance(start, end):
+    """The cuts the store counted against where they went, over one
+    daemon's life (status.rs, `cuts_replaced`): between the look at its
+    start and the one after the drain, the change in `cuts` equals the
+    change in the cuts committed and let go (`uploaded` +
+    `upload_found_committed` - `upload_committed_gone` -
+    `upload_committed_kept`), plus those replaced, abandoned and held.
+    -> (True or False, detail)."""
+    missing = sorted({k for k in BALANCE for st in (start, end) if not (st.get(k) or '').isdigit()})
+    if missing:
+        return False, f"the status has no {', '.join(missing)} (a daemon before cuts_replaced?)"
+    d = {k: int(end[k]) - int(start[k]) for k in BALANCE}
+    committed = d['uploaded'] + d['upload_found_committed'] - d['upload_committed_gone'] - d['upload_committed_kept']
+    rest = committed + d['cuts_replaced'] + d['cuts_abandoned'] + d['cuts_held']
+    detail = (f"cuts {d['cuts']} = committed and let go {committed} + replaced {d['cuts_replaced']} + abandoned "
+              f"{d['cuts_abandoned']} + held {d['cuts_held']:+d}"
+              + ('' if rest == d['cuts'] else f": the right side is {rest}")
+              + f"; at the start upload_state {start.get('upload_state')!r}, after the drain "
+              f"{end.get('upload_state')!r}")
+    if rest != d['cuts']:
+        detail = detail.replace(' = ', ' != ', 1)
+    return rest == d['cuts'], detail
+
+
+def upload_lines(put, rdir, records, dcuts, status, name='life'):
+    """The daemon's uploads (M2.T3 on M2.4c), where the watcher ran beside
+    the recording -> (1 when a line is a verdict against the daemon, else
+    0; whether a line is the rig's ERROR).
+
+    Each cut node B fetched at head (cut_watch.py) that the daemon
+    uploaded, and not another writer (DIR/others.tsv), is held to the
+    reference's content at its instant, as a holder's written cuts are
+    (held_content: the row's number and group against the cut line's,
+    every block, the last cut fetched the last counted, or in a course
+    that stops the uploads the last before it). The status after the
+    drain says what the course wants (course_wants): in a recording with
+    no other writer, that the daemon uploads, holds the lease it took at
+    epoch 1 under the holder node B's row names, holds nothing and is idle, uploaded the volume whole once,
+    and counted none of the things no other writer and no bound make
+    (UPLOAD_ZERO). `upload_course` judges a course's own files."""
+    rc, errored = 0, False
+    log = read_file(rdir, 'watch.log')
+    err = [ln for ln in log.splitlines() if '\tERROR ' in ln]
+    if err:
+        raise RigError(f"the watcher: {err[0].split(chr(9), 1)[1]}")
+    bad = [ln.split('\tVERDICT ', 1)[1] for ln in log.splitlines() if '\tVERDICT ' in ln]
+    put('upload_reads', 'FAIL' if bad else 'PASS', '; '.join(bad) if bad else
+        "node B read the content of every cut it found at head")
+    if bad:
+        return 1, False
+    bare = [r for r in records if cut_ref.is_write(r) and r.get('hashes') is None]
+    if bare:
+        raise RigError(f'{len(bare)} writes applied with no hashes in the request log: the content of uploaded '
+                       'cuts cannot be judged')
+    got = read_uploaded(read_file(rdir, 'uploaded.tsv')) if os.path.exists(os.path.join(rdir, 'uploaded.tsv')) \
+        else []
+    others = read_others(read_file(rdir, 'others.tsv')) \
+        if os.path.exists(os.path.join(rdir, 'others.tsv')) else (set(), set())
+    # Where a later instance began a state (ufailed), its cuts' numbers
+    # are their places in the whole log, as the cut lines' are (epochs).
+    n_epochs = 1 + max((d.get('epoch', 0) for d in dcuts), default=0)
+    offsets = [sum(1 for d in dcuts if d.get('epoch', 0) < e) for e in range(n_epochs)]
+    mine, blocks, skipped, twice, states = daemons_fetches(
+        got, read_file(rdir, 'uploaded-blocks.tsv') if got else '', others, offsets)
+    if not mine:
+        put('upload_content', 'FAIL', f"node B found no cut of the daemon's at head ({skipped} of another "
+            f"writer's); the daemon counted {len(dcuts)}")
+        return 1, False
+    by_number = {int(d['number']): d for d in dcuts if d['number'].isdigit()}
+    written = []
+    for g in mine:
+        d = by_number.get(g['number'])
+        # The row says no more than the number and the group: the cut
+        # line says how it opens, and held_content holds the group.
+        written.append({'number': g['number'], 'group': g['group'], 'blocks': g['blocks'], 'asked': g['asked'],
+                        'opens': ('itself' if d['itself'] else 'rewind') if d else 'itself'})
+    last = None
+    if name in STOPPED_AT:
+        cut = read_row(read_file(rdir, STOPPED_AT[name]), STOPPED_AT[name])['cut']
+        last = cut[1] if cut else None
+    ok, detail, controls, _ = held_content(records, dcuts, written, blocks, last=last)
+    if len(states) > n_epochs:
+        ok, detail = False, (f"the rows name {len(states)} cut states ({', '.join(states)}), the request log "
+                             f"{n_epochs}; {detail}")
+    if twice:
+        ok, detail = False, f"cuts {sorted(twice)} were at head under two commits; {detail}"
+    detail = detail.replace(' cuts written and released;', ' cuts fetched at head;')
+    ok_content = bool(ok)
+    if ok is None:
+        put('upload_content', 'ERROR', detail)
+        errored = True
+    else:
+        put('upload_content', 'PASS' if ok else 'FAIL',
+            f"node B fetched cuts {', '.join(str(g['number']) for g in mine)} at head"
+            + (f' and {skipped} of another writer\'s' if skipped else '') + f": {detail}")
+        rc = rc if ok else 1
+    for c in CONTENT_CONTROLS:
+        verdict, d = controls[c]
+        good = verdict == CONTENT_EXPECTED[c]
+        put(f'ctl_{c}', verdict.upper(), f"{d} (expected: {CONTENT_EXPECTED[c]}{'' if good else '; DIFFERS'})")
+        rc = rc if good else 1
+    drain = read_file(rdir, 'drain.txt').splitlines()
+    secs = drain[0].split()[-1] if drain and drain[0].startswith('seconds ') else '?'
+    want, cbad, notes = course_wants(name, rdir, status)
+    wrong = [f"{k} {status.get(k)!r}, not {v if isinstance(v, str) else 'as the course wants'}"
+             for k, v in want.items()
+             if not (status.get(k) == v if isinstance(v, str) else v(status.get(k) or ''))]
+    n = status.get('uploaded', '')
+    if name not in UPLOAD_COURSES and (not n.isdigit() or int(n) < len(mine)):
+        wrong.append(f'uploaded {n!r}, fewer than the {len(mine)} cuts node B fetched')
+    if name not in UPLOAD_COURSES:
+        wrong += cbad           # no course line: node B's read of the lease goes here
+    put('upload_status', 'FAIL' if wrong else 'PASS',
+        ('; '.join(wrong) if wrong else ', '.join(f'{k} {status.get(k)}' for k in want))
+        + f"; uploaded {n}, upload_checked {status.get('upload_checked')!r}, upload_rule "
+        f"{status.get('upload_rule')!r}, upload_errors {status.get('upload_errors')!r}, lease_holder "
+        f"{status.get('lease_holder')!r}; the drain took {secs} s")
+    rc = rc if not wrong else 1
+    # The balance over the last instance, from a look at rest after its
+    # start (DIR/balance-start.txt, which a course that starts the daemon
+    # again takes) to the drain.
+    k = max(int(m.group(1)) for m in (re.fullmatch(r'status-start-(\d+)\.txt', f) for f in os.listdir(rdir)) if m)
+    fn = 'balance-start.txt' if os.path.exists(os.path.join(rdir, 'balance-start.txt')) else f'status-start-{k}.txt'
+    if k > 1 and fn != 'balance-start.txt':
+        raise RigError(f'serve {k} and no balance-start.txt: the balance has no look at rest to start from')
+    start = read_status(read_file(rdir, fn))
+    if not at_rest(start):
+        put('upload_balance', 'ERROR', f"serve {k}: the look it starts from ({fn}) is not at rest: upload_state "
+            f"{start.get('upload_state')!r}, cuts_held {start.get('cuts_held')!r}")
+        errored = True
+    else:
+        ok, detail = upload_balance(start, status)
+        put('upload_balance', 'PASS' if ok else 'FAIL', f'serve {k}, from {fn}: {detail}')
+        rc = rc if ok else 1
+    # ufailed: the blocks written to the device after the old state's
+    # last cut and before the failure are in the new state's cuts.
+    raw = raw_held(rdir)
+    if raw is not None:
+        held, n = raw
+        if held == n:
+            put('upload_raw', 'PASS', f"node B's last cut holds the {n} blocks written to the device after the old "
+                "state's last cut and before the failure")
+        elif ok_content:
+            put('upload_raw', 'ERROR', f"node B's last cut holds {held} of the {n} blocks written before the "
+                "failure, and so does the reference: the pool wrote over them, and the course shows nothing")
+            errored = True
+        else:
+            put('upload_raw', 'FAIL', f"node B's last cut holds {held} of the {n} blocks written before the "
+                "failure; the content line says where it differs from the reference")
+            rc = 1
+    if name in UPLOAD_COURSES:
+        put('upload_course', 'FAIL' if cbad else 'PASS', '; '.join(cbad + notes) if cbad or notes else name)
+        rc = rc if not cbad else 1
+    return rc, errored
+
+
 def main():
     if len(sys.argv) not in (6, 7):
         sys.exit(__doc__)
@@ -1618,6 +2067,12 @@ def main():
                     rc = max(rc, failure_line(put, rdir))
                 v, e = held_lines(put, rdir, instances, records, dcuts, status, dev, name, begun)
                 rc, errored = max(rc, v), errored or e
+        elif os.path.exists(os.path.join(rdir, 'watch.log')):
+            if len(instances) > 1 and name not in TWO_STARTS:
+                raise RigError(f'{len(instances)} instances of the daemon in a recording that uploads: only '
+                               f"{', '.join(TWO_STARTS)} start it again")
+            v, e = upload_lines(put, rdir, records, dcuts, status, name)
+            rc, errored = max(rc, v), errored or e
         elif len(instances) > 1:
             raise RigError(f'{len(instances)} instances of the daemon and no holder: only a recording that holds '
                            'cuts starts the daemon again')

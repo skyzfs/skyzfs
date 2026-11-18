@@ -10,6 +10,7 @@ taken in with it.
 import contextlib
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,7 @@ FAILURE = 'cuts_held\t1\nfailed_rc\t3\nrefused_rc\t4\n'
 
 def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_name=None, holder=None,
               split=None, tamper_split=None, tamper_written=None, holder_log=None, holder_left=None,
-              failure=FAILURE, tamper_starts=None, tamper_marks=None, held=None):
+              failure=FAILURE, tamper_starts=None, tamper_marks=None, held=None, upload=None, watch_log='1\tstopped\n'):
     """A recording's directory -> (exit code, {line: (verdict, detail)}).
 
     holder: where given, the daemon held cuts and the holder ran: its
@@ -52,10 +53,15 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
     changes the statuses read at each start; tamper_marks(marks) the
     rig's marks. held: where given, main runs in this process with
     held_lines replaced by held(the real held_lines), and the exit code is
-    its SystemExit's."""
+    its SystemExit's. upload: where given, the daemon uploaded its cuts and
+    the watcher ran (the third stage): its files as node B would leave
+    them for a right daemon that uploaded every cut, with upload(written,
+    blocks, status) -> (written, blocks, status[, {file: text}]) changing
+    them and naming a course's own files (watcher_files); watch_log
+    the watcher's log."""
     records, read, dev = t.fixture(name)
     cs, at = t.daemon_cuts_of(records, read, dev)
-    text, marks = t.request_log(records, read, dev, at, hashes=holder is not None)
+    text, marks = t.request_log(records, read, dev, at, hashes=holder is not None or upload is not None)
     if tamper_log:
         text = tamper_log(text)
     if tamper_marks:
@@ -107,9 +113,50 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     if fn not in holder_left:
                         os.remove(os.path.join(d, fn))
             status = status or held_status(records, read, dev, cs)
+        if upload is not None:
+            written, blocks, _ = t.held_images(records, cs, cut_ref.opens(records, read, dev, cs))
+            got = upload(written, blocks, (status or held_status(records, read, dev, cs))
+                         + UPLOADED.format(n=len(written), r=len(cs) - len(written)))
+            written, blocks, status = got[:3]
+            watcher_files(d, written, blocks, watch_log)
+            # A course's own files (cut-record.sh), where upload gives them.
+            for fn, body in (got[3] if len(got) > 3 else {}).items():
+                with open(os.path.join(d, fn), 'w') as f:
+                    f.write(body)
         return run_in(d, text, marks, records, read, dev, cs, status, name, tamper_kstat, as_name, held)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# The status's upload keys after a right daemon's drain (status
+# version 15), with n cuts uploaded.
+UPLOADED = ('upload_state idle\nupload_cut 0\nlease held\nlease_holder runner\nlease_epoch 1\nuploaded {n}\n'
+            'uploaded_whole 1\nupload_mismatches 0\nupload_abandoned_at_mismatch 0\nupload_cuts_lost 0\n'
+            'upload_given_up 0\nupload_committed_kept 0\nupload_found_committed 0\nupload_errors 0\n'
+            'upload_checked matched\nupload_rule delta\ncuts_held 0\nupload_committed_gone 0\n'
+            'cuts_replaced {r}\n')
+# The look at the daemon's start: nothing counted yet.
+STARTED = ''.join(f'{k} 0\n' for k in cdc.BALANCE) + 'upload_state unchecked\ncut_state begun\n'
+STATE = 'ab' * 16
+
+
+def watcher_files(d, written, blocks, log):
+    """The watcher's files (cut_watch.py) in recording directory d: each
+    cut of written fetched at head, its blocks those that changed (keyed
+    by its number, or by its 'key' where it has one: another writer's
+    fetch, which can carry a number of the daemon's), at its 'head'."""
+    def w(fn, text):
+        with open(os.path.join(d, fn), 'w') as f:
+            f.write(text)
+    w('watch.log', log)
+    w('uploaded.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x.get('state', STATE)}\t{x.get('head', 'cd' * 32)}\t"
+                              f"{x['blocks']}\t"
+                              f"{x.get('asked', 1)}\t{x.get('asked', 1) + 1}\n" for x in written))
+    w('uploaded-blocks.tsv', ''.join(f'{k}\t{x["number"]}\t{b}\t{h}\n' for k, x in enumerate(written)
+                                     for b, h in sorted(blocks[x.get('key', x['number'])].items())))
+    w('drain.txt', 'seconds 3\nupload_state idle\ncuts_held 0\n')
+    w('status-start-1.txt', STARTED)
+    w('rows.tsv', f"5\t{'cd' * 32} 7\t{STATE} 1 4\trunner 1 99\n")
 
 
 def held_status(records, read, dev, cs):
@@ -590,6 +637,94 @@ class Main(unittest.TestCase):
                                           held=lambda real: lambda *a, **kw: (0, errored), **kw)
                     self.assertEqual(rc, want, {n: v for n, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
 
+    def test_a_right_daemon_that_uploads(self):
+        """The third stage (M2.4c): every cut fetched at head holds the
+        reference's content, the last is the last counted, and the status
+        after the drain is a clean upload's."""
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st))
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        for key in ('cuts', 'status', 'upload_reads', 'upload_content', 'upload_status'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        for c in cdc.CONTENT_CONTROLS:
+            self.assertEqual(lines[f'ctl_{c}'][0], 'CAUGHT', lines[f'ctl_{c}'])
+        self.assertNotIn('held_content', lines)
+
+    def test_node_b_saw_some_cuts(self):
+        """The watcher fetches head twice a second and misses cuts that
+        head held for less: those it fetched are judged, each with what
+        changed since the one before it."""
+        def sparse(written, blocks, st):
+            kept, acc = [], {}
+            for k, x in enumerate(written):
+                acc.update(blocks[x['number']])
+                if k % 3 == 2 or k == len(written) - 1:
+                    blocks[x['number']] = dict(acc)
+                    kept.append(dict(x, blocks=len(acc)))
+                    acc = {}
+            return kept, blocks, st
+        rc, lines = recording(upload=sparse)
+        self.assertEqual((rc, lines['upload_content'][0]), (0, 'PASS'), lines['upload_content'])
+
+    def test_what_an_upload_gets_wrong(self):
+        """Each wrong thing node B or the status could show is a verdict."""
+        def wrong_block(w, b, st):
+            n = w[len(w) // 2]['number']
+            blk = sorted(b[n])[0]
+            b[n][blk] = '0123456789abcdef'
+            return w, b, st
+
+        def wrong_group(w, b, st):
+            w[2] = dict(w[2], group=w[2]['group'] + 1)
+            return w, b, st
+
+        def not_the_last(w, b, st):
+            return w[:-1], b, st
+
+        def two_states(w, b, st):
+            w[-1] = dict(w[-1], state='ef' * 16)
+            return w, b, st
+
+        def status(old, new):
+            return lambda w, b, st: (w, b, st.replace(old, new))
+        for why, upload, key in (('a block of a cut', wrong_block, 'upload_content'),
+                                 ("a row's group", wrong_group, 'upload_content'),
+                                 ('the last cut not uploaded', not_the_last, 'upload_content'),
+                                 ('two cut states', two_states, 'upload_content'),
+                                 ('a mismatch', status('upload_mismatches 0', 'upload_mismatches 1'), 'upload_status'),
+                                 ('a second whole cut', status('uploaded_whole 1', 'uploaded_whole 2'),
+                                  'upload_status'),
+                                 ('the lease lost', status('lease held', 'lease lost'), 'upload_status'),
+                                 ('no holder named', status('lease_holder runner', 'lease_holder none'),
+                                  'upload_status'),
+                                 ('another epoch', status('lease_epoch 1', 'lease_epoch 2'), 'upload_status'),
+                                 ('a cut lost', status('upload_cuts_lost 0', 'upload_cuts_lost 1'), 'upload_status'),
+                                 ('not idle', status('upload_state idle', 'upload_state backoff'), 'upload_status'),
+                                 ('a cut still held', status('cuts_held 0', 'cuts_held 1'), 'upload_status'),
+                                 ('fewer uploaded than fetched', lambda w, b, st: (w, b, re.sub(
+                                     r'^uploaded \d+$', 'uploaded 1', st, flags=re.M)), 'upload_status'),
+                                 ('a cut that went nowhere', lambda w, b, st: (w, b, re.sub(
+                                     r'^cuts (\d+)$', lambda m: f'cuts {int(m.group(1)) + 1}', st, flags=re.M)),
+                                  'upload_balance'),
+                                 ('a cut counted twice', status('cuts_replaced 0', 'cuts_replaced 1'),
+                                  'upload_balance'),
+                                 ('a daemon before cuts_replaced', status('cuts_replaced 0\n', ''),
+                                  'upload_balance')):
+            with self.subTest(why):
+                rc, lines = recording(upload=upload)
+                self.assertEqual((rc, lines[key][0]), (1, 'FAIL'), lines[key])
+
+    def test_the_watchers_own_end(self):
+        """A VERDICT in the watcher's log (node B could not read head's
+        content) is one; its ERROR is the rig's; no cut fetched is a
+        verdict."""
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st), watch_log='1\tVERDICT node B could not read head\n')
+        self.assertEqual((rc, lines['upload_reads'][0]), (1, 'FAIL'))
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st), watch_log='1\tERROR node B row failed 3 times\n')
+        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        rc, lines = recording(upload=lambda w, b, st: ([], {}, st))
+        self.assertEqual((rc, lines['upload_content'][0]), (1, 'FAIL'))
+        self.assertIn("node B found no cut of the daemon's at head", lines['upload_content'][1])
+
     def test_two_instances(self):
         """A take-over between a flush's receipt and its barrier: the
         reference cuts at the flush the next instance is handed again,
@@ -735,6 +870,344 @@ class Main(unittest.TestCase):
         rc, lines = recording(lambda text: text + f'999999999\t7\tstart\t0\t-\t-\t-\t64\n')
         self.assertEqual(rc, 2, lines)
         self.assertIn('rig_error', lines)
+
+
+
+OTHER_HEAD = 'ee' * 32
+
+
+def row_file(cut, head='cd' * 32, lease=('runner', 1)):
+    """node B's `row` output naming cut (state, number, group) or none."""
+    return (f'head\t{head}\t7\n' + (f'row\t{cut[0]}\t{cut[1]}\t{cut[2]}\n' if cut else 'row\tnone\n')
+            + (f'lease\t{lease[0]}\t{lease[1]}\t99\n' if lease else 'lease\tnone\n'))
+
+
+class Courses(unittest.TestCase):
+    """The upload courses (cut-record.sh's umoved, urow, ukill, ulease,
+    ulost): what another writer put at head is not the daemon's, and each
+    course's own files."""
+
+    def test_the_daemons_fetches(self):
+        """The image is followed through every fetch; a cut of the
+        daemon's is what changed since its cut fetched before, another
+        writer's head or row is skipped, and a number at head under two
+        of the daemon's commits is named."""
+        got = [{'number': 1, 'group': 10, 'state': STATE, 'head': 'aa' * 32},
+               {'number': 1, 'group': 10, 'state': STATE, 'head': OTHER_HEAD},
+               {'number': 2, 'group': 11, 'state': STATE, 'head': 'bb' * 32},
+               {'number': 2, 'group': 11, 'state': 'ff' * 16, 'head': 'bb' * 32},
+               {'number': 2, 'group': 11, 'state': STATE, 'head': 'cc' * 32}]
+        a, b, x = '1' * 16, '2' * 16, '3' * 16
+        text = (f'0\t1\t0\t{a}\n0\t1\t1\t{b}\n1\t1\t0\t{x}\n1\t1\t5\t{x}\n'
+                f'2\t2\t0\t{a}\n2\t2\t5\t{cdc.ZERO}\n4\t2\t1\t{x}\n')
+        others = ({OTHER_HEAD}, {('ff' * 16, 2, 11)})
+        written, blocks, skipped, twice, states = cdc.daemons_fetches(got, text, others)
+        self.assertEqual([w['number'] for w in written], [1, 2])
+        self.assertEqual(blocks, {1: {0: a, 1: b}, 2: {}})
+        self.assertEqual((skipped, twice, states), (2, {2}, [STATE]))
+        # A state begun later: its numbers are places in the whole log.
+        later = got[:1] + [dict(got[2], state='99' * 16, number=1)]
+        written, blocks, _, _, states = cdc.daemons_fetches(later, f'0\t1\t0\t{a}\n1\t1\t3\t{b}\n', (set(), set()),
+                                                            (0, 26))
+        self.assertEqual(([w['number'] for w in written], states), ([1, 27], [STATE, '99' * 16]))
+        self.assertEqual(blocks[27], {3: b})
+        written, _, _, _, states = cdc.daemons_fetches(later, f'0\t1\t0\t{a}\n', (set(), set()))
+        self.assertEqual(([w['number'] for w in written], len(states)), ([1], 2))
+        with self.assertRaises(cdc.RigError):
+            cdc.daemons_fetches(got, '7\t1\t0\t' + a + '\n', others)
+        with self.assertRaises(cdc.RigError):
+            cdc.daemons_fetches(got, '1\t2\t0\t' + a + '\n', others)
+
+    def files(self, files):
+        files = dict({'rows.tsv': f"5\t{'cd' * 32} 7\t{STATE} 5 40\trunner 1 99\n"}, **files)
+        d = tempfile.mkdtemp(prefix='cdc-course-')
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        for fn, body in files.items():
+            with open(os.path.join(d, fn), 'w') as f:
+                f.write(body)
+        return d
+
+    def judge(self, name, files, status):
+        d = self.files(files)
+        want, bad, notes = cdc.course_wants(name, d, status)
+        wrong = [k for k, v in want.items()
+                 if not (status.get(k) == v if isinstance(v, str) else v(status.get(k) or ''))]
+        return wrong, bad, notes
+
+    def test_the_lease_node_b_reads(self):
+        """Every recording: the holder and the epoch the status names are
+        those of the lease in the bucket, and a bucket with no lease is
+        no holder (review of #119, G5)."""
+        st = cdc.read_status(UPLOADED.format(n=5, r=0))
+        self.assertEqual(self.judge('life', {}, st)[:2], ([], []))
+        none = {'rows.tsv': f"5\t{'cd' * 32} 7\t{STATE} 5 40\tnone\n"}
+        wrong, bad, _ = self.judge('life', none, dict(st, lease_holder='none'))
+        self.assertEqual((wrong, len(bad)), ([], 1))
+        self.assertIn('no lease in the bucket', bad[0])
+        later = {'rows.tsv': f"5\t{'cd' * 32} 7\t{STATE} 5 40\trunner 7 99\n"}
+        self.assertEqual(len(self.judge('life', later, st)[1]), 1)
+        # The last look is the one read, not the first.
+        two = {'rows.tsv': f"4\tnone\tnone\tnone\n5\t{'cd' * 32} 7\t{STATE} 5 40\trunner 1 99\n"}
+        self.assertEqual(self.judge('life', two, st)[:2], ([], []))
+        # Through the whole check: a recording that is no course says so on
+        # upload_status.
+        rows = f"5\t{'cd' * 32} 7\t{STATE} 5 40\tnone\n"
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st.replace('lease_holder runner', 'lease_holder none'),
+                                                       {'rows.tsv': rows}))
+        self.assertEqual((rc, lines['upload_status'][0]), (1, 'FAIL'), lines['upload_status'])
+        self.assertIn('no lease in the bucket', lines['upload_status'][1])
+
+    def test_each_courses_files(self):
+        """Each course's files and status as a right daemon leaves them
+        pass, and each thing it could get wrong is named."""
+        st = cdc.read_status(UPLOADED.format(n=5, r=0))
+        cut = (STATE, 5, 40)
+        moved = {'moved-row.txt': row_file(cut), 'moved-status.txt': 'uploaded 5\n',
+                 'end-row.txt': row_file(cut, head=OTHER_HEAD), 'others.tsv': f'head\t{OTHER_HEAD}\n'}
+        good = dict(st, upload_mismatches='2', upload_abandoned_at_mismatch='3', upload_checked='head_moved')
+        self.assertEqual(self.judge('umoved', moved, good)[:2], ([], []))
+        self.assertEqual(self.judge('umoved', moved, dict(good, uploaded='6'))[0], ['uploaded'])
+        self.assertEqual(self.judge('umoved', moved, dict(good, upload_checked='matched'))[0], ['upload_checked'])
+        self.assertEqual(self.judge('umoved', moved, dict(good, upload_mismatches='0',
+                                                          upload_abandoned_at_mismatch='0'))[0],
+                         ['upload_mismatches', 'upload_abandoned_at_mismatch'])
+        back = dict(moved, **{'end-row.txt': row_file((STATE, 6, 41))})
+        self.assertEqual(len(self.judge('umoved', back, good)[1]), 2)
+
+        rows = {'row1-row.txt': row_file(cut), 'end-row.txt': row_file((STATE, 9, 44)),
+                'others.tsv': f"row\t{'5e' * 16}\t5\t40\nrow\t{STATE}\t12\t42\n",
+                'row1-after.txt': 'upload_checked not_the_base\n', 'row2-after.txt': 'upload_checked matched\n'}
+        good = dict(st, upload_mismatches='2', upload_abandoned_at_mismatch='2', uploaded_whole='3')
+        wrong, bad, notes = self.judge('urow', rows, good)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertIn("row1: upload_checked 'not_the_base'", notes[0])
+        self.assertEqual(self.judge('urow', rows, dict(good, uploaded_whole='2'))[0], ['uploaded_whole'])
+        stuck = dict(rows, **{'end-row.txt': row_file((STATE, 12, 42))})
+        self.assertEqual(len(self.judge('urow', stuck, good)[1]), 1)
+        self.assertEqual(self.judge('urow', rows, dict(good, upload_mismatches='1'))[0], ['upload_mismatches'])
+        self.assertEqual(self.judge('urow', rows, dict(good, upload_checked='not_the_base'))[0], ['upload_checked'])
+        other = dict(rows, **{'end-row.txt': row_file(('ef' * 16, 9, 44))})
+        self.assertEqual(len(self.judge('urow', other, good)[1]), 1)
+
+        hook = ('skyzfsd: test hook --kill-at-upload: killed after the swap of commit 3 (group 30) landed, '
+                'before its cut was let go\n')
+        kill = {'kill.tsv': 'killed_rc\t137\n', 'serve.log': 'serving device 0 (added)\n' + hook}
+        good = dict(st, upload_found_committed='1', uploaded_whole='0')
+        self.assertEqual(self.judge('ukill', kill, good)[:2], ([], []))
+        self.assertEqual(self.judge('ukill', kill, dict(good, upload_found_committed='0'))[0],
+                         ['upload_found_committed'])
+        self.assertEqual(self.judge('ukill', kill, dict(good, uploaded_whole='1', uploaded='0'))[0],
+                         ['uploaded_whole', 'uploaded'])
+        self.assertEqual(len(self.judge('ukill', dict(kill, **{'kill.tsv': 'killed_rc\t0\n'}), good)[1]), 1)
+        self.assertEqual(len(self.judge('ukill', dict(kill, **{'serve.log': hook.replace('commit 3', 'commit 2')}),
+                                        good)[1]), 1)
+
+        lease_rows = ('3\tnone\tnone\tother-node 1 99\n4\tnone\tnone\tother-node 1 99\n'
+                      f"9\t{'cd' * 32} 7\t{STATE} 5 40\trunner 2 99\n")
+        lease = {'lease.tsv': 'refused_rc\t10\n', 'refused-wrote.txt': '', 'release-ns.txt': '5\n',
+                 'status-start-1.txt': 'upload_state off\nlease none\n', 'without-status.txt': 'uploaded 0\n',
+                 'rows.tsv': lease_rows}
+        good = dict(st, lease_epoch='2')
+        self.assertEqual(self.judge('ulease', lease, good)[:2], ([], []))
+        # Node B read a head before the other let go: an upload without
+        # the lease, whatever the status says; and a look before it.
+        early = dict(lease, **{'rows.tsv': lease_rows.replace('4\tnone\tnone', f"4\t{'cd' * 32} 6\t{STATE} 1 9")})
+        self.assertEqual(len(self.judge('ulease', early, good)[1]), 1)
+        self.assertEqual(len(self.judge('ulease', dict(lease, **{'release-ns.txt': '2\n'}), good)[1]), 1)
+        # Head at the create's own commit, which names no cut (run
+        # 44272704862), is no upload; a head that moves from it, or a row
+        # that names a cut under it, is.
+        made = f"{'ab' * 32} 0"
+        at_made = dict(lease, **{'rows.tsv': lease_rows.replace('\tnone\tnone\t', f'\t{made}\tnone\t')})
+        self.assertEqual(self.judge('ulease', at_made, good)[:2], ([], []))
+        for planted in (lease_rows.replace('4\tnone\tnone', f"4\t{'cd' * 32} 1\tnone"),
+                        lease_rows.replace('4\tnone\tnone', f'4\tnone\t{STATE} 1 9')):
+            self.assertEqual(len(self.judge('ulease', dict(lease, **{'rows.tsv': planted}), good)[1]), 1, planted)
+        for fn, body in (('lease.tsv', 'refused_rc\t0\n'), ('status-start-1.txt', 'upload_state idle\nlease held\n'),
+                         ('without-status.txt', 'uploaded 1\n')):
+            self.assertTrue(self.judge('ulease', dict(lease, **{fn: body}), good)[1], fn)
+
+        lost = {'lost-row.txt': row_file(cut), 'lost-status.txt': 'uploaded 5\n',
+                'end-row.txt': row_file(cut, lease=('other-node', 2)),
+                'other-lease.txt': 'lease\tacquired\tother-node\t2\t99\n',
+                'rows.tsv': f"5\t{'cd' * 32} 7\t{STATE} 5 40\tother-node 2 99\n"}
+        good = dict(st, upload_state='lease_lost', lease='lost', lease_holder='other-node', lease_epoch='2',
+                    cuts_held='3')
+        self.assertEqual(self.judge('ulost', lost, good)[:2], ([], []))
+        self.assertEqual(self.judge('ulost', lost, dict(good, uploaded='6', lease='held'))[0], ['lease', 'uploaded'])
+        self.assertEqual(self.judge('ulost', lost, dict(good, upload_state='idle', lease_holder='runner'))[0],
+                         ['upload_state', 'lease_holder'])
+        self.assertEqual(self.judge('ulost', lost, dict(good, lease_epoch='3'))[0], ['lease_epoch'])
+        moved_on = dict(lost, **{'end-row.txt': row_file((STATE, 6, 41), lease=('other-node', 2))})
+        self.assertEqual(len(self.judge('ulost', moved_on, good)[1]), 1)
+        # Head moved alone at the end, the row as it was: the uploader
+        # committed after the loss.
+        head_on = dict(lost, **{'end-row.txt': row_file(cut, head='ee' * 32, lease=('other-node', 2))})
+        self.assertEqual(len(self.judge('ulost', head_on, good)[1]), 1)
+        taken_back = dict(lost, **{'end-row.txt': row_file(cut, lease=('runner', 3))})
+        self.assertEqual(len(self.judge('ulost', taken_back, good)[1]), 1)
+
+        put = {'kill.tsv': 'killed_rc\t137\n',
+               'serve.log': 'skyzfsd: test hook --kill-at-upload: killed after segment PUT 5 landed (seg/x)\n'}
+        self.assertEqual(self.judge('ukillput', put, st)[:2], ([], []))
+        self.assertEqual(self.judge('ukillput', put, dict(st, uploaded_whole='0'))[:2], ([], []))
+        self.assertEqual(len(self.judge('ukillput', dict(put, **{'serve.log': hook}), st)[1]), 1)
+
+        down = {'nostore-status.txt': 'lease none\nupload_state backoff\nuploaded 0\nupload_why refused\n'}
+        wrong, bad, notes = self.judge('unostore', down, st)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertIn("upload_why 'refused'", notes[0])
+        self.assertEqual(len(self.judge('unostore', {'nostore-status.txt': 'lease held\nupload_state idle\n'
+                                                     'uploaded 1\n'}, st)[1]), 3)
+
+        anew = 'skyzfsd: intent map: begun anew with every region named\n'
+        failed = {'failure.tsv': 'failed_rc\t3\n', 'status-start-2.txt': 'cut_state begun\n', 'serve-2.log': anew}
+        self.assertEqual(self.judge('ufailed', failed, st)[:2], ([], []))
+        self.assertEqual(len(self.judge('ufailed', {'failure.tsv': 'failed_rc\t0\n', 'serve-2.log': anew,
+                                                    'status-start-2.txt': 'cut_state taken_up\n'}, st)[1]), 2)
+        self.assertEqual(self.judge('ufailed', failed, dict(st, uploaded_whole='0'))[0], ['uploaded_whole'])
+        # A start that took the intent map up: the new state's first cut is
+        # a delta onto the map's base, as run 44255421061 had it.
+        took = dict(failed, **{'serve-2.log': 'skyzfsd: intent map: taken up, naming 2 of 128 regions\n'})
+        delta = dict(st, uploaded_whole='0', uploaded='2', upload_rule='delta', upload_checked='matched')
+        wrong, bad, notes = self.judge('ufailed', took, delta)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertTrue(any('took the intent map up' in n for n in notes))
+        self.assertEqual(self.judge('ufailed', took, dict(delta, uploaded_whole='1'))[0], ['uploaded_whole'])
+        self.assertEqual(self.judge('ufailed', took, dict(delta, upload_rule='whole'))[0], ['upload_rule'])
+        self.assertEqual(len(self.judge('ufailed', dict(failed, **{'serve-2.log': 'nothing\n'}), st)[1]), 1)
+
+    def test_the_balance_over_one_daemon(self):
+        """The balance is of changes from the start's look: a daemon that
+        took a state up starts with cuts, abandoned and held cuts
+        counted, and a cut held at its start that it found committed
+        counts there."""
+        start = dict.fromkeys(cdc.BALANCE, '0')
+        start.update(cuts='7', cuts_abandoned='2', cuts_held='1')
+        end = dict(start, cuts='12', uploaded='3', upload_found_committed='1', cuts_replaced='2', cuts_held='0')
+        ok, detail = cdc.upload_balance(start, end)
+        self.assertTrue(ok, detail)
+        self.assertIn('cuts 5 = committed and let go 4 + replaced 2 + abandoned 0 + held -1', detail)
+        for why, more in (('a cut gone', dict(cuts_replaced='1')), ('a kept commit', dict(upload_committed_kept='1')),
+                          ('a gone commit', dict(upload_committed_gone='1')),
+                          ('one more abandoned', dict(cuts_abandoned='3'))):
+            with self.subTest(why):
+                ok, detail = cdc.upload_balance(start, dict(end, **more))
+                self.assertFalse(ok)
+                self.assertIn(' != ', detail)
+        self.assertEqual(cdc.upload_balance(start, {k: v for k, v in end.items() if k != 'cuts_replaced'}),
+                         (False, 'the status has no cuts_replaced (a daemon before cuts_replaced?)'))
+
+    def test_where_the_balance_starts(self):
+        """The balance starts from DIR/balance-start.txt where the course
+        took one, and that look must be at rest; a recording that started
+        the daemon again and took none is the rig's error (review of #119,
+        D3)."""
+        def with_files(files):
+            return lambda w, b, st: (w, b, st, files)
+        rc, lines = recording(upload=with_files({}))
+        self.assertEqual(lines['upload_balance'][0], 'PASS', lines['upload_balance'])
+        self.assertIn('from status-start-1.txt', lines['upload_balance'][1])
+        rest = STARTED.replace('upload_state unchecked', 'upload_state idle')
+        rc, lines = recording(upload=with_files({'balance-start.txt': 'seconds 1\n' + rest}))
+        self.assertIn('from balance-start.txt', lines['upload_balance'][1])
+        busy = rest.replace('cuts 0', 'cuts 2').replace('cuts_held 0', 'cuts_held 1')
+        rc, lines = recording(upload=with_files({'balance-start.txt': busy}))
+        self.assertEqual((rc, lines['upload_balance'][0]), (2, 'ERROR'), lines['upload_balance'])
+        self.assertIn('not at rest', lines['upload_balance'][1])
+        rc, lines = recording(upload=with_files({'status-start-2.txt': STARTED}))
+        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        self.assertIn('no balance-start.txt', lines['rig_error'][1])
+
+    def test_the_blocks_written_before_a_failure(self):
+        """ufailed's blocks written to the device outside the pool: node
+        B's last image holds each, or the line says why not (review of
+        #119, D4)."""
+        d = tempfile.mkdtemp(prefix='cdc-raw-')
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.assertIsNone(cdc.raw_held(d))
+        h = [cdc.hashlib.sha256(cdc.raw_block(k)).digest()[:8].hex() for k in range(4)]
+        for fn, body in (('raw.tsv', 'raw\t100\t4\n'),
+                         ('uploaded-blocks.tsv', f'0\t1\t100\t{h[0]}\n0\t1\t101\t{h[1]}\n1\t2\t101\t{cdc.ZERO}\n'
+                                                 f'1\t2\t102\t{h[2]}\n1\t2\t103\t{h[3]}\n')):
+            with open(os.path.join(d, fn), 'w') as f:
+                f.write(body)
+        # Block 101 was zeroed at the second fetch, which brought 102 and
+        # 103: the image is every fetch's, not the first's alone (J50).
+        self.assertEqual(cdc.raw_held(d), (3, 4))
+        self.assertNotEqual(cdc.raw_block(0), cdc.raw_block(1))
+        # Blocks missing where the content line failed too: the new state
+        # lost acknowledged writes (J49).
+        def again(written, blocks, st):
+            blocks['again'] = {}
+            return written + [dict(written[-1], head='dd' * 32, key='again')], blocks, st, {'raw.tsv': 'raw\t120000\t4\n'}
+        rc, lines = recording(upload=again)
+        self.assertEqual((rc, lines['upload_content'][0], lines['upload_raw'][0]), (1, 'FAIL', 'FAIL'), lines['upload_raw'])
+        self.assertIn('0 of the 4 blocks', lines['upload_raw'][1])
+        # Blocks the reference never had either: the course shows nothing.
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st, {'raw.tsv': 'raw\t120000\t4\n'}))
+        self.assertEqual((rc, lines['upload_raw'][0]), (2, 'ERROR'), lines['upload_raw'])
+        self.assertIn('0 of the 4 blocks', lines['upload_raw'][1])
+        rc, lines = recording(upload=lambda w, b, st: (w, b, st))
+        self.assertNotIn('upload_raw', lines)
+
+    def test_a_course_that_stops_the_uploads(self):
+        """umoved from end to end: the cuts before the other writer's head
+        are judged, its head is skipped, and the last fetched is the last
+        before it. A daemon that moved head back and uploaded once more
+        fails the content and the course."""
+        def stopped(more):
+            def up(written, blocks, st):
+                m = len(written) // 2
+                kept = written[:m + 1]
+                last = kept[-1]
+                other = dict(last, head=OTHER_HEAD, key='other', blocks=last['blocks'] + 1)
+                blocks['other'] = {0: '5a' * 8}
+                fetched = kept + [other]
+                if more:
+                    nxt = dict(written[m + 1], head='dd' * 32)
+                    # Since the other writer's head: its own blocks, and
+                    # block 0 as the daemon's image has it.
+                    blocks[nxt['number']] = dict(blocks[nxt['number']])
+                    blocks[nxt['number']].setdefault(0, next(
+                        (blocks[w['number']][0] for w in reversed(kept) if 0 in blocks[w['number']]), cdc.ZERO))
+                    fetched.append(nxt)
+                cut = (STATE, last['number'], last['group'])
+                st = (st.replace('upload_mismatches 0', 'upload_mismatches 1')
+                        .replace('upload_abandoned_at_mismatch 0', 'upload_abandoned_at_mismatch 2')
+                        .replace('upload_checked matched', 'upload_checked head_moved'))
+                st = re.sub(r'uploaded \d+', f'uploaded {m + 1}', st)
+                # The cuts after the move went nowhere but to the abandoned.
+                cuts = int(re.search(r'^cuts (\d+)$', st, flags=re.M).group(1))
+                st = st.replace('cuts_abandoned 0', f'cuts_abandoned {cuts - m - 1}')
+                files = {'moved-row.txt': row_file(cut), 'moved-status.txt': f'uploaded {m + 1}\n',
+                         'end-row.txt': row_file(cut, head=OTHER_HEAD) if not more else
+                         row_file((STATE, fetched[-1]['number'], fetched[-1]['group']), head='dd' * 32),
+                         'others.tsv': f'head\t{OTHER_HEAD}\n'}
+                return fetched, blocks, st, files
+            return up
+        rc, lines = recording(upload=stopped(False), as_name='umoved')
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        for key in ('upload_content', 'upload_status', 'upload_course'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertIn("and 1 of another writer's", lines['upload_content'][1])
+        rc, lines = recording(upload=stopped(True), as_name='umoved')
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['upload_content'][0], 'FAIL', lines['upload_content'])
+        self.assertIn('the last cut written is', lines['upload_content'][1])
+        self.assertEqual(lines['upload_course'][0], 'FAIL', lines['upload_course'])
+
+    def test_a_cut_under_two_commits(self):
+        """The daemon's cut at head again under another commit that no
+        other writer made (the same number and group, the same blocks) is
+        a verdict, though the image is right."""
+        def again(written, blocks, st):
+            last = written[-1]
+            blocks['again'] = {}
+            return written + [dict(last, head='dd' * 32, key='again')], blocks, st
+        rc, lines = recording(upload=again)
+        self.assertEqual((rc, lines['upload_content'][0]), (1, 'FAIL'), lines['upload_content'])
+        self.assertIn('at head under two commits', lines['upload_content'][1])
 
 
 if __name__ == '__main__':
