@@ -26,8 +26,10 @@
 //! volume's whose head was made (Codex on #118). A create that stopped
 //! between its superblock and its head leaves the superblock: the next
 //! create of that size goes on, and one of another size is refused, as
-//! for a volume of that size. This module's reading: the design does not
-//! say how two creates of a name meet.
+//! for a volume of that size, with the object to delete to free the name
+//! in its message ([`refused_over`]). This module's reading, which the
+//! lead accepted: the design does not say how two creates of a name
+//! meet. A `create --replace` that would delete it is for later.
 //!
 //! # At the start of `serve` ([`Start`], [`Leased`])
 //!
@@ -281,12 +283,7 @@ where
             .map_err(|e| format!("making {named}: {e}"))?;
         if let Some(superblock) = there {
             if (superblock.size, superblock.shard_bytes) != (size, SHARD_BYTES) {
-                return Err(format!(
-                    "{named} has a superblock of {} bytes in shards of {}, not {size} in shards \
-                     of {SHARD_BYTES}, from another create of the name: under way, done, or \
-                     stopped before its head. The name is another volume's",
-                    superblock.size, superblock.shard_bytes
-                ));
+                return Err(refused_over(&refs, remote, &named, &superblock, size).await);
             }
         }
         Engine::create_volume(store, refs, vol, size, engine_config(0))
@@ -387,6 +384,48 @@ async fn reserve<S: ObjectStore>(
                 .map_err(|e| format!("reading the superblock there: {e}"))
         }
         Err(e) => Err(format!("writing the superblock where there is none: {e}")),
+    }
+}
+
+/// Why a create of `size` bytes is refused over `there`, a superblock of
+/// another size or shards that another create of the name wrote. The
+/// head is read again: where that create has made it, the name is that
+/// volume's. Where there is still none, that create is under way or
+/// stopped before its head, and the message names the object whose
+/// deletion frees the name (the lead's ask on #118; a `create
+/// --replace` that would do it is for later).
+async fn refused_over<R: RefStore>(
+    refs: &R,
+    remote: &Remote,
+    named: &str,
+    there: &Superblock,
+    size: u64,
+) -> String {
+    let what = format!("{} bytes in shards of {}", there.size, there.shard_bytes);
+    let asked = format!("{size} in shards of {SHARD_BYTES}");
+    match refs.get(remote.id, "head").await {
+        Ok(Some(_)) => format!(
+            "{named} holds {what}, not {asked}: another create of the name made it first. The \
+             name is another volume's"
+        ),
+        Ok(None) => {
+            let same = if there.shard_bytes == SHARD_BYTES {
+                format!("; a create with --size {} goes on with it", there.size)
+            } else {
+                String::new()
+            };
+            format!(
+                "{named} has a superblock of {what}, not {asked}, and no head: another create of \
+                 the name is under way, or stopped before its head. If none is under way, delete \
+                 the object {} in the bucket {} to free the name{same}",
+                keys::superblock(remote.id, 0),
+                remote.bucket
+            )
+        }
+        Err(e) => format!(
+            "{named} has a superblock of {what}, not {asked}, from another create of the name, \
+             and its head could not be read again: {e}"
+        ),
     }
 }
 

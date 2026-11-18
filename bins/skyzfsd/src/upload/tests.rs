@@ -400,8 +400,8 @@ fn two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made() {
         } else {
             assert!(
                 refused.contains(&format!(
-                    "a superblock of {SIZE} bytes in shards of {SHARD_BYTES}, not {second} in \
-                     shards of {SHARD_BYTES}"
+                    "holds {SIZE} bytes in shards of {SHARD_BYTES}, not {second} in shards of \
+                     {SHARD_BYTES}: another create of the name made it first"
                 )),
                 "{refused}"
             );
@@ -454,8 +454,15 @@ fn a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size() {
     assert!(
         refused.contains(&format!(
             "a superblock of {SIZE} bytes in shards of {SHARD_BYTES}, not {} in shards of \
-             {SHARD_BYTES}",
+             {SHARD_BYTES}, and no head",
             2 * SIZE
+        )),
+        "{refused}"
+    );
+    assert!(
+        refused.contains(&format!(
+            "delete the object {key} in the bucket volumes to free the name; a create with \
+             --size {SIZE} goes on with it"
         )),
         "{refused}"
     );
@@ -467,8 +474,16 @@ fn a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size() {
     let (world, left) = stopped(EngineConfig::default());
     let refused = world.place(SIZE).expect_err("other shards");
     assert!(
-        refused.contains(&format!("not {SIZE} in shards of {SHARD_BYTES}")),
+        refused.contains(&format!(
+            "not {SIZE} in shards of {SHARD_BYTES}, and no head"
+        )),
         "{refused}"
+    );
+    assert!(
+        refused.ends_with(&format!(
+            "delete the object {key} in the bucket volumes to free the name"
+        )),
+        "no create of that superblock's shards goes on: {refused}"
     );
     assert_eq!(world.get(&key), left, "the superblock as it was");
     assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);

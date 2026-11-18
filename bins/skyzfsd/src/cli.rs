@@ -206,7 +206,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       leaves it (the same size, empty, not a clone, never served), and
       otherwise refuses (status 1) and makes nothing in DIR; a create
       of the name under way, or one that stopped before the volume's
-      head, counts as a volume of its size. The keys
+      head, counts as a volume of its size, and the refusal names the
+      object whose deletion frees the name. The keys
       are AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY where both are
       set and AWS_SESSION_TOKEN is not, else the AWS SDK's own chain
       (which takes all three); they are never written. The region is
