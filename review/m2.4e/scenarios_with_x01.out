@@ -1,0 +1,24 @@
+# with X01: failing: r2, r3, r6
+test inplace::state::tests::review_m24e_r4_a_read_failure_of_the_first_cut_gives_its_holes_to_the_cut_that_waits ... ok
+test inplace::state::tests::review_m24e_r5_a_slice_begun_inside_a_run_of_holes ... ok
+test inplace::state::tests::review_m24e_r1_a_mismatch_while_the_set_holds_keeps_every_write_into_a_hole ...    0: FAILED__rustc::rust_begin_unwind
+test inplace::state::tests::review_m24e_r3_a_death_at_any_store_of_a_mismatch_while_the_set_holds ... FAILED
+test inplace::state::tests::review_m24e_r2_a_mismatch_with_three_cuts_held_keeps_every_write_into_a_hole ... FAILED
+test inplace::state::tests::review_m24e_r6_abandon_all_with_no_cut_held_keeps_the_open_map ... FAILED
+R7: 16 GiB, 2048 blocks written at the start: 9 slices in 310.54278ms, the slowest 78.865589ms
+R7: 64 GiB, 2048 blocks written at the start: 9 slices in 919.405422ms, the slowest 127.134419ms
+R7: 256 GiB, 2048 blocks written at the start: 9 slices in 3.353926154s, the slowest 467.048568ms
+test inplace::state::tests::review_m24e_r7_slicing_a_cut_over_one_long_run_of_holes ... ok
+test result: FAILED. 3 passed; 4 failed; 0 ignored; 0 measured; 294 filtered out; finished in 4.75s
+thread 'inplace::state::tests::review_m24e_r1_a_mismatch_while_the_set_holds_keeps_every_write_into_a_hole' (24121) panicked at crates/skyzfs-local/src/inplace/state/tests.rs:3084:9:
+  left: Some(0)
+ right: Some(11)
+thread 'inplace::state::tests::review_m24e_r2_a_mismatch_with_three_cuts_held_keeps_every_write_into_a_hole' (24122) panicked at crates/skyzfs-local/src/inplace/state/tests.rs:3120:9:
+  left: Some(0)
+ right: Some(11)
+thread 'inplace::state::tests::review_m24e_r3_a_death_at_any_store_of_a_mismatch_while_the_set_holds' (24123) panicked at crates/skyzfs-local/src/inplace/state/tests.rs:3161:13:
+  left: Some(0)
+ right: Some(11)
+thread 'inplace::state::tests::review_m24e_r6_abandon_all_with_no_cut_held_keeps_the_open_map' (24127) panicked at crates/skyzfs-local/src/inplace/state/tests.rs:3250:9:
+  left: Some(0)
+ right: Some(11)
