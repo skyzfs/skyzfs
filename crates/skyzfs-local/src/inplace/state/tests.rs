@@ -860,7 +860,7 @@ fn program_with_mismatches(seed: u64, len: usize) -> Vec<Step> {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            if x % 12 == 0 {
+            if x.is_multiple_of(12) {
                 Step::Mismatch
             } else {
                 step
@@ -2703,7 +2703,11 @@ fn a_mismatch_while_the_holes_are_held_keeps_them_and_the_writes_before_it() {
     }
     assert_eq!(world.state.figures().copied, 0);
     world.step(Step::Write(40, 1)).expect("written");
-    assert_eq!(world.state.figures().copied, 0, "a write into a hole after it");
+    assert_eq!(
+        world.state.figures().copied,
+        0,
+        "a write into a hole after it"
+    );
     assert_eq!(world.state.read(number, 40), Some(Read::Zero));
     world.step(Step::Release).expect("released");
     assert_eq!(world.state.figures().holes, Holes::Dropped);
