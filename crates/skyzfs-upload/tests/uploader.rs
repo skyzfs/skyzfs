@@ -1168,3 +1168,32 @@ async fn a_slow_renewal_during_a_backoff_is_followed_by_what_is_left_of_the_wait
     assert_eq!(expires(&up), Leasing::expiry(Duration::from_secs(24)));
     assert_eq!(wait, Duration::from_secs(6), "to the next renewal, at 30 s");
 }
+
+/// A cut the store kept at its release (the intent map could not be
+/// written) stops the uploader for good: it rests, and its driver is
+/// not stepped again (P6 of #117's review).
+#[tokio::test(start_paused = true)]
+async fn a_cut_kept_at_its_release_stops_the_uploader_which_rests() {
+    let mut fx = Fixture::new(68).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), fenced(&fx, &clock), 16);
+    fx.disk.fail_write_of("intent.map");
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        if up.shown().state == State::Stopped {
+            assert_eq!(wait, AT_REST);
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(up.shown().state, State::Stopped);
+    fx.assert_uploaded(7, "committed, then kept").await;
+    for _ in 0..3 {
+        tokio::time::advance(AT_REST).await;
+        assert_eq!(up.turn().await, AT_REST);
+        assert_eq!(up.shown().state, State::Stopped, "not stepped again");
+    }
+    assert_eq!(up.shown().figures.kept, 1);
+}

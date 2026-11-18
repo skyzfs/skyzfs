@@ -666,4 +666,21 @@ mod tests {
             ("a", 1, 0)
         );
     }
+
+    /// A renewal whose read finds the row this holder's and whose take
+    /// then fails on the store leaves the lease unsure, not lost (K13 of
+    /// #117's review): nothing says that anyone else holds it.
+    #[tokio::test]
+    async fn a_renewal_whose_take_fails_after_its_read_is_unsure() {
+        let w = World::new();
+        let mut k = w.keeper("a");
+        k.keep().await;
+        w.store.arm(FaultOp::Put, "", 0).await;
+        assert!(matches!(
+            k.keep().await,
+            LeaseState::Unsure { epoch: 1, .. }
+        ));
+        w.store.disarm().await;
+        assert!(held(1)(k.keep().await));
+    }
 }
