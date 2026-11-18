@@ -1246,14 +1246,16 @@ rec_ukillput() { rec_ukill; }
 # ufailed (f, by name): the volume fails (SIGUSR1, the test build)
 # after the pool's export, once node B has fetched the old state's last
 # cut. Before the failure, RAW_BLOCKS blocks are written to the device
-# itself, outside the pool, where the pool does not allocate: the
-# intent map names them and no cut of the old state holds them. The
+# itself at 2 MiB, in the area between the front labels and the first
+# metaslab that ZFS leaves alone (as rec_edges uses it; the end of the
+# device can fall inside the last metaslab): the intent map names them,
+# no cut of the old state holds them, and nothing writes them again. The
 # instance ends with 3; one that acknowledges the failure begins a new
 # state, and its cuts must hold those blocks, whether the first goes up
 # whole or as a delta onto the map's base.
 RAW_BLOCKS=16
 raw_write() {
-    local at=$(((VDEV_MB - 4) << 8))
+    local at=$(((2 << 20) >> 12))
     python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cut_daemon_check as c
 sys.stdout.buffer.write(b"".join(c.raw_block(k) for k in range(int(sys.argv[2]))))' "$HERE" "$RAW_BLOCKS" > "$WORK/raw.img"
     "$DD" if="$WORK/raw.img" of="$DEV" bs=4K seek="$at" oflag=direct conv=notrunc,fsync status=none \
