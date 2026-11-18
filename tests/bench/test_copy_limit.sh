@@ -34,6 +34,7 @@ setup() {
     head -c 3145728 /dev/zero > "$WORK/zfs-origin.img"
     SKZ_DIR=$WORK/vol; SKZ_RUN=$WORK/run; SKZ_PID=$$; SKZ_CGROUP=""; SKZ_DEV=/dev/null; SKZ_UP=""
     SKYZFSD_ARGS="--io-threads,8"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
+    SKZ_UPLOAD=""; SKZ_VOLUME_NAME=""
     SKZ_SYSRQ=$tt/sysrq; : > "$SKZ_SYSRQ"
     : > "$tt/calls"; : > "$tt/log"
     rm -f "$tt/hang-on" "$tt/dd-count" "$tt/sync-hang-on" "$tt/sync-count"
@@ -138,6 +139,17 @@ check "the repetition's summary names the create's arguments" 'grep -q "create -
 setup
 skz_create 4096 2> /dev/null
 check "with none, nothing is added" 'grep -q -- "--size 4096$" "$tt/create-args"'
+
+# 5b. TB_SKZ_UPLOAD (M2.4c): the volume is made in object storage too,
+# under a new name each create, after the create's own arguments.
+setup; SKZ_UPLOAD=1; SKYZFSD_CREATE_ARGS="--zero-fill"
+TB_S3_ENDPOINT=http://127.0.0.1:9000; TB_S3_BUCKET=tb-9-1
+skz_create 4096 2> /dev/null; first=$SKZ_VOLUME_NAME
+check "an upload's create names the place, after the create's arguments" \
+    'grep -qE -- "--size 4096 --zero-fill --endpoint http://127.0.0.1:9000 --bucket tb-9-1 --volume tb-[0-9]+$" "$tt/create-args"'
+check "the volume's name is the one the create was given" 'grep -q -- "--volume $first$" "$tt/create-args"'
+rm -rf -- "$SKZ_DIR"; skz_create 4096 2> /dev/null
+check "each create a new name" '[ -n "$first" ] && [ "$SKZ_VOLUME_NAME" != "$first" ]'
 
 # 6. The label of a row after failed rows (TB_EARLIER_FAILED, set by the
 # workflow), taken out of the script like the functions.

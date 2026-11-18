@@ -245,6 +245,22 @@
 #                           refuses it). With any, the create may take up
 #                           to 1800 s instead of 120, and what it said on
 #                           stderr is kept in the row's .skzinfo
+#   TB_SKZ_UPLOAD=1         zfs-skyzfsd only (M2.4c): the volume is created
+#                           in object storage too (create --endpoint
+#                           TB_S3_ENDPOINT --bucket TB_S3_BUCKET --volume
+#                           tb-<ns>, a new name each create), so the
+#                           daemon holds its cuts and uploads each one
+#                           there, as a deployed daemon does. The keys are
+#                           TB_S3_KEY_ID and TB_S3_SECRET, given to the
+#                           daemon as AWS_ACCESS_KEY_ID and
+#                           AWS_SECRET_ACCESS_KEY. The workflow sets the
+#                           four for MinIO on the runner when the sequence
+#                           names TB_SKZ_UPLOAD=1, and makes the bucket.
+#                           The first cut goes up whole, while the pool
+#                           image is copied on and the workload warms up.
+#                           The summary has a table of what the uploader
+#                           did in the window. Not with TB_SKZ_RELEASE: a
+#                           daemon that uploads lets its cuts go itself
 #   TB_SKZ_RELEASE=N        zfs-skyzfsd with --hold-cuts in TB_SKYZFSD_ARGS
 #                           and a build with the test hooks
 #                           (TB_SKYZFSD_REF=<ref>+hooks): a releaser
@@ -652,6 +668,28 @@ if drows:
                                 for c, (n, ms) in calls if n)
                 print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {s_['tool']}, {s_['seconds']:.0f} | "
                       f"{name} ({t['tids']}) | {txt} |")
+    # What the uploader did in the window (TB_SKZ_UPLOAD): the status's
+    # counters over the window, and its state at the window's end.
+    ups = [r for r in runs if r.get('skyzfsd', {}).get('upload')]
+    if ups:
+        print('\nWhat the uploader did in the window (TB_SKZ_UPLOAD), from the daemon\'s status at its two ends: '
+              'cuts taken, uploaded (of them whole), blocks uploaded, replaced before their upload, abandoned at a '
+              'mismatch, mismatches and errors over the window; at its end the cuts held, the cut being uploaded '
+              'and the newest, the uploader\'s state and the lease. Cuts taken = uploaded + replaced + abandoned '
+              '+ the change in held, where nothing was found committed or kept.\n')
+        print('| workload | daemon row | tps | cuts | uploaded (whole) | blocks | replaced | abandoned | mismatches | '
+              'errors | held at end | uploading / newest | state | lease |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+        for r in ups:
+            sb, sa = r['skyzfsd']['before'], r['skyzfsd']['after']
+            def d(key):
+                a, b = sa.get(key, ''), sb.get(key, '')
+                return str(int(a) - int(b)) if a.isdigit() and b.isdigit() else 'n/a'
+            tps = f"{r['tps']:.0f}" if r.get('tps') is not None else 'n/a'
+            print(f"| {r['workload']} | {label(r)} | {tps} | {d('cuts')} | {d('uploaded')} ({d('uploaded_whole')}) | "
+                  f"{d('upload_blocks')} | {d('cuts_replaced')} | {d('cuts_abandoned')} | {d('upload_mismatches')} | "
+                  f"{d('upload_errors')} | {sa.get('cuts_held', 'n/a')} | {sa.get('upload_cut', 'n/a')} / "
+                  f"{sa.get('cuts', 'n/a')} | {sa.get('upload_state', 'n/a')} | {sa.get('lease', 'n/a')} |")
     # Where the daemon's CPU went (TB_PERF_RECORD): per thread name, the
     # kernel's share of its samples, that share by what the kernel was
     # doing, and its ten commonest kernel symbols.
@@ -930,6 +968,9 @@ SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 SKYZFSD_CREATE_ARGS=${TB_SKYZFSD_CREATE_ARGS:-}
 SKZ_COPY_LIMIT_S=${TB_SKYZFSD_COPY_LIMIT_S:-600}
 SKZ_RELEASE=${TB_SKZ_RELEASE:-}
+SKZ_UPLOAD=${TB_SKZ_UPLOAD:-}
+[ -z "$SKZ_UPLOAD" ] || [ "$SKZ_UPLOAD" = 1 ] || { echo "TB_SKZ_UPLOAD is 1 or unset, not: $SKZ_UPLOAD" >&2; exit 64; }
+SKZ_VOLUME_NAME=""
 [ -z "$SKZ_RELEASE" ] || [[ $SKZ_RELEASE =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKZ_RELEASE must be a count of cuts from 1: $SKZ_RELEASE" >&2; exit 64; }
 [[ $SKZ_COPY_LIMIT_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_LIMIT_S must be a number of seconds: $SKZ_COPY_LIMIT_S" >&2; exit 64; }
 SKZ_COPY_REPEAT=${TB_SKYZFSD_COPY_REPEAT:-}
@@ -997,10 +1038,24 @@ for t in $TOPOLOGIES; do
                 [ -n "$_hold" ] || { echo "TB_SKZ_RELEASE needs --hold-cuts in TB_SKYZFSD_ARGS ('$SKYZFSD_ARGS'): without it the daemon holds no cut" >&2; exit 64; }
                 [[ ${TB_SKYZFSD_REF:-} == *+hooks ]] || { echo "TB_SKZ_RELEASE needs a build with the test hooks, TB_SKYZFSD_REF=<ref>+hooks, not '${TB_SKYZFSD_REF:-}': a release build has no commands about held cuts" >&2; exit 64; }
             fi
+            # Uploads: the place and the keys, and no releaser (a daemon
+            # that uploads refuses `release`, and lets its cuts go itself).
+            if [ "$SKZ_UPLOAD" = 1 ]; then
+                for _v in TB_S3_ENDPOINT TB_S3_BUCKET TB_S3_KEY_ID TB_S3_SECRET; do
+                    [ -n "${!_v:-}" ] || { echo "TB_SKZ_UPLOAD=1 needs $_v (the workflow sets it when the sequence names TB_SKZ_UPLOAD=1)" >&2; exit 64; }
+                done
+                [ -z "$SKZ_RELEASE" ] || { echo "TB_SKZ_UPLOAD=1 and TB_SKZ_RELEASE: a daemon that uploads lets its cuts go itself" >&2; exit 64; }
+                export AWS_ACCESS_KEY_ID="$TB_S3_KEY_ID" AWS_SECRET_ACCESS_KEY="$TB_S3_SECRET"
+            fi
             ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
+# A row that names uploads and has no daemon would be measured without
+# them under a label that says otherwise.
+if [ "$SKZ_UPLOAD" = 1 ] && [[ " $TOPOLOGIES " != *" zfs-skyzfsd "* ]]; then
+    echo "TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: $TOPOLOGIES" >&2; exit 64
+fi
 if [ -n "$ANY_ZFS" ] && [ -z "$ZFS_ARC_MB" ] && [ -n "$MEM_LIMIT" ] && [ "$MEM_LIMIT" != max ]; then
     # The ARC is kernel memory outside postgres's cgroup. Give it what
     # the page cache can have in the other topologies: the cap minus
@@ -1804,6 +1859,10 @@ skz_create() { # size
         read -r -a args <<< "${SKYZFSD_CREATE_ARGS//,/ }"
         secs=1800
     fi
+    if [ "$SKZ_UPLOAD" = 1 ]; then
+        SKZ_VOLUME_NAME="tb-$(date +%s%N)"
+        args+=(--endpoint "$TB_S3_ENDPOINT" --bucket "$TB_S3_BUCKET" --volume "$SKZ_VOLUME_NAME")
+    fi
     lim "$secs" "$SKYZFSD" create --dir "$SKZ_DIR" --size "$1" "${args[@]}" > "$WORK/skyzfsd-create.out" 2> "$WORK/skyzfsd-create.err" || rc=$?
     cat "$WORK/skyzfsd-create.out" "$WORK/skyzfsd-create.err" >&2
     return "$rc"
@@ -1953,6 +2012,11 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKZ_SERVE_ARGS:-}" >> "$OUT/$TOPO.skzinfo"
             echo "release_every ${SKZ_RELEASE:-0}" >> "$OUT/$TOPO.skzinfo"
+            if [ "$SKZ_UPLOAD" = 1 ]; then
+                echo "upload $TB_S3_ENDPOINT $TB_S3_BUCKET $SKZ_VOLUME_NAME" >> "$OUT/$TOPO.skzinfo"
+            else
+                echo "upload none" >> "$OUT/$TOPO.skzinfo"
+            fi
             echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
             # Every status of this row is read by skz_status, with this
             # row's own binary: a newer `status` prints an older status
@@ -2668,6 +2732,11 @@ if skz[base + '.after']:
             # its label would say. bracket.py gives it no verdict.
             k['release']['ended'] = k['release']['last'] or 'no line from the releaser'
             k['serve_args'] += f" (cuts released every {every}: THE RELEASER ENDED, {k['release']['ended']})"
+    # The uploads (TB_SKZ_UPLOAD): where the volume is in object storage.
+    up = k['info'].get('upload', 'none').split()
+    if up and up[0] != 'none':
+        k['upload'] = {'endpoint': up[0], 'bucket': up[1] if len(up) > 1 else '', 'volume': up[2] if len(up) > 2 else ''}
+        k['serve_args'] += f" (uploads to {k['upload']['volume']})"
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k

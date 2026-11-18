@@ -292,6 +292,32 @@ jobs:
           fi
           sudo modprobe ublk_drv
 
+      - name: Object storage (MinIO) for the daemon's uploads
+        # Only for a sequence that names TB_SKZ_UPLOAD=1 (M2.4c): MinIO on
+        # this runner, a bucket for the job, and the four TB_S3_* settings
+        # the script gives the daemon. The keys are MinIO's local
+        # defaults, not secrets. pgsty/minio is the community fork, pinned
+        # as in the rigs (minio/minio left Docker Hub in Sept 2026). The
+        # bucket is made with curl's SigV4, so nothing else is built.
+        if: contains(inputs.sequence, 'TB_SKZ_UPLOAD=1')
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          up=""
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then up=1; break; fi
+            sleep 1
+          done
+          [ -n "$up" ] || { echo "::error::MinIO did not answer in 60 s"; docker logs minio 2>&1 | tail -n 20; exit 2; }
+          bucket="tb-${{ github.run_id }}-${{ github.run_attempt }}"
+          code=$(curl -s -o /dev/stderr -w '%{http_code}' -X PUT --user minioadmin:minioadmin \
+            --aws-sigv4 "aws:amz:us-east-1:s3" "http://127.0.0.1:9000/$bucket")
+          [ "$code" = 200 ] || { echo "::error::making the bucket $bucket answered $code"; exit 2; }
+          { echo "TB_S3_ENDPOINT=http://127.0.0.1:9000"; echo "TB_S3_BUCKET=$bucket"
+            echo "TB_S3_KEY_ID=minioadmin"; echo "TB_S3_SECRET=minioadmin"; } >> "$GITHUB_ENV"
+          echo "MinIO on the runner, bucket $bucket" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
         run: |

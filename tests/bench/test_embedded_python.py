@@ -53,6 +53,41 @@ class Embedded(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
         return json.loads(p.stdout)
 
+    def test_a_row_that_uploads(self):
+        """TB_SKZ_UPLOAD (M2.4c): the row names the volume it uploads to,
+        and the summary has a line for it in the uploader's table, with
+        the counters over the window and the state at its end; a row
+        without uploads has neither."""
+        devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
+        before = (devs + 'skz cuts 10\nskz uploaded 3\nskz uploaded_whole 1\nskz upload_blocks 900\nskz cuts_replaced 6\n'
+                  'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 1\n')
+        after = (devs + 'skz cuts 40\nskz uploaded 9\nskz uploaded_whole 1\nskz upload_blocks 1500\nskz cuts_replaced 30\n'
+                 'skz cuts_abandoned 0\nskz upload_mismatches 0\nskz upload_errors 0\nskz cuts_held 2\n'
+                 'skz upload_cut 39\nskz upload_state putting\nskz lease held\n')
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n')
+            r = self.row(d, {'.before': before, '.after': after, '.pgbench': 'tps = 812.5 (without initial connection time)\n'})
+            self.assertEqual(r['skyzfsd']['upload'], {'endpoint': 'http://127.0.0.1:9000', 'bucket': 'tb-1-1', 'volume': 'tb-17'})
+            self.assertTrue(r['skyzfsd']['serve_args'].endswith('(uploads to tb-17)'), r['skyzfsd']['serve_args'])
+            out = os.path.join(d, 'out', '1')
+            os.makedirs(out)
+            with open(os.path.join(out, 'tpcb-zfs-skyzfsd.json'), 'w') as f:
+                json.dump(r, f)
+            p = subprocess.run(['bash', SCRIPT, 'summarize', os.path.join(d, 'out')], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+            rows = [ln for ln in p.stdout.splitlines() if ln.startswith('| tpcb | ') and '(whole)' not in ln
+                    and ' / 40 |' in ln]
+            self.assertEqual(rows, ['| tpcb | zfs-skyzfsd [x] | 812 | 30 | 6 (0) | 600 | 24 | 0 | 0 | 0 | 2 | 39 / 40 | '
+                                    'putting | held |'], p.stdout[-3000:])
+            # a row without uploads
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')
+            r = self.row(d, {'.before': before, '.after': after, '.pgbench': ''})
+            self.assertNotIn('upload', r['skyzfsd'])
+            self.assertNotIn('uploads to', r['skyzfsd']['serve_args'])
+
     def test_a_row_says_what_its_releaser_did(self):
         """TB_SKZ_RELEASE (M2.T4): the row's serve arguments give the
         releases in the window, or that the releaser ended, from its
