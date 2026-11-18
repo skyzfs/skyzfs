@@ -649,3 +649,112 @@ fn a_withdrawn_publish_ends_at_once_or_once_its_failed_transaction_is_looked_up(
     assert_eq!(publishing.figures().withdrawn, 2);
     assert_eq!(publishing.pending().0, 0);
 }
+
+/// D1 of the review of #122 (its q9): a publish withdrawn while its
+/// failed transaction waits to be looked up, then asked again with the
+/// same request, goes on: `Accepted` comes true, and the lookup that
+/// finds the name absent makes it again on its cut. A publish whose time
+/// is up is not brought back so: asked again while it pends, a publish
+/// keeps its deadline, and it ends expired.
+#[test]
+fn a_withdrawn_publish_asked_again_with_the_same_request_goes_on() {
+    let mut publishing = publishing();
+    let asked_at = Instant::now();
+    let mut expiring = request("expiring", 1, 40);
+    expiring.expiry = Duration::from_secs(60);
+    assert_eq!(publishing.ask(request("t", 1, 40)), Answer::Accepted);
+    assert_eq!(publishing.ask(expiring.clone()), Answer::Accepted);
+    publishing.committed(cut(3, 42, true));
+    for name in ["t", "expiring"] {
+        publishing.absent(name);
+        publishing.failed(name);
+    }
+    assert_eq!(publishing.withdraw("t"), Progress::Pending);
+    assert_eq!(publishing.ask(request("t", 1, 40)), Answer::Accepted);
+    publishing.absent("t");
+    assert_eq!(publishing.progress("t"), Progress::Pending);
+    assert_eq!(
+        stage(&publishing, "t"),
+        Some(Stage::Ready(cut(3, 42, true)))
+    );
+    assert_eq!(publishing.figures().withdrawn, 0);
+    // Another request of the name is still refused.
+    assert_eq!(
+        publishing.ask(request("t", 2, 40)),
+        Answer::Refused(Refusal::Asked)
+    );
+
+    publishing.expire(asked_at + Duration::from_secs(61));
+    assert_eq!(publishing.progress("expiring"), Progress::Pending);
+    assert_eq!(publishing.ask(expiring), Answer::Accepted);
+    publishing.absent("expiring");
+    assert_eq!(publishing.progress("expiring"), Progress::Expired);
+    assert_eq!(publishing.figures().expired, 1);
+}
+
+/// D2 of the review of #122: each publish has its own wait after a step
+/// that failed, and while it waits the others step, oldest first. The
+/// wait doubles at each failure of the same publish, a lookup that
+/// succeeds does not reset it, and a publish asked after another has
+/// failed starts from a second.
+#[tokio::test(start_paused = true)]
+async fn each_publish_waits_alone_after_its_own_failures() {
+    let mut publishing = publishing();
+    for name in ["a", "b"] {
+        assert_eq!(publishing.ask(request(name, 1, 40)), Answer::Accepted);
+    }
+    let now = Instant::now();
+    assert_eq!(publishing.due_at(), Some(now));
+    assert_eq!(publishing.next(), Some(("a".into(), Stage::Look)));
+
+    assert_eq!(
+        publishing.wait_after("a", now),
+        Some(Duration::from_secs(1))
+    );
+    assert_eq!(publishing.next(), Some(("b".into(), Stage::Look)));
+    assert_eq!(
+        publishing.wait_after("b", now),
+        Some(Duration::from_secs(1))
+    );
+    assert_eq!(publishing.next(), None);
+    assert_eq!(publishing.due_at(), Some(now + Duration::from_secs(1)));
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(publishing.next(), Some(("a".into(), Stage::Look)));
+    // Looked up, absent, and carried by cut 3: the lookup leaves the wait
+    // as it was, and the next failure doubles it.
+    publishing.committed(cut(3, 42, true));
+    publishing.absent("a");
+    let now = Instant::now();
+    assert_eq!(
+        publishing.wait_after("a", now),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        publishing.wait_after("a", now),
+        Some(Duration::from_secs(4))
+    );
+    assert_eq!(publishing.next(), Some(("b".into(), Stage::Look)));
+
+    // A publish that waits for a cut has no step, and so no due time.
+    publishing.absent("b");
+    let mut waiting = request("waiting", 1, 50);
+    waiting.expiry = Duration::from_secs(60);
+    assert_eq!(publishing.ask(waiting), Answer::Accepted);
+    publishing.absent("waiting");
+    assert_eq!(stage(&publishing, "waiting"), Some(Stage::Wait));
+    assert_eq!(
+        publishing.next(),
+        Some(("b".into(), Stage::Ready(cut(3, 42, true))))
+    );
+
+    // A name that ends takes its wait with it: asked again, it starts
+    // from a second.
+    assert_eq!(publishing.withdraw("a"), Progress::Withdrawn);
+    assert_eq!(publishing.ask(request("a", 1, 40)), Answer::Accepted);
+    assert_eq!(
+        publishing.wait_after("a", now),
+        Some(Duration::from_secs(1))
+    );
+    assert_eq!(publishing.wait_after("never", now), None);
+}

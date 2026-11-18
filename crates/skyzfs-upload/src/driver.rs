@@ -323,6 +323,8 @@ pub struct Driver<L, R> {
     buf: Buf,
     figures: Figures,
     publishing: Publishing,
+    /// The publish the last [`Driver::step_publish`] stepped, if any.
+    stepped: Option<String>,
 }
 
 impl<L: Local, R: Remote> Driver<L, R> {
@@ -340,6 +342,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
             buf: Buf::zeroed(blocks.max(1)),
             figures: Figures::default(),
             publishing: Publishing::default(),
+            stepped: None,
         }
     }
 
@@ -407,23 +410,40 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// Whether a publish has a step to take: a lookup, or its transaction.
-    /// One that waits for a cut has none.
+    /// Whether a publish has a step to take now: a lookup, or its
+    /// transaction, and its own wait after a step that failed has passed
+    /// ([`Publishing::wait_after`]). One that waits for a cut has none.
     pub fn publish_due(&self) -> bool {
         self.publishing.next().is_some()
     }
 
-    /// The step of the publish with work asked first; [`Step::Idle`] where
-    /// none has work. An error leaves the publish pending, to be looked up
-    /// before its transaction is made again.
+    /// When a publish may next take a step ([`Publishing::due_at`]).
+    pub fn publish_due_at(&self) -> Option<tokio::time::Instant> {
+        self.publishing.due_at()
+    }
+
+    /// The step of the publish with work asked first whose wait has
+    /// passed; [`Step::Idle`] where none has. An error leaves the publish
+    /// pending, to be looked up before its transaction is made again; the
+    /// caller gives it its wait ([`Driver::publish_failed`]).
     pub async fn step_publish(&mut self) -> Result<Step, RemoteError> {
         // A publish whose time is up makes no transaction.
         self.publishing.expire(tokio::time::Instant::now());
-        let result = match self.publishing.next() {
+        let next = self.publishing.next();
+        self.stepped = next.as_ref().map(|(name, _)| name.clone());
+        let result = match next {
             Some((name, stage)) => self.publish(name, stage).await,
             None => Ok(Step::Idle),
         };
         self.counted(result)
+    }
+
+    /// The last [`Driver::step_publish`] failed, at `ended`: the publish it
+    /// stepped waits ([`Publishing::wait_after`]). Its wait, where it still
+    /// pends.
+    pub fn publish_failed(&mut self, ended: tokio::time::Instant) -> Option<std::time::Duration> {
+        let name = self.stepped.take()?;
+        self.publishing.wait_after(&name, ended)
     }
 
     /// The cut's step, whatever the publishes have to do. An error from

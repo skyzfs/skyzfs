@@ -38,13 +38,17 @@
 //!
 //!    **A publish** (M2.5) takes its step before the cut's when it has
 //!    one ([`Driver::step_publish`]), with a wait of its own (F3 of #122's
-//!    review): a publish step that fails waits one second doubling to five
-//!    minutes before the publishes step again, and that wait is reset only
-//!    when a publish ends (published, found, or refused), not by its
-//!    lookup, which can succeed while its transaction cannot be made. The
+//!    review): a publish whose step fails takes no step for one second,
+//!    doubling to five minutes at each failure of it in a row
+//!    ([`crate::publish::Publishing::wait_after`]). The wait is that
+//!    publish's alone (D2 of the review of #122): the other publishes
+//!    step meanwhile, oldest first, and a publish that ends, however it
+//!    ends, takes its wait with it. Its lookup does not reset it, since
+//!    the lookup can succeed while the transaction cannot be made. The
 //!    cut's steps go on meanwhile, and their wait is not touched by a
-//!    publish's: a publish that cannot be made does not hold the uploads.
-//!    A publish refused by the fence loses the lease, as a commit does.
+//!    publish's: a publish that cannot be made holds up neither the
+//!    uploads nor another publish. A publish refused by the fence loses
+//!    the lease, as a commit does.
 //! 3. With no cut to upload, the next turn comes after [`IDLE`].
 //!
 //! An uploader that will upload nothing more (its lease lost, or its
@@ -182,8 +186,6 @@ pub struct Uploader<L, R, F, M> {
     errors: Backoff,
     /// After a commit given up.
     refused: Backoff,
-    /// After a publish's step that failed.
-    publish_errors: Backoff,
     /// A commit was refused, and the step after it, which reads the row
     /// and head again, has not ended yet.
     rereading: bool,
@@ -194,8 +196,6 @@ pub struct Uploader<L, R, F, M> {
     lease_at: Instant,
     /// When the driver may next take a cut's step.
     step_at: Instant,
-    /// When the driver may next take a publish's step.
-    publish_at: Instant,
     /// The publishes asked before the driver is made, which it then takes
     /// ([`Uploader::publishing`]).
     publishing: Option<Publishing>,
@@ -225,13 +225,11 @@ where
             slice_blocks: blocks,
             errors: Backoff::new(),
             refused: Backoff::new(),
-            publish_errors: Backoff::new(),
             rereading: false,
             lease_backoff: Backoff::new(),
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
             step_at: now,
-            publish_at: now,
             publishing: Some(Publishing::default()),
         }
     }
@@ -401,7 +399,7 @@ where
             driver.publishing().stop();
             return AT_REST;
         }
-        let publish = driver.publish_due() && now >= self.publish_at;
+        let publish = driver.publish_due();
         if !publish && now < self.step_at {
             return self.next_wait(now, self.step_at);
         }
@@ -477,19 +475,17 @@ where
         }
     }
 
-    /// After a publish's step that ended at `ended`: its wait, where it
-    /// failed; nothing else waits on it ([module docs](self)).
+    /// After a publish's step that ended at `ended`: where it failed, the
+    /// wait of that publish alone; nothing else waits on it ([module
+    /// docs](self)). A publish that ends takes its wait with it.
     fn after_publish(&mut self, step: Result<Step, RemoteError>, ended: Instant) -> Duration {
         match step {
-            Ok(Step::Published { .. } | Step::PublishRefused { .. }) => {
-                self.publish_errors.succeeded();
-            }
-            // A lookup: the publish goes on, and its wait is not reset.
             Ok(_) => {}
             Err(RemoteError::Fenced { holder, epoch }) => return self.fenced(holder, epoch),
             Err(_) => {
-                let wait = self.publish_errors.failed();
-                self.publish_at = ended + wait;
+                if let Some(driver) = self.driver.as_mut() {
+                    driver.publish_failed(ended);
+                }
             }
         }
         Duration::ZERO
@@ -589,8 +585,8 @@ where
     /// publish with a step to take may take it, if that comes first.
     fn next_wait(&self, now: Instant, until: Instant) -> Duration {
         let mut until = until.min(self.lease_at);
-        if self.driver.as_ref().is_some_and(Driver::publish_due) {
-            until = until.min(self.publish_at);
+        if let Some(at) = self.driver.as_ref().and_then(Driver::publish_due_at) {
+            until = until.min(at);
         }
         until.saturating_duration_since(now)
     }
