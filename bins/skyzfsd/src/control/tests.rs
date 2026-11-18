@@ -308,7 +308,9 @@ fn a_publish_hands_its_manifest_to_the_handler() {
 }
 
 /// Mutant: a request taken without the greeting, or one cut short
-/// taken.
+/// taken, or a name the uploader would refuse handed on (a minor point
+/// of the review of #127: the request log writes names in columns
+/// separated by tabs).
 #[test]
 fn a_request_that_cannot_be_taken_is_refused_without_asking() {
     let long = format!("progress name={}", "n".repeat(LINE_MAX));
@@ -329,6 +331,15 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
         (format!("{HELLO}\ncuts please\n"), Code::Malformed),
         (format!("{HELLO}\n\u{7f}\u{0}\n"), Code::Malformed),
         (format!("{HELLO}\n{}\n", over.line()), Code::Manifest),
+        (format!("{HELLO}\nprogress name=a\tb\n"), Code::Name),
+        (format!("{HELLO}\nwithdraw name=a/b\n"), Code::Name),
+        (
+            format!(
+                "{HELLO}\n{}\n",
+                publish(None).line().replace("pool-7.b_c", "a\tb")
+            ),
+            Code::Name,
+        ),
         (
             format!("{HELLO}\n{}\n", expiry(Duration::ZERO)),
             Code::Expiry,
@@ -521,13 +532,21 @@ mod socket {
         assert!(refusing.close());
     }
 
-    /// The check itself: this test's own user passes it.
+    /// The check itself: this test's own user and root pass it, and
+    /// another user does not (T1 of the review of #127).
+    ///
+    /// Mutant: the check that lets every user ask.
     #[test]
     fn the_daemons_own_user_and_root_may_ask() {
+        let own = rustix::process::geteuid().as_raw();
         assert!(super::super::server::same_user_or_root(0));
-        assert!(super::super::server::same_user_or_root(
-            rustix::process::geteuid().as_raw()
-        ));
+        assert!(super::super::server::same_user_or_root(own));
+        let other = if own == 1 {
+            2
+        } else {
+            own.wrapping_add(1).max(1)
+        };
+        assert!(!super::super::server::same_user_or_root(other), "{other}");
     }
 
     /// Mutant: a stale socket not removed (the bind fails), or anything
@@ -588,20 +607,250 @@ mod socket {
         assert!(!path.exists());
         assert!(ask(&path, &Request::Cuts, &[], IO_LIMIT).is_err());
     }
+
+    /// A listener at `path` with a backlog of one, answered by nobody
+    /// until it is given to a channel.
+    fn small_backlog(path: &std::path::Path) -> UnixListener {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+        let socket = rustix::net::socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("a socket");
+        let address = SocketAddrUnix::new(path).expect("an address");
+        rustix::net::bind(&socket, &address).expect("bound");
+        rustix::net::listen(&socket, 1).expect("listening");
+        UnixListener::from(socket)
+    }
+
+    /// Connections to `path` that wait in its backlog until it is full:
+    /// the next connect would wait (or, made not to, fails at once).
+    fn fill_backlog(path: &std::path::Path) -> Vec<rustix::fd::OwnedFd> {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+        let address = SocketAddrUnix::new(path).expect("an address");
+        let mut waiting = Vec::new();
+        for _ in 0..64 {
+            let socket = rustix::net::socket_with(
+                AddressFamily::UNIX,
+                SocketType::STREAM,
+                SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+                None,
+            )
+            .expect("a socket");
+            match rustix::net::connect(&socket, &address) {
+                Ok(()) => waiting.push(socket),
+                Err(rustix::io::Errno::AGAIN) => return waiting,
+                Err(e) => panic!("a connect: {e}"),
+            }
+        }
+        panic!("the backlog took 64 connections");
+    }
+
+    /// The wake does not wait where the backlog is full (F2 of the review
+    /// of #127, Codex's P2 on `server.rs`).
+    ///
+    /// Mutant: the wake's connect made blocking (it waits until a
+    /// connection is taken, which nobody does here).
+    #[test]
+    fn the_wake_does_not_wait_for_a_full_backlog() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let listener = small_backlog(&path);
+        let waiting = fill_backlog(&path);
+        assert!(!waiting.is_empty());
+        let (woke, woken) = std::sync::mpsc::channel();
+        let waker = path.clone();
+        std::thread::spawn(move || {
+            server::wake(&waker);
+            let _ = woke.send(());
+        });
+        assert!(
+            woken.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the wake waits"
+        );
+        drop(listener);
+    }
+
+    /// A channel whose thread is held in a request, and whose backlog is
+    /// full, closes within its limit and says the thread did not end
+    /// (F2 of the review of #127).
+    ///
+    /// Mutant: the wake's connect made blocking (the close waits until
+    /// the request ends, 60 s here).
+    #[test]
+    fn close_does_not_wait_on_a_full_backlog() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let (entered, inside) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let handler: Handler = Box::new(move |_: &Request, _: Vec<u8>| {
+            let _ = entered.send(());
+            let _ = held.recv_timeout(Duration::from_secs(60));
+            Reply::Pending
+        });
+        let channel = Channel::answering(
+            small_backlog(&path),
+            &path,
+            handler,
+            server::same_user_or_root,
+            quiet(),
+            REQUEST_LIMIT,
+        )
+        .expect("open");
+        let asker = path.clone();
+        let first =
+            std::thread::spawn(move || ask(&asker, &Request::Cuts, &[], Duration::from_secs(70)));
+        inside
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the request is in the handler");
+        let waiting = fill_backlog(&path);
+        let (closed, close) = std::sync::mpsc::channel();
+        let began = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let _ = closed.send(channel.close());
+        });
+        let ended = close.recv_timeout(server::CLOSE_LIMIT + Duration::from_secs(3));
+        let took = began.elapsed();
+        drop(release);
+        assert_eq!(ended, Ok(false), "the close after {took:?}");
+        assert!(
+            took < server::CLOSE_LIMIT + Duration::from_secs(2),
+            "{took:?}"
+        );
+        drop(waiting);
+        let _ = first.join();
+    }
+
+    /// A peer that sends its request a byte at a time, each well within
+    /// the limit of one read, holds the thread no longer than the
+    /// request's own limit: the next peer is answered (F3 of the review
+    /// of #127).
+    ///
+    /// Mutant: each read given its own limit (the trickle holds the
+    /// thread for as long as it goes on, 20 s here).
+    #[test]
+    fn a_request_that_trickles_holds_the_thread_no_longer_than_its_limit() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::answering(
+            UnixListener::bind(&path).expect("bound"),
+            &path,
+            recording(&asked, Reply::Unknown),
+            server::same_user_or_root,
+            quiet(),
+            Duration::from_millis(500),
+        )
+        .expect("open");
+        let mut slow = UnixStream::connect(&path).expect("connect");
+        let trickle = std::thread::spawn(move || {
+            let mut sent = format!("{HELLO}\nprogress name=").into_bytes();
+            sent.extend(std::iter::repeat_n(b'a', 400));
+            for byte in sent {
+                if slow.write_all(&[byte]).is_err() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let began = std::time::Instant::now();
+        let reply = ask(&path, &Request::Cuts, &[], Duration::from_secs(5));
+        let took = began.elapsed();
+        assert_eq!(reply.ok(), Some(Reply::Unknown), "after {took:?}");
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        assert!(
+            trickle.join().expect("the trickle"),
+            "the trickling peer was cut off"
+        );
+        assert_eq!(asked.count.load(Ordering::SeqCst), 1);
+        assert!(channel.close());
+    }
 }
 
 mod uploader {
-    use skyzfs_local::inplace::Cut;
+    use std::sync::Weak;
+
+    use skyzfs_blk::Buf;
+    use skyzfs_local::inplace::{Cut, CutSlice};
     use skyzfs_upload::publish::Request as Ask;
-    use skyzfs_upload::{Answer, Control, CutsNow};
+    use skyzfs_upload::queued::Desk;
+    use skyzfs_upload::{Answer, Control, CutsNow, Released, Store, Uploadable};
     use tokio::sync::mpsc;
 
     use super::*;
 
     const LIMIT: Duration = Duration::from_secs(10);
 
+    /// The count of cuts the store of [`answered_desk`] holds.
+    const NOW: CutsNow = CutsNow {
+        state: Some(S),
+        count: 4,
+        newest: Some(Cut {
+            number: 4,
+            group: 9,
+            itself: false,
+        }),
+    };
+
+    /// A store that holds no cut to upload, and counts [`NOW`].
+    struct Counting;
+
+    impl Store for Counting {
+        fn uploadable(&mut self) -> Option<Uploadable> {
+            None
+        }
+        fn read(&mut self, _: u64, _: u64, _: &mut Buf) -> io::Result<CutSlice> {
+            Err(io::Error::other("no cut"))
+        }
+        fn begin_sync_copies(&mut self, _: u64) -> io::Result<()> {
+            Err(io::Error::other("no cut"))
+        }
+        fn copies_synced(&mut self, _: bool) -> Option<io::Result<()>> {
+            None
+        }
+        fn release(&mut self, _: u64) -> Released {
+            Released::Gone
+        }
+        fn name_committed(&mut self, _: u64, _: u64) -> bool {
+            false
+        }
+        fn abandon_all(&mut self) -> Vec<u64> {
+            Vec::new()
+        }
+        fn cuts(&mut self) -> CutsNow {
+            NOW
+        }
+    }
+
+    /// A desk whose queue's thread answers it from [`Counting`] at each
+    /// wake, until the desk closes or is dropped.
+    fn answered_desk() -> Arc<Desk> {
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        let desk = Desk::new(move || {
+            let _ = wake.send(());
+        });
+        let weak: Weak<Desk> = Arc::downgrade(&desk);
+        std::thread::spawn(move || {
+            while woken.recv().is_ok() {
+                let Some(desk) = weak.upgrade() else {
+                    return;
+                };
+                if desk.closed() {
+                    return;
+                }
+                desk.answer(&mut Counting);
+            }
+        });
+        desk
+    }
+
     /// An uploader on a thread of its own that answers each control with
-    /// `answer`, after keeping what it was asked.
+    /// `answer`, after keeping what it was asked; the count of cuts is
+    /// the desk's.
     fn uploader_with(
         answer: impl Fn(Control, &mut Vec<String>) + Send + 'static,
     ) -> (Handler, std::thread::JoinHandle<Vec<String>>) {
@@ -613,27 +862,16 @@ mod uploader {
             }
             seen
         });
-        let handler = handler::uploader(A, tx, LIMIT).expect("a handler");
+        let handler = handler::uploader(A, tx, answered_desk(), LIMIT).expect("a handler");
         (handler, thread)
     }
 
     /// Mutant: a field of a request or an answer lost on the way (the
-    /// attachment answered is the daemon's, not the request's).
+    /// attachment answered is the daemon's, not the request's), or the
+    /// count of cuts asked of the uploader.
     #[test]
     fn each_request_goes_to_the_uploader_and_its_answer_back() {
         let (mut handler, thread) = uploader_with(|control, seen| match control {
-            Control::Cuts(reply) => {
-                seen.push("cuts".into());
-                let _ = reply.send(CutsNow {
-                    state: Some(S),
-                    count: 4,
-                    newest: Some(Cut {
-                        number: 4,
-                        group: 9,
-                        itself: false,
-                    }),
-                });
-            }
             Control::Ask(ask, reply) => {
                 seen.push(format!("{ask:?}"));
                 let _ = reply.send(match ask.name.as_str() {
@@ -699,7 +937,6 @@ mod uploader {
         assert_eq!(
             seen,
             [
-                "cuts".to_string(),
                 ask("pool-7.b_c", EXPIRY_DEFAULT),
                 ask("taken", Duration::from_secs(5)),
                 "progress t".into(),
@@ -713,12 +950,47 @@ mod uploader {
     #[test]
     fn an_uploader_that_does_not_answer_in_time_reads_no_answer() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler = handler::uploader(A, tx, Duration::from_millis(50)).expect("a handler");
-        let reply = handler(&Request::Cuts, Vec::new());
+        let mut handler = handler::uploader(A, tx, answered_desk(), Duration::from_millis(50))
+            .expect("a handler");
+        let reply = handler(&Request::Progress("t".into()), Vec::new());
         assert!(
             matches!(reply, Reply::Refused(Code::NoAnswer, _)),
             "{reply:?}"
         );
+        drop(rx);
+    }
+
+    /// A store whose queue takes no turn leaves `cuts` unanswered: the
+    /// channel waits its limit and says `no-answer`, naming the store.
+    ///
+    /// Mutant: the count waited for with no limit (the test would not
+    /// end), or the wrong code.
+    #[test]
+    fn a_store_whose_queue_takes_no_turn_reads_no_answer_for_cuts() {
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let desk = Desk::new(|| {});
+        let mut handler =
+            handler::uploader(A, tx, desk, Duration::from_millis(50)).expect("a handler");
+        let reply = handler(&Request::Cuts, Vec::new());
+        let Reply::Refused(Code::NoAnswer, why) = reply else {
+            panic!("{reply:?}");
+        };
+        assert!(why.contains("the store did not answer"), "{why}");
+        drop(rx);
+    }
+
+    /// A closed desk is a store no longer served: `cuts` reads `ended`,
+    /// and not a count of nothing (F5 of the review of #127).
+    ///
+    /// Mutant: a closed desk answered with an empty count.
+    #[test]
+    fn a_closed_desk_reads_ended_for_cuts() {
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let desk = answered_desk();
+        desk.close();
+        let mut handler = handler::uploader(A, tx, desk, LIMIT).expect("a handler");
+        let reply = handler(&Request::Cuts, Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
         drop(rx);
     }
 
@@ -727,7 +999,7 @@ mod uploader {
     #[test]
     fn an_uploader_that_has_ended_reads_ended() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler = handler::uploader(A, tx, LIMIT).expect("a handler");
+        let mut handler = handler::uploader(A, tx, answered_desk(), LIMIT).expect("a handler");
         drop(rx);
         let reply = handler(&Request::Progress("t".into()), Vec::new());
         assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
@@ -739,20 +1011,40 @@ mod uploader {
         let _ = thread.join();
     }
 
-    /// Mutant: a full inbox waited on (the channel would hang).
+    /// A full inbox is not waited on, and does not hold back the count of
+    /// cuts, which the desk gives (F1 of the review of #127).
+    ///
+    /// Mutant: a full inbox waited on (the channel would hang), or the
+    /// count asked through the inbox (`no-answer`).
     #[test]
     fn a_full_inbox_is_not_waited_on() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler =
-            handler::uploader(A, tx.clone(), Duration::from_millis(1)).expect("a handler");
+        let mut handler = handler::uploader(A, tx.clone(), answered_desk(), Duration::from_secs(5))
+            .expect("a handler");
         for _ in 0..handler::INBOX {
             let (reply, _) = tokio::sync::oneshot::channel();
-            tx.try_send(Control::Cuts(reply)).expect("room");
+            tx.try_send(Control::Progress("t".into(), reply))
+                .expect("room");
         }
-        let reply = handler(&Request::Cuts, Vec::new());
+        let began = std::time::Instant::now();
+        let reply = handler(&Request::Progress("t".into()), Vec::new());
         assert!(
             matches!(reply, Reply::Refused(Code::NoAnswer, _)),
             "{reply:?}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(
+            handler(&Request::Cuts, Vec::new()),
+            Reply::Cuts(CutsReply {
+                attachment: A,
+                state: Some(S),
+                count: 4,
+                newest: Some((9, false)),
+            })
         );
         drop(rx);
     }

@@ -1526,10 +1526,6 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
         }
         None
     }
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    requests.blocking_send(Control::Cuts(reply)).expect("sent");
-    let now = within(answer).expect("the count");
-    assert_eq!(now, skyzfs_upload::CutsNow::default());
     let ask = |attachment| Ask {
         name: "t".into(),
         attachment,

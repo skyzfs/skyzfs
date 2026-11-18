@@ -68,10 +68,17 @@
 //! asked of an idle uploader is looked up then and not after the sleep.
 //! A request whose asker has stopped waiting is not taken: the asker was
 //! told that no answer came, and would not hear of it. A withdrawal is
-//! made all the same, since it ends a publish and makes none. The count
-//! of cuts ([`Control::Cuts`]) is the store's own, read where the store
-//! lives when the request is answered ([`Local::cuts`]): a cut counted
-//! before the request was made is in it.
+//! made all the same, since it ends a publish and makes none.
+//!
+//! An answer calls neither the store nor object storage
+//! ([`Uploader::control`] does not wait), so a request between two turns
+//! holds back neither the lease's renewal nor the next step (F1 of the
+//! review of #127): the lease is kept as #117's F4 has it. A publish is
+//! judged against the cut state given at the start
+//! ([`Publishing::set_state`]), which is the store's: a store's state
+//! changes only at a start. The count of cuts is not the uploader's to
+//! answer: the channel asks it of the store at the desk
+//! (`queued::Desk::cuts_now`), beside the uploader's calls.
 //!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
@@ -89,7 +96,7 @@ use skynbd_refs::RefStore;
 use crate::backoff::Backoff;
 use crate::driver::{Doing, Driver, Figures, Step};
 use crate::lease::{Keeper, LeaseState};
-use crate::local::{CutsNow, Local};
+use crate::local::Local;
 use crate::publish::{Answer, Progress, PublishFigures, Publishing, Request};
 use crate::remote::{Remote, RemoteError};
 
@@ -164,8 +171,6 @@ pub struct PublishesShown {
 /// [`Uploader::control`] between two turns of [`Uploader::run_with`].
 #[derive(Debug)]
 pub enum Control {
-    /// The store's count of cuts ([`Local::cuts`]).
-    Cuts(oneshot::Sender<CutsNow>),
     /// Ask for a publish ([`Publishing::ask`]).
     Ask(Request, oneshot::Sender<Answer>),
     /// How the publish of a name stands ([`Publishing::progress`]).
@@ -274,47 +279,18 @@ where
         }
     }
 
-    /// The store, the driver's once it is made.
-    fn local(&mut self) -> Option<&mut L> {
-        match self.driver {
-            Some(ref mut driver) => Some(driver.local()),
-            None => self.local.as_mut(),
-        }
-    }
-
     /// Answer a request of the daemon's channel ([module docs](self)), and
     /// say whether the next turn should begin at once: a publish was
-    /// accepted.
-    pub async fn control(&mut self, control: Control) -> bool {
+    /// accepted. It waits on nothing: no call of the store and none of
+    /// object storage.
+    pub fn control(&mut self, control: Control) -> bool {
         // The publishes as they stand now: those whose time is up end
         // before anything is answered.
         self.publishing().expire(Instant::now());
         match control {
-            Control::Cuts(reply) => {
-                if reply.is_closed() {
-                    return false;
-                }
-                let now = match self.local() {
-                    Some(local) => local.cuts().await,
-                    None => CutsNow::default(),
-                };
-                let _ = reply.send(now);
-                false
-            }
             Control::Ask(request, reply) => {
                 if reply.is_closed() {
                     return false;
-                }
-                // The store's cut state as it is now. The driver names it
-                // at each check of a cut; a request whose state was read
-                // with `cuts` after the store's first cut, and before
-                // that check, would be refused otherwise.
-                let state = match self.local() {
-                    Some(local) => local.cuts().await.state,
-                    None => None,
-                };
-                if let Some(state) = state {
-                    self.publishing().set_state(state);
                 }
                 let answer = self.publishing().ask(request);
                 let accepted = answer == Answer::Accepted;
@@ -638,11 +614,7 @@ where
                             open = false;
                             continue;
                         };
-                        let now = tokio::select! {
-                            biased;
-                            () = &mut stop => break 'turns,
-                            now = self.control(control) => now,
-                        };
+                        let now = self.control(control);
                         self.post(&mut publish);
                         if now {
                             continue 'turns;

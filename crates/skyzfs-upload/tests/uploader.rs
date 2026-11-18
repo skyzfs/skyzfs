@@ -711,10 +711,6 @@ impl<L: skyzfs_upload::Local> skyzfs_upload::Local for Slow<L> {
     async fn abandon_all(&mut self) -> Vec<u64> {
         self.inner.abandon_all().await
     }
-
-    async fn cuts(&mut self) -> skyzfs_upload::CutsNow {
-        self.inner.cuts().await
-    }
 }
 
 /// The lease's expiry, as the status shows it.
@@ -2108,10 +2104,11 @@ async fn ask_of<T>(
     answer.await.expect("an answer")
 }
 
-/// `run_with` answers the channel's requests between its turns: the
-/// count of cuts as the store has it, a publish accepted, its progress
-/// until it is done, on cut 1, whose commit is head. Each post of the
-/// status after a publish ended names it once, as it ended.
+/// `run_with` answers the channel's requests between its turns: a
+/// publish accepted, its progress until it is done, on cut 1, whose
+/// commit is head. Each post of the status after a publish ended names
+/// it once, as it ended. (The count of cuts is the store's, asked at the
+/// desk: `tests/queued.rs`.)
 #[tokio::test(start_paused = true)]
 async fn run_with_answers_the_channels_requests_between_turns() {
     let mut fx = Fixture::new(81).await;
@@ -2132,10 +2129,6 @@ async fn run_with_answers_the_channels_requests_between_turns() {
         move |shown| post.post(Duration::ZERO, shown),
     );
     let client = async move {
-        let now = ask_of(&inbox, Control::Cuts).await;
-        assert_eq!((now.state, now.count), (Some(state), 1), "{now:?}");
-        let newest = now.newest.expect("cut 1");
-        assert_eq!((newest.number, newest.group), (1, 7));
         let answer = ask_of(&inbox, |r| Control::Ask(asked(state, "t", 0, 7), r)).await;
         assert_eq!(answer, Answer::Accepted);
         let done = loop {
@@ -2224,10 +2217,7 @@ async fn a_request_whose_asker_gave_up_is_not_taken() {
     *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     let (reply, answer) = tokio::sync::oneshot::channel();
     drop(answer);
-    assert!(
-        !up.control(Control::Ask(asked(state, "t", 0, 7), reply))
-            .await
-    );
+    assert!(!up.control(Control::Ask(asked(state, "t", 0, 7), reply)));
     assert_eq!(up.publishing().progress("t"), Progress::Unknown);
     assert_eq!(up.publishing().figures().accepted, 0);
 
@@ -2237,7 +2227,7 @@ async fn a_request_whose_asker_gave_up_is_not_taken() {
     );
     let (reply, answer) = tokio::sync::oneshot::channel();
     drop(answer);
-    assert!(!up.control(Control::Withdraw("u".into(), reply)).await);
+    assert!(!up.control(Control::Withdraw("u".into(), reply)));
     assert_eq!(up.publishing().progress("u"), Progress::Withdrawn);
 }
 
@@ -2281,55 +2271,104 @@ async fn a_publish_whose_time_is_up_reads_expired_between_turns() {
     assert_eq!(at, Progress::Expired);
 }
 
-/// A request is judged against the store's cut state as it is when it
-/// is asked: one whose state was read after the store's first cut is
-/// taken before any turn has checked that cut, and one of another state
-/// is refused all the same.
+/// A request is judged against the cut state the uploader was given at
+/// the start, which is the store's (a store's state changes only at a
+/// start): one of that state is taken before any turn has checked a
+/// cut, and one of another state is refused. No store call is made for
+/// it (`control` does not wait; F1 and F5 of the review of #127).
 ///
-/// Mutant: the state left to the driver's check (the first is refused
+/// Mutant: the state not given at the start (the first is refused
 /// `State`).
 #[tokio::test(start_paused = true)]
-async fn a_request_is_judged_against_the_stores_cut_state_when_it_is_asked() {
+async fn a_request_is_judged_against_the_cut_state_given_at_the_start() {
     let mut fx = Fixture::new(86).await;
     let store = one_cut(&mut fx);
     let state = store.cut_state_id().expect("the cut state");
     let clock = Clock::new();
     let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
-    *up.publishing() = Publishing::new(Some(ATTACHMENT), None);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(
-        up.control(Control::Ask(asked(state, "t", 0, 1), reply))
-            .await
-    );
+    assert!(up.control(Control::Ask(asked(state, "t", 0, 1), reply)));
     assert_eq!(answer.await.ok(), Some(Answer::Accepted));
     let mut other = state;
     other[0] ^= 1;
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(
-        !up.control(Control::Ask(asked(other, "u", 0, 1), reply))
-            .await
-    );
+    assert!(!up.control(Control::Ask(asked(other, "u", 0, 1), reply)));
     assert_eq!(answer.await.ok(), Some(Answer::Refused(Refusal::State)));
     assert_eq!(up.publishing().progress("t"), Progress::Pending);
 }
 
-/// The count of cuts a request reads is the store's when it is asked: a
-/// cut counted after the uploader's last turn is in it.
+/// The channel's requests, each answered between two turns, do not hold
+/// back the lease's renewal, while each of the store's checks takes 21 s
+/// (two thirds of the lease and more): no two takes of the lease are
+/// more than a third of it apart, the first at 0 (F1 of the review of
+/// #127, its scenario: a request 0.25 s before a renewal is due, and a
+/// store answer of 21 s). Each request is answered, after the check
+/// under way at most.
+///
+/// Mutant: a store call made for a request between two turns, outside
+/// the lease's keeping (the code at 1595d6f: the store's state read at a
+/// publish's ask): the row lapses.
 #[tokio::test(start_paused = true)]
-async fn the_count_of_cuts_is_the_stores_when_it_is_asked() {
-    let mut fx = Fixture::new(85).await;
-    let store = one_cut(&mut fx);
+async fn the_channels_requests_do_not_hold_back_the_leases_renewal() {
+    let fx = Fixture::new(95).await;
+    let store = fx.start();
+    let state = store.cut_state_id().expect("the cut state");
+    let delay = Arc::new(AtomicU64::new(21_000));
+    let slow = Slow {
+        inner: store,
+        delay: Arc::clone(&delay),
+    };
     let clock = Clock::new();
-    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
-    until_idle(&mut up, 100).await;
-    let local = up.driver().expect("the driver").local();
-    fx.write(local, 12, 0x12);
-    fx.group(local, 8);
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(!up.control(Control::Cuts(reply)).await);
-    let now = answer.await.expect("the count");
-    assert_eq!(now.count, 2);
-    assert_eq!(now.newest.map(|cut| cut.group), Some(8));
+    let way = Leasing::apart(&fx);
+    let mut up = Uploader::with_slices(slow, way.keeper(&fx), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    let (inbox, requests) = tokio::sync::mpsc::channel(4);
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let run = up.run_with(
+        async move {
+            let _ = stopped.await;
+        },
+        requests,
+        |_| {},
+    );
+    let begun = tokio::time::Instant::now();
+    let third = Duration::from_millis(TTL / 3);
+    let client = async move {
+        let mut answered = Vec::new();
+        for i in 1..=6u32 {
+            // A quarter second before the i-th renewal is due.
+            tokio::time::sleep_until(begun + third * i - IDLE).await;
+            let name = format!("t{i}");
+            let answer = match i % 3 {
+                1 => format!(
+                    "{:?}",
+                    ask_of(&inbox, |r| Control::Ask(asked(state, &name, 0, 100), r)).await
+                ),
+                2 => format!(
+                    "{:?}",
+                    ask_of(&inbox, |r| Control::Progress(name.clone(), r)).await
+                ),
+                _ => format!(
+                    "{:?}",
+                    ask_of(&inbox, |r| Control::Withdraw(name.clone(), r)).await
+                ),
+            };
+            answered.push(answer);
+        }
+        tokio::time::sleep_until(begun + Duration::from_secs(80)).await;
+        let _ = stop.send(());
+        answered
+    };
+    let (_keeper, answered) = tokio::join!(run, client);
+    assert_eq!(
+        answered,
+        ["Accepted", "Unknown", "Unknown", "Accepted", "Unknown", "Unknown"],
+        "each request is answered"
+    );
+    let takes = way.takes();
+    on_time(&takes, "requests 0.25 s before each renewal");
+    assert!(takes.len() >= 8, "{takes:?}");
 }
 
 /// An uploader of `store` whose remote notes the publishes in `sent`,

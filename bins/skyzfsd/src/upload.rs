@@ -802,8 +802,10 @@ pub type Told = Box<dyn FnMut(&str, &Progress) + Send>;
 /// What the uploader's thread publishes from: the attachment the daemon
 /// serves (its attachment record's nonce; `None` where the record could
 /// not be read, and every publish is then refused), the store's cut
-/// state at the start (`InPlace::cut_state_id`, `None` before its first
-/// cut), and the channel's requests. An inbox whose sender is gone (the
+/// state at the start (`InPlace::cut_state_id`: named from the start in
+/// a store that holds cuts, as an uploading daemon's does, and changed
+/// only at a start; F5 of the review of #127), and the channel's
+/// requests. An inbox whose sender is gone (the
 /// channel could not be made) is no longer read.
 pub struct Publishes {
     /// The attachment record's nonce.

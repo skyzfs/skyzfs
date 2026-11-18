@@ -1,10 +1,19 @@
 //! What the daemon answers on its channel: its uploader's answers, or
 //! a refusal where it has none ([module docs](super)).
+//!
+//! The count of cuts is not asked of the uploader: it is the store's,
+//! asked at the desk where the queue's thread answers the uploader's
+//! calls ([`Desk::cuts_now`]), and given at the queue's next turn,
+//! whatever step the uploader is in. A stalled PUT or a slow lookup
+//! holds up the publishes' answers, which wait for the step under way,
+//! but not `cuts` (F1 and F4 of the review of #127).
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
+use skyzfs_upload::queued::Desk;
 use skyzfs_upload::{Answer, Control};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
@@ -22,12 +31,13 @@ pub fn no_upload(why: String) -> Handler {
 }
 
 /// A handler that asks the uploader through `inbox` (read by
-/// `Uploader::run_with`), for the daemon that serves `attachment`.
-/// Each answer is waited for at most `limit` ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the
-/// daemon).
+/// `Uploader::run_with`), and the store's count of cuts at `desk`, for
+/// the daemon that serves `attachment`. Each answer is waited for at
+/// most `limit` ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the daemon).
 pub fn uploader(
     attachment: [u8; 16],
     inbox: mpsc::Sender<Control>,
+    desk: Arc<Desk>,
     limit: Duration,
 ) -> io::Result<Handler> {
     // The channel's thread is not the runtime's: it waits on its own,
@@ -40,7 +50,7 @@ pub fn uploader(
             runtime: &runtime,
             limit,
         };
-        match answer(&waiter, &inbox, attachment, request, manifest) {
+        match answer(&waiter, &inbox, &desk, attachment, request, manifest) {
             Ok(reply) | Err(reply) => reply,
         }
     }))
@@ -54,15 +64,14 @@ struct Waiter<'a> {
 fn answer(
     waiter: &Waiter<'_>,
     inbox: &mpsc::Sender<Control>,
+    desk: &Desk,
     attachment: [u8; 16],
     request: &Request,
     manifest: Vec<u8>,
 ) -> Result<Reply, Reply> {
     Ok(match request {
         Request::Cuts => {
-            let (tx, rx) = oneshot::channel();
-            send(inbox, Control::Cuts(tx))?;
-            let now = wait(waiter, rx)?;
+            let now = count(waiter, desk)?;
             Reply::Cuts(CutsReply {
                 attachment,
                 state: now.state,
@@ -128,6 +137,27 @@ fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
             format!(
                 "the uploader did not answer within {} s; a publish may have been \
                  taken: ask again, or withdraw it",
+                waiter.limit.as_secs_f64()
+            ),
+        )),
+    }
+}
+
+/// The store's count of cuts, asked at the desk and waited for at most
+/// the waiter's limit. A closed desk is a store no longer served:
+/// `ended`, and not a count of nothing (F5 of the review of #127).
+fn count(waiter: &Waiter<'_>, desk: &Desk) -> Result<skyzfs_upload::CutsNow, Reply> {
+    let limit = waiter.limit;
+    match waiter
+        .runtime
+        .block_on(async move { tokio::time::timeout(limit, desk.cuts_now()).await })
+    {
+        Ok(Some(now)) => Ok(now),
+        Ok(None) => Err(ended()),
+        Err(_) => Err(Reply::Refused(
+            Code::NoAnswer,
+            format!(
+                "the store did not answer within {} s: its queue takes no turn",
                 waiter.limit.as_secs_f64()
             ),
         )),

@@ -120,11 +120,6 @@ pub trait Local {
     /// A mismatch: abandon every held cut, so that the next holds the
     /// whole volume (`InPlace::abandon_all_cuts`). The cuts abandoned.
     async fn abandon_all(&mut self) -> Vec<u64>;
-
-    /// The store's count of cuts now ([`CutsNow`]): taken where the store
-    /// lives when the call comes, so that a cut counted before the call
-    /// was made is in it.
-    async fn cuts(&mut self) -> CutsNow;
 }
 
 /// [`Local`] answered where the store lives: the store's side of each
@@ -152,7 +147,10 @@ pub trait Store {
     fn name_committed(&mut self, number: u64, group: u64) -> bool;
     /// [`Local::abandon_all`].
     fn abandon_all(&mut self) -> Vec<u64>;
-    /// [`Local::cuts`].
+    /// The store's count of cuts now ([`CutsNow`]), for the daemon's
+    /// channel: not one of the uploader's calls, but asked at the desk
+    /// beside them (`Desk::cuts_now`). It reads the store's state in
+    /// memory, and waits on nothing.
     fn cuts(&mut self) -> CutsNow;
 }
 
@@ -186,10 +184,6 @@ impl<S: Store> Local for S {
 
     async fn abandon_all(&mut self) -> Vec<u64> {
         Store::abandon_all(self)
-    }
-
-    async fn cuts(&mut self) -> CutsNow {
-        Store::cuts(self)
     }
 }
 

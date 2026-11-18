@@ -10,14 +10,18 @@
 //! # The socket
 //!
 //! A Unix stream socket, [`SOCKET`] in the volume's run directory, made
-//! once the device serves and removed at the end of `serve`. A socket
+//! once the device serves, before the daemon prints `ready`, and removed
+//! at the end of `serve`. A socket
 //! left there by an instance that was killed is removed by the next one,
 //! which holds the volume's lock, before it makes its own. Its mode is
 //! 0600, and the daemon answers only a peer whose user is the daemon's
 //! own or root (`SO_PEERCRED`): any other is refused (`peer`) and told
 //! nothing else. One connection is answered at a time, on a thread of its
 //! own, and one request per connection: the daemon answers and closes.
-//! A connection that sends nothing for [`IO_LIMIT`] is closed.
+//! A connection whose request (the greeting, the request line and the
+//! manifest) is not whole within [`REQUEST_LIMIT`] is closed, however
+//! its bytes come (F3 of the review of #127), and the answer is written
+//! with [`IO_LIMIT`] for each write.
 //!
 //! `status` says what the channel is (`control`: `uploads` where the
 //! uploader answers it, `no_upload` where every request is refused
@@ -78,6 +82,10 @@
 //!   same `publish` asked again undoes the withdrawal, and its `accepted`
 //!   holds: the publish goes on (D1 of the review of #122).
 //!
+//! A name T that no publish can have
+//! (`skyzfs_upload::publish::valid_name`) is refused `name` by each of
+//! `publish`, `progress` and `withdraw`, before the request goes further.
+//!
 //! `refused stopped`, to a `publish` or as a publish's `progress`: this
 //! daemon's uploader steps no more (its lease lost, a commit or a publish
 //! refused by the fence, the store keeping a cut). A publish that pended
@@ -110,7 +118,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use skyzfs_upload::publish::{EXPIRY_MAX, MANIFEST_MAX};
+use skyzfs_upload::publish::{valid_name, EXPIRY_MAX, MANIFEST_MAX};
 use skyzfs_upload::{Progress, Refusal};
 
 /// The socket's name in the volume's run directory.
@@ -124,6 +132,13 @@ pub const LINE_MAX: usize = 4096;
 
 /// How long either side waits for the other's next bytes.
 pub const IO_LIMIT: Duration = Duration::from_secs(10);
+
+/// How long the daemon waits for a whole request, its manifest
+/// included: one deadline for the connection's reads, so that a peer that
+/// sends a byte now and then holds the channel's thread no longer than
+/// this (F3 of the review of #127). A request of the command line's
+/// client is written at once, a manifest of at most 1 MiB with it.
+pub const REQUEST_LIMIT: Duration = IO_LIMIT;
 
 /// How long the daemon waits for its uploader's answer: it answers
 /// between two of its steps, and a step can wait on object storage.
@@ -606,6 +621,17 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Result<(Request, Vec<u8
         Ok(request) => request,
         Err(why) => return Ok(Err(Reply::Refused(Code::Malformed, why))),
     };
+    // A name the uploader would refuse is refused here, before anything
+    // reads or records it: the request log writes names into lines of
+    // tab-separated columns (a minor point of the review of #127).
+    let name = match &request {
+        Request::Cuts => None,
+        Request::Publish(p) => Some(&p.name),
+        Request::Progress(name) | Request::Withdraw(name) => Some(name),
+    };
+    if name.is_some_and(|name| !valid_name(name)) {
+        return Ok(Err(Reply::Refused(Code::Name, Refusal::Name.to_string())));
+    }
     let mut manifest = Vec::new();
     if let Request::Publish(p) = &request {
         if p.manifest > MANIFEST_MAX {

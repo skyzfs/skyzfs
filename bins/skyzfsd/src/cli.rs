@@ -339,13 +339,13 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
   skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
   skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
       Ask the daemon serving the volume, through its channel (the socket
-      control in the volume's run directory, made once the device
-      serves; a daemon answers only its own user and root), and print
+      control in the volume's run directory, made before the daemon
+      prints ready; a daemon answers only its own user and root), and print
       its answer, one line. Status 0 for an answer, 1 for a refusal
       (refused CODE TEXT) or no answer.
       cuts prints `cuts attachment=A state=S count=C group=G opens=O`:
-      the attachment the daemon serves, the store's cut state (none
-      before its first cut), its count of cuts, and the newest cut's
+      the attachment the daemon serves, the store's cut state (named
+      from the daemon's start), its count of cuts, and the newest cut's
       group and whether it opens as itself or with a rewind (none
       before the first).
       publish asks that the first cut of state S counted after C whose
