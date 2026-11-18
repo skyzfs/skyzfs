@@ -7,7 +7,7 @@
 //!
 //! Two groups:
 //!
-//! - **D1 to D5: the daemon's queue loop with the desk in it.** `serve`'s
+//! - **D1 to D7: the daemon's queue loop with the desk in it.** `serve`'s
 //!   own `pumped`, a pump over the in-place store on the simulated disk,
 //!   a queue of the test's that waits as the kernel's does (a wake, a
 //!   request, a stop, or 20 s of nothing), the each-turn closure with
@@ -15,7 +15,8 @@
 //!   daemon's `Start`, `maker` and `Uploading` over object storage in
 //!   memory. What is not the daemon's: the closure is a copy, since
 //!   `run` cannot be called without a kernel.
-//! - **S1 to S6: the start, the status and `create`.**
+//! - **S1 to S6: the start, the status and `create`.** S1b needs the
+//!   harness of the first group.
 //!
 //! A scenario named `defect_...` states what should hold and fails on
 //! the head.
@@ -31,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use skynbd_engine::Engine;
-use skynbd_format::CommitKind;
+use skynbd_format::{Codec as _, CommitKind};
 use skynbd_refs::{ObjectRefStore, RefStore};
 use skynbd_store::{MemoryStore, ObjectStore, Precondition, Result as StoreResult};
 use skyzfs_blk::Buf;
@@ -140,6 +141,10 @@ struct Slow<S> {
     armed: Arc<AtomicBool>,
     landed: Arc<Mutex<Option<mpsc::Sender<()>>>>,
     hold_ms: Arc<AtomicU64>,
+    /// Not zero: the next read of the refs object leaves a blocking task
+    /// of this many ms on the runtime, as a name lookup does that is slow
+    /// to answer (the HTTP client resolves names on the blocking pool).
+    block_ms: Arc<AtomicU64>,
 }
 
 impl<S> Slow<S> {
@@ -151,6 +156,7 @@ impl<S> Slow<S> {
             armed: Arc::new(AtomicBool::new(false)),
             landed: Arc::new(Mutex::new(None)),
             hold_ms: Arc::new(AtomicU64::new(0)),
+            block_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -186,6 +192,10 @@ impl<S: ObjectStore> ObjectStore for Slow<S> {
     }
     async fn get_versioned(&self, key: &str) -> StoreResult<(Bytes, String)> {
         pause(&self.get_ms).await;
+        let ms = self.block_ms.swap(0, Ordering::SeqCst);
+        if ms > 0 {
+            tokio::task::spawn_blocking(move || std::thread::sleep(Duration::from_millis(ms)));
+        }
         self.inner.get_versioned(key).await
     }
     async fn put_if(&self, key: &str, data: Bytes, pre: Precondition) -> StoreResult<String> {
@@ -258,8 +268,25 @@ impl Daemon {
     /// Serve `fx`'s volume as `holder`: the lease taken at the start,
     /// the queue's thread, then the uploader's thread.
     fn serve(fx: &Fixture, objects: &Objects, holder: &str, wiring: Wiring) -> Self {
-        let refs: SlowRefs = Arc::new(ObjectRefStore::new(objects.clone()));
-        let keeper = Keeper::new(Arc::clone(&refs), fx.vol, holder, TTL);
+        Self::serve_with(fx, objects, holder, wiring, TTL, None)
+    }
+
+    /// The same, with a lease of `ttl` ms and, with `clock`, the refs
+    /// object's clock (what a lease's time is judged by).
+    fn serve_with(
+        fx: &Fixture,
+        objects: &Objects,
+        holder: &str,
+        wiring: Wiring,
+        ttl: u64,
+        clock: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        let refs = ObjectRefStore::new(objects.clone());
+        let refs: SlowRefs = Arc::new(match clock {
+            Some(now) => refs.with_clock(Arc::new(move || now.load(Ordering::SeqCst))),
+            None => refs,
+        });
+        let keeper = Keeper::new(Arc::clone(&refs), fx.vol, holder, ttl);
         let mut start = Start::new(runtime().expect("a runtime"), keeper, false);
         start.take().expect("the lease at the start");
         assert!(
@@ -443,7 +470,7 @@ fn lease_row(refs: &SlowRefs, fx: &Fixture) -> (String, u64, u64) {
     (lease.holder, lease.epoch, lease.expires_at_ms)
 }
 
-// ------------------------------------------------------------- D1 to D5
+// ------------------------------------------------------------- D1 to D7
 
 /// D1. The loop as built: a cut made through the queue goes up while
 /// the device is idle (only the desk's wake turns the queue: nothing
@@ -467,6 +494,14 @@ fn d1_a_cut_goes_up_through_the_queue_loop_and_the_stop_lets_the_lease_go() {
     assert!(spent < Duration::from_secs(10), "{spent:?}");
     block_on(fx.assert_uploaded(7, "D1, the first cut"));
     assert_eq!(shown.lease, LeaseShown::Held);
+    // The commit is stamped with the lease's epoch (N2 of #117's review).
+    let head = block_on(daemon.refs.get(fx.vol, "head"))
+        .expect("read")
+        .expect("a head");
+    let object = block_on(objects.get(&skynbd_engine::keys::commit(fx.vol, &head.commit), None))
+        .expect("head's commit");
+    let commit = skynbd_format::Commit::decode(&object).expect("a commit");
+    assert_eq!(commit.epoch, 1, "the commit's epoch is the lease's");
     let answered = daemon.desk.answered();
     assert!(answered > 3, "the desk answered {answered} calls");
     println!(
@@ -693,6 +728,99 @@ fn d5_a_queue_thread_that_panics_leaves_the_desk_open_and_the_drop_ends_the_uplo
     let _ = &daemon.objects;
 }
 
+/// D6. What #117's review left to this pull request: the remote the
+/// daemon makes (`maker`) is fenced by the epoch the lease holds. The
+/// daemon's lease runs out (its renewals are an hour apart here, so only
+/// a commit can tell it), another holder takes it, and the daemon's next
+/// cut is read and PUT and its commit refused: nothing lands, the status
+/// says who has the lease, and the end at exit 0 lets nothing go of the
+/// other holder's lease.
+#[test]
+fn d6_the_daemons_commit_is_fenced_once_another_holder_has_the_lease() {
+    const HOUR: u64 = 3_600_000;
+    let mut fx = block_on(Fixture::new(123));
+    let objects = Slow::new(fx.store.clone());
+    let now = Arc::new(AtomicU64::new(1_000_000));
+    let mut daemon = Daemon::serve_with(
+        &fx,
+        &objects,
+        "node-a",
+        Wiring::AsBuilt,
+        HOUR,
+        Some(Arc::clone(&now)),
+    );
+    daemon.write(&mut fx, 10, 0x10);
+    daemon.group(&mut fx, 7);
+    daemon
+        .posted(Duration::from_secs(10), uploaded_at_least(1))
+        .unwrap_or_else(|| panic!("cut 7 uploaded: {:?}", daemon.states()));
+
+    now.fetch_add(HOUR + 1, Ordering::SeqCst);
+    let theirs = {
+        let now = Arc::clone(&now);
+        Arc::new(
+            ObjectRefStore::new(objects.clone())
+                .with_clock(Arc::new(move || now.load(Ordering::SeqCst))),
+        )
+    };
+    let mut other = Keeper::new(Arc::clone(&theirs), fx.vol, "node-b", HOUR);
+    let taken = block_on(other.keep()).clone();
+    assert!(matches!(taken, LeaseState::Held { epoch: 2, .. }), "{taken:?}");
+
+    daemon.seen.clear();
+    daemon.write(&mut fx, 11, 0x21);
+    daemon.group(&mut fx, 8);
+    let shown = daemon
+        .posted(Duration::from_secs(10), |s| {
+            s.state == UploadStateShown::LeaseLost
+        })
+        .unwrap_or_else(|| panic!("the lease lost within 10 s: {:?}", daemon.states()));
+    assert_eq!((shown.holder.said(), shown.epoch), ("node-b".to_string(), 2));
+    assert_eq!(shown.lease, LeaseShown::Lost);
+    let after = block_on(fx.uploaded());
+    assert_eq!(after.group, Some(7), "nothing landed");
+    assert_eq!(after.row.map(|row| row.group), Some(7));
+    assert!(after.fsck);
+    let states = daemon.states();
+    let refs = Arc::clone(&daemon.refs);
+    let (_, store, ended, _) = daemon.stop();
+    let (holder, epoch, expires) = lease_row(&refs, &fx);
+    println!(
+        "D6: after node-b took the lease at epoch 2: states {states:?}; head still group 7; \
+         the end at exit 0: {ended:?}; the row: {holder} at epoch {epoch}, {}; {} cut held",
+        if expires > 0 { "running" } else { "let go" },
+        store.held_cuts().len()
+    );
+    assert_eq!((holder.as_str(), epoch), ("node-b", 2));
+    assert!(expires > 0, "the other holder's lease was let go");
+    assert_eq!(ended, Ended::Kept);
+}
+
+/// D7. The end of the uploader's thread is given a limit (`end`: "waits
+/// at most `limit` for the thread"), and waits longer where the runtime
+/// has blocking work left: the thread's answer comes in time, and then
+/// the thread is joined with no limit, and its last act is to drop the
+/// runtime, which waits for the blocking pool. Here a blocking task of
+/// 8 s stands for a name lookup that is slow to answer.
+#[test]
+fn defect_d7_the_end_waits_beyond_its_limit_for_the_runtimes_blocking_work() {
+    let fx = block_on(Fixture::new(124));
+    let objects = Slow::new(fx.store.clone());
+    let mut daemon = Daemon::serve(&fx, &objects, "node-a", Wiring::AsBuilt);
+    daemon
+        .posted(Duration::from_secs(10), |s| s.state == UploadStateShown::Idle)
+        .expect("idle");
+    objects.block_ms.store(8000, Ordering::SeqCst);
+    let limit = RELEASE_LIMIT + END_LIMIT;
+    let (_, _store, ended, took) = daemon.stop();
+    println!("D7: the end at exit 0, given {limit:?}: {ended:?} after {took:?}");
+    assert_eq!(ended, Ended::Released);
+    assert!(
+        took <= limit + Duration::from_millis(500),
+        "the end took {took:?}, its limit was {limit:?}"
+    );
+}
+
 // ------------------------------------------------------------- S1 to S6
 
 type Mem = Arc<MemoryStore>;
@@ -754,6 +882,65 @@ fn defect_s1_create_takes_a_clone_that_holds_data_as_empty() {
         placed.is_err(),
         "a clone that holds data was taken as a volume a create left: {placed:?}"
     );
+}
+
+/// S1b. What follows from S1, with the daemon's uploader: the volume
+/// served is bound to a clone that holds data (as `create` leaves it),
+/// and its first cut, which holds the whole local volume, goes up onto
+/// the clone's head (no row, and a head commit with no group: the
+/// check's rule 2). Head then holds the local volume, and the clone's
+/// data is at no ref.
+#[test]
+fn s1b_the_first_cut_of_a_volume_bound_to_a_clone_replaces_the_clones_data() {
+    let mut fx = block_on(Fixture::new(125));
+    let store = fx.store.clone();
+    let refs = Arc::new(ObjectRefStore::new(store.clone()));
+    let base = skynbd_types::VolumeId(ulid::Ulid::from(0xba5e_u128));
+    let mut engine = block_on(Engine::create_volume(
+        store.clone(),
+        Arc::clone(&refs),
+        base,
+        SIZE,
+        cfg(),
+    ))
+    .expect("the base");
+    let at = 20 * BLOCK;
+    engine.write(at, &[7u8; 4096]).expect("written");
+    block_on(engine.commit(CommitKind::Flush)).expect("committed");
+    let head = block_on(refs.get(base, "head")).expect("read").expect("a head");
+    let clone = skynbd_types::VolumeId(ulid::Ulid::from(0xc10e_u128));
+    drop(
+        block_on(Engine::clone_volume(
+            store.clone(),
+            Arc::clone(&refs),
+            clone,
+            SIZE,
+            base,
+            head.commit,
+            cfg(),
+        ))
+        .expect("cloned"),
+    );
+    // The local volume, empty, bound to the clone.
+    fx.vol = clone;
+    let before = block_on(fx.uploaded());
+    assert_eq!(before.content[at as usize], 7, "the clone holds the base's data");
+
+    let objects = Slow::new(store);
+    let mut daemon = Daemon::serve(&fx, &objects, "node-a", Wiring::AsBuilt);
+    daemon.write(&mut fx, 10, 0x10);
+    daemon.group(&mut fx, 7);
+    daemon
+        .posted(Duration::from_secs(10), uploaded_at_least(1))
+        .unwrap_or_else(|| panic!("the first cut uploaded: {:?}", daemon.states()));
+    let after = block_on(fx.assert_uploaded(7, "S1b"));
+    println!(
+        "S1b: the clone's block 20 read {} before the first cut of the volume bound to it, and \
+         reads {} after: head is the local volume, group {:?}",
+        before.content[at as usize], after.content[at as usize], after.group
+    );
+    assert_eq!(after.content[at as usize], 0, "the clone's data is gone from head");
+    daemon.stop();
 }
 
 /// S2 (Codex's third finding, checked). The status's `lease_holder` is

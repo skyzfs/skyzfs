@@ -13,7 +13,7 @@ pull request's own tests are run, and the file is restored. A plant is
 
 For a plant that survives and is marked `scen`, the review's scenarios
 (scenarios.rs) are run as well: "scenarios: KILLED" means the set of
-failing scenarios differs from the head's (the two `defect_` scenarios).
+failing scenarios differs from the head's (the three `defect_` scenarios).
 
 Each result is appended to plants.out as it comes; a plant already there
 is skipped on a rerun. The worktree must be clean at the start and is
@@ -21,6 +21,7 @@ checked clean at the end.
 """
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -45,8 +46,10 @@ P = ["cargo", "test", "-p", "skyzfsd", "--no-fail-fast"]
 U = ["cargo", "test", "-p", "skyzfs-ublk", "--lib", "--no-fail-fast"]
 SCEN = ["cargo", "test", "-p", "skyzfsd", "--test", "review_m24c2", "--no-fail-fast",
         "--", "--test-threads=1"]
+LIMIT = 300
 BASELINE = {"defect_s1_create_takes_a_clone_that_holds_data_as_empty",
-            "defect_s2_the_status_names_no_holder_while_the_lease_is_held"}
+            "defect_s2_the_status_names_no_holder_while_the_lease_is_held",
+            "defect_d7_the_end_waits_beyond_its_limit_for_the_runtimes_blocking_work"}
 
 ANSWER = """                    if ended {
                         desk.close();
@@ -190,6 +193,9 @@ PLANTS = [
     ("U20", UPLOAD, "ActingRefStore::new(refs.clone(), holder.clone(), epoch);",
      "ActingRefStore::new(refs.clone(), holder.clone(), epoch + 1);",
      "the uploader's commits are fenced by another epoch than the one held", [D], True),
+    ("U20p", UPLOAD, "ActingRefStore::new(refs.clone(), holder.clone(), epoch);",
+     "ActingRefStore::new(refs.clone(), holder.clone(), epoch + 1);",
+     "the same as U20, against the default build's tests", [P], True),
     ("U21", UPLOAD, "EngineRemote::new(objects.clone(), Arc::new(acting), vol, engine_config(epoch))",
      "EngineRemote::new(objects.clone(), Arc::new(acting), vol, engine_config(0))",
      "the uploader's commits carry epoch 0", [D], True),
@@ -278,12 +284,20 @@ def status(tree):
 def run(cmd, tree, target):
     """(verdict, detail): 'pass', 'fail' with the failing tests, 'build', 'timeout'."""
     env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_TARGET_DIR=target, RUST_BACKTRACE="0")
+    # A plant can make a test of the head wait for ever: the run is ended,
+    # with its test processes, after LIMIT seconds (a run takes about one
+    # minute here).
+    proc = subprocess.Popen(cmd, cwd=tree, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
-        done = subprocess.run(cmd, cwd=tree, env=env, capture_output=True, text=True,
-                              timeout=1500)
+        text, _ = proc.communicate(timeout=LIMIT)
     except subprocess.TimeoutExpired:
-        return "timeout", "no end within 1500 s"
-    text = done.stdout + done.stderr
+        os.killpg(proc.pid, signal.SIGKILL)
+        text, _ = proc.communicate()
+        running = sorted(set(re.findall(r"^test (\S+) has been running for over", text, re.M)))
+        names = ", ".join(name.split("::")[-1] for name in running[:3])
+        return "timeout", f"no end within {LIMIT} s" + (f"; still running: {names}" if names else "")
+    done = proc
     if "could not compile" in text:
         errors = re.findall(r"^error(?:\[E\d+\])?: (.*)$", text, re.M)
         return "build", "; ".join(errors[:2])
@@ -305,7 +319,7 @@ def scenarios(tree, target):
     if verdict == "build":
         return f"scenarios: do not build ({detail})"
     if verdict == "timeout":
-        return "scenarios: KILLED (no end within 1500 s)"
+        return f"scenarios: KILLED ({detail})"
     failed = set(detail) if verdict == "fail" else set()
     if failed == BASELINE:
         return "scenarios: SURVIVED"
@@ -344,10 +358,10 @@ def main():
                         result = f"NOT APPLIED (does not build: {detail})"
                         break
                     if verdict == "timeout":
-                        result = f"KILLED (a test run had {detail})"
+                        result = f"KILLED: the head's tests have {detail}"
                         break
                     if verdict == "fail":
-                        names = [name.split("::")[-1] for name in detail]
+                        names = [name.split("::")[-1] for name in detail] or ["a run that failed and named no test"]
                         more = f" and {len(names) - 3} more" if len(names) > 3 else ""
                         result = f"KILLED by {', '.join(names[:3])}{more}"
                         break

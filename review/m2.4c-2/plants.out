@@ -8,3 +8,49 @@ W07 | bins/skyzfsd/src/serve.rs | the lease's time is counted in the start's `de
 W08 | bins/skyzfsd/src/serve.rs | a start refused for the lease exits 8, not 10 | SURVIVED
 W09 | bins/skyzfsd/src/serve.rs | the lease's options are taken for a volume with no place | KILLED by the_uploads_come_from_the_file_remote_and_the_lease_options_need_one
 W10 | bins/skyzfsd/src/serve.rs | --kill-at-upload is taken for a volume with no place | KILLED by the_uploads_come_from_the_file_remote_and_the_lease_options_need_one
+W11 | bins/skyzfsd/src/serve.rs | the uploader's thread starts under another holder's lease (--serve-without-upload) | SURVIVED
+W12 | bins/skyzfsd/src/serve.rs | the hook command `release` is taken in a daemon that uploads | SURVIVED
+W13 | bins/skyzfsd/src/serve.rs | the lease's default time is an hour | SURVIVED
+U01 | bins/skyzfsd/src/upload.rs | the lease is taken before the open | KILLED by the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back
+U02 | bins/skyzfsd/src/upload.rs | a refusal leaves the store open | KILLED by the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back
+U03 | bins/skyzfsd/src/upload.rs | another holder's lease never refuses the start | KILLED by another_holders_lease_refuses_the_start_unless_the_operator_says_otherwise
+U04 | bins/skyzfsd/src/upload.rs | --serve-without-upload is not heeded | KILLED by another_holders_lease_refuses_the_start_unless_the_operator_says_otherwise
+U05 | bins/skyzfsd/src/upload.rs | a take with no answer within the limit refuses the start | KILLED by a_store_out_of_reach_or_silent_serves_with_no_lease_yet
+U06 | bins/skyzfsd/src/upload.rs | object storage out of reach refuses the start | KILLED by a_store_out_of_reach_or_silent_serves_with_no_lease_yet
+U07 | bins/skyzfsd/src/upload.rs | AtStart::uploads says yes under another holder's lease | KILLED by another_holders_lease_refuses_the_start_unless_the_operator_says_otherwise
+U08 | bins/skyzfsd/src/upload.rs | the uploader's thread lets the lease go at every end | KILLED by any_other_end_keeps_the_lease
+U09 | bins/skyzfsd/src/upload.rs | the uploader's thread never lets the lease go | KILLED by the_end_at_exit_0_lets_the_lease_go
+U10 | bins/skyzfsd/src/upload.rs | ending the thread does not close the desk | KILLED: the head's tests have no end within 300 s; still running: any_other_end_keeps_the_lease, the_end_at_exit_0_lets_the_lease_go
+U11 | bins/skyzfsd/src/upload.rs | a drop of the thread's handle (every exit but 0) lets the lease go | KILLED by any_other_end_keeps_the_lease
+U12 | bins/skyzfsd/src/upload.rs | an end with no lease held says it was let go | SURVIVED
+U13 | bins/skyzfsd/src/upload.rs | create takes a volume that has a lease row | KILLED by a_create_refuses_a_name_that_is_another_volumes
+U14 | bins/skyzfsd/src/upload.rs | create takes a volume of another size | KILLED by a_create_refuses_a_name_that_is_another_volumes
+U15 | bins/skyzfsd/src/upload.rs | create takes a volume with other shards | KILLED by a_create_refuses_a_name_that_is_another_volumes
+U16 | bins/skyzfsd/src/upload.rs | create takes a head commit that has a parent | SURVIVED
+U17 | bins/skyzfsd/src/upload.rs | create takes a head commit that has segments | SURVIVED
+U18 | bins/skyzfsd/src/upload.rs | create takes a head commit that names a group | SURVIVED
+U19 | bins/skyzfsd/src/upload.rs | the volume is made with shards of 64 MiB | KILLED by a_create_makes_the_volume_with_the_empty_commit_and_takes_it_again, a_create_refuses_a_name_that_is_another_volumes
+U20 | bins/skyzfsd/src/upload.rs | the uploader's commits are fenced by another epoch than the one held | KILLED by the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swap
+U22 | bins/skyzfsd/src/upload.rs | the status shows an unsure lease as held | KILLED by the_status_shows_the_uploader_as_it_is
+U23 | bins/skyzfsd/src/upload.rs | the status names no holder for a lost lease | SURVIVED
+U24 | bins/skyzfsd/src/upload.rs | the status does not show when the lease runs out | KILLED by the_start_takes_a_lease_nobody_holds, the_status_shows_the_uploader_as_it_is
+U25 | bins/skyzfsd/src/upload.rs | the build with the test hooks does not give the uploader its kill point | SURVIVED
+L01 | crates/skyzfs-ublk/src/lifecycle.rs | a refused open ends the start as an error | KILLED by a_refusal_after_an_acknowledging_open_keeps_the_failure_note, a_refusal_after_the_open_stops_the_daemon_and_leaves_the_device
+L02 | crates/skyzfs-ublk/src/lifecycle.rs | a refused open removes the failure note | KILLED by a_refusal_after_an_acknowledging_open_keeps_the_failure_note
+T01 | crates/skyzfs-ublk/src/status.rs | a post of the store's counters wipes the upload's part | KILLED by the_uploaders_post_is_kept_by_the_stores_and_written_on_its_own
+K01 | bins/skyzfsd/src/kill.rs | put:N counts every PUT, not the segments' | KILLED by put_n_falls_once_the_nth_segment_put_has_landed
+K02 | bins/skyzfsd/src/kill.rs | put:N kills before the PUT is sent, and counts one that fails | KILLED by put_n_falls_once_the_nth_segment_put_has_landed, the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swap
+K03 | bins/skyzfsd/src/kill.rs | swap:N kills before the commit is sent, and counts one that fails | KILLED by the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swap
+K04 | bins/skyzfsd/src/kill.rs | swap:N also kills at the Nth segment PUT | KILLED by put_n_falls_once_the_nth_segment_put_has_landed
+C01 | bins/skyzfsd/src/cli.rs | a default build takes --kill-at-upload | KILLED by the_test_hooks_are_refused_in_a_default_build
+C02 | bins/skyzfsd/src/cli.rs | the exit status of a start refused for the lease is 9 | KILLED by the_exit_statuses_are_the_agreed_numbers
+C03 | bins/skyzfsd/src/cli.rs | --kill-at-upload put:0 is taken | KILLED by the_test_hooks_are_parsed_in_a_test_build
+C04 | bins/skyzfsd/src/cli.rs | --lease-ttl-s is not bounded | KILLED by serve_takes_the_lease_options
+C05 | bins/skyzfsd/src/cli.rs | two of --endpoint --bucket --volume make a volume with no place | KILLED by create_takes_a_place_in_object_storage_whole_or_not_at_all
+M01 | bins/skyzfsd/src/commands.rs | create does not write the file `remote` | KILLED by create_whose_place_cannot_be_written_says_so, create_with_a_place_makes_it_first_and_writes_it_beside_the_volume
+M02 | bins/skyzfsd/src/commands.rs | a place refused makes the local volume all the same, with no place | KILLED by create_with_a_place_refused_makes_nothing
+X01 | bins/skyzfsd/src/cut_commands.rs | the hook command `release` is never refused | KILLED by release_is_refused_in_a_daemon_that_uploads
+R01 | bins/skyzfsd/src/remote.rs | the file's id is not checked against the name's | KILLED by a_file_that_is_not_exactly_the_five_lines_is_refused
+R02 | bins/skyzfsd/src/remote.rs | a line after the id is taken | KILLED by a_file_that_is_not_exactly_the_five_lines_is_refused
+U21 | bins/skyzfsd/src/upload.rs | the uploader's commits carry epoch 0 | SURVIVED; scenarios: KILLED by d1
+U20p | bins/skyzfsd/src/upload.rs | the same as U20, against the default build's tests | SURVIVED; scenarios: KILLED by d1, d3, d4, d6
