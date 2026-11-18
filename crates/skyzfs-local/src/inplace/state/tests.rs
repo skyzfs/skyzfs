@@ -2845,6 +2845,53 @@ fn the_slices_of_a_sparse_volume_read_the_map_and_hole_set_once_over() {
     );
 }
 
+/// [`Maps::first_in`] gives the first block of the maps in a range, or
+/// none, over ranges that span several words of a map's summary. The
+/// state calls it on one stretch of [`RUN_LOOK`] blocks, which a single
+/// word of the summary covers, so no other test reaches past the first
+/// word (F4g, a plant for F4 of the review of #125).
+#[test]
+fn the_first_block_in_a_range_is_found_over_several_words_of_the_summary() {
+    const BLOCKS: u64 = 5 * RUN_LOOK + 100;
+    let mut region = MemRegion::new(Maps::words(BLOCKS));
+    let maps = Maps::new(0, BLOCKS, Mutants(0));
+    let in_first = [5, RUN_LOOK + 70, 3 * RUN_LOOK + 1];
+    let in_second = [2 * RUN_LOOK + 9, BLOCKS - 1];
+    for block in in_first {
+        maps.insert(&mut region, 0, block);
+    }
+    for block in in_second {
+        maps.insert(&mut region, 1, block);
+    }
+    let first: BTreeSet<u64> = in_first.into_iter().collect();
+    let both: BTreeSet<u64> = in_first.into_iter().chain(in_second).collect();
+    let froms = [
+        0,
+        5,
+        6,
+        RUN_LOOK,
+        RUN_LOOK + 71,
+        2 * RUN_LOOK + 9,
+        2 * RUN_LOOK + 10,
+        3 * RUN_LOOK + 2,
+        BLOCKS - 1,
+        BLOCKS,
+    ];
+    for from in froms {
+        for length in [0, 1, 64, RUN_LOOK, 3 * RUN_LOOK, BLOCKS, BLOCKS + 10] {
+            let until = from + length;
+            let end = until.min(BLOCKS).max(from);
+            for (named, set) in [(&[0][..], &first), (&[0, 1][..], &both)] {
+                assert_eq!(
+                    maps.first_in(&region, named, from, until),
+                    set.range(from..end).next().copied(),
+                    "maps {named:?}, {from}..{until}"
+                );
+            }
+        }
+    }
+}
+
 /// A run of zeros is not cut where a look for its end stops, every
 /// [`RUN_LOOK`] blocks, and it ends at the next block of the cut's map
 /// however many stretches away that lies: at the first block of one,
