@@ -18,10 +18,16 @@ use crate::row::ROW_KEY;
 /// Why a call to object storage failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RemoteError {
-    /// Head or the row was not as the commit expected: the commit did not
-    /// land, unless the error itself was a retry of a request that had
-    /// landed (the uploader reads the row again to know).
-    #[error("head or the cut's row moved")]
+    /// The commit's transaction was refused: head or the row was not as
+    /// the commit expected, or a refs store that fences writes found no
+    /// lease row for the volume (`LeaseLost` with no holder, which the
+    /// engine maps to a conflict; G7 of #114's review). The daemon creates
+    /// the row when it takes the lease (M2.4c), so the second is not
+    /// expected there; either way a conflict is given up, and the
+    /// uploader waits before the next ([`crate::backoff`]). The commit did
+    /// not land, unless the error itself was a retry of a request that
+    /// had landed (the uploader reads the row again to know).
+    #[error("the commit was refused: head or the cut's row moved, or the volume has no lease row")]
     Conflict,
     /// The volume's lease is held by another holder: nothing is written
     /// under it until the daemon holds it again (M2.4c).
