@@ -62,12 +62,26 @@
 //!   the snapshot's `createtxg`. A request of another attachment or
 //!   state is refused. `accepted` says that it pends; how it ends is
 //!   read with `progress`. Asking twice is asking once.
+//!
+//!   The E seconds are counted from the acceptance on this daemon's
+//!   uploader: asked again while it pends, a publish keeps the deadline
+//!   it had; asked of the next daemon (after a restart), it has a new
+//!   one. So an agent that holds `pool@T` while its publish pends counts
+//!   its hold from its last request answered `accepted`, not its first
+//!   (q11 of the review of #122).
 //! - `progress`: how the publish of T stands. `done` names the commit
 //!   (H, 64 hex digits) that `snap/T` names. `unknown`: not asked of
 //!   this daemon's uploader, or its end has left the 1024 kept.
 //! - `withdraw`: end the publish of T, unless it is made already. One
 //!   whose transaction may have landed is looked up first, and so may
 //!   still read `pending` and then `done`.
+//!
+//! `refused stopped`, to a `publish` or as a publish's `progress`: this
+//! daemon's uploader steps no more (its lease lost, a commit or a publish
+//! refused by the fence, the store keeping a cut). A publish that pended
+//! when it stopped ends so even where its transaction may have landed
+//! unheard. `stopped` therefore says "ask the next daemon", which looks
+//! `snap/T` up, and not "not published" (q10 of the review of #122).
 //!
 //! A refusal of the channel itself, with no publish involved: `version`
 //! (the greeting is not [`HELLO`]), `malformed`, `peer`, `no-upload`
