@@ -1,0 +1,130 @@
+the recorded tear: byte 13389824 = 3269 * 4096 + 0
+as recorded: exit 0; 1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 801
+20 shapes in the 400 pages before it
+1 pages back, 3916 bytes left of a line of 8048 (a digit 0 to 9 in the last column); 0 whole lines fewer than recorded
+    torn: exit 0; control: exit 0; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43866: pid 9937's `263932738825 9937 label 25 write 1047960 8` line after 3916 bytes, then pid 10
+6 pages back, 28 bytes left of a line of 8232 (inside column 5); 5 whole lines fewer than recorded
+    torn: exit 0; control: exit 0; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43861: pid 9937's `263932386487 9937 label 23 w` line after 28 bytes, then pid 10976's start
+7 pages back, 42 bytes left of a line of 48 (inside column 7); 95 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43771: pid 9937's `263930883978 9937 commit 18 write 206608 8` line after 42 bytes, then pid 1097
+    torn     held_content	FAIL	cut 231 (group 683): 19 blocks differ from the reference at its instant, for example block 20556: 33959b90eb8d7c74 wanted, 4b4f0188f7d446de held, bloc
+8 pages back, 32 bytes left of a line of 44 (after the tab of column 5); 172 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43694: pid 9937's `263926402954 9937 recv 19 write ` line after 32 bytes, then pid 10976's start
+    torn     held_content	FAIL	cut 231 (group 683): 42 blocks differ from the reference at its instant, for example block 20555: 93962de5b9f6e774 wanted, d6fb2ba2eba70bd5 held, bloc
+12 pages back, 20 bytes left of a line of 45 (inside column 3); 257 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43609: pid 9937's `263914840764 9937 co` line after 20 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 222 (request log line 43633) carries the number '223'
+    torn     status	FAIL	cuts '250', not '249'
+    torn     held_content	FAIL	cut 231 (group 683): 316 blocks differ from the reference at its instant, for example block 20547: a8df0382ddae5364 wanted, 405d316f2ea471d1 held, blo
+    torn     sessions	FAIL	session 1: the cuts give 240 groups, the kstat 241 committed; first difference at 220: cuts [650, 653, 659, 662, 665], committed [650, 653, 656, 659, 
+19 pages back, 13 bytes left of a line of 50 (after the time's tab); 344 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43522: pid 9937's `263912758784 ` line after 13 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 222 (request log line 43546) carries the number '223'
+    torn     status	FAIL	cuts '250', not '249'
+    torn     held_content	FAIL	cut 231 (group 683): 343 blocks differ from the reference at its instant, for example block 48: 456941c86ae28362 wanted, 37567857e948854c held, block 
+    torn     sessions	FAIL	session 1: the cuts give 240 groups, the kstat 241 committed; first difference at 220: cuts [650, 653, 659, 662, 665], committed [650, 653, 656, 659, 
+20 pages back, 44 bytes left of a line of 50 (after the tab of column 7); 414 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43452: pid 9937's `263908134320 9937 commit 28 write 361728 64` line after 44 bytes, then pid 109
+    torn     cut_numbers	FAIL	cut line 222 (request log line 43476) carries the number '223'
+    torn     status	FAIL	cuts '250', not '249'
+    torn     held_content	FAIL	cut 231 (group 683): 400 blocks differ from the reference at its instant, for example block 48: 456941c86ae28362 wanted, 37567857e948854c held, block 
+    torn     sessions	FAIL	session 1: the cuts give 240 groups, the kstat 241 committed; first difference at 220: cuts [650, 653, 659, 662, 665], committed [650, 653, 656, 659, 
+21 pages back, 26 bytes left of a line of 52 (inside column 4); 444 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43422: pid 9937's `263906267115 9937 commit 2` line after 26 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 222 (request log line 43446) carries the number '223'
+    torn     status	FAIL	cuts '250', not '249'
+    torn     held_content	FAIL	cut 231 (group 683): 568 blocks differ from the reference at its instant, for example block 48: 456941c86ae28362 wanted, 37567857e948854c held, block 
+    torn     sessions	FAIL	session 1: the cuts give 240 groups, the kstat 241 committed; first difference at 220: cuts [650, 653, 659, 662, 665], committed [650, 653, 656, 659, 
+30 pages back, 66 bytes left of a line of 92 (a hex digit a to f in the last column); 511 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43355: pid 9937's `263897455104 9937 applied 23 write - -` line after 66 bytes, then pid 10976's 
+    torn     cut_numbers	FAIL	cut line 221 (request log line 43379) carries the number '223'
+    torn     status	FAIL	cuts '250', not '248'
+    torn     held_content	FAIL	cut 231 (group 683): 649 blocks differ from the reference at its instant, for example block 45: c7f957a3f4824049 wanted, 882b2bb55b0e09ac held, block 
+    torn     sessions	FAIL	session 1: the cuts give 239 groups, the kstat 241 committed; first difference at 219: cuts [647, 650, 659, 662, 665], committed [647, 650, 653, 656, 
+31 pages back, 17 bytes left of a line of 33 (after the pid, before its tab); 589 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 43277: pid 9937's `263892980767 9937` line after 17 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 221 (request log line 43301) carries the number '223'
+    torn     status	FAIL	cuts '250', not '248'
+    torn     held_content	FAIL	cut 231 (group 683): 675 blocks differ from the reference at its instant, for example block 45: c7f957a3f4824049 wanted, 882b2bb55b0e09ac held, block 
+    torn     sessions	FAIL	session 1: the cuts give 239 groups, the kstat 241 committed; first difference at 219: cuts [647, 650, 659, 662, 665], committed [647, 650, 653, 656, 
+55 pages back, 0 bytes left of a line of 45 (no torn line: the page is where a line begins); 1007 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    0 lines of the request log cut short by a kill -9 and lost with it
+    torn     cut_numbers	FAIL	cut line 219 (request log line 42883) carries the number '223'
+    torn     status	FAIL	cuts '250', not '246'
+    torn     held_content	FAIL	cut 231 (group 683): 1539 blocks differ from the reference at its instant, for example block 39: 0a794518057fee59 wanted, 88b64820251dfa51 held, block
+    torn     sessions	FAIL	session 1: the cuts give 237 groups, the kstat 241 committed; first difference at 217: cuts [641, 644, 659, 662, 665], committed [641, 644, 647, 650, 
+64 pages back, 1 bytes left of a line of 75 (inside the time); 1087 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 42779: pid 9937's `2` line after 1 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 218 (request log line 42803) carries the number '223'
+    torn     status	FAIL	cuts '250', not '245'
+    torn     held_content	FAIL	cut 231 (group 683): 1588 blocks differ from the reference at its instant, for example block 36: 86fe7806e8cb44f2 wanted, e2847df10fd1ff29 held, block
+    torn     sessions	FAIL	session 1: the cuts give 236 groups, the kstat 241 committed; first difference at 216: cuts [638, 641, 659, 662, 665], committed [638, 641, 644, 647, 
+75 pages back, 49 bytes left of a line of 50 (the whole line but its newline); 1253 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 42613: pid 9937's `263833587507 9937 commit 29 write 163464 24` line after 49 bytes, then pid 109
+    torn     cut_numbers	FAIL	cut line 217 (request log line 42637) carries the number '223'
+    torn     status	FAIL	cuts '250', not '244'
+    torn     held_content	FAIL	cut 231 (group 683): 1890 blocks differ from the reference at its instant, for example block 33: 1c9500dbd58a27c4 wanted, fb8709f722d3daf5 held, block
+    torn     sessions	FAIL	session 1: the cuts give 235 groups, the kstat 241 committed; first difference at 215: cuts [635, 638, 659, 662, 665], committed [635, 638, 641, 644, 
+87 pages back, 16 bytes left of a line of 33 (inside the pid); 1499 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 42367: pid 9937's `263817026155 993` line after 16 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 216 (request log line 42391) carries the number '223'
+    torn     status	FAIL	cuts '250', not '243'
+    torn     held_content	FAIL	cut 231 (group 683): 2227 blocks differ from the reference at its instant, for example block 33: 1c9500dbd58a27c4 wanted, fb8709f722d3daf5 held, block
+    torn     sessions	FAIL	session 1: the cuts give 234 groups, the kstat 241 committed; first difference at 214: cuts [632, 635, 659, 662, 665], committed [632, 635, 638, 641, 
+110 pages back, 18 bytes left of a line of 92 (after the tab of column 2); 1917 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 41949: pid 9937's `263784821906 9937 ` line after 18 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 214 (request log line 41973) carries the number '223'
+    torn     status	FAIL	cuts '250', not '241'
+    torn     held_content	FAIL	cut 231 (group 683): 2843 blocks differ from the reference at its instant, for example block 33: 1c9500dbd58a27c4 wanted, fb8709f722d3daf5 held, block
+    torn     sessions	FAIL	session 1: the cuts give 232 groups, the kstat 241 committed; first difference at 212: cuts [626, 629, 659, 662, 665], committed [626, 629, 632, 635, 
+145 pages back, 39 bytes left of a line of 43 (after the tab of column 6); 2573 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 41293: pid 9937's `263736891136 9937 recv 16 write 337472 ` line after 39 bytes, then pid 10976's
+    torn     cut_numbers	FAIL	cut line 211 (request log line 41317) carries the number '223'
+    torn     status	FAIL	cuts '250', not '238'
+    torn     held_content	FAIL	cut 231 (group 683): 3810 blocks differ from the reference at its instant, for example block 33: 1c9500dbd58a27c4 wanted, fb8709f722d3daf5 held, block
+    torn     sessions	FAIL	session 1: the cuts give 229 groups, the kstat 241 committed; first difference at 209: cuts [617, 620, 659, 662, 665], committed [617, 620, 623, 626, 
+178 pages back, 38 bytes left of a line of 47 (inside column 6); 3082 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 40784: pid 9937's `263687746097 9937 commit 21 write 5254` line after 38 bytes, then pid 10976's 
+    torn     cut_numbers	FAIL	cut line 208 (request log line 40808) carries the number '223'
+    torn     status	FAIL	cuts '250', not '235'
+    torn     held_content	FAIL	cut 231 (group 683): 4713 blocks differ from the reference at its instant, for example block 33: 1c9500dbd58a27c4 wanted, fb8709f722d3daf5 held, block
+    torn     sessions	FAIL	session 1: the cuts give 226 groups, the kstat 241 committed; first difference at 206: cuts [608, 611, 659, 662, 665], committed [608, 611, 614, 617, 
+230 pages back, 12 bytes left of a line of 33 (after the time, before its tab); 3996 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 39870: pid 9937's `263573111276` line after 12 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 203 (request log line 39894) carries the number '223'
+    torn     status	FAIL	cuts '250', not '230'
+    torn     held_content	FAIL	cut 231 (group 683): 6241 blocks differ from the reference at its instant, for example block 32: 0a8f889287a1260a wanted, c1b24d17bb6e6c36 held, block
+    torn     sessions	FAIL	session 1: the cuts give 221 groups, the kstat 241 committed; first difference at 201: cuts [593, 596, 659, 662, 665], committed [593, 596, 599, 602, 
+302 pages back, 25 bytes left of a line of 48 (after the tab of column 3); 5176 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 38690: pid 9937's `263405367562 9937 commit ` line after 25 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 197 (request log line 38714) carries the number '223'
+    torn     status	FAIL	cuts '250', not '224'
+    torn     held_content	FAIL	cut 231 (group 683): 8078 blocks differ from the reference at its instant, for example block 32: 0a8f889287a1260a wanted, c1b24d17bb6e6c36 held, block
+    torn     sessions	FAIL	session 1: the cuts give 215 groups, the kstat 241 committed; first difference at 195: cuts [575, 578, 659, 662, 665], committed [575, 578, 581, 584, 
+315 pages back, 25 bytes left of a line of 33 (after the tab of column 4); 5466 whole lines fewer than recorded
+    torn: exit 1; control: exit 1; the same lines
+    1 lines of the request log cut short by a kill -9 and lost with it; line 38400: pid 9937's `263372956666 9937 sent - ` line after 25 bytes, then pid 10976's start
+    torn     cut_numbers	FAIL	cut line 196 (request log line 38424) carries the number '223'
+    torn     status	FAIL	cuts '250', not '223'
+    torn     held_content	FAIL	cut 231 (group 683): 8527 blocks differ from the reference at its instant, for example block 32: 0a8f889287a1260a wanted, c1b24d17bb6e6c36 held, block
+    torn     sessions	FAIL	session 1: the cuts give 214 groups, the kstat 241 committed; first difference at 194: cuts [572, 575, 659, 662, 665], committed [572, 575, 578, 581, 
+20 shapes judged as their control, 0 differently

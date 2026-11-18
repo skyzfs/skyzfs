@@ -1,0 +1,45 @@
+# plants on 73869d1, one at a time, each restored: the bound (B), then the rule's and the torn line's of the earlier looks again (L, P)
+B1 no bound on the digits (torn_line as 3fe4133 had it: T3 as it was): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+B2 the start's time is not held to the next line's digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+B3 the torn line's own time is not held to the next line's digits: SURVIVED
+B4 the torn line's own time is counted with its leading zeros: KILLED by 1: test_a_line_torn_at_the_take_over
+B5 a start as long as the next line's time is skipped (> to >=): KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+B6 a torn line's time as long as the next line's is skipped (> to >=): KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+B7 a next line's time of any length is taken (no bound of 20): SURVIVED
+B8 no torn line where the next line's time has more than 12 digits (13 after 1000 s): SURVIVED
+B9 no torn line where the next line's time has more than 11 digits: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+B10 a candidate with too long a time ends the search (continue to return None): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+L1 a cut line of any pid counts, not the last instance's only: NOT APPLIED (found [0] times)
+L2 the start after a cut line may be of a pid already started: NOT APPLIED (found [0] times)
+L3 the start need not end the line: NOT APPLIED (found [0] times)
+L4 the start may be earlier than the cut line: NOT APPLIED (found [0] times)
+L5 the start may be later than the line after it: NOT APPLIED (found [0] times)
+L6 a cut line that ends in no digit counts too (<= to <): NOT APPLIED (found [0] times)
+L7 the start is taken with all the digits before it: NOT APPLIED (found [0] times)
+L8 a cut line counts before any start (the next instance need not have taken the device over): KILLED by 2: test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+L9 a cut line counts where there is no instances.tsv: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L10 a cut line counts where instances.tsv does not name the next pid: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L11 a cut line counts only before an instance that created the device: KILLED by 2: test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+L12 the program takes no cut line (parse_log without the list): KILLED by 1: test_a_line_torn_at_the_take_over
+L13 the program does not hold a cut line to the take-over: KILLED by 1: test_a_line_torn_at_the_take_over
+L14 the program says nothing of a cut line: KILLED by 1: test_a_line_torn_at_the_take_over
+L15 the line after the start need not begin with a time: NOT APPLIED (found [0] times)
+P1 the start may follow at any byte of the line, not at a page of the file: KILLED by 3: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start, test_cut_daemon_main.py did not end in 300 s
+P2 a page is 8192 bytes: KILLED by 1: test_a_line_torn_at_the_take_over
+P3 a page is 2048 bytes: SURVIVED
+P4 the pages are counted from the line's beginning, not the file's: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+P5 the file's offset counts no newlines: KILLED by 4: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over, test_a_line_torn_at_the_take_over
+P6 the start line may carry a leading zero: SURVIVED
+P7 the start may be of a pid already started (the author's survivor): SURVIVED
+P8 what is left may carry any whole pid: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P9 what is left may carry any digits where its pid is cut: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P10 the start may be earlier than the last whole line: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P11 the start may be later than the line after it (the author's survivor): SURVIVED
+P12 the torn line's own time is not held to the lines around it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P13 the torn line may be earlier than the last whole line: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P14 the torn line may be later than the start: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P15 the torn line's daemon may write after it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P16 a start line later than the line after it is let through: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P17 only a line that does not parse is looked at (as e88773b): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P18 the last instance's start, not its last whole line, bounds the times: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P19 what is left must hold the whole time and its tab: KILLED by 1: test_a_line_torn_anywhere_on_a_page

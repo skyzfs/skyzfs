@@ -1,0 +1,39 @@
+1. the eighteen shapes on a page, with the times a recording can have
+  times of 12 digits (the recorded ones, 264 s): 18 of 18 shapes taken
+  times of 13 digits (after 1000 s): 18 of 18 shapes taken
+  the torn line at 999.95 s, the start at 1000.1 s (12 digits, then 13): 18 of 18 shapes taken
+  the start at 999.99 s, the next line at 1000.0 s (the start 12 digits, the next line 13): 18 of 18 shapes taken
+  times of 9 digits (the first second after boot): 18 of 18 shapes taken
+  times of 20 digits: 18 of 18 shapes taken
+2. what no kill leaves: the times the bound is about
+  left: 13 digits and no tab, where the next line's time has 12: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 13 bytes of pid 9937's line
+  left: 12 digits and no tab (a whole time): taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 12 bytes of pid 9937's line
+  left: 30 digits and no tab: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 30 bytes of pid 9937's line
+  left: 0 and eleven digits, no tab (a leading zero): taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 12 bytes of pid 9937's line
+  left: twenty zeros and a 1, no tab: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 21 bytes of pid 9937's line
+  left: a time with a leading zero, the pid and more: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 41 bytes of pid 9937's line
+  left: a time of 9000 digits, the pid and more: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  the next line's time has 20 digits: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the next line's time has 21 digits: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the next line's time has 5000 digits: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  the next line's time has a leading zero and is later: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4 bytes of pid 9937's line
+  the next line's time is shorter than the start's: the rig's error: request log line 53: a start line later than the line after it, as of a line cut short in its time: '2639264075526204\t10976\tstart\t1\t-\t-
+  the start has 13 digits, the next line 12: the rig's error: request log line 53: a start line later than the line after it, as of a line cut short in its time: '26392640755262040\t10976\tstart\t1\t-\t
+3. a second kill in the line after the start (its time cut: the start is not on a page, so not a tear a kill leaves)
+  4 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a start line later than the line after it, as of a line cut short in its time: '2640264500000000\t11500\tstart\t1\t-\t-
+  9 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a start line later than the line after it, as of a line cut short in its time: '264075546264500000000\t11500\tstart\t1\
+  12 digits of the second instance's first line, then the third's start: the rig's error: request log line 54: a start line later than the line after it, as of a line cut short in its time: '264075546749264500000000\t11500\tstart\
+4. T3: a line of digits over three pages (what is left ends in N digits that begin on a page with a digit 1 to 9)
+  4096 digits 1: taken: pid 9937 at 263932000000, pid 10976 at 264075526204; lost 4145 bytes of pid 9937's line
+  8192 digits 1: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  8192 digits 9: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  12288 digits 7: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  262144 digits 1: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+  a 1 on the page and 8191 zeros: ValueError: Exceeds the limit (4300 digits) for integer string conversio
+5. T3 on the recorded takeover: the kill moved into a long label line, a 1 put on a page two pages before the tear
+  the kill 2518 pages before the recorded one, 225492 bytes into a line of 229422; the control is the log ended at the end of the line before
+    torn: exit 2; control: exit 2; DIFFERENT
+    takeover: time: INFO: 0 s
+  the kill 2519 pages before the recorded one, 221396 bytes into a line of 229422; the control is the log ended at the end of the line before
+    torn: exit 2; control: exit 2; DIFFERENT
+    takeover: time: INFO: 0 s
