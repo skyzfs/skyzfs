@@ -194,13 +194,15 @@ check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "d
 # 8. TB_SKZ_UPLOAD: the wait for the first upload before the windows
 # (skz_first_upload), on a status that changes with the clock. The clock
 # moves 10 s a call; the status reads uploaded 0 until UP_AT s.
+# DEAD_UNTIL: the status is not read before that time (a daemon gone).
 first_upload() { # up_at wait_s [under] -> rc; the row's line in $OUT/t.skzinfo
-    echo "$1" > "$tt/up_at"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
+    echo "$1" > "$tt/up_at"; echo "${DEAD_UNTIL:-0}" > "$tt/dead"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
     # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_first_upload
     (
         TOPO=t; SKZ_UPLOAD_WAIT_S=$2
         skz_status() {
             local up=0
+            [ "$(cat "$tt/clock")" -ge "$(cat "$tt/dead")" ] || return 1
             [ "$(cat "$tt/clock")" -lt "$(cat "$tt/up_at")" ] || up=1
             printf 'uploaded %s\nupload_state reading\nupload_cuts_lost 4\nupload_cut 9\ncuts 12\n' "$up"
         }
@@ -229,6 +231,17 @@ check "the seed under the workload: the row says when, and that the workload ran
 first_upload 100000 3600 under; rc=$?
 check "a seed that never lands under the workload says so" \
     'grep -qx "first_upload NONE in 3600 s under the workload (state reading, uploading cut 9 of 12, cuts lost 4)" "$OUT/t.skzinfo"'
+DEAD_UNTIL=100000 first_upload 10 900; rc=$?
+check "a status not read three times running ends the wait, and says so" \
+    '[ "$rc" = 0 ] && grep -qE "^first_upload NONE after [0-9]+ s: the status could not be read three times running$" "$OUT/t.skzinfo"'
+DEAD_UNTIL=100000 first_upload 10 3600 under; rc=$?
+check "  under the workload too" \
+    'grep -qE "^first_upload NONE after [0-9]+ s under the workload: the status could not be read three times running$" "$OUT/t.skzinfo"'
+# The clock moves 10 s a round, from 10: rounds at 10 and 20 unread, the
+# third read.
+DEAD_UNTIL=25 first_upload 10 900; rc=$?
+check "  a status unread two rounds running: the wait goes on to the upload" \
+    'grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
 check "with no wait, the watcher runs in the background and the teardown stops it" \
     'grep -q "( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload under ) &" "$script" && grep -q "kill \"\$SKZ_SEED_WATCH\"" "$script"'
 
