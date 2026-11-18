@@ -165,6 +165,7 @@ fn commit<R: skyzfs_upload::Remote>(
         remote
             .commit(group, expected.map(<[u8]>::to_vec), row.to_vec())
             .await
+            .map(|_| ())
     })
 }
 

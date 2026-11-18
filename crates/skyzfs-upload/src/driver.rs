@@ -42,12 +42,43 @@
 //! A death at any point leaves the cut held, with head and the row as
 //! they were or as the commit made them: the next instance's check finds
 //! which.
+//!
+//! **Publishes** ([`crate::publish`], M2.5) are steps of their own: a
+//! publish asked is first looked up in object storage, then made, in a
+//! transaction of its own, on the first cut committed that carries it,
+//! and looked up again after a transaction that failed. [`Driver::step`]
+//! takes a publish's step before the cut's; [`Driver::step_publish`] and
+//! [`Driver::step_cut`] take one or the other, so that the uploader can
+//! wait after a publish that fails without holding the cuts up (F3 of
+//! #122's review). A publish that fails on object storage stays pending,
+//! and the step's error is the caller's, as a cut's is.
+//!
+//! Each cut committed is handed to the publishes
+//! ([`Publishing::committed`]) before it is let go, with its commit: the
+//! hash the commit returned, or, for a cut found committed (at its check,
+//! or by reading the row and head again after a commit that failed),
+//! head as read, **where head's group is the cut's**. The row moves with
+//! head only when this uploader moves them: another writer can move head
+//! and leave the row (an operator's write, `Engine::rollback` to a
+//! snapshot), and head is then not the cut's commit. Such a cut is let
+//! go as committed, as before, and no publish goes on it
+//! ([`Figures::not_offered`]); the next cut's check finds the mismatch
+//! (F1 of #122's review). The group is what the uploader's check already
+//! trusts to tell head is the row's (`check::judge`): a commit of another
+//! writer has no group unless it was made by `Engine::set_group` or is a
+//! rollback to a snapshot's commit, and a snapshot of this cut is its own
+//! commit. What the group cannot tell apart: a rollback to a snapshot of
+//! a cut of another cut state with the same group (groups begin again
+//! after `zpool import -T`). A row that named its commit would; the row's
+//! version 1 does not (M2.5-1's report).
 
+use skynbd_types::CommitHash;
 use skyzfs_blk::{Buf, BLOCK_SIZE, BLOCK_USIZE};
 
 use crate::check::{judge, Mismatch, Rule, Verdict};
 use crate::local::{Local, Released, Uploadable};
-use crate::remote::{Remote, RemoteError};
+use crate::publish::{Known, Publishing, Refusal, Snapshot, Stage as PublishStage};
+use crate::remote::{Observed, Remote, RemoteError};
 use crate::row::{self, Row};
 
 /// The blocks a slice reads, one turn of the queue's thread each: 256 KiB.
@@ -145,6 +176,31 @@ pub enum Step {
         /// The cut.
         number: u64,
     },
+    /// A publish was looked up: `snap/<name>` is absent. It is made next
+    /// where a cut known carries it, or waits for one.
+    PublishLooked {
+        /// The snapshot.
+        name: String,
+    },
+    /// `snap/<name>` names a cut that carries the publish: published by
+    /// this step, or found so in object storage (`found`).
+    Published {
+        /// The snapshot.
+        name: String,
+        /// The cut published.
+        number: u64,
+        /// Its commit.
+        commit: CommitHash,
+        /// Whether it was found published, not published by this step.
+        found: bool,
+    },
+    /// `snap/<name>` exists and does not record the publish: refused.
+    PublishRefused {
+        /// The snapshot.
+        name: String,
+        /// Why.
+        why: Refusal,
+    },
 }
 
 /// What the driver's next step does, for the status.
@@ -188,6 +244,10 @@ pub struct Figures {
     /// The cuts the check found committed already, let go with nothing
     /// uploaded.
     pub found_committed: u64,
+    /// The cuts found committed while head's group was not theirs: head
+    /// moved after their commit, so it is not their commit, and no
+    /// publish goes on them (F1 of #122's review).
+    pub not_offered: u64,
     /// The cuts committed (by this driver or found so) that had gone from
     /// the store before they could be let go.
     pub not_held: u64,
@@ -252,6 +312,7 @@ pub struct Driver<L, R> {
     stage: Stage,
     buf: Buf,
     figures: Figures,
+    publishing: Publishing,
 }
 
 impl<L: Local, R: Remote> Driver<L, R> {
@@ -268,7 +329,25 @@ impl<L: Local, R: Remote> Driver<L, R> {
             stage: Stage::Check,
             buf: Buf::zeroed(blocks.max(1)),
             figures: Figures::default(),
+            publishing: Publishing::default(),
         }
+    }
+
+    /// The driver, with `publishing` as its publishes: those asked before
+    /// it was made ([`crate::Uploader`]).
+    pub fn with_publishing(mut self, publishing: Publishing) -> Self {
+        self.publishing = publishing;
+        self
+    }
+
+    /// The publishes: to ask for one, and to see how one stands.
+    pub fn publishing(&mut self) -> &mut Publishing {
+        &mut self.publishing
+    }
+
+    /// The publishes, to read.
+    pub fn publishes(&self) -> &Publishing {
+        &self.publishing
     }
 
     /// The store.
@@ -307,9 +386,40 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// Take the next step. An error from object storage leaves the stage
-    /// as it was, for the step to be taken again.
+    /// Take the next step: a publish's where one has work
+    /// ([`Driver::publish_due`]), else the cut's. An error from object
+    /// storage leaves the stage as it was, for the step to be taken again.
     pub async fn step(&mut self) -> Result<Step, RemoteError> {
+        if self.publish_due() {
+            self.step_publish().await
+        } else {
+            self.step_cut().await
+        }
+    }
+
+    /// Whether a publish has a step to take: a lookup, or its transaction.
+    /// One that waits for a cut has none.
+    pub fn publish_due(&self) -> bool {
+        self.publishing.next().is_some()
+    }
+
+    /// The step of the publish with work asked first; [`Step::Idle`] where
+    /// none has work. An error leaves the publish pending, to be looked up
+    /// before its transaction is made again.
+    pub async fn step_publish(&mut self) -> Result<Step, RemoteError> {
+        // A publish whose time is up makes no transaction.
+        self.publishing.expire(tokio::time::Instant::now());
+        let result = match self.publishing.next() {
+            Some((name, stage)) => self.publish(name, stage).await,
+            None => Ok(Step::Idle),
+        };
+        self.counted(result)
+    }
+
+    /// The cut's step, whatever the publishes have to do. An error from
+    /// object storage leaves the stage as it was, for the step to be taken
+    /// again.
+    pub async fn step_cut(&mut self) -> Result<Step, RemoteError> {
         let stage = std::mem::replace(&mut self.stage, Stage::Check);
         let (stage, result) = match stage {
             Stage::Check => self.check().await,
@@ -319,6 +429,11 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Stage::Stopped => (Stage::Stopped, Ok(Step::Idle)),
         };
         self.stage = stage;
+        self.counted(result)
+    }
+
+    /// A step's result, its error counted.
+    fn counted(&mut self, result: Result<Step, RemoteError>) -> Result<Step, RemoteError> {
         if let Err(e) = &result {
             self.figures.errors += 1;
             self.figures.last_error = Some(e.clone());
@@ -339,10 +454,61 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
+    /// One step of the publish of `name`, which stands at `stage`.
+    async fn publish(&mut self, name: String, stage: PublishStage) -> Result<Step, RemoteError> {
+        let known = match stage {
+            PublishStage::Look | PublishStage::Recheck(_) => {
+                return match self.remote.snapshot(&name).await? {
+                    None => {
+                        self.publishing.absent(&name);
+                        Ok(Step::PublishLooked { name })
+                    }
+                    Some(found) => Ok(match self.publishing.found(&name, &found) {
+                        Ok(row) => Step::Published {
+                            name,
+                            number: row.cut.number,
+                            commit: found.commit,
+                            found: true,
+                        },
+                        Err(why) => Step::PublishRefused { name, why },
+                    }),
+                };
+            }
+            PublishStage::Ready(known) => known,
+            // Not a stage with work: `Publishing::next` does not give it.
+            PublishStage::Wait => return Ok(Step::Idle),
+        };
+        let Some((snap, row, manifest)) = self.publishing.snapshot(&name, &known) else {
+            return Ok(Step::Idle);
+        };
+        let snapshot = Snapshot {
+            name: &name,
+            snap,
+            row: &row,
+            manifest,
+        };
+        match self.remote.publish(known.commit, &snapshot).await {
+            Ok(()) => {
+                self.publishing.published(&name, row, known.commit);
+                Ok(Step::Published {
+                    name,
+                    number: known.cut.number,
+                    commit: known.commit,
+                    found: false,
+                })
+            }
+            Err(e) => {
+                self.publishing.failed(&name);
+                Err(e)
+            }
+        }
+    }
+
     async fn check(&mut self) -> (Stage, Result<Step, RemoteError>) {
         let Some(cut) = self.local.uploadable().await else {
             return (Stage::Check, Ok(Step::Idle));
         };
+        self.publishing.set_state(cut.state);
         let seen = match self.remote.observe().await {
             Ok(seen) => seen,
             Err(e) => return (Stage::Check, Err(e)),
@@ -351,6 +517,9 @@ impl<L: Local, R: Remote> Driver<L, R> {
         match judge(&cut, &row, seen.head_group) {
             Verdict::Committed => {
                 self.figures.checked = Checked::Matched;
+                // The row names the cut, so its commit landed; head is
+                // that commit where nothing moved head since.
+                self.committed(&cut, head_of(&cut, &seen));
                 let step = self.found_committed(&cut).await;
                 (Self::after(&step), Ok(step))
             }
@@ -390,6 +559,20 @@ impl<L: Local, R: Remote> Driver<L, R> {
             }
             Released::Kept => self.kept(number),
             Released::Gone => self.not_held(cut).await,
+        }
+    }
+
+    /// `cut` is committed in object storage: hand it to the publishes on
+    /// `commit`, its commit where that is known, or count it not offered
+    /// ([module docs](self)).
+    fn committed(&mut self, cut: &Uploadable, commit: Option<CommitHash>) {
+        match commit {
+            Some(commit) => self.publishing.committed(Known {
+                cut: cut.row(),
+                itself: cut.itself,
+                commit,
+            }),
+            None => self.figures.not_offered += 1,
         }
     }
 
@@ -491,7 +674,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
             };
             if Row::of(seen.row.as_deref()) == Row::Named(upload.cut.row()) {
                 self.remote.reset();
-                let step = self.uploaded(&upload).await;
+                let step = self.uploaded(&upload, head_of(&upload.cut, &seen)).await;
                 return (Self::after(&step), Ok(step));
             }
             if conflict || seen.row != upload.expected || !seen.current {
@@ -515,8 +698,8 @@ impl<L: Local, R: Remote> Driver<L, R> {
             .commit(upload.cut.group, upload.expected.clone(), row)
             .await
         {
-            Ok(()) => {
-                let step = self.uploaded(&upload).await;
+            Ok(commit) => {
+                let step = self.uploaded(&upload, Some(commit)).await;
                 (Self::after(&step), Ok(step))
             }
             Err(e) => {
@@ -532,8 +715,10 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// `upload`'s cut is committed: let it go.
-    async fn uploaded(&mut self, upload: &Upload) -> Step {
+    /// `upload`'s cut is committed, on `commit` where it is known: hand it
+    /// to the publishes, and let it go.
+    async fn uploaded(&mut self, upload: &Upload, commit: Option<CommitHash>) -> Step {
+        self.committed(&upload.cut, commit);
         let number = upload.cut.number;
         self.figures.uploaded += 1;
         self.figures.blocks += upload.blocks;
@@ -558,6 +743,14 @@ impl<L: Local, R: Remote> Driver<L, R> {
         self.figures.lost += 1;
         Step::Lost { number, why }
     }
+}
+
+/// Head as `seen`, where it is `cut`'s commit: the row named the cut, so
+/// the cut's commit landed, and head's group as read is the cut's, so
+/// nothing moved head since that the group can tell ([module docs](self);
+/// F1 of #122's review).
+fn head_of(cut: &Uploadable, seen: &Observed) -> Option<CommitHash> {
+    (seen.head_group == Some(cut.group)).then_some(seen.head)
 }
 
 /// Write the blocks of a slice into the engine, a block of `buf` each in

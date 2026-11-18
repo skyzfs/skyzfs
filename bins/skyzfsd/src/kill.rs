@@ -23,7 +23,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use skynbd_refs::{ActingRefStore, RefStore};
 use skynbd_store::{ObjectStore, Precondition, Result};
-use skynbd_types::VolumeId;
+use skynbd_types::{CommitHash, VolumeId};
+use skyzfs_upload::publish::{Found, Snapshot};
 use skyzfs_upload::{EngineRemote, Observed, Remote, RemoteError};
 
 use crate::cli::KillAt;
@@ -190,8 +191,8 @@ impl<R: Remote> Remote for KillRemote<R> {
         group: u64,
         expected: Option<Vec<u8>>,
         row: Vec<u8>,
-    ) -> std::result::Result<(), RemoteError> {
-        self.inner.commit(group, expected, row).await?;
+    ) -> std::result::Result<CommitHash, RemoteError> {
+        let commit = self.inner.commit(group, expected, row).await?;
         self.swaps += 1;
         if self.at == Some(self.swaps) {
             (self.die)(&format!(
@@ -199,7 +200,19 @@ impl<R: Remote> Remote for KillRemote<R> {
                 self.swaps
             ));
         }
-        Ok(())
+        Ok(commit)
+    }
+
+    async fn snapshot(&mut self, name: &str) -> std::result::Result<Option<Found>, RemoteError> {
+        self.inner.snapshot(name).await
+    }
+
+    async fn publish(
+        &mut self,
+        commit: CommitHash,
+        snapshot: &Snapshot<'_>,
+    ) -> std::result::Result<(), RemoteError> {
+        self.inner.publish(commit, snapshot).await
     }
 
     fn discard(&mut self) {

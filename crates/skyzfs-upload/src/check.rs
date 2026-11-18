@@ -125,6 +125,7 @@ mod tests {
             number: 5,
             group: 50,
             whole: false,
+            itself: true,
             base: Some(BASE),
         }
     }
