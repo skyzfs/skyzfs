@@ -765,10 +765,13 @@ def copied(records, dcuts, written, blocks):
 def held_across_start(records, dcuts, written, blocks):
     """The cuts written by a later instance's holder than the instance that
     counted them -> [(number, counted by, written by, blocks)], instances
-    counted from 1 and blocks those of the cut's map that a write applied
-    after the cut's instant and before the next instance started had
-    changed in the home: the next instance read them from copies an
-    earlier one made (the review of #111, G1)."""
+    counted from 1 and blocks those of the cut's map whose content in the
+    home, as the last write before the next instance started left it,
+    differs from the cut's: the next instance read them from copies an
+    earlier one made (the review of #111, G1). Only what is known counts:
+    a block a write covered in part, or a write-zeroes touched, last in
+    that span is not known, and a block written back to the cut's content
+    is not counted (Codex on #115)."""
     starts = [r for r in records if 'instance' in r['flags']]
     by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
     out = []
@@ -782,15 +785,18 @@ def held_across_start(records, dcuts, written, blocks):
             continue
         end = starts[counted]['i']
         held = blocks.get(w['number'], {})
-        hit = set()
+        home = {}               # block -> its content as last written, None where not known
         for r in records[d['prefix'] + 1:end]:
-            if cut_ref.is_write(r):
-                hs = r.get('hashes')
-                first = r['offset'] // BLOCK
-                for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
-                    if b in held and (hs is None or hs[k] is None or hs[k] != held[b]):
-                        hit.add(b)
-        out.append((w['number'], counted + 1, wrote + 1, len(hit)))
+            zeroes = r.get('op') == 'write_zeroes'
+            if not (cut_ref.is_write(r) or zeroes):
+                continue
+            hs = None if zeroes else r.get('hashes')
+            first = r['offset'] // BLOCK
+            for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+                if b in held:
+                    home[b] = None if hs is None else hs[k]
+        hit = sum(1 for b, h in home.items() if h is not None and h != held[b])
+        out.append((w['number'], counted + 1, wrote + 1, hit))
     return out
 
 

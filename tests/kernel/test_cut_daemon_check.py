@@ -1706,12 +1706,23 @@ class AcrossStarts(unittest.TestCase):
         blocks = {1: {1: self.A, 2: self.A, 3: self.A, 4: self.A}, 2: {1: self.B}}
         # cut 1 written after the second start, cut 2 before it
         written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 35}]
-        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 2)])
+        # block 1 differs; block 2 is as the cut holds it; block 3, written
+        # in part, is not known
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 1)])
         # both after: cut 2 (counted after block 1's write) has nothing changed
         written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 46}]
-        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 2), (2, 1, 2, 0)])
-        # a log with no hashes: every block a write touched counts
-        self.assertEqual(cdc.held_across_start(self.records(hashes=False), dcuts, written, blocks)[0], (1, 1, 2, 3))
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 1), (2, 1, 2, 0)])
+        # a log with no hashes: nothing is known to differ
+        self.assertEqual(cdc.held_across_start(self.records(hashes=False), dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # a block written back to the cut's content before the next start
+        # is read from the home, not from a copy (Codex on #115)
+        back = recs[:4] + [{'i': 4, 'ns': 35, 'flags': [], 'pos': 0, 'offset': 4096, 'bytes': 4096,
+                            'hashes': [self.A]}] + [dict(r, i=r['i'] + 1) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(back, dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # ... and one a write-zeroes touched last is not known
+        zeroed = recs[:4] + [{'i': 4, 'ns': 35, 'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096,
+                              'bytes': 4096}] + [dict(r, i=r['i'] + 1) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(zeroed, dcuts, written, blocks)[0], (1, 1, 2, 0))
         # a cut counted by the second instance is no cut held across it
         dcuts = [{'number': '1', 'prefix': 5}]
         self.assertEqual(cdc.held_across_start(recs, dcuts, [{'number': 1, 'asked': 60}], blocks), [])
