@@ -18,6 +18,17 @@
 //! storage and then failed leaves it, empty, for the next create of the
 //! name.
 //!
+//! Where there is no head, the create first writes the superblock with
+//! the condition that there is none ([`reserve`]), and goes on to make
+//! the volume only where it wrote it or the one there is of its size
+//! and shards. Of two creates of the name at once, of two sizes, one is
+//! refused before it writes anything, and the superblock is the
+//! volume's whose head was made (Codex on #118). A create that stopped
+//! between its superblock and its head leaves the superblock: the next
+//! create of that size goes on, and one of another size is refused, as
+//! for a volume of that size. This module's reading: the design does not
+//! say how two creates of a name meet.
+//!
 //! # At the start of `serve` ([`Start`], [`Leased`])
 //!
 //! The lease is taken under the volume's lock, after the store's open and
@@ -62,7 +73,7 @@ use std::time::{Duration, Instant};
 use skynbd_engine::{keys, Engine, EngineConfig};
 use skynbd_format::{Codec as _, Commit, CommitKind, Node, Superblock};
 use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
-use skynbd_store::{ObjectStore, S3Store};
+use skynbd_store::{ObjectStore, Precondition, S3Store, StoreError};
 use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
 use skyzfs_ublk::status::{
     CheckedShown, LeaseShown, RuleShown, Text, UploadFigures, UploadShown, UploadStateShown,
@@ -265,6 +276,19 @@ where
         .await
         .map_err(|e| format!("reading the head of {named}: {e}"))?;
     let Some(head) = head else {
+        let there = reserve(&store, vol, size)
+            .await
+            .map_err(|e| format!("making {named}: {e}"))?;
+        if let Some(superblock) = there {
+            if (superblock.size, superblock.shard_bytes) != (size, SHARD_BYTES) {
+                return Err(format!(
+                    "{named} has a superblock of {} bytes in shards of {}, not {size} in shards \
+                     of {SHARD_BYTES}, from another create of the name: under way, done, or \
+                     stopped before its head. The name is another volume's",
+                    superblock.size, superblock.shard_bytes
+                ));
+            }
+        }
         Engine::create_volume(store, refs, vol, size, engine_config(0))
             .await
             .map_err(|e| format!("making {named}: {e}"))?;
@@ -314,6 +338,56 @@ where
         ));
     }
     Ok(Placed::Found)
+}
+
+/// Write the superblock of a create of `size` bytes where there is none,
+/// and only there (Codex on #118). `Engine::create_volume` writes the
+/// superblock unconditionally before its head's compare-and-swap: of two
+/// creates of the name that both read no head, the one that loses the
+/// swap would otherwise have written its superblock over the winner's. A
+/// create goes on to the engine only where this write made the
+/// superblock, or where the one there is of its own size and shards, so
+/// that any superblock the engine writes again is the same but for its
+/// time. `None` where this write made it; else the superblock there.
+///
+/// The conditional write is no new demand on the store: the refs' swaps
+/// are conditional writes in it too.
+async fn reserve<S: ObjectStore>(
+    store: &S,
+    vol: skynbd_types::VolumeId,
+    size: u64,
+) -> Result<Option<Superblock>, String> {
+    let created_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    let superblock = Superblock {
+        vol_id: vol,
+        size,
+        format_major: 1,
+        created_at_ms,
+        shard_bytes: SHARD_BYTES,
+    }
+    .encode()
+    .map_err(|e| format!("the superblock: {e}"))?;
+    let key = keys::superblock(vol, 0);
+    match store
+        .put_if(&key, superblock.into(), Precondition::IfNoneMatch)
+        .await
+    {
+        Ok(_) => Ok(None),
+        Err(StoreError::PreconditionFailed(_)) => {
+            let there = store
+                .get(&key, None)
+                .await
+                .map_err(|e| format!("reading the superblock there: {e}"))?;
+            Superblock::decode(&there)
+                .map(Some)
+                .map_err(|e| format!("reading the superblock there: {e}"))
+        }
+        Err(e) => Err(format!("writing the superblock where there is none: {e}")),
+    }
 }
 
 /// The hash of the shard index a create makes for a volume of `size`

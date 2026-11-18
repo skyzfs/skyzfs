@@ -307,6 +307,186 @@ fn a_create_refuses_a_head_that_only_looks_empty() {
     }
 }
 
+/// The store of a [`World`], holding the first write of `key` (a put or
+/// a conditional put) until the test lets it go: it says it has come,
+/// then waits.
+struct Held {
+    inner: Mem,
+    key: String,
+    gate: std::sync::Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl Held {
+    fn wait(&self, key: &str) {
+        if key != self.key {
+            return;
+        }
+        let gate = self.gate.lock().expect("the gate").take();
+        if let Some((came, go)) = gate {
+            came.send(()).expect("the test waits");
+            go.recv().expect("let go");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Held {
+    async fn put(&self, key: &str, data: Bytes) -> StoreResult<()> {
+        self.wait(key);
+        self.inner.put(key, data).await
+    }
+    async fn get(&self, key: &str, range: Option<Range<u64>>) -> StoreResult<Bytes> {
+        self.inner.get(key, range).await
+    }
+    async fn exists(&self, key: &str) -> StoreResult<bool> {
+        self.inner.exists(key).await
+    }
+    async fn list(&self, prefix: &str) -> StoreResult<Vec<String>> {
+        self.inner.list(prefix).await
+    }
+    async fn delete(&self, key: &str) -> StoreResult<()> {
+        self.inner.delete(key).await
+    }
+    async fn get_versioned(&self, key: &str) -> StoreResult<(Bytes, String)> {
+        self.inner.get_versioned(key).await
+    }
+    async fn put_if(
+        &self,
+        key: &str,
+        data: Bytes,
+        pre: skynbd_store::Precondition,
+    ) -> StoreResult<String> {
+        self.wait(key);
+        self.inner.put_if(key, data, pre).await
+    }
+}
+
+/// Two creates of the name at once (Codex on #118). The second has read
+/// no head and is held at its first write of the superblock while the
+/// first makes the volume. Of another size, the second is refused there
+/// and the superblock stays the first's: the engine writes the
+/// superblock unconditionally before its head's swap, so the create that
+/// lost the swap used to write its size over the volume's. Of the same
+/// size, the second goes on to the engine and loses the head's swap.
+/// Either way the next create of the first's size finds its volume.
+#[test]
+fn two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made() {
+    let vol = remote().id;
+    for second in [2 * SIZE, SIZE] {
+        let world = World::new();
+        let (came, arrived) = mpsc::channel();
+        let (go, gone) = mpsc::channel();
+        let held = Arc::new(Held {
+            inner: Arc::clone(&world.store),
+            key: keys::superblock(vol, 0),
+            gate: std::sync::Mutex::new(Some((came, gone))),
+        });
+        let refs = world.refs();
+        let other = std::thread::spawn(move || block_on(place(held, refs, &remote(), second)));
+        arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the second create at the superblock");
+        assert_eq!(world.place(SIZE), Ok(Placed::Made), "the first create");
+        let head = block_on(world.refs().get(vol, "head"))
+            .expect("read")
+            .expect("a head");
+        go.send(()).expect("the second create waits");
+        let refused = other
+            .join()
+            .expect("the second create ends")
+            .expect_err("the second create");
+        if second == SIZE {
+            assert!(refused.contains("head CAS conflict"), "{refused}");
+        } else {
+            assert!(
+                refused.contains(&format!(
+                    "a superblock of {SIZE} bytes in shards of {SHARD_BYTES}, not {second} in \
+                     shards of {SHARD_BYTES}"
+                )),
+                "{refused}"
+            );
+        }
+        let superblock =
+            Superblock::decode(&world.get(&keys::superblock(vol, 0))).expect("decoded");
+        assert_eq!(
+            (superblock.size, superblock.shard_bytes),
+            (SIZE, SHARD_BYTES),
+            "the second create of {second} bytes"
+        );
+        assert_eq!(world.place(SIZE), Ok(Placed::Found));
+        let again = block_on(world.refs().get(vol, "head"))
+            .expect("read")
+            .expect("a head");
+        assert_eq!(again.commit, head.commit, "the first create's head");
+    }
+}
+
+/// A create that stopped between its superblock and its head (a write of
+/// the engine's failed) leaves the superblock and no head. The next
+/// create of its size and shards makes the volume; one of another size,
+/// or over a superblock of other shards, is refused and nothing is
+/// written. A superblock that cannot be written refuses the create, and
+/// the engine is not called.
+#[test]
+fn a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size() {
+    let vol = remote().id;
+    let key = keys::superblock(vol, 0);
+    // The superblock a create of `config`'s shards left when it stopped.
+    let stopped = |config: EngineConfig| {
+        let world = World::new();
+        let failing = FaultStore::new(Arc::clone(&world.store));
+        block_on(failing.arm(FaultOp::Put, "", 1));
+        let made = block_on(Engine::create_volume(
+            failing,
+            world.refs(),
+            vol,
+            SIZE,
+            config,
+        ));
+        assert!(made.is_err(), "stopped before its head");
+        assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
+        let left = world.get(&key);
+        (world, left)
+    };
+
+    let (world, left) = stopped(engine_config(0));
+    let refused = world.place(2 * SIZE).expect_err("another size");
+    assert!(
+        refused.contains(&format!(
+            "a superblock of {SIZE} bytes in shards of {SHARD_BYTES}, not {} in shards of \
+             {SHARD_BYTES}",
+            2 * SIZE
+        )),
+        "{refused}"
+    );
+    assert_eq!(world.get(&key), left, "the superblock as it was");
+    assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
+    assert_eq!(world.place(SIZE), Ok(Placed::Made));
+    assert_eq!(world.place(SIZE), Ok(Placed::Found));
+
+    let (world, left) = stopped(EngineConfig::default());
+    let refused = world.place(SIZE).expect_err("other shards");
+    assert!(
+        refused.contains(&format!("not {SIZE} in shards of {SHARD_BYTES}")),
+        "{refused}"
+    );
+    assert_eq!(world.get(&key), left, "the superblock as it was");
+    assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
+
+    let world = World::new();
+    let failing = FaultStore::new(Arc::clone(&world.store));
+    block_on(failing.arm(FaultOp::Put, &key, 0));
+    let refused =
+        block_on(place(failing, world.refs(), &remote(), SIZE)).expect_err("no superblock");
+    assert!(
+        refused
+            .contains("writing the superblock where there is none: backend error: injected fault"),
+        "{refused}"
+    );
+    assert!(!block_on(world.store.exists(&key)).expect("asked"));
+    assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
+}
+
 /// The keys of the environment sign only where both are set and no
 /// session token is: temporary keys come with a token, which the client
 /// of fixed keys would not send, so the ambient chain takes all three
