@@ -161,5 +161,78 @@ class Bracketed(unittest.TestCase):
         self.assertIn('NO VERDICT: the daemon was recorded by perf', b['verdict'])
 
 
+def uploading(sb=None, sa=None, pid_same=True):
+    """A row's skyzfsd part with uploads: by default one that uploaded
+    over its window under one lease (the figures of run 44372469282)."""
+    b = {'pid': '4242', 'lease': 'held', 'lease_epoch': '1', 'uploaded': '3'}
+    a = {'pid': '4242', 'lease': 'held', 'lease_epoch': '1', 'uploaded': '27'}
+    b.update(sb or {}); a.update(sa or {})
+    return {'upload': {'endpoint': 'http://127.0.0.1:9000', 'bucket': 'tb-1-1', 'volume': 'tb-1'},
+            'before': b, 'after': a, 'pid_same': pid_same}
+
+
+class AnUploadRow(unittest.TestCase):
+    """A row that says it uploads and did not over its window keeps its
+    ratio, printed, and has no verdict (review's G4 on #123, the lead's
+    decision (c))."""
+
+    def judge(self, k, tps=950):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', tps, skyzfsd=k), row(3, 'zfs-slog', 1000)]
+        return bk.bracketed(rows[1], rows)
+
+    def assert_no_verdict(self, b, *words):
+        self.assertTrue(b['verdict'].startswith('NO VERDICT: the row says it uploads, but '), b['verdict'])
+        for w in words:
+            self.assertIn(w, b['verdict'])
+        # Its figures are still shown.
+        self.assertAlmostEqual(b['ratio'], 0.95)
+        self.assertAlmostEqual(b['width'], 0.0)
+
+    def test_a_row_that_uploaded_under_one_lease_is_judged(self):
+        self.assertEqual(self.judge(uploading())['verdict'], 'at least 0.90')
+        self.assertEqual(self.judge(uploading(), tps=850)['verdict'], 'BELOW 0.90')
+        # Unsure is held: the uploads go on under its epoch.
+        self.assertEqual(self.judge(uploading(sa={'lease': 'unsure'}))['verdict'], 'at least 0.90')
+        # A row without uploads is not asked.
+        self.assertEqual(self.judge({'before': {}, 'after': {}, 'pid_same': True})['verdict'], 'at least 0.90')
+
+    def test_no_upload_committed_in_the_window(self):
+        b = self.judge(uploading(sa={'uploaded': '3'}))
+        self.assert_no_verdict(b, 'no upload committed in its window', 'uploaded 3 at its start and 3 at its end')
+        # Counters that cannot be read are no proof of an upload.
+        for sb, sa in (({'uploaded': ''}, {}), ({}, {'uploaded': 'x'}), ({'uploaded': None}, {})):
+            k = uploading(sb, sa)
+            for s in (k['before'], k['after']):
+                if s.get('uploaded') is None:
+                    del s['uploaded']
+            self.assert_no_verdict(self.judge(k), 'its uploads cannot be read')
+
+    def test_no_lease_for_the_whole_window(self):
+        for sb, sa, said in (({'lease': 'none'}, {}, 'at its start none at epoch 1'),
+                             ({}, {'lease': 'lost'}, 'at its end lost at epoch 1'),
+                             ({}, {'lease_epoch': '2'}, 'at its end held at epoch 2'),
+                             ({'lease': 'unsure'}, {'lease_epoch': '2'}, 'at its start unsure at epoch 1')):
+            b = self.judge(uploading(sb, sa))
+            self.assert_no_verdict(b, 'it did not hold the lease for the whole window', said)
+        k = uploading()
+        del k['after']['lease']
+        self.assert_no_verdict(self.judge(k), 'at its end not read at epoch 1')
+
+    def test_two_daemons_in_the_window(self):
+        b = self.judge(uploading(sa={'pid': '5151'}, pid_same=False))
+        self.assert_no_verdict(b, "its daemon was not the same at the window's two ends (pid 4242 and 5151)")
+        k = uploading()
+        del k['pid_same']
+        self.assert_no_verdict(self.judge(k), 'its daemon was not the same')
+
+    def test_the_rows_own_reason_comes_before_a_missing_model_row(self):
+        rows = [row(1, 'zfs-skyzfsd', 950, skyzfsd=uploading(sa={'uploaded': '3'})), row(2, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[0], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('no upload committed in its window', b['verdict'])
+        rows[0]['skyzfsd'] = uploading()
+        self.assertIn('no zfs-slog row of this machine and workload before it', bk.bracketed(rows[0], rows)['verdict'])
+
+
 if __name__ == '__main__':
     unittest.main()

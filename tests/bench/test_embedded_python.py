@@ -79,6 +79,7 @@ class Embedded(unittest.TestCase):
             r = self.row(d, {'.before': before, '.after': after, '.pgbench': 'tps = 812.5 (without initial connection time)\n'})
             self.assertEqual(r['skyzfsd']['upload'], {'endpoint': 'http://127.0.0.1:9000', 'bucket': 'tb-1-1', 'volume': 'tb-17'})
             self.assertTrue(r['skyzfsd']['serve_args'].endswith('(uploads to tb-17)'), r['skyzfsd']['serve_args'])
+            self.assertNotIn('from_load', r['skyzfsd']['upload'])
             two = self.row(d, {'.before': before, '.after': after.replace('skz pid 7', 'skz pid 8'), '.pgbench': ''})
             self.assertIs(two['skyzfsd']['pid_same'], False)
             two['workload'] = 'select'
@@ -97,6 +98,15 @@ class Embedded(unittest.TestCase):
                              p.stdout[-3000:])
             self.assertEqual([ln.split(' | ')[1] for ln in table if ln.startswith('| select | ')],
                              ['zfs-skyzfsd [x] (TWO DAEMONS in the window)'])
+            # a row whose object storage was frozen until the workload began
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-18\nbuild abc\n'
+                        'upload_from_load 1\n')
+            r = self.row(d, {'.before': before, '.after': after, '.pgbench': ''})
+            self.assertIs(r['skyzfsd']['upload'].get('from_load'), True)
+            self.assertTrue(r['skyzfsd']['serve_args'].endswith(
+                "(uploads to tb-18) (object storage frozen from the daemon's start to the workload's)"),
+                r['skyzfsd']['serve_args'])
             # a row without uploads
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')

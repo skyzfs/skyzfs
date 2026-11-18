@@ -6,6 +6,10 @@
 #                                         in BUCKET, uploads not finished
 #   tests/bench/minio.sh down DIR         stop it and delete DIR (named
 #                                         minio-data, or exit 64)
+#   tests/bench/minio.sh pause|unpause    freeze it or let it go on: a
+#                                         request in between waits, and
+#                                         the daemon's own limits end it
+#                                         (TB_SKZ_UPLOAD_FROM_LOAD)
 #
 # The data is on DIR, a directory of the runner, so that what a row
 # left there is measured from outside the container and is gone with
@@ -54,13 +58,17 @@ down() { # dir
     # Deleted as root: only a directory named minio-data, as the
     # workflow names it, so that a wrong argument deletes nothing else.
     [ "$(basename -- "${1:?}")" = minio-data ] || { echo "minio.sh down deletes only a directory named minio-data, not: $1" >&2; exit 64; }
+    # A row that ended with MinIO frozen (TB_SKZ_UPLOAD_FROM_LOAD) left it
+    # paused, which some versions of docker will not remove.
+    docker unpause minio > /dev/null 2>&1 || true
     docker rm -f minio > /dev/null 2>&1 || true
     sudo rm -rf -- "${1:?}"
 }
 
 case "${1:-}" in
     up) up "${2:?dir}" "${3:?bucket}" ;;
+    pause | unpause) docker "$1" minio > /dev/null ;;
     usage) usage "${2:?dir}" "${3:?bucket}" ;;
     down) down "${2:?dir}" ;;
-    *) echo "usage: $0 up DIR BUCKET | usage DIR BUCKET | down DIR" >&2; exit 64 ;;
+    *) echo "usage: $0 up DIR BUCKET | usage DIR BUCKET | down DIR | pause | unpause" >&2; exit 64 ;;
 esac

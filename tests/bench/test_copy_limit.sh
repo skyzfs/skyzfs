@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -229,19 +229,38 @@ check "the wait follows the import and a sync, on the daemon's upload rows only"
 check "the wait is called nowhere else" '[ "$(grep -c "^ *skz_first_upload$" "$script")" = 1 ]'
 # With no wait the watcher runs beside the row (run 44372469282: the
 # seed committed during the setup, while the line said "under the
-# workload"). The clock reads 10 at the start, and the status is read
-# at 10, 20, ...: up at 100, seen at the read at 100, written at 110.
+# workload"). The clock reads 10 at the start; each round takes the
+# read's start, reads, and takes its end: reads at 20, 40, ..., 100, so
+# up at 100 is seen at the read of 100, after the read of 80 showed
+# nothing, and written at 110. The commit came in (80, 110].
 first_upload 100 3600 watch; rc=$?
 check "the seed watched: it says first that nothing has committed" \
     '[ "$rc" = 0 ] && [ "$(head -n 1 "$OUT/t.skzinfo")" = "first_upload not committed by the window'"'"'s end (watched from the import)" ]'
 check "  and with no workload begun, that it committed before the workload" \
     '[ "$(tail -n 1 "$OUT/t.skzinfo")" = "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" ]'
 BEGAN=50 first_upload 100 3600 watch; rc=$?
-check "  a workload begun before the commit: under it, and how long after" \
-    '[ "$(tail -n 1 "$OUT/t.skzinfo")" = "first_upload after 100 s from the import, under the workload, 60 s after its warm-up began (uploaded 1, cuts lost 4)" ]'
-BEGAN=110 first_upload 100 3600 watch; rc=$?
-check "  begun in the very second of the commit: under it" \
-    'grep -qx "first_upload after 100 s from the import, under the workload, 0 s after its warm-up began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+check "  a workload begun before the read before the commit: under it, and how long after" \
+    '[ "$(tail -n 1 "$OUT/t.skzinfo")" = "first_upload after 100 s from the import, under the workload, 30 to 60 s after its warm-up began (uploaded 1, cuts lost 4)" ]'
+BEGAN=80 first_upload 100 3600 watch; rc=$?
+check "  begun at that read's start: under it" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 0 to 30 s after its warm-up began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+# Review's N1 on #123: a mark between the read before and the read that
+# saw the commit does not say whether the commit came under the load.
+for b in 81 90 110; do
+    BEGAN=$b first_upload 100 3600 watch; rc=$?
+    check "  begun at $b, between the two reads: as the workload began" \
+        'grep -qx "first_upload after 100 s from the import, as the workload began (within 30 s of its warm-up) (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+done
+BEGAN=111 first_upload 100 3600 watch; rc=$?
+check "  begun after the read that saw it: before" \
+    'grep -qx "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+# A round whose status was not read shows nothing: the read before the
+# commit is the last one that was read. Reads at 20 and 40 unread, at 60
+# read and up: the commit came in (10, 70], the watcher's start to the
+# read's end, and the mark at 30 lies inside.
+DEAD_UNTIL=45 BEGAN=30 first_upload 60 3600 watch; rc=$?
+check "  unread rounds before the commit do not count as reads that showed none" \
+    'grep -qx "first_upload after 60 s from the import, as the workload began (within 60 s of its warm-up) (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
 BEGAN=500 first_upload 100 3600 watch; rc=$?
 check "  a workload that began after the commit: before it" \
     'grep -qx "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
@@ -257,9 +276,9 @@ check "a status not read three times running ends the wait, and says so" \
 DEAD_UNTIL=100000 first_upload 10 3600 watch; rc=$?
 check "  the watcher too" \
     'grep -qE "^first_upload NONE after [0-9]+ s from the import: the status could not be read three times running$" "$OUT/t.skzinfo"'
-# The clock moves 10 s a round, from 10: rounds at 10 and 20 unread, the
-# third read.
-DEAD_UNTIL=25 first_upload 10 900; rc=$?
+# The clock moves 20 s a round, reads at 20, 40, 60: the first two
+# unread, the third read.
+DEAD_UNTIL=45 first_upload 10 900; rc=$?
 check "  a status unread two rounds running: the wait goes on to the upload" \
     'grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
 # The row keeps the last value of a key: the watcher's first line until
@@ -268,9 +287,64 @@ check "a row reads the last first_upload of its .skzinfo" \
     'grep -q "if key: k\[.info.\]\[key\] = value" "$script"'
 check "with no wait, the watcher runs in the background and the teardown stops it" \
     'grep -q "( SKZ_UPLOAD_WAIT_S=3600; skz_first_upload watch ) &" "$script" && grep -q "kill \"\$SKZ_SEED_WATCH\"" "$script"'
+# The teardown's block (review's N2 on #123): a watcher still running
+# leaves NONE in the record and is stopped; one that has ended wrote its
+# own line, and nothing is added.
+seed_stop() { # watcher-pid-or-empty -> the record's lines in $tt/info
+    : > "$tt/info"
+    ( SKZ_SEED_WATCH=$1; SKZ_SEED_T0=$(( $(date +%s) - 42 )); SKZ_SEED_INFO=$tt/info
+      skz_seed_watch_stop; echo "cleared:${SKZ_SEED_WATCH}" > "$tt/cleared" )
+}
+sleep 60 & live=$!
+seed_stop "$live"
 check "  a watcher still running at the teardown: the record says NONE by the end of the rows" \
-    'grep -q "first_upload NONE by the end of the rows" "$script"'
+    'grep -qxE "first_upload NONE by the end of the rows \((42|43) s after the import\)" "$tt/info" && [ "$(wc -l < "$tt/info")" = 1 ]'
+sleep 1
+check "    and it is stopped" '! kill -0 "$live" 2> /dev/null && [ "$(cat "$tt/cleared")" = cleared: ]'
+wait "$live" 2> /dev/null
+true & ended=$!; wait "$ended"
+seed_stop "$ended"
+check "  a watcher that has ended: nothing is added" '[ ! -s "$tt/info" ] && [ "$(cat "$tt/cleared")" = cleared: ]'
+seed_stop ""
+check "  no watcher: nothing is added" '[ ! -s "$tt/info" ]'
+check "  the teardown calls it" \
+    '[ "$(sed -n "/^teardown_topology() {/,/^}$/p" "$script" | grep -c "^    skz_seed_watch_stop$")" = 1 ]'
 rw=$(sed -n '/^run_workload() {/,/^}$/p' "$script")
+bz=$(sed -n '/^build_zfs_direct() {/,/^}$/p' "$script")
+# TB_SKZ_UPLOAD_FROM_LOAD: MinIO, frozen from after the create, answers
+# again once the workload begins, after the seed's watcher has its mark.
+minio_resume() { # paused unpause-rc -> "calls|paused after" ; log in $tt/log
+    : > "$tt/minio"; : > "$tt/log"
+    # shellcheck disable=SC2317,SC2329  # the stand-in is called by skz_minio_resume
+    ( SKZ_MINIO_PAUSED=$1
+      skz_minio() { echo "$1" >> "$tt/minio"; return "$MINIO_RC"; }
+      MINIO_RC=$2 skz_minio_resume; echo "$(tr '\n' ' ' < "$tt/minio")|$SKZ_MINIO_PAUSED" > "$tt/resumed" )
+    cat "$tt/resumed"
+}
+check "from the load: a frozen MinIO is let go as the workload begins" \
+    '[ "$(minio_resume 1 0)" = "unpause |" ] && grep -q "MinIO answers again" "$tt/log"'
+check "  one that would not go on is said, and left for the teardown" \
+    '[ "$(minio_resume 1 1)" = "unpause |1" ] && grep -q "WARNING: MinIO could not be let go" "$tt/log"'
+check "  not frozen: nothing is called" '[ "$(minio_resume "" 0)" = "|" ]'
+# The line numbers of the first line holding each text, in order.
+order() { # text with fixed strings... (stdin: the function) -> "n,n,..."
+    local body t; body=$(cat)
+    # A text not found gives an empty field, which is not in order.
+    for t in "$@"; do printf "%s\n" "$(printf "%s\n" "$body" | grep -n -m1 -F -e "$t" | cut -d: -f1)"; done | tr "\n" ,
+}
+increasing() { awk -F, '{ for (i = 2; i < NF; i++) if ($i == "" || $i <= $(i - 1)) exit 1; exit ($1 == "") }' <<< "$1"; }
+mark_at='date +%s > "$SKZ_SEED_BEGAN"'; warm_at='log "$tag: warm-up'
+check "  run_workload lets it go after the mark, before the first warm-up" \
+    'increasing "$(printf "%s\n" "$rw" | order "$mark_at" "    skz_minio_resume" "$warm_at")"'
+check "  frozen after the create and before the daemon starts" \
+    '[ "$(printf "%s\n" "$bz" | grep -n -E "^ *skz_create |^ *skz_minio pause|^ *skz_start$" | cut -d: -f2 | sed "s/^ *//" | cut -d" " -f1-2 | tr "\n" ,)" = "skz_create \"\$(stat,skz_minio pause,skz_start," ]'
+unpause_at='if [ -n "$SKZ_MINIO_PAUSED" ]; then skz_minio unpause || true; SKZ_MINIO_PAUSED=""; fi'
+check "  the teardown lets a frozen MinIO go" \
+    '[ "$(sed -n "/^teardown_topology() {/,/^}$/p" "$script" | grep -cxF -e "    $unpause_at")" = 1 ]'
+# The mark of a row before is not read by the next (TB_WORK is the job's):
+# it is removed before the watcher starts.
+check "  the last row's mark is removed before the watcher starts" \
+    '[ "$(printf "%s\n" "$bz" | grep -m1 -F -e "rm -f \"\$SKZ_SEED_BEGAN\"" -e "skz_first_upload watch ) &" | grep -c "rm -f")" = 1 ]'
 check "  run_workload marks the start of the workload for it, before the first warm-up" \
     '[ "$(printf "%s\n" "$rw" | grep -m1 -F -e "date +%s > \"\$SKZ_SEED_BEGAN\"" -e "log \"\$tag: warm-up" | grep -c SKZ_SEED_BEGAN)" = 1 ]'
 
