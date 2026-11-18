@@ -1,0 +1,41 @@
+W01 a fetch is kept whatever head and the row are after the read: KILLED by 2: test_head_moved_under_the_read, test_head_or_the_row_alone_moved
+W02a a fetch is kept when head alone did not move (the row may have): SURVIVED
+W02b a fetch is kept when the row alone did not move (head may have): KILLED by 1: test_head_or_the_row_alone_moved
+W03 the same head and row are fetched again at every look: NOT APPLIED (found [0] times)
+W04 a row seen before is not fetched again under another head: SURVIVED
+W05 a row with no head is fetched: SURVIVED
+W07 a block that became zeros is not reported as changed: KILLED by 2: test_each_cut_once_with_what_changed, test_hash_and_changed
+W08 the blocks of the last fetch are not kept: every fetch is compared with nothing: KILLED by 1: test_each_cut_once_with_what_changed
+W09 what changed is taken against an empty image: KILLED by 1: test_each_cut_once_with_what_changed
+W10 a head node B cannot read (exit 4) is not a verdict: KILLED by 1: test_what_ends_the_watcher
+W11 any failure of get is a verdict: KILLED by 2: test_a_fetch_that_keeps_failing, test_the_last_look
+W12 failures are never forgotten: three in the whole recording end it: NOT APPLIED (found [0] times)
+W13 failures never end the watcher: NOT APPLIED (found [0] times)
+W14 blocks of zeros are hashed like any other: KILLED by 2: test_each_cut_once_with_what_changed, test_hash_and_changed
+W15 blocks are numbered among those that are not zeros: KILLED by 2: test_each_cut_once_with_what_changed, test_hash_and_changed
+W17 no fetch after the stop: NOT APPLIED (found [0] times)
+W17b one try after the stop, whatever it found: KILLED by 1: test_the_last_look
+W18 the pause is ignored: SURVIVED
+W19 the watcher ends with 0 after a verdict: SURVIVED
+W20 the watcher ends with 1 after its own error: SURVIVED
+W21 uploaded.tsv has the group where the number goes: KILLED by 3: test_each_cut_once_with_what_changed, test_head_moved_under_the_read, test_the_last_look
+W22 uploaded.tsv has the end of the read where its beginning goes: SURVIVED
+W23 every fetch is fetch 0 in uploaded-blocks.tsv: KILLED by 1: test_each_cut_once_with_what_changed
+W24 the row file is not written: KILLED by 1: test_each_cut_once_with_what_changed
+R01 the pause is lifted after PRE_SERVE set it: KILLED by 1: test_cut_record.sh: FAIL a pause PRE_SERVE asked for holds past the watcher's start: got '0 not paus
+R02 the watcher starts by lifting the pause: KILLED by 1: test_cut_record.sh: FAIL a pause PRE_SERVE asked for holds past the watcher's start: got '0 not paus
+R03 (kernel only) before_other does not wait for the watcher: KILLED by 2: test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '0 fetched st , test_cut_record.sh: FAIL a row that moved on five times is the rig's error: got '0 fetched st 1 40 a
+R04 (kernel only) the watcher's verdict ends the recording as the rig's error: SURVIVED
+R05 (kernel only) the drain does not wait for the held cuts: SURVIVED
+R06 (kernel only) the watcher is stopped before the drain: SURVIVED
+N01 row: the number and the group read from each other's place: KILLED by 2: tests::a_row_is_put_as_the_uploader_reads_it, tests::the_cut_row_is_read_as_the_uploader_writes_it
+N02 row: any version is read as version 1: KILLED by 1: tests::the_cut_row_is_read_as_the_uploader_writes_it
+N03 row: a longer row is read as version 1: SURVIVED
+N04 row: the state is read one byte late: KILLED by 2: tests::a_row_is_put_as_the_uploader_reads_it, tests::the_cut_row_is_read_as_the_uploader_writes_it
+N05 set-row: the number and the group put in each other's place: KILLED by 1: tests::a_row_is_put_as_the_uploader_reads_it
+N06 set-row: a state of any length: KILLED by 1: tests::a_row_is_put_as_the_uploader_reads_it
+N07 lease: exit 0 when another holds it: SURVIVED
+N08 move-head: the group is not set: SURVIVED
+N09 set-row: the row is put under another key: NOT APPLIED (found [0] times)
+N10 row: the cut's row read under another key: SURVIVED
+N11 the row's key is another: SURVIVED

@@ -1,0 +1,46 @@
+A  the watcher as a command, node B's row working
+    get always ends with 2, no stop: exit 2 after 1 s; log: ERROR node B get failed 3 times in a row: stand-in: get fails
+    get always ends with 2, the stop there from the start: exit 2 after 0 s; log: ERROR node B get failed 3 times in a row: stand-in: get fails
+    get ends with 4 (content not readable): exit 1 after 0 s; log: VERDICT node B could not read head: stand-in: get fails
+
+B  ufailed (run 44280164949), the 16 blocks written at 2 MiB before the failure
+    as recorded: exit 0
+    upload_content	PASS	node B fetched cuts 9, 17 at head: 2 of 17 cuts fetched at head; 11073 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    upload_raw	PASS	node B's last cut holds the 16 blocks written to the device after the old state's last cut and before the failure
+    node B's image never holds them (a first cut that leaves out the map's regions): exit 1
+    upload_content	FAIL	node B fetched cuts 9, 17 at head: cut 17 (group 51): 16 blocks differ from the reference at its instant, for example block 512: e796a81e5edf31a4 wanted, ad7facb2586fc6e9 held, block 513: f2a5bfc09945d047 wanted, ad7facb2586fc6e9 
+    upload_raw	FAIL	node B's last cut holds 0 of the 16 blocks written before the failure; the content line says where it differs from the reference
+    node B's image holds them at the old state's last cut already (a cut made of the raw write): exit 1
+    upload_content	FAIL	node B fetched cuts 9, 17 at head: cut 9 (group 27): 16 blocks differ from the reference at its instant, for example block 512: ad7facb2586fc6e9 wanted, e796a81e5edf31a4 held, block 513: ad7facb2586fc6e9 wanted, f2a5bfc09945d047 h
+    upload_raw	PASS	node B's last cut holds the 16 blocks written to the device after the old state's last cut and before the failure
+
+C  the balance's start look
+    ufailed, balance-start.txt with a cut held: exit 2
+    upload_balance	ERROR	serve 2: the look it starts from (balance-start.txt) is not at rest: upload_state 'idle', cuts_held '1'
+    ufailed, no balance-start.txt: exit 2
+    upload_balance	(no line)
+    rig_error	ERROR	serve 2 and no balance-start.txt: the balance has no look at rest to start from
+    ukill as recorded: exit 0
+    upload_balance	PASS	serve 2, from balance-start.txt: cuts 4 = committed and let go 2 + replaced 2 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+    ukill status-start-2.txt: upload_state idle, cuts 208, cuts_held 2, uploaded 0, upload_found_committed 0, cuts_replaced 0, cuts_abandoned 0
+    ukill balance-start.txt: upload_state idle, cuts 315, cuts_held 0, uploaded 33, upload_found_committed 1, cuts_replaced 75, cuts_abandoned 0
+    ukill status.txt: upload_state idle, cuts 319, cuts_held 0, uploaded 35, upload_found_committed 1, cuts_replaced 77, cuts_abandoned 0
+
+D  ulease, node B's rows before the other holder let go
+    rows 12, before the release 2; the last of them 0.13 s before the release and +0.16 s from the first instance's last request
+    as recorded: exit 0
+    upload_course	PASS	the refused start wrote 5 paths (vol, volume.start, run, v-801-7e56a7); lease_epoch '2' after the other holder let go
+    head another commit at the second look: exit 1
+    upload_course	FAIL	node B read head eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 1 and the row none before the other holder let the lease go, head 580efdbf9f58b7e540bac1fccea6c76f19deb421fc2ab7ea2fb3edc71d9e1e8a 0 at its first lo
+    the row names a cut at the second look: exit 1
+    upload_course	FAIL	node B read head 580efdbf9f58b7e540bac1fccea6c76f19deb421fc2ab7ea2fb3edc71d9e1e8a 0 and the row abababababababababababababababab 1 4 before the other holder let the lease go, head 580efdbf9f58b7e540bac1fccea6c76f19deb421fc2ab7ea2f
+
+E  the status of the look one upload older than its row (the daemon right)
+    umoved: exit 1
+    upload_status	FAIL	uploaded '2', not 1; uploaded 2, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runnervmccnms:e4dac6e3b7e549ce99152e37724327d0'; the drain took 1 s
+    upload_course	PASS	umoved
+    ulost: exit 1
+    upload_status	FAIL	uploaded '2', not 1; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+    upload_course	PASS	ulost
+    umoved as recorded: the look's status has cuts 8, cut_group 14, age_ms 560, seconds 3; its row names cut 8 of group 14
+    ulost as recorded: the look's status has cuts 10, cut_group 27, age_ms 470, seconds 3; its row names cut 10 of group 27

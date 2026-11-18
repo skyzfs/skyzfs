@@ -1,0 +1,44 @@
+== run 44280164949 (dispatch, rig cd849a6, daemon 4c733d3)
+life: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 26 at head: 1 of 26 cuts fetched at head; 12321 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervmccnms:e4dac6e3b7e549ce99152e37724327d0'
+  upload_balance	PASS	serve 1, from status-start-1.txt: cuts 26 = committed and let go 2 + replaced 24 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+ufailed: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 9, 17 at head: 2 of 17 cuts fetched at head; 11073 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 0, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 3, upload_rule delta, upload_checked matched; uploaded 3, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_
+  upload_balance	PASS	serve 2, from balance-start.txt: cuts 8 = committed and let go 3 + replaced 5 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+  upload_raw	PASS	node B's last cut holds the 16 blocks written to the device after the old state's last cut and before the failure
+  upload_course	PASS	the start that acknowledged the failure took the intent map up: the new state's first cut went up as a delta onto the map's base
+ukill: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 1, 319 at head: 2 of 319 cuts fetched at head; 53228 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 0, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 1, uploaded 35; uploaded 35, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervmccnms:e4dac6e3b7e549ce991
+  upload_balance	PASS	serve 2, from balance-start.txt: cuts 4 = committed and let go 2 + replaced 2 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+  upload_course	PASS	ukill
+ulease: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 10, 18 at head: 2 of 18 cuts fetched at head; 11093 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 6, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervmccnms:e4dac6e3b7e549ce99152e37724327d0'
+  upload_balance	PASS	serve 2, from balance-start.txt: cuts 8 = committed and let go 4 + replaced 4 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+  upload_course	PASS	the refused start wrote 5 paths (vol, volume.start, run, v-801-7e56a7); lease_epoch '2' after the other holder let go
+ulost: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 10 at head: 1 of 10 cuts fetched at head; 3812 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state lease_lost, cuts_held 2, lease lost, lease_holder other-node, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 2; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+  upload_balance	PASS	serve 1, from status-start-1.txt: cuts 18 = committed and let go 2 + replaced 14 + abandoned 0 + held +2; at the start upload_state 'idle', after the drain 'lease_lost'
+  upload_course	PASS	ulost
+umoved: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 8 at head and 1 of another writer's: 1 of 8 cuts fetched at head; 3750 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 1, lease_epoch 1, upload_mismatches 3, upload_abandoned_at_mismatch 4, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 2; uploaded 2, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runne
+  upload_balance	PASS	serve 1, from status-start-1.txt: cuts 15 = committed and let go 2 + replaced 9 + abandoned 4 + held +0; at the start upload_state 'idle', after the drain 'idle'
+  upload_course	PASS	umoved
+== run 44287481926 (dispatch, rig 6b1be16, daemon 4c733d3)
+urow: exit 0
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 8, 14, 22 at head and 2 of another writer's: 3 of 22 cuts fetched at head; 19879 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervmccnms:e4dac6e3b7e549ce99152e37724327d0, uploaded_whole 3, lease_epoch 1, upload_mismatches 2, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked matched; uploaded 10, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervmccnms:e4dac6e3
+  upload_balance	PASS	serve 1, from status-start-1.txt: cuts 22 = committed and let go 10 + replaced 10 + abandoned 2 + held +0; at the start upload_state 'idle', after the drain 'idle'
+  upload_course	PASS	row1: upload_checked 'not_the_base' once the mismatch was counted; row2: upload_checked 'not_the_base' once the mismatch was counted

@@ -1,0 +1,129 @@
+W02a a fetch is kept when head alone did not move (the row may have): SURVIVED
+W02b a fetch is kept when the row alone did not move (head may have): KILLED by 1: test_head_or_the_row_alone_moved
+W04 a row seen before is not fetched again under another head: SURVIVED
+W05 a row with no head is fetched: SURVIVED
+W11 any failure of get is a verdict: KILLED by 2: test_a_fetch_that_keeps_failing, test_the_last_look
+W12 failures are never forgotten: three in the whole recording end it: NOT APPLIED (found [0] times)
+W17 no fetch after the stop: NOT APPLIED (found [0] times)
+W17b one try after the stop, whatever it found: KILLED by 1: test_the_last_look
+W18 the pause is ignored: SURVIVED
+W19 the watcher ends with 0 after a verdict: SURVIVED
+W20 the watcher ends with 1 after its own error: SURVIVED
+W22 uploaded.tsv has the end of the read where its beginning goes: SURVIVED
+W30 a command that works forgets every command's failures: KILLED by 1: test_a_fetch_that_keeps_failing
+W31 failures never end the watcher: KILLED by 2: test_a_fetch_that_keeps_failing, test_what_ends_the_watcher
+W32 a last look that never settles is no error: KILLED by 1: test_the_last_look
+W34 a cut fetched before does not settle the look: KILLED by 1: test_the_last_look
+W35 a row that names no cut does not settle the look: KILLED by 1: test_the_last_look
+W36 a look stays settled once one was: KILLED by 1: test_the_last_look
+W38 main: one look at the stop, whatever it found: SURVIVED
+J04 the image is not followed through a skipped fetch: SURVIVED
+J07 a state past the last epoch is taken as the last epoch's: SURVIVED
+J08 more states than epochs is not a verdict: SURVIVED
+J16b a content control that differs does not set the exit: SURVIVED
+J17h upload_abandoned_at_mismatch may be anything: SURVIVED
+J17j upload_given_up may be anything: SURVIVED
+J17k upload_committed_kept may be anything: SURVIVED
+J17l upload_found_committed may be anything: SURVIVED
+J17m the holder is the first the rows named, not the last: NOT APPLIED (found [0] times)
+J19d the balance adds upload_committed_gone: SURVIVED
+J19j the balance from the first instance's start: KILLED by 1: test_where_the_balance_starts
+J20d umoved: no mismatch need be counted: KILLED by 1: test_each_courses_files
+J20e umoved: nothing need be abandoned at the mismatch: KILLED by 1: test_each_courses_files
+J21 urow: one mismatch is enough: KILLED by 1: test_each_courses_files
+J21d urow: the row at the end may be of another state: KILLED by 1: test_each_courses_files
+J21e urow: upload_checked may be anything: KILLED by 1: test_each_courses_files
+J22d ukill: the next instance may upload a whole cut: KILLED by 1: test_each_courses_files
+J22e ukill: the next instance need upload nothing: KILLED by 1: test_each_courses_files
+J24e ufailed: with the map taken up, upload_checked may be anything: SURVIVED
+J26 ulost: upload_state may be anything: KILLED by 1: test_each_courses_files
+J26c ulost: lease_holder may be anything: KILLED by 1: test_each_courses_files
+J26d ulost: lease_epoch may be anything: KILLED by 1: test_each_courses_files
+J26g ulost: head at the end may have moved: KILLED by 1: test_each_courses_files
+J26i ulost: the lease at the end may be anyone's: KILLED by 1: test_each_courses_files
+J27 a course's own findings do not set the exit: SURVIVED
+J28 any recording that uploads may start the daemon again: SURVIVED
+J40 any look is at rest: KILLED by 1: test_where_the_balance_starts
+J41 at rest with cuts held: KILLED by 1: test_where_the_balance_starts
+J42 at rest whatever the uploader's state, with nothing held: SURVIVED
+J43 a start with nothing counted yet is not at rest: KILLED by 5: test_a_course_that_stops_the_uploads, test_a_right_daemon_that_uploads, test_node_b_saw_some_cuts, test_what_an_upload_gets_wrong, test_where_the_balance_starts
+J44 the balance always starts from the instance's start: KILLED by 1: test_where_the_balance_starts
+J45 a later instance with no look at rest is balanced from its start: KILLED by 1: test_where_the_balance_starts
+J46 a start look not at rest does not set the exit: KILLED by 1: test_where_the_balance_starts
+J47 upload_raw passes whatever node B holds: KILLED by 1: test_the_blocks_written_before_a_failure
+J48 upload_raw: missing blocks with the content line passed are a verdict, with it failed the rig's error: KILLED by 1: test_the_blocks_written_before_a_failure
+J49 upload_raw: missing blocks with the content line failed say PASS: SURVIVED
+J50 raw_held reads the first fetch alone: SURVIVED
+J51 raw_held counts any content at the blocks: KILLED by 1: test_the_blocks_written_before_a_failure
+J52 raw_held compares every block with block 0's content: KILLED by 1: test_the_blocks_written_before_a_failure
+J54 the lease is the first the rows named: KILLED by 2: test_each_courses_files, test_the_lease_node_b_reads
+J55 a bucket with no lease is no finding: KILLED by 1: test_the_lease_node_b_reads
+J56 the status's epoch is not compared with the bucket's: KILLED by 1: test_the_lease_node_b_reads
+J57 a recording that is no course drops node B's read of the lease: KILLED by 1: test_the_lease_node_b_reads
+J58 ulease: no row before the release is no finding: KILLED by 1: test_each_courses_files
+J59 ulease: head may move before the release: KILLED by 1: test_each_courses_files
+J60 ulease: the row may name a cut before the release: KILLED by 1: test_each_courses_files
+J61 ulease: head must be none before the release (the want before cd849a6): KILLED by 1: test_each_courses_files
+J62 ulease: rows after the release count as before it: KILLED by 1: test_each_courses_files
+R20 other_act: an act that found the row moved is taken as done: KILLED by 2: test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '0 acted on  after 0 agai, test_cut_record.sh: FAIL a row that moved five times is the rig's error: got '0 acted on  after 0 ag
+R23 before_other: the pool is not synced before the look: KILLED by 2: test_cut_record.sh: FAIL a cut the watcher fetched: got '0 fetched st 1 40 after 0 looks again, sync, test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '0 fetched st 
+R24 before_other: the pool is synced whether imported or not: KILLED by 1: test_cut_record.sh: FAIL a pool not imported is not synced: got '0 fetched st 1 40 after 0 looks aga
+R25 before_other: the row is never read again while it waits: KILLED by 2: test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '2 rig error: , test_cut_record.sh: FAIL a row that moved on five times is the rig's error: got '2 rig error: the wa
+R26 before_other: a row that moved on is no reason to look again: KILLED by 2: test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '2 rig error: , test_cut_record.sh: FAIL a row that moved on five times is the rig's error: got '2 rig error: the wa
+R27 before_other: a fetch under another head counts: SURVIVED
+R28 before_other: a fetch of another cut of the state counts: SURVIVED
+R30 before_other: a cut the watcher never fetched is no error: SURVIVED
+R31 before_other: the second look is not written to looks-again.txt: KILLED by 1: test_cut_record.sh: FAIL a daemon that cut after two looks: the third look's cut: got '0 fetched st 
+R40 (kernel only) ufailed does not wait for node B before the failure (D1): SURVIVED
+R41 (kernel only) guarded: node B's exit 6 is taken as done: SURVIVED
+R42 (kernel only) the acts are not guarded: SURVIVED
+R43 (kernel only) ufailed writes its blocks over the front labels: SURVIVED
+R44 (kernel only) ulease writes the release's time after the release: SURVIVED
+N03 row: a longer row is read as version 1: SURVIVED
+N07 lease: exit 0 when another holds it: SURVIVED
+N08 move-head: the group is not set: SURVIVED
+N09 set-row: the row is put under another key: NOT APPLIED (found [0] times)
+N10 row: the cut's row read under another key: SURVIVED
+N11 the row's key is another: SURVIVED
+N20 move-head: a row that did not hold is an error, not "moved": KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N21 move-head: head moved under a guarded commit is an error, not "moved": SURVIVED
+N22 move-head: the guard is built and not given to the commit: KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N23 row_held: expects no row: KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N24 row_held: holds the row and writes it empty: KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N25 set-row: the guard is dropped (a plain put): KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N26 set-row: a row that did not hold reads as set: KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N27 set-row none: the guard is dropped: KILLED by 1: tests::the_other_writer_acts_on_the_row_it_read
+N28 a row that moved ends with 0: SURVIVED
+N29 --expect-row is read and ignored: KILLED by 1: tests::each_command_names_what_it_needs
+N30 the move-head command gives the function no expected row: SURVIVED
+N31 the set-row command gives the function no expected row: SURVIVED
+P01 a path that begins like a listed file counts: KILLED by 1: test_paths_that_only_look_alike
+P02 a directory's name without its slash counts as a prefix: KILLED by 1: test_paths_that_only_look_alike
+P03 every changed path must be an upload path: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P04 the plan does not know the path crates/skyzfs-upload/: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P05 the plan does not know the path bins/skyzfsd/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P06 the plan does not know the path crates/skyzfs-local/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P07 the plan does not know the path crates/skyzfs-ublk/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P08 the plan does not know the path bins/skyzfs-nodeb/: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P09 the plan does not know the path tests/kernel/cut_watch.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P10 the plan does not know the path tests/kernel/cut-record.sh: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P11 the plan does not know the path tests/kernel/cut_daemon_check.py: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P11b the plan does not know the path .github/workflows/skyzfs-cut-daemon.yml: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P12 a pull request runs the held cuts' stage on one image: KILLED by 3: test_a_pull_request_that_touches_no_upload_path, test_a_pull_request_that_touches_the_uploader, test_the_command
+P13 the upload job takes the place of the held cuts' jobs: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P14 the pull request's upload job also holds cuts: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P15 the pull request's upload job leaves out ulost: KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P15b the pull request's upload job runs every recording (empty list): KILLED by 1: test_a_pull_request_that_touches_the_uploader
+P16 a dispatch with upload also holds cuts: KILLED by 1: test_a_dispatch
+P17 a dispatch uploads whatever its input says: KILLED by 1: test_a_dispatch
+P17b a dispatch never uploads: KILLED by 1: test_a_dispatch
+P17c a dispatch drops its recordings: KILLED by 1: test_a_dispatch
+P17d a dispatch runs its first image alone: KILLED by 1: test_a_dispatch
+P18 a push runs on arm64: KILLED by 1: test_a_push
+P18b a push does not hold cuts: KILLED by 1: test_a_push
+P19 the upload job runs on arm64: KILLED by 2: test_a_pull_request_that_touches_the_uploader, test_the_command
+P20 the command does not read the changed paths: KILLED by 1: test_the_command
+P21 the upload job has the held cuts' job's label: KILLED by 3: test_a_dispatch, test_a_pull_request_that_touches_the_uploader, test_the_command
+P22 an event with no plan runs nothing: KILLED by 1: test_another_event
+P23 upload is written true or false, not 1 or 0: KILLED by 4: test_a_dispatch, test_a_pull_request_that_touches_no_upload_path, test_a_pull_request_that_touches_the_uploader, test_a_push
+P24 a pull request always gets the upload job: KILLED by 1: test_a_pull_request_that_touches_no_upload_path
