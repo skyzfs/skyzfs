@@ -588,6 +588,23 @@ fn a_file_of_the_fifteenth_version_is_read_without_the_header_sync() {
         .any(|(key, _)| key.starts_with("intent_header")));
 }
 
+/// The flag at 976 reads on only where it is 1: any other value is off,
+/// as the table says (S04 of #120's review).
+#[test]
+fn the_header_sync_flag_is_on_only_at_one() {
+    for (word, on) in [(0u64, false), (1, true), (2, false), (u64::MAX, false)] {
+        let mut bytes = encode(&sample()).to_vec();
+        bytes[976..984].copy_from_slice(&word.to_le_bytes());
+        let read = decode(&bytes).expect("a status");
+        let header = read
+            .shown
+            .intent
+            .and_then(|intent| intent.header)
+            .expect("the header's sync");
+        assert_eq!(header.on, on, "{word}");
+    }
+}
+
 /// The uploader is printed from a fifteenth file, every key whether or
 /// not the daemon uploads, with its state in words as the lead's
 /// decisions on M2.4c give them; an empty text is printed as `none`, and
