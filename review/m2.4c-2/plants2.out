@@ -11,3 +11,84 @@ W03 | bins/skyzfsd/src/serve.rs | the desk's wake does nothing | SURVIVED
 E4 | crates/skyzfs-upload/src/uploader.rs | a conflict right after a refused commit is not waited after | KILLED by a_conflict_right_after_a_refused_commit_is_waited_after
 E5 | crates/skyzfs-upload/src/uploader.rs | a conflict anywhere but at the commit is followed at once by another step | SURVIVED
 W04 | bins/skyzfsd/src/serve.rs | the lease is let go at every exit that reaches the end | SURVIVED
+E6 | crates/skyzfs-upload/src/uploader.rs | a refused commit waits as an error does, and again at its give-up | KILLED by a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, a_conflict_right_after_a_refused_commit_is_waited_after, a_cut_committed_and_gone_ends_the_wait_of_the_refusals and 1 more
+P4b | crates/skyzfs-upload/src/uploader.rs | a give-up announces its wait and returns none | KILLED by a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, a_cut_found_committed_ends_the_wait_of_the_refusals
+W05 | bins/skyzfsd/src/serve.rs | the lease is never let go | SURVIVED
+P1 | crates/skyzfs-upload/src/uploader.rs | no step while the lease is unsure | KILLED by the_uploads_go_on_while_the_lease_is_unsure
+P6 | crates/skyzfs-upload/src/uploader.rs | a stopped driver is stepped all the same | KILLED by a_cut_kept_at_its_release_stops_the_uploader_which_rests
+W07 | bins/skyzfsd/src/serve.rs | the lease's time is counted in the start's `devices` time | SURVIVED
+P15 | crates/skyzfs-upload/src/uploader.rs | the lease's backoff is never reset | SURVIVED
+B1 | crates/skyzfs-upload/src/uploader.rs | no renewal is made beside a step | KILLED by a_step_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal, a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end, an_idle_check_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal and 1 more
+W08 | bins/skyzfsd/src/serve.rs | a start refused for the lease exits 8, not 10 | SURVIVED
+B2 | crates/skyzfs-upload/src/uploader.rs | a step that ends during a renewal counts its wait from the renewal's end | KILLED by a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end, an_idle_step_that_ends_during_a_renewal_counts_its_wait_from_its_own_end
+W12 | bins/skyzfsd/src/serve.rs | the hook command `release` is taken in a daemon that uploads | SURVIVED
+B3 | crates/skyzfs-upload/src/uploader.rs | a renewal under way when the step ends is dropped half done | KILLED by a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end, an_idle_step_that_ends_during_a_renewal_counts_its_wait_from_its_own_end
+B4 | crates/skyzfs-upload/src/uploader.rs | the idle wait is counted from the turn's end, not the step's | KILLED by an_idle_step_that_ends_during_a_renewal_counts_its_wait_from_its_own_end
+W13 | bins/skyzfsd/src/serve.rs | the lease's default time is an hour | KILLED by the_uploads_come_from_the_file_remote_and_the_lease_options_need_one
+B5 | crates/skyzfs-upload/src/uploader.rs | a backoff is counted from the turn's end, not the step's | KILLED by a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end
+X1 | crates/skyzfs-upload/src/uploader.rs | the clock is not read again after the lease is kept | KILLED by a_slow_first_take_that_fails_is_tried_again_a_second_after_it_failed, a_slow_renewal_during_a_backoff_is_followed_by_what_is_left_of_the_wait
+H01 | bins/skyzfsd/src/serve.rs | the default holder is the host's name alone | KILLED by the_default_holder_needs_a_machine_id, the_holder_is_the_option_or_the_hosts_name_and_machine_id
+X3 | crates/skyzfs-upload/src/uploader.rs | a failed take's backoff is counted from before the take | KILLED by a_slow_first_take_that_fails_is_tried_again_a_second_after_it_failed
+X4 | crates/skyzfs-upload/src/uploader.rs | the rest after a lost lease is counted from before the take | SURVIVED
+H02 | bins/skyzfsd/src/serve.rs | a machine id of another length is taken | KILLED by the_default_holder_needs_a_machine_id
+X5 | crates/skyzfs-upload/src/uploader.rs | the next renewal is counted from when the take came back | KILLED by a_slow_renewal_during_a_backoff_is_followed_by_what_is_left_of_the_wait
+H03 | bins/skyzfsd/src/serve.rs | a machine id that is not hexadecimal is taken | KILLED by the_default_holder_needs_a_machine_id
+R1 | crates/skyzfs-upload/src/uploader.rs | run does not sleep between turns | KILLED by run_publishes_each_turn_sleeps_between_them_and_gives_back_the_lease
+R2 | crates/skyzfs-upload/src/uploader.rs | run does not stop during a turn | KILLED by run_stops_during_a_turn
+H04 | bins/skyzfsd/src/serve.rs | a machine id of all zeros is taken | KILLED by the_default_holder_needs_a_machine_id
+R3 | crates/skyzfs-upload/src/uploader.rs | run does not publish | KILLED by run_publishes_each_turn_sleeps_between_them_and_gives_back_the_lease
+R4 | crates/skyzfs-upload/src/uploader.rs | run does not stop during the sleep between turns | SURVIVED
+H05 | bins/skyzfsd/src/serve.rs | the machine id is read from another file | KILLED by the_holder_is_the_option_or_the_hosts_name_and_machine_id
+T02 | bins/skyzfsd/src/serve.rs | the status's cuts replaced are the cuts abandoned | KILLED by the_held_cuts_reach_the_status_each_in_its_field
+T03 | crates/skyzfs-ublk/src/status.rs | the status file does not carry the cuts replaced | KILLED by before_the_first_cut_the_file_has_no_group, status_prints_the_held_cuts, the_file_has_the_documented_layout and 1 more
+T04 | crates/skyzfs-ublk/src/status.rs | a status file of the fourteenth version is read as having cuts replaced | KILLED by a_file_of_the_fourteenth_version_is_read_without_the_uploader, a_file_of_the_thirteenth_version_is_read_without_the_intent_map, status_prints_the_held_cuts and 1 more
+T05 | crates/skyzfs-ublk/src/status.rs | the report does not print the cuts replaced | KILLED by status_prints_the_held_cuts, the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are
+S01 | crates/skyzfs-local/src/inplace/state.rs | a cut still flushing at the next cut's instant is not counted replaced | KILLED by the_cuts_replaced_before_their_upload_are_counted
+S02 | crates/skyzfs-local/src/inplace/state.rs | a waiting cut replaced at a freeze is not counted | SURVIVED
+S03 | crates/skyzfs-local/src/inplace/state.rs | a waiting cut replaced when a newer cut's flush completes is not counted | KILLED by the_cuts_replaced_before_their_upload_are_counted
+A00 | bins/skyzfsd/src/upload.rs | create takes a clone | KILLED by a_create_refuses_a_clone_under_the_name
+A01 | bins/skyzfsd/src/upload.rs | create takes a head commit of another volume | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A02 | bins/skyzfsd/src/upload.rs | create takes a head commit that has a parent | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A03 | bins/skyzfsd/src/upload.rs | create takes a head commit that has segments | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A04 | bins/skyzfsd/src/upload.rs | create takes a head commit that names a group | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A05 | bins/skyzfsd/src/upload.rs | create takes a head commit that counts flushes | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A06 | bins/skyzfsd/src/upload.rs | create takes a head commit written under a lease | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A07 | bins/skyzfsd/src/upload.rs | create takes a head commit of another kind | KILLED by a_create_refuses_a_head_that_only_looks_empty
+A08 | bins/skyzfsd/src/upload.rs | create takes a head commit whose index is not the empty one | KILLED by a_create_refuses_a_head_that_only_looks_empty
+Q8 | crates/skyzfs-upload/src/queued.rs | the desk answers the sync of the copies as done without asking the store | KILLED: the head's tests have no end within 400 s; still running: a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning
+A09 | bins/skyzfsd/src/upload.rs | the empty index has no shard for a last part shard | KILLED by a_create_makes_the_volume_with_the_empty_commit_and_takes_it_again, a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+Q11 | crates/skyzfs-upload/src/queued.rs | the desk waits for the sync of the copies on the queue's thread | KILLED by a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning, a_sync_of_the_copies_under_way_at_the_close_ends_as_failed
+V01 | bins/skyzfsd/src/upload.rs | the create's superblock is written whether one is there or not | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+Q12 | crates/skyzfs-upload/src/queued.rs | the reply to a sync under way is dropped | KILLED by a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning
+Q13 | crates/skyzfs-upload/src/queued.rs | the reply to a sync still under way at the next turn is dropped | KILLED by a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning
+V02 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of another size or shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+Q14 | crates/skyzfs-upload/src/queued.rs | the close keeps the reply to a sync under way | KILLED by a_sync_of_the_copies_under_way_at_the_close_ends_as_failed
+V03 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of other shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+Q15 | crates/skyzfs-upload/src/queued.rs | a reply is parked on a closed desk | KILLED by a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close
+Q16 | crates/skyzfs-upload/src/queued.rs | a sync that ended at a later turn is answered as done whatever its outcome | SURVIVED
+V04 | bins/skyzfsd/src/upload.rs | a create goes on over a superblock of another size | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size, two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+Q7b | crates/skyzfs-upload/src/queued.rs | the queue's thread is woken before the call is left as well, on an open desk | KILLED by a_closed_desk_answers_as_a_store_that_holds_nothing
+V05 | bins/skyzfsd/src/upload.rs | a superblock that cannot be written does not refuse the create | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+V06 | bins/skyzfsd/src/upload.rs | the refusal over a superblock with no head does not name the object | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+V08 | bins/skyzfsd/src/upload.rs | the refusal says a create of that size goes on, over a superblock of other shards | KILLED by a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size
+Y01 | bins/skyzfsd/src/upload.rs | keys that come with a session token are signed with as fixed keys | KILLED by fixed_keys_sign_only_with_no_session_token
+Y02 | bins/skyzfsd/src/upload.rs | fixed keys sign in us-east-1 whatever AWS_REGION says | KILLED by fixed_keys_sign_only_with_no_session_token
+Y03 | bins/skyzfsd/src/upload.rs | connect names us-east-1 to the client of fixed keys, whatever the keys' region | SURVIVED
+Y04 | bins/skyzfsd/src/upload.rs | an empty AWS_REGION is the region | KILLED by the_region_is_aws_region_or_the_default
+N01 | bins/skyzfsd/src/upload.rs | the thread's end waits for the runtime's blocking work | KILLED by the_end_does_not_wait_for_work_left_on_the_runtime
+N02 | bins/skyzfsd/src/upload.rs | the thread posts after the desk is closed | KILLED by nothing_is_posted_once_the_desk_is_closed
+N03 | bins/skyzfsd/src/upload.rs | the status names no holder while the lease is held | KILLED by the_end_at_exit_0_lets_the_lease_go, the_start_takes_a_lease_nobody_holds, the_status_shows_the_uploader_as_it_is
+N04 | bins/skyzfsd/src/upload.rs | the status names no holder while the lease is unsure | KILLED by the_status_shows_the_uploader_as_it_is
+N05 | bins/skyzfsd/src/upload.rs | the start's status names no holder | KILLED by the_start_takes_a_lease_nobody_holds
+U12 | bins/skyzfsd/src/upload.rs | an end with no lease held says it was let go | KILLED by an_end_with_no_lease_held_says_it_was_kept
+U20p | bins/skyzfsd/src/upload.rs | the uploader's commits are fenced by another epoch than the one held, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
+U21 | bins/skyzfsd/src/upload.rs | the uploader's commits carry epoch 0, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
+U26 | bins/skyzfsd/src/upload.rs | the uploader's commits are made as another holder, default build | KILLED by the_daemons_remote_commits_under_the_epoch_it_is_made_for
+Q7c | crates/skyzfs-upload/src/queued.rs | a call does not wake the queue's thread | KILLED: the head's tests have no end within 400 s; still running: a_closed_desk_answers_as_a_store_that_holds_nothing, a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close
+K3 | crates/skyzfs-upload/src/lease.rs | a renewal that finds no row takes the lease again | KILLED by a_renewal_that_finds_the_row_gone_loses_the_lease_and_takes_nothing
+K5 | crates/skyzfs-upload/src/lease.rs | a renewal's take that finds another holder leaves the lease unsure | KILLED by a_lease_another_holder_took_between_the_read_and_the_take_is_lost_to_it
+K8 | crates/skyzfs-upload/src/lease.rs | a commit the fence refused does not lose the lease | KILLED by a_fenced_commit_loses_a_held_lease_at_once
+K9 | crates/skyzfs-upload/src/lease.rs | an unsure lease is not released | KILLED by an_unsure_lease_is_let_go_at_a_release
+K13 | crates/skyzfs-upload/src/lease.rs | a renewal whose take fails loses the lease | KILLED by a_renewal_whose_take_fails_after_its_read_is_unsure
+V07 | bins/skyzfsd/src/upload.rs | the refusal tells to delete the superblock though the volume's head is made | KILLED by two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made
+R4d | crates/skyzfs-upload/src/uploader.rs | run does not stop during the sleep between turns, against the daemon's tests | KILLED by an_end_with_no_lease_held_says_it_was_kept

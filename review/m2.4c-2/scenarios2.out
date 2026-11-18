@@ -1,0 +1,151 @@
+head da0b4c92db4c70e1b308cf2a9bf308541c4f4b58
+$ cargo test -p skyzfsd --test review_m24c2 --no-fail-fast -- --nocapture --test-threads=1
+
+running 19 tests
+test d1_a_cut_goes_up_through_the_queue_loop_and_the_stop_lets_the_lease_go ... D1: cut 7 (whole) uploaded 259.656913ms after its first write, 9 calls answered on the queue's thread; states [Idle, Reading, Committing, Checking, Idle]
+D1: cut 8 uploaded from a copy; states [Reading, Syncing, Committing, Checking, Idle]
+D1: stop in order, Released in 111.087µs; held cuts 0
+ok
+test d2_without_the_desks_wake_an_idle_queue_answers_nothing ... D2: with no wake, nothing uploaded in 4 s on an idle queue; 1 calls answered
+ok
+test d3_a_stop_under_a_commit_ends_in_time_and_the_next_instance_uploads_the_cut ... D3: stop under a commit: Released in 700.956908ms; head's group None, 1 cut held
+D3: the next instance: uploaded 1, found committed 0, lease epoch 1
+ok
+test d4_a_stop_between_the_swap_and_the_release_is_found_committed_by_the_next_instance ... D4: stop between the swap and the release: Released in 125.517µs; head's group Some(7), the row's Some(7), 1 cut still held
+D4: the next instance found cut 7 committed and let it go
+ok
+test d5_a_queue_thread_that_panics_leaves_the_desk_open_and_the_drop_ends_the_uploader ... D5: after a panic of the queue's thread the desk was left open; the drop ended the uploader in 29.97µs, lease kept
+ok
+test d6_the_daemons_commit_is_fenced_once_another_holder_has_the_lease ... D6: after node-b took the lease at epoch 2: states [Reading, Committing, LeaseLost]; head still group 7; the end at exit 0: Kept; the row: node-b at epoch 2, running; 1 cut held
+ok
+test defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left ... N1: a place given 200ms came back with Err("object storage did not answer within the limit") after 3.000279215s
+FAILED
+test defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work ... N1b: the drop of a start that took the lease, with blocking work left: 3.00406542s
+FAILED
+test n2_two_creates_of_one_name_on_two_threads_leave_one_volume_of_one_size ... N2:  11 rounds: one sizes: failed (lease lost (I2)) / made
+N2:  56 rounds: one sizes: found empty / made
+N2:   8 rounds: one sizes: made / failed (lease lost (I2))
+N2:  25 rounds: one sizes: made / found empty
+N2:  42 rounds: two sizes: made / refused (another's)
+N2:   5 rounds: two sizes: made / refused (made first)
+N2:  13 rounds: two sizes: made / refused (superblock, no head)
+N2: 129 rounds: two sizes: refused (another's) / made
+N2:   5 rounds: two sizes: refused (made first) / made
+N2:   6 rounds: two sizes: refused (superblock, no head) / made
+ok
+test n3_a_create_over_a_clone_that_stopped_before_its_head ... N3: a create over a clone that stopped before its head: Ok(Made); the next: Err("the volume pg-clone in object storage is a clone of another volume: what it reads is its base's. The name is another volume's")
+ok
+test n4_the_status_after_a_stop_keeps_the_figures_from_before_the_close ... N4: a stop with cut 2 under way: Released; 0 posts from the queue's end on: []
+ok
+test s1b_the_first_cut_of_a_volume_bound_to_a_clone_replaces_the_clones_data ... S1b: the clone's block 20 read 7 before the first cut of the volume bound to it, and reads 0 after: head is the local volume, group Some(7)
+ok
+test s3_a_refusal_after_an_acknowledging_open_has_removed_the_stores_marker ... S3: after exit 10 on an acknowledging start: marker removed, start token new, the next start without --acknowledge-failure opens the volume
+ok
+test s4_a_take_that_landed_unheard_is_held_at_the_same_epoch_by_the_uploader ... S4: the start said Unreached("object storage did not answer within 100 ms"); the row names node-a at epoch 1; the uploader's take: Held { epoch: 1, expires_at_ms: 1794992008161 }
+ok
+test s5_a_start_that_fails_after_the_take_keeps_the_lease_for_its_time ... S5: after a start that took the lease and failed: node-b refused (another holder has the volume's lease in object storage: node-a at epoch 1), still refused 29999 ms later: true; node-a again: Some(Taken { epoch: 1 }); node-b after the lease's time: Some(Taken { epoch: 2 })
+ok
+test s6_two_creates_of_one_name_before_a_serve_both_succeed ... S6: the first create: Ok(Made); a second, of another directory or node: Ok(Found)
+ok
+test was_f1_s1_create_refuses_a_clone_that_holds_data ... S1: create --volume pg-clone on a clone that holds data: Err("the volume pg-clone in object storage is a clone of another volume: what it reads is its base's. The name is another volume's")
+ok
+test was_f2_d7_the_end_keeps_its_limit_with_blocking_work_left_on_the_runtime ... D7: the end at exit 0, given 6s: Released after 150.852µs
+ok
+test was_f3_s2_the_status_names_the_holder_while_the_lease_is_held ... S2: lease held: lease_holder at the start "node-a", after a turn "node-a"
+ok
+
+failures:
+
+failures:
+    defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left
+    defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work
+
+test result: FAILED. 17 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.96s
+
+
+thread 'defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left' (19193) panicked at bins/skyzfsd/tests/review_m24c2.rs:1211:5:
+the place took 3.000279215s, its limit was 200ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work' (19214) panicked at bins/skyzfsd/tests/review_m24c2.rs:1233:5:
+the drop took 3.00406542s
+error: test failed, to rerun pass `-p skyzfsd --test review_m24c2`
+error: 1 target failed:
+    `-p skyzfsd --test review_m24c2`
+exit 101
+
+$ cargo test -p skyzfsd --features skyzfsd/test-hooks --test review_m24c2 --no-fail-fast -- --nocapture --test-threads=1
+
+running 19 tests
+test d1_a_cut_goes_up_through_the_queue_loop_and_the_stop_lets_the_lease_go ... D1: cut 7 (whole) uploaded 258.672961ms after its first write, 9 calls answered on the queue's thread; states [Idle, Reading, Committing, Checking, Idle]
+D1: cut 8 uploaded from a copy; states [Reading, Syncing, Committing, Checking, Idle]
+D1: stop in order, Released in 150.906µs; held cuts 0
+ok
+test d2_without_the_desks_wake_an_idle_queue_answers_nothing ... D2: with no wake, nothing uploaded in 4 s on an idle queue; 1 calls answered
+ok
+test d3_a_stop_under_a_commit_ends_in_time_and_the_next_instance_uploads_the_cut ... D3: stop under a commit: Released in 701.278026ms; head's group None, 1 cut held
+D3: the next instance: uploaded 1, found committed 0, lease epoch 1
+ok
+test d4_a_stop_between_the_swap_and_the_release_is_found_committed_by_the_next_instance ... D4: stop between the swap and the release: Released in 109.209µs; head's group Some(7), the row's Some(7), 1 cut still held
+D4: the next instance found cut 7 committed and let it go
+ok
+test d5_a_queue_thread_that_panics_leaves_the_desk_open_and_the_drop_ends_the_uploader ... D5: after a panic of the queue's thread the desk was left open; the drop ended the uploader in 123.464µs, lease kept
+ok
+test d6_the_daemons_commit_is_fenced_once_another_holder_has_the_lease ... D6: after node-b took the lease at epoch 2: states [Reading, Committing, LeaseLost]; head still group 7; the end at exit 0: Kept; the row: node-b at epoch 2, running; 1 cut held
+ok
+test defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left ... N1: a place given 200ms came back with Err("object storage did not answer within the limit") after 3.004169159s
+FAILED
+test defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work ... N1b: the drop of a start that took the lease, with blocking work left: 3.003673499s
+FAILED
+test n2_two_creates_of_one_name_on_two_threads_leave_one_volume_of_one_size ... N2:   4 rounds: one sizes: failed (lease lost (I2)) / made
+N2:  32 rounds: one sizes: found empty / made
+N2:   6 rounds: one sizes: made / failed (lease lost (I2))
+N2:  58 rounds: one sizes: made / found empty
+N2: 101 rounds: two sizes: made / refused (another's)
+N2:   3 rounds: two sizes: made / refused (made first)
+N2:   5 rounds: two sizes: made / refused (superblock, no head)
+N2:  79 rounds: two sizes: refused (another's) / made
+N2:   4 rounds: two sizes: refused (made first) / made
+N2:   8 rounds: two sizes: refused (superblock, no head) / made
+ok
+test n3_a_create_over_a_clone_that_stopped_before_its_head ... N3: a create over a clone that stopped before its head: Ok(Made); the next: Err("the volume pg-clone in object storage is a clone of another volume: what it reads is its base's. The name is another volume's")
+ok
+test n4_the_status_after_a_stop_keeps_the_figures_from_before_the_close ... N4: a stop with cut 2 under way: Released; 0 posts from the queue's end on: []
+ok
+test s1b_the_first_cut_of_a_volume_bound_to_a_clone_replaces_the_clones_data ... S1b: the clone's block 20 read 7 before the first cut of the volume bound to it, and reads 0 after: head is the local volume, group Some(7)
+ok
+test s3_a_refusal_after_an_acknowledging_open_has_removed_the_stores_marker ... S3: after exit 10 on an acknowledging start: marker removed, start token new, the next start without --acknowledge-failure opens the volume
+ok
+test s4_a_take_that_landed_unheard_is_held_at_the_same_epoch_by_the_uploader ... S4: the start said Unreached("object storage did not answer within 100 ms"); the row names node-a at epoch 1; the uploader's take: Held { epoch: 1, expires_at_ms: 1794992052801 }
+ok
+test s5_a_start_that_fails_after_the_take_keeps_the_lease_for_its_time ... S5: after a start that took the lease and failed: node-b refused (another holder has the volume's lease in object storage: node-a at epoch 1), still refused 29999 ms later: true; node-a again: Some(Taken { epoch: 1 }); node-b after the lease's time: Some(Taken { epoch: 2 })
+ok
+test s6_two_creates_of_one_name_before_a_serve_both_succeed ... S6: the first create: Ok(Made); a second, of another directory or node: Ok(Found)
+ok
+test was_f1_s1_create_refuses_a_clone_that_holds_data ... S1: create --volume pg-clone on a clone that holds data: Err("the volume pg-clone in object storage is a clone of another volume: what it reads is its base's. The name is another volume's")
+ok
+test was_f2_d7_the_end_keeps_its_limit_with_blocking_work_left_on_the_runtime ... D7: the end at exit 0, given 6s: Released after 205.088µs
+ok
+test was_f3_s2_the_status_names_the_holder_while_the_lease_is_held ... S2: lease held: lease_holder at the start "node-a", after a turn "node-a"
+ok
+
+failures:
+
+failures:
+    defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left
+    defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work
+
+test result: FAILED. 17 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.18s
+
+
+thread 'defect_n1_creates_limit_does_not_bound_the_create_with_blocking_work_left' (25718) panicked at bins/skyzfsd/tests/review_m24c2.rs:1211:5:
+the place took 3.004169159s, its limit was 200ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'defect_n1b_a_start_dropped_before_the_thread_waits_for_the_runtimes_blocking_work' (25773) panicked at bins/skyzfsd/tests/review_m24c2.rs:1233:5:
+the drop took 3.003673499s
+error: test failed, to rerun pass `-p skyzfsd --test review_m24c2`
+error: 1 target failed:
+    `-p skyzfsd --test review_m24c2`
+exit 101
+

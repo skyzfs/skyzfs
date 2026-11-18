@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run scenarios.rs against a scratch worktree of #118's head (e42ea6a).
+"""Run scenarios.rs against a scratch worktree of #118's head.
 
-    scenarios.py WORKTREE TARGET_DIR
+    scenarios.py WORKTREE TARGET_DIR [SCENARIOS.rs OUT]
 
 The file is copied to bins/skyzfsd/tests/review_m24c2.rs, run as an
 integration test of skyzfsd (one test at a time, output shown), and
@@ -17,6 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     tree, target = sys.argv[1], sys.argv[2]
+    source = sys.argv[3] if len(sys.argv) > 3 else "scenarios.rs"
+    result = sys.argv[4] if len(sys.argv) > 4 else "scenarios.out"
     dirty = subprocess.run(["git", "-C", tree, "status", "--short"],
                            capture_output=True, text=True).stdout.strip()
     if dirty:
@@ -25,10 +27,11 @@ def main():
                           capture_output=True, text=True).stdout.strip()
     there = os.path.join(tree, "bins/skyzfsd/tests/review_m24c2.rs")
     env = dict(os.environ, CARGO_INCREMENTAL="0", CARGO_TARGET_DIR=target,
-               RUST_BACKTRACE="0")
+               RUST_BACKTRACE="0", CARGO_PROFILE_DEV_DEBUG="0",
+               CARGO_PROFILE_TEST_DEBUG="0")
     out = [f"head {head}\n"]
     try:
-        with open(os.path.join(HERE, "scenarios.rs")) as f, open(there, "w") as g:
+        with open(os.path.join(HERE, source)) as f, open(there, "w") as g:
             g.write(f.read())
         for features in ([], ["--features", "skyzfsd/test-hooks"]):
             cmd = ["cargo", "test", "-p", "skyzfsd", *features, "--test",
@@ -47,7 +50,7 @@ def main():
     finally:
         if os.path.exists(there):
             os.remove(there)
-        with open(os.path.join(HERE, "scenarios.out"), "w") as f:
+        with open(os.path.join(HERE, result), "w") as f:
             f.write("".join(out))
     left = subprocess.run(["git", "-C", tree, "status", "--short"],
                           capture_output=True, text=True).stdout.strip()
