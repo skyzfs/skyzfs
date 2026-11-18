@@ -185,6 +185,14 @@ impl Fixture {
     /// Group `txg`'s uberblock to the four labels, then the flush after
     /// it: the cut of group `txg`, whose instant is the volume now.
     pub fn group(&mut self, store: &mut InPlace<SimDisk>, txg: u64) {
+        self.labels(store, txg);
+        self.run(store, Op::Flush);
+        self.at.insert(txg, self.now.clone());
+    }
+
+    /// Group `txg`'s uberblock to the four labels, and no flush: the
+    /// flush after it takes the cut of group `txg`.
+    pub fn labels(&mut self, store: &mut InPlace<SimDisk>, txg: u64) {
         let labels = Labels::for_size(SIZE);
         let rings: Vec<u64> = labels.rings().map(|ring| ring.start).collect();
         for ring in rings {
@@ -195,8 +203,6 @@ impl Fixture {
             self.now[at..at + SLOT as usize].copy_from_slice(&slot);
             self.run(store, Op::Write { offset, data: slot });
         }
-        self.run(store, Op::Flush);
-        self.at.insert(txg, self.now.clone());
     }
 
     /// The volume in object storage, read through an engine opened now

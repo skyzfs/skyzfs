@@ -26,7 +26,8 @@
 //! checked and uploaded next. A cut that goes after its commit has
 //! landed and before it is let go is named in the intent map as the
 //! committed cut instead, so that the cut that took its map goes up as a
-//! delta onto it.
+//! delta onto it (or whole, where the cut named was whole: its heir took
+//! a whole cut's map).
 //!
 //! A cut committed that the store cannot let go stops the driver, for
 //! good: the intent map's pages could not be written, the volume has
@@ -101,10 +102,15 @@ pub enum Step {
         /// The cut.
         number: u64,
         /// Whether the map names it now, so that the next check finds the
-        /// row to be the base and the next cut goes up as a delta onto it.
-        /// Where not (the volume failed, or the store refused), or where a
-        /// death or a lost header undoes the naming, the next check finds
-        /// a row the map does not name: a mismatch, and one whole upload.
+        /// row to be the base and the next cut goes up as a delta onto it
+        /// (whole where that cut holds the whole volume). Where the store
+        /// refused, or where a death or a lost header undoes the naming,
+        /// the next check finds a row the map does not name: a mismatch,
+        /// and one whole upload. Where the map's pages could not be
+        /// written, the volume has failed, but the map in memory names
+        /// the cut all the same: this instance uploads the next cut onto
+        /// it, and stops at that cut's release ([`Step::Kept`]) if the
+        /// map still cannot be written.
         named: bool,
     },
     /// The cut is committed, by this driver or found so, but the store

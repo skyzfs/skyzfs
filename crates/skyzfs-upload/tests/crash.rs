@@ -20,7 +20,7 @@ use futures_util::FutureExt;
 use skynbd_store::{FaultOp, FaultWhen};
 use skyzfs_local::inplace::{InPlace, Lost};
 use skyzfs_local::sim::SimDisk;
-use skyzfs_upload::{Mismatch, Rule, Step};
+use skyzfs_upload::{Doing, Mismatch, Rule, Step};
 
 /// Where the daemon dies.
 #[derive(Debug, Clone, Copy)]
@@ -137,15 +137,47 @@ async fn kill_at(kill: Kill) -> Seen {
     }
 }
 
-/// The operations on object storage of the run with no death.
-async fn operations_of_the_run() -> Vec<String> {
+/// The run with no death, step by step: its operations on object
+/// storage, and how many of them it had made when it came to the first
+/// cut's commit.
+async fn operations_of_the_run() -> (Vec<String>, usize) {
     let mut fx = Fixture::new(20).await;
     let store = two_cuts(&mut fx);
     let mut up = fx.driver(store, SLICE);
     fx.store.inner().record(true);
-    up.run().await.expect("the run");
+    let mut at_commit = None;
+    loop {
+        if at_commit.is_none() && up.doing() == Doing::Committing {
+            at_commit = Some(fx.store.inner().log().len());
+        }
+        if up.step().await.expect("a step") == Step::Idle {
+            break;
+        }
+    }
     fx.store.inner().record(false);
-    fx.store.inner().log()
+    let at_commit = at_commit.expect("the run came to a commit");
+    (fx.store.inner().log(), at_commit)
+}
+
+/// The run with no death, step by step: how many stores into the cut
+/// state it made, and how many it had made when each cut's release
+/// began (the step that commits it, which is the step that lets it go).
+async fn stores_of_the_run() -> (u64, Vec<u64>) {
+    let mut fx = Fixture::new(20).await;
+    let store = two_cuts(&mut fx);
+    let mut up = fx.driver(store, SLICE);
+    let first = fx.region.stores();
+    let mut releases = Vec::new();
+    loop {
+        let before = fx.region.stores() - first;
+        let step = up.step().await.expect("a step");
+        match step {
+            Step::Idle => break,
+            Step::Uploaded { .. } => releases.push(before),
+            _ => assert_eq!(fx.region.stores() - first, before, "{step:?} stored"),
+        }
+    }
+    (fx.region.stores() - first, releases)
 }
 
 /// The daemon lost at every operation on object storage, before it and
@@ -154,7 +186,7 @@ async fn operations_of_the_run() -> Vec<String> {
 /// restart lets each cut go with nothing uploaded.
 #[tokio::test]
 async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on() {
-    let operations = operations_of_the_run().await;
+    let (operations, at_commit) = operations_of_the_run().await;
     let swaps: Vec<usize> = operations
         .iter()
         .enumerate()
@@ -169,7 +201,9 @@ async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_u
         .map(|(i, _)| i)
         .collect();
     assert_eq!(commits.len(), 2, "{operations:?}");
-    let early = operations[..commits[0]]
+    // Counted where the driver comes to the commit, not at the commit's
+    // own PUTs: the engine's commit PUTs what is left sealed itself.
+    let early = operations[..at_commit]
         .iter()
         .filter(|op| *op == "put seg")
         .count();
@@ -206,22 +240,34 @@ async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_u
 /// those of each release, after its commit. The restart finds the cut
 /// held and the row naming it, and lets it go, or finds it gone and the
 /// intent map naming it; never a mismatch.
+///
+/// A kill point at each store of the run with no death, counted first.
+/// The cut is found held for the row to name exactly where the release
+/// dies before the store that drops it: at cut 1's first store, and at
+/// cut 2's first two, since cut 2 is the last held and its release
+/// moves the open epoch's lower end before it drops the cut.
 #[tokio::test]
 async fn a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch() {
+    let (stores, releases) = stores_of_the_run().await;
+    assert_eq!(releases.len(), 2, "a release for each cut");
     let mut points = 0;
-    let mut landed_unheard = 0;
+    let mut held_for_the_row = Vec::new();
     for n in 0.. {
         let seen = kill_at(Kill::Region(n)).await;
         if !seen.died {
             break;
         }
         points += 1;
-        landed_unheard += seen.landed_unheard;
+        if seen.landed_unheard > 0 {
+            held_for_the_row.push(n);
+        }
     }
-    assert!(points >= 2, "{points} stores into the cut state");
-    assert!(
-        landed_unheard >= 1,
-        "a death in a release leaves the cut held for the row to name"
+    assert_eq!(points, stores, "a kill point at each store of the run");
+    assert_eq!(
+        held_for_the_row,
+        [releases[0], releases[1], releases[1] + 1],
+        "the stores at which the cut is found held, of {stores} \
+         (releases at {releases:?})"
     );
 }
 

@@ -999,7 +999,12 @@ struct Intent<F> {
     /// How many syncs of the file have begun on the write path since
     /// the start.
     begun: u64,
-    /// How many commits have cleared bits since the start.
+    /// How many commits have been made to the map since the start: each
+    /// release of a committed cut, the first or one made again, since
+    /// its clear can take a waiting request's bit, and each naming of a
+    /// cut ([`InPlace::name_committed_cut`]), which clears none. A
+    /// request whose bit is gone with no commit counted since it was set
+    /// has lost it to the disk.
     commits: u64,
 }
 
@@ -3161,9 +3166,17 @@ impl<D: Dir> InPlace<D> {
     /// names it as the committed cut, and no bit is cleared. Whether the
     /// map names it now. False, with nothing changed, where the store
     /// holds the cut (it is released instead), where `number` is not a
-    /// cut of this state, where the map names a newer cut of this state,
-    /// and where the map's pages cannot be written, which fails the
-    /// volume as at a release.
+    /// cut of this state, and where the map names a newer cut of this
+    /// state.
+    ///
+    /// False also where the map's pages cannot be written, which fails
+    /// the volume as at a release; but there the map in memory names the
+    /// cut all the same, since it is named before the write. That is
+    /// true (the cut is committed), and the held cuts hold everything
+    /// since it, so the same instance uploads the next cut as a delta
+    /// onto it, and stops at that cut's release if the map still cannot
+    /// be written ([`InPlace::release_cut`]). The disk has the header as
+    /// it was or as named, and the next start finds either as below.
     ///
     /// Why the bits need no change. An abandoned cut hands its map on to
     /// the cut that waits or to the open map and never drops it, so a
@@ -3181,7 +3194,10 @@ impl<D: Dir> InPlace<D> {
     /// cut released before (`lo`), so they hold every block changed
     /// since cut `number`. With the map naming it, the uploader's check
     /// finds head's row to be the base and uploads the next cut onto it
-    /// as a delta, not whole. The header is written without a sync, as
+    /// as a delta, not whole, unless that cut holds the whole volume:
+    /// where cut `number` held it (the first of a state, the first after
+    /// a mismatch), the cut that took its map holds it too, its `lo`
+    /// unmoved, and goes up whole. The header is written without a sync, as
     /// at a release: a death before this call, or a power cut that loses
     /// the header, leaves the map naming the cut before, and the check
     /// then finds a mismatch (Q8 stays strict): one whole upload.

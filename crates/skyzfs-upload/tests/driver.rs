@@ -5,9 +5,14 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::*;
 use skynbd_store::{FaultOp, FaultWhen};
-use skyzfs_local::inplace::{CommittedCut, CutPhase};
+use skyzfs_blk::{BlockTarget, Buf, Op, Request, RequestId};
+use skyzfs_local::inplace::{CommittedCut, CutPhase, InPlace};
+use skyzfs_local::sim::SimDisk;
+use skyzfs_local::store::HOME_NAME;
 use skyzfs_upload::{row, Checked, Doing, Driver, Mismatch, Rule, Step};
 
 /// The steps of a run that are not reads.
@@ -31,6 +36,15 @@ async fn step_until(up: &mut Up, doing: Doing) {
         assert_ne!(step, Step::Idle, "at rest before {doing:?}");
     }
     panic!("{doing:?} not reached in a hundred steps");
+}
+
+/// The cuts `store` holds, by number, and the phase of each.
+fn phases(store: &InPlace<SimDisk>) -> Vec<(u64, CutPhase)> {
+    store
+        .held_cuts()
+        .iter()
+        .map(|cut| (cut.number, cut.phase))
+        .collect()
 }
 
 /// The first cut of a state begun with nothing known holds the whole
@@ -413,6 +427,80 @@ async fn a_head_moved_by_another_writer_stops_the_upload() {
     assert_eq!(up.figures().mismatches, 3);
 }
 
+/// A commit fails with nothing of it landed (the commit object's PUT),
+/// and another writer then moves head, or the row, leaving the other as
+/// it was. The engine holds cut 2's writes on a head and a row that are
+/// no longer the volume's: the commit is given up, not made again, and
+/// the check after it is a mismatch. What the other writer left stays.
+/// Made again, the commit conflicts (the engine kept as it was), or,
+/// where the engine is opened again at the moved head, carries the group
+/// and the row onto the other writer's commit with none of the cut's
+/// blocks: a cut in object storage that lacks its writes, and the next
+/// delta onto it.
+#[tokio::test]
+async fn a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up() {
+    let theirs = row::encode(&CommittedCut {
+        state: *b"another writer's",
+        number: 9,
+        group: 7,
+    });
+    for (seed, head_moved) in [(23, true), (26, false)] {
+        let case = if head_moved {
+            "head moved"
+        } else {
+            "row moved"
+        };
+        let mut fx = Fixture::new(seed).await;
+        let mut store = fx.start();
+        fx.write(&mut store, 10, 0x10);
+        fx.group(&mut store, 7);
+        let mut up = fx.driver(store, 64);
+        up.run().await.expect("cut 1");
+        fx.write(up.local(), 20, 0x20);
+        fx.group(up.local(), 8);
+        step_until(&mut up, Doing::Committing).await;
+        fx.store
+            .arm_when(FaultOp::Put, "/commit/", 0, FaultWhen::Before)
+            .await;
+        assert!(up.step().await.is_err(), "{case}: the commit fails");
+        fx.store.disarm().await;
+        assert_eq!(
+            fx.uploaded().await.group,
+            Some(7),
+            "{case}: nothing of cut 2 landed"
+        );
+        if head_moved {
+            fx.move_head().await;
+        } else {
+            fx.put_row(theirs.clone()).await;
+        }
+        let moved = fx.uploaded().await;
+        assert_eq!(up.step().await, Ok(Step::GaveUp { number: 2 }), "{case}");
+        let steps = up.run().await.expect("the check after");
+        let why = if head_moved {
+            Mismatch::HeadMoved
+        } else {
+            Mismatch::NotTheBase
+        };
+        assert_eq!(
+            told(&steps),
+            [Step::Mismatch {
+                why,
+                abandoned: vec![2]
+            }],
+            "{case}"
+        );
+        let now = fx.uploaded().await;
+        assert!(
+            now.content == moved.content,
+            "{case}: the uploader moved head"
+        );
+        assert_eq!(now.group, moved.group, "{case}: head's group");
+        assert_eq!(now.row, moved.row, "{case}: the row");
+        assert_eq!(up.figures().gave_up, 1, "{case}");
+    }
+}
+
 /// A row this uploader cannot read is a mismatch, and never overwritten.
 #[tokio::test]
 async fn a_row_of_another_version_is_never_overwritten() {
@@ -706,13 +794,11 @@ const INTENT_NAME: &str = "intent.map";
 async fn a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver() {
     async fn stopped(up: &mut Up, number: u64, case: &str) {
         assert!(up.local().is_failed(), "{case}");
-        let held: Vec<(u64, CutPhase)> = up
-            .local()
-            .held_cuts()
-            .iter()
-            .map(|cut| (cut.number, cut.phase))
-            .collect();
-        assert_eq!(held, [(number, CutPhase::Uploading)], "{case}: kept");
+        assert_eq!(
+            phases(up.local()),
+            [(number, CutPhase::Uploading)],
+            "{case}: kept"
+        );
         assert_eq!(up.doing(), Doing::Stopped, "{case}");
         assert_eq!(up.under_way(), None, "{case}");
         for _ in 0..3 {
@@ -752,6 +838,110 @@ async fn a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver() {
         (0, 0),
         "{case}"
     );
+}
+
+/// Design §5.2: a cut is uploaded only once its flush has completed.
+/// While the flush that takes cut 1 waits for the image's sync, the cut
+/// is held, flushing: the store offers nothing, and the driver rests
+/// with no check made. Once the flush has ended, the upload begins.
+#[tokio::test]
+async fn a_cut_whose_flush_is_under_way_is_not_uploaded() {
+    let mut fx = Fixture::new(24).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.labels(&mut store, 7);
+    fx.at.insert(7, fx.now.clone());
+    fx.disk.hold_syncs_of(HOME_NAME);
+    store
+        .submit(Request {
+            id: RequestId(1 << 41),
+            op: Op::Flush,
+        })
+        .expect("submitted");
+    let mut done = Vec::new();
+    for _ in 0..1000 {
+        store.poll(&mut done);
+        if !phases(&store).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(phases(&store), [(1, CutPhase::Flushing)]);
+    assert!(done.is_empty(), "the flush's sync is held");
+    let mut up = fx.driver(store, 64);
+    assert_eq!(up.step().await, Ok(Step::Idle));
+    assert_eq!(up.figures().checked, Checked::Unchecked);
+    assert_eq!(fx.uploaded().await.group, None);
+    fx.disk.release_syncs();
+    while done.is_empty() {
+        up.local().wait(&mut done, Duration::from_secs(60));
+    }
+    assert!(done[0].result.is_ok(), "the flush: {:?}", done[0].result);
+    let steps = up.run().await.expect("the upload");
+    assert_eq!(
+        told(&steps).first(),
+        Some(&Step::Began {
+            number: 1,
+            rule: Rule::Whole
+        }),
+        "{steps:?}"
+    );
+    fx.assert_uploaded(7, "once the flush has ended").await;
+}
+
+/// Design §5.2: a cut whose flush had completed is still uploaded after
+/// the volume fails, by the instance that saw the failure. The volume
+/// fails at a write of the image, not at the intent map: cut 2 stays
+/// held, goes up as a delta (block 20 and the four uberblocks) and is
+/// let go, and the driver goes on to the next check. It stops only at a
+/// cut the store kept (above).
+#[tokio::test]
+async fn a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded() {
+    let mut fx = Fixture::new(25).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 64);
+    up.run().await.expect("cut 1");
+    fx.write(up.local(), 20, 0x20);
+    fx.group(up.local(), 8);
+    fx.disk.fail_write_of(HOME_NAME);
+    let store = up.local();
+    store
+        .submit(Request {
+            id: RequestId(1 << 41),
+            op: Op::Write {
+                offset: 30 * BLOCK,
+                data: Buf::filled(1, 0x30),
+            },
+        })
+        .expect("submitted");
+    let mut done = Vec::new();
+    while done.is_empty() {
+        store.wait(&mut done, Duration::from_secs(60));
+    }
+    assert!(done[0].result.is_err(), "the write fails");
+    assert!(store.is_failed(), "and the volume with it");
+    assert_eq!(phases(store), [(2, CutPhase::Uploading)]);
+    let steps = up.run().await.expect("the upload on the failed volume");
+    assert_eq!(
+        told(&steps),
+        [
+            Step::Began {
+                number: 2,
+                rule: Rule::Delta
+            },
+            Step::Uploaded {
+                number: 2,
+                rule: Rule::Delta,
+                blocks: 5
+            }
+        ]
+    );
+    assert_eq!(up.doing(), Doing::Checking);
+    assert!(phases(up.local()).is_empty(), "let go");
+    assert_eq!(up.figures().kept, 0);
+    fx.assert_uploaded(8, "on a failed volume").await;
 }
 
 /// A PUT that fails while a cut is read fails its step and nothing else:

@@ -92,7 +92,9 @@ pub trait Local {
     /// after its commit had landed. Name it in the intent map as the
     /// committed cut (`InPlace::name_committed_cut`), so that the next
     /// check finds head's row to be the base and the next cut goes up as
-    /// a delta onto it, not whole. Whether the map names it now.
+    /// a delta onto it, not whole, unless that cut holds the whole volume
+    /// itself (it took the map of a cut that did). Whether the map names
+    /// it now.
     async fn name_committed(&mut self, number: u64, group: u64) -> bool;
 
     /// A mismatch: abandon every held cut, so that the next holds the

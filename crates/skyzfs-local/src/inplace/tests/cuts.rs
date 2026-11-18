@@ -3903,6 +3903,75 @@ fn a_write_whose_bit_a_clear_takes_while_it_waits_sets_it_again() {
     }
 }
 
+/// A release made again for the same cut must count as a commit, as the
+/// first does (`intent.commits`, the guard of a write that waits for the
+/// map). The daemon dies in the release of cut 2, after the map's pages
+/// and at the cut state's first store: the map names cut 2 already, and
+/// the cut is still held. The next instance takes both up. A write into
+/// a clean region waits for the map's sync, and the uploader's check
+/// finds the row naming cut 2 and releases it again: its `clear` takes
+/// the waiting write's bit, as the first release's can. The write sets
+/// the bit again and goes on once the map holds it, and the volume stays
+/// healthy. The defect counts a release only where it moves the map's
+/// base: the write finds its bit gone with no commit counted, takes it
+/// for lost to the disk, and fails a healthy volume.
+#[test]
+fn a_release_made_again_after_a_death_counts_for_a_write_that_waits() {
+    state::tests::quiet_deaths();
+    let disk = created(80, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, IoMode::default());
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert!(store.release_cut(1));
+    // Cut 2 by a group to the first label alone, so that region 2 stays
+    // clean, as above.
+    assert!(run(&mut store, 300, uberblock_write(0, 9, 90))
+        .result
+        .is_ok());
+    assert!(run(&mut store, 301, Op::Flush).result.is_ok());
+    assert_eq!(phases(&store), [(2, CutPhase::Uploading)]);
+    let id = store.cut_state_id().expect("a cut state");
+    region.die_at(0);
+    let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.release_cut(2)));
+    region.revive();
+    match lived {
+        Ok(_) => panic!("the release did not die at its first store"),
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => {}
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+    drop(store);
+    disk.kill();
+    let mut store = start_on(&disk, 0, &region, IoMode::default());
+    assert_eq!(store.cut_state_id(), Some(id), "the state taken up");
+    assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "cut 2 held");
+    assert_eq!(
+        store.committed_cut().map(|cut| (cut.number, cut.group)),
+        Some((2, 9)),
+        "the map names cut 2 already"
+    );
+    let syncs = intent_of(&store).syncs.count;
+    disk.hold_syncs_of(intent::INTENT_NAME);
+    submit(&mut store, 1, write_op(150, 0x66));
+    let mut done = Vec::new();
+    polled(&mut store, &mut done, 1, Duration::from_millis(50));
+    let early = ended(&done);
+    let released = store.release_cut(2);
+    disk.release_syncs();
+    let store = drained(store, &mut done);
+    assert!(early.is_empty(), "{early:?}");
+    assert!(released);
+    assert_eq!(ended(&done), [(1, Ok(()))], "the write that waited");
+    assert!(!store.is_failed(), "a healthy volume failed");
+    assert_eq!(phases(&store), []);
+    assert_eq!(
+        intent_of(&store).syncs.count,
+        syncs + 2,
+        "the bit set again"
+    );
+    assert_eq!(intent_of(&store).named, 1);
+}
+
 /// Where the map's file cannot sync on a helper (no thread could be
 /// started for it), the sync is made where the write waits, and the
 /// write goes on after it.
