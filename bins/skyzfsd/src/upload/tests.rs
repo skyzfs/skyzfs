@@ -10,7 +10,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use skynbd_engine::{keys, Engine, EngineConfig};
 use skynbd_format::{Commit, CommitKind, Superblock};
-use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
+use skynbd_refs::{ActingRefStore, LeaseOutcome, ObjectRefStore, RefStore};
 use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore, Result as StoreResult};
 use skyzfs_blk::Buf;
 use skyzfs_local::inplace::CutSlice;
@@ -217,9 +217,10 @@ fn a_create_refuses_a_clone_under_the_name() {
     }
 }
 
-/// A head that is not the commit a create makes, though it has no
-/// parent, segment or group, is refused: another kind, another volume's
-/// shard index, an epoch, a count of flushes, another volume's commit.
+/// A head that is not the commit a create makes is refused, one field
+/// at a time: another kind, another volume's shard index, an epoch, a
+/// count of flushes, another volume's commit, a parent, segments, a
+/// group (the last three: the review's U16 to U18).
 #[test]
 fn a_create_refuses_a_head_that_only_looks_empty() {
     use skynbd_format::Codec;
@@ -264,7 +265,29 @@ fn a_create_refuses_a_head_that_only_looks_empty() {
                 ..made.clone()
             },
         ),
+        (
+            "parent",
+            Commit {
+                parent: filled.parent,
+                ..made.clone()
+            },
+        ),
+        (
+            "segments",
+            Commit {
+                segments: filled.segments.clone(),
+                ..made.clone()
+            },
+        ),
+        (
+            "group",
+            Commit {
+                group: Some(7),
+                ..made.clone()
+            },
+        ),
     ];
+    assert!(filled.parent.is_some() && !filled.segments.is_empty());
     let refs = world.refs();
     for (what, commit) in cases {
         let hash = commit.content_hash().expect("hashed");
@@ -299,14 +322,23 @@ fn fixed_keys_sign_only_with_no_session_token() {
     }
     let key = ("AWS_ACCESS_KEY_ID", "AKIA");
     let secret = ("AWS_SECRET_ACCESS_KEY", "s3cr3t");
-    assert_eq!(
-        fixed_keys(env(&[key, secret])),
-        Some(("AKIA".to_owned(), "s3cr3t".to_owned()))
-    );
+    let keys = |region: &str| {
+        Some(FixedKeys {
+            key: "AKIA".into(),
+            secret: "s3cr3t".into(),
+            region: region.into(),
+        })
+    };
+    assert_eq!(fixed_keys(env(&[key, secret])), keys(REGION));
     assert_eq!(
         fixed_keys(env(&[key, secret, ("AWS_SESSION_TOKEN", "")])),
-        Some(("AKIA".to_owned(), "s3cr3t".to_owned())),
+        keys(REGION),
         "an empty token is none"
+    );
+    assert_eq!(
+        fixed_keys(env(&[key, secret, ("AWS_REGION", "eu-west-1")])),
+        keys("eu-west-1"),
+        "the keys sign in AWS_REGION (F5 of #118's review)"
     );
     assert_eq!(
         fixed_keys(env(&[key, secret, ("AWS_SESSION_TOKEN", "FQoG")])),
@@ -800,35 +832,43 @@ fn queue_thread(desk: Arc<Desk>, woken: mpsc::Receiver<()>) -> std::thread::Join
     })
 }
 
-/// The uploader's thread over a volume made by `create`, with the lease
-/// taken at the start: what it posts, its end, and its desk.
-fn uploading(
-    world: &World,
-) -> (
+/// What [`uploading`] gives: the uploader's thread, what it posts, the
+/// queue's thread and the desk.
+type Up = (
     Uploading,
     mpsc::Receiver<UploadShown>,
     std::thread::JoinHandle<()>,
     Arc<Desk>,
-) {
+);
+
+/// The uploader's thread over a volume made by `create`, with the lease
+/// taken at the start: what it posts, its end, and its desk.
+fn uploading(world: &World) -> Up {
+    uploading_with(world, true, |_| {})
+}
+
+/// [`uploading`], with the lease taken at the start only if `take`, and
+/// `before` given the runtime before the thread takes it over.
+fn uploading_with(world: &World, take: bool, before: impl FnOnce(&tokio::runtime::Runtime)) -> Up {
     world.place(SIZE).expect("made");
     let mut at = start(world.keeper("node-a"), false);
-    at.take().expect("taken");
+    if take {
+        at.take().expect("taken");
+    }
     let (runtime, keeper) = at.into_parts();
+    before(&runtime);
     let (wake, woken) = mpsc::channel();
     let desk = Desk::new(move || {
         let _ = wake.send(());
     });
     let queue = queue_thread(Arc::clone(&desk), woken);
     let asked = Arc::clone(&desk);
-    let (store, refs) = (Arc::clone(&world.store), world.refs());
-    let make = move |epoch| {
-        EngineRemote::new(
-            Arc::clone(&store),
-            Arc::new(ActingRefStore::new(Arc::clone(&refs), "node-a", epoch)),
-            remote().id,
-            engine_config(epoch),
-        )
-    };
+    let make = maker(
+        Arc::clone(&world.store),
+        world.refs(),
+        "node-a".into(),
+        remote().id,
+    );
     let (posted, posts) = mpsc::channel();
     let up = Uploading::start(runtime, keeper, make, desk, move |shown| {
         let _ = posted.send(shown);
@@ -916,4 +956,117 @@ fn nothing_is_posted_once_the_desk_is_closed() {
         before.len()
     );
     assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
+}
+
+/// The end's limit holds with work left on the runtime's blocking pool,
+/// as a name lookup of the HTTP client is (F2 of #118's review): the
+/// runtime's drop waited for it, and `end` waited for the drop.
+#[test]
+fn the_end_does_not_wait_for_work_left_on_the_runtime() {
+    let world = World::new();
+    let (began, begun) = mpsc::channel();
+    let (up, posts, queue, _) = uploading_with(&world, true, move |runtime| {
+        runtime.spawn_blocking(move || {
+            let _ = began.send(());
+            std::thread::sleep(Duration::from_secs(5));
+        });
+    });
+    begun
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the blocking work began");
+    idle_and_held(&posts);
+    let at = std::time::Instant::now();
+    assert_eq!(up.end(true, Duration::from_secs(2)), Ended::Released);
+    assert!(
+        at.elapsed() < Duration::from_secs(2),
+        "the end took {:?}",
+        at.elapsed()
+    );
+    queue.join().expect("the queue's thread ended at the close");
+}
+
+/// An end asked to let the lease go, where this daemon holds none (the
+/// lease is another holder's), says it was kept, and the other holder's
+/// row is left as it was.
+#[test]
+fn an_end_with_no_lease_held_says_it_was_kept() {
+    let world = World::new();
+    let (up, posts, queue, _) = uploading_with(&world, false, |_| {
+        let taken = block_on(world.refs().lease_acquire(remote().id, "node-b", TTL));
+        assert!(matches!(taken, Ok(LeaseOutcome::Acquired(_))), "{taken:?}");
+    });
+    loop {
+        let shown = posts
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a post within 10 s");
+        if shown.lease == LeaseShown::Lost {
+            assert_eq!(shown.holder.said(), "node-b");
+            break;
+        }
+    }
+    assert_eq!(up.end(true, RELEASE_LIMIT), Ended::Kept);
+    queue.join().expect("the queue's thread ended at the close");
+    let lease = block_on(world.refs().lease_get(remote().id))
+        .expect("read")
+        .expect("a row");
+    assert_eq!(lease.holder, "node-b");
+    assert!(lease.expires_at_ms > 0, "not let go");
+}
+
+/// The remote the daemon makes for the uploader ([`maker`]) commits
+/// under the epoch it is made for: its commit carries that epoch, and
+/// one made for another epoch than the lease's is fenced, and nothing
+/// lands (G2 of #118's review: `maker` was reached only in the build
+/// with the test hooks).
+#[test]
+fn the_daemons_remote_commits_under_the_epoch_it_is_made_for() {
+    use skyzfs_upload::Remote as _;
+    let world = World::new();
+    world.place(SIZE).expect("made");
+    let vol = remote().id;
+    let taken = block_on(world.refs().lease_acquire(vol, "node-a", TTL)).expect("the take");
+    let LeaseOutcome::Acquired(lease) = taken else {
+        panic!("not taken: {taken:?}");
+    };
+    let mut make = maker(Arc::clone(&world.store), world.refs(), "node-a".into(), vol);
+    let commit = |up: &mut EngineRemote<Mem, Arc<ActingRefStore<Arc<ObjectRefStore<Mem>>>>>| {
+        block_on(async {
+            up.observe().await?;
+            up.write(0, &[7; 4096])?;
+            up.commit(7, None, b"row 7".to_vec()).await
+        })
+    };
+    let (before, _) = world.head(vol);
+    for epoch in [lease.epoch + 1, lease.epoch - 1] {
+        let refused = commit(&mut make(epoch));
+        assert_eq!(
+            refused,
+            Err(RemoteError::Fenced {
+                holder: "node-a".into(),
+                epoch: lease.epoch
+            }),
+            "made for epoch {epoch}"
+        );
+        assert_eq!(world.head(vol).0, before, "nothing landed");
+    }
+    commit(&mut make(lease.epoch)).expect("committed under the lease's epoch");
+    let (after, landed) = world.head(vol);
+    assert_ne!(after, before);
+    assert_eq!(
+        landed.epoch, lease.epoch,
+        "the commit carries the lease's epoch"
+    );
+}
+
+/// The region named to an S3 client with fixed keys: `AWS_REGION`, or
+/// us-east-1 where it is unset or empty (F5 of #118's review).
+#[test]
+fn the_region_is_aws_region_or_the_default() {
+    let unset = |_: &str| None;
+    assert_eq!(region(unset), REGION);
+    assert_eq!(REGION, "us-east-1");
+    let empty = |name: &str| (name == "AWS_REGION").then(String::new);
+    assert_eq!(region(empty), REGION);
+    let set = |name: &str| (name == "AWS_REGION").then(|| "eu-west-1".to_owned());
+    assert_eq!(region(set), "eu-west-1");
 }

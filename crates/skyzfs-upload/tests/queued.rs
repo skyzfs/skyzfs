@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use skynbd_refs::ObjectRefStore;
 use skyzfs_blk::Buf;
+use skyzfs_local::inplace::CutSlice;
 use skyzfs_local::inplace::InPlace;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
 use skyzfs_upload::uploader::{State, Uploader};
-use skyzfs_upload::{Desk, Local, Queued, Released};
+use skyzfs_upload::{Desk, Local, Queued, Released, Store, Uploadable};
 
 use common::*;
 
@@ -298,6 +299,67 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     assert!(after.abandon_all().await.is_empty());
     assert!(woken.try_recv().is_err(), "no call after the close woke it");
     assert_eq!(desk.answered(), 0);
+}
+
+/// A store whose sync of the copies is under way once begun, and whose
+/// begin closes the desk: the close comes between the take of the call
+/// and the keeping of its reply, which no other way reaches in a test.
+struct ClosingAtTheSync(Arc<Desk>);
+
+impl Store for ClosingAtTheSync {
+    fn uploadable(&mut self) -> Option<Uploadable> {
+        None
+    }
+
+    fn read(&mut self, _: u64, _: u64, _: &mut Buf) -> std::io::Result<CutSlice> {
+        Err(std::io::Error::other("no cut"))
+    }
+
+    fn begin_sync_copies(&mut self, _: u64) -> std::io::Result<()> {
+        self.0.close();
+        Ok(())
+    }
+
+    fn copies_synced(&mut self, _: bool) -> Option<std::io::Result<()>> {
+        None
+    }
+
+    fn release(&mut self, _: u64) -> Released {
+        Released::Gone
+    }
+
+    fn name_committed(&mut self, _: u64, _: u64) -> bool {
+        false
+    }
+
+    fn abandon_all(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+}
+
+/// A desk closed while a sync of the copies begins does not keep the
+/// sync's reply for a turn that will never come: the call ends as at a
+/// close (Q13 of this pull request's plants).
+#[tokio::test]
+async fn a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close() {
+    let (wake, mut woken) = tokio::sync::mpsc::unbounded_channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let mut up = Queued::new(Arc::clone(&desk));
+    let call = tokio::spawn(async move { up.sync_copies(7).await });
+    woken
+        .recv()
+        .await
+        .expect("the call woke the queue's thread");
+    desk.answer(&mut ClosingAtTheSync(Arc::clone(&desk)));
+    assert!(desk.closed());
+    let synced = tokio::time::timeout(Duration::from_secs(10), call)
+        .await
+        .expect("the call ends at the close")
+        .expect("the task");
+    let e = synced.expect_err("not synced");
+    assert!(e.to_string().contains("no longer served"), "{e}");
 }
 
 /// A queue that turns only when woken and never looks on its own answers

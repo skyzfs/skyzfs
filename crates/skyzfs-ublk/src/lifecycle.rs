@@ -522,8 +522,10 @@ pub enum Stop {
     Failed(String),
     /// The store opened and the daemon refused to serve it, and why
     /// ([`OpenError::Refused`]): another holder has the volume's lease in
-    /// object storage. No device was touched, and the volume has not
-    /// failed. Exit status 10.
+    /// object storage. No device was added or taken over, and the refusal
+    /// does not fail the volume. (An acknowledging start has deleted the
+    /// failed volume's waiting device before the open, as every
+    /// acknowledging start does.) Exit status 10.
     Refused(String),
     /// Something else went wrong. No device was deleted. Exit status 1.
     Error(String),
@@ -772,8 +774,12 @@ fn open<C: Control, R: Records, V: Volume>(
                 return Err(Stop::Error(format!("opening the store: {e}")))
             }
             // Before the failure note is removed: a start refused here
-            // changes no note, and the next start judges the failure as
-            // this one did.
+            // leaves the note as it was. The store's own marker is
+            // another matter: where it alone knew of the failure and
+            // this start acknowledged it, the acknowledging open has
+            // removed it, and the next start serves without
+            // --acknowledge-failure (the operator did acknowledge, and
+            // the open's new start token makes the next cut whole).
             Err((OpenError::Refused(why), _)) => return Err(Stop::Refused(why)),
             Err((OpenError::MarkedFailed, lock)) => (Reason::Marked, lock),
         };

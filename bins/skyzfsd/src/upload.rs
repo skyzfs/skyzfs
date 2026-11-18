@@ -26,9 +26,13 @@
 //!
 //! - **Taken** (made where there was no row, or this holder's): the
 //!   uploader's thread starts once the device serves.
-//! - **Another holder's**: the start is refused, exit 10, the device
-//!   untouched. What the open wrote stays: its start token, and the
-//!   region of the held cuts' state (`OpenOptions::hold_cuts`). With
+//! - **Another holder's**: the start is refused, exit 10: no device is
+//!   added or taken over (an acknowledging start has deleted the failed
+//!   volume's waiting device before the open, as every acknowledging
+//!   start does). What the open wrote stays: its start token, the region
+//!   of the held cuts' state (`OpenOptions::hold_cuts`), and, where it
+//!   acknowledged a failure the store's marker alone knew, the marker's
+//!   removal. With
 //!   `--serve-without-upload` the volume is served with no uploader, and
 //!   the status says "no lease: held by H at epoch E".
 //! - **Object storage out of reach, or no answer within the limit**: the
@@ -102,9 +106,8 @@ pub const RELEASE_LIMIT: Duration = Duration::from_secs(5);
 /// after it all the same.
 pub const END_LIMIT: Duration = Duration::from_secs(1);
 
-/// The region the daemon names to an S3 client given keys: the one node
-/// B and the rigs' MinIO use. A client of the ambient chain takes the
-/// environment's or the profile's.
+/// The region the daemon names to an S3 client where `AWS_REGION` names
+/// none: the one node B and the rigs' MinIO use.
 pub const REGION: &str = "us-east-1";
 
 /// The objects of a volume's bucket.
@@ -131,23 +134,23 @@ pub fn runtime() -> io::Result<tokio::runtime::Runtime> {
 }
 
 /// The bucket of `remote` and its refs. With fixed keys in the
-/// environment ([`fixed_keys`]), the client signs with those keys in
-/// [`REGION`], as node B does; otherwise it takes the AWS SDK's ambient
-/// chain (decision 2), in the region `AWS_REGION` names, or [`REGION`]
-/// where it names none (so that no region is looked for on a network the
-/// SDK would ask: a profile's region is not read). The ambient chain
-/// reads the environment's keys first, with their session token. The
-/// keys are never on the command line. Nothing is asked of the store
-/// here.
+/// environment ([`fixed_keys`]), the client signs with those keys;
+/// otherwise it takes the AWS SDK's ambient chain (decision 2), which
+/// reads the environment's keys first, with their session token. Either
+/// signs in the region [`region`] gives: `AWS_REGION`'s, or [`REGION`]
+/// where it names none (a profile's region is not read, so that no
+/// region is looked for on a network the SDK would ask). The keys are
+/// never on the command line. Nothing is asked of the store here.
 pub async fn connect(remote: &Remote) -> (Objects, Refs) {
-    let store = match fixed_keys(|name| std::env::var(name).ok()) {
-        Some((key, secret)) => {
+    let env = |name: &str| std::env::var(name).ok();
+    let store = match fixed_keys(env) {
+        Some(keys) => {
             S3Store::new(
                 &remote.endpoint,
                 &remote.bucket,
-                &key,
-                &secret,
-                REGION,
+                &keys.key,
+                &keys.secret,
+                &keys.region,
                 true,
             )
             .await
@@ -162,17 +165,42 @@ pub async fn connect(remote: &Remote) -> (Objects, Refs) {
     (store, refs)
 }
 
+/// What a client of fixed keys signs with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedKeys {
+    /// `AWS_ACCESS_KEY_ID`.
+    pub key: String,
+    /// `AWS_SECRET_ACCESS_KEY`.
+    pub secret: String,
+    /// The region, as [`region`] reads it.
+    pub region: String,
+}
+
 /// The fixed keys the client signs with, read through `env`:
 /// `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, where both are set
-/// and `AWS_SESSION_TOKEN` is unset or empty. Keys that come with a
-/// token are temporary, and the client of fixed keys would sign without
-/// the token, so every request would be refused: those go to the
-/// ambient chain, which sends all three (Codex on #118).
-pub fn fixed_keys(env: impl Fn(&str) -> Option<String>) -> Option<(String, String)> {
+/// and `AWS_SESSION_TOKEN` is unset or empty, and the region they sign
+/// in. Keys that come with a token are temporary, and the client of
+/// fixed keys would sign without the token, so every request would be
+/// refused: those go to the ambient chain, which sends all three (Codex
+/// on #118).
+pub fn fixed_keys(env: impl Fn(&str) -> Option<String>) -> Option<FixedKeys> {
     if env("AWS_SESSION_TOKEN").is_some_and(|token| !token.is_empty()) {
         return None;
     }
-    Some((env("AWS_ACCESS_KEY_ID")?, env("AWS_SECRET_ACCESS_KEY")?))
+    Some(FixedKeys {
+        key: env("AWS_ACCESS_KEY_ID")?,
+        secret: env("AWS_SECRET_ACCESS_KEY")?,
+        region: region(&env),
+    })
+}
+
+/// The region a client of fixed keys signs in, read through `env`:
+/// `AWS_REGION` where it is set and not empty, else [`REGION`] (F5 of
+/// #118's review: a bucket in another region refused every request).
+pub fn region(env: impl Fn(&str) -> Option<String>) -> String {
+    env("AWS_REGION")
+        .filter(|region| !region.is_empty())
+        .unwrap_or_else(|| REGION.to_owned())
 }
 
 /// [`place`] in the bucket `remote` names, within [`PLACE_LIMIT`]:
@@ -413,7 +441,7 @@ impl<R: RefStore> Start<R> {
             Ok(LeaseState::Lost { holder, epoch }) if !self.serve_without_upload => {
                 return Err(format!(
                     "another holder has the volume's lease in object storage: {holder} at \
-                     epoch {epoch}. Nothing was served and the volume has not failed. \
+                     epoch {epoch}. Nothing was served, and this refusal did not fail the volume. \
                      --serve-without-upload serves it with no upload"
                 ));
             }
@@ -459,6 +487,11 @@ impl<R: RefStore> Start<R> {
             },
         };
         Some(shown_of(&shown, self.keeper.holder()))
+    }
+
+    /// The lease's time, in milliseconds.
+    pub fn ttl_ms(&self) -> u64 {
+        self.keeper.ttl_ms()
     }
 
     /// The runtime and the keeper, for the uploader's thread.
@@ -773,6 +806,12 @@ impl Uploading {
                         )),
                     }
                 });
+                // The runtime's drop would wait for its blocking pool,
+                // where the HTTP client looks names up, and the join in
+                // `finish` with it, so `end`'s limit would not hold (F2
+                // of #118's review). Its tasks are left to the process's
+                // end instead.
+                runtime.shutdown_background();
                 let _ = said.send(end);
             })?;
         Ok(Self {
@@ -785,7 +824,9 @@ impl Uploading {
 
     /// End the thread: the desk closed (a call waiting is dropped), the
     /// upload under way dropped, and the lease let go if `release`.
-    /// Waits at most `limit` for the thread.
+    /// Waits at most `limit` for the thread's answer; once it has
+    /// answered, the thread ends without waiting for work left on its
+    /// runtime's blocking pool.
     pub fn end(mut self, release: bool, limit: Duration) -> Ended {
         self.finish(release, limit)
     }

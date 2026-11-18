@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1386,4 +1386,202 @@ async fn a_cut_kept_at_its_release_stops_the_uploader_which_rests() {
         assert_eq!(up.shown().state, State::Stopped, "not stepped again");
     }
     assert_eq!(up.shown().figures.kept, 1);
+}
+
+/// Commits pass.
+const PASS: u8 = 0;
+/// Commits are refused with a conflict, and nothing lands.
+const REFUSE: u8 = 1;
+/// A commit lands, its answer is a conflict, and the read of the row and
+/// head after it returns what was read before it: the commit is given up,
+/// and the next check finds the cut committed.
+const LAND_UNSEEN: u8 = 2;
+
+/// A remote whose commits pass, are refused, or land unseen, as `mode`
+/// says.
+struct Refusals<R> {
+    inner: R,
+    mode: Arc<AtomicU8>,
+    last: Option<Observed>,
+    stale: Option<Observed>,
+}
+
+impl<R> Refusals<R> {
+    fn make(
+        mut make: impl FnMut(u64) -> R,
+        mode: &Arc<AtomicU8>,
+    ) -> impl FnMut(u64) -> Refusals<R> {
+        let mode = Arc::clone(mode);
+        move |epoch| Refusals {
+            inner: make(epoch),
+            mode: Arc::clone(&mode),
+            last: None,
+            stale: None,
+        }
+    }
+}
+
+impl<R: Remote> Remote for Refusals<R> {
+    async fn observe(&mut self) -> Result<Observed, RemoteError> {
+        if let Some(stale) = self.stale.take() {
+            return Ok(stale);
+        }
+        let seen = self.inner.observe().await?;
+        self.last = Some(seen.clone());
+        Ok(seen)
+    }
+
+    fn write(&mut self, offset: u64, data: &[u8]) -> Result<(), RemoteError> {
+        self.inner.write(offset, data)
+    }
+
+    fn write_zeroes(&mut self, offset: u64, len: u64) -> Result<(), RemoteError> {
+        self.inner.write_zeroes(offset, len)
+    }
+
+    async fn put_sealed(&mut self) -> Result<(), RemoteError> {
+        self.inner.put_sealed().await
+    }
+
+    async fn commit(
+        &mut self,
+        group: u64,
+        expected: Option<Vec<u8>>,
+        row: Vec<u8>,
+    ) -> Result<(), RemoteError> {
+        match self.mode.load(Ordering::SeqCst) {
+            REFUSE => Err(RemoteError::Conflict),
+            LAND_UNSEEN => {
+                self.inner.commit(group, expected, row).await?;
+                self.stale = self.last.clone();
+                Err(RemoteError::Conflict)
+            }
+            _ => self.inner.commit(group, expected, row).await,
+        }
+    }
+
+    fn discard(&mut self) {
+        self.inner.discard()
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset()
+    }
+}
+
+/// Turn, moving tokio's time by each wait, until `n` more commits have
+/// been given up: the wait each give-up announced.
+async fn give_ups<L, R, F, M>(up: &mut Uploader<L, R, F, M>, n: usize) -> Vec<Duration>
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    let (mut waits, mut last) = (Vec::new(), None);
+    for _ in 0..1000 {
+        let wait = up.turn().await;
+        let state = up.shown().state;
+        if let State::Backoff { why, wait: w } = &state {
+            assert!(why.contains("refused: conflict"), "{why}");
+            if last.as_ref() != Some(&state) {
+                waits.push(*w);
+            }
+        }
+        last = Some(state);
+        tokio::time::advance(wait.max(Duration::from_millis(1))).await;
+        if waits.len() == n {
+            return waits;
+        }
+    }
+    panic!("{n} give-ups not seen: {waits:?}");
+}
+
+/// A cut found committed at its check ends the wait of the refusals
+/// before it, as a cut committed does: the next refused cycle waits a
+/// second again (P2 of #117's review, which the two waits of F3 had left
+/// to no test: the tests of a found cut reset the errors' wait).
+#[tokio::test(start_paused = true)]
+async fn a_cut_found_committed_ends_the_wait_of_the_refusals() {
+    let mut fx = Fixture::new(69).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let mode = Arc::new(AtomicU8::new(REFUSE));
+    let make = Refusals::make(fenced(&fx, &clock), &mode);
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), make, 16);
+    assert_eq!(give_ups(&mut up, 2).await, [SECOND, 2 * SECOND]);
+    mode.store(LAND_UNSEEN, Ordering::SeqCst);
+    assert_eq!(give_ups(&mut up, 1).await, [4 * SECOND]);
+    fx.assert_uploaded(7, "the commit given up had landed")
+        .await;
+    mode.store(REFUSE, Ordering::SeqCst);
+    until_idle(&mut up, 100).await;
+    assert_eq!(up.shown().figures.found_committed, 1);
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 30, 0x30);
+        fx.group(store, 9);
+    }
+    assert_eq!(
+        give_ups(&mut up, 1).await,
+        [SECOND],
+        "the wait starts again"
+    );
+}
+
+/// A cut committed and gone from the store before its release ends the
+/// wait of the refusals before it (P3 of #117's review, as P2 above).
+#[tokio::test(start_paused = true)]
+async fn a_cut_committed_and_gone_ends_the_wait_of_the_refusals() {
+    let mut fx = Fixture::new(70).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let way = Leasing::apart(&fx);
+    let mode = Arc::new(AtomicU8::new(PASS));
+    let make = Refusals::make(fenced(&fx, &clock), &mode);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), make, 64);
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    {
+        let store = up.driver().expect("the driver").local();
+        for block in 0..OVER {
+            fx.write(store, 100 + block, 0x22);
+        }
+        fx.group(store, 8);
+    }
+    mode.store(REFUSE, Ordering::SeqCst);
+    assert_eq!(give_ups(&mut up, 2).await, [SECOND, 2 * SECOND]);
+    mode.store(PASS, Ordering::SeqCst);
+    for _ in 0..100 {
+        if up.shown().state == State::Working(Doing::Committing, Some(2)) {
+            break;
+        }
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(up.shown().state, State::Working(Doing::Committing, Some(2)));
+    // The head swap lands and its reply is lost.
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, skynbd_store::FaultWhen::After)
+        .await;
+    let wait = up.turn().await;
+    fx.store.disarm().await;
+    fx.assert_uploaded(8, "cut 2's swap landed").await;
+    // The bound takes cut 2, and cut 3 takes its map.
+    {
+        let store = up.driver().expect("the driver").local();
+        for block in 0..OVER {
+            fx.write(store, 100 + block, 0x33);
+        }
+        fx.group(store, 9);
+    }
+    tokio::time::advance(wait).await;
+    up.turn().await;
+    assert_eq!(up.shown().figures.not_held, 1, "cut 2 committed, not held");
+    mode.store(REFUSE, Ordering::SeqCst);
+    assert_eq!(
+        give_ups(&mut up, 1).await,
+        [SECOND],
+        "the wait starts again"
+    );
 }

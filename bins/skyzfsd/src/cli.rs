@@ -207,7 +207,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       otherwise refuses (status 1) and makes nothing in DIR. The keys
       are AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY where both are
       set and AWS_SESSION_TOKEN is not, else the AWS SDK's own chain
-      (which takes all three); they are never written. The line
+      (which takes all three); they are never written. The region is
+      AWS_REGION, or us-east-1 where it is unset. The line
       printed names the volume in object storage. A volume created
       without these options is served with no upload, and cannot be
       given a place later.
@@ -282,9 +283,10 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       the original, a copy in a cloned VM image included (a clone
       copies the machine id): give the copy its own --holder. The
       lease is taken after the store opens and before a device is
-      touched, within 10 s. Where another holder has it, serve
-      refuses (status 10) and touches no device; --serve-without-upload
-      serves the volume all the same, with no upload. Where object
+      added or taken over, within 10 s. Where another holder has it,
+      serve refuses (status 10) and adds or takes over no device;
+      --serve-without-upload serves the volume all the same, with no
+      upload. Where object
       storage cannot be reached in time, the volume is served and the
       lease taken when it can. A lease lost while serving stops the
       uploads, and the volume is served on. SIGTERM lets the lease go;
@@ -329,7 +331,8 @@ failed; a device this serve added is deleted, and one it took over is
 left waiting for the next server, as after a kill. A supervisor should
 retry the serve once; a second 9 is for a person;
 10 refused, another holder has the volume's lease in object storage:
-no device was touched and the volume is not failed.
+no device was added or taken over, and the refusal does not fail the
+volume.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -375,8 +378,10 @@ pub enum Exit {
     NotStarted,
     /// 10: `serve` refused: another holder has the volume's lease in
     /// object storage (M2.4c), and `--serve-without-upload` was not
-    /// given. The store was opened and closed again; no device was
-    /// touched, and the volume is not failed.
+    /// given. The store was opened and closed again; no device was added
+    /// or taken over, and the refusal does not fail the volume (an
+    /// acknowledging start has deleted the failed volume's waiting device
+    /// before the open, as every acknowledging start does).
     LeaseHeld,
 }
 

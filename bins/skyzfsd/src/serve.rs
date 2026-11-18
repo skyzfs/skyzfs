@@ -2101,6 +2101,16 @@ mod tests {
             .expect("uploads");
         assert!(uploads.started().found().is_none(), "nothing taken yet");
         assert!(uploads.started().shown().is_none());
+        assert_eq!(uploads.started().ttl_ms(), 5_000, "--lease-ttl-s");
+        let uploads = uploads_of(&serving(dir, "--holder node-a"))
+            .expect("read")
+            .expect("uploads");
+        assert_eq!(
+            uploads.started().ttl_ms(),
+            crate::upload::DEFAULT_LEASE_TTL_S * 1000,
+            "30 s unless --lease-ttl-s is given"
+        );
+        assert_eq!(crate::upload::DEFAULT_LEASE_TTL_S, 30);
     }
 
     /// The lease's holder is `--holder`, or else the host's name and the

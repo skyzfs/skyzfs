@@ -651,6 +651,13 @@ fn create_whose_place_cannot_be_written_says_so() {
         "{}",
         output.err
     );
+    assert!(
+        output.err.contains("could not be written in")
+            && output.err.contains(" and create it again")
+            && !output.err.contains("  "),
+        "one line, its words one space apart (F4 of #118's review): {:?}",
+        output.err
+    );
     assert_eq!(crate::remote::read(&dir), Ok(None));
     open(&dir).expect("the volume is there");
 }

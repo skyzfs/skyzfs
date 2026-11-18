@@ -465,7 +465,9 @@ fn create_with(
         if let Some((remote, _)) = placed {
             write(&create.dir, remote).map_err(|e| {
                 Output::error(format_args!(
-                    "{shown}: the volume was made, but its place in object storage could not be                      written in {} ({e}): it would be served with no upload. Remove {shown} and                      create it again",
+                    "{shown}: the volume was made, but its place in object storage could not be \
+                     written in {} ({e}): it would be served with no upload. Remove {shown} and \
+                     create it again",
                     create.dir.join(crate::remote::REMOTE).display()
                 ))
             })?;
