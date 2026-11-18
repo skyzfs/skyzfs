@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 968
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 976
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -23,8 +23,10 @@
 //! the driver's figures, its last check and the rule of the last cut
 //! uploaded, and three short texts (why it waits or has no lease, the
 //! lease's holder, the last error on object storage). A daemon that does
-//! not upload writes them as zeros (`upload_state` off). Nothing is
-//! dropped or moved. The fourteenth (`SKYZST14`, 424 bytes) is still
+//! not upload writes them as zeros (`upload_state` off). After the texts
+//! it adds one figure of the held cuts, the cuts replaced before their
+//! upload (`cuts_replaced`), which a reader of an older file does not
+//! get. Nothing is dropped or moved. The fourteenth (`SKYZST14`, 424 bytes) is still
 //! read, without the uploader.
 //!
 //! The fourteenth version (M2.3b) added the intent
@@ -124,6 +126,7 @@
 //! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error or commit given up the uploader waits after |
 //! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost. A holder's name means one daemon (`--holder`, or the host's name and its machine id): a copy of a volume's files, a cloned VM image among them, must not be served under the same name |
 //! | 840 | 128 | `upload_last_error`: the last step that failed on object storage |
+//! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -178,7 +181,7 @@ pub const STATUS: &str = "status";
 const MAGIC: &[u8; 8] = b"SKYZST15";
 /// The version this crate writes.
 pub const VERSION: u32 = 15;
-const LEN: usize = 968;
+const LEN: usize = 976;
 
 /// The fourteenth version, still read: up to the uploader, at the same
 /// places.
@@ -625,6 +628,10 @@ pub struct HeldShown {
     /// The cuts abandoned at the bound or let go at a copy that could
     /// not be made.
     pub abandoned: u64,
+    /// The cuts replaced before they were uploaded, since this daemon
+    /// started serving. `None` in a file of a version before the
+    /// fifteenth.
+    pub replaced: Option<u64>,
 }
 
 /// Whether the store holds cuts, and what its start did with the state
@@ -872,6 +879,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     ] {
         bytes[at..at + TEXT].copy_from_slice(&text.0);
     }
+    bytes[968..976].copy_from_slice(&held.replaced.unwrap_or(0).to_le_bytes());
     bytes
 }
 
@@ -973,6 +981,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             copied: field(328),
             bound: field(336),
             abandoned: field(344),
+            replaced: (version >= 15).then(|| field(968)),
         });
         let intent = (version >= 14).then(|| IntentShown {
             state: CutStateShown::of(field(352)),
@@ -1663,6 +1672,9 @@ pub fn report(
                 ("cuts_abandoned", held.abandoned),
             ] {
                 lines.push((key, value.to_string()));
+            }
+            if let Some(replaced) = held.replaced {
+                lines.push(("cuts_replaced", replaced.to_string()));
             }
         }
         // The intent map, from a file that has it, after the held cuts:

@@ -653,6 +653,7 @@ fn held_shown(store: &Target) -> HeldShown {
         copied: figures.copied,
         bound: figures.bound,
         abandoned: figures.abandoned,
+        replaced: Some(figures.replaced),
     }
 }
 

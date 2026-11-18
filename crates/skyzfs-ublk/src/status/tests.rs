@@ -66,6 +66,7 @@ fn sample() -> Status {
                 copied: 31,
                 bound: 32,
                 abandoned: 33,
+                replaced: Some(46),
             }),
             intent: Some(IntentShown {
                 state: CutStateShown::TakenUp,
@@ -108,7 +109,7 @@ fn sample_upload() -> UploadShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 968);
+    assert_eq!(bytes.len(), 976);
     assert_eq!(&bytes[..8], b"SKYZST15");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
@@ -164,7 +165,7 @@ fn the_file_has_the_documented_layout() {
         (464, 45),
     ]);
     fields.extend((0..12).map(|i| (472 + 8 * i, 50 + i as u64)));
-    fields.extend([(568, 3), (576, 2)]);
+    fields.extend([(568, 3), (576, 2), (968, 46)]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
     }
@@ -481,6 +482,10 @@ fn a_file_of_the_thirteenth_version_is_read_without_the_intent_map() {
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 13;
+    // The cuts replaced came with the fifteenth version.
+    if let Some(held) = &mut expected.shown.held {
+        held.replaced = None;
+    }
     expected.shown.upload = None;
     expected.shown.intent = None;
     assert_eq!(read, expected);
@@ -510,6 +515,10 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
     let read = decode(&fourteenth_file()).expect("a status");
     let mut expected = sample();
     expected.version = 14;
+    // The cuts replaced came with the fifteenth version.
+    if let Some(held) = &mut expected.shown.held {
+        held.replaced = None;
+    }
     expected.shown.upload = None;
     assert_eq!(read, expected);
     let lines = report(
@@ -811,12 +820,28 @@ fn status_prints_the_held_cuts() {
         ("cut_copied_bytes", "31"),
         ("cut_bound_bytes", "32"),
         ("cuts_abandoned", "33"),
+        ("cuts_replaced", "46"),
     ] {
         assert_eq!(value(&lines, key), Some(said), "{key}");
     }
-    let off = lines_of(HeldShown::default());
+    // A daemon that holds no cut says 0 replaced; a file before the
+    // fifteenth version does not say it, and the key is not printed.
+    let off = lines_of(HeldShown {
+        replaced: Some(0),
+        ..HeldShown::default()
+    });
     assert_eq!(value(&off, "cut_state"), Some("off"));
     assert_eq!(value(&off, "cuts_held"), Some("0"));
+    assert_eq!(value(&off, "cuts_replaced"), Some("0"));
+    let older = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&decode(&fourteenth_file()).expect("a status")),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&older, "cuts_abandoned"), Some("33"));
+    assert_eq!(value(&older, "cuts_replaced"), None);
     let begun = lines_of(HeldShown {
         state: CutStateShown::Begun,
         ..HeldShown::default()
@@ -1293,6 +1318,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "cut_copied_bytes",
             "cut_bound_bytes",
             "cuts_abandoned",
+            "cuts_replaced",
             "intent_state",
             "intent_region_bytes",
             "intent_regions",
