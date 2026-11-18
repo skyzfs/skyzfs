@@ -323,6 +323,32 @@ impl Fixture {
             .await
             .expect("another writer's commit");
     }
+
+    /// Another writer moves the volume's head with a commit that writes
+    /// every block, block `b` full of [`old_byte`]`(b)`, none of them 0
+    /// (the review of #125, G2).
+    pub async fn move_head_everywhere(&self) {
+        let inner = self.store.inner().clone();
+        let refs = ObjectRefStore::new(inner.clone());
+        let mut engine = Engine::open(inner, refs, self.vol, cfg())
+            .await
+            .expect("the engine");
+        for block in 0..BLOCKS {
+            engine
+                .write(block * BLOCK, &[old_byte(block); BLOCK as usize])
+                .expect("a write");
+        }
+        engine
+            .commit(skynbd_format::CommitKind::Flush)
+            .await
+            .expect("another writer's commit");
+    }
+}
+
+/// The byte [`Fixture::move_head_everywhere`] fills block `block` with:
+/// never 0.
+pub fn old_byte(block: u64) -> u8 {
+    0x80 | (block % 0x7f) as u8
 }
 
 /// Run `op` on `store` as request `id`, and wait for it.
