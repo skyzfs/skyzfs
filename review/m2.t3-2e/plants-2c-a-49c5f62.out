@@ -44,3 +44,4 @@ V2 held_reads fails and the check goes on to the lines after it: KILLED by 1: te
 V3 held_reads fails and is no verdict (rc 0): KILLED by 1: test_a_held_cut_the_daemon_could_not_read
 V4 a refused read is the rig's ERROR line: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
 A1 main reads no acknowledgement from instances.tsv: KILLED by 5: test_a_failed_instance_line_is_a_verdict, test_an_acknowledged_failure, test_an_acknowledged_start_cuts_nothing_again, test_carried_across_failure_must_show_something, test_the_failure_and_later_states
+A2 instances.tsv may say anything in its third column: KILLED by 1: test_kinds_with_the_acknowledgement
