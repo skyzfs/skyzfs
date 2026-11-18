@@ -1,0 +1,34 @@
+W02a a fetch is kept when head alone did not move (the row may have): KILLED by 1: test_head_or_the_row_alone_moved
+W04 a row seen before is not fetched again under another head: SURVIVED
+W05 a row with no head is fetched: SURVIVED
+W18 the pause is ignored: KILLED by 1: test_the_pause
+W19 the watcher ends with 0 after a verdict: KILLED by 1: test_the_exits
+W20 the watcher ends with 1 after its own error: KILLED by 1: test_the_exits
+W22 uploaded.tsv has the end of the read where its beginning goes: SURVIVED
+W38 main: one look at the stop, whatever it found: KILLED by 2: test_the_exits, test_the_last_look_retries
+J42 at rest whatever the uploader's state, with nothing held: SURVIVED
+J49 upload_raw: missing blocks with the content line failed say PASS: KILLED by 1: test_the_blocks_written_before_a_failure
+J50 raw_held reads the first fetch alone: KILLED by 1: test_the_blocks_written_before_a_failure
+R27 before_other: a fetch under another head counts: SURVIVED
+R28 before_other: a fetch of another cut of the state counts: SURVIVED
+R30 before_other: a cut the watcher never fetched is no error: SURVIVED
+R41 (kernel only) guarded: node B's exit 6 is taken as done: SURVIVED
+R42 (kernel only) the acts are not guarded: SURVIVED
+R51 before_other: a status older than its row is taken: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R52 before_other: a status whose cut group is not the row's, either way, means look again: SURVIVED
+R53 before_other: a status ahead of its row means look again, one behind does not: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R54 before_other: a look taken again for its status is not written to looks-again.txt: KILLED by 1: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 2
+R55 before_other: a status older than its row is logged and the look kept: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R56 before_other: the status's count of cuts is compared with the row's group: KILLED by 2: test_cut_record.sh: FAIL a status one upload older than its row: the look again: got '0 fetched st 1, test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R57 before_other: a status older than its row is looked at again without end: KILLED by 1: test_cut_record.sh: FAIL a status older than its row five times is the rig's error: got '0 fetched s
+R60 other_act: no control: KILLED by 1: test_cut_record.sh: FAIL an act that does not check the row it was given is the rig's error: got '0 
+R61 other_act: a control that did not end with 6 is no error: KILLED by 1: test_cut_record.sh: FAIL an act that does not check the row it was given is the rig's error: got '0 
+R62 other_act: the control acts on the row as read: KILLED by 2: test_cut_record.sh: FAIL an act on the row as read: got '2 rig error: node B's act at step on the ro, test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '2 rig error: node B's ac
+R63 other_act: the control may end with any failure: SURVIVED
+R64 other_act: the control is not written to guard-controls.txt: KILLED by 2: test_cut_record.sh: FAIL an act on the row as read: got '0 acted on ab 1 40 after 0 agains, 0 contro, test_cut_record.sh: FAIL a row that moved twice: the third look's row: got '0 acted on ab 3 40 after
+R65 other_act: one control, before the first act alone: SURVIVED
+P30 an empty list of images runs nothing: KILLED by 1: test_a_dispatch_with_no_images
+P31 images that is no list is taken letter by letter: KILLED by 1: test_a_dispatch_with_no_images
+P32 an image with no name is a job: KILLED by 1: test_a_dispatch_with_no_images
+P33 images that is not JSON ends in a traceback: KILLED by 1: test_a_dispatch_with_no_images
+P34 the command lets the plan's error through as a traceback: KILLED by 1: test_a_dispatch_with_no_images
