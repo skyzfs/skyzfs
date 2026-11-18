@@ -63,6 +63,7 @@ on:
       - tests/kernel/cut*
       - tests/kernel/test_cut*
       - tests/kernel/replay_check.py
+      - tests/kernel/logwrites.py
       - bins/skyzfs-nodeb/**
       - tests/lib/**
       - bins/skyzfsd/**
@@ -76,7 +77,9 @@ on:
       - crates/skynbd-refs/**
       - crates/skynbd-store/**
       - crates/skynbd-format/**
+      - crates/skynbd-tree/**
       - crates/skynbd-types/**
+      - crates/skyzfs-mapped/**
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml

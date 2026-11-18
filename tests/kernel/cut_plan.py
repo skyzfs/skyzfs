@@ -36,7 +36,10 @@ UPLOAD_PATHS = (
     'bins/skyzfsd/',
     'crates/skyzfs-local/',
     'crates/skyzfs-ublk/',
+    'crates/skyzfs-ublk-sys/',
     'crates/skyzfs-blk/',
+    'crates/skyzfs-mapped/',
+    'crates/skyzfs-uberblock/',
     'bins/skyzfs-nodeb/',
     # The commit, the row's transaction, the object store's client and
     # the formats the uploader and node B run on.
@@ -44,6 +47,7 @@ UPLOAD_PATHS = (
     'crates/skynbd-refs/',
     'crates/skynbd-store/',
     'crates/skynbd-format/',
+    'crates/skynbd-tree/',
     'crates/skynbd-types/',
     'Cargo.toml',
     'Cargo.lock',
@@ -54,6 +58,11 @@ UPLOAD_PATHS = (
     'tests/kernel/cut_daemon_check.py',
     'tests/kernel/cut_plan.py',
     'tests/kernel/cut_summary.py',
+    # What the judge imports.
+    'tests/kernel/cut_check.py',
+    'tests/kernel/cut_ref.py',
+    'tests/kernel/replay_check.py',
+    'tests/kernel/logwrites.py',
     '.github/workflows/skyzfs-cut-daemon.yml',
 )
 

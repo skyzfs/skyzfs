@@ -170,7 +170,9 @@ is "a pause left from the recording before does not" "$(started ':')" "0 not pau
 # given is not the last look's, or until the number reaches MOVES+1, and
 # ignores the row it was given where UNGUARDED is 1. Each call on a row
 # that is not the last look's is a control. -> "acted on N after K
-# agains, C controls", C counting the calls, or what ended it.
+# agains, C controls on groups G, L logged", C counting the calls, G the
+# groups they named, L the lines of guard-controls.txt; or what ended
+# it.
 oact=$(sed -n '/^other_act() {$/,/^}$/p' "$SCRIPT")
 rcut=$(grep '^rowcut() ' "$SCRIPT")
 rskey=$(grep '^skey() ' "$SCRIPT")
@@ -188,20 +190,21 @@ acted() { # moves [unguarded]
         act() {
             local cur
             cur=$(wc -l < "$RDIR/looks")
-            { [ "$2" = "$cur" ] && [ "$3" = 40 ]; } || echo x >> "$RDIR/control-calls"
+            { [ "$2" = "$cur" ] && [ "$3" = 40 ]; } || echo "$3" >> "$RDIR/control-calls"
             [ "$UNGUARDED" = 1 ] || { [ "$2" = "$cur" ] && [ "$3" = 40 ]; } || return 6
             [ "$cur" -gt "$MOVES" ] || return 6
             echo "$1 $2 $3" > "$RDIR/acted"
         }
         other_act step act
         echo "acted on $(cat "$RDIR/acted") after $(cat "$RDIR/acts-again.txt" 2>/dev/null | wc -l) agains," \
-            "$(cat "$RDIR/control-calls" | wc -l) controls" > "$T/why"
+            "$(wc -l < "$RDIR/control-calls") controls on groups $(sort -u "$RDIR/control-calls" | paste -sd, -)," \
+            "$(wc -l < "$RDIR/guard-controls.txt") logged" > "$T/why"
     )
     echo "$? $(cat "$T/why" 2>/dev/null)"
     rm -f "$T/why"
 }
-is "an act on the row as read" "$(acted 0)" "0 acted on ab 1 40 after 0 agains, 1 controls"
-is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 40 after 2 agains, 3 controls"
+is "an act on the row as read" "$(acted 0)" "0 acted on ab 1 40 after 0 agains, 1 controls on groups 0, 1 logged"
+is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 40 after 2 agains, 3 controls on groups 0, 3 logged"
 is "a row that moved five times is the rig's error" "$(acted 5)" \
     "2 rig error: node B's act at step found the row moved five times in a row"
 is "an act that does not check the row it was given is the rig's error" "$(acted 0 1)" \
