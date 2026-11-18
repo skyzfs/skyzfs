@@ -17,6 +17,7 @@ members = [
     "crates/skyzfs-uberblock",
     "crates/skyzfs-ublk",
     "crates/skyzfs-ublk-sys",
+    "crates/skyzfs-upload",
     "bins/skynbdd",
     "bins/skynbd-agent",
     "bins/skynbdctl",

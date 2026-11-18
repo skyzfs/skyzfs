@@ -12,10 +12,17 @@
 //! # The file
 //!
 //! Each instance appends to `PATH`, so that the instances of one volume
-//! (a take-over after a kill) write one file. Each line is one `write`
-//! to a file opened with `O_APPEND`, made when the event happens: a
-//! `kill -9` loses nothing that was written, and two instances never
-//! interleave inside a line. Lines are tab-separated, eight columns:
+//! (a take-over after a kill) write one file. Each line is written when
+//! the event happens, by one `write_all` to a file opened with
+//! `O_APPEND`, so that a line one `write` takes whole is never
+//! interleaved with another instance's. A `kill -9` loses no line
+//! written before it, but it can cut the line being written: one
+//! longer than a page (a `label` line, a write's bytes in hex) can reach
+//! the file in pieces, and the kill fall between them. A cut line has no
+//! end of line, so the next instance's `start` line begins on the same
+//! line of the file. A reader must accept a torn last line of an
+//! instance (seen in the cut rig's take-over recording, #113). Lines
+//! are tab-separated, eight columns:
 //!
 //! ```text
 //! mono_ns  pid  event  tag  op  sector  sectors  result

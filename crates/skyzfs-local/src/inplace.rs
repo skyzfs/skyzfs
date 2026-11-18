@@ -269,8 +269,8 @@ use state::CutState;
 pub use cuts::{Cut, Cuts, Seen, Watcher};
 pub use intent::Base as CommittedCut;
 pub use state::{
-    Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase, DEFAULT_INTENT_REGION,
-    MAX_INTENT_REGION, MIN_INTENT_REGION,
+    records_for, words_for, Figures as CutFigures, HeldCut, Lost, MemRegion, Phase as CutPhase,
+    DEFAULT_INTENT_REGION, MAX_INTENT_REGION, MIN_INTENT_REGION,
 };
 
 pub use start::{
@@ -999,7 +999,12 @@ struct Intent<F> {
     /// How many syncs of the file have begun on the write path since
     /// the start.
     begun: u64,
-    /// How many commits have cleared bits since the start.
+    /// How many commits have been made to the map since the start: each
+    /// release of a committed cut, the first or one made again, since
+    /// its clear can take a waiting request's bit, and each naming of a
+    /// cut ([`InPlace::name_committed_cut`]), which clears none. A
+    /// request whose bit is gone with no commit counted since it was set
+    /// has lost it to the disk.
     commits: u64,
 }
 
@@ -3098,8 +3103,9 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// Held cut `number`, the one being uploaded, is committed in object
-    /// storage: let it go. Whether it was that cut; false changes
-    /// nothing. Called only after the commit (M2.4); the test-hooks
+    /// storage: let it go. True where it was that cut: the intent map may
+    /// name it from then on. False where it was not, and nothing
+    /// changed. Called only after the commit (M2.4); the test-hooks
     /// build's `release` command calls it without one.
     ///
     /// After it the intent map names the cut as its base (the cut
@@ -3107,14 +3113,31 @@ impl<D: Dir> InPlace<D> {
     /// of the regions in which nothing changed after the cut's instant
     /// (`intent.rs`). The pages are written without a sync; one that
     /// cannot be written fails the volume, as on the write path, and the
-    /// cut stays held (review of M2.4b-1).
+    /// cut stays held, the one being uploaded still (review of M2.4b-1):
+    /// the map in memory names it, and the map on the disk may, page by
+    /// page. **So true does not say that the cut is gone.** A caller
+    /// looks at [`InPlace::is_failed`], or at the held cuts, before it
+    /// takes the next cut; else it finds the same one again, and only
+    /// the cut being uploaded can be let go (F2 of that review; the
+    /// uploader's `Released::Kept`).
     ///
     /// The intent map names the cut before the cut state lets it go, so
-    /// that a death between, or a failed write of the map's pages, leaves
-    /// the cut held for the uploader's check to find in the row, and
-    /// never a cut gone that the map does not name: the regions it clears
-    /// are those in which nothing changed after the cut's instant, the
-    /// same whether the cut is held or not.
+    /// that a death between leaves the cut held for the uploader's check
+    /// to find in the row, and never a cut gone that the map does not
+    /// name: the regions it clears are those in which nothing changed
+    /// after the cut's instant, the same whether the cut is held or not.
+    ///
+    /// **A cut kept at a failed write of the map** is found again only
+    /// by a start that takes the cut state up, which is where the
+    /// failure was never marked on the disk (a death before the marker):
+    /// its check finds the cut in the row and lets it go. In the usual
+    /// course the failure is marked, the start that acknowledges it
+    /// begins a new cut state and holds no cut, and the check finds a
+    /// row that the map does not name: a mismatch, and one whole upload
+    /// (F1 of that review). While the map's file refuses, the instance
+    /// that saw the failure cannot let the cut go, so no later cut
+    /// leaves from it; whether it stays up to upload at all is M2.5's
+    /// (design §5.2).
     pub fn release_cut(&mut self, number: u64) -> bool {
         let Some(group) = self
             .held_cuts()
@@ -3125,13 +3148,89 @@ impl<D: Dir> InPlace<D> {
             return false;
         };
         if !self.intent_committed(number, group) {
-            // The volume has failed, and the cut stays held for the next
-            // start's check, which finds it in the row.
+            // The volume has failed, and the cut stays held: true all the
+            // same, since the map may name it from now on (see the doc
+            // for what finds it after).
             return true;
         }
         self.state
             .as_mut()
             .is_some_and(|state| state.release(number))
+    }
+
+    /// Cut `number` of this cut state, of group `group`, is committed in
+    /// object storage, but the store no longer holds it: the bound, or a
+    /// failed read or sync of the copies, abandoned it after its commit
+    /// had landed and before [`InPlace::release_cut`] (P1 of the review
+    /// of M2.4b-1; the lead's choice over relaxing Q8). The intent map
+    /// names it as the committed cut, and no bit is cleared. Whether the
+    /// map names it now. False, with nothing changed, where the store
+    /// holds the cut (it is released instead), where `number` is not a
+    /// cut of this state, and where the map names a newer cut of this
+    /// state.
+    ///
+    /// False also where the map's pages cannot be written, which fails
+    /// the volume as at a release; but there the map in memory names the
+    /// cut all the same, since it is named before the write. That is
+    /// true (the cut is committed), and the held cuts hold everything
+    /// since it, so the same instance uploads the next cut as a delta
+    /// onto it, and stops at that cut's release if the map still cannot
+    /// be written ([`InPlace::release_cut`]). The disk has the header as
+    /// it was or as named, and the next start finds either as below.
+    ///
+    /// Why the bits need no change. An abandoned cut hands its map on to
+    /// the cut that waits or to the open map and never drops it, so a
+    /// block changed after the cut's instant is in a newer map, as for a
+    /// cut released. The map's bits cover every region with a block
+    /// changed since the cut it names, or every region where it names
+    /// none. That cut is older than cut `number`: a cut of this state
+    /// with a lower number, or one committed before this state began.
+    /// What changed since cut `number` changed since it too, so the bits
+    /// as they are cover it. Clearing what nothing changed in since cut
+    /// `number` would be sound as well, by the same argument as at a
+    /// release; it is left to the next release.
+    ///
+    /// What it gives the uploader. The held cuts were made against the
+    /// cut released before (`lo`), so they hold every block changed
+    /// since cut `number`. With the map naming it, the uploader's check
+    /// finds head's row to be the base and uploads the next cut onto it
+    /// as a delta, not whole, unless that cut holds the whole volume:
+    /// where cut `number` held it (the first of a state, the first after
+    /// a mismatch), the cut that took its map holds it too, its `lo`
+    /// unmoved, and goes up whole. The header is written without a sync, as
+    /// at a release: a death before this call, or a power cut that loses
+    /// the header, leaves the map naming the cut before, and the check
+    /// then finds a mismatch (Q8 stays strict): one whole upload.
+    pub fn name_committed_cut(&mut self, number: u64, group: u64) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let id = state.id();
+        let held = state.held().iter().any(|cut| cut.number == number);
+        if held || number == 0 || number > state.count() {
+            return false;
+        }
+        let Some(intent) = &mut self.intent else {
+            return false;
+        };
+        let named = intent::Base {
+            state: id,
+            number,
+            group,
+        };
+        match intent.map.base() {
+            Some(base) if base == named => return true,
+            Some(base) if base.state == id && base.number >= number => return false,
+            _ => {}
+        }
+        intent.map.commit(named);
+        intent.commits += 1;
+        if self.write_intent(false).is_err() {
+            self.fail();
+            self.settle_failed();
+            return false;
+        }
+        true
     }
 
     /// Cut `number` of group `group` is committed in object storage:

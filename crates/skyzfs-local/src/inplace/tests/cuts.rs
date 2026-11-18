@@ -3566,10 +3566,11 @@ fn a_request_deferred_behind_a_write_that_waits_for_the_map_is_answered_at_a_fai
 
 /// A write of the map that fails when a commit clears bits fails the
 /// volume, as a failed write of the store does (G4 of the review of
-/// #106), and the cut is not let go: the map may not name it, and the
-/// uploader's check at the next start finds it held (review of
-/// M2.4b-1). It was the cut being uploaded, as `release_cut` says. The
-/// defect, planted by hand: the cut let go all the same.
+/// #106), and the cut is not let go (review of M2.4b-1): the map on the
+/// disk may name it or not, page by page. `release_cut` says true: it
+/// was the cut being uploaded, and the map may name it from now on.
+/// What finds the kept cut after is the next test's. The defect,
+/// planted by hand: the cut let go all the same.
 #[test]
 fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
     for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
@@ -3588,6 +3589,206 @@ fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
             .collect();
         assert_eq!(held, [(1, CutPhase::Uploading)], "{io:?}");
     }
+}
+
+/// What finds a cut kept at a failed write of the map (F1 of the review
+/// of M2.4b-1). In the usual course the failure is marked on the disk:
+/// a start that does not acknowledge it is refused, and the one that
+/// does begins a new cut state and holds no cut. The map it takes up
+/// names the cut released before, so the uploader's check finds a row
+/// the map does not name: a mismatch, and one whole upload. Only where
+/// the failure was never marked (a death before the marker; here the
+/// planted defect that leaves the marker out) does the next start take
+/// the state up and hold the cut, which a release then lets go.
+#[test]
+fn a_cut_kept_at_a_failed_write_of_the_map_is_held_again_only_where_no_marker_was_written() {
+    for marked in [true, false] {
+        let case = if marked { "marked" } else { "never marked" };
+        let mutants = if marked { 0 } else { Mutants::FAIL_UNMARKED };
+        let disk = created(79, 0);
+        let region = region();
+        let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1), "{case}");
+        let id = store.cut_state_id().expect("a cut state");
+        let one = CommittedCut {
+            state: id,
+            number: 1,
+            group: 7,
+        };
+        write(&mut store, 6, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        disk.fail_write_of(intent::INTENT_NAME);
+        assert!(store.release_cut(2), "{case}");
+        assert!(store.is_failed(), "{case}");
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        // The drop waits for the marker's thread.
+        drop(store);
+        disk.kill();
+        disk.clear_faults();
+        if marked {
+            assert!(
+                matches!(
+                    opened(&disk, false, ON_CALLER),
+                    Err(OpenError::MarkedFailed)
+                ),
+                "{case}"
+            );
+            let acknowledging = Coming {
+                acknowledging: true,
+                ..TAKING_OVER
+            };
+            let store = start_as(&disk, 0, &region, ON_CALLER, acknowledging);
+            assert_ne!(store.cut_state_id(), Some(id), "{case}: a new state");
+            assert_eq!(phases(&store), [], "{case}");
+            assert_eq!(store.committed_cut(), Some(one), "{case}");
+        } else {
+            let mut store = start_on(&disk, 0, &region, ON_CALLER);
+            assert_eq!(store.cut_state_id(), Some(id), "{case}: taken up");
+            assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+            assert_eq!(store.committed_cut(), Some(one), "{case}");
+            assert!(store.release_cut(2), "{case}");
+            assert_eq!(phases(&store), [], "{case}");
+            let two = CommittedCut {
+                number: 2,
+                group: 8,
+                ..one
+            };
+            assert_eq!(store.committed_cut(), Some(two), "{case}");
+        }
+    }
+}
+
+/// The bound abandons the cut being uploaded after its commit has
+/// landed and before its release (P1 of the review of M2.4b-1, the
+/// review's scenario T5): the release finds it gone, and
+/// `name_committed_cut` names it in the intent map as committed all the
+/// same, clearing no bit. After a restart of the machine the map taken
+/// up names it, and the next cut holds every block that differs from
+/// the volume at its instant. That start begins a new state, so the map
+/// then names a cut of the state before; when the bound takes the new
+/// state's first cut after its commit, it is named over that one. The
+/// defects, planted by hand: the call that names nothing, the header
+/// not written, and a base of another state never replaced.
+#[test]
+fn a_committed_cut_the_bound_took_is_named_as_committed() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(77, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1), "{case}");
+        let id = store.cut_state_id().expect("a cut state");
+        let committed = |number, group| {
+            Some(CommittedCut {
+                state: id,
+                number,
+                group,
+            })
+        };
+        // Cut 2 holds more blocks than the bound, so that overwriting
+        // them all abandons it.
+        let over = TEST_BOUND / BLOCK + 8;
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x22).unwrap();
+        }
+        group(&mut store, 200, 8, 80);
+        let at_cut_2 = volume_now(&mut store);
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "{case}");
+        // Cut 2's commit lands here, and the pool writes over it.
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x33).unwrap();
+        }
+        assert_eq!(phases(&store), [], "{case}: the bound took cut 2");
+        assert!(!store.release_cut(2), "{case}: not held");
+        assert_eq!(store.committed_cut(), committed(1, 7), "{case}");
+        let named = intent_of(&store).named;
+        assert!(store.name_committed_cut(2, 8), "{case}");
+        assert_eq!(store.committed_cut(), committed(2, 8), "{case}");
+        assert_eq!(intent_of(&store).named, named, "{case}: no bit cleared");
+        assert!(store.name_committed_cut(2, 8), "{case}: named already");
+        write(&mut store, 230, 0x44).unwrap();
+        drop(store);
+        disk.power_cut(crate::sim::KeepAll);
+        let mut store = start_as(&disk, 0, &region(), io, AFTER_A_REBOOT);
+        assert!(
+            matches!(store.intent_at_start(), Some(IntentAtStart::TakenUp { .. })),
+            "{case}: {:?}",
+            store.intent_at_start()
+        );
+        assert_eq!(store.committed_cut(), committed(2, 8), "{case}");
+        let now = volume_now(&mut store);
+        group(&mut store, 400, 10, 100);
+        let map: std::collections::BTreeSet<u64> = store.cut_map(1).into_iter().collect();
+        for block in 0..VOLUME_BLOCKS {
+            if now[block as usize] != at_cut_2[block as usize] {
+                assert!(
+                    map.contains(&block),
+                    "{case}: block {block} differs from cut 2 and the next cut lacks it"
+                );
+            }
+        }
+        let new_id = store.cut_state_id().expect("the new state");
+        assert_ne!(new_id, id, "{case}: a new state after the reboot");
+        assert_eq!(phases(&store), [(1, CutPhase::Uploading)], "{case}");
+        // The new state's cut 1 commits, and the pool writes over it.
+        for block in 0..over {
+            write(&mut store, 100 + block, 0x55).unwrap();
+        }
+        assert_eq!(phases(&store), [], "{case}: the bound took cut 1");
+        assert!(!store.release_cut(1), "{case}: not held");
+        assert!(
+            store.name_committed_cut(1, 10),
+            "{case}: over another state's"
+        );
+        assert_eq!(
+            store.committed_cut(),
+            Some(CommittedCut {
+                state: new_id,
+                number: 1,
+                group: 10,
+            }),
+            "{case}"
+        );
+    }
+}
+
+/// A cut is named as committed only where the store no longer holds it,
+/// it is a cut of this state, and the map names no newer cut of this
+/// state; anything else changes nothing. A map that cannot be written
+/// fails the volume, as at a release. The defects, planted by hand: each
+/// of the three refusals taken out.
+#[test]
+fn a_cut_is_named_as_committed_only_when_it_is_gone_and_newer() {
+    let disk = created(78, 0);
+    let mut store = start_on(&disk, 0, &region(), ON_CALLER);
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert!(!store.name_committed_cut(1, 7), "held: released instead");
+    assert!(!store.name_committed_cut(0, 7), "no cut 0");
+    assert!(!store.name_committed_cut(2, 8), "no cut 2 yet");
+    assert_eq!(store.committed_cut(), None);
+    assert!(store.release_cut(1));
+    write(&mut store, 6, 0x66).unwrap();
+    group(&mut store, 200, 8, 80);
+    write(&mut store, 7, 0x77).unwrap();
+    group(&mut store, 300, 9, 90);
+    assert!(store.release_cut(2));
+    let id = store.cut_state_id().expect("a cut state");
+    let base = Some(CommittedCut {
+        state: id,
+        number: 2,
+        group: 8,
+    });
+    assert_eq!(store.committed_cut(), base);
+    assert!(!store.name_committed_cut(1, 7), "older than the base");
+    assert_eq!(store.committed_cut(), base);
+    assert_eq!(store.abandon_all_cuts(), [3]);
+    disk.fail_write_of(intent::INTENT_NAME);
+    assert!(!store.name_committed_cut(3, 9), "the map's write failed");
+    assert!(store.is_failed());
 }
 
 /// A start refused for want of direct I/O touches neither the cut state
@@ -3700,6 +3901,75 @@ fn a_write_whose_bit_a_clear_takes_while_it_waits_sets_it_again() {
         group(&mut store, 400, 10, 100);
         assert_eq!(store.cut_map(1).contains(&150), mutants == 0, "{case}");
     }
+}
+
+/// A release made again for the same cut must count as a commit, as the
+/// first does (`intent.commits`, the guard of a write that waits for the
+/// map). The daemon dies in the release of cut 2, after the map's pages
+/// and at the cut state's first store: the map names cut 2 already, and
+/// the cut is still held. The next instance takes both up. A write into
+/// a clean region waits for the map's sync, and the uploader's check
+/// finds the row naming cut 2 and releases it again: its `clear` takes
+/// the waiting write's bit, as the first release's can. The write sets
+/// the bit again and goes on once the map holds it, and the volume stays
+/// healthy. The defect counts a release only where it moves the map's
+/// base: the write finds its bit gone with no commit counted, takes it
+/// for lost to the disk, and fails a healthy volume.
+#[test]
+fn a_release_made_again_after_a_death_counts_for_a_write_that_waits() {
+    state::tests::quiet_deaths();
+    let disk = created(80, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, IoMode::default());
+    write(&mut store, 5, 0x55).unwrap();
+    group(&mut store, 100, 7, 70);
+    assert!(store.release_cut(1));
+    // Cut 2 by a group to the first label alone, so that region 2 stays
+    // clean, as above.
+    assert!(run(&mut store, 300, uberblock_write(0, 9, 90))
+        .result
+        .is_ok());
+    assert!(run(&mut store, 301, Op::Flush).result.is_ok());
+    assert_eq!(phases(&store), [(2, CutPhase::Uploading)]);
+    let id = store.cut_state_id().expect("a cut state");
+    region.die_at(0);
+    let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.release_cut(2)));
+    region.revive();
+    match lived {
+        Ok(_) => panic!("the release did not die at its first store"),
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => {}
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+    drop(store);
+    disk.kill();
+    let mut store = start_on(&disk, 0, &region, IoMode::default());
+    assert_eq!(store.cut_state_id(), Some(id), "the state taken up");
+    assert_eq!(phases(&store), [(2, CutPhase::Uploading)], "cut 2 held");
+    assert_eq!(
+        store.committed_cut().map(|cut| (cut.number, cut.group)),
+        Some((2, 9)),
+        "the map names cut 2 already"
+    );
+    let syncs = intent_of(&store).syncs.count;
+    disk.hold_syncs_of(intent::INTENT_NAME);
+    submit(&mut store, 1, write_op(150, 0x66));
+    let mut done = Vec::new();
+    polled(&mut store, &mut done, 1, Duration::from_millis(50));
+    let early = ended(&done);
+    let released = store.release_cut(2);
+    disk.release_syncs();
+    let store = drained(store, &mut done);
+    assert!(early.is_empty(), "{early:?}");
+    assert!(released);
+    assert_eq!(ended(&done), [(1, Ok(()))], "the write that waited");
+    assert!(!store.is_failed(), "a healthy volume failed");
+    assert_eq!(phases(&store), []);
+    assert_eq!(
+        intent_of(&store).syncs.count,
+        syncs + 2,
+        "the bit set again"
+    );
+    assert_eq!(intent_of(&store).named, 1);
 }
 
 /// Where the map's file cannot sync on a helper (no thread could be

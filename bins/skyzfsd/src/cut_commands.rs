@@ -35,7 +35,11 @@
 //!   is synced: a reader on the same machine sees them through the
 //!   page cache.
 //! - `TOKEN release N`: lets cut N go, as an upload's commit will. Only
-//!   the cut being uploaded can be let go. Then `TOKEN ok`.
+//!   the cut being uploaded can be let go. Then `TOKEN ok`. `ok` says
+//!   that it was the cut being uploaded and that the intent map may name
+//!   it from now on, not that it went: where the map's pages cannot be
+//!   written, the volume fails and the cut stays held, the one being
+//!   uploaded still (`InPlace::release_cut`). A `held` after says which.
 //!
 //! Anything else, or a command the store cannot carry out, is answered
 //! `TOKEN refused: REASON` (`- refused: …` when the line has no token).
