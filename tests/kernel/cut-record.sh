@@ -416,7 +416,6 @@ nodeb() { local c=$1; shift; timeout 300 "$NODEB" "$c" --endpoint "$S3_ENDPOINT"
 # The watcher beside the daemon, node B's side of the uploads.
 watcher_start() {
     rm -f "${WORK:?}/watch.stop"
-    rm -f "$WORK/watch.pause"
     CUT_WATCH_PAUSE="$WORK/watch.pause" python3 -I "$HERE/cut_watch.py" "$RDIR" "$NODEB" "$S3_ENDPOINT" "$S3_BUCKET" \
         "cut-$NAME" "$WORK/watch.stop" 2>> "$RDIR/watch.err" &
     WATCH_PID=$!
@@ -466,6 +465,9 @@ begin_daemon() {
     fi
     timeout 90 "$SKYZFSD" create --dir "$VOL" --size $((VDEV_MB << 20)) --run-dir "$RUN" "${place[@]}" > "$RDIR/create.log" 2>&1 \
         || rig_error "skyzfsd create failed: $(tail -n 2 "$RDIR/create.log")"
+    # A course's PRE_SERVE may pause the watcher (unostore): the pause
+    # holds until the course lifts it, past the watcher's start.
+    rm -f "${WORK:?}/watch.pause"
     [ -z "$PRE_SERVE" ] || "$PRE_SERVE"
     serve_start 1
     : > "$RDIR/marks.tsv"

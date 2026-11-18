@@ -990,11 +990,22 @@ class Courses(unittest.TestCase):
         self.assertEqual(len(self.judge('unostore', {'nostore-status.txt': 'lease held\nupload_state idle\n'
                                                      'uploaded 1\n'}, st)[1]), 3)
 
-        failed = {'failure.tsv': 'failed_rc\t3\n', 'status-start-2.txt': 'cut_state begun\n'}
+        anew = 'skyzfsd: intent map: begun anew with every region named\n'
+        failed = {'failure.tsv': 'failed_rc\t3\n', 'status-start-2.txt': 'cut_state begun\n', 'serve-2.log': anew}
         self.assertEqual(self.judge('ufailed', failed, st)[:2], ([], []))
-        self.assertEqual(len(self.judge('ufailed', {'failure.tsv': 'failed_rc\t0\n',
+        self.assertEqual(len(self.judge('ufailed', {'failure.tsv': 'failed_rc\t0\n', 'serve-2.log': anew,
                                                     'status-start-2.txt': 'cut_state taken_up\n'}, st)[1]), 2)
         self.assertEqual(self.judge('ufailed', failed, dict(st, uploaded_whole='0'))[0], ['uploaded_whole'])
+        # A start that took the intent map up: the new state's first cut is
+        # a delta onto the map's base, as run 44255421061 had it.
+        took = dict(failed, **{'serve-2.log': 'skyzfsd: intent map: taken up, naming 2 of 128 regions\n'})
+        delta = dict(st, uploaded_whole='0', uploaded='2', upload_rule='delta', upload_checked='matched')
+        wrong, bad, notes = self.judge('ufailed', took, delta)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertTrue(any('took the intent map up' in n for n in notes))
+        self.assertEqual(self.judge('ufailed', took, dict(delta, uploaded_whole='1'))[0], ['uploaded_whole'])
+        self.assertEqual(self.judge('ufailed', took, dict(delta, upload_rule='whole'))[0], ['upload_rule'])
+        self.assertEqual(len(self.judge('ufailed', dict(failed, **{'serve-2.log': 'nothing\n'}), st)[1]), 1)
 
     def test_a_course_that_stops_the_uploads(self):
         """umoved from end to end: the cuts before the other writer's head

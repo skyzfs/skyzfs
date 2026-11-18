@@ -1730,8 +1730,18 @@ def course_wants(name, rdir, status):
         st2 = stat('status-start-2.txt')
         if st2.get('cut_state') != 'begun':
             bad.append(f"the start that acknowledged the failure says cut_state {st2.get('cut_state')!r}, not begun")
-        # The new state's first cut goes up whole onto the old state's
-        # head (rule 3); the status counts the second instance's.
+        # The status counts the second instance's. Its new state's first
+        # cut holds the whole volume (rule 3) only where the start began
+        # the intent map anew; one that took the map up counts only the
+        # map's regions as changed (M2.3), and that cut goes up as a delta
+        # onto the base the map names (rule 2). The start's log says which.
+        log2 = read_file(rdir, 'serve-2.log')
+        if 'intent map: taken up' in log2:
+            want.update(uploaded_whole='0', uploaded=at_least(1), upload_rule='delta', upload_checked='matched')
+            notes.append('the start that acknowledged the failure took the intent map up: the new state\'s first '
+                         'cut went up as a delta onto the map\'s base')
+        elif 'intent map: begun anew' not in log2:
+            bad.append('serve-2.log says neither that the intent map was taken up nor that it was begun anew')
     elif name == 'ulease':
         rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'lease.tsv').splitlines()).get('refused_rc')
         if rc != '10':

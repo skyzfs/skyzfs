@@ -128,5 +128,40 @@ is "no bare wait for the holder" "$bare" ""
 n=$(grep -c 'holder_ended "' "$SCRIPT")
 is "the holder's leave, its stop and an early end all go through holder_ended" "$n" 3
 
+# The daemon's start as unostore has it: PRE_SERVE pauses the watcher
+# (WORK/watch.pause) and the watcher must start paused. A stand-in
+# watcher says whether the pause was there when it started. -> "paused"
+# or "not paused".
+begin=$(sed -n '/^begin_daemon() {$/,/^}$/p' "$SCRIPT")
+wstart=$(sed -n '/^watcher_start() {$/,/^}$/p' "$SCRIPT")
+is "begin_daemon and watcher_start are in the script" "$([ -n "$begin" ] && [ -n "$wstart" ] && echo yes)" yes
+started() { # pre-serve-body
+    # shellcheck disable=SC2034,SC2329
+    (
+        set -euo pipefail
+        RDIR=$T/s; WORK=$T/sw; HERE=$T/sh; RUN=$T/sr; VOL=$T/sv; NAME=rec
+        rm -rf "$RDIR" "$WORK" "$HERE"; mkdir -p "$RDIR" "$WORK" "$HERE"
+        printf 'import os, sys\nopen(sys.argv[1] + "/seen", "w").write("paused" if os.path.exists(os.environ["CUT_WATCH_PAUSE"]) else "not paused")\n' \
+            > "$HERE/cut_watch.py"
+        UPLOAD=1; HOLD=0; VDEV_MB=1; DEV=d; SKYZFSD=true; NODEB=true; S3_ENDPOINT=e; S3_BUCKET=b
+        log() { :; }
+        nodeb() { :; }
+        serve_start() { :; }
+        rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
+        eval "pre() { $1; }"
+        PRE_SERVE=pre
+        touch "$WORK/watch.pause"     # a pause left by the recording before
+        eval "$wstart"
+        eval "$begin"
+        begin_daemon
+        wait "$WATCH_PID"
+        cat "$RDIR/seen" > "$T/why"
+    )
+    echo "$? $(cat "$T/why" 2>/dev/null)"
+    rm -f "$T/why"
+}
+is "a pause PRE_SERVE asked for holds past the watcher's start" "$(started 'touch "$WORK/watch.pause"')" "0 paused"
+is "a pause left from the recording before does not" "$(started ':')" "0 not paused"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
