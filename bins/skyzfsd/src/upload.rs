@@ -23,7 +23,10 @@
 //! the volume only where it wrote it or the one there is of its size
 //! and shards. Of two creates of the name at once, of two sizes, one is
 //! refused before it writes anything, and the superblock is the
-//! volume's whose head was made (Codex on #118). A create that stopped
+//! volume's whose head was made (Codex on #118). Of one size, the one
+//! that loses the head's swap looks at the name again and takes the
+//! volume the other made, as any create that finds it (#118's review,
+//! 2.2). A create that stopped
 //! between its superblock and its head leaves the superblock: the next
 //! create of that size goes on, and one of another size is refused, as
 //! for a volume of that size, with the object to delete to free the name
@@ -72,7 +75,7 @@ use std::io;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use skynbd_engine::{keys, Engine, EngineConfig};
+use skynbd_engine::{keys, Engine, EngineConfig, EngineError};
 use skynbd_format::{Codec as _, Commit, CommitKind, Node, Superblock};
 use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
 use skynbd_store::{ObjectStore, Precondition, S3Store, StoreError};
@@ -201,7 +204,7 @@ pub async fn connect(remote: &Remote) -> (Objects, Refs) {
             .await
         }
         None => {
-            let region = std::env::var_os("AWS_REGION").is_none().then_some(REGION);
+            let region = ambient_region(env);
             S3Store::from_env(Some(&remote.endpoint), &remote.bucket, region, true).await
         }
     };
@@ -237,6 +240,17 @@ pub fn fixed_keys(env: impl Fn(&str) -> Option<String>) -> Option<FixedKeys> {
         secret: env("AWS_SECRET_ACCESS_KEY")?,
         region: region(&env),
     })
+}
+
+/// The region the ambient chain's client is given, read through `env`:
+/// [`REGION`] where `AWS_REGION` is unset or empty, as with fixed keys
+/// ([`region`]); else none, and the SDK reads `AWS_REGION` itself. An
+/// empty one was left to the SDK (#118's review, 2.4).
+pub fn ambient_region(env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    env("AWS_REGION")
+        .filter(|region| !region.is_empty())
+        .is_none()
+        .then_some(REGION)
 }
 
 /// The region a client of fixed keys signs in, read through `env`:
@@ -306,17 +320,7 @@ where
 {
     let vol = remote.id;
     let named = format!("the volume {} in object storage", remote.name);
-    let lease = refs
-        .lease_get(vol)
-        .await
-        .map_err(|e| format!("reading the lease of {named}: {e}"))?;
-    if let Some(lease) = lease {
-        return Err(format!(
-            "{named} has been served: its lease names {} at epoch {}. The name is another \
-             volume's",
-            lease.holder, lease.epoch
-        ));
-    }
+    unserved(&refs, vol, &named).await?;
     let head = refs
         .get(vol, "head")
         .await
@@ -330,11 +334,61 @@ where
                 return Err(refused_over(&refs, remote, &named, &superblock, size).await);
             }
         }
-        Engine::create_volume(store, refs, vol, size, engine_config(0))
-            .await
-            .map_err(|e| format!("making {named}: {e}"))?;
-        return Ok(Placed::Made);
+        match Engine::create_volume(store.clone(), refs.clone(), vol, size, engine_config(0)).await
+        {
+            Ok(_) => return Ok(Placed::Made),
+            // Another create of the name, of this size and shards (the
+            // superblock is of them), swapped its head in first (#118's
+            // review, 2.2): what it made is looked at as any volume found
+            // under the name, its lease row first.
+            Err(EngineError::Conflict) => {
+                unserved(&refs, vol, &named).await?;
+                let head = refs
+                    .get(vol, "head")
+                    .await
+                    .map_err(|e| format!("reading the head of {named}: {e}"))?;
+                let Some(head) = head else {
+                    return Err(format!("making {named}: {}", EngineError::Conflict));
+                };
+                return found(&store, vol, &named, &head, size).await;
+            }
+            Err(e) => return Err(format!("making {named}: {e}")),
+        }
     };
+    found(&store, vol, &named, &head, size).await
+}
+
+/// No lease row for `vol`, `named` in words: a volume that a daemon has
+/// served is not one a create left.
+async fn unserved<R: RefStore>(
+    refs: &R,
+    vol: skynbd_types::VolumeId,
+    named: &str,
+) -> Result<(), String> {
+    let lease = refs
+        .lease_get(vol)
+        .await
+        .map_err(|e| format!("reading the lease of {named}: {e}"))?;
+    match lease {
+        Some(lease) => Err(format!(
+            "{named} has been served: its lease names {} at epoch {}. The name is another \
+             volume's",
+            lease.holder, lease.epoch
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `Found` where the volume `vol` (`named` in words), whose head is
+/// `head`, is as a create of `size` bytes leaves it; else why it is
+/// another volume's.
+async fn found<S: ObjectStore>(
+    store: &S,
+    vol: skynbd_types::VolumeId,
+    named: &str,
+    head: &skynbd_refs::RefValue,
+    size: u64,
+) -> Result<Placed, String> {
     let read = |what: &'static str, e: &dyn std::fmt::Display| {
         format!("reading the {what} of {named}: {e}")
     };

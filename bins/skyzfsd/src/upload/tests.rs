@@ -364,43 +364,57 @@ impl ObjectStore for Held {
     }
 }
 
+/// A create of `size` bytes of the volume of [`remote`] on a thread of
+/// its own, returned once it has read no head and is held at its first
+/// write of the superblock; it goes on when the sender is used.
+fn create_held_at_the_superblock(
+    world: &World,
+    size: u64,
+) -> (
+    std::thread::JoinHandle<Result<Placed, String>>,
+    mpsc::Sender<()>,
+) {
+    let (came, arrived) = mpsc::channel();
+    let (go, gone) = mpsc::channel();
+    let held = Arc::new(Held {
+        inner: Arc::clone(&world.store),
+        key: keys::superblock(remote().id, 0),
+        gate: std::sync::Mutex::new(Some((came, gone))),
+    });
+    let refs = world.refs();
+    let other = std::thread::spawn(move || block_on(place(held, refs, &remote(), size)));
+    arrived
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the create held at the superblock");
+    (other, go)
+}
+
 /// Two creates of the name at once (Codex on #118). The second has read
 /// no head and is held at its first write of the superblock while the
 /// first makes the volume. Of another size, the second is refused there
 /// and the superblock stays the first's: the engine writes the
 /// superblock unconditionally before its head's swap, so the create that
 /// lost the swap used to write its size over the volume's. Of the same
-/// size, the second goes on to the engine and loses the head's swap.
+/// size, the second goes on to the engine, loses the head's swap, and
+/// looks at the volume again: it finds the first's as a create left it
+/// (#118's review, 2.2: it said "head CAS conflict: lease lost").
 /// Either way the next create of the first's size finds its volume.
 #[test]
 fn two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made() {
     let vol = remote().id;
     for second in [2 * SIZE, SIZE] {
         let world = World::new();
-        let (came, arrived) = mpsc::channel();
-        let (go, gone) = mpsc::channel();
-        let held = Arc::new(Held {
-            inner: Arc::clone(&world.store),
-            key: keys::superblock(vol, 0),
-            gate: std::sync::Mutex::new(Some((came, gone))),
-        });
-        let refs = world.refs();
-        let other = std::thread::spawn(move || block_on(place(held, refs, &remote(), second)));
-        arrived
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the second create at the superblock");
+        let (other, go) = create_held_at_the_superblock(&world, second);
         assert_eq!(world.place(SIZE), Ok(Placed::Made), "the first create");
         let head = block_on(world.refs().get(vol, "head"))
             .expect("read")
             .expect("a head");
         go.send(()).expect("the second create waits");
-        let refused = other
-            .join()
-            .expect("the second create ends")
-            .expect_err("the second create");
+        let ended = other.join().expect("the second create ends");
         if second == SIZE {
-            assert!(refused.contains("head CAS conflict"), "{refused}");
+            assert_eq!(ended, Ok(Placed::Found), "the second create");
         } else {
+            let refused = ended.expect_err("the second create");
             assert!(
                 refused.contains(&format!(
                     "holds {SIZE} bytes in shards of {SHARD_BYTES}, not {second} in shards of \
@@ -421,6 +435,53 @@ fn two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made() {
             .expect("read")
             .expect("a head");
         assert_eq!(again.commit, head.commit, "the first create's head");
+    }
+}
+
+/// A create that loses the head's swap to another create of the name
+/// and size looks at the volume as at one found under the name, its
+/// lease row first (#118's review, 2.2): a volume whose lease a daemon
+/// has taken by then, or that holds data by then, is refused, and its
+/// head is left as it was.
+#[test]
+fn a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since() {
+    let vol = remote().id;
+    for served in [true, false] {
+        let world = World::new();
+        let (other, go) = create_held_at_the_superblock(&world, SIZE);
+        assert_eq!(world.place(SIZE), Ok(Placed::Made), "the first create");
+        if served {
+            let taken = block_on(world.refs().lease_acquire(vol, "node-b", TTL));
+            assert!(matches!(taken, Ok(LeaseOutcome::Acquired(_))), "{taken:?}");
+        } else {
+            let mut engine = block_on(Engine::open(
+                Arc::clone(&world.store),
+                world.refs(),
+                vol,
+                engine_config(0),
+            ))
+            .expect("opened");
+            engine.write(0, &[7u8; 4096]).expect("written");
+            block_on(engine.commit(CommitKind::Import)).expect("committed");
+        }
+        let head = block_on(world.refs().get(vol, "head"))
+            .expect("read")
+            .expect("a head");
+        go.send(()).expect("the second create waits");
+        let refused = other
+            .join()
+            .expect("the second create ends")
+            .expect_err("the second create");
+        let said = if served {
+            "has been served: its lease names node-b at epoch 1"
+        } else {
+            "holds data"
+        };
+        assert!(refused.contains(said), "{refused}");
+        let again = block_on(world.refs().get(vol, "head"))
+            .expect("read")
+            .expect("a head");
+        assert_eq!(again.commit, head.commit, "the head as it was");
     }
 }
 
@@ -1314,7 +1375,9 @@ fn the_daemons_remote_commits_under_the_epoch_it_is_made_for() {
 }
 
 /// The region named to an S3 client with fixed keys: `AWS_REGION`, or
-/// us-east-1 where it is unset or empty (F5 of #118's review).
+/// us-east-1 where it is unset or empty (F5 of #118's review); the
+/// ambient chain's client is given us-east-1 there too, and no region
+/// where `AWS_REGION` names one (2.4 of its next look).
 #[test]
 fn the_region_is_aws_region_or_the_default() {
     let unset = |_: &str| None;
@@ -1324,4 +1387,10 @@ fn the_region_is_aws_region_or_the_default() {
     assert_eq!(region(empty), REGION);
     let set = |name: &str| (name == "AWS_REGION").then(|| "eu-west-1".to_owned());
     assert_eq!(region(set), "eu-west-1");
+    // The ambient chain's client is given the default where fixed keys
+    // sign in it, and no region where the SDK reads `AWS_REGION` itself
+    // (#118's review, 2.4).
+    assert_eq!(ambient_region(unset), Some(REGION));
+    assert_eq!(ambient_region(empty), Some(REGION));
+    assert_eq!(ambient_region(set), None);
 }

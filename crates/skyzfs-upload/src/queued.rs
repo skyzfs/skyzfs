@@ -21,8 +21,10 @@
 //! under way is not answered, and every call after is answered as by a
 //! store that holds nothing ([`Queued`]'s doc): the uploader idles and
 //! lands nothing more, until the daemon stops its thread, which it does
-//! when the queue stops. The daemon closes it on every way out of the
-//! queue's thread, and from the main thread when the serve ends. A call
+//! when the queue stops. The daemon closes it at the queue's last turn,
+//! and from the main thread when the uploader's thread is ended: a queue
+//! thread that panics has no last turn, and the main thread's close is
+//! the one that comes (#118's review, 2.5). A call
 //! that found the desk open can still wake the queue's thread once after
 //! the close (it leaves the call, the desk closes, it wakes), so the wake
 //! must be harmless once the queue has ended: the daemon's is an event
