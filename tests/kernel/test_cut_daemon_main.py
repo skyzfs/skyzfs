@@ -597,7 +597,7 @@ class Main(unittest.TestCase):
                 for key in ('cuts', 'cut_numbers', 'status', 'cut_state', 'held_content', 'instance_1',
                             'instance_2'):
                     self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
-                self.assertIn('1 flushes the daemon was killed at', lines['obs_unstored_at_kill'][1])
+                self.assertIn('1 flushes killed after their barrier and before their answer', lines['obs_unstored_at_kill'][1])
                 self.assertIn(said, lines['obs_unstored_at_kill'][1])
                 self.assertEqual(rc, 1)    # ctl_mark-kept, as test_two_instances
         rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover')

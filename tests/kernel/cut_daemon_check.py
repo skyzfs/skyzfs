@@ -1034,8 +1034,13 @@ def unstored_at_kill(instances, acked=frozenset()):
 
 def unstored_detail(notes):
     """unstored_at_kill's notes -> the line obs_unstored_at_kill's detail."""
-    return (f'{len(notes)} flushes the daemon was killed at, between the barrier and the state storing the cut'
-            + ''.join(f"; line {n['line']}: pid {n['pid']}'s barrier with no cut line, a flush with no barrier"
+    # Most flushes carry no cut, and every flush writes its barrier and
+    # then syncs: a kill on a barrier line says a cut was not stored only
+    # where the flush carried one (the review of #115, F1).
+    return (f'{len(notes)} flushes killed after their barrier and before their answer; a cut such a flush carried '
+            'was not stored'
+            + ''.join(f"; line {n['line']}: pid {n['pid']}'s barrier with no cut line, taken as a flush with no "
+                      'barrier (whether or not it carried a cut)'
                       if n['shape'] == 'B' else
                       f"; line {n['line']}: pid {n['pid']}'s cut {n['number']} (group {n['group']}), cut again "
                       'by the next instance: no cut' for n in notes))

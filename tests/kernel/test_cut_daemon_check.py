@@ -943,6 +943,22 @@ class Parse(unittest.TestCase):
                     cdc.parse_log(begin + '9' * digits + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
         cdc.parse_log(begin + '9' * 20 + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
 
+    def test_a_tear_on_a_page_of_4_kib(self):
+        """A start line at byte 4096, 8192 or 12288 of the file after a
+        line cut short is a tear: the page is 4 KiB, written here as a
+        number (the review of #115, G1: the fixtures above take the page
+        from cdc.PAGE and move with it)."""
+        lost = '263932738825\t9937\tlab'
+        for at in (4096, 8192, 12288):
+            with self.subTest(at=at):
+                text = (self.BEGIN + self.filler(at - len(self.BEGIN) - len(self.RECV) - len(lost)) + self.RECV
+                        + lost + self.START + '\n' + self.NEXT)
+                self.assertEqual(text.index(self.START), at)
+                torn = []
+                inst = cdc.parse_log(text, torn)
+                self.assertEqual([i['pid'] for i in inst], ['9937', '10976'])
+                self.assertEqual([x['bytes'] for x in torn], [len(lost)])
+
     def test_a_label_line_torn_by_a_kill(self):
         self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
         text, n = self.torn(self.LABEL[:8012])
@@ -1442,7 +1458,7 @@ class TwoInstances(unittest.TestCase):
                 self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
                 b = next(r['i'] for r in recs if 'instance' in r['flags'])
                 self.assertGreater(ref[self.k - 1]['prefix'], b)
-                self.assertIn('1 flushes the daemon was killed at', cdc.unstored_detail(self.unstored))
+                self.assertIn('1 flushes killed after their barrier and before their answer', cdc.unstored_detail(self.unstored))
                 # As the log stood, a verdict against the right daemon.
                 inst = cdc.parse_log(split_log(self.text, self.k, shape=shape))
                 recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: True}), cdc.read_marks(self.marks))
