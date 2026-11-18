@@ -375,7 +375,7 @@ there, and the user decides when it merges.
   refused) must name one daemon only: never serve a copy of a volume's
   files, a cloned VM image included, under the original's name.
   `--lease-ttl-s` is 3 to 3600, 30 by default. The lease is let go at exit
-  0 and kept at any other exit. Status version 15 has the `upload_*` and
+  0 and kept at any other exit. `serve --intent-header-sync` (M2.4d, off by default, release build, needs `--hold-cuts`) begins a sync of the intent map's header on the helper at each release; a benchmark entry for it passes both `--hold-cuts,--intent-header-sync`, and its cost is read in tps and latency, not in `intent_header_sync_ns` alone (writes into just-released regions wait). Status is version 16 with `intent_header_sync` and the header's syncs and times. Status version 15 (before M2.4d) has the `upload_*` and
   `lease_*` keys and `cuts_replaced`; cuts taken = uploaded + replaced +
   abandoned + held over a window of one serve. The test-hooks build
   refuses `release` in a daemon that uploads, and has `serve
