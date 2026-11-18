@@ -154,6 +154,170 @@ fn a_create_refuses_a_name_that_is_another_volumes() {
     assert_eq!(block_on(world.refs().get(vol, "head")).expect("read"), None);
 }
 
+/// Another volume `name`, of [`SIZE`] with skyzfsd's shards, holding one
+/// block of data if `data`: its head's commit.
+fn another(world: &World, name: &str, data: bool) -> (skynbd_types::VolumeId, Commit) {
+    let vol = crate::remote::volume_id(name);
+    let mut engine = block_on(Engine::create_volume(
+        Arc::clone(&world.store),
+        world.refs(),
+        vol,
+        SIZE,
+        engine_config(0),
+    ))
+    .expect("made");
+    if data {
+        engine.write(0, &[7u8; 4096]).expect("written");
+        block_on(engine.commit(CommitKind::Import)).expect("committed");
+    }
+    (vol, world.head(vol).1)
+}
+
+impl World {
+    /// `vol`'s head and its commit.
+    fn head(&self, vol: skynbd_types::VolumeId) -> (skynbd_refs::RefValue, Commit) {
+        let head = block_on(self.refs().get(vol, "head"))
+            .expect("read")
+            .expect("a head");
+        let commit = Commit::decode(&self.get(&keys::commit(vol, &head.commit))).expect("decoded");
+        (head, commit)
+    }
+}
+
+/// A clone under the name is refused though its first commit has no
+/// parent, no segment and no group, as the empty commit has: its shard
+/// index is its base's, and it reads through the base. So is a clone of
+/// an empty base, whose index is the empty one: what it reads is the
+/// base's. Nothing is written.
+#[test]
+fn a_create_refuses_a_clone_under_the_name() {
+    let vol = remote().id;
+    for data in [true, false] {
+        let world = World::new();
+        let (base, _) = another(&world, "base", data);
+        let (head, _) = world.head(base);
+        block_on(Engine::clone_volume(
+            Arc::clone(&world.store),
+            world.refs(),
+            vol,
+            SIZE,
+            base,
+            head.commit,
+            engine_config(0),
+        ))
+        .expect("the clone");
+        let (first, commit) = world.head(vol);
+        assert!(
+            commit.parent.is_none() && commit.segments.is_empty() && commit.group.is_none(),
+            "the clone's first commit looks empty"
+        );
+        let refused = world.place(SIZE).expect_err("a clone");
+        assert!(refused.contains("is a clone of"), "{data}: {refused}");
+        assert_eq!(world.head(vol).0, first, "nothing written");
+    }
+}
+
+/// A head that is not the commit a create makes, though it has no
+/// parent, segment or group, is refused: another kind, another volume's
+/// shard index, an epoch, a count of flushes, another volume's commit.
+#[test]
+fn a_create_refuses_a_head_that_only_looks_empty() {
+    use skynbd_format::Codec;
+    let vol = remote().id;
+    let world = World::new();
+    world.place(SIZE).expect("made");
+    let (mut at, made) = world.head(vol);
+    let (other, filled) = another(&world, "other", true);
+    let cases = [
+        (
+            "kind",
+            Commit {
+                kind: CommitKind::Import,
+                ..made.clone()
+            },
+        ),
+        (
+            "index",
+            Commit {
+                shard_index: filled.shard_index,
+                ..made.clone()
+            },
+        ),
+        (
+            "epoch",
+            Commit {
+                epoch: 3,
+                ..made.clone()
+            },
+        ),
+        (
+            "flushes",
+            Commit {
+                flush_seq: 1,
+                ..made.clone()
+            },
+        ),
+        (
+            "volume",
+            Commit {
+                vol_id: other,
+                ..made.clone()
+            },
+        ),
+    ];
+    let refs = world.refs();
+    for (what, commit) in cases {
+        let hash = commit.content_hash().expect("hashed");
+        block_on(world.store.put(
+            &keys::commit(vol, &hash),
+            commit.encode().expect("encoded").into(),
+        ))
+        .expect("put");
+        let swapped = block_on(refs.compare_and_swap(vol, "head", Some(at.clone()), Some(hash)))
+            .expect("swapped");
+        let skynbd_refs::CasOutcome::Committed(Some(now)) = swapped else {
+            panic!("{what}: not swapped: {swapped:?}");
+        };
+        at = now;
+        let refused = world.place(SIZE).expect_err(what);
+        assert!(refused.contains("holds data"), "{what}: {refused}");
+    }
+}
+
+/// The keys of the environment sign only where both are set and no
+/// session token is: temporary keys come with a token, which the client
+/// of fixed keys would not send, so the ambient chain takes all three
+/// (Codex on #118).
+#[test]
+fn fixed_keys_sign_only_with_no_session_token() {
+    fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+    let key = ("AWS_ACCESS_KEY_ID", "AKIA");
+    let secret = ("AWS_SECRET_ACCESS_KEY", "s3cr3t");
+    assert_eq!(
+        fixed_keys(env(&[key, secret])),
+        Some(("AKIA".to_owned(), "s3cr3t".to_owned()))
+    );
+    assert_eq!(
+        fixed_keys(env(&[key, secret, ("AWS_SESSION_TOKEN", "")])),
+        Some(("AKIA".to_owned(), "s3cr3t".to_owned())),
+        "an empty token is none"
+    );
+    assert_eq!(
+        fixed_keys(env(&[key, secret, ("AWS_SESSION_TOKEN", "FQoG")])),
+        None,
+        "temporary keys: the ambient chain"
+    );
+    assert_eq!(fixed_keys(env(&[key])), None, "no secret");
+    assert_eq!(fixed_keys(env(&[secret])), None, "no key");
+    assert_eq!(fixed_keys(env(&[])), None, "nothing");
+}
+
 /// A store that never answers.
 #[derive(Clone)]
 struct Stalled;
@@ -209,6 +373,7 @@ fn the_start_takes_a_lease_nobody_holds() {
         (UploadStateShown::Idle, LeaseShown::Held, 1)
     );
     assert_eq!(shown.expires_unix_ms, 1_000_000 + TTL);
+    assert_eq!(shown.holder.said(), "node-a");
     // The keeper goes on to the thread holding it.
     let (_, keeper) = at.into_parts();
     assert_eq!(keeper.state().epoch(), Some(1));
@@ -412,11 +577,14 @@ fn the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back() {
 #[test]
 fn the_status_shows_the_uploader_as_it_is() {
     let shown = |state: State, lease: LeaseState, figures: Figures| {
-        shown_of(&Shown {
-            state,
-            lease,
-            figures,
-        })
+        shown_of(
+            &Shown {
+                state,
+                lease,
+                figures,
+            },
+            "node-a",
+        )
     };
     let held = LeaseState::Held {
         epoch: 4,
@@ -436,6 +604,7 @@ fn the_status_shows_the_uploader_as_it_is() {
             "no lease: nope".to_string()
         )
     );
+    assert_eq!(s.holder.said(), "", "no holder with no lease");
 
     let s = shown(
         State::LeaseLost {
@@ -453,11 +622,17 @@ fn the_status_shows_the_uploader_as_it_is() {
         (UploadStateShown::LeaseLost, LeaseShown::Lost, 5)
     );
     assert_eq!(s.said(), "lease lost to node-b at epoch 5");
+    assert_eq!(s.holder.said(), "node-b", "the holder the row names");
 
     let s = shown(State::Idle, held.clone(), Figures::default());
     assert_eq!(
         (s.state, s.lease, s.epoch, s.expires_unix_ms),
         (UploadStateShown::Idle, LeaseShown::Held, 4, 99)
+    );
+    assert_eq!(
+        s.holder.said(),
+        "node-a",
+        "held: this daemon (Codex on #118)"
     );
 
     for (doing, state) in [
@@ -504,6 +679,11 @@ fn the_status_shows_the_uploader_as_it_is() {
         Figures::default(),
     );
     assert_eq!((s.lease, s.epoch), (LeaseShown::Unsure, 4));
+    assert_eq!(
+        s.holder.said(),
+        "node-a",
+        "unsure: this daemon, as last held"
+    );
     assert_eq!(s.why.said(), "the lease's last renewal failed: timed out");
 
     let figures = Figures {
@@ -672,6 +852,11 @@ fn the_end_at_exit_0_lets_the_lease_go() {
     let (up, posts, queue) = uploading(&world);
     let shown = idle_and_held(&posts);
     assert_eq!(shown.epoch, 1);
+    assert_eq!(
+        shown.holder.said(),
+        "node-a",
+        "the thread's posts name the holder"
+    );
     assert_eq!(up.end(true, RELEASE_LIMIT), Ended::Released);
     queue.join().expect("the queue's thread ended at the close");
     let lease = block_on(world.refs().lease_get(remote().id))

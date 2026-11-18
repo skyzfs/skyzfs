@@ -203,10 +203,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       pool's cuts to it. NAME is 1 to 63 characters of A-Z, a-z, 0-9,
       '.', '-' and '_', beginning with a letter or a digit. Where the
       volume NAME is there already, create takes it only as a create
-      leaves it (the same size, empty, never served), and otherwise
-      refuses (status 1) and makes nothing in DIR. The keys are
-      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY where both are set,
-      else the AWS SDK's own chain; they are never written. The line
+      leaves it (the same size, empty, not a clone, never served), and
+      otherwise refuses (status 1) and makes nothing in DIR. The keys
+      are AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY where both are
+      set and AWS_SESSION_TOKEN is not, else the AWS SDK's own chain
+      (which takes all three); they are never written. The line
       printed names the volume in object storage. A volume created
       without these options is served with no upload, and cannot be
       given a place later.

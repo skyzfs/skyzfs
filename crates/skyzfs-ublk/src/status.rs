@@ -122,7 +122,7 @@
 //! | 568 | 8 | `upload_checked`: what the last check found: 0 no check yet; 1 matched; a mismatch: 2 no row, 3 the row names another cut, 4 head's commit is not the row's, 5 the row cannot be read. Any other value is read as "not said" |
 //! | 576 | 8 | `upload_rule`: how the last cut uploaded went up: 0 none yet; 1 a delta onto the cut the row named; 2 the whole volume. Any other value is read as "not said" |
 //! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error or commit given up the uploader waits after |
-//! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held, another's when lost |
+//! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost |
 //! | 840 | 128 | `upload_last_error`: the last step that failed on object storage |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon

@@ -10,11 +10,13 @@
 //! storage before the local volume is: its superblock, the empty commit
 //! and head, with shards of [`SHARD_BYTES`] (decided for M2.4). Where the
 //! name's volume is there already, `create` takes it only if a create
-//! left it so: of the size asked, with shards of [`SHARD_BYTES`], head
-//! the empty commit, and no lease row (no daemon has served it). Anything
-//! else is refused (exit 1, the lead's decision 1): the name is another
-//! volume's. A create that made the volume in object storage and then
-//! failed leaves it, empty, for the next create of the name.
+//! left it so: of the size asked, with shards of [`SHARD_BYTES`], not a
+//! clone, head the empty commit a create makes (every shard a hole, a
+//! checkpoint under no lease), and no lease row (no daemon has served
+//! it). Anything else is refused (exit 1, the lead's decision 1): the
+//! name is another volume's. A create that made the volume in object
+//! storage and then failed leaves it, empty, for the next create of the
+//! name.
 //!
 //! # At the start of `serve` ([`Start`], [`Leased`])
 //!
@@ -54,7 +56,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use skynbd_engine::{keys, Engine, EngineConfig};
-use skynbd_format::{Codec as _, Commit, Superblock};
+use skynbd_format::{Codec as _, Commit, CommitKind, Node, Superblock};
 use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
 use skynbd_store::{ObjectStore, S3Store};
 use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
@@ -128,20 +130,18 @@ pub fn runtime() -> io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-/// The bucket of `remote` and its refs. With `AWS_ACCESS_KEY_ID` and
-/// `AWS_SECRET_ACCESS_KEY` both set, the client signs with those keys in
+/// The bucket of `remote` and its refs. With fixed keys in the
+/// environment ([`fixed_keys`]), the client signs with those keys in
 /// [`REGION`], as node B does; otherwise it takes the AWS SDK's ambient
 /// chain (decision 2), in the region `AWS_REGION` names, or [`REGION`]
 /// where it names none (so that no region is looked for on a network the
-/// SDK would ask: a profile's region is not read). The keys are never on
-/// the command line. Nothing is asked of the store here.
+/// SDK would ask: a profile's region is not read). The ambient chain
+/// reads the environment's keys first, with their session token. The
+/// keys are never on the command line. Nothing is asked of the store
+/// here.
 pub async fn connect(remote: &Remote) -> (Objects, Refs) {
-    let keys = (
-        std::env::var("AWS_ACCESS_KEY_ID"),
-        std::env::var("AWS_SECRET_ACCESS_KEY"),
-    );
-    let store = match keys {
-        (Ok(key), Ok(secret)) => {
+    let store = match fixed_keys(|name| std::env::var(name).ok()) {
+        Some((key, secret)) => {
             S3Store::new(
                 &remote.endpoint,
                 &remote.bucket,
@@ -152,7 +152,7 @@ pub async fn connect(remote: &Remote) -> (Objects, Refs) {
             )
             .await
         }
-        _ => {
+        None => {
             let region = std::env::var_os("AWS_REGION").is_none().then_some(REGION);
             S3Store::from_env(Some(&remote.endpoint), &remote.bucket, region, true).await
         }
@@ -160,6 +160,19 @@ pub async fn connect(remote: &Remote) -> (Objects, Refs) {
     let store = Arc::new(store);
     let refs = Arc::new(ObjectRefStore::new(Arc::clone(&store)));
     (store, refs)
+}
+
+/// The fixed keys the client signs with, read through `env`:
+/// `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, where both are set
+/// and `AWS_SESSION_TOKEN` is unset or empty. Keys that come with a
+/// token are temporary, and the client of fixed keys would sign without
+/// the token, so every request would be refused: those go to the
+/// ambient chain, which sends all three (Codex on #118).
+pub fn fixed_keys(env: impl Fn(&str) -> Option<String>) -> Option<(String, String)> {
+    if env("AWS_SESSION_TOKEN").is_some_and(|token| !token.is_empty()) {
+        return None;
+    }
+    Some((env("AWS_ACCESS_KEY_ID")?, env("AWS_SECRET_ACCESS_KEY")?))
 }
 
 /// [`place`] in the bucket `remote` names, within [`PLACE_LIMIT`]:
@@ -250,18 +263,56 @@ where
             superblock.shard_bytes
         ));
     }
+    let clone = store
+        .exists(&keys::clone_base(vol))
+        .await
+        .map_err(|e| read("clone base", &e))?;
+    if clone {
+        return Err(format!(
+            "{named} is a clone of another volume: what it reads is its base's. The name is \
+             another volume's"
+        ));
+    }
     let object = store
         .get(&keys::commit(vol, &head.commit), None)
         .await
         .map_err(|e| read("head commit", &e))?;
     let commit = Commit::decode(&object).map_err(|e| read("head commit", &e))?;
-    if commit.parent.is_some() || !commit.segments.is_empty() || commit.group.is_some() {
+    let empty = empty_index(size).map_err(|e| format!("the empty shard index: {e}"))?;
+    if !as_created(&commit, vol, &empty) {
         return Err(format!(
             "{named} holds data: its head is not the empty commit a create makes. The name is \
              another volume's"
         ));
     }
     Ok(Placed::Found)
+}
+
+/// The hash of the shard index a create makes for a volume of `size`
+/// bytes: every shard a hole, so that the volume reads as zeros.
+fn empty_index(size: u64) -> Result<skynbd_types::NodeHash, skynbd_format::FormatError> {
+    let shards = usize::try_from(size.div_ceil(SHARD_BYTES)).unwrap_or(usize::MAX);
+    Node::ShardIndex(vec![None; shards]).content_hash()
+}
+
+/// Whether `commit` is the commit a create makes for `vol`, the time it
+/// was made aside: no parent, segment or group, no flush, written under
+/// no lease, a checkpoint, and the index `empty` ([`empty_index`]). A
+/// commit with no parent, segment or group is not enough: a clone's
+/// first commit is one, with its base's index (Codex on #118).
+fn as_created(
+    commit: &Commit,
+    vol: skynbd_types::VolumeId,
+    empty: &skynbd_types::NodeHash,
+) -> bool {
+    commit.vol_id == vol
+        && commit.parent.is_none()
+        && commit.segments.is_empty()
+        && commit.group.is_none()
+        && commit.flush_seq == 0
+        && commit.epoch == 0
+        && commit.kind == CommitKind::Checkpoint
+        && commit.shard_index == *empty
 }
 
 /// What the start's take of the lease found.
@@ -407,7 +458,7 @@ impl<R: RefStore> Start<R> {
                 figures: Figures::default(),
             },
         };
-        Some(shown_of(&shown))
+        Some(shown_of(&shown, self.keeper.holder()))
     }
 
     /// The runtime and the keeper, for the uploader's thread.
@@ -552,8 +603,11 @@ impl<V: Volume, F: FnMut() -> Result<(), String>> Volume for Leased<'_, V, F> {
     }
 }
 
-/// What the status shows of the uploader as it is.
-pub fn shown_of(shown: &Shown) -> UploadShown {
+/// What the status shows of the uploader as it is, whose lease is kept
+/// as `holder`. The holder shown is the one the lease row names: this
+/// daemon's while the lease is held, or unsure (as last held), and
+/// another's when it is lost.
+pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
     let mut out = UploadShown::default();
     match &shown.lease {
         LeaseState::None(_) => out.lease = LeaseShown::None,
@@ -564,11 +618,13 @@ pub fn shown_of(shown: &Shown) -> UploadShown {
             out.lease = LeaseShown::Held;
             out.epoch = *epoch;
             out.expires_unix_ms = *expires_at_ms;
+            out.holder = Text::new(holder);
         }
         LeaseState::Unsure { epoch, why } => {
             out.lease = LeaseShown::Unsure;
             out.epoch = *epoch;
             out.why = Text::new(&format!("the lease's last renewal failed: {why}"));
+            out.holder = Text::new(holder);
         }
         LeaseState::Lost { holder, epoch } => {
             out.lease = LeaseShown::Lost;
@@ -681,6 +737,7 @@ impl Uploading {
         let (stop, mut stopped) = tokio::sync::watch::channel(None::<bool>);
         let (said, ended) = mpsc::channel();
         let local = Queued::new(Arc::clone(&desk));
+        let holder = keeper.holder().to_owned();
         let thread = std::thread::Builder::new()
             .name("skyzfsd-upload".into())
             .spawn(move || {
@@ -689,7 +746,9 @@ impl Uploading {
                     let asked = async {
                         let _ = stopped.wait_for(Option::is_some).await;
                     };
-                    uploader.run(asked, |s| publish(shown_of(&s))).await;
+                    uploader
+                        .run(asked, |s| publish(shown_of(&s, &holder)))
+                        .await;
                     let release = stopped.borrow().unwrap_or(false);
                     if !release {
                         return Ended::Kept;
