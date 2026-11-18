@@ -1,0 +1,56 @@
+# Next look 3 at #125: the cost of slicing, R9 and R13 (scenarios_f4_cost.rs),
+# test profile of the workspace (optimized), MemRegion (a mutex per load),
+# a 4-core container with other builds at times. Loads are exact; times are
+# indicative. Run with scen.sh / plant_cost.py and REVIEW_SIZES.
+
+## R9: a chunk of data in every MiB, nothing written before the cut, slices of 64
+
+# af7b524 (the code before the fix)
+R9 1 GiB: loads 71641 (next_look2.md)
+R9 4 GiB: slices 1025 runs 4096 blocks 65536 loads 384793 all 5.66904ms slowest 254.201µs
+R9 16 GiB: slices 4097 runs 16384 blocks 262144 loads 3111961 all 42.529161ms slowest 95.132µs
+R9 64 GiB: slices 16385 runs 65536 blocks 1048576 loads 37613593 all 499.912629ms slowest 247.754µs
+R9 256 GiB: slices 65537 runs 262144 blocks 4194304 loads 553107481 all 7.398888221s slowest 2.169838ms
+
+# d71869a (the fix)
+R9 1 GiB: slices 257 runs 1024 blocks 16384 loads 64407 all 1.174689ms slowest 46.101µs
+R9 4 GiB: slices 1025 runs 4096 blocks 65536 loads 257559 all 4.431706ms slowest 57.457µs
+R9 16 GiB: slices 4097 runs 16384 blocks 262144 loads 1030167 all 15.237913ms slowest 158.287µs
+R9 64 GiB: slices 16385 runs 65536 blocks 1048576 loads 4120599 all 62.550617ms slowest 237.597µs
+R9 256 GiB: slices 65537 runs 262144 blocks 4194304 loads 16482327 all 248.53065ms slowest 196.157µs
+R9 1024 GiB: slices 262145 runs 1048576 blocks 16777216 loads 65929239 all 972.638314ms slowest 1.19125ms
+
+# d71869a with Z01 (a stretch of 64 summary words)
+Z01 R9 16 GiB: loads 1545192 all 26.560749ms
+Z01 R9 64 GiB: loads 6180888 all 97.284298ms
+
+## R13: one hole, nothing written (a new, empty volume): one slice, one run
+
+# af7b524
+R13 4 GiB: loads 1312 17.365µs
+R13 16 GiB: loads 5152 66.781µs
+R13 64 GiB: loads 20512 264.918µs
+R13 256 GiB: loads 81952 1.06796ms
+
+# d71869a
+R13 4 GiB: loads 1822 30.469µs
+R13 16 GiB: loads 7198 113.992µs
+R13 64 GiB: loads 28702 454.114µs
+R13 256 GiB: loads 114718 1.836374ms
+R13 1024 GiB: loads 458782 7.386492ms
+
+# d71869a with Z06 (each stretch walks the hole set from the run's first block)
+Z06 R13 4 GiB: loads 132382 1.753217ms
+Z06 R13 16 GiB: loads 2102302 27.504822ms
+Z06 R13 64 GiB: loads 33574942 438.901553ms
+Z06 R13 256 GiB: loads 536952862 7.08790783s
+
+# d71869a with Z07 (each stretch reads the summary from the run's first block)
+Z07 R13 4 GiB: loads 34462 453.721µs
+Z07 R13 16 GiB: loads 530974 7.086617ms
+Z07 R13 64 GiB: loads 8415262 112.158507ms
+Z07 R13 256 GiB: loads 134324254 1.789028966s
+
+# d71869a, R13 with a block written every 3 stretches + 5, and every 64 + 77, at 1 TiB
+R13 1024 GiB apart 12293: slices 342 runs 21837 blocks 21836 loads 772951 all 17.186374ms slowest 183.503µs
+R13 1024 GiB apart 262221: slices 17 runs 1025 blocks 1024 loads 473513 all 7.760203ms slowest 512.255µs
