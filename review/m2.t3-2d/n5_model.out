@@ -1,0 +1,27 @@
+the flush before group 21's uberblocks at 20280, cut 11 at 20480, the flush before group 22's at 21420, cut 12 at 21620; the test's marks at 18175 and 20485
+V0: exit 0   [the test: one flush kept between the marks, one gone after noflush-end]
+    cuts	PASS	25 cuts, each at the same barrier with the same group and the same answer to itself
+    obs_noflush_groups	INFO	groups [21] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+    sessions	PASS	2 sessions as committed; 21 cuts within the kstats' windows, the others in strictly increasing groups
+V0n: exit 1   [the test without the marks]
+    cuts	PASS	25 cuts, each at the same barrier with the same group and the same answer to itself
+    sessions	FAIL	session 1: the cuts give 11 groups, the kstat 12 committed; first difference at 10: cuts [17, 18, 22], committed [17, 18, 21, 22]
+V1: exit 0   [noflush-end at 21435, after the last flush gone]
+    cuts	PASS	25 cuts, each at the same barrier with the same group and the same answer to itself
+    obs_noflush_groups	INFO	groups [21] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+    sessions	PASS	2 sessions as committed; 21 cuts within the kstats' windows, the others in strictly increasing groups
+V2: exit 0   [no flush between the marks, every flush after them]
+    cuts	PASS	25 cuts, each at the same barrier with the same group and the same answer to itself
+    obs_noflush_groups	INFO	groups [21] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+    sessions	PASS	2 sessions as committed; 21 cuts within the kstats' windows, the others in strictly increasing groups
+V3a: exit 1   [course (b): the flush after noflush-end is there, and the daemon cuts nothing at it]
+    cuts	FAIL	cut 11: the daemon's is group 22 (itself) at record 695, the reference's group 21 (itself) at record 689
+    status	FAIL	cuts '25', not '26'
+    sessions	PASS	2 sessions as committed; 22 cuts within the kstats' windows, the others in strictly increasing groups
+V3b: exit 0   [course (b): the daemon cuts group 21 at the first flush after noflush-end]
+    cuts	PASS	26 cuts, each at the same barrier with the same group and the same answer to itself
+    sessions	PASS	2 sessions as committed; 22 cuts within the kstats' windows, the others in strictly increasing groups
+V4: exit 0   [two groups between the marks (18 and 21): 18 is never cut, 21 at the first flush after]
+    cuts	PASS	25 cuts, each at the same barrier with the same group and the same answer to itself
+    obs_noflush_groups	INFO	groups [18] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+    sessions	PASS	2 sessions as committed; 21 cuts within the kstats' windows, the others in strictly increasing groups

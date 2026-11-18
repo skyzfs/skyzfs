@@ -1,0 +1,8 @@
+A7 lost_at_kill reads the place in the whole log, not the number the line carries: SURVIVED
+K9 the reason is matched whatever number follows "cut" (the cut asked for or not): SURVIVED
+W4 a VERDICT line is a verdict whatever the holder's status: SURVIVED
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED
+P2 a page is 8192 bytes: KILLED by 1: test_a_tear_on_a_page_of_4_kib
+P7 the start may be of a pid already started (the author's survivor): SURVIVED
+P11 the start may be later than the line after it (the author's survivor): SURVIVED

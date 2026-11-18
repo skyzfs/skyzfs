@@ -14,6 +14,9 @@ SET is one of:
            next2_plants.py, next3_plants.py (#113, four heads)
   again    plants of the older lists whose text has changed since,
            planted in this head's text (the names say which they were)
+  look     the next look at 813120a: I7 in the head's text, the page by
+           other numbers, a fault the other way round for each new test
+           of 5ed17fe, the helper's two hooks
   head2    `new` for fe6970c: held_across_start's plants in that head's
            text, and L1 to L9 in its rule (a block counts by its last
            known content before the next start)
@@ -270,6 +273,91 @@ HEAD2 = [p for p in NEW if not p[0].startswith(('H3 ', 'H4 ', 'H5 ', 'H6 ', 'H7 
      H2_SUM, "        hit = sum(1 for b, h in home.items() if h is not None and h != held[b] and False)\n"),
 ]
 
+# 813120a (covers 5ed17fe): the next look. The listed plants of #111 run
+# from their own lists (sets 2b and 2b-next); here I7 in this head's
+# text, the page by other numbers, and for each new test a fault the
+# other way round (O...), so that a test that only ever expects a FAIL,
+# or only ever a PASS, shows. X1 and X2 are in the main tests' helper.
+TM = 'tests/kernel/test_cut_daemon_main.py'
+HOLD = 'tests/kernel/cut_hold.py'
+F_ASK = "        if len(w) >= 3 and w[0] == '>' and w[2] == 'release':\n            asked.add(w[1])\n"
+F_ANS = "        elif len(w) >= 3 and w[0] == '<' and w[1] in asked and w[2] == 'ok':\n            return int(f[0])\n"
+L_LAX = "        if k and (committed is None or committed > inst['ns']):\n"
+L_RC = "        rc = 1 if bad else rc\n    return rc\n"
+I_USE = "                rc = max(rc, instance_lines(put, rdir, instances, dcuts, records, begun))\n"
+N_PUT = "        if left:\n            put('obs_noflush_groups', 'INFO',"
+N_USE = "        kstats, left = noflush_kstats(kstats, records, taken, cs)\n"
+LEAVE_IF = "        if leave and os.path.exists(leave):\n"
+LEAVE_LOG = "            h.d.log.write(f'{time.monotonic_ns()}\\tleft\\n')\n"
+LEAVE_EXIT = "os.environ.get('CUT_HOLD_LEAVE', '')):\n                sys.exit(0)\n"
+LOOK = [
+    ('I7 (in this head\'s text) a failed instance line is no verdict (main drops instance_lines\' result)', J,
+     I_USE, "                instance_lines(put, rdir, instances, dcuts, records, begun)\n"),
+    ('N5 (again) main does not take the groups out of the kstats', J,
+     N_USE, "        _, left = noflush_kstats(kstats, records, taken, cs)\n"),
+    # ---- the page, by other numbers (G1 of the review at fe6970c) ----
+    ('G1 a page is 8192 bytes', J, "PAGE = 4096\n", "PAGE = 8192\n"),
+    ('G1 a page is 16384 bytes', J, "PAGE = 4096\n", "PAGE = 16384\n"),
+    ('G1 a page is 12288 bytes', J, "PAGE = 4096\n", "PAGE = 12288\n"),
+    ('G1 a page is 65536 bytes', J, "PAGE = 4096\n", "PAGE = 65536\n"),
+    ('G1 a page is 2048 bytes', J, "PAGE = 4096\n", "PAGE = 2048\n"),
+    ('G1 a page is 1024 bytes', J, "PAGE = 4096\n", "PAGE = 1024\n"),
+    ('G1 a page is 512 bytes', J, "PAGE = 4096\n", "PAGE = 512\n"),
+    ('G1 a page is 1 byte (a tear anywhere)', J, "PAGE = 4096\n", "PAGE = 1\n"),
+    # ---- first_commit: the other way round from F4 to F6 ----
+    ('O1 no release answered is ever a commit', J,
+     F_ANS, F_ANS.replace("            return int(f[0])\n", "            pass\n")),
+    ('O2 the time the first release was asked, not answered', J,
+     F_ASK, F_ASK.replace("asked.add(w[1])", "return int(f[0])")),
+    ('O3 a release is not asked for unless it is the log\'s first line', J,
+     F_ASK, F_ASK.replace("w[2] == 'release':", "w[2] == 'release' and f[0] == '1':")),
+    ('O4 a line that is not a time and a text is the rig\'s error', J,
+     "        if len(f) != 2 or not f[0].isdigit():\n            continue\n",
+     "        if len(f) != 2 or not f[0].isdigit():\n            raise RigError('holder.log: not a time and a text')\n"),
+    # ---- instance_lines: the other way round from L3 to L13 ----
+    ('O5 a later start takes either map whenever (no commit is looked at)', J,
+     L_LAX, "        if k:\n"),
+    ('O6 a later start never takes either: the map must be taken up', J,
+     L_LAX, "        if False:\n"),
+    ('O7 every later start is a verdict', J,
+     L_RC, "        rc = 1 if bad or k else rc\n    return rc\n"),
+    ('O8 no start is a verdict', J,
+     L_RC, "        rc = rc\n    return rc\n"),
+    ('O9 the commit is held to the start, at or after (> to >=) and a commit at the start\'s own time', J,
+     L_LAX, "        if k and (committed is None or committed >= inst['ns']):\n"),
+    # ---- the holder's leave: the other way round from H4 ----
+    ('O10 a leave ends the holder with 1', HOLD,
+     LEAVE_EXIT, LEAVE_EXIT.replace("sys.exit(0)", "sys.exit(1)")),
+    ('O11 a leave writes no `left` line', HOLD, LEAVE_LOG, ""),
+    ('O12 a leave is not looked at before the first step (the holder steps once, then leaves)', HOLD,
+     "    paused = False\n    while not os.path.exists(stop):\n" + LEAVE_IF,
+     "    paused = False\n    h.step()\n    while not os.path.exists(stop):\n" + LEAVE_IF),
+    ('O13 at a leave the holder writes its final listing and status, and drains nothing', HOLD,
+     LEAVE_EXIT, "os.environ.get('CUT_HOLD_LEAVE', '')):\n"
+     "                open(os.path.join(out, 'held-final.txt'), 'w').close()\n                sys.exit(0)\n"),
+    # ---- main and the no-flush groups: the other way round from N5 ----
+    ('O14 main does not say which groups it left out', J, N_PUT, N_PUT.replace("if left:", "if False:")),
+    ('O15 main says obs_noflush_groups in every recording', J, N_PUT, N_PUT.replace("if left:", "if True:")),
+    ('O16 main leaves every group out of the kstats that the reference does not cut, marks or none', J,
+     N_USE, N_USE + "        kstats = {k: [g for g in v if g in {c['txg'] for c in cs}] for k, v in kstats.items()}\n"),
+    ('O17 main takes the groups out and holds the sessions to nothing (session_verdicts on no kstats)', J,
+     N_USE, N_USE + "        kstats = {k: [] for k in kstats}\n"),
+    # ---- main and an instance line: the other way round from I7 ----
+    ('O18 a failed instance line is the rig\'s error (exit 2)', J,
+     I_USE, "                if instance_lines(put, rdir, instances, dcuts, records, begun):\n"
+     "                    raise RigError('an instance line')\n"),
+    # ---- the helper's two new hooks ----
+    ('X1 the helper drops what tamper_starts returns', TM,
+     "                starts = tamper_starts(starts)\n", "                tamper_starts(starts)\n"),
+    ('X2 the helper drops what tamper_marks returns', TM,
+     "        marks = tamper_marks(marks)\n", "        tamper_marks(marks)\n"),
+    # ---- the words of obs_unstored_at_kill (F1) ----
+    ('W1 the line says again that the kill was before the state stored the cut', J,
+     "flushes killed after their barrier and before their answer; a cut such a flush carried '\n            'was not stored'",
+     "flushes the daemon was killed at, between the barrier and the state storing the cut'\n            ''"),
+]
+
+
 def load(name, path, argv):
     """An older review's plant script as a module; it reads sys.argv when imported."""
     saved = sys.argv
@@ -292,6 +380,8 @@ def plants_of(which):
         return AGAIN
     if which == 'head2':
         return HEAD2
+    if which == 'look':
+        return LOOK
     b, c = os.path.join(HERE, '..', 'm2.t3-2b'), os.path.join(HERE, '..', 'm2.t3-2c')
     if which == '2b':
         return load('p2b', os.path.join(b, 'plants.py'), ['x', ROOT]).PLANTS

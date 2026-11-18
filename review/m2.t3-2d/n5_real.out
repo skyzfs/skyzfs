@@ -1,0 +1,18 @@
+art115c-ubuntu-26.04:
+  marks at records 6694 and 6736: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 468 (cut); the first flush after noflush-end: record 6818, which cuts group 468
+  marks at records 6985 and 7107: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 479 (not cut), 483 (not cut), 492 (not cut); the first flush after noflush-end: record 7141, which cuts nothing
+art115c-ubuntu-26.04-arm:
+  marks at records 6096 and 6143: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 441 (cut); the first flush after noflush-end: record 6226, which cuts group 441
+  marks at records 6397 and 6530: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 452 (not cut), 456 (not cut), 465 (not cut); the first flush after noflush-end: record 6565, which cuts nothing
+art115b-ubuntu-26.04:
+  marks at records 6648 and 6695: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 459 (cut); the first flush after noflush-end: record 6794, which cuts group 459
+  marks at records 6962 and 7068: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 470 (not cut), 474 (not cut), 483 (not cut); the first flush after noflush-end: record 7102, which cuts nothing
+art115b-ubuntu-26.04-arm:
+  marks at records 4810 and 4857: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 345 (cut); the first flush after noflush-end: record 4940, which cuts group 345
+  marks at records 5108 and 5226: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 356 (not cut), 360 (not cut), 369 (not cut); the first flush after noflush-end: record 5261, which cuts nothing
+art115-2604:
+  marks at records 6466 and 6509: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 447 (cut); the first flush after noflush-end: record 6598, which cuts group 447
+  marks at records 6774 and 6884: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 458 (not cut), 462 (not cut), 471 (not cut); the first flush after noflush-end: record 6921, which cuts nothing
+art115-2604arm:
+  marks at records 4995 and 5037: 0 flushes received between them; starts between them: ['took the device over']; groups whose uberblocks were written there: 351 (cut); the first flush after noflush-end: record 5124, which cuts group 351
+  marks at records 5288 and 5421: 0 flushes received between them; starts between them: ['created the device']; groups whose uberblocks were written there: 362 (not cut), 366 (not cut), 375 (not cut); the first flush after noflush-end: record 5452, which cuts nothing

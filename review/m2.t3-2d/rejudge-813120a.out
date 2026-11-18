@@ -1,0 +1,62 @@
+art115c-ubuntu-26.04 autotrim: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 bound: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 config: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 edges: exit 0 here, 31 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 failed: exit 0 here, 33 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    carried_across_failure	INFO	cut 14, the first written of the new state: 1780 of its 6177 blocks differ from the image the holders of the state before left
+art115c-ubuntu-26.04 full: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 life: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 multihost: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 rewind: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 rewindf: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 rewindsync: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 slog: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 stray: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04 takeover: exit 0 here, 35 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    held_across_start	INFO	cut 10, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made
+    obs_noflush_groups	INFO	groups [479, 483, 492] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
+art115c-ubuntu-26.04-arm autotrim: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm bound: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm config: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm edges: exit 0 here, 31 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm failed: exit 0 here, 33 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    carried_across_failure	INFO	cut 14, the first written of the new state: 1789 of its 6177 blocks differ from the image the holders of the state before left
+art115c-ubuntu-26.04-arm full: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm life: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm multihost: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm rewind: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm rewindf: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm rewindsync: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm slog: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm stray: exit 0 here, 30 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+art115c-ubuntu-26.04-arm takeover: exit 0 here, 35 lines, the same as the run
+    obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+    held_across_start	INFO	cut 9, counted by instance 1 and written by instance 2: 281 blocks from copies instance 1 made
+    obs_noflush_groups	INFO	groups [452, 456, 465] were synced with no flush and are not cut, by the reference: left out of the sessions' committed groups
