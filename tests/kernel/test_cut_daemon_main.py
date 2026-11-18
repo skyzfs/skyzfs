@@ -363,6 +363,27 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=none)
         self.assertNotIn('carried_across_failure', lines)
 
+    def test_what_cannot_be_judged(self):
+        """The rig's errors of a recording that cannot be judged (the plants
+        I10 and I11 of the review of #111): two instances with no holder,
+        as no recording that holds no cuts starts the daemon again; and a
+        held stage on a log with no hashes, as a daemon from before
+        M2.2b-2 writes it. The same log with no holder is judged."""
+        none = lambda written, blocks, final: None    # noqa: E731
+        rc, lines = recording(holder=none, split=(13, 'taken-over'), holder_left=())
+        self.assertEqual((rc, lines['rig_error']),
+                         (2, ('ERROR', '2 instances of the daemon and no holder: only a recording that holds cuts '
+                              'starts the daemon again')))
+
+        def bare(text):
+            return '\n'.join('\t'.join(ln.split('\t')[:8]) if '\tapplied\t' in ln else ln
+                             for ln in text.split('\n'))
+        rc, lines = recording(holder=none, tamper_log=bare)
+        self.assertEqual(rc, 2)
+        self.assertIn('writes applied with no hashes in the request log', lines['rig_error'][1])
+        rc, lines = recording(tamper_log=bare)
+        self.assertEqual((rc, lines['cuts'][0]), (0, 'PASS'))
+
     def test_a_verdict_before_the_first_cut(self):
         """The daemon refused to read the first cut the holder asked for
         (Codex on #113): the holder ended with its VERDICT and wrote no

@@ -1021,6 +1021,9 @@ class Parse(unittest.TestCase):
             'the torn line before the last whole line': self.torn(cut.replace('263932738825', '263932600000', 1)),
             'the start at the end of the log': self.torn(cut, after=''),
             'the start not on a page': self.torn(cut, off=1),
+            # half a page off: a page of 2048 bytes would take it (the
+            # review of #113's next look, P3)
+            'the start half a page off': self.torn(cut, off=2048),
             'the start a page late': self.torn(cut[:-1] + 'x', off=-1),
             'another pid torn': self.torn(cut.replace('\t9937\t', '\t9999\t', 1)),
             'a pid that is not the last instance\'s, cut': self.torn('263932738825\t98'),
@@ -1374,6 +1377,29 @@ class TwoInstances(unittest.TestCase):
         _, recs, dcuts, ref = self.judge(split_log(self.text, self.k))
         self.assertIsNone(cdc.cut_line_missing(dcuts[:self.k - 1] + dcuts[self.k:], ref, recs))
 
+    def test_a_missing_cut_line_by_hand(self):
+        """cut_line_missing names one missing line, of the cut at the last
+        barrier before the kill, where the next instance counts past it;
+        anything else is a verdict for compare (the plants K3 and K4 of
+        the review of #111)."""
+        flush = lambda i: {'i': i, 'flags': ['flush']}    # noqa: E731
+        records = [flush(0), flush(1), {'i': 2, 'flags': []}, flush(3), {'i': 4, 'flags': []},
+                   {'i': 5, 'flags': ['instance']}, flush(6), flush(7)]
+        after = [{'prefix': 7, 'number': '3'}]
+        ref = [{'prefix': 1, 'txg': 5}, {'prefix': 3, 'txg': 6}, {'prefix': 7, 'txg': 7}]
+        got = cdc.cut_line_missing([{'prefix': 1, 'number': '1'}] + after, ref, records)
+        self.assertIn('no line of cut 2 (group 6)', got)
+        # the next instance counts on from the cut whose line is there
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 1, 'number': '1'}, {'prefix': 7, 'number': '2'}], ref,
+                                               records))
+        # the reference's cut the daemon has no line of is not at the last
+        # barrier before the kill
+        ref2 = [{'prefix': 0, 'txg': 4}, {'prefix': 1, 'txg': 5}, {'prefix': 7, 'txg': 7}]
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 0, 'number': '1'}] + after, ref2, records))
+        # two cuts with no line
+        ref3 = [{'prefix': 0, 'txg': 4}, {'prefix': 1, 'txg': 5}, {'prefix': 3, 'txg': 6}, {'prefix': 7, 'txg': 7}]
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 0, 'number': '1'}] + after, ref3, records))
+
     def test_a_kill_before_the_state_stored_the_cut(self):
         """Killed after the barrier line (window B), or after the cut line
         (C), before the state stored the cut: the next instance is handed
@@ -1452,6 +1478,50 @@ class TwoInstances(unittest.TestCase):
         kinds = [('instance' if 'instance' in r['flags'] else r['flags'][0] if r['flags'] else 'write') for r in recs]
         self.assertEqual(kinds, ['receipt', 'instance', 'write', 'receipt', 'flush', 'discard'])
 
+    def test_nothing_of_the_first_instance_carries_over(self):
+        """What the first instance received and did not finish is not the
+        next one's: a flush with no barrier holds back none of its
+        requests, a write with no `applied` line is none of its writes,
+        and its last barrier is no barrier of its cut lines (the plants
+        C2 to C4 of the review of #111)."""
+        z = cdc.ZERO
+        first = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n'
+                 f'3\t{PID}\trecv\t4\tflush\t0\t0\t-\n4\t{PID}\tbarrier\t4\tflush\t-\t-\t-\n'
+                 f'5\t{PID}\tcut\t4\tflush\titself\t1\t5\n'
+                 f'6\t{PID}\trecv\t1\twrite\t8\t8\t-\n7\t{PID}\trecv\t2\tflush\t0\t0\t-\n'
+                 f'10\t{PID2}\tstart\t0\t-\t-\t-\t64\n11\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up\n')
+
+        def records(rest):
+            return cdc.records_of(cdc.log_lines(cdc.parse_log(first + rest), {PID2: True}), [])[0]
+
+        def kinds(recs):
+            return [('instance' if 'instance' in r['flags'] else r['flags'][0] if r['flags'] else 'write')
+                    for r in recs]
+        # a write-zeroes the next instance receives with no flush of its
+        # own waiting is placed at its receipt, not behind the old flush
+        recs = records(f'12\t{PID2}\trecv\t13\twrite_zeroes\t8\t8\t-\n'
+                       f'13\t{PID2}\trecv\t11\twrite\t32\t8\t-\n14\t{PID2}\tapplied\t11\twrite\t-\t-\t-\t{z}\n')
+        self.assertEqual(kinds(recs), ['receipt', 'flush', 'receipt', 'instance', 'discard', 'write'])
+        # ... and over the old instance's write, which is not pending
+        self.assertEqual(recs[4]['ambiguous'], set())
+        # the old instance's write is applied by none of the next's lines
+        with self.assertRaisesRegex(RigError, 'line 10: write 1 applied with no recv before it'):
+            records(f'12\t{PID2}\tapplied\t1\twrite\t-\t-\t-\t{z}\n')
+        # nor does the old instance's barrier stand before the next's cut
+        with self.assertRaisesRegex(RigError, 'line 10: a cut that does not follow its own barrier'):
+            records(f'12\t{PID2}\tcut\t4\tflush\titself\t2\t5\n')
+
+    def test_instances_do_not_interleave(self):
+        """A serve begins once the one before has ended: a line of the
+        first instance after the second's start is the rig's error (the
+        plant C9 of the review of #111)."""
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n'
+                f'3\t{PID2}\tstart\t0\t-\t-\t-\t64\n4\t{PID}\trecv\t2\tflush\t0\t0\t-\n'
+                f'5\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up\n')
+        with self.assertRaisesRegex(RigError, f'line 3: pid {PID2} started before pid {PID}\'s last line '
+                                    '\\(line 4\\)'):
+            cdc.log_lines(cdc.parse_log(text), {PID2: True})
+
     def test_the_log_must_say_which_took_over(self):
         text = split_log(self.text, self.k)
         with self.assertRaises(RigError):
@@ -1509,6 +1579,12 @@ class NoFlush(unittest.TestCase):
         self.assertEqual((ks, left), ({1: [6, 8, 9]}, [7]))
         with self.assertRaises(RigError):
             cdc.noflush_kstats({}, recs[:2], taken, [])
+        # a group not cut after the span is not one of them (the plants N2
+        # and N3 of the review of #111)
+        recs.append({'i': 5, 'flags': []})
+        ks, left = cdc.noflush_kstats({1: [6, 7, 8, 9, 10]}, recs, taken + [{'record': 5, 'txg': 10}],
+                                      [{'txg': 8}, {'txg': 9}])
+        self.assertEqual((ks, left), ({1: [6, 8, 9, 10]}, [7]))
 
 
 class Status(unittest.TestCase):
