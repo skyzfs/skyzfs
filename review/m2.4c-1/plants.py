@@ -173,6 +173,9 @@ PLANTS = [
     ("X3", "a failed take's backoff is counted from before the take", UPLOADER,
      "            LeaseState::None(_) => after + self.lease_backoff.failed(),",
      "            LeaseState::None(_) => before + self.lease_backoff.failed(),", []),
+    ("X3s", "as X3 (a failed take's backoff is counted from before the take), with the scenario of a slow take", UPLOADER,
+     "            LeaseState::None(_) => after + self.lease_backoff.failed(),",
+     "            LeaseState::None(_) => before + self.lease_backoff.failed(),", [scn("c4_")]),
     ("X4", "the rest after a lost lease is counted from before the take", UPLOADER,
      "            LeaseState::Lost { .. } => after + AT_REST,",
      "            LeaseState::Lost { .. } => before + AT_REST,", []),
@@ -216,6 +219,14 @@ PLANTS = [
       "        (self.wake)();\n        answer.await.ok()"),
      ("        let (reply, answer) = oneshot::channel();\n        (self.wake)();\n        {\n",
       "        answer.await.ok()"), [scn("d3_")]),
+    ("Q7b", "the queue's thread is woken before the call is left, on an open desk only", QUEUED,
+     "        {\n            let mut slot = self.slot();\n            if slot.closed {\n                return None;\n            }\n"
+     "            // One caller, which waits for each answer: the slot is empty.\n            slot.call = Some((call, reply));\n        }\n"
+     "        (self.wake)();\n        answer.await.ok()",
+     "        if self.slot().closed {\n            return None;\n        }\n        (self.wake)();\n"
+     "        {\n            let mut slot = self.slot();\n            if slot.closed {\n                return None;\n            }\n"
+     "            slot.call = Some((call, reply));\n        }\n"
+     "        answer.await.ok()", [scn("d3_")]),
     ("Q8", "the desk answers the sync of the copies as done without asking the store", QUEUED,
      "        Call::SyncCopies(number) => Answer::SyncCopies(store.sync_copies(number)),",
      "        Call::SyncCopies(number) => {\n            let _ = number;\n            Answer::SyncCopies(Ok(()))\n        }", []),

@@ -44,3 +44,15 @@ B1	KILLED	the wait does not double	by 5: a_commit_refused_again_and_again_waits_
 B2	KILLED	the wait has no upper bound	by 1: backoff::tests::the_wait_doubles_from_a_second_to_five_minutes
 B3	KILLED	a success does not reset the wait	by 2: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, backoff::tests::a_success_starts_the_waits_again
 Q1	KILLED	close leaves the call waiting	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing
+Q2	KILLED	a call on a closed desk is left there and waited for	by a test that does not end (240 s): a_closed_desk_answers_as_a_store_that_holds_nothing, a_cut_goes_up_through_the_desk_answered_on_the_stores_thread
+Q3	KILLED	a read on a closed desk answers a slice of nothing (not an error)	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing
+Q4	KILLED	a release on a closed desk answers that the cut was let go	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing	with scenarios.rs d4_: passes
+Q4b	KILLED	a naming on a closed desk answers that it named	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing	with scenarios.rs d4_: passes
+Q5	KILLED	the sync of the copies on a closed desk answers done	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing	with scenarios.rs d4_: passes
+Q6	KILLED	a call does not wake the queue's thread	by a test that does not end (240 s): a_closed_desk_answers_as_a_store_that_holds_nothing	with scenarios.rs d3_: FAILS (plants_detail/Q6.with)
+Q7	KILLED	the queue's thread is woken before the call is left	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing	with scenarios.rs d3_: FAILS (plants_detail/Q7.with)
+Q8	SURVIVED	the desk answers the sync of the copies as done without asking the store	
+Q9	KILLED	the desk answers a release without asking the store	by 1: a_cut_goes_up_through_the_desk_answered_on_the_stores_thread
+Q10	SURVIVED	the desk does not answer a call after it has closed, though it took it before	
+X3s	SURVIVED	as X3 (a failed take's backoff is counted from before the take), with the scenario of a slow take		with scenarios.rs c4_: FAILS (plants_detail/X3s.with)
+Q7b	SURVIVED	the queue's thread is woken before the call is left, on an open desk only		with scenarios.rs d3_: FAILS (plants_detail/Q7b.with)

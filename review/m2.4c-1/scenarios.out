@@ -1,0 +1,106 @@
+
+running 16 tests
+test b1_a_long_upload_over_a_link_that_loses_a_put_now_and_then ... ## B1: every 0th PUT call of 512 fails (0 failures): the cut of 60 data blocks and 4 slots is uploaded after 0 s of tokio's time; waits (s): []
+## B1: every 50th PUT call of 512 fails (10 failures): the cut of 60 data blocks and 4 slots is uploaded after 811 s of tokio's time; waits (s): [1, 2, 4, 8, 16, 32, 64, 128, 256, 300]
+## B1: every 20th PUT call of 512 fails (25 failures): the cut of 60 data blocks and 4 slots is uploaded after 5311 s of tokio's time; waits (s): [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300]
+## B1: every 8th PUT call of 512 fails (64 failures): the cut of 60 data blocks and 4 slots is uploaded after 17011 s of tokio's time; waits (s): [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300]
+ok
+test b2_a_cut_found_committed_resets_the_wait ... ## B2: waits before the cut was found committed: [1, 2]; the wait after: Some(1)
+ok
+test b3_the_lease_is_kept_during_a_long_wait ... ## B3: twenty minutes of failing steps: the longest wait 300s; the least time left on the lease before a turn: 20000 ms; observes: 12
+ok
+test c1_a_slow_step_delays_the_renewal_by_the_wait_as_well ... ## C1: steps that fail after 0 ms: the longest time between two renewals 10000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 20000 ms; first renewals at (ms): [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000]
+## C1: steps that fail after 5000 ms: the longest time between two renewals 11000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 19000 ms; first renewals at (ms): [0, 11000, 21000, 31000, 41000, 51000, 61000, 71000]
+## C1: steps that fail after 15000 ms: the longest time between two renewals 23000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 7000 ms; first renewals at (ms): [0, 15000, 31000, 48000, 67000, 90000, 100000, 121000]
+## C1: steps that fail after 19000 ms: the longest time between two renewals 27000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 3000 ms; first renewals at (ms): [0, 19000, 39000, 60000, 83000, 110000, 120000, 145000]
+## C1: steps that fail after 21000 ms: the longest time between two renewals 29000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 1000 ms; first renewals at (ms): [0, 21000, 43000, 66000, 91000, 120000, 130000, 157000]
+## C1: steps that fail after 25000 ms: the longest time between two renewals 33000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 0 ms; first renewals at (ms): [0, 25000, 51000, 78000, 107000, 140000, 150000, 181000]
+ok
+test c2_a_step_under_way_when_the_renewal_is_due ... ## C2: an idle uploader, every check takes 5000 ms: the longest time between two renewals 10250 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 19750 ms; 118 turns in ten minutes
+## C2: an idle uploader, every check takes 9700 ms: the longest time between two renewals 19650 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 10350 ms; 62 turns in ten minutes
+## C2: an idle uploader, every check takes 15000 ms: the longest time between two renewals 15000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 15000 ms; 40 turns in ten minutes
+## C2: an idle uploader, every check takes 25000 ms: the longest time between two renewals 25000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 5000 ms; 24 turns in ten minutes
+## C2: an idle uploader, every check takes 35000 ms: the longest time between two renewals 35000 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 0 ms; 18 turns in ten minutes
+## C2: an idle uploader, a check that begins in the last 250 ms before the renewal is due takes 5000 ms: the longest time between two renewals 14750 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 15250 ms; 1640 turns in ten minutes
+## C2: an idle uploader, a check that begins in the last 250 ms before the renewal is due takes 15000 ms: the longest time between two renewals 24750 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 5250 ms; 984 turns in ten minutes
+## C2: an idle uploader, a check that begins in the last 250 ms before the renewal is due takes 19000 ms: the longest time between two renewals 28750 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 1250 ms; 840 turns in ten minutes
+## C2: an idle uploader, a check that begins in the last 250 ms before the renewal is due takes 21000 ms: the longest time between two renewals 30750 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 0 ms; 800 turns in ten minutes
+## C2: an idle uploader, a check that begins in the last 250 ms before the renewal is due takes 25000 ms: the longest time between two renewals 34750 ms (the lease's time is 30000 ms); the least left on the lease when a turn began: 0 ms; 717 turns in ten minutes
+ok
+test c3_lease_calls_slower_than_the_renewals_interval ... ## C3: the lease's calls answer at once, idle: 2418 turns, 60 takes of the lease and 1 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 18 (the cut's own upload is 18 such turns); the lease at the end: Held { epoch: 1, expires_at_ms: 1000620000 }
+## C3: the lease's calls take 12 s and succeed, idle: 50 turns, 50 takes of the lease and 1 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Held { epoch: 1, expires_at_ms: 1000630000 }
+## C3: the lease's calls take 12 s and succeed, every step fails at once: 50 turns, 50 takes of the lease and 10 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Held { epoch: 1, expires_at_ms: 1000630000 }
+## C3: the lease's calls take 12 s and fail from the first take on, idle: 9 turns, 9 takes of the lease and 0 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: None("backend error: the scenario's timeout")
+## C3: the lease's calls take 12 s and fail after the first take (unsure), idle: 50 turns, 50 takes of the lease and 1 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Unsure { epoch: 1, why: "backend error: the scenario's timeout" }
+## C3: the lease's calls take 12 s and fail after the first take (unsure), every step fails at once: 50 turns, 50 takes of the lease and 10 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Unsure { epoch: 1, why: "backend error: the scenario's timeout" }
+## C3: the lease's calls take 40 s and fail after the first take (unsure), idle: 15 turns, 15 takes of the lease and 1 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Unsure { epoch: 1, why: "backend error: the scenario's timeout" }
+## C3: the lease's calls fail at once after the first take (unsure), every step fails at once: 69 turns, 60 takes of the lease and 10 reads of head in ten minutes; the most turns in a row that took no time and asked for no wait: 0 (the cut's own upload is 18 such turns); the lease at the end: Unsure { epoch: 1, why: "backend error: the scenario's timeout" }
+ok
+test c4_a_wait_after_a_slow_take_is_counted_from_when_it_came_back ... ## C4: a first take that failed after 5 s: the wait before the next is 1s
+## C4: a renewal that took 4 s during a backoff: the wait after it is 6s
+ok
+test d1_the_sync_of_the_copies_is_waited_for_on_the_queues_thread ... ## D1: with the copies file's sync held for 501 ms: the queue's thread is inside Desk::answer: true; callers waiting at the end of a held sync: 1; turns of the queue's thread meanwhile: 0
+## D1: the longest single Desk::answer took 505 ms; the uploader's states: [Working(Reading, Some(1)), Working(Syncing, Some(1)), Working(Committing, Some(1)), Working(Checking, None), Idle]
+ok
+test d2_a_run_stopped_at_a_read_and_run_again ... ## D2: the first run ended 104 ms after it began, with a read waiting at the desk; states published: [Working(Reading, Some(1)), Working(Reading, Some(1))]
+## D2: calls answered before the second run: 3
+## D2: the second run, 1.5 s: 1339 turns; its first states: [Working(Reading, Some(1)), Working(Checking, None), Working(Reading, Some(1)), Working(Checking, None), Working(Reading, Some(1)), Working(Checking, None), Working(Reading, Some(1)), Working(Checking, None), Working(Reading, Some(1)), Working(Checking, None), Working(Reading, Some(1)), Working(Checking, None)]
+## D2: after it: state Working(Reading, Some(1)); uploaded 0; cuts lost 669; checks answered by the desk in all: 1342; head's group: None
+## D2: the store still holds 1 cut(s)
+ok
+test d3_no_wake_is_lost_with_a_queue_that_turns_only_when_woken ... ## D3: 20000 calls in 782 ms; wakes lost: 0
+ok
+test d4_a_desk_closed_at_any_moment_of_an_upload ... ## D4: 300 uploads with the desk closed after 0 to 139 answers: nothing landed in 269, the cut landed whole in 31; figures over all runs: cuts counted as lost 254, cuts counted as committed and gone from the store 13
+ok
+test l1_two_nodes_never_commit_under_a_lease_that_is_not_theirs ... ## L1: 400 programs, 156017 turns, 25455 commits landed (14316 by node-a, 11139 by node-b), 535 changes of hand; turns with the lease unsure: 2876
+## L1: at the end (both reach the store, clocks agree, 7 minutes, both pools write): somebody uploads in 345 (in 7 of them the lease changed hands once more, when the clocks were set equal); nobody uploads in 16 because the holder's daemon is stopped and the other lost the lease, in 0 with both uploaders running, in 39 otherwise (no uploader running, or a case below)
+ok
+test l2_two_nodes_under_one_holder_name_both_commit ... ## L2 (one holder name for both nodes): 60 programs, 4709 commits landed (2580 by the first node, 2129 by the second), 1140 changes of hand; at the end a node uploads in 56 programs
+ok
+test l3_one_holder_name_on_two_nodes_step_by_step ... ## L3: round 0, node 0: lease Some(1); head moved: true; uploaded 1 (whole 1), mismatches 0
+## L3: round 0, node 1: lease Some(1); head moved: true; uploaded 1 (whole 1), mismatches 0
+## L3: round 1, node 0: lease Some(1); head moved: false; uploaded 1 (whole 1), mismatches 1
+## L3: round 1, node 1: lease Some(1); head moved: true; uploaded 2 (whole 1), mismatches 0
+## L3: round 2, node 0: lease Some(1); head moved: true; uploaded 2 (whole 2), mismatches 1
+## L3: round 2, node 1: lease Some(1); head moved: false; uploaded 2 (whole 1), mismatches 1
+## L3: round 3, node 0: lease Some(1); head moved: true; uploaded 3 (whole 2), mismatches 1
+## L3: round 3, node 1: lease Some(1); head moved: true; uploaded 3 (whole 2), mismatches 1
+## L3: round 4, node 0: lease Some(1); head moved: false; uploaded 3 (whole 2), mismatches 2
+## L3: round 4, node 1: lease Some(1); head moved: true; uploaded 4 (whole 2), mismatches 1
+## L3: round 5, node 0: lease Some(1); head moved: true; uploaded 4 (whole 3), mismatches 2
+## L3: round 5, node 1: lease Some(1); head moved: false; uploaded 4 (whole 2), mismatches 2
+## L3: the row at the end: Some(("node-a", 1, 1000050000))
+ok
+test l4_a_take_at_a_newer_epoch_costs_both_nodes_the_lease ... ## L4: A's first take: Held { epoch: 1, expires_at_ms: 1000030000 }
+## L4: B's first take, between A's read and A's take: Some(Held { epoch: 2, expires_at_ms: 1000090000 })
+## L4: A after its renewal: Lost { holder: "", epoch: 3 }
+## L4: the row: Some(("node-a", 3, 0))
+## L4: B at its next renewal: Lost { holder: "node-a", epoch: 3 }
+## L4: ten lease times later: A Lost { holder: "", epoch: 3 }; B Lost { holder: "node-a", epoch: 3 }
+## L4: the row then: Some(("node-a", 3, 0))
+ok
+test l5_the_lease_row_gone_under_an_uploader ... ## L5: at 0 ms: Working(Reading, Some(2))
+## L5: at 1 ms: Working(Syncing, Some(2))
+## L5: at 2 ms: Working(Committing, Some(2))
+## L5: at 3 ms: Backoff { why: "the commit was refused: head or the cut's row moved, or the volume has no lease row", wait: 1s }
+## L5: at 1003 ms: Backoff { why: "commit of cut 2 refused: conflict", wait: 2s }
+## L5: at 3003 ms: Working(Reading, Some(2))
+## L5: at 3004 ms: Working(Syncing, Some(2))
+## L5: at 3005 ms: Working(Committing, Some(2))
+## L5: at 3006 ms: Backoff { why: "the commit was refused: head or the cut's row moved, or the volume has no lease row", wait: 4s }
+## L5: at 7006 ms: Backoff { why: "commit of cut 2 refused: conflict", wait: 8s }
+## L5: at 10000 ms: LeaseLost { holder: "", epoch: 0 }
+## L5: uploads begun after the row went: 2; commits given up: 2; errors: 2; segment bytes in the store: 20480 before, 61440 after; the lease: Lost { holder: "", epoch: 0 }; the row: None
+ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.57s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-upload v0.0.1 (/scratch/wt117/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.24s
+     Running tests/review_scn.rs (/scratch/wt117-target/debug/build/skyzfs-upload/bb8be93e4a904ad1/out/review_scn-bb8be93e4a904ad1)
+
+--- exit 0

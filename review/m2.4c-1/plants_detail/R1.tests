@@ -9,7 +9,7 @@ warning: unused variable: `wait`
 warning: `skyzfs-upload` (lib) generated 1 warning (run `cargo fix --lib -p skyzfs-upload` to apply 1 suggestion)
 warning: `skyzfs-upload` (lib test) generated 1 warning (1 duplicate)
     Finished `test` profile [optimized + debuginfo] target(s) in 0.09s
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/1636ce5e84eb833f/out/skyzfs_upload-1636ce5e84eb833f)
+     Running unittests src/lib.rs (/scratch/wt117-target/debug/build/skyzfs-upload/1636ce5e84eb833f/out/skyzfs_upload-1636ce5e84eb833f)
 
 running 21 tests
 test backoff::tests::a_success_starts_the_waits_again ... ok
@@ -36,7 +36,7 @@ test lease::tests::this_holders_name_at_another_epoch_is_lost ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/crash.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/afb87bf7485a9c0d/out/crash-afb87bf7485a9c0d)
+     Running tests/crash.rs (/scratch/wt117-target/debug/build/skyzfs-upload/afb87bf7485a9c0d/out/crash-afb87bf7485a9c0d)
 
 running 3 tests
 test a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most ... ok
@@ -45,7 +45,7 @@ test a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_uploa
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
 
-     Running tests/driver.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/6029d3d490335114/out/driver-6029d3d490335114)
+     Running tests/driver.rs (/scratch/wt117-target/debug/build/skyzfs-upload/6029d3d490335114/out/driver-6029d3d490335114)
 
 running 22 tests
 test a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded ... ok
@@ -73,7 +73,7 @@ test a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_whole
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
-     Running tests/queued.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/a12a5f684f0a6b6f/out/queued-a12a5f684f0a6b6f)
+     Running tests/queued.rs (/scratch/wt117-target/debug/build/skyzfs-upload/a12a5f684f0a6b6f/out/queued-a12a5f684f0a6b6f)
 
 running 2 tests
 test a_closed_desk_answers_as_a_store_that_holds_nothing ... ok
@@ -81,7 +81,7 @@ test a_cut_goes_up_through_the_desk_answered_on_the_stores_thread ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/uploader.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb59b7d39d371e0f/out/uploader-bb59b7d39d371e0f)
+     Running tests/uploader.rs (/scratch/wt117-target/debug/build/skyzfs-upload/bb59b7d39d371e0f/out/uploader-bb59b7d39d371e0f)
 
 running 9 tests
 test after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure ... ok

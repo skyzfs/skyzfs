@@ -1,5 +1,5 @@
     Finished `test` profile [optimized + debuginfo] target(s) in 0.10s
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/1636ce5e84eb833f/out/skyzfs_upload-1636ce5e84eb833f)
+     Running unittests src/lib.rs (/scratch/wt117-target/debug/build/skyzfs-upload/1636ce5e84eb833f/out/skyzfs_upload-1636ce5e84eb833f)
 
 running 21 tests
 test check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch ... ok
@@ -26,7 +26,7 @@ test row::tests::a_row_reads_back_as_the_cut_it_names ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/crash.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/afb87bf7485a9c0d/out/crash-afb87bf7485a9c0d)
+     Running tests/crash.rs (/scratch/wt117-target/debug/build/skyzfs-upload/afb87bf7485a9c0d/out/crash-afb87bf7485a9c0d)
 
 running 3 tests
 test a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most ... ok
@@ -35,7 +35,7 @@ test a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_uploa
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
 
-     Running tests/driver.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/6029d3d490335114/out/driver-6029d3d490335114)
+     Running tests/driver.rs (/scratch/wt117-target/debug/build/skyzfs-upload/6029d3d490335114/out/driver-6029d3d490335114)
 
 running 22 tests
 test a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded ... ok
@@ -63,7 +63,7 @@ test the_first_cut_goes_up_whole_and_the_next_as_a_delta_onto_it ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running tests/queued.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/a12a5f684f0a6b6f/out/queued-a12a5f684f0a6b6f)
+     Running tests/queued.rs (/scratch/wt117-target/debug/build/skyzfs-upload/a12a5f684f0a6b6f/out/queued-a12a5f684f0a6b6f)
 
 running 2 tests
 test a_closed_desk_answers_as_a_store_that_holds_nothing ... ok
@@ -71,7 +71,7 @@ test a_cut_goes_up_through_the_desk_answered_on_the_stores_thread ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/uploader.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb59b7d39d371e0f/out/uploader-bb59b7d39d371e0f)
+     Running tests/uploader.rs (/scratch/wt117-target/debug/build/skyzfs-upload/bb59b7d39d371e0f/out/uploader-bb59b7d39d371e0f)
 
 running 9 tests
 test a_store_out_of_reach_for_longer_than_the_lease_does_not_stop_the_uploads ... ok
