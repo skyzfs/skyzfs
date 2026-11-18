@@ -660,7 +660,7 @@ class HeldLines(HeldFixture):
     holder's files, the status, what it was given."""
 
     def lines(self, name='life', status=None, final=None, log='', status_held=None, cuts_line='begun',
-              recs=None, dcuts=None, written=None, blocks=None, image=None):
+              recs=None, dcuts=None, written=None, blocks=None, image=None, begun=None):
         import shutil
         import tempfile
         d = tempfile.mkdtemp(prefix='cdc-held-')
@@ -671,9 +671,9 @@ class HeldLines(HeldFixture):
                          status_held=status_held if status_held is not None else 'cuts_held 1\n')
             inst = {'lines': [{'event': 'cuts', 'result': cuts_line}]}
             got = []
-            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, [inst], recs or self.recs,
+            rc = cdc.held_lines(lambda k, v, t: got.append((k, v, t)), d, [inst] * len(begun or [1]), recs or self.recs,
                                 dcuts or self.dcuts, status or {'cut_state': 'begun', 'cuts_abandoned': '0'},
-                                512 << 20, name)
+                                512 << 20, name, begun)
             return rc, {k: (v, t) for k, v, t in got}
         finally:
             shutil.rmtree(d)
@@ -684,6 +684,23 @@ class HeldLines(HeldFixture):
         for k in ('cut_state', 'cuts_held', 'held_content'):
             self.assertEqual(lines[k][0], 'PASS', (k, lines[k]))
         self.assertEqual(lines['cuts_abandoned'][0], 'INFO')
+
+    def test_a_floor_not_met_is_the_rigs_error(self):
+        """Either floor's ERROR is returned as the rig's (the review of
+        #115, G3: plants H10 and A6), and leaves the verdict alone: a right
+        daemon's held cuts with no cut held across a start (takeover) or
+        no state begun again (a start that acknowledged a failure)."""
+        rc, lines = self.lines(name='takeover')
+        self.assertEqual(lines['held_across_start'][0], 'ERROR', lines['held_across_start'])
+        self.assertEqual(rc, (0, True), {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        rc, lines = self.lines(begun=[True, True])
+        self.assertEqual(lines['carried_across_failure'], ('ERROR', 'no cut of the new state was written'))
+        self.assertEqual(rc, (0, True), {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        # and neither is asked where its recording is not
+        rc, lines = self.lines()
+        self.assertEqual(rc, (0, False))
+        self.assertNotIn('held_across_start', lines)
+        self.assertNotIn('carried_across_failure', lines)
 
     def test_a_held_cut_the_daemon_could_not_read(self):
         """The holder's VERDICT (cut_hold.py: a refused read of a cut still

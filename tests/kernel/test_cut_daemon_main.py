@@ -335,14 +335,18 @@ class Main(unittest.TestCase):
         self.assertEqual([lines[i].split('\t')[2:5] for i in (ci - 2, ci - 1)],
                          [['recv', '1', 'flush'], ['barrier', '1', 'flush']])
         group = lines[ci].split('\t')[7]
-        lo, hi = int(lines[cuts[9]].split('\t')[0]) + 5, int(lines[ci].split('\t')[0]) + 5
-
-        # every flush from the one that cut the group to the one before the
-        # next cut's: under zfs_nocacheflush the pool sends none of them
-        gone = set(range(ci - 2, ci + 1)) | {i for i in range(ci + 1, cuts[11] - 2)
-                                             if lines[i].split('\t')[2:5] in (['recv', '1', 'flush'],
-                                                                               ['barrier', '1', 'flush'])}
-        self.assertEqual(len(gone), 5)
+        # The span: from after the cut before it to the flush that comes
+        # before the next group's uberblock writes. Under zfs_nocacheflush
+        # the pool sends no flush in it (none of the twelve spans of the
+        # real recordings has one; the review of #115, N1), so every flush
+        # between the marks goes: the group's own, before and after its
+        # uberblock writes, and the next group's first.
+        nxt = next(i for i in range(ci + 1, cuts[11]) if lines[i].split('\t')[2:5] == ['barrier', '1', 'flush'])
+        lo, hi = int(lines[cuts[9]].split('\t')[0]) + 5, int(lines[nxt].split('\t')[0]) + 5
+        gone = {i for i, ln in enumerate(lines) if lo < int(ln.split('\t')[0]) < hi
+                and ln.split('\t')[2:5] in (['recv', '1', 'flush'], ['barrier', '1', 'flush'], ['cut', '1', 'flush'])}
+        self.assertEqual(len(gone), 7)
+        self.assertLess(nxt, cuts[11] - 2)
 
         def no_flush(text):
             return ''.join(ln + '\n' for i, ln in enumerate(text.splitlines()) if i not in gone)
@@ -480,6 +484,7 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=none, split=(k, 'acknowledged'), status=status, as_name='failed',
                               tamper_written=lambda written, ns: [w for w in written if w.get('asked', 1) <= ns])
         self.assertEqual(lines['carried_across_failure'], ('ERROR', 'no cut of the new state was written'))
+
         # a recording with no acknowledged start is not asked
         rc, lines = recording(holder=none)
         self.assertNotIn('carried_across_failure', lines)
