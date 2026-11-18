@@ -1365,6 +1365,57 @@ class AcknowledgedFailure(unittest.TestCase):
         self.assertTrue(cdc.status_verdict(st, ref, since=starts[-1]['i'])[0], cdc.status_verdict(st, ref,
                                                                                                     since=starts[-1]['i']))
 
+    def test_a_state_through_two_starts(self):
+        """Four instances: the second begins a state, the third takes it up
+        and counts no cut, the fourth takes it up again. At the fourth
+        start the state's cuts and releases are those since the second:
+        its cut 2, released while the second served, leaves nothing held;
+        not released, it must be held, though the third counted nothing."""
+        import shutil
+        import tempfile
+        text, _ = split_begun(self.text, self.k)
+        lines = text.splitlines()
+        ci = [i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [PID2, 'cut']][1]
+        ns = int(lines[ci].split('\t')[0])
+        pid3, pid4 = '4444', '5555'
+        later = [f'{ns + 1}\t{pid3}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{pid3}\tcuts\t-\t-\t-\t-\ttaken_up',
+                 f'{ns + 3}\t{pid4}\tstart\t0\t-\t-\t-\t64', f'{ns + 4}\t{pid4}\tcuts\t-\t-\t-\t-\ttaken_up']
+        later += ['\t'.join([f[0], pid4] + f[2:]) for f in (ln.split('\t') for ln in lines[ci + 1:])]
+        inst = cdc.parse_log('\n'.join(lines[:ci + 1] + later) + '\n')
+        self.assertEqual(len(inst), 4)
+        recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: False, pid3: True, pid4: True}, {PID2}),
+                                     cdc.read_marks(self.marks))
+        cdc.epochs(dcuts, recs)
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        begun = [True, True, False, False]
+        good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        third = 'cuts 2\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\n'
+        fourth = 'cuts 2\ncut_state taken_up\ncuts_held 0\nintent_state taken_up\n'
+        t1, t2 = inst[1]['ns'], inst[2]['ns']
+        for why, log, statuses, want in (
+                ('cut 2 released while the second served', COMMITTED + f'{t1 + 1}\t> t9 release 2\n'
+                 f'{t2 - 1}\t< t9 ok (0 lines)\n', (good, fourth, fourth), 0),
+                ('cut 2 not released', COMMITTED, (good, third, fourth), 1)):
+            with self.subTest(why):
+                d = tempfile.mkdtemp(prefix='cdc-ack-')
+                try:
+                    for k, st in enumerate((START_STATUS,) + statuses):
+                        with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                            f.write(st)
+                    with open(os.path.join(d, 'holder.log'), 'w') as f:
+                        f.write(log)
+                    got = []
+                    rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs, begun)
+                    self.assertEqual(rc, want, got)
+                    self.assertEqual(len(got), 4)
+                    if not want:
+                        self.assertIn('cuts 2 at the start, 2 counted before it', got[3][2])
+                    else:
+                        self.assertEqual([v for _, v, _ in got], ['PASS', 'PASS', 'PASS', 'FAIL'], got)
+                        self.assertIn('wanted at least 1: cut 2 was counted before it', got[3][2])
+                finally:
+                    shutil.rmtree(d)
+
     def test_kinds_with_the_acknowledgement(self):
         text = f'{PID}\tadded\n{PID2}\tadded\tacknowledged\n'
         self.assertEqual(cdc.read_kinds(text), {PID: False, PID2: False})
