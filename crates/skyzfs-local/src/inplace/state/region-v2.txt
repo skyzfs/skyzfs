@@ -1,0 +1,173 @@
+# A cut state's region of version 2, as the code of version 2 wrote it
+# (zfs-topology at a3f3580, before M2.4e): the state tests' world ran
+# `a_taking_over_several_words`, then a cut, a write of block 66 and one
+# of blocks 3 and 4, with a bound of 64 blocks and no death, and then
+# set a mark (the state of cut 9). Read by
+# `a_region_of_version_2_is_read_as_it_was_written`.
+#
+# len N: the region's words. w I V: word I holds V (hex); every other
+# word is zero. cut NUMBER LO PHASE ITSELF: a held cut, oldest first.
+# r CUT BLOCK READ: what the cut reads for the block, i (the image) or
+# cS (the copy in slot S); every block not listed reads u (unchanged).
+# figures HELD COPIED BOUND ABANDONED, and count N.
+len 298
+w 0 315455435a594b53
+w 1 2
+w 2 c8
+w 3 40
+w 4 7473657420656874
+w 5 2e746f6f62202773
+w 6 7473657420656874
+w 7 2e6b736964202773
+w 8 7473657420656874
+w 9 7472617473202773
+w 10 5
+w 11 1
+w 12 1
+w 14 ff
+w 15 1
+w 16 6d
+w 17 9
+w 18 9
+w 19 9
+w 20 9
+w 21 9
+w 22 9
+w 23 9
+w 24 9
+w 25 9
+w 26 9
+w 27 9
+w 28 9
+w 29 9
+w 30 9
+w 31 9
+w 32 9
+w 50 101
+w 51 69
+w 52 5
+w 53 5
+w 54 5
+w 55 5
+w 56 5
+w 57 5
+w 58 5
+w 59 5
+w 60 5
+w 61 5
+w 62 5
+w 63 5
+w 64 5
+w 65 5
+w 66 5
+w 67 5
+w 68 68
+w 69 4
+w 70 4
+w 71 4
+w 72 4
+w 73 4
+w 74 4
+w 75 4
+w 76 4
+w 77 4
+w 78 4
+w 79 4
+w 80 4
+w 81 4
+w 82 4
+w 83 4
+w 84 4
+w 85 5
+w 86 4ff03
+w 88 1
+w 89 69
+w 90 5
+w 91 5
+w 92 5
+w 93 5
+w 94 5
+w 95 5
+w 96 5
+w 97 5
+w 98 5
+w 99 5
+w 100 5
+w 101 5
+w 102 5
+w 103 5
+w 104 5
+w 105 5
+w 107 2ff00
+w 108 1
+w 109 1
+w 110 67
+w 111 3
+w 112 3
+w 113 3
+w 114 3
+w 115 3
+w 116 3
+w 117 3
+w 118 3
+w 119 3
+w 120 3
+w 121 3
+w 122 3
+w 123 3
+w 124 3
+w 125 3
+w 126 3
+w 127 4
+w 128 2ff02
+w 129 2
+w 130 1
+w 131 68
+w 132 4
+w 133 4
+w 134 4
+w 135 4
+w 136 4
+w 137 4
+w 138 4
+w 139 4
+w 140 4
+w 141 4
+w 142 4
+w 143 4
+w 144 4
+w 145 4
+w 146 4
+w 147 4
+w 148 7473657420656874
+w 149 7472617473202773
+w 150 3
+w 151 18
+w 152 4
+w 160 f
+w 161 6
+w 162 6
+w 163 6
+w 164 2
+w 165 5
+w 166 2
+w 168 2
+w 170 2
+w 171 500000003
+w 172 82
+w 173 500000003
+w 174 43
+w 175 600000003
+cut 4 2 Uploading true
+cut 5 4 Flushing true
+r 4 1 c0
+r 4 2 i
+r 4 65 i
+r 4 66 c2
+r 4 129 c1
+r 4 130 i
+r 4 193 i
+r 5 1 i
+r 5 129 i
+figures 2 12288 262144 0
+count 5

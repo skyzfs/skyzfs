@@ -826,9 +826,10 @@ fn uberblock_write(txg: u64) -> Op {
 }
 
 /// A cut state of version 1, from before M2.4 named its state, is
-/// refused for its version though its file is two words shorter than
-/// version 2's: the start reads the old header before it makes the
-/// region again, and says why it began a new state.
+/// refused for its version though its file is not of this version's
+/// length (here two words shorter, as version 1's was than version
+/// 2's): the start reads the old header before it makes the region
+/// again, and says why it began a new state.
 #[cfg(feature = "test-hooks")]
 #[test]
 fn a_cut_state_of_version_1_is_refused_for_its_version() {
@@ -859,12 +860,14 @@ fn a_cut_state_of_version_1_is_refused_for_its_version() {
 /// What the start says of a cut state's file whose length is not this
 /// version's, for each kind of header (review of M2.4b-1, G4): it names
 /// the version only where the file has the state's magic and a version
-/// other than this one, whatever the file's length; a file of this
-/// version, or of another magic, is "not there with the volume's
-/// length". In each case it begins a new state, the file has its full
-/// length again, and the start after takes that state up. The defects,
-/// planted by hand: the guard on this version taken out of the start's
-/// message, and the version read whatever the magic.
+/// the start does not read, whatever the file's length; a file of a
+/// version it reads (this one, 3, and 2, M2.4e) at a length that is not
+/// that version's own, or of another magic, is "not there with the
+/// volume's length". In each case it begins a new state, the file has
+/// this version's full length again, and the start after takes that
+/// state up. The defects, planted by hand: the guard on the versions
+/// read taken out of the start's message, and the version read
+/// whatever the magic.
 #[cfg(feature = "test-hooks")]
 #[test]
 fn the_start_names_the_version_of_a_cut_state_only_where_it_is_another() {
@@ -888,9 +891,13 @@ fn the_start_names_the_version_of_a_cut_state_only_where_it_is_another() {
     let mut other_magic = with(1, full - 16);
     other_magic[0] ^= 1;
     const ABSENT: &str = "the region was not there with the volume's length";
-    let cases: [(&str, Vec<u8>, &str); 10] = [
+    // This version is 3, and the start reads 2 as well. A state of
+    // version 2 is shorter than this version's by the hole set's words,
+    // three at least, so a file two words shorter than `full` is of
+    // neither version's length.
+    let cases: [(&str, Vec<u8>, &str); 11] = [
         (
-            "version 1, of version 2's length",
+            "version 1, of version 3's length",
             with(1, full),
             "of version 1,",
         ),
@@ -901,9 +908,10 @@ fn the_start_names_the_version_of_a_cut_state_only_where_it_is_another() {
         ),
         ("version 1, its header alone", with(1, 16), "of version 1,"),
         ("version 0", with(0, full - 16), "of version 0,"),
-        ("version 3", with(3, full - 16), "of version 3,"),
+        ("version 4", with(4, full - 16), "of version 4,"),
+        ("version 3, two words shorter", with(3, full - 16), ABSENT),
+        ("version 3, a byte shorter", with(3, full - 1), ABSENT),
         ("version 2, two words shorter", with(2, full - 16), ABSENT),
-        ("version 2, a byte shorter", with(2, full - 1), ABSENT),
         ("another magic", other_magic, ABSENT),
         ("the magic alone", with(1, 8), ABSENT),
         ("empty", Vec::new(), ABSENT),
