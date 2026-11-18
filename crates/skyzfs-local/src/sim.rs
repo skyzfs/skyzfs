@@ -467,6 +467,8 @@ struct State {
     writes_of: BTreeMap<String, u64>,
     /// Calls that read each file, by name: see [`SimDisk::reads_of`].
     reads_of: BTreeMap<String, u64>,
+    /// Syncs asked of each file, by name: see [`SimDisk::syncs_of`].
+    syncs_of: BTreeMap<String, u64>,
     /// The files with a sync that ended later under way, by inode: how
     /// many handles have one.
     syncing: BTreeMap<u64, u64>,
@@ -592,6 +594,13 @@ impl State {
         }
     }
 
+    /// A sync of the file `inode` was asked for: counted under its name.
+    fn count_sync(&mut self, inode: u64) {
+        if let Some(name) = self.name_of(inode).map(str::to_string) {
+            *self.syncs_of.entry(name).or_default() += 1;
+        }
+    }
+
     /// A sync that ends later, of the file `inode`, is no longer under
     /// way.
     fn sync_over(&mut self, inode: u64) {
@@ -693,6 +702,7 @@ impl SimDisk {
                 begins_refused: 0,
                 writes_of: BTreeMap::new(),
                 reads_of: BTreeMap::new(),
+                syncs_of: BTreeMap::new(),
                 syncing: BTreeMap::new(),
                 writes_while_syncing: BTreeMap::new(),
                 halt: None,
@@ -1178,6 +1188,14 @@ impl SimDisk {
     /// it had at the call).
     pub fn reads_of(&self, name: &str) -> u64 {
         self.lock().reads_of.get(name).copied().unwrap_or(0)
+    }
+
+    /// How many syncs the file named `name` has been asked for so far:
+    /// whole ones ([`File::sync`]) and ones begun to end later
+    /// ([`File::sync_begin`]), failed ones included (counted under the
+    /// name it had at the call).
+    pub fn syncs_of(&self, name: &str) -> u64 {
+        self.lock().syncs_of.get(name).copied().unwrap_or(0)
     }
 
     /// Every call that started writeback so far, in order: the file's
@@ -1726,6 +1744,7 @@ impl File for SimFile {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.held_waiting -= 1;
         }
+        guard.count_sync(self.inode);
         self.sync_locked(&mut guard, None)
     }
 
@@ -1733,6 +1752,7 @@ impl File for SimFile {
         // Nothing wakes: the caller asks (`sync_wakes`).
         drop(wake);
         let mut guard = self.disk.lock();
+        guard.count_sync(self.inode);
         let state = &mut *guard;
         self.check(state)?;
         if state.halted(false) {
@@ -1790,6 +1810,7 @@ impl File for SimFile {
         }
         let Some(mut pending) = self.pending.take() else {
             // Nothing was begun: a whole sync, as by default.
+            guard.count_sync(self.inode);
             return Some(self.sync_locked(&mut guard, None));
         };
         if !wait && pending.polls > 0 {

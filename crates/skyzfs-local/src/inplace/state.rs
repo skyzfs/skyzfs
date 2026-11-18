@@ -311,6 +311,11 @@ pub(crate) struct Taken {
     /// Whether the region was there with the length the volume needs:
     /// only then can it hold a state to take up.
     pub(crate) kept: bool,
+    /// The version of the state a named region held when it was there
+    /// with another length, read before it was made again: a state of
+    /// another version is refused for its version, which the start
+    /// says, whatever its length (version 1 is two words shorter).
+    pub(crate) found_version: Option<u64>,
     /// Whose a state must be to be taken up: with the start token this
     /// open found.
     pub(crate) owner: Owner,
@@ -362,12 +367,14 @@ impl Taken {
             ));
         }
         let words = words_for(size / BLOCK_SIZE, records_for(bound));
+        let mut found_version = None;
         let (region, kept) = match &hold.region {
             super::CutRegion::Memory(region) if region.words() >= words => {
                 (StoreRegion::Memory(region.clone()), true)
             }
             super::CutRegion::Memory(_) => (StoreRegion::Memory(MemRegion::new(words)), false),
             super::CutRegion::Named(path) => {
+                found_version = version_in(path);
                 let (region, opened) =
                     skyzfs_mapped::Mapped::open(path, words).map_err(|e| e.to_string())?;
                 (
@@ -379,6 +386,7 @@ impl Taken {
         Ok(Self {
             region,
             kept,
+            found_version,
             owner: Owner {
                 volume: identity,
                 boot: hold.boot,
@@ -393,10 +401,29 @@ impl Taken {
     }
 }
 
+/// The version of the cut state in the file at `path`, read from its
+/// header; `None` where there is no file, or no state's magic in it.
+fn version_in(path: &std::path::Path) -> Option<u64> {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    let (words, _) = header.as_chunks::<8>();
+    let word = |i: usize| words.get(i).map(|word| u64::from_le_bytes(*word));
+    (word(at::MAGIC) == Some(MAGIC))
+        .then(|| word(at::VERSION))
+        .flatten()
+}
+
 /// The region's magic: `SKYZCUT1`.
 const MAGIC: u64 = u64::from_le_bytes(*b"SKYZCUT1");
 /// The version of the region's format this code reads and writes.
-pub const VERSION: u64 = 1;
+/// Version 2 (M2.4) added the state's name, [`CutState::id`]. A state
+/// of version 1 is not read: its volume counts as changed once, as for
+/// any state that is not taken up.
+pub const VERSION: u64 = 2;
 
 /// The words of a pool state: its group, then its root block pointer.
 const STATE_WORDS: usize = 1 + ROOT_WORDS;
@@ -469,7 +496,11 @@ mod at {
     pub(super) const NEWEST_SEL: usize = MARK + 2 * STATE_WORDS;
     pub(super) const NEWEST: usize = NEWEST_SEL + 1;
     pub(super) const CUTS: usize = NEWEST + 2 * STATE_WORDS;
-    pub(super) const HEADER: usize = CUTS + HELD * CUT_WORDS;
+    /// The state's name ([`super::CutState::id`]): the start token of
+    /// the open that began it, two words likewise. Unlike `START` it is
+    /// never stored again.
+    pub(super) const STATE_ID: usize = CUTS + HELD * CUT_WORDS;
+    pub(super) const HEADER: usize = STATE_ID + 2;
 }
 
 /// The words a state needs for a volume of `blocks` blocks with room
@@ -819,6 +850,7 @@ impl<R: Region> CutState<R> {
         }
         for (i, word) in id_words(owner.start).into_iter().enumerate() {
             region.store(at::START + i, word);
+            region.store(at::STATE_ID + i, word);
         }
         region.store(at::OPEN_ALSO, NO_MAP);
         match changed {
@@ -840,9 +872,6 @@ impl<R: Region> CutState<R> {
     /// a word `w` holds blocks `64 w .. 64 w + 64`. `None` where the
     /// whole volume counts as changed after it. A superset is safe for
     /// what asks (the intent map keeps a bit it might have cleared).
-    // The store clears the intent map from M2.3b on; until then only
-    // the map's model test asks.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn changed_after(&self, number: u64) -> Option<Vec<usize>> {
         if self.whole() > number {
             return None;
@@ -1011,6 +1040,20 @@ impl<R: Region> CutState<R> {
     }
 
     // ---- the count, the open map and the epochs ----
+
+    /// The state's name: the start token of the open that began it. A
+    /// later start that takes the state up keeps it. The numbers of
+    /// cuts begin again with each state, so a cut is named across
+    /// states by this and its number: what an upload records, and
+    /// what the intent map's base holds (M2.4).
+    pub fn id(&self) -> [u8; 16] {
+        let mut id = [0; 16];
+        let (eights, _) = id.as_chunks_mut::<8>();
+        for (i, eight) in eights.iter_mut().enumerate() {
+            *eight = self.load(at::STATE_ID + i).to_le_bytes();
+        }
+        id
+    }
 
     /// The count of cuts.
     pub fn count(&self) -> u64 {
@@ -1468,6 +1511,52 @@ impl<R: Region> CutState<R> {
         }
         self.free_unneeded(None);
         true
+    }
+
+    /// Cut `number`, the one being uploaded, cannot be uploaded: a read
+    /// for it, or the sync of the copies it was read from, failed (M2.4).
+    /// It is abandoned as at the bound, its map going to the cut that
+    /// waits, and counted. Whether it was that cut.
+    pub fn abandon_uploading(&mut self, number: u64) -> bool {
+        let uploading = self
+            .held()
+            .first()
+            .is_some_and(|cut| cut.number == number && cut.phase == Phase::Uploading);
+        uploading && self.abandon() == Some(number)
+    }
+
+    /// The row in object storage is not what the held cuts were made
+    /// against (M2.4, the uploader's check: no row, another cut, another
+    /// state, or a head another writer moved): every held cut is
+    /// abandoned, oldest first, each counted as at the bound, and the
+    /// whole volume counts as changed in the open epoch, so that the
+    /// next cut holds all of it. The numbers of the cuts abandoned.
+    ///
+    /// Each cut goes as [`CutState::abandon`] lets one go, so a death at
+    /// any store counts each once. The open epoch is marked only once
+    /// no cut is held: a held cut that counted the whole volume does so
+    /// until it is gone, since the mark moves the epoch that counts it.
+    /// After a death the uploader checks again before any upload and
+    /// does this again; with no cut held it only marks the open epoch.
+    pub fn abandon_all(&mut self) -> Vec<u64> {
+        let mut abandoned = Vec::new();
+        for _ in 0..HELD {
+            match self.abandon() {
+                Some(number) => abandoned.push(number),
+                None => break,
+            }
+        }
+        if self.held().is_empty() {
+            self.store(at::WHOLE, self.epoch());
+        }
+        abandoned
+    }
+
+    /// Whether held cut `number` holds the whole volume: the first cut
+    /// of a state begun with nothing known, the first after a mismatch,
+    /// or a cut that took such a cut's map. Its upload needs no base.
+    pub fn is_whole_cut(&self, number: u64) -> bool {
+        self.hold(number).is_some_and(|h| self.is_whole(&h.cut))
     }
 
     /// The oldest held cut is abandoned at the bound. The one being
@@ -1994,6 +2083,30 @@ impl<R: Region> CutState<R> {
                 .find(|(_, record)| record.lo <= number && number < record.hi)
                 .map_or(Read::Image, |(index, _)| Read::Copy(index as u32)),
         )
+    }
+
+    /// The blocks in held cut `number`'s map from block `from` on, in
+    /// order, at most `limit` of them (at least one), and the block of
+    /// the map after them (`None`: the map ends with them); `None` if no
+    /// such cut is held. The map of the cut being uploaded does not
+    /// change while it is held, since it is the oldest: no cut gives it
+    /// a map (M2.4 reads it so, a slice at a time).
+    pub fn map_from(
+        &self,
+        number: u64,
+        from: u64,
+        limit: usize,
+    ) -> Option<(Vec<u64>, Option<u64>)> {
+        let cut = self.hold(number)?;
+        if self.is_whole(&cut.cut) {
+            let from = from.min(self.blocks);
+            let end = from.saturating_add(limit.max(1) as u64).min(self.blocks);
+            return Some(((from..end).collect(), (end < self.blocks).then_some(end)));
+        }
+        let maps: Vec<usize> = std::iter::once(cut.parts.first)
+            .chain(cut.parts.also)
+            .collect();
+        Some(self.maps.blocks_from(&self.region, &maps, from, limit))
     }
 
     /// The blocks in held cut `number`'s map, in order.

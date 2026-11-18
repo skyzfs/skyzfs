@@ -97,10 +97,6 @@
 //! left it: in a region the map names if that write came after the
 //! base, and otherwise as the base holds it.
 
-// Clearing a bit follows a commit, which only the test-hooks build's
-// release stands in for until M2.4.
-#![cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
-
 use std::collections::BTreeMap;
 
 use skyzfs_blk::Buf;
@@ -116,8 +112,10 @@ pub(crate) const PAGE: usize = 4096;
 /// The header's first bytes.
 const MAGIC: [u8; 8] = *b"SKZINTNT";
 
-/// This format's version. A file of another is not taken up.
-pub(crate) const VERSION: u32 = 1;
+/// This format's version. A file of another is not taken up. Version 2
+/// (M2.4) names the base's cut state ([`Base::state`]); a map of
+/// version 1 counts the whole volume as changed once.
+pub(crate) const VERSION: u32 = 2;
 
 /// Where a bit page's bits begin: after its number.
 const BITS_AT: usize = 8;
@@ -135,6 +133,9 @@ const WORDS_PER_PAGE: usize = (PER_PAGE as usize).div_ceil(64);
 /// named hold as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Base {
+    /// The cut state that made the cut ([`super::state::CutState::id`]):
+    /// the numbers of cuts begin again with each state.
+    pub state: [u8; 16],
     /// The cut's number, in the cut state that made it.
     pub number: u64,
     /// Its transaction group.
@@ -197,9 +198,13 @@ pub enum Distrust {
     /// place: a page torn by a power cut, or damaged.
     #[error("page {0} of the intent map is not whole")]
     Torn(u64),
-    /// Another format, or another version of it.
-    #[error("the intent map is of another format or version")]
+    /// Another format.
+    #[error("the intent map is of another format")]
     Format,
+    /// Another version of the format, read before the header's
+    /// checksum.
+    #[error("the intent map is of version {0}, and this daemon reads version {VERSION}")]
+    Version(u32),
     /// Another volume's: one made again in the same directory.
     #[error("the intent map is another volume's")]
     Identity,
@@ -285,15 +290,19 @@ impl IntentMap {
         if header[..8] != MAGIC {
             return Err(Distrust::Format);
         }
-        if !whole(header) {
-            return Err(Distrust::Torn(0));
-        }
         let u32_at =
             |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
         let u64_at =
             |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap_or([0; 8]));
-        if u32_at(8) != VERSION {
-            return Err(Distrust::Format);
+        // The version before the checksum: a map of another version is
+        // refused as such, whatever its checksum (the lead's condition
+        // on M2.4b's question 4).
+        let version = u32_at(8);
+        if version != VERSION {
+            return Err(Distrust::Version(version));
+        }
+        if !whole(header) {
+            return Err(Distrust::Torn(0));
         }
         if header[16..32] != shape.identity {
             return Err(Distrust::Identity);
@@ -306,9 +315,14 @@ impl IntentMap {
         }
         let mut token = [0; 16];
         token.copy_from_slice(&header[48..64]);
-        let base = (header[64] == 1).then(|| Base {
-            number: u64_at(72),
-            group: u64_at(80),
+        let base = (header[64] == 1).then(|| {
+            let mut state = [0; 16];
+            state.copy_from_slice(&header[88..104]);
+            Base {
+                state,
+                number: u64_at(72),
+                group: u64_at(80),
+            }
         });
         let mut map = Self::empty(shape, token, mutants);
         map.base = base;
@@ -357,7 +371,7 @@ impl IntentMap {
         self.shape
     }
 
-    #[cfg(test)]
+    /// The newest cut committed, if the map names one.
     pub(crate) fn base(&self) -> Option<Base> {
         self.base
     }
@@ -513,6 +527,7 @@ impl IntentMap {
             image[64] = 1;
             image[72..80].copy_from_slice(&base.number.to_le_bytes());
             image[80..88].copy_from_slice(&base.group.to_le_bytes());
+            image[88..104].copy_from_slice(&base.state);
         }
     }
 
