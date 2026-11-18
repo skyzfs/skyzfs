@@ -163,5 +163,35 @@ started() { # pre-serve-body
 is "a pause PRE_SERVE asked for holds past the watcher's start" "$(started 'touch "$WORK/watch.pause"')" "0 paused"
 is "a pause left from the recording before does not" "$(started ':')" "0 not paused"
 
+# The other writer's act (umoved, urow): a row that moved between the
+# look and the act (node B's exit 6) means look again and act again, up
+# to five times. A stand-in look writes a row whose number counts the
+# looks; the stand-in act ends with 6 until the number reaches MOVES+1.
+# -> "acted on N after K agains", or what ended it.
+oact=$(sed -n '/^other_act() {$/,/^}$/p' "$SCRIPT")
+rcut=$(grep '^rowcut() ' "$SCRIPT")
+is "other_act and rowcut are in the script" "$([ -n "$oact" ] && [ -n "$rcut" ] && echo yes)" yes
+acted() { # moves
+    # shellcheck disable=SC2034,SC2329
+    (
+        set -euo pipefail
+        RDIR=$T/a; NAME=rec; MOVES=$1; rm -rf "$RDIR"; mkdir -p "$RDIR"; : > "$RDIR/looks"
+        log() { :; }
+        rig_error() { echo "rig error: $*" > "$T/why"; exit 2; }
+        eval "$rcut"
+        eval "$oact"
+        before_other() { echo x >> "$RDIR/looks"; printf 'row\tab\t%s\t40\n' "$(wc -l < "$RDIR/looks")" > "$RDIR/$1-row.txt"; }
+        act() { [ "$2" -gt "$MOVES" ] || return 6; echo "$1 $2 $3" > "$RDIR/acted"; }
+        other_act step act
+        echo "acted on $(cat "$RDIR/acted") after $(cat "$RDIR/acts-again.txt" 2>/dev/null | wc -l) agains" > "$T/why"
+    )
+    echo "$? $(cat "$T/why" 2>/dev/null)"
+    rm -f "$T/why"
+}
+is "an act on the row as read" "$(acted 0)" "0 acted on ab 1 40 after 0 agains"
+is "a row that moved twice: the third look's row" "$(acted 2)" "0 acted on ab 3 40 after 2 agains"
+is "a row that moved five times is the rig's error" "$(acted 5)" \
+    "2 rig error: node B's act at step found the row moved five times in a row"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

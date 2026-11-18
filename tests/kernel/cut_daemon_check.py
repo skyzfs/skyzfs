@@ -1665,11 +1665,17 @@ def course_wants(name, rdir, status):
     rows = [ln.split('\t') for ln in read_file(rdir, 'rows.tsv').splitlines()]
     if not rows or len(rows[-1]) != 4:
         raise RigError(f"rows.tsv: no line `ns head row lease` at its end: {rows[-1:] or 'nothing'}")
-    holder = rows[-1][3].split()[0]
+    lease = rows[-1][3].split()
+    holder = lease[0]
     want = {'upload_state': 'idle', 'cuts_held': '0', 'lease': 'held', 'lease_holder': holder,
             'uploaded_whole': '1', 'lease_epoch': '1'}
     want.update({k: '0' for k in UPLOAD_ZERO})
     bad, notes = [], []
+    # Node B's own read of the lease: a holder, and the status's epoch.
+    if holder == 'none' or len(lease) < 2:
+        bad.append(f"node B read no lease in the bucket at its last look ({rows[-1][3]!r})")
+    elif status.get('lease_epoch') != lease[1]:
+        bad.append(f"the status says lease_epoch {status.get('lease_epoch')!r}, the bucket's lease {lease[1]}")
 
     def row(fn):
         return read_row(read_file(rdir, fn), fn)
@@ -1757,6 +1763,15 @@ def course_wants(name, rdir, status):
             bad.append(f'served with --serve-without-upload, uploaded {n!r} cuts')
         want.update(lease_epoch=at_least(1))
         notes.append(f"lease_epoch {status.get('lease_epoch')!r} after the other holder let go")
+        # Node B's side: head was none at every look before the release.
+        until = int(read_file(rdir, 'release-ns.txt').split()[0])
+        before = [r for r in rows if len(r) == 4 and int(r[0]) < until]
+        if not before:
+            bad.append('node B read nothing before the other holder let the lease go')
+        moved = [r[1] for r in before if r[1] != 'none']
+        if moved:
+            bad.append(f"node B read head {moved[0]} before the other holder let the lease go: the daemon "
+                       "uploaded without the lease")
     elif name == 'ulost':
         before, end = row('lost-row.txt'), row('end-row.txt')
         took = read_file(rdir, 'other-lease.txt').split()
@@ -1769,6 +1784,38 @@ def course_wants(name, rdir, status):
         if end['lease'] is None or end['lease'][0] != OTHER:
             bad.append(f"the lease at the end is {end['lease']}, not {OTHER}'s")
     return want, bad, notes
+
+
+def raw_block(k):
+    """Block k of those ufailed writes to the device itself before the
+    failure (cut-record.sh raw_write)."""
+    return (f'ufailed raw block {k}\n'.encode() * 256)[:BLOCK]
+
+
+def raw_held(rdir):
+    """ufailed's blocks written outside the pool before the failure, in
+    the last image node B fetched -> (how many of them it holds, how
+    many were written), or None where the course wrote none (raw.tsv)."""
+    if not os.path.exists(os.path.join(rdir, 'raw.tsv')):
+        return None
+    f = read_file(rdir, 'raw.tsv').split()
+    if len(f) != 3 or f[0] != 'raw' or not (f[1].isdigit() and f[2].isdigit()):
+        raise RigError(f'raw.tsv: {f}')
+    at, n = int(f[1]), int(f[2])
+    image = {}
+    for ln in read_file(rdir, 'uploaded-blocks.tsv').splitlines():
+        x = ln.split('\t')
+        if len(x) == 4:
+            image[int(x[2])] = x[3]
+    held = sum(1 for k in range(n) if image.get(at + k) == hashlib.sha256(raw_block(k)).digest()[:8].hex())
+    return held, n
+
+
+def at_rest(st):
+    """A status look the balance can start from: the uploader idle with
+    nothing held, or nothing counted yet."""
+    return (st.get('upload_state') == 'idle' and st.get('cuts_held') == '0') or \
+        all(st.get(k) == '0' for k in BALANCE)
 
 
 BALANCE = ('cuts', 'uploaded', 'upload_found_committed', 'upload_committed_gone', 'upload_committed_kept',
@@ -1861,6 +1908,8 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
                              f"{n_epochs}; {detail}")
     if twice:
         ok, detail = False, f"cuts {sorted(twice)} were at head under two commits; {detail}"
+    detail = detail.replace(' cuts written and released;', ' cuts fetched at head;')
+    ok_content = bool(ok)
     if ok is None:
         put('upload_content', 'ERROR', detail)
         errored = True
@@ -1883,17 +1932,46 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
     n = status.get('uploaded', '')
     if name not in UPLOAD_COURSES and (not n.isdigit() or int(n) < len(mine)):
         wrong.append(f'uploaded {n!r}, fewer than the {len(mine)} cuts node B fetched')
+    if name not in UPLOAD_COURSES:
+        wrong += cbad           # no course line: node B's read of the lease goes here
     put('upload_status', 'FAIL' if wrong else 'PASS',
         ('; '.join(wrong) if wrong else ', '.join(f'{k} {status.get(k)}' for k in want))
         + f"; uploaded {n}, upload_checked {status.get('upload_checked')!r}, upload_rule "
         f"{status.get('upload_rule')!r}, upload_errors {status.get('upload_errors')!r}, lease_holder "
         f"{status.get('lease_holder')!r}; the drain took {secs} s")
     rc = rc if not wrong else 1
-    # The balance over the last instance, from its start to the drain.
+    # The balance over the last instance, from a look at rest after its
+    # start (DIR/balance-start.txt, which a course that starts the daemon
+    # again takes) to the drain.
     k = max(int(m.group(1)) for m in (re.fullmatch(r'status-start-(\d+)\.txt', f) for f in os.listdir(rdir)) if m)
-    ok, detail = upload_balance(read_status(read_file(rdir, f'status-start-{k}.txt')), status)
-    put('upload_balance', 'PASS' if ok else 'FAIL', f'serve {k}: {detail}')
-    rc = rc if ok else 1
+    fn = 'balance-start.txt' if os.path.exists(os.path.join(rdir, 'balance-start.txt')) else f'status-start-{k}.txt'
+    if k > 1 and fn != 'balance-start.txt':
+        raise RigError(f'serve {k} and no balance-start.txt: the balance has no look at rest to start from')
+    start = read_status(read_file(rdir, fn))
+    if not at_rest(start):
+        put('upload_balance', 'ERROR', f"serve {k}: the look it starts from ({fn}) is not at rest: upload_state "
+            f"{start.get('upload_state')!r}, cuts_held {start.get('cuts_held')!r}")
+        errored = True
+    else:
+        ok, detail = upload_balance(start, status)
+        put('upload_balance', 'PASS' if ok else 'FAIL', f'serve {k}, from {fn}: {detail}')
+        rc = rc if ok else 1
+    # ufailed: the blocks written to the device after the old state's
+    # last cut and before the failure are in the new state's cuts.
+    raw = raw_held(rdir)
+    if raw is not None:
+        held, n = raw
+        if held == n:
+            put('upload_raw', 'PASS', f"node B's last cut holds the {n} blocks written to the device after the old "
+                "state's last cut and before the failure")
+        elif ok_content:
+            put('upload_raw', 'ERROR', f"node B's last cut holds {held} of the {n} blocks written before the "
+                "failure, and so does the reference: the pool wrote over them, and the course shows nothing")
+            errored = True
+        else:
+            put('upload_raw', 'FAIL', f"node B's last cut holds {held} of the {n} blocks written before the "
+                "failure; the content line says where it differs from the reference")
+            rc = 1
     if name in UPLOAD_COURSES:
         put('upload_course', 'FAIL' if cbad else 'PASS', '; '.join(cbad + notes) if cbad or notes else name)
         rc = rc if not cbad else 1

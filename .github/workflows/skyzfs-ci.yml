@@ -94,6 +94,7 @@ jobs:
       - run: python3 tests/kernel/test_cut_daemon_check.py
       - run: python3 tests/kernel/test_cut_daemon_main.py
       - run: python3 tests/kernel/test_cut_hold.py
+      - run: python3 tests/kernel/test_cut_watch.py
       - run: python3 tests/kernel/test_nodeb_check.py
       - run: python3 tests/bench/test_skz_time.py
       - run: python3 tests/bench/test_cut_release.py

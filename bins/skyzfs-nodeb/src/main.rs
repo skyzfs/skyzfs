@@ -11,8 +11,8 @@
 //! skyzfs-nodeb bucket --endpoint URL --bucket B --volume NAME
 //! skyzfs-nodeb lease --endpoint URL --bucket B --volume NAME --holder H --ttl-s N
 //! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
-//! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none
-//! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row STATE:NUMBER:GROUP|none|hex:BYTES
+//! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--expect-row ROW]
+//! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row STATE:NUMBER:GROUP|none|hex:BYTES [--expect-row ROW]
 //! ```
 //!
 //! The keys are `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The
@@ -56,7 +56,14 @@
 //!   as they are (`hex:...`, a row the uploader cannot read); head
 //!   does not move.
 //!
-//! Exit 0: done. Exit 3: `get` found no such ref. Exit 4: `get` found
+//! With `--expect-row ROW` (as `--row` writes it, `none` for no row),
+//! `move-head` and `set-row` act only while the row is ROW, in the same
+//! transaction as their write: a daemon that committed a cut since the
+//! caller read the row moved the row with its head, and the command
+//! changes nothing, prints `row moved`, and ends with 6. The caller reads
+//! again and acts on what it finds (the review of #119, G2).
+//!
+//! Exit 0: done. Exit 6: `--expect-row` did not hold. Exit 3: `get` found no such ref. Exit 4: `get` found
 //! the ref and the bucket does not hold its content: an object it needs
 //! is not there, does not decode, or is corrupt. For the rig that is a
 //! verdict against what put the volume there, not its own error. Exit
@@ -95,6 +102,7 @@ struct Args {
     at: String,
     group: String,
     row: String,
+    expect_row: Option<String>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -120,6 +128,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--at" => a.at = v,
             "--group" => a.group = v,
             "--row" => a.row = v,
+            "--expect-row" => a.expect_row = Some(v),
             _ => return Err(format!("unknown option {k}")),
         }
     }
@@ -298,7 +307,6 @@ async fn list(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// What `get` found.
 /// The cut's row among the refs object's meta rows, and the length of
 /// its version 1 (`skyzfs-upload`'s `ROW_KEY` and `ROW_LEN`: version u16,
 /// the cut state's name 16 bytes, the cut's number and group u64, all
@@ -428,7 +436,7 @@ async fn release(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-async fn move_head(a: &Args) -> Result<(), String> {
+async fn move_head(a: &Args) -> Result<u8, String> {
     let at = number("--at", &a.at)?;
     if !at.is_multiple_of(BLOCK as u64) {
         return Err(format!("--at {at}: not a multiple of {BLOCK}"));
@@ -437,46 +445,117 @@ async fn move_head(a: &Args) -> Result<(), String> {
         "none" => None,
         g => Some(number("--group", g)?),
     };
+    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
     let (store, refs) = open(a).await?;
-    let mut eng = Engine::open(store, refs, volume_id(&a.volume), EngineConfig::default())
+    let moved = move_head_on(store, refs, volume_id(&a.volume), at, group, expect).await?;
+    Ok(report(moved, |head| println!("head\t{}", hex(&head))))
+}
+
+/// `Some(x)` -> print it and 0; `None` (the expected row did not hold)
+/// -> `row moved` and 6.
+fn report<T>(got: Option<T>, print: impl FnOnce(T)) -> u8 {
+    match got {
+        Some(x) => {
+            print(x);
+            0
+        }
+        None => {
+            println!("row\tmoved");
+            6
+        }
+    }
+}
+
+/// The meta op that holds the row at EXPECT and leaves it as it is.
+fn row_held(expect: Option<Vec<u8>>) -> Result<RefOp, String> {
+    let value = expect
+        .clone()
+        .ok_or("--expect-row none: move-head keeps a row it can name")?;
+    Ok(RefOp::MetaCas {
+        key: ROW_KEY.to_string(),
+        expected: expect,
+        value,
+    })
+}
+
+/// move-head on a volume's store and refs -> head's new commit, or None
+/// where `expect` (the row's bytes, `Some(None)` for no row) did not hold.
+async fn move_head_on<S: ObjectStore + Clone + 'static>(
+    store: S,
+    refs: Arc<ObjectRefStore<S>>,
+    vol: VolumeId,
+    at: u64,
+    group: Option<u64>,
+    expect: Option<Option<Vec<u8>>>,
+) -> Result<Option<[u8; 32]>, String> {
+    let ops = expect.map(row_held).transpose()?;
+    let mut eng = Engine::open(store, refs, vol, EngineConfig::default())
         .await
         .map_err(|e| format!("open the volume: {e}"))?;
     eng.write(at, &[0x5a; BLOCK])
         .map_err(|e| format!("write at {at}: {e}"))?;
     eng.set_group(group);
-    let head = eng
-        .commit(CommitKind::Flush)
-        .await
-        .map_err(|e| format!("commit: {e}"))?;
-    println!("head\t{}", hex(&head));
-    Ok(())
-}
-
-async fn set_row(a: &Args) -> Result<(), String> {
-    let bytes = row_bytes(&a.row)?;
-    let (_, refs) = open(a).await?;
-    let op = match bytes {
-        Some(value) => RefOp::MetaPut {
-            key: ROW_KEY.to_string(),
-            value,
-        },
-        None => RefOp::MetaDelete {
-            key: ROW_KEY.to_string(),
-        },
+    let guarded = ops.is_some();
+    let done = match ops {
+        Some(op) => eng.commit_with(CommitKind::Flush, vec![op]).await,
+        None => eng.commit(CommitKind::Flush).await,
     };
-    match refs
-        .transact(volume_id(&a.volume), vec![op])
-        .await
-        .map_err(|e| format!("set the row: {e}"))?
-    {
-        TxnOutcome::Committed => {
-            println!("row\tset\t{}", a.row);
-            Ok(())
-        }
-        other => Err(format!("set the row: {other:?}")),
+    match done {
+        Ok(head) => Ok(Some(head)),
+        // The row, or head with it (a daemon's commit moves both): what
+        // the caller read is gone.
+        Err(EngineError::OpConflict { .. }) => Ok(None),
+        Err(EngineError::Conflict) if guarded => Ok(None),
+        Err(e) => Err(format!("commit: {e}")),
     }
 }
 
+async fn set_row(a: &Args) -> Result<u8, String> {
+    let bytes = row_bytes(&a.row)?;
+    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
+    let (_, refs) = open(a).await?;
+    let set = set_row_on(&refs, volume_id(&a.volume), bytes, expect).await?;
+    Ok(report(set.then_some(()), |()| {
+        println!("row\tset\t{}", a.row)
+    }))
+}
+
+/// set-row on a volume's refs -> whether it was set (false where
+/// `expect`, the row's bytes or `Some(None)` for no row, did not hold).
+async fn set_row_on<S: ObjectStore + Clone + 'static>(
+    refs: &ObjectRefStore<S>,
+    vol: VolumeId,
+    bytes: Option<Vec<u8>>,
+    expect: Option<Option<Vec<u8>>>,
+) -> Result<bool, String> {
+    let key = ROW_KEY.to_string();
+    let ops = match (bytes, expect) {
+        (Some(value), None) => vec![RefOp::MetaPut { key, value }],
+        (None, None) => vec![RefOp::MetaDelete { key }],
+        (Some(value), Some(expected)) => vec![RefOp::MetaCas {
+            key,
+            expected,
+            value,
+        }],
+        // The row held, then deleted, in one transaction.
+        (None, Some(expected)) => vec![
+            row_held(expected)?,
+            RefOp::MetaDelete {
+                key: ROW_KEY.to_string(),
+            },
+        ],
+    };
+    match refs
+        .transact(vol, ops)
+        .await
+        .map_err(|e| format!("set the row: {e}"))?
+    {
+        TxnOutcome::Committed => Ok(true),
+        TxnOutcome::Conflict { .. } => Ok(false),
+    }
+}
+
+/// What `get` found.
 #[derive(Debug, PartialEq, Eq)]
 enum Got {
     /// No such ref.
@@ -596,8 +675,8 @@ async fn main() -> ExitCode {
         "bucket" => bucket(&a).await.map(|()| 0),
         "lease" => lease(&a).await,
         "release" => release(&a).await.map(|()| 0),
-        "move-head" => move_head(&a).await.map(|()| 0),
-        "set-row" => set_row(&a).await.map(|()| 0),
+        "move-head" => move_head(&a).await,
+        "set-row" => set_row(&a).await,
         _ => get(&a).await,
     };
     match r {
@@ -664,6 +743,97 @@ mod tests {
         assert!(row_bytes("hex:0g").is_err());
     }
 
+    /// The other writer acts only on the row it read (the review of #119,
+    /// G2): a row that moved since leaves the volume as it is.
+    #[tokio::test]
+    async fn the_other_writer_acts_on_the_row_it_read() {
+        let (store, refs, vol, _) = put_small("expect-row").await;
+        let row = |n: u64, g: u64| row_bytes(&format!("{}:{n}:{g}", "ab".repeat(16))).unwrap();
+        let read = || async { refs.meta_get(vol, ROW_KEY).await.expect("meta_get") };
+        // No row yet: expecting none sets it; expecting a row does not.
+        assert_eq!(
+            set_row_on(&refs, vol, row(1, 4), Some(row(9, 9))).await,
+            Ok(false)
+        );
+        assert_eq!(read().await, None);
+        assert_eq!(
+            set_row_on(&refs, vol, row(1, 4), Some(None)).await,
+            Ok(true)
+        );
+        assert_eq!(read().await, row(1, 4));
+        // The row as read: set; a stale one: nothing changes.
+        assert_eq!(
+            set_row_on(&refs, vol, row(2, 5), row(1, 4).map(Some)).await,
+            Ok(true)
+        );
+        assert_eq!(
+            set_row_on(&refs, vol, row(3, 6), row(1, 4).map(Some)).await,
+            Ok(false)
+        );
+        assert_eq!(read().await, row(2, 5));
+        // Unguarded, as before.
+        assert_eq!(set_row_on(&refs, vol, row(4, 7), None).await, Ok(true));
+        assert_eq!(read().await, row(4, 7));
+        // move-head: head moves with the row as read, and the row stays.
+        let head = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        let moved = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(1000),
+            row(4, 7).map(Some),
+        )
+        .await
+        .expect("move-head");
+        let now = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        assert!(moved.is_some_and(|h| h == now) && now != head);
+        assert_eq!(read().await, row(4, 7));
+        // A stale row: head stays.
+        let stale = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(1001),
+            row(3, 6).map(Some),
+        )
+        .await
+        .expect("move-head");
+        assert_eq!(stale, None);
+        assert_eq!(
+            refs.get(vol, "head")
+                .await
+                .expect("get")
+                .expect("head")
+                .commit,
+            now
+        );
+        // Deleting under a guard: the row held, then gone.
+        assert_eq!(
+            set_row_on(&refs, vol, None, row(3, 6).map(Some)).await,
+            Ok(false)
+        );
+        assert_eq!(
+            set_row_on(&refs, vol, None, row(4, 7).map(Some)).await,
+            Ok(true)
+        );
+        assert_eq!(read().await, None);
+        assert!(move_head_on(store, refs, vol, 0, None, Some(None))
+            .await
+            .is_err());
+    }
+
     #[test]
     fn holes_must_be_sector_aligned() {
         assert_eq!(parse_hole("4096:8192"), Ok((4096, 8192)));
@@ -690,6 +860,17 @@ mod tests {
         assert!(parse(&args(&format!("move-head {base} --at 0 --group none"))).is_ok());
         assert!(parse(&args(&format!("move-head {base} --at 0"))).is_err());
         assert!(parse(&args(&format!("set-row {base} --row none"))).is_ok());
+        let a = parse(&args(&format!(
+            "set-row {base} --row none --expect-row none"
+        )))
+        .expect("parse");
+        assert_eq!(a.expect_row.as_deref(), Some("none"));
+        assert_eq!(
+            parse(&args(&format!("set-row {base} --row none")))
+                .expect("parse")
+                .expect_row,
+            None
+        );
         assert!(parse(&args("refs --endpoint http://x --bucket b")).is_err());
         assert!(parse(&args(&format!("copy {base}"))).is_err());
         assert!(parse(&args(&format!("refs {base} --nope 1"))).is_err());

@@ -134,6 +134,19 @@ class Steps(unittest.TestCase):
         self.assertTrue(self.w.step())          # the next look takes cut 2
         self.assertTrue(self.read('uploaded.tsv').startswith('2\t11\t'))
 
+    def test_head_or_the_row_alone_moved(self):
+        """The courses move them apart: move-head moves head and not the
+        row, set-row the row and not head. Either alone drops the fetch
+        (review of #119, W02a and W02b)."""
+        for why, moved in (('head alone', row_text(1, 10, head='ef' * 32)), ('the row alone', row_text(2, 11))):
+            with self.subTest(why):
+                self.w.last = None
+                self.put('row.txt', row_text(1, 10))
+                self.put('head.img', b'\1' * 4096)
+                self.put('move', moved)
+                self.assertFalse(self.w.step())
+                self.assertEqual(self.read('uploaded.tsv'), '')
+
     def test_what_ends_the_watcher(self):
         self.put('row.txt', row_text(1, 10))
         self.put('head.img', b'\1' * 4096)

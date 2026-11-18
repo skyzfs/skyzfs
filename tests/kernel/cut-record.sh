@@ -1039,14 +1039,9 @@ before_other() {
 # never moves head back: nothing it holds afterwards is uploaded, and
 # head stays where the other writer put it.
 rec_umoved() {
-    local g
     create_pool
     load 2
-    before_other moved
-    g=$(rowcut moved-row.txt | cut -d ' ' -f 3)
-    nodeb move-head --at 0 --group $((g + 1000)) > "$RDIR/moved.txt" 2>&1 \
-        || rig_error "node B move-head failed: $(tail -n 2 "$RDIR/moved.txt")"
-    awk -F '\t' '$1 == "head" { print "head\t" $2 }' "$RDIR/moved.txt" >> "$RDIR/others.tsv"
+    other_act moved act_move
     nudge_until moved-after.txt upload_mismatches 1 120 || true
     load 2
     export_pool
@@ -1058,27 +1053,61 @@ rec_umoved() {
 # committed (the notes' Q8). Each is a mismatch (not_the_base), and the
 # next cut is whole: it uploads, so the daemon's state is at head again.
 rec_urow() {
-    local st n g
     create_pool
     load 2
-    before_other row1
-    read -r st n g <<< "$(rowcut row1-row.txt)"
-    other_row "$(printf '%032x' $((0x5eed)))" "$n" "$g"
+    other_act row1 act_row1
     nudge_until row1-after.txt upload_mismatches 1 120 || true
     nudge_until row1-whole.txt uploaded_whole 2 120 || true
     load 1
-    before_other row2
-    read -r st n g <<< "$(rowcut row2-row.txt)"
-    other_row "$st" $((n + 5)) "$g"
+    other_act row2 act_row2
     nudge_until row2-after.txt upload_mismatches 2 120 || true
     nudge_until row2-whole.txt uploaded_whole 3 120 || true
     load 1
     export_pool
     nbrow end-row.txt
 }
-other_row() {
-    nodeb set-row --row "$1:$2:$3" > "$RDIR/set-row.txt" 2>&1 \
-        || rig_error "node B set-row failed: $(tail -n 2 "$RDIR/set-row.txt")"
+# STEP ACT: the other writer's act on the row it read. before_other STEP
+# reads the row once the daemon is at rest; ACT STATE NUMBER GROUP acts
+# on that row with node B's --expect-row and returns 6 where the row had
+# moved since (the daemon cut between the look and the act, which made
+# the act land on a group that was no longer head's: the review of #119,
+# G2). Then both are done again, up to five times; each time is a line
+# in DIR/acts-again.txt.
+other_act() {
+    local st n g rc _i
+    for _i in 1 2 3 4 5; do
+        before_other "$1"
+        read -r st n g <<< "$(rowcut "$1-row.txt")"
+        rc=0
+        "$2" "$st" "$n" "$g" || rc=$?
+        [ "$rc" = 6 ] || return 0
+        log "$NAME: the daemon cut between the look before $1 and node B's act: again"
+        printf '%s\n' "$1" >> "$RDIR/acts-again.txt"
+    done
+    rig_error "node B's act at $1 found the row moved five times in a row"
+}
+# node B's COMMAND ARGS on the row STATE:NUMBER:GROUP, its output in
+# DIR/FILE: 0, or 6 where the row had moved; anything else is the rig's
+# error.
+guarded() { # file row command args...
+    local f=$1 row=$2 rc=0
+    shift 2
+    nodeb "$@" --expect-row "$row" > "$RDIR/$f" 2>&1 || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 6 ] || rig_error "node B $1 failed: $(tail -n 2 "$RDIR/$f")"
+    return "$rc"
+}
+# umoved's act: head moves to a commit of node B's, with a group the
+# daemon never made; the row stays.
+act_move() {
+    guarded moved.txt "$1:$2:$3" move-head --at 0 --group $(($3 + 1000)) || return 6
+    awk -F '\t' '$1 == "head" { print "head\t" $2 }' "$RDIR/moved.txt" >> "$RDIR/others.tsv"
+}
+# urow's acts: a row of another state on head's group, then one of the
+# daemon's state with a number five past the one it committed.
+act_row1() { other_row "$(printf '%032x' $((0x5eed)))" "$2" "$3" "$1:$2:$3"; }
+act_row2() { other_row "$1" $(($2 + 5)) "$3" "$1:$2:$3"; }
+other_row() { # state number group expected-row
+    guarded set-row.txt "$4" set-row --row "$1:$2:$3" || return 6
     printf 'row\t%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RDIR/others.tsv"
 }
 
@@ -1114,6 +1143,10 @@ rec_ukill() {
     fi
     wait "$WRITER" || rig_error "the writer failed across the kill: $(tail -n 2 "$RDIR/kill-writer.log")"
     WRITER=""
+    # The balance's start look (upload_balance), with nothing moving:
+    # a look while the cut found committed is let go can catch the
+    # uploader's count before the store's.
+    drain balance-start.txt idle 1
     load 1
     export_pool
 }
@@ -1148,10 +1181,14 @@ rec_ulease() {
     [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve.log")"
     timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach-1.log" 2>&1 \
         || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach-1.log")"
+    # Until here head is none at every look of node B's (rows.tsv): the
+    # time, on the clock of its lines, that the check reads them up to.
+    python3 -I -c 'import time; print(time.monotonic_ns())' > "$RDIR/release-ns.txt"
     nodeb release --holder other-node > "$RDIR/other-release.txt" 2>&1 \
         || rig_error "node B could not let the lease go: $(tail -n 2 "$RDIR/other-release.txt")"
     SERVE_ARGS=()
     serve_start 2
+    drain balance-start.txt idle 1
     import_pool
     load 2
     export_pool
@@ -1206,19 +1243,34 @@ rec_unostore() {
 # again; nothing of the first attempt is at head.
 rec_ukillput() { rec_ukill; }
 
-# ufailed (f, by name): the volume fails while it uploads (SIGUSR1, the
-# test build) after the pool's export. The instance ends with 3; one
-# that acknowledges the failure begins a new state, and its first cut
-# goes up whole onto the old state's head.
+# ufailed (f, by name): the volume fails (SIGUSR1, the test build)
+# after the pool's export, once node B has fetched the old state's last
+# cut. Before the failure, RAW_BLOCKS blocks are written to the device
+# itself, outside the pool, where the pool does not allocate: the
+# intent map names them and no cut of the old state holds them. The
+# instance ends with 3; one that acknowledges the failure begins a new
+# state, and its cuts must hold those blocks, whether the first goes up
+# whole or as a delta onto the map's base.
+RAW_BLOCKS=16
+raw_write() {
+    local at=$(((VDEV_MB - 4) << 8))
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cut_daemon_check as c
+sys.stdout.buffer.write(b"".join(c.raw_block(k) for k in range(int(sys.argv[2]))))' "$HERE" "$RAW_BLOCKS" > "$WORK/raw.img"
+    "$DD" if="$WORK/raw.img" of="$DEV" bs=4K seek="$at" oflag=direct conv=notrunc,fsync status=none \
+        || rig_error "the write of $RAW_BLOCKS blocks to $DEV at block $at failed"
+    printf 'raw\t%s\t%s\n' "$at" "$RAW_BLOCKS" > "$RDIR/raw.tsv"
+}
 rec_ufailed() {
     create_pool
     load 2
     export_pool
-    drain failed-before.txt idle 1
+    before_other failed
+    raw_write
     kill -USR1 "$SERVE_PID" 2>/dev/null || rig_error "SIGUSR1 to $SERVE_PID failed: the daemon had ended"
     serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGUSR1"
     printf 'failed_rc\t%s\n' "$SERVE_RC" > "$RDIR/failure.tsv"
     serve_start 2 acknowledged
+    drain balance-start.txt idle 1
     import_pool
     load 2
     export_pool
