@@ -41,10 +41,13 @@ impl Clock {
     }
 
     fn refs(&self, fx: &Fixture) -> LeaseRefs {
+        self.refs_on(fx.store.clone())
+    }
+
+    fn refs_on(&self, store: Store) -> LeaseRefs {
         let now = Arc::clone(&self.0);
         Arc::new(
-            ObjectRefStore::new(fx.store.clone())
-                .with_clock(Arc::new(move || now.load(Ordering::SeqCst))),
+            ObjectRefStore::new(store).with_clock(Arc::new(move || now.load(Ordering::SeqCst))),
         )
     }
 }
@@ -435,4 +438,147 @@ async fn the_lease_is_kept_every_third_of_its_time() {
             3 * TTL
         ]
     );
+}
+
+/// A store whose answer to `uploadable` takes `delay` milliseconds of
+/// tokio's time: a step that outlasts the lease's renewal.
+struct Slow<L> {
+    inner: L,
+    delay: Arc<AtomicU64>,
+}
+
+impl<L: skyzfs_upload::Local> skyzfs_upload::Local for Slow<L> {
+    async fn uploadable(&mut self) -> Option<skyzfs_upload::Uploadable> {
+        let ms = self.delay.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        self.inner.uploadable().await
+    }
+
+    async fn read(
+        &mut self,
+        number: u64,
+        from: u64,
+        buf: skyzfs_blk::Buf,
+    ) -> (
+        skyzfs_blk::Buf,
+        std::io::Result<skyzfs_local::inplace::CutSlice>,
+    ) {
+        self.inner.read(number, from, buf).await
+    }
+
+    async fn sync_copies(&mut self, number: u64) -> std::io::Result<()> {
+        self.inner.sync_copies(number).await
+    }
+
+    async fn release(&mut self, number: u64) -> skyzfs_upload::Released {
+        self.inner.release(number).await
+    }
+
+    async fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        self.inner.name_committed(number, group).await
+    }
+
+    async fn abandon_all(&mut self) -> Vec<u64> {
+        self.inner.abandon_all().await
+    }
+}
+
+/// The lease's expiry, as the status shows it.
+fn expires<L, R, F, M>(up: &Uploader<L, R, F, M>) -> u64
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    match up.shown().lease {
+        LeaseState::Held { expires_at_ms, .. } => expires_at_ms,
+        other => panic!("the lease is not held: {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure(
+) {
+    let mut fx = Fixture::new(48).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let delay = Arc::new(AtomicU64::new(0));
+    let slow = Slow {
+        inner: store,
+        delay: Arc::clone(&delay),
+    };
+    // The uploads' way to object storage fails; the lease's, a way of
+    // its own to the same objects, does not.
+    let apart = clock.refs_on(skynbd_store::FaultStore::new(fx.store.inner().clone()));
+    let lease = Keeper::new(apart, fx.vol, HOLDER, TTL);
+    fx.store.arm(FaultOp::Any, "", 0).await;
+    let mut up = Uploader::with_slices(slow, lease, fenced(&fx, &clock), 16);
+
+    let wait = up.turn().await;
+    assert_eq!(wait, Duration::from_secs(1), "the first failure's backoff");
+    assert_eq!(expires(&up), 1_000_000 + TTL, "the lease taken");
+    tokio::time::advance(wait).await;
+
+    // The next check takes twenty seconds, past the renewal due ten
+    // seconds after the take, and fails.
+    delay.store(20_000, Ordering::SeqCst);
+    clock.pass(21_000);
+    let wait = up.turn().await;
+    assert!(
+        matches!(&up.shown().state, State::Backoff { why, wait }
+            if why.contains("injected") && *wait == Duration::from_secs(2)),
+        "{:?}",
+        up.shown().state
+    );
+    assert_eq!(wait, Duration::ZERO, "the renewal is overdue: at once");
+
+    // The renewal comes first; the step waits out the backoff counted
+    // from the failure, not from the turn's start.
+    delay.store(0, Ordering::SeqCst);
+    fx.store.disarm().await;
+    let wait = up.turn().await;
+    assert_eq!(expires(&up), 1_000_000 + 21_000 + TTL, "the lease kept");
+    assert!(
+        matches!(up.shown().state, State::Backoff { .. }),
+        "no step before the backoff is over: {:?}",
+        up.shown().state
+    );
+    assert_eq!(
+        wait,
+        Duration::from_secs(2),
+        "the backoff, from the failure"
+    );
+    tokio::time::advance(wait).await;
+
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(7, "after the backoff").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once() {
+    let fx = Fixture::new(49).await;
+    let clock = Clock::new();
+    let delay = Arc::new(AtomicU64::new(0));
+    let slow = Slow {
+        inner: fx.start(),
+        delay: Arc::clone(&delay),
+    };
+    let mut up = Uploader::with_slices(slow, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+
+    let wait = up.turn().await;
+    assert_eq!((up.shown().state, wait), (State::Idle, IDLE));
+    tokio::time::advance(wait).await;
+
+    // A check that finds nothing, after twenty seconds: the renewal,
+    // due ten seconds after the take, is overdue.
+    delay.store(20_000, Ordering::SeqCst);
+    clock.pass(20_250);
+    let wait = up.turn().await;
+    assert_eq!((up.shown().state, wait), (State::Idle, Duration::ZERO));
+
+    delay.store(0, Ordering::SeqCst);
+    let wait = up.turn().await;
+    assert_eq!(expires(&up), 1_000_000 + 20_250 + TTL, "the lease kept");
+    assert_eq!((up.shown().state, wait), (State::Idle, IDLE));
 }

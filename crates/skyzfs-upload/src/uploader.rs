@@ -161,10 +161,16 @@ where
     }
 
     /// One bounded piece of work; how long to wait before the next turn.
+    ///
+    /// The clock is read again after each call that waits on the store or
+    /// object storage: a wait is counted from when that call came back,
+    /// so a step that outlasts the lease's renewal is followed by the
+    /// renewal at once, and a backoff starts at the failure.
     pub async fn turn(&mut self) -> Duration {
-        let now = Instant::now();
+        let mut now = Instant::now();
         if now >= self.lease_at {
             self.keep_lease(now).await;
+            now = Instant::now();
         }
         let epoch = match self.lease.state() {
             LeaseState::Lost { holder, epoch } => {
@@ -197,6 +203,7 @@ where
             return self.next_wait(now, self.step_at);
         }
         let step = driver.step().await;
+        let now = Instant::now();
         let (doing, under_way) = (driver.doing(), driver.under_way());
         match step {
             Ok(Step::Idle) => {
@@ -235,16 +242,23 @@ where
         }
     }
 
-    /// Take or renew the lease, and say when to keep it next.
-    async fn keep_lease(&mut self, now: Instant) {
+    /// Take or renew the lease, and say when to keep it next. `before` is
+    /// when the take was sent. The next renewal is counted from then: the
+    /// store set the row's expiry at some time after it, so the renewal
+    /// comes a third of the lease after that at the latest. A failed
+    /// take's backoff and the rest after a lost lease are counted from
+    /// when the take came back.
+    async fn keep_lease(&mut self, before: Instant) {
         let renew = Duration::from_millis((self.lease.ttl_ms() / 3).max(1));
-        self.lease_at = match self.lease.keep().await {
-            LeaseState::None(_) => now + self.lease_backoff.failed(),
+        let kept = self.lease.keep().await;
+        let after = Instant::now();
+        self.lease_at = match kept {
+            LeaseState::None(_) => after + self.lease_backoff.failed(),
             LeaseState::Held { .. } | LeaseState::Unsure { .. } => {
                 self.lease_backoff.succeeded();
-                now + renew
+                before + renew
             }
-            LeaseState::Lost { .. } => now + AT_REST,
+            LeaseState::Lost { .. } => after + AT_REST,
         };
     }
 
