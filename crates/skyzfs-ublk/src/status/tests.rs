@@ -80,6 +80,14 @@ fn sample() -> Status {
                     max_ns: 40,
                 },
                 waits: 41,
+                header: Some(HeaderSyncShown {
+                    on: true,
+                    syncs: Spent {
+                        count: 47,
+                        sum_ns: 48,
+                        max_ns: 49,
+                    },
+                }),
             }),
             upload: Some(sample_upload()),
         },
@@ -109,8 +117,8 @@ fn sample_upload() -> UploadShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 976);
-    assert_eq!(&bytes[..8], b"SKYZST15");
+    assert_eq!(bytes.len(), 1008);
+    assert_eq!(&bytes[..8], b"SKYZST16");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -165,7 +173,15 @@ fn the_file_has_the_documented_layout() {
         (464, 45),
     ]);
     fields.extend((0..12).map(|i| (472 + 8 * i, 50 + i as u64)));
-    fields.extend([(568, 3), (576, 2), (968, 46)]);
+    fields.extend([
+        (568, 3),
+        (576, 2),
+        (968, 46),
+        (976, 1),
+        (984, 47),
+        (992, 48),
+        (1000, 49),
+    ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
     }
@@ -515,9 +531,13 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
     let read = decode(&fourteenth_file()).expect("a status");
     let mut expected = sample();
     expected.version = 14;
-    // The cuts replaced came with the fifteenth version.
+    // The cuts replaced came with the fifteenth version, the header's
+    // sync with the sixteenth.
     if let Some(held) = &mut expected.shown.held {
         held.replaced = None;
+    }
+    if let Some(intent) = &mut expected.shown.intent {
+        intent.header = None;
     }
     expected.shown.upload = None;
     assert_eq!(read, expected);
@@ -532,6 +552,40 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
     assert!(!lines
         .iter()
         .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
+}
+
+/// A file of the fifteenth version (976 bytes, `SKYZST15`): this
+/// version's fields up to the header's sync, at the same places.
+fn fifteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..976].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST15");
+    bytes
+}
+
+/// A file of the fifteenth version is still read, with the uploader and
+/// the cuts replaced and without the header's sync (M2.4d), whose keys
+/// `status` does not print for it.
+#[test]
+fn a_file_of_the_fifteenth_version_is_read_without_the_header_sync() {
+    let read = decode(&fifteenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 15;
+    if let Some(intent) = &mut expected.shown.intent {
+        intent.header = None;
+    }
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cuts_replaced"), Some("46"));
+    assert_eq!(value(&lines, "intent_waits"), Some("41"));
+    assert!(!lines
+        .iter()
+        .any(|(key, _)| key.starts_with("intent_header")));
 }
 
 /// The uploader is printed from a fifteenth file, every key whether or
@@ -741,12 +795,18 @@ fn status_prints_the_intent_map() {
         ("intent_sync_ns", "39"),
         ("intent_sync_max_ns", "40"),
         ("intent_waits", "41"),
+        ("intent_header_sync", "on"),
+        ("intent_header_syncs", "47"),
+        ("intent_header_sync_ns", "48"),
+        ("intent_header_sync_max_ns", "49"),
     ] {
         assert_eq!(value(&lines, key), Some(said), "{key}");
     }
     let off = lines_of(IntentShown::default());
     assert_eq!(value(&off, "intent_state"), Some("off"));
     assert_eq!(value(&off, "intent_named"), Some("0"));
+    assert_eq!(value(&off, "intent_header_sync"), Some("off"));
+    assert_eq!(value(&off, "intent_header_syncs"), Some("0"));
     let begun = lines_of(IntentShown {
         state: CutStateShown::Begun,
         ..IntentShown::default()
@@ -1328,6 +1388,10 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "intent_sync_ns",
             "intent_sync_max_ns",
             "intent_waits",
+            "intent_header_sync",
+            "intent_header_syncs",
+            "intent_header_sync_ns",
+            "intent_header_sync_max_ns",
             // The upload (v15), after the intent map.
             "upload",
             "upload_state",
@@ -1763,7 +1827,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut fifteenth = encode(&sample()).to_vec();
+    let mut sixteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1773,6 +1837,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("13", b"SKYZST13"),
         ("14", b"SKYZST14"),
         ("15", b"SKYZST15"),
+        ("16", b"SKYZST16"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -1782,7 +1847,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "12" => twelfth_file(),
             "13" => thirteenth_file(),
             "14" => fourteenth_file(),
-            _ => std::mem::take(&mut fifteenth),
+            "15" => fifteenth_file(),
+            _ => std::mem::take(&mut sixteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -1797,7 +1863,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 15);
+    assert_eq!(VERSION, 16);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

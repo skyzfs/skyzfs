@@ -326,6 +326,9 @@ pub(crate) struct Taken {
     pub(crate) bound: u64,
     /// The blocks of a region of the intent map.
     pub(crate) intent_region_blocks: u64,
+    /// Whether the map's header is synced at each release
+    /// ([`super::HoldCuts::intent_header_sync`]).
+    pub(crate) intent_header_sync: bool,
 }
 
 /// The default region of the intent map: 4 MiB, the lead's decision
@@ -397,6 +400,7 @@ impl Taken {
             start,
             bound,
             intent_region_blocks: intent_region / BLOCK_SIZE,
+            intent_header_sync: hold.intent_header_sync,
         })
     }
 }

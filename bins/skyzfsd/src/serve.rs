@@ -190,7 +190,8 @@ use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wa
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{
-    self, Board, CutStateShown, HeldShown, IntentShown, Pace, Status, StoreShown, ZeroesShown,
+    self, Board, CutStateShown, HeaderSyncShown, HeldShown, IntentShown, Pace, Status, StoreShown,
+    ZeroesShown,
 };
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
@@ -609,6 +610,10 @@ fn intent_shown(store: &Target) -> IntentShown {
         named_at_start,
         syncs: figures.syncs,
         waits: figures.waits,
+        header: Some(HeaderSyncShown {
+            on: figures.header_sync,
+            syncs: figures.header_syncs,
+        }),
     }
 }
 
@@ -637,6 +642,7 @@ fn hold_cuts_of(
         boot,
         bound: None,
         intent_region: serve.intent_region_mib.map(|mib| mib << 20),
+        intent_header_sync: serve.intent_header_sync,
     })
 }
 
@@ -2270,8 +2276,15 @@ mod tests {
         assert!(hold_cuts_of(&parsed("serve --dir /v/a"), false, path.clone(), boot).is_none());
         // A volume that uploads holds its cuts, given --hold-cuts or not
         // (M2.4c).
-        let hold = hold_cuts_of(&parsed("serve --dir /v/a"), true, path, boot);
+        let hold = hold_cuts_of(&parsed("serve --dir /v/a"), true, path.clone(), boot);
         assert_eq!(hold.map(|hold| hold.intent_region), Some(None));
+        // `--intent-header-sync` reaches the store, and is off unless
+        // given (M2.4d).
+        let synced = parsed("serve --dir /v/a --hold-cuts --intent-header-sync");
+        let hold = hold_cuts_of(&synced, false, path.clone(), boot).expect("cuts are held");
+        assert!(hold.intent_header_sync);
+        let hold = hold_cuts_of(&default, false, path, boot).expect("cuts are held");
+        assert!(!hold.intent_header_sync);
     }
 
     /// The status says how many regions the map named at the start: a

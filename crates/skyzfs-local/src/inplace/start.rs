@@ -107,6 +107,15 @@ pub struct HoldCuts {
     /// another size than the map was kept with counts the whole volume
     /// once.
     pub intent_region: Option<u64>,
+    /// Whether the intent map's header is synced at each release of a
+    /// committed cut and where a committed cut is named
+    /// ([`super::InPlace::release_cut`],
+    /// [`super::InPlace::name_committed_cut`]; M2.4d, for the lead's Q7
+    /// of M2.4b). Off, the header is written without a sync, as built in
+    /// M2.3: a power cut that loses it costs one whole upload. On, a
+    /// sync of the map's file begins on its helper once the header is
+    /// written, not on the queue's thread.
+    pub intent_header_sync: bool,
 }
 
 /// Where a store's cut state lives: a region that a death of the daemon

@@ -143,6 +143,7 @@ impl InPlaceHarness {
                 boot: [0; 16],
                 bound: Some(HELD_BOUND),
                 intent_region: None,
+                intent_header_sync: false,
             }),
             ..OpenOptions::default()
         }

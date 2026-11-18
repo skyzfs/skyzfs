@@ -5,8 +5,8 @@
 //!                [--endpoint URL --bucket BUCKET --volume NAME]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--io-threads N] [--hold-cuts]
-//!                [--intent-region-mib N] [--holder NAME] [--lease-ttl-s N]
-//!                [--serve-without-upload]
+//!                [--intent-region-mib N] [--intent-header-sync]
+//!                [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -112,7 +112,7 @@ pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
                  [--endpoint URL --bucket BUCKET --volume NAME]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                 [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--intent-header-sync]
                  [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                  [--kernel-has-async-delete]
                  (one queue is all this version serves)
@@ -217,7 +217,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       given a place later.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--io-threads N] [--hold-cuts] [--intent-region-mib N]
+                [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--intent-header-sync]
                 [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                 [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
@@ -273,7 +273,13 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       unless given) sets the size of a region; only with --hold-cuts.
       A start with another size than the map's counts the whole volume
       once. A start that cannot write and sync the map is refused
-      (exit 1); a write that cannot fails the volume.
+      (exit 1); a write that cannot fails the volume. When a cut is
+      committed the map's header names it, written without a sync: a
+      power cut that loses it costs one whole upload. With
+      --intent-header-sync (only with --hold-cuts) a sync of the map
+      begins once the header is written, beside the device's requests,
+      and nothing waits for it; one that fails fails the volume. The
+      status says which (intent_header_sync).
       A volume created with --endpoint (it has the file remote) is
       uploaded: its cuts are held as with --hold-cuts, and a thread
       uploads each to the volume in object storage and lets it go. The
@@ -487,6 +493,9 @@ pub struct Serve {
     /// `--intent-region-mib`: the size of a region of the intent map,
     /// in MiB, where it is given (only with `--hold-cuts`; M2.3).
     pub intent_region_mib: Option<u64>,
+    /// `--intent-header-sync`: the intent map's header is synced at
+    /// each release (only with `--hold-cuts`; M2.4d, for Q7 of M2.4b).
+    pub intent_header_sync: bool,
     /// `--holder`: whose the lease in object storage is, where given
     /// (the host's name and the machine's id otherwise; M2.4c).
     pub holder: Option<String>,
@@ -672,6 +681,7 @@ const SERVE: &[Opt] = &[
     opt("--io-threads", true, false),
     opt("--hold-cuts", false, false),
     opt("--intent-region-mib", true, false),
+    opt("--intent-header-sync", false, false),
     opt("--holder", true, false),
     opt("--lease-ttl-s", true, false),
     opt("--serve-without-upload", false, false),
@@ -953,6 +963,13 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     return Err(UsageError::Value(name(), "out of range"));
                 }
             }
+            let intent_header_sync = given.flag("--intent-header-sync");
+            if intent_header_sync && !hold_cuts {
+                return Err(UsageError::Value(
+                    "--intent-header-sync".into(),
+                    "only with --hold-cuts",
+                ));
+            }
             let holder = given.get("--holder").map(str::to_owned);
             if let Some(holder) = &holder {
                 check_holder(holder).map_err(UsageError::Refused)?;
@@ -972,6 +989,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 in_place_io,
                 hold_cuts,
                 intent_region_mib,
+                intent_header_sync,
                 holder,
                 lease_ttl_s,
                 serve_without_upload: given.flag("--serve-without-upload"),
