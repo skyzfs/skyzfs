@@ -990,6 +990,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         lost: 10,
         gave_up: 11,
         errors: 12,
+        zero_blocks: 13,
         last_error: Some(RemoteError::Volume("gone".into())),
         checked: Checked::Mismatched(Mismatch::HeadMoved),
         last_rule: Some(Rule::Whole),
@@ -1013,6 +1014,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         ],
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
+    assert_eq!(f.zero_blocks, Some(13));
     assert_eq!(
         (s.checked, s.rule),
         (CheckedShown::HeadMoved, RuleShown::Whole)

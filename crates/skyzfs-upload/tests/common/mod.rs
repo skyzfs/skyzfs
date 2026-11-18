@@ -3,6 +3,11 @@
 //! volume's content at each cut's instant; and the volume in object
 //! storage behind a store that can die at any operation.
 //!
+//! The simulated disk of [`Fixture::new`] cannot say where its files'
+//! holes are, so a whole cut reads every block of the volume, as before
+//! M2.4e; that of [`Fixture::sparse`] can, so a whole cut reads only what
+//! was written since its state began, and its holes go up as zeros.
+//!
 //! The volume's four labels have their rings at 128, 384, 640 and
 //! 896 KiB. A group's uberblock is written to the four, one 4 KiB slot
 //! each with its label checksum, then a flush: the cut of that group
@@ -30,6 +35,7 @@ use skyzfs_local::inplace::{
     create, lock, records_for, words_for, CommittedCut, CutRegion, CutSlice, HoldCuts, InPlace,
     Lost, MemRegion, OpenOptions, Opened, VolumeConfig,
 };
+use skyzfs_local::io::Dir;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC};
 use skyzfs_upload::{row, Doing, Driver, EngineRemote, Local, Released, Uploadable, ROW_KEY};
@@ -90,10 +96,23 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// A volume of zeros, on a disk of `seed`, and its volume in object
-    /// storage with no commit but the empty one.
+    /// A volume of zeros, on a disk of `seed` that cannot say where a
+    /// file's holes are, and its volume in object storage with no commit
+    /// but the empty one.
     pub async fn new(seed: u64) -> Self {
+        Self::on(seed, false).await
+    }
+
+    /// [`Fixture::new`], on a disk that says where a file's holes are: the
+    /// image, made sparse, is all holes when its first state begins
+    /// (M2.4e).
+    pub async fn sparse(seed: u64) -> Self {
+        Self::on(seed, true).await
+    }
+
+    async fn on(seed: u64, holes: bool) -> Self {
         let disk = SimDisk::new(seed);
+        disk.set_seek_data(holes);
         disk.set_write_unit(BLOCK);
         disk.set_page_size(BLOCK);
         disk.set_block_size(Some(BLOCK));
@@ -169,6 +188,20 @@ impl Fixture {
         let id = RequestId(self.next_id);
         self.next_id += 1;
         run(store, id, op);
+    }
+
+    /// The host rebooted: the daemon died, the cut state's region on its
+    /// memory file system is lost, and so is the intent map's file (as
+    /// for a volume that had none): the next start begins a state with
+    /// nothing known, whose first cut holds the whole volume.
+    pub fn rebooted(&mut self, driver: Up) {
+        drop(driver);
+        self.disk.kill();
+        self.region = MemRegion::new(words_for(BLOCKS, records_for(BOUND)));
+        // The intent map's file, as the store names it.
+        self.disk
+            .remove("intent.map")
+            .expect("the intent map removed");
     }
 
     /// Write block `block` full of `byte`.

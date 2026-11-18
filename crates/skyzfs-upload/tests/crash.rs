@@ -39,7 +39,8 @@ const SLICE: usize = 16;
 /// Cut 1 of group 7 (whole, the first) and cut 2 of group 8, each with a
 /// block overwritten after its instant, so that each reads a copy. The
 /// whole cut holds 40 blocks of data besides its uberblocks, in four
-/// slices: a segment sealed and PUT for each before the commit.
+/// slices (three on a sparse volume): a segment sealed and PUT for each
+/// before the commit.
 fn two_cuts(fx: &mut Fixture) -> InPlace<SimDisk> {
     let mut store = fx.start();
     for block in 60..100 {
@@ -63,10 +64,19 @@ struct Seen {
     landed_unheard: u64,
 }
 
-async fn kill_at(kill: Kill) -> Seen {
+/// The fixture, on a sparse volume or one with no holes.
+async fn fixture(sparse: bool) -> Fixture {
+    if sparse {
+        Fixture::sparse(20).await
+    } else {
+        Fixture::new(20).await
+    }
+}
+
+async fn kill_at(kill: Kill, sparse: bool) -> Seen {
     quiet_deaths();
-    let case = format!("{kill:?}");
-    let mut fx = Fixture::new(20).await;
+    let case = format!("{kill:?}, sparse {sparse}");
+    let mut fx = fixture(sparse).await;
     let store = two_cuts(&mut fx);
     let mut up = fx.driver(store, SLICE);
     match kill {
@@ -140,8 +150,8 @@ async fn kill_at(kill: Kill) -> Seen {
 /// The run with no death, step by step: its operations on object
 /// storage, and how many of them it had made when it came to the first
 /// cut's commit.
-async fn operations_of_the_run() -> (Vec<String>, usize) {
-    let mut fx = Fixture::new(20).await;
+async fn operations_of_the_run(sparse: bool) -> (Vec<String>, usize) {
+    let mut fx = fixture(sparse).await;
     let store = two_cuts(&mut fx);
     let mut up = fx.driver(store, SLICE);
     fx.store.inner().record(true);
@@ -162,8 +172,8 @@ async fn operations_of_the_run() -> (Vec<String>, usize) {
 /// The run with no death, step by step: how many stores into the cut
 /// state it made, and how many it had made when each cut's release
 /// began (the step that commits it, which is the step that lets it go).
-async fn stores_of_the_run() -> (u64, Vec<u64>) {
-    let mut fx = Fixture::new(20).await;
+async fn stores_of_the_run(sparse: bool) -> (u64, Vec<u64>) {
+    let mut fx = fixture(sparse).await;
     let store = two_cuts(&mut fx);
     let mut up = fx.driver(store, SLICE);
     let first = fx.region.stores();
@@ -186,7 +196,19 @@ async fn stores_of_the_run() -> (u64, Vec<u64>) {
 /// restart lets each cut go with nothing uploaded.
 #[tokio::test]
 async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on() {
-    let (operations, at_commit) = operations_of_the_run().await;
+    deaths_at_operations(false).await;
+}
+
+/// [`a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on`]
+/// on a sparse volume (M2.4e): the whole cut reads only what was written
+/// since its state began, and the rest goes up as zeros.
+#[tokio::test]
+async fn a_death_at_any_operation_on_object_storage_of_a_sparse_volume() {
+    deaths_at_operations(true).await;
+}
+
+async fn deaths_at_operations(sparse: bool) {
+    let (operations, at_commit) = operations_of_the_run(sparse).await;
     let swaps: Vec<usize> = operations
         .iter()
         .enumerate()
@@ -207,16 +229,21 @@ async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_u
         .iter()
         .filter(|op| *op == "put seg")
         .count();
+    // Where the volume has no holes, its data (blocks 60 to 99) runs
+    // through four slices of the volume's blocks; where it is sparse, the
+    // 44 blocks written since the state began (the data and the four
+    // uberblock slots) are read 16 to a slice, in three.
+    let slices = if sparse { 3 } else { 4 };
     assert!(
-        early >= 4,
-        "the whole cut's data runs through four slices, and each slice's \
-         segment is PUT before the commit: {operations:?}"
+        early >= slices,
+        "the whole cut's data runs through {slices} slices, and each \
+         slice's segment is PUT before the commit: {operations:?}"
     );
     for when in [FaultWhen::Before, FaultWhen::After] {
         let mut points = 0;
         let mut landed_unheard = 0;
         for k in 0.. {
-            let seen = kill_at(Kill::Remote(when, k)).await;
+            let seen = kill_at(Kill::Remote(when, k), sparse).await;
             if !seen.died {
                 break;
             }
@@ -248,12 +275,24 @@ async fn a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_u
 /// moves the open epoch's lower end before it drops the cut.
 #[tokio::test]
 async fn a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch() {
-    let (stores, releases) = stores_of_the_run().await;
+    deaths_at_stores(false).await;
+}
+
+/// [`a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch`]
+/// on a sparse volume (M2.4e), whose state holds the image's holes until
+/// the first cut is let go.
+#[tokio::test]
+async fn a_death_at_any_store_into_the_cut_state_of_a_sparse_volume() {
+    deaths_at_stores(true).await;
+}
+
+async fn deaths_at_stores(sparse: bool) {
+    let (stores, releases) = stores_of_the_run(sparse).await;
     assert_eq!(releases.len(), 2, "a release for each cut");
     let mut points = 0;
     let mut held_for_the_row = Vec::new();
     for n in 0.. {
-        let seen = kill_at(Kill::Region(n)).await;
+        let seen = kill_at(Kill::Region(n), sparse).await;
         if !seen.died {
             break;
         }

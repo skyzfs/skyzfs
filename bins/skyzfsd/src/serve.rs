@@ -181,8 +181,8 @@ use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{
-    CutFigures, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions, Opened,
-    StartError,
+    CutFigures, CutHoles, CutRegion, CutsTakenUp, HoldCuts, InPlace, IntentAtStart, OpenOptions,
+    Opened, StartError,
 };
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
@@ -190,8 +190,8 @@ use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wa
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{
-    self, Board, CutStateShown, HeaderSyncShown, HeldShown, IntentShown, Pace, Status, StoreShown,
-    ZeroesShown,
+    self, Board, CutHolesShown, CutStateShown, HeaderSyncShown, HeldShown, HolesShown, IntentShown,
+    Pace, Status, StoreShown, ZeroesShown,
 };
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
@@ -666,6 +666,14 @@ fn held_shown_of(at_start: Option<&CutsTakenUp>, figures: CutFigures) -> HeldSho
         bound: figures.bound,
         abandoned: figures.abandoned,
         replaced: Some(figures.replaced),
+        holes: Some(HolesShown {
+            state: match figures.holes {
+                CutHoles::None => CutHolesShown::None,
+                CutHoles::Held => CutHolesShown::Held,
+                CutHoles::Dropped => CutHolesShown::Dropped,
+            },
+            chunks: figures.hole_chunks,
+        }),
     }
 }
 
@@ -2178,7 +2186,8 @@ mod tests {
     }
 
     /// The held cuts' figures reach the status each in its own field,
-    /// the cuts replaced among them, with what the start did.
+    /// the cuts replaced and the image's holes among them, with what the
+    /// start did.
     #[test]
     fn the_held_cuts_reach_the_status_each_in_its_field() {
         let figures = CutFigures {
@@ -2187,6 +2196,8 @@ mod tests {
             bound: 4,
             abandoned: 5,
             replaced: 6,
+            holes: CutHoles::Held,
+            hole_chunks: 7,
         };
         assert_eq!(
             held_shown_of(Some(&CutsTakenUp::TakenUp), figures),
@@ -2197,12 +2208,28 @@ mod tests {
                 bound: 4,
                 abandoned: 5,
                 replaced: Some(6),
+                holes: Some(HolesShown {
+                    state: CutHolesShown::Held,
+                    chunks: 7,
+                }),
             }
         );
         assert_eq!(
             held_shown_of(None, CutFigures::default()).state,
             CutStateShown::Off
         );
+        for (holes, shown) in [
+            (CutHoles::None, CutHolesShown::None),
+            (CutHoles::Held, CutHolesShown::Held),
+            (CutHoles::Dropped, CutHolesShown::Dropped),
+        ] {
+            let figures = CutFigures {
+                holes,
+                ..CutFigures::default()
+            };
+            let said = held_shown_of(None, figures).holes.map(|h| h.state);
+            assert_eq!(said, Some(shown), "{holes:?}");
+        }
     }
 
     /// What the end of the uploader's thread says, for each end.
