@@ -92,3 +92,97 @@ run-44217572301/ubuntu-26.04-arm rewindsync: exit 0 here, 30 lines, the same as 
 run-44217572301/ubuntu-26.04-arm slog: exit 0 here, 30 lines, the same as the run
 run-44217572301/ubuntu-26.04-arm stray: exit 0 here, 30 lines, the same as the run
 run-44217572301/ubuntu-26.04-arm takeover: exit 0 here, 35 lines, the same as the run
+run-44222833248/ubuntu-26.04 autotrim: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 bound: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 config: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 edges: exit 0 here, 31 lines, the same as the run
+run-44222833248/ubuntu-26.04 failed: exit 0 here, 33 lines, the same as the run
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    records	INFO	1039 records from the request log (123 with their bytes), 21 uberblock writes that mark, of 84; 6 marks
+    cuts	PASS	21 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 21 cut lines are numbered 1 to 21 (state 2 counts from 1 again)
+    obs_opens_as_itself	INFO	21 of 21 cuts open as themselves, by the reference
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 11260 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 11492 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '1
+    failure	PASS	with 2 cuts held the volume failed and serve ended with 3; a start without --acknowledge-failure was refused with 4, and one with it served
+    held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    cut_state	PASS	the request log's cuts lines say ['begun', 'begun'], the last status 'begun'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 in
+    cuts_held	PASS	the status says '1' held, `held` listed 1 (8 55 uploading itself 188), a second and a half apart after the export
+    held_content	PASS	5 of 21 cuts written and released; 655360 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    cuts_abandoned	INFO	'0'
+    obs_copied_blocks	INFO	2299 blocks of the first written cut and 20 of the 4 written after it (in cuts 14; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote them from copies
+    carried_across_failure	INFO	cut 14, the first written of the new state: 1784 of its 6177 blocks differ from the image the holders of the state before left
+    ctl_content_early	CAUGHT	cut 14: 45 blocks differ (expected: caught)
+    ctl_content_stale	CAUGHT	cut 14: 1784 blocks differ (expected: caught)
+    sessions	PASS	2 sessions as committed; 16 cuts within the kstats' windows, the others in strictly increasing groups
+    import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 33..35)
+    ctl_drop	CAUGHT	cut 11: the daemon's is group 22 (itself) at record 602, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_last	CAUGHT	the daemon counted 20 cuts, the reference 21 (expected: caught)
+    ctl_extra	CAUGHT	the daemon counted 22 cuts, the reference 21 (expected: caught)
+    ctl_group	CAUGHT	cut 11: the daemon's is group 19 (itself) at record 573, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_opens	CAUGHT	cut 11: the daemon's is group 18 (rewind) at record 573, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_late	CAUGHT	cut 11: the daemon's is group 18 (itself) at record 596, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 65, the reference's group 4 (rewind) at record 59 (expected: caught)
+    ctl_txg-alone	SAME	the rule txg-alone gives the design's 21 cuts here (expected: same or caught)
+    ctl_count-repeats	SAME	the rule count-repeats gives the design's 21 cuts here (expected: same or caught)
+    ctl_previous	SAME	the rule previous gives the design's 21 cuts here (expected: same or caught)
+    ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 21 cuts here (expected: same)
+    ctl_mark-kept	SAME	the rule mark-kept gives the design's 21 cuts here (expected: same)
+run-44222833248/ubuntu-26.04 full: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 life: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 multihost: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 rewind: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 rewindf: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 rewindsync: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 slog: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 stray: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04 takeover: exit 0 here, 35 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm autotrim: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm bound: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm config: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm edges: exit 0 here, 31 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm failed: exit 0 here, 33 lines, the same as the run
+    obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+    obs_unstored_at_kill	INFO	0 flushes the daemon was killed at, between the barrier and the state storing the cut
+    records	INFO	1050 records from the request log (123 with their bytes), 21 uberblock writes that mark, of 84; 6 marks
+    cuts	PASS	21 cuts, each at the same barrier with the same group and the same answer to itself
+    cut_numbers	PASS	the 21 cut lines are numbered 1 to 21 (state 2 counts from 1 again)
+    obs_opens_as_itself	INFO	21 of 21 cuts open as themselves, by the reference
+    status	PASS	cuts 8, cut_group 55, cut_opens itself
+    instance_1	PASS	pid 11087 (the first): cut_state begun, intent_state begun by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '128' of '128' regions at the start
+    instance_2	PASS	pid 11316 (created the device, acknowledging a failure): cut_state begun, intent_state taken_up by its cuts line and the status's cut_state and intent_state; cuts 0 at the start, 0 counted before it; the intent map named '6' of '1
+    failure	PASS	with 2 cuts held the volume failed and serve ended with 3; a start without --acknowledge-failure was refused with 4, and one with it served
+    held_reads	PASS	the daemon read every block of each cut the holder asked it to write
+    cut_state	PASS	the request log's cuts lines say ['begun', 'begun'], the last status 'begun'; a new volume's first start with --hold-cuts begins a state, and each start after it takes it up unless it acknowledged a failure, which begins one (2 in
+    cuts_held	PASS	the status says '2' held, `held` listed 2 (4 38 uploading itself 34; 8 55 waiting itself 1806), a second and a half apart after the export
+    held_content	PASS	6 of 21 cuts written and released; 786432 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    cuts_abandoned	INFO	'0'
+    obs_copied_blocks	INFO	1866 blocks of the first written cut and 16 of the 5 written after it (in cuts 14; 0 under a write-zeroes) had changed in the home between the cut's instant and its write: the daemon wrote them from copies
+    carried_across_failure	INFO	cut 14, the first written of the new state: 1792 of its 6177 blocks differ from the image the holders of the state before left
+    ctl_content_early	CAUGHT	cut 16: 1633 blocks differ (expected: caught)
+    ctl_content_stale	CAUGHT	cut 16: 1677 blocks differ (expected: caught)
+    sessions	PASS	2 sessions as committed; 16 cuts within the kstats' windows, the others in strictly increasing groups
+    import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 33..35)
+    ctl_drop	CAUGHT	cut 11: the daemon's is group 22 (itself) at record 603, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_last	CAUGHT	the daemon counted 20 cuts, the reference 21 (expected: caught)
+    ctl_extra	CAUGHT	the daemon counted 22 cuts, the reference 21 (expected: caught)
+    ctl_group	CAUGHT	cut 11: the daemon's is group 19 (itself) at record 573, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_opens	CAUGHT	cut 11: the daemon's is group 18 (rewind) at record 573, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_late	CAUGHT	cut 11: the daemon's is group 18 (itself) at record 597, the reference's group 18 (itself) at record 573 (expected: caught)
+    ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 59, the reference's group 4 (rewind) at record 53 (expected: caught)
+    ctl_txg-alone	SAME	the rule txg-alone gives the design's 21 cuts here (expected: same or caught)
+    ctl_count-repeats	SAME	the rule count-repeats gives the design's 21 cuts here (expected: same or caught)
+    ctl_previous	SAME	the rule previous gives the design's 21 cuts here (expected: same or caught)
+    ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 21 cuts here (expected: same)
+    ctl_mark-kept	SAME	the rule mark-kept gives the design's 21 cuts here (expected: same)
+run-44222833248/ubuntu-26.04-arm full: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm life: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm multihost: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm rewind: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm rewindf: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm rewindsync: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm slog: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm stray: exit 0 here, 30 lines, the same as the run
+run-44222833248/ubuntu-26.04-arm takeover: exit 0 here, 35 lines, the same as the run

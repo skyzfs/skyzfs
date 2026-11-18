@@ -1,0 +1,17 @@
+
+running 1 test
+test inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit ... T1 after the death: held [(2, Uploading)], the map's base Some((2, 9)), named 0
+T1 the release made again: true; the write that waited: [(1, Ok(()))] (early []); the volume failed: false; named 1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 270 filtered out; finished in 0.05s
+
+
+--- stderr
+   Compiling skyzfs-local v0.0.1 (<scratch>/wt114/crates/skyzfs-local)
+   Compiling skyzfs-ublk v0.0.1 (<scratch>/wt114/crates/skyzfs-ublk)
+   Compiling skyzfs-ublk-sys v0.0.1 (<scratch>/wt114/crates/skyzfs-ublk-sys)
+    Finished `test` profile [optimized + debuginfo] target(s) in 28.13s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-local/8283a10c693ef846/out/skyzfs_local-8283a10c693ef846)
+
+--- exit 0

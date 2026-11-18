@@ -1,0 +1,26 @@
+U1 a barrier with no cut line at a kill is kept (shape B as before the pull request): KILLED by 2: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U2 a cut line cut again by the next instance is kept (shape C as before): KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U3 the barrier is taken out even where the next instance counts on past one more (shape A excused): KILLED by 2: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again
+U4 a next instance that acknowledged a failure can count past one more too: SURVIVED
+U5 past one more is n + 1 (the next number itself): KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U6 shape C by the number alone (any group): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U7 shape C by the group alone (any number): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U8 shape C before a start that acknowledged a failure too: KILLED by 1: test_a_cut_line_that_is_not_cut_again
+U9 shape C takes out the cut line and leaves its barrier: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U10 shape C whatever flush the barrier before the cut line is of: SURVIVED
+U11 the count before the kill is not begun again at a start that acknowledged a failure: SURVIVED
+U12 the count before the kill is the instances' before it, never this one's own lines: KILLED by 2: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again
+U13 main judges the log as it stood (the instances without the lines are dropped): KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut
+U14 main does not say which starts acknowledged a failure: SURVIVED
+U15 shape C where the cut line ends the instance, whatever stands before it: SURVIVED
+U16 shape C looks at the next instance's last cut, not its first: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+U17 the line of a shape C says what a shape B's says: KILLED by 1: test_a_kill_before_the_state_stored_the_cut
+U18 the last instance's barrier at the end of the log is taken out too: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_a_kill_before_the_state_stored_the_cut
+M1 cut_line_missing: the reference need not have one cut more before the kill: KILLED by 1: test_a_missing_cut_line_by_hand
+T1 parse_log takes a time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T2 parse_log refuses a time of more than 12 digits: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_time_of_more_than_20_digits
+T3 parse_log refuses a time of 20 digits: KILLED by 1: test_a_time_of_more_than_20_digits
+T4 the start check converts a next line's time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T5 a torn line's time may begin with zeros again: SURVIVED
+T6 torn_line takes a next line's time of any length: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+T7 torn_line refuses where the next line's time has more than 12 digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page

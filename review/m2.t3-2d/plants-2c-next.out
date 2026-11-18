@@ -42,3 +42,27 @@ P2 a page is 8192 bytes: SURVIVED
 P3 a page is 2048 bytes: KILLED by 1: test_a_torn_line_not_followed_by_a_start
 P4 the pages are counted from the line's beginning, not the file's: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
 P5 the file's offset counts no newlines: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+P6 the start line may carry a leading zero: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P7 the start may be of a pid already started (the author's survivor): SURVIVED
+P8 what is left may carry any whole pid: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P9 what is left may carry any digits where its pid is cut: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P10 the start may be earlier than the last whole line: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P11 the start may be later than the line after it (the author's survivor): SURVIVED
+P12 the torn line's own time is not held to the lines around it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P13 the torn line may be earlier than the last whole line: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P14 the torn line may be later than the start: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P15 the torn line's daemon may write after it: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P16 a start line later than the line after it is let through: NOT APPLIED (found [0] times)
+P17 only a line that does not parse is looked at (as e88773b): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+P18 the last instance's start, not its last whole line, bounds the times: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+P19 what is left must hold the whole time and its tab: NOT APPLIED (found [0] times)
+B1 no bound on the digits (torn_line as 3fe4133 had it: T3 as it was): NOT APPLIED (found [1, 0] times)
+B2 the start's time is not held to the next line's digits: NOT APPLIED (found [0] times)
+B3 the torn line's own time is not held to the next line's digits: NOT APPLIED (found [0] times)
+B4 the torn line's own time is counted with its leading zeros: NOT APPLIED (found [0] times)
+B5 a start as long as the next line's time is skipped (> to >=): NOT APPLIED (found [0] times)
+B6 a torn line's time as long as the next line's is skipped (> to >=): NOT APPLIED (found [0] times)
+B7 a next line's time of any length is taken (no bound of 20): KILLED by 1: test_a_torn_line_not_followed_by_a_start
+B8 no torn line where the next line's time has more than 12 digits (13 after 1000 s): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+B9 no torn line where the next line's time has more than 11 digits: KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+B10 a candidate with too long a time ends the search (continue to return None): NOT APPLIED (found [0] times)

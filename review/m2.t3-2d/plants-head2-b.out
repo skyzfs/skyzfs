@@ -1,0 +1,33 @@
+H1 a cut written by the instance that counted it counts too (<= to <): KILLED by 1: test_held_across_start
+H2 the writes up to the last start before the cut's write count, not up to the first after its instant: SURVIVED
+H8 a cut held across a start with no block from a copy meets the floor: SURVIVED
+H9 the floor's line is INFO whatever it found: KILLED by 1: test_a_cut_held_across_the_take_over
+H10 a take-over that shows nothing is no error of the rig (the exit): SURVIVED
+H11 every recording is asked for a cut held across a start: KILLED by 5: test_a_control_missed_is_a_verdict, test_a_right_daemon, test_a_wrong_block_is_a_verdict, test_a_wrong_block_is_a_verdict_whatever_the_log_holds_after, test_edges_must_send_both
+H12 the instance that wrote is counted by the starts before the cut line, not before the write was asked: KILLED by 1: test_a_cut_held_across_the_take_over
+A1 the old state's image is left empty (every block of the first cut that is not zeros differs): KILLED by 1: test_across_failure
+A2 the blocks that are the same are counted: KILLED by 1: test_across_failure
+A3 a block the old image does not hold differs whatever it holds (zeros too): KILLED by 1: test_across_failure
+A4 a first cut of the new state that differs in no block meets the floor: KILLED by 1: test_carried_across_failure_must_show_something
+A5 the floor's line is INFO whatever it found: KILLED by 1: test_carried_across_failure_must_show_something
+A6 a failure that carries nothing is no error of the rig (the exit): SURVIVED
+A7 no recording is asked for it: KILLED by 2: test_an_acknowledged_failure, test_carried_across_failure_must_show_something
+A8 the old image is the cuts of every state but the last written: KILLED by 1: test_across_failure
+G1 the cuts before a start are counted from the log's first line (as before): KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G2 the cuts before a start are counted from the first start that began a state: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G3 a start that acknowledged a failure is not asked what it holds: KILLED by 1: test_the_second_instance_begins
+G4 a status with no cuts_held passes at an acknowledged start: KILLED by 1: test_the_second_instance_begins
+G5 every later start must hold nothing: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+H3 the writes before the cut's instant count too: SURVIVED
+H4 the writes after the next start count too: KILLED by 1: test_held_across_start
+H6 only a block whose last content is the cut's counts: KILLED by 1: test_held_across_start
+H7 a block that is not of the cut's map counts: SURVIVED
+L1 any write that differs counts, whatever was written after it (as at afd217a): KILLED by 1: test_held_across_start
+L2 the first write to a block decides, not the last: KILLED by 1: test_held_across_start
+L3 a block whose last content is not known counts: KILLED by 1: test_held_across_start
+L4 a write-zeroes is not looked at (the write before it decides): KILLED by 1: test_held_across_start
+L5 a write-zeroes leaves zeros, which are known: KILLED by 1: test_held_across_start
+L6 a write of no known content is passed over (the write before it decides): KILLED by 1: test_held_across_start
+L7 a block once not known stays so, whatever is written after: SURVIVED
+L8 a write-zeroes is read as a write with hashes: SURVIVED
+L9 no block counts: KILLED by 1: test_held_across_start

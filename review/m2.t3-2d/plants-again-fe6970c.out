@@ -8,3 +8,14 @@
 2b B4 skz_release_line does not squeeze the last line's blanks: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 	# a  
 2b B4 (as #115 has it) skz_release_line leaves the blanks at the ends of the last line: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0  # a l
 2b B4 (as #115 has it) only the blank at the beginning is taken: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0 # a li
+2b B4 (as #115 has it) only the blank at the end is taken: KILLED by 1: test_skz_store.sh: FAIL   the last line's blanks squeezed and its ends bare: got 'skzrel 1 0  # a l
+2c B1 no bound on the digits (torn_line as 3fe4133 had it): KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_torn_line_not_followed_by_a_start
+2c B2 the start's time is not held to the next line's digits: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c B3 the torn line's own time is not held to the next line's digits: KILLED by 1: test_a_torn_line_not_followed_by_a_start
+2c B5 a start as long as the next line's time is skipped (> to >=): KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+2c B6 a torn line's time as long as the next line's is skipped (> to >=): KILLED by 3: test_a_label_line_torn_by_a_kill, test_a_line_torn_anywhere_on_a_page, test_a_torn_line_only_before_a_take_over
+2c B10 a candidate with too long a time ends the search (continue to return None): KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P16 a start line later than the line after it is let through: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P19 what is left must hold the whole time and its tab: KILLED by 1: test_a_line_torn_anywhere_on_a_page
+2c P2 a page is 8192 bytes: SURVIVED
+2c P2 (16384) a page is 16384 bytes: SURVIVED

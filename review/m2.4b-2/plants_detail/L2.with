@@ -1,0 +1,46 @@
+
+running 1 test
+test inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit ... T1 after the death: held [(2, Uploading)], the map's base Some((2, 9)), named 0
+T1 the release made again: true; the write that waited: [(1, Err(Failed))] (early []); the volume failed: true; named 1
+FAILED
+
+failures:
+
+failures:
+    inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 270 filtered out; finished in 0.17s
+
+
+--- stderr
+   Compiling skyzfs-local v0.0.1 (<scratch>/wt114/crates/skyzfs-local)
+   Compiling skyzfs-ublk v0.0.1 (<scratch>/wt114/crates/skyzfs-ublk)
+   Compiling skyzfs-ublk-sys v0.0.1 (<scratch>/wt114/crates/skyzfs-ublk-sys)
+    Finished `test` profile [optimized + debuginfo] target(s) in 27.48s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-local/8283a10c693ef846/out/skyzfs_local-8283a10c693ef846)
+
+thread 'inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit' (16437) panicked at crates/skyzfs-local/src/inplace/tests/cuts/review_m24b2.rs:63:5:
+assertion `left == right` failed: the write that waited goes on
+  left: [(1, Err(Failed))]
+ right: [(1, Ok(()))]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:447:23
+   3: core::panicking::assert_failed::<alloc::vec::Vec<(u64, core::result::Result<(), skyzfs_blk::BlkError>)>, [(u64, core::result::Result<(), skyzfs_blk::BlkError>); 1]>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:407:5
+   4: skyzfs_local::inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit
+             at ./src/inplace/tests/cuts/review_m24b2.rs:63:5
+   5: skyzfs_local::inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit::{closure#0}
+             at ./src/inplace/tests/cuts/review_m24b2.rs:17:77
+   6: <skyzfs_local::inplace::tests::cuts::review_m24b2::review_t1_a_release_made_again_after_a_death_takes_a_waiting_writes_bit::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `-p skyzfs-local --lib`
+
+--- exit 101

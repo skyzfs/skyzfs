@@ -1,2 +1,0 @@
-A -> B -> A before the next start: [(1, 1, 2, 1)]
-A -> B, left at B:                 [(1, 1, 2, 1)]

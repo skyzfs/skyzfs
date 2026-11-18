@@ -14,6 +14,9 @@ SET is one of:
            next2_plants.py, next3_plants.py (#113, four heads)
   again    plants of the older lists whose text has changed since,
            planted in this head's text (the names say which they were)
+  head2    `new` for fe6970c: held_across_start's plants in that head's
+           text, and L1 to L9 in its rule (a block counts by its last
+           known content before the next start)
 
 A plant is a text of a file replaced by another. One whose text is not
 found exactly once says NOT APPLIED. The file is restored after each
@@ -183,6 +186,7 @@ NEW = [
 ]
 
 
+SKIP2 = "        if len(m.group(1)) > len(nxt) or len(h.group(1)) > len(nxt):\n            continue\n"
 F_CALL = "                if name == 'failed':\n                    rc = max(rc, failure_line(put, rdir))\n"
 AGAIN = [
     ('2b K2 cut_line_missing: the next instance\'s number is not looked at', J,
@@ -208,6 +212,62 @@ AGAIN = [
      "sed 's/^ //; s/ $//'", "sed 's/^ //'"),
     ('2b B4 (as #115 has it) only the blank at the end is taken', BENCH,
      "sed 's/^ //; s/ $//'", "sed 's/ $//'"),
+    ('2c B1 no bound on the digits (torn_line as 3fe4133 had it)', J,
+     T_TORN, "    if not nxt.isdigit():\n        return None\n", SKIP2, ""),
+    ('2c B2 the start\'s time is not held to the next line\'s digits', J,
+     SKIP2, SKIP2.replace("len(m.group(1)) > len(nxt) or ", "")),
+    ('2c B3 the torn line\'s own time is not held to the next line\'s digits', J,
+     SKIP2, SKIP2.replace(" or len(h.group(1)) > len(nxt)", "")),
+    ('2c B5 a start as long as the next line\'s time is skipped (> to >=)', J,
+     SKIP2, SKIP2.replace("len(m.group(1)) > len(nxt)", "len(m.group(1)) >= len(nxt)")),
+    ('2c B6 a torn line\'s time as long as the next line\'s is skipped (> to >=)', J,
+     SKIP2, SKIP2.replace("len(h.group(1)) > len(nxt)", "len(h.group(1)) >= len(nxt)")),
+    ('2c B10 a candidate with too long a time ends the search (continue to return None)', J,
+     SKIP2, SKIP2.replace("continue", "return None")),
+    ('2c P16 a start line later than the line after it is let through', J,
+     T_NEXT, "            if False:\n"),
+    ('2c P19 what is left must hold the whole time and its tab', J,
+     T_HEAD, "TORN_HEAD = re.compile(r'([1-9]\\d*)\\t(\\d*)(\\t.*)?', re.S)\n"),
+    ('2c P2 a page is 8192 bytes', J, "PAGE = 4096\n", "PAGE = 8192\n"),
+    ('2c P2 (16384) a page is 16384 bytes', J, "PAGE = 4096\n", "PAGE = 16384\n"),
+]
+
+# fe6970c: held_across_start counts a block by its last known content.
+H2_RANGE = "        for r in records[d['prefix'] + 1:end]:\n            zeroes = r.get('op') == 'write_zeroes'\n"
+H2_SET = "                if b in held:\n                    home[b] = None if hs is None else hs[k]\n"
+H2_SUM = "        hit = sum(1 for b, h in home.items() if h is not None and h != held[b])\n"
+H2_ZERO = "            zeroes = r.get('op') == 'write_zeroes'\n"
+H2_HS = "            hs = None if zeroes else r.get('hashes')\n"
+HEAD2 = [p for p in NEW if not p[0].startswith(('H3 ', 'H4 ', 'H5 ', 'H6 ', 'H7 '))] + [
+    ('H3 the writes before the cut\'s instant count too', J,
+     H2_RANGE, H2_RANGE.replace("records[d['prefix'] + 1:end]", "records[:end]")),
+    ('H4 the writes after the next start count too', J,
+     H2_RANGE, H2_RANGE.replace("records[d['prefix'] + 1:end]", "records[d['prefix'] + 1:]")),
+    ('H6 only a block whose last content is the cut\'s counts', J,
+     H2_SUM, H2_SUM.replace("h != held[b]", "h == held[b]")),
+    ('H7 a block that is not of the cut\'s map counts', J,
+     H2_SET, "                if True:\n                    home[b] = None if hs is None else hs[k]\n",
+     H2_SUM, H2_SUM.replace("h != held[b]", "h != held.get(b)")),
+    ('L1 any write that differs counts, whatever was written after it (as at afd217a)', J,
+     H2_SET, "                if b in held and not (hs is not None and hs[k] == held[b] and b in home):\n"
+     "                    home[b] = None if hs is None else hs[k]\n"),
+    ('L2 the first write to a block decides, not the last', J,
+     H2_SET, "                if b in held:\n                    home.setdefault(b, None if hs is None else hs[k])\n"),
+    ('L3 a block whose last content is not known counts', J,
+     H2_SUM, H2_SUM.replace("h is not None and h != held[b]", "h is None or h != held[b]")),
+    ('L4 a write-zeroes is not looked at (the write before it decides)', J,
+     H2_ZERO, "            zeroes = False\n"),
+    ('L5 a write-zeroes leaves zeros, which are known', J,
+     H2_SET, "                if b in held:\n                    home[b] = (ZERO if zeroes else None) if hs is None else hs[k]\n"),
+    ('L6 a write of no known content is passed over (the write before it decides)', J,
+     H2_SET, "                if b in held and hs is not None and hs[k] is not None:\n                    home[b] = hs[k]\n"),
+    ('L7 a block once not known stays so, whatever is written after', J,
+     H2_SET, "                if b in held and home.get(b, 0) is not None:\n"
+     "                    home[b] = None if hs is None else hs[k]\n"),
+    ('L8 a write-zeroes is read as a write with hashes', J,
+     H2_HS, "            hs = r.get('hashes')\n"),
+    ('L9 no block counts', J,
+     H2_SUM, "        hit = sum(1 for b, h in home.items() if h is not None and h != held[b] and False)\n"),
 ]
 
 def load(name, path, argv):
@@ -230,6 +290,8 @@ def plants_of(which):
         return NEW
     if which == 'again':
         return AGAIN
+    if which == 'head2':
+        return HEAD2
     b, c = os.path.join(HERE, '..', 'm2.t3-2b'), os.path.join(HERE, '..', 'm2.t3-2c')
     if which == '2b':
         return load('p2b', os.path.join(b, 'plants.py'), ['x', ROOT]).PLANTS

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#115 at afd217a: the two judged floors on real recordings.
+"""#115 at afd217a and at fe6970c: the two judged floors on real recordings.
 
     python3 -I floors.py CHECKOUT ARTIFACT_DIR...
 
@@ -9,9 +9,11 @@ For each artifact's `takeover`:
     the first instance reached, when the first block of its map changed
     in the home (ms after the cut's instant, ms before the next start,
     groups after the cut), and where the counted blocks lie;
-  - of the counted blocks, how many held the cut's content again at the
-    next start (Codex's remark on #115: such a block is counted, and the
-    next instance needs no copy to get it right);
+  - of the blocks of its map that a write touched in that span, how many
+    a write changed at any time (what afd217a counts), how many held the
+    cut's content again at the next start (Codex's remark on #115), and
+    how many were last touched by a write of no known content or by a
+    write-zeroes (what fe6970c calls not known and does not count);
   - the same count by the method of the review of #111 (the blocks whose
     last content before the next start differs from the cut's);
   - T1: a daemon that took the cut up without the record of its copies
@@ -121,9 +123,11 @@ for art in arts:
             groups_at = {}
             cuts_before = [x for x in dcuts if x['prefix'] <= d['prefix']]
             cuts_between = [x for x in dcuts if d['prefix'] < x['prefix'] <= end['i']]
+            unknown = set()
             for r in records[d['prefix'] + 1:end['i']]:
-                if c.cut_ref.is_write(r):
-                    hs = r.get('hashes')
+                zeroes = r.get('op') == 'write_zeroes'
+                if c.cut_ref.is_write(r) or zeroes:
+                    hs = None if zeroes else r.get('hashes')
                     b0 = r['offset'] // c.BLOCK
                     for k, b in enumerate(range(b0, (r['offset'] + r['bytes'] - 1) // c.BLOCK + 1)):
                         if b in mine:
@@ -133,13 +137,15 @@ for art in arts:
                                     first[b] = r
                                     groups_at[b] = sum(1 for x in cuts_between if x['prefix'] <= r['i'])
                             last[b] = None if hs is None else hs[k]
+                            (unknown.add if last[b] is None else unknown.discard)(b)
             restored = sorted(b for b in hit if last.get(b) == mine[b])
-            assert len(hit) == nb
+            by_last = sum(1 for b in hit if last[b] is not None and last[b] != mine[b])
+            assert nb in (len(hit), by_last), (nb, len(hit), by_last)
             lie = {}
             for b in hit:
                 lie[where(b, dev_blocks)] = lie.get(where(b, dev_blocks), 0) + 1
             print(f'  cut {n} (group {d["txg"]}), counted by instance {counted}, written by instance {wrote}: '
-                  f'{len(mine)} blocks in its map, {nb} counted; they lie in: '
+                  f'{len(mine)} blocks in its map, {nb} counted by the check; they lie in: '
                   f"{', '.join(f'{k}: {v}' for k, v in sorted(lie.items()))}")
             print(f'      the instance counted {len(cuts_between)} more cuts before the next start (to group '
                   f"{cuts_between[-1]['txg'] if cuts_between else d['txg']})")
@@ -150,7 +156,9 @@ for art in arts:
                       f"instant and {(end['ns'] - fr['ns']) / 1e6:.0f} ms before the next start, "
                       f'{groups_at[fb]} cuts after it; by blocks, cuts after the cut at the first change: '
                       f'{sorted(groups_at.values())}')
-            print(f'      counted blocks that held the cut\'s content again at the next start: {len(restored)}')
+            print(f'      blocks of the map a write changed in that span: {len(hit)}; of them, holding the cut\'s '
+                  f'content again at the next start: {len(restored)}; last touched by a write of no known content '
+                  f'or a write-zeroes: {len(unknown)}; by their last known content: {by_last}')
             # the #111 review's count: blocks whose content at the next start is not the cut's
             model, at = {}, 0
             while at < d['prefix']:
