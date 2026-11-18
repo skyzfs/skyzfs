@@ -27,3 +27,5 @@ I2 a start that acknowledged a failure wants the intent map begun: KILLED by 2: 
 I3 a start that acknowledged a failure takes either for the intent map: KILLED by 1: test_the_second_instance_begins
 I4 the acknowledged start's count is held to the cuts before it: NOT APPLIED (found [0] times)
 I5 the line does not say that the start acknowledged a failure: KILLED by 1: test_the_second_instance_begins
+I6 main passes no begun list to instance_lines: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+C1 cut_state wants every later start taken up: KILLED by 1: test_a_floor_not_met_is_the_rigs_error

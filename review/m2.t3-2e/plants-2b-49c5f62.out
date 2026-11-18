@@ -37,3 +37,4 @@ I7 a failed instance line is no verdict (main drops instance_lines' result): NOT
 I8 cut_state: only the first start's cuts line is looked at: KILLED by 1: test_an_acknowledged_failure
 I9 cut_state: the last status may say begun after a take-up: KILLED by 1: test_two_instances
 I10 several instances with no holder are no error: KILLED by 1: test_what_cannot_be_judged
+I11 a held stage on a log with no hashes is judged: KILLED by 1: test_what_cannot_be_judged
