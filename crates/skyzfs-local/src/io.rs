@@ -233,6 +233,25 @@ pub trait File {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    /// The first range of the file at or after `offset` that may hold
+    /// data, as `(start, end)` in bytes: `start` at or after `offset`,
+    /// and `end` the next hole after it or the file's end. `None` where
+    /// nothing from `offset` to the end may: the rest reads as zeros.
+    /// What lies in no such range is a hole, and reads as zeros. A
+    /// range named data may read as zeros too (written zeros, an
+    /// unwritten extent): only a hole is a promise. M2.4e records the
+    /// image's holes with it when a cut state begins.
+    ///
+    /// Linux: `lseek` with `SEEK_DATA`, then `SEEK_HOLE`; a file system
+    /// without holes of its own answers that the whole file is data.
+    /// Fails with [`io::ErrorKind::Unsupported`] where the platform or
+    /// the kernel has no such call, which is this default: the caller
+    /// then takes the whole file for data.
+    fn data_from(&self, offset: u64) -> io::Result<Option<(u64, u64)>> {
+        let _ = offset;
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Set the file's length to `len` with real, zero-filled space behind
     /// it, so that a later write inside it allocates nothing.
     fn preallocate(&mut self, len: u64) -> io::Result<()>;

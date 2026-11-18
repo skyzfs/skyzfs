@@ -430,6 +430,8 @@ struct State {
     direct_refused_of: Option<String>,
     /// The file system has no call that deallocates.
     no_holes: bool,
+    /// The system has no call that finds a file's data and holes.
+    no_seek_data: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
     /// Files, by inode, that lie on a file system of their own, with
@@ -687,6 +689,7 @@ impl SimDisk {
                 read_fault: None,
                 direct_refused_of: None,
                 no_holes: false,
+                no_seek_data: false,
                 block_size: Some(SECTOR),
                 block_sizes_of: BTreeMap::new(),
                 page_size: SECTOR,
@@ -1031,6 +1034,12 @@ impl SimDisk {
         state.direct_refused_of = None;
         state.halt = None;
         state.read_fault = None;
+    }
+
+    /// Whether the system can say where a file's data and holes are
+    /// ([`File::data_from`]). It can, unless this says otherwise.
+    pub fn set_seek_data(&self, supported: bool) {
+        self.lock().no_seek_data = !supported;
     }
 
     /// Whether the file system can deallocate a range of a file
@@ -2013,6 +2022,46 @@ impl File for SimFile {
         self.check(&state)?;
         Ok(state.inodes.get(&self.inode).ok_or_else(gone)?.len)
     }
+
+    /// A block of the file system ([`SimDisk::set_block_size`]) is data
+    /// where the disk was ever handed one of its sectors, by a write or
+    /// a deallocation, and a hole where it never was: the sectors it
+    /// was never handed read as zeros. A deallocated block stays data,
+    /// which a file system need not do; data is only "may hold data".
+    /// Unsupported where [`SimDisk::set_seek_data`] says so.
+    fn data_from(&self, offset: u64) -> io::Result<Option<(u64, u64)>> {
+        let state = self.disk.lock();
+        self.check(&state)?;
+        if state.no_seek_data {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let unit = state.block_size_of(self.inode).unwrap_or(SECTOR).max(SECTOR);
+        let inode = state.inodes.get(&self.inode).ok_or_else(gone)?;
+        if offset >= inode.len {
+            return Ok(None);
+        }
+        let block_of = |index: u64| index * SECTOR / unit;
+        let mut handed = inode
+            .sectors
+            .range(offset / unit * unit / SECTOR..)
+            .map(|(&index, _)| index);
+        let Some(first) = handed.next() else {
+            return Ok(None);
+        };
+        let mut last = block_of(first);
+        for index in handed {
+            let block = block_of(index);
+            if block > last + 1 {
+                break;
+            }
+            last = block;
+        }
+        let start = (block_of(first) * unit).max(offset);
+        if start >= inode.len {
+            return Ok(None);
+        }
+        Ok(Some((start, ((last + 1) * unit).min(inode.len))))
+    }
 }
 
 #[cfg(test)]
@@ -2039,6 +2088,43 @@ mod tests {
         f.sync().unwrap();
         Dir::sync(&disk).unwrap();
         disk
+    }
+
+    /// Holes: a block of the file system is data where a write or a
+    /// deallocation reached it, and a hole where nothing did; adjacent
+    /// blocks of data are one range, a range starts no earlier than
+    /// asked and ends no later than the file, and a disk that has no
+    /// such call says so.
+    #[test]
+    fn data_is_where_a_write_or_a_deallocation_reached_and_the_rest_is_holes() {
+        const B: u64 = 4096;
+        let disk = SimDisk::new(1);
+        disk.set_block_size(Some(B));
+        let mut f = disk.create("f").unwrap();
+        f.extend(16 * B).unwrap();
+        assert_eq!(f.data_from(0).unwrap(), None, "a new extent is all hole");
+        // One sector in block 2, blocks 3 and 4 whole, block 9 by a
+        // deallocation, and the file's last block in part.
+        f.write_at(2 * B + 512, &[1; S]).unwrap();
+        f.write_at(3 * B, &vec![2; 2 * B as usize]).unwrap();
+        f.deallocate(9 * B, B).unwrap();
+        f.extend(16 * B + 100).unwrap();
+        f.write_at(16 * B, &[3; 100]).unwrap();
+        assert_eq!(f.data_from(0).unwrap(), Some((2 * B, 5 * B)));
+        assert_eq!(f.data_from(3 * B + 7).unwrap(), Some((3 * B + 7, 5 * B)));
+        assert_eq!(f.data_from(5 * B).unwrap(), Some((9 * B, 10 * B)));
+        assert_eq!(f.data_from(10 * B).unwrap(), Some((16 * B, 16 * B + 100)));
+        assert_eq!(f.data_from(16 * B + 100).unwrap(), None);
+        assert_eq!(f.data_from(u64::MAX).unwrap(), None);
+        // A hole reads as zeros, as every hole must.
+        let mut buf = vec![0xEE; (4 * B) as usize];
+        f.read_at(5 * B, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+        disk.set_seek_data(false);
+        assert_eq!(
+            f.data_from(0).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 
     /// Visibility: a write is read back at once, synced or not, and a
