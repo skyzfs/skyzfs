@@ -27,3 +27,19 @@ P4	KILLED	no wait after a step that failed	by 2: a_store_out_of_reach_for_longer
 P4b	SURVIVED	no wait after a commit given up	
 P5	KILLED	a commit the fence refused is an error like another (wait and try again)	by 1: a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing	with scenarios.rs l1_: passes
 P6	SURVIVED	a stopped driver is stepped all the same	
+P7	KILLED	a step is taken during the wait	by 2: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure
+P8	KILLED	the wait does not end for the lease's renewal	by 2: after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once	with scenarios.rs b3_: FAILS (plants_detail/P8.with)
+P9	KILLED	the lease is kept at every turn	by 2: a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing, the_lease_is_kept_every_third_of_its_time
+P10	KILLED	the lease is renewed at its whole time (not a third)	by 3: after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once, the_lease_is_kept_every_third_of_its_time
+P11	KILLED	the driver is stepped though the lease is lost	by 1: another_holders_lease_stops_the_uploads_for_good	with scenarios.rs l1_: passes
+P12	KILLED	the driver is stepped with no lease (at epoch 0)	by 1: no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held
+P13	KILLED	an idle uploader asks again at once	by 3: after_an_idle_check_that_outlasts_the_renewal_the_lease_is_kept_at_once, an_idle_uploader_asks_again_after_a_quarter_second, the_lease_is_kept_every_third_of_its_time
+P14	KILLED	a failed take of the lease is tried again at once (no backoff)	by 1: no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held
+P15	SURVIVED	the lease's backoff is never reset	
+R1	SURVIVED	run does not sleep between turns	
+R2	SURVIVED	run does not stop during a turn	
+R3	SURVIVED	run does not publish	
+X1s	SURVIVED	as X1 (the clock is not read again after the lease is kept), with the scenario of a slow take		with scenarios.rs c4_: FAILS (plants_detail/X1s.with)
+B1	KILLED	the wait does not double	by 5: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, backoff::tests::a_success_starts_the_waits_again, backoff::tests::the_wait_doubles_from_a_second_to_five_minutes, no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held
+B2	KILLED	the wait has no upper bound	by 1: backoff::tests::the_wait_doubles_from_a_second_to_five_minutes
+B3	KILLED	a success does not reset the wait	by 2: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, backoff::tests::a_success_starts_the_waits_again
