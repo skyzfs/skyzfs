@@ -1,0 +1,3 @@
+the last cut node B fetched of the first state: 10 (group 27); the new state's first cut line is place 11; node B fetched of the new state: [18]
+between that cut's instant and the failure: 2 writes, 56 blocks ([68, 69, 70, 71, 72, 73, 74, 75])
+cut 18 (group 51): a head without those writes differs from the reference in 0 blocks []

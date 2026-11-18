@@ -1,0 +1,39 @@
+S1 the holder the judge wants is whatever the last row says
+  no lease row in the bucket, lease held and lease_holder none in the status: exit 0
+    upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder none, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 26, upload_checked 'matched', upload_rule 'delta', u
+  the bucket's lease at epoch 7, the status's lease_epoch 1: exit 0
+    upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runner, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 26, upload_checked 'matched', upload_rule 'delta',
+
+S2 one fetch
+  node B fetched the last cut and no other: exit 0
+    upload_content	PASS	node B fetched cuts 26 at head: 1 of 26 cuts written and released; 12315 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runner, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 26, upload_checked 'matched', upload_rule 'delta',
+
+S3 ufailed, run 44255421061 (daemon e42ea6a; its lease_holder none fails upload_status either way)
+  as recorded: exit 1
+    upload_content	PASS	node B fetched cuts 10, 18 at head: 2 of 18 cuts written and released; 11096 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  the same recording, the watcher's fetch of the old state's cut 10 missed: exit 1
+    upload_content	FAIL	node B fetched cuts 8 at head: cut 8: held as group 51 (itself), its cut line says group 14 (itself); cut 8 (group 14): 3566 blocks differ from the reference at its instant, for example block 4: 03908e6e73157b64 wanted, db9bec9c8cef1837 held, block 31: 485a1d9ba7a65b6a wanted, ae2d3e0891a64100 held,
+
+S4 the balance, ukill's second instance (figures of run 44253158409, cuts_replaced as it must have been)
+  the look after the release reached the board whole: (True, "cuts 122 = committed and let go 9 + replaced 115 + abandoned 0 + held -2; at the start upload_state 'reading', after the drain 'idle'")
+  the look with the uploader's upload_found_committed 1 and the store's cuts_held not yet one less: (False, "cuts 122 != committed and let go 9 + replaced 115 + abandoned 0 + held -3: the right side is 121; at the start upload_state 'reading', after the drain 'idle'")
+
+S5 a node B whose get always ends with 2
+  the watcher: exit 0; 11 failed gets logged, uploaded.tsv not written; its last line: 'stopped'; ERROR lines: 0
+  the judge on a recording whose watcher fetched nothing: exit 1
+    upload_reads	PASS	node B read the content of every cut it found at head
+    upload_content	FAIL	node B found no cut of the daemon's at head (0 of another writer's); the daemon counted 26
+
+S6 umoved, one more cut uploaded before the other writer acted
+  the other writer acted on the cut the rig read: exit 0
+    upload_content	PASS	node B fetched cuts 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 at head and 1 of another writer's: 14 of 14 cuts written and released; 52151 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+    upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runner, uploaded_whole 1, lease_epoch 1, upload_mismatches 1, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 14; uploaded 14, upload
+    upload_balance	PASS	serve 1: cuts 26 = committed and let go 14 + replaced 0 + abandoned 12 + held +0; at the start upload_state 'unchecked', after the drain 'idle'
+    upload_course	PASS	umoved
+  a right daemon uploaded one more cut first: exit 1
+    upload_content	FAIL	node B fetched cuts 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 at head and 1 of another writer's: the last cut written is 15, the last counted 14; 15 of 14 cuts written and released; 59300 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write t
+    upload_status	FAIL	uploaded '15', not 14; uploaded 15, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runner'; the drain took 3 s
+    upload_balance	PASS	serve 1: cuts 26 = committed and let go 15 + replaced 0 + abandoned 11 + held +0; at the start upload_state 'unchecked', after the drain 'idle'
+    upload_course	FAIL	the row is ('abababababababababababababababab', 15, 37) at the end, ('abababababababababababababababab', 14, 35) before the other writer
+

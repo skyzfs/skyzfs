@@ -1,0 +1,19 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 24s
+     Running unittests src/main.rs (TARGET/debug/build/skyzfs-nodeb/f79e4f8b7d83a9a6/out/skyzfs_nodeb-f79e4f8b7d83a9a6)
+
+running 11 tests
+test tests::a_row_is_put_as_the_uploader_reads_it ... ok
+test tests::a_store_that_does_not_answer_is_not_about_content ... ok
+test tests::each_command_names_what_it_needs ... ok
+test tests::exit_codes ... ok
+test tests::holes_must_be_sector_aligned ... ok
+test tests::runs_join_adjacent_blocks_and_skip_zeros ... ok
+test tests::the_cut_row_is_read_as_the_uploader_writes_it ... ok
+test tests::the_id_is_the_provisioners ... ok
+test tests::a_ref_whose_objects_are_gone_is_unreadable ... ok
+test tests::a_ref_whose_segments_are_gone_is_unreadable ... ok
+test tests::a_put_image_reads_back_through_a_second_ref_store ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+exit 0

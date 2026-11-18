@@ -1,0 +1,32 @@
+== 44251116091
+life: RigError: uploaded-blocks.tsv line 1: '1\t3\t1e0ee1ec1e16f5d1'
+== 44253158409
+life: 26 cuts counted, uploaded 2 (the last instance), node B fetched 2 of the daemon's and 0 of another writer's; 0 reads given up because head moved
+  cut 1 (group 4), read 3.1 s after its cut line: prev -, next 44, live 12068 (1131 writes applied between), end 12068
+  cut 26 (group 67), read 3.1 s after its cut line: prev 65, next -, live 4 (2 writes applied between), end 4
+ukill: 466 cuts counted, uploaded 9 (the last instance), node B fetched 3 of the daemon's and 0 of another writer's; 2 reads given up because head moved
+  cut 1 (group 4), read 4.1 s after its cut line: prev -, next 44, live 50403 (8100 writes applied between), end 65194
+  cut 185 (group 549), read 1.9 s after its cut line: prev 309, next 315, live 26121 (3898 writes applied between), end 53309
+  cut 466 (group 1397), read 0.4 s after its cut line: prev 89, next -, live 4 (2 writes applied between), end 4
+ulease: 18 cuts counted, uploaded 2 (the last instance), node B fetched 1 of the daemon's and 0 of another writer's; 0 reads given up because head moved
+  cut 18 (group 51), read 2.5 s after its cut line: prev 59, next -, live 4 (2 writes applied between), end 4
+ulost: 18 cuts counted, uploaded 2 (the last instance), node B fetched 1 of the daemon's and 0 of another writer's; 1 reads given up because head moved
+  cut 10 (group 27), read 3.6 s after its cut line: prev 56, next 45, live 4 (2 writes applied between), end 3483
+umoved: 15 cuts counted, uploaded 2 (the last instance), node B fetched 0 of the daemon's and 1 of another writer's; 1 reads given up because head moved
+urow: 22 cuts counted, uploaded 8 (the last instance), node B fetched 2 of the daemon's and 2 of another writer's; 2 reads given up because head moved
+  cut 18 (group 42), read 1.0 s after its cut line: prev 309, next 1622, live 0 (0 writes applied between), end 1759
+  cut 22 (group 59), read 0.9 s after its cut line: prev 59, next -, live 4 (2 writes applied between), end 4
+== 44255421061
+ufailed: 18 cuts counted, uploaded 2 (the last instance), node B fetched 2 of the daemon's and 0 of another writer's; 0 reads given up because head moved
+  cut 10 (group 27), read 2.7 s after its cut line: prev 53, next 45, live 4 (2 writes applied between), end 3480
+  cut 18 (group 51), read 0.3 s after its cut line: prev 59, next -, live 4 (2 writes applied between), end 4
+ukillput: 227 cuts counted, uploaded 3 (the last instance), node B fetched 3 of the daemon's and 0 of another writer's; 1 reads given up because head moved
+  cut 1 (group 4), read 4.6 s after its cut line: prev -, next 38, live 39730 (5021 writes applied between), end 48517
+  cut 123 (group 363), read 3.4 s after its cut line: prev 312, next 309, live 27540 (3480 writes applied between), end 30629
+  cut 227 (group 680), read 2.7 s after its cut line: prev 86, next -, live 4 (2 writes applied between), end 4
+umoved: 15 cuts counted, uploaded 2 (the last instance), node B fetched 1 of the daemon's and 1 of another writer's; 0 reads given up because head moved
+  cut 8 (group 14), read 2.6 s after its cut line: prev 34, next 315, live 0 (0 writes applied between), end 3724
+unostore: FileNotFoundError: [Errno 2] No such file or directory: 'ART/44255421061/unostore/status.txt'
+== 44259950077
+unostore: 12 cuts counted, uploaded 2 (the last instance), node B fetched 1 of the daemon's and 0 of another writer's; 1 reads given up because head moved
+  cut 12 (group 35), read 3.6 s after its cut line: prev 59, next -, live 4 (2 writes applied between), end 4

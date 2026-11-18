@@ -1,0 +1,59 @@
+== 44253158409
+life: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 1, 26 at head: 2 of 26 cuts written and released; 12678 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not ip-10-0-129-22; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 3 s
+  upload_balance	FAIL	serve 1: the status has no cuts_replaced (a daemon before cuts_replaced?)
+ukill: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 1, 185, 466 at head: 3 of 466 cuts written and released; 108334 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not ip-10-0-129-22; uploaded 9, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 1 s
+  upload_balance	FAIL	serve 2: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	ukill
+ulease: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 18 at head: 1 of 18 cuts written and released; 7272 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not ip-10-0-129-22; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 3 s
+  upload_balance	FAIL	serve 2: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	the refused start wrote 5 paths (vol, volume.start, run, v-fc00-822a7f); lease_epoch '2' after the other holder let go
+ulost: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 10 at head: 1 of 10 cuts written and released; 3819 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	PASS	upload_state lease_lost, cuts_held 2, lease lost, lease_holder other-node, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 2; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+  upload_balance	FAIL	serve 1: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	ulost
+umoved: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	FAIL	node B found no cut of the daemon's at head (1 of another writer's); the daemon counted 15
+urow: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 18, 22 at head and 2 of another writer's: 2 of 22 cuts written and released; 17443 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not ip-10-0-129-22; uploaded 8, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 1 s
+  upload_balance	FAIL	serve 1: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	row1: upload_checked 'not_the_base' once the mismatch was counted; row2: upload_checked 'not_the_base' once the mismatch was counted
+== 44255421061
+ufailed: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 10, 18 at head: 2 of 18 cuts written and released; 11096 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not runnervmccnms; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 1 s
+  upload_balance	FAIL	serve 2: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	the start that acknowledged the failure took the intent map up: the new state's first cut went up as a delta onto the map's base
+ukillput: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 1, 123, 227 at head: 3 of 227 cuts written and released; 85246 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not runnervmccnms; uploaded 3, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 2 s
+  upload_balance	FAIL	serve 2: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	uploaded_whole '0' after the kill
+umoved: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 8 at head and 1 of another writer's: 1 of 8 cuts written and released; 3748 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not runnervmccnms; uploaded 2, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 1 s
+  upload_balance	FAIL	serve 1: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	umoved
+== 44259950077
+unostore: exit 1
+  upload_reads	PASS	node B read the content of every cut it found at head
+  upload_content	PASS	node B fetched cuts 12 at head: 1 of 12 cuts written and released; 5453 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+  upload_status	FAIL	lease_holder 'none', not runnervmccnms; uploaded 2, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'none'; the drain took 3 s
+  upload_balance	FAIL	serve 1: the status has no cuts_replaced (a daemon before cuts_replaced?)
+  upload_course	PASS	with object storage down: upload 'no lease: backend error: backend error: get: dispatch failure', upload_why 'backend error: backend error: get: dispatch failure', upload_wait_ms '0'; upload_errors '0' at the end
