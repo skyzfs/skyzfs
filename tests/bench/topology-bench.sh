@@ -690,6 +690,37 @@ if drows:
                   f"{d('upload_blocks')} | {d('cuts_replaced')} | {d('cuts_abandoned')} | {d('upload_mismatches')} | "
                   f"{d('upload_errors')} | {sa.get('cuts_held', 'n/a')} | {sa.get('upload_cut', 'n/a')} / "
                   f"{sa.get('cuts', 'n/a')} | {sa.get('upload_state', 'n/a')} | {sa.get('lease', 'n/a')} |")
+    # The intent map in the window (M2.3; the header's own syncs since
+    # status version 16, M2.4d's --intent-header-sync): the map's syncs
+    # on the write path and the header's, each over the window with its
+    # mean, the longest since the daemon started, and the writes that
+    # waited for a sync. A row whose daemon keeps no map is left out.
+    ims = [r for r in runs if r.get('skyzfsd', {}).get('after', {}).get('intent_syncs', '').isdigit()]
+    if ims:
+        print('\nThe intent map in the window (M2.3, M2.4d), from the daemon\'s status at its two ends: the map\'s '
+              'syncs on the write path over the window and ms each; the header\'s own syncs (status version 16, '
+              '`--intent-header-sync`; n/a for an older daemon) over the window and ms each; the longest of each since '
+              'the daemon started; the writes that waited for a sync of the map over the window.\n')
+        print('| workload | daemon row | tps | header sync | map syncs | ms each | longest ms | header syncs | ms each | '
+              'longest ms | waits |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|')
+        for r in ims:
+            sb, sa = r['skyzfsd']['before'], r['skyzfsd']['after']
+            def dn(key):
+                a, b = sa.get(key, ''), sb.get(key, '')
+                return int(a) - int(b) if a.isdigit() and b.isdigit() else None
+            def each(n, ns):
+                return f'{dn(ns) / dn(n) / 1e6:.2f}' if dn(n) and dn(ns) is not None else 'n/a'
+            def ms(key):
+                v = sa.get(key, '')
+                return f'{int(v) / 1e6:.2f}' if v.isdigit() else 'n/a'
+            def s(v):
+                return 'n/a' if v is None else str(v)
+            tps = f"{r['tps']:.0f}" if r.get('tps') is not None else 'n/a'
+            print(f"| {r['workload']} | {label(r)} | {tps} | {sa.get('intent_header_sync', 'n/a')} | "
+                  f"{s(dn('intent_syncs'))} | {each('intent_syncs', 'intent_sync_ns')} | {ms('intent_sync_max_ns')} | "
+                  f"{s(dn('intent_header_syncs'))} | {each('intent_header_syncs', 'intent_header_sync_ns')} | "
+                  f"{ms('intent_header_sync_max_ns')} | {s(dn('intent_waits'))} |")
     # Where the daemon's CPU went (TB_PERF_RECORD): per thread name, the
     # kernel's share of its samples, that share by what the kernel was
     # doing, and its ten commonest kernel symbols.

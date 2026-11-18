@@ -88,6 +88,38 @@ class Embedded(unittest.TestCase):
             self.assertNotIn('upload', r['skyzfsd'])
             self.assertNotIn('uploads to', r['skyzfsd']['serve_args'])
 
+    def test_the_intent_maps_table(self):
+        """The intent map's syncs over the window (M2.3) and the header's
+        own (status version 16, --intent-header-sync): a row from a
+        daemon with the header's keys, one from an older daemon (n/a),
+        and one whose daemon keeps no map (left out)."""
+        devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
+        old = 'skz intent_state taken_up\nskz intent_syncs {}\nskz intent_sync_ns {}\nskz intent_sync_max_ns 3000000\nskz intent_waits {}\n'
+        new = old + 'skz intent_header_sync on\nskz intent_header_syncs {}\nskz intent_header_sync_ns {}\nskz intent_header_sync_max_ns 1500000\n'
+        cases = {'on': (devs + new.format(10, 10_000_000, 2, 4, 4_000_000), devs + new.format(110, 260_000_000, 7, 54, 54_000_000)),
+                 'old': (devs + old.format(10, 10_000_000, 2), devs + old.format(30, 50_000_000, 2)),
+                 'none': (devs + 'skz cuts 1\n', devs + 'skz cuts 2\n')}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args --hold-cuts\nrelease_every 0\nbuild abc\n')
+            out = os.path.join(d, 'out', '1')
+            os.makedirs(out)
+            for i, (name, (b, a)) in enumerate(cases.items()):
+                r = self.row(d, {'.before': b, '.after': a, '.pgbench': f'tps = {700 + i} (without initial connection time)\n'})
+                r['workload'] = name
+                with open(os.path.join(out, f'{name}-zfs-skyzfsd.json'), 'w') as f:
+                    json.dump(r, f)
+            p = subprocess.run(['bash', SCRIPT, 'summarize', os.path.join(d, 'out')], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+            text = p.stdout.split('The intent map in the window', 1)
+            self.assertEqual(len(text), 2, p.stdout[-3000:])
+            table = text[1].split('\n\n')[1].splitlines()
+            rows = [ln for ln in table if 'zfs-skyzfsd' in ln]
+            self.assertEqual(sorted(rows), sorted([
+                '| on | zfs-skyzfsd [x] | 700 | on | 100 | 2.50 | 3.00 | 50 | 1.00 | 1.50 | 5 |',
+                '| old | zfs-skyzfsd [x] | 701 | n/a | 20 | 2.00 | 3.00 | n/a | n/a | n/a | 0 |']), text[1][:3000])
+
     def test_a_row_says_what_its_releaser_did(self):
         """TB_SKZ_RELEASE (M2.T4): the row's serve arguments give the
         releases in the window, or that the releaser ended, from its
