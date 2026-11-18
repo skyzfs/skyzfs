@@ -1,0 +1,22 @@
+
+running 1 test
+test l4_a_take_at_a_newer_epoch_costs_both_nodes_the_lease ... ## L4: A's first take: Held { epoch: 1, expires_at_ms: 1000030000 }
+## L4: B's first take, between A's read and A's take: Some(Held { epoch: 2, expires_at_ms: 1000090000 })
+## L4: A after its renewal: Lost { holder: "", epoch: 3 }
+## L4: the row: Some(("node-a", 3, 1000150000))
+## L4: B at its next renewal: Lost { holder: "node-a", epoch: 3 }
+## L4: ten lease times later: A Lost { holder: "", epoch: 3 }; B Lost { holder: "node-a", epoch: 3 }
+## L4: the row then: Some(("node-a", 3, 1000150000))
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+--- panics
+
+--- stderr (its end)
+   Compiling skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 40.91s
+     Running tests/review_scn.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt117-target/debug/build/skyzfs-upload/bb8be93e4a904ad1/out/review_scn-bb8be93e4a904ad1)
+
+--- exit 0

@@ -1,0 +1,8 @@
+tags in use after W: F is 9, G's own flush is 1
+Mt (RIGHT): passed; shapes ['M']; cuts as the reference; cut_numbers PASS
+Mr (RIGHT): passed; shapes []; cuts as the reference; cut_numbers PASS
+Ms (WRONG): FAILED; shapes []; cuts DIFFER: cut 13: the daemon's is group 26 (itself) at record 732, the reference's group 26 (itself) at record 731; cut_numbers PASS
+Mx (WRONG): FAILED; shapes ['M']; cuts DIFFER: cut 13: the daemon's is group 35 (itself) at record 775, the reference's group 26 (itself) at record 735; cut_numbers PASS
+My (WRONG): FAILED; shapes []; cuts DIFFER: cut 14: the daemon's is group 26 (itself) at record 736, the reference's group 35 (itself) at record 776; cut_numbers PASS
+Mz (WRONG): FAILED; shapes []; cuts DIFFER: cut 14: the daemon's is group 26 (itself) at record 736, the reference's group 35 (itself) at record 776; cut_numbers PASS
+Mv (WRONG): the log is Mc's

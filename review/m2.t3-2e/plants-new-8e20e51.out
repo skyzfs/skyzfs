@@ -1,0 +1,52 @@
+R1a window C only where the next cut line is of the same group (as before #116): KILLED by 1: test_a_cut_line_that_is_not_cut_again
+R1b the next cut line is looked for in the next instance only: KILLED by 1: test_the_kill_window_by_hand
+R1c a start that acknowledged a failure does not end the search: KILLED by 2: test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+R1d a start that acknowledged a failure is passed over, and the search goes on: KILLED by 1: test_the_kill_window_by_hand
+R1e the last cut line of the later instance, not its first: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut
+R1f window C whatever number the next cut line carries: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1g window C with no cut line after it: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_after_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1h window C takes out the cut line and leaves the barrier: KILLED by 2: test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1i window B: the next cut one past, not two, keeps the barrier: KILLED by 4: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+R1j window B: the barrier is never kept: KILLED by 3: test_a_cut_counted_and_its_line_lost_at_the_kill, test_a_cut_line_that_is_not_cut_again, test_the_kill_window_by_hand
+M1 window M: whatever the request that ends the instance was: SURVIVED
+M2 window M: a cut line before the write comes again does not keep the line: NOT APPLIED (found [0] times)
+M3 window M: any write applied by the next instance counts as the same: NOT APPLIED (found [0] times)
+M4 window M: the same range, whatever its content: NOT APPLIED (found [0] times)
+M5 window M: the same content, wherever: NOT APPLIED (found [0] times)
+M6 window M before a start that acknowledged a failure too: KILLED by 1: test_the_kill_window_by_hand
+M7 window M: the applied line is not taken out: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+M8 window M: never: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+M9 window M: an instance that ends on any line of the write: KILLED by 1: test_the_kill_window_by_hand
+M10 window M: the write applied again after the next instance cut counts too (the cut line ends nothing): NOT APPLIED (found [0] times)
+M11 the line counts a killed write among the flushes: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M12 the line does not say how many writes: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M13 the line calls a killed write a cut that was cut again: KILLED by 1: test_a_kill_before_the_state_stored_the_mark
+M14 window M is looked at before window B: KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+R2a a write received before a write-zeroes and applied after it in the log is known: KILLED by 1: test_held_across_start
+R2b the write received after the write-zeroes is the one not known: KILLED by 1: test_held_across_start
+R2c every write after a write-zeroes that left the block unplaced is not known: KILLED by 1: test_held_across_start
+R2d every block of the write-zeroes is unplaced, not its ambiguous set: SURVIVED
+S2a cuts_held 0 will do: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+S2b held is wanted though the newest cut was released: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+S2c a release answered after the start counts as before it: NOT APPLIED (found [0] times)
+S2d a status with no cuts_held line will do: KILLED by 1: test_instance_lines
+S2e only at a take-over, not at a start that created the device: NOT APPLIED (found [0] times)
+S2f only at a start that created the device: NOT APPLIED (found [0] times)
+S2g the cuts counted before the start, of whatever state: NOT APPLIED (found [0] times)
+S2h a release the daemon refused counts as answered: KILLED by 1: test_the_releases_answered
+S2i no release is read: KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+S2j the rule is never asked: NOT APPLIED (found [0] times)
+S2k any release before the start will do, of whatever cut: KILLED by 1: test_instance_lines
+S2l the PASS line does not show cuts_held: SURVIVED
+G2a a cut written across the start with no block from a copy meets the floor: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3a held_across_start under its floor is not the rig's error: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3b carried_across_failure under its floor is not the rig's error: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3c main: an ERROR line with no verdict ends 0: KILLED by 2: test_a_failed_cuts_with_what_the_check_cannot_place, test_a_floor_not_met_ends_as_the_rigs_error
+G3d main: an ERROR line with a verdict ends 2: KILLED by 4: test_a_cut_line_torn_at_the_take_over, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_two_instances
+G3e main drops held_lines' ERROR (the whole recording): KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+G3f main drops held_lines' ERROR (a holder that ended with a verdict): KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+G3g held_across_start under its floor reads INFO: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3h carried_across_failure under its floor reads INFO: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+G3i carried_across_failure: a cut with no block that differs meets the floor: KILLED by 1: test_carried_across_failure_must_show_something
+again U2 a cut line cut again by a later instance is kept (window C never): KILLED by 3: test_a_cut_line_that_is_not_cut_again, test_a_kill_before_the_state_stored_the_cut, test_the_kill_window_by_hand
+again U7 window C by the group alone (any number): KILLED by 1: test_a_cut_line_that_is_not_cut_again

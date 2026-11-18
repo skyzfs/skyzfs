@@ -1,0 +1,38 @@
+X1 the branch is gone: such a write is the rig's error again (D2 as it was): KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
+X2 a written cut with no line in any state is a verdict too: KILLED by 1: test_held_cuts_keyed_by_state
+X3 held_lines does not look at such writes (the content is judged without them): KILLED by 1: test_an_acknowledged_failure
+X4 the line fails and is no verdict (rc 0): KILLED by 1: test_an_acknowledged_failure
+X5 the held cuts are judged before the instances' lines again: NOT APPLIED (found [0] times)
+X6 a cut of this state with a line counts as an old state's where an earlier state has the number too: KILLED by 1: test_held_cuts_keyed_by_state
+L1 a cut line of any pid counts, not the last instance's only: NOT APPLIED (found [0] times)
+L2 the start after a cut line may be of a pid already started: NOT APPLIED (found [0] times)
+L3 the start need not end the line: NOT APPLIED (found [0] times)
+L4 the start may be earlier than the cut line: NOT APPLIED (found [0] times)
+L5 the start may be later than the line after it: NOT APPLIED (found [0] times)
+L6 a cut line that ends in no digit counts too (<= to <): NOT APPLIED (found [0] times)
+L7 the start is taken with all the digits before it: NOT APPLIED (found [0] times)
+L8 a cut line counts before any start (the next instance need not have taken the device over): KILLED by 1: test_a_torn_line_only_before_a_take_over
+L9 a cut line counts where there is no instances.tsv: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L10 a cut line counts where instances.tsv does not name the next pid: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L11 a cut line counts only before an instance that created the device: KILLED by 1: test_a_torn_line_only_before_a_take_over
+L12 the program takes no cut line (parse_log without the list): KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_line_torn_at_the_take_over
+L13 the program does not hold a cut line to the take-over: KILLED by 1: test_a_line_torn_at_the_take_over
+L14 the program says nothing of a cut line: KILLED by 2: test_a_cut_line_torn_at_the_take_over, test_a_line_torn_at_the_take_over
+L15 the line after the start need not begin with a time: NOT APPLIED (found [0] times)
+Y1 the wait does not look whether the holder has ended (as before the commit: 300 s, then the rig's error): NOT APPLIED (found [0] times)
+Y2 the ended holder's status is not taken (a VERDICT line alone decides): NOT APPLIED (found [0] times)
+Y3 a holder that ended with 0 before a cut ends the recording for the check too: NOT APPLIED (found [0] times)
+Y4 after a verdict before the first cut the wait says "wrote one" (the recording goes on): NOT APPLIED (found [0] times)
+Y5 a verdict before the first cut is the rig's error (as before, said at once): NOT APPLIED (found [0] times)
+Y6 takeover does not take the wait's 1 (set -e ends the recording with it, and no line): KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y7 failed does not take the wait's 1: KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y8 takeover ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y9 failed goes on after the verdict (the wait's 1 is dropped): KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y10 the ended holder's status is taken by a bare wait: NOT APPLIED (found [0] times)
+Z1 a verdict is not judged first (the order of e88773b for every recording): KILLED by 2: test_a_floor_not_met_ends_as_the_rigs_error, test_a_verdict_before_the_first_cut
+Z2 every recording with a holder is judged as one that ended at a verdict (no instance or failure line): KILLED by 7: test_a_cut_line_torn_at_the_take_over, test_a_failed_instance_line_is_a_verdict, test_a_kill_before_the_state_stored_the_cut, test_a_line_torn_at_the_take_over, test_an_acknowledged_failure, test_the_failure_and_later_states
+Z3 after a verdict the failure line is judged as well: KILLED by 2: test_a_floor_not_met_ends_as_the_rigs_error, test_a_verdict_before_the_first_cut
+Z4 after a verdict the instances' lines are judged as well (the failure line is not): SURVIVED
+Z5 a verdict judged first does not count (rc as it was): KILLED by 1: test_a_verdict_before_the_first_cut
+Z6 held_lines goes on to the held cuts' files after a verdict: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+Z7 a verdict is judged first in failed only (takeover in the order of e88773b): SURVIVED

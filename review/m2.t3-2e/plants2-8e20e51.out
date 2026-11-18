@@ -1,0 +1,28 @@
+D1a the rule of 49c5f62: applied again before any cut line: KILLED by 1: test_the_kill_window_by_hand
+D1b any cut line keeps the line, a later flush's too: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+D1c a cut after the second applied line never keeps the line, an early flush's neither: KILLED by 1: test_the_kill_window_by_hand
+D1d no cut line keeps the line: KILLED by 2: test_a_kill_after_the_state_stored_the_mark, test_the_kill_window_by_hand
+D1e a flush received after the second applied line is early too: KILLED by 2: test_a_kill_before_the_state_stored_the_mark, test_the_kill_window_by_hand
+D1f a tag used again stays early: KILLED by 1: test_the_kill_window_by_hand
+D1g no write applied again and no cut: the line is kept whatever: KILLED by 1: test_the_kill_window_by_hand
+D1h the line is taken out though the write was not applied again: KILLED by 1: test_the_kill_window_by_hand
+D1i the tag alone decides at a cut line (no `not again`): SURVIVED
+D1j a later flush's cut does not end the reading: SURVIVED
+D1k every request received before the second applied line is early, not only a flush: SURVIVED
+D1m a cut before the write comes again takes the line out: KILLED by 2: test_a_kill_after_the_state_stored_the_mark, test_the_kill_window_by_hand
+D1n the early flushes are forgotten at the second applied line: KILLED by 1: test_the_kill_window_by_hand
+D1o a tag is discarded at every receipt (no flush is early): KILLED by 1: test_the_kill_window_by_hand
+again M3 any write applied by the next instance counts as the same: KILLED by 1: test_the_kill_window_by_hand
+again M4 the same range, whatever its content: KILLED by 1: test_the_kill_window_by_hand
+again M5 the same content, wherever: KILLED by 1: test_the_kill_window_by_hand
+D2a the check's running numbers (as at 49c5f62): KILLED by 1: test_a_third_instance_takes_the_new_state_up
+D2b every release before the start counts, an older state's too: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+D2c a release answered after the start counts (again S2c): KILLED by 2: test_a_third_instance_takes_the_new_state_up, test_instance_lines
+D2d only the releases since the start before this one: SURVIVED
+D2e the releases since the second start, whichever began the state: SURVIVED
+D2f the cuts counted before the start, of whatever state (again S2g): KILLED by 1: test_a_third_instance_takes_the_new_state_up
+D2g a release at the very time of the start that began the state counts: SURVIVED
+T1 the helper does not replace held_lines: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+T2 the helper takes any end of main as exit 2: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+T3 the helper takes any end of main as exit 0: KILLED by 1: test_a_floor_not_met_ends_as_the_rigs_error
+T4 main ends 2 whatever the flag when held_lines is called (after the instances): KILLED by 4: test_a_floor_not_met_ends_as_the_rigs_error, test_an_acknowledged_failure, test_the_failure_and_later_states, test_the_second_stage

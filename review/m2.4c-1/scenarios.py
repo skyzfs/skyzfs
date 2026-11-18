@@ -35,9 +35,9 @@ try:
         panics = []
         for i, line in enumerate(lines):
             if "panicked at" in line:
-                panics += lines[i:i + 8] + [""]
+                panics += lines[i:i + 400] + [""]
         errors = [l for l in lines if l.startswith("error") or l.startswith("  -->")]
-        text = (stdout + "\n--- panics\n" + "\n".join(panics)[:8000]
+        text = (stdout + "\n--- panics\n" + "\n".join(panics)[:40000]
                 + ("\n--- build errors\n" + "\n".join(errors)[:6000] if proc.returncode == 101 and "test result" not in stdout else "")
                 + "\n--- stderr (its end)\n" + stderr[-3000:] + f"\n--- exit {proc.returncode}\n")
     except subprocess.TimeoutExpired:

@@ -1,0 +1,4 @@
+K1	KILLED	a renewal takes the row as its own whatever the epoch	by 1: lease::tests::this_holders_name_at_another_epoch_is_lost	with scenarios.rs l1_: passes
+K2	SURVIVED	a renewal takes the row as its own whatever the holder		with scenarios.rs l1_: passes
+K3	SURVIVED	a renewal that finds no row takes the lease again		with scenarios.rs l5_: FAILS (plants_detail/K3.with)
+K4	KILLED	a renewal that took the lease at a newer epoch does not give it back	by 1: lease::tests::a_lease_taken_and_let_go_by_another_between_the_read_and_the_take_is_lost	with scenarios.rs l4_: passes

@@ -1,0 +1,12 @@
+1. the tests of Main with every recording judged both ways: 26 tests, 0 failures, 0 errors
+   52 recordings; (exit of the subprocess, exit in this process): (0, 0): 8, (1, 1): 36, (2, 2): 8
+   recordings whose exit or lines differ between the two: 0
+   of them with an ERROR line: 20; names: bound: 1, failed: 15, life: 20, nosuch: 1, rewind: 1, takeover: 14
+2. a replacement that raises:
+   after the instances: exit 2; rig_error: ('ERROR', 'ZeroDivisionError: division by zero')
+   after the holder's verdict: exit 2; rig_error: ('ERROR', 'ZeroDivisionError: division by zero')
+3. what the replacement is called with, and what the real one returns there:
+   after the instances: exit 0; 1 call(s): 9 positional, keywords [], dev 536870912, name 'failed', returned (0, False)
+      lines not PASS or INFO or as expected: 
+   after the holder's verdict: exit 1; 1 call(s): 9 positional, keywords [], dev 536870912, name 'failed', returned (1, False)
+      lines not PASS or INFO or as expected: held_reads FAIL
