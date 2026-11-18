@@ -1,0 +1,27 @@
+R1 TB_SKZ_UPLOAD value not checked: KILLED by skz_store
+R2 the four settings not checked: KILLED by skz_store
+R3 TB_S3_SECRET left out of the check: KILLED by skz_store
+R4 upload with the releaser let through: KILLED by skz_store
+R5 upload beside or without the daemon let through: KILLED by skz_store
+R6 that refusal exits 0: KILLED by skz_store
+R7 TB_SKZ_UPLOAD_WAIT_S not checked: KILLED by skz_store
+R8 upload with copies repeated let through: KILLED by skz_store
+R9 every upload row refused, the daemon alone too: SURVIVED
+U1 the keys not handed to the daemon: SURVIVED
+U4 no upload line in .skzinfo: SURVIVED
+T1 abandoned: the end value: KILLED by embedded
+T2 mismatches: the end value: SURVIVED
+T3 errors: the end value: KILLED by embedded
+T4 abandoned and mismatches swapped: KILLED by embedded
+T11 abandoned at a mismatch: the end value: SURVIVED
+T12 held at the start reads the end: KILLED by embedded
+T13 no mark for two daemons: KILLED by embedded
+I1 named at end: the start value: KILLED by embedded
+I2 longest map sync: the start value: KILLED by embedded
+I3 header sync said from the start: KILLED by embedded
+I8 "ms each" divides by a count of 0: KILLED by embedded
+I9 rows with the map off kept: KILLED by embedded
+W7 an unreadable status never ends the wait: KILLED by copy_limit
+W8 one unreadable status ends the wait: KILLED by copy_limit
+M1 minio.sh down deletes any directory: KILLED by skz_store
+exit 0

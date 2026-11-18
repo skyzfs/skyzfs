@@ -1,0 +1,6 @@
+G1 upload, zfs-skyzfsd alone: past every check       rc=64  not enough space under TMP: 8284 MiB free, worst case needs 45520 MiB (lower TB_SCALE / TB_MAX_WAL_
+G2 upload, spaces around zfs-skyzfsd                 rc=64  not enough space under TMP: 8284 MiB free, worst case needs 45520 MiB (lower TB_SCALE / TB_MAX_WAL_
+G3 upload, zfs-slog and zfs-skyzfsd                  rc=64  TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-slog zfs-skyzfsd
+G4 upload, zfs-skyzfsd twice                         rc=64  TB_SKZ_UPLOAD=1 is for zfs-skyzfsd only, not: zfs-skyzfsd zfs-skyzfsd
+G5 no upload, zfs-slog and zfs-skyzfsd               rc=64  not enough space under TMP: 8284 MiB free, worst case needs 45520 MiB (lower TB_SCALE / TB_MAX_WAL_
+served: nothing

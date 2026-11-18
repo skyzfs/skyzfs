@@ -1,0 +1,18 @@
+S1 the watcher is not started: KILLED by copy_limit
+S2 the watcher starts without the sync: SURVIVED
+S3 the teardown does not stop the watcher: KILLED by copy_limit
+S4 the watcher's line does not say "under the workload": KILLED by copy_limit
+S5 the watcher on every daemon row, uploads or not: SURVIVED
+S6 the watcher gives up after 60 s: KILLED by copy_limit
+V1 zero blocks: the end value, not the change: KILLED by embedded
+V2 holes: the start value: KILLED by embedded
+V3 hole chunks: the change: KILLED by embedded
+K1 boundsparse: the copies not asked: KILLED by cut_check
+K2 boundsparse: the abandoned not asked: KILLED by cut_check
+K3 boundsparse: INFO unless the set holds at the end: SURVIVED
+K4 boundsparse: a v17 daemon that took no holes (none) is asked nothing: SURVIVED
+K5 bound: the abandoned not asked: KILLED by cut_check
+K6 bound on a sparse volume (no --zero-fill): KILLED by cut_record
+K7 boundsparse zero-filled too: KILLED by cut_record
+K8 the create does not take the course's arguments: KILLED by cut_record
+exit 0
