@@ -352,7 +352,12 @@ there, and the user decides when it merges.
   two more recordings run, `bound` (a cut abandoned at the bound) and
   `edges` (write-zeroes and discard), and since stage 2b `takeover`
   (four instances: added, taken over twice, added; the mark kept across
-  a take-over and not across a created device), thirteen in all. Ubuntu 26.04 and
+  a take-over and not across a created device) and since stage 2c `failed` (a
+  volume that fails with cuts held ends with status 3, the next start is
+  refused with 4 without `--acknowledge-failure`, the new state counts
+  its cuts from 1 again), fourteen in all. A kill can tear the last line of
+  the request log; the check takes it as lost only before a take-over's
+  `start` on a 4096-byte boundary, with one writer thread. Ubuntu 26.04 and
   26.04-arm on a pull request. Exit codes and `recordings.tsv` as the
   cut rig's.
 - **The node B rig.** `skyzfs-nodeb-rig.yml` (M2.T2) runs MinIO on the
