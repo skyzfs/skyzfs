@@ -265,7 +265,11 @@ EXPECTED = {
                                  'appears or goes, and no other file changes but the status file and the start token '
                                  'volume.start, which every open writes and which may not go (M2.2b-1; every changed '
                                  'file named); the same file system '
-                                 'mounted data=ordered serves the volume before and after (M1.3y, g.4)', 'WAITING'),
+                                 'mounted data=ordered serves the volume before and after (M1.3y, g.4). Every serve '
+                                 'holds cuts where the daemon has --hold-cuts (M2.T3 stage 2c): the refused start leaves '
+                                 'intent.map, copies.img and each cuts.state as they were, the serve before begins a cut '
+                                 'state and the serve after begins one again where the refused start wrote a new start '
+                                 'token', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.

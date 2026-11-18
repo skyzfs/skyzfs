@@ -117,7 +117,7 @@ shift $(( $# >= 2 ? 2 : 1 ))
 ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
 # Only where the daemon holds cuts (CUT_HOLD=1): what the ten above
 # never make the daemon do (M2.T3).
-HELD_ONLY="bound edges takeover"
+HELD_ONLY="bound edges takeover failed"
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
@@ -144,6 +144,9 @@ for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a
 for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+# A kill -9 cuts a line of the request log on a page of the file
+# (cut_daemon_check.py's torn_line): say where the logs are written.
+[ "$SERVER" != daemon ] || log "request logs on $(stat -f -c %T "$OUT"), page size $(getconf PAGESIZE)"
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
 VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
@@ -264,12 +267,14 @@ serve_end() {
 # kernel's device over where there is one, else creates it:
 # DIR/instances.tsv says which for each pid, from serve's line "serving
 # device N (taken over)" or "(added)". With held cuts, its status once it
-# is ready goes to DIR/status-start-K.txt (stage 2b).
+# is ready goes to DIR/status-start-K.txt (stage 2b). With `acknowledged`
+# the serve acknowledges a failure, and instances.tsv says so (stage 2c).
 serve_start() {
-    local k=$1 slog=$RDIR/serve.log _i kind=""
+    local k=$1 ack=${2:-} slog=$RDIR/serve.log _i kind=""
     [ "$k" = 1 ] || slog=$RDIR/serve-$k.log
     local hold=()
     [ "$HOLD" != 1 ] || hold=(--hold-cuts)
+    [ -z "$ack" ] || hold+=(--acknowledge-failure)
     "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$slog" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do
@@ -280,7 +285,7 @@ serve_start() {
         sleep 0.25
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] && [ -n "$kind" ] || rig_error "skyzfsd serve $k was not ready, or did not say how, in 120 s"
-    printf '%s\t%s\n' "$SERVE_PID" "${kind/ /-}" >> "$RDIR/instances.tsv"
+    printf '%s\t%s%s\n' "$SERVE_PID" "${kind/ /-}" "${ack:+$'\t'acknowledged}" >> "$RDIR/instances.tsv"
     if [ "$HOLD" = 1 ]; then
         for _i in $(seq 1 40); do
             timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status-start-$k.txt" 2>&1 \
@@ -303,26 +308,57 @@ holder_start() {
 # Wait for the holder's first written cut: its step ends with the
 # release, so a holder asked to leave after this has committed one, and
 # the intent map is taken up at the next start (with no committed cut the
-# daemon begins it anew, which the check then allows).
+# daemon begins it anew, which the check then allows). -> 1 where the
+# holder ended with a verdict before it wrote one (the daemon refused to
+# read the first cut): the recording then ends there, with the pool
+# exported, and the check fails it (held_reads). A holder that ended
+# otherwise is the rig's error.
 holder_wrote_one() {
     local _i
-    for _i in $(seq 1 300); do [ -s "$RDIR/held.tsv" ] && return 0; sleep 1; done
+    for _i in $(seq 1 300); do
+        [ -s "$RDIR/held.tsv" ] && return 0
+        kill -0 "$HOLD_PID" 2>/dev/null || { holder_gone "before it wrote a cut"; return 1; }
+        sleep 1
+    done
     rig_error "the holder wrote no cut in 300 s: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
 # The holder ends between two steps and drains nothing: what the daemon
 # holds stays held for the next instance's holder.
 holder_leave() {
-    local _i rc=0
+    local _i
     touch "$WORK/hold.leave"
     for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
     if kill -0 "$HOLD_PID" 2>/dev/null; then
-        kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null || true; HOLD_PID=""
         rig_error "the holder did not leave 720 s after it was asked: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
     fi
+    rm -f "$WORK/hold.leave"
+    holder_ended "when asked to leave"
+}
+# The holder has ended while the recording waits on it (WHEN): with its
+# verdict (1 and a VERDICT line) the recording ends there and goes to the
+# check; any other end is the rig's error, 0 as well, since it was not
+# asked to leave.
+holder_gone() {
+    holder_ended "$1"
+    grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log" \
+        || rig_error "the holder ended with 0 $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+}
+# The holder has ended (WHEN says when): take its status. 1 with a VERDICT
+# line in its log is the daemon refusing to read a cut it held, which the
+# check fails (held_reads), so the recording goes on to the check; any
+# other status but 0 is the rig's error. Wherever a holder ends, its
+# status goes through here: a bare wait under set -e would end the
+# recording at a verdict as the rig's error.
+holder_ended() {
+    local rc=0
     wait "$HOLD_PID" 2>/dev/null || rc=$?
     HOLD_PID=""
-    rm -f "$WORK/hold.leave"
-    [ "$rc" = 0 ] || rig_error "the holder ended with $rc when asked to leave: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
+    if [ "$rc" = 1 ] && grep -q "$(printf '\tVERDICT ')" "$RDIR/holder.log"; then
+        log "$NAME: the holder ended with a verdict $1: $(grep "$(printf '\tVERDICT ')" "$RDIR/holder.log" | tail -n 1)"
+        return 0
+    fi
+    [ "$rc" = 0 ] || rig_error "the holder ended with $rc $1: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
 }
 # The volume, served by the daemon with its request log.
 begin_daemon() {
@@ -346,10 +382,10 @@ end_daemon() {
         touch "$WORK/hold.stop"
         for _i in $(seq 1 720); do kill -0 "$HOLD_PID" 2>/dev/null || break; sleep 1; done
         if kill -0 "$HOLD_PID" 2>/dev/null; then
-            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+            kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null || true; HOLD_PID=""
             rig_error "the holder did not end 720 s after the stop: $(tail -n 2 "$RDIR/holder.log" 2>/dev/null)"
         fi
-        wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+        holder_ended "at the stop"
         rm -f "${WORK:?}/held.img" "$WORK/held.img.blocks" "$WORK/hold.stop"
     fi
     # The daemon rewrites its status at most every 100 ms, when a counter
@@ -639,6 +675,7 @@ rec_bound() {
 # one being uploaded, and stays held until hold_go. The pool is synced
 # and left idle; the holder writes what it holds, and is paused again
 # until it says it holds nothing (cut_hold.py writes hold.pause.held).
+# Returns 1 where the holder ended with its verdict (holder_gone).
 hold_idle() {
     local k t
     z 60 zpool sync "$POOL"
@@ -648,6 +685,7 @@ hold_idle() {
         touch "$WORK/hold.pause"
         for t in $(seq 1 600); do
             [ -e "$WORK/hold.pause.held" ] && break
+            kill -0 "$HOLD_PID" 2>/dev/null || { holder_gone "while it was asked to pause"; return 1; }
             sleep 0.2
         done
         [ -e "$WORK/hold.pause.held" ] || rig_error "the holder did not say it had paused in 120 s"
@@ -672,7 +710,7 @@ rec_edges() {
     local base=$((1 << 20))
     create_pool
     load 1
-    hold_idle
+    hold_idle || { export_pool; return 0; }
     dd if=/dev/urandom of="$DEV" bs=64K count=4 seek=$((base >> 16)) oflag=direct conv=notrunc status=none
     z 60 zpool sync "$POOL"
     load 1
@@ -713,7 +751,7 @@ rec_takeover() {
     create_pool
     load 2
     # (a)
-    holder_wrote_one
+    holder_wrote_one || { export_pool; return 0; }
     holder_leave
     # Files of 1 MiB, each synced, until the stop file (at most 2000).
     rm -f "$WORK/writer.stop"
@@ -769,6 +807,48 @@ rec_takeover() {
     export_pool
     awk -F '\t' '{ print $2 }' "$RDIR/instances.tsv" | tr '\n' ' ' | grep -qx 'added taken-over taken-over added ' \
         || rig_error "the instances were $(cut -f 2 "$RDIR/instances.tsv" | tr '\n' ' '), not added, taken over twice, added"
+}
+
+# failed (held cuts only; stage 2c): the volume fails with cuts held and
+# no client holding its device (the pool exported), as a failed sync of
+# the image would leave it; the test build's SIGUSR1 fails it. The
+# instance that saw the failure ends with 3, and the cuts it held go
+# with it (design §5.2 as of d26841d: uploading them is M2.5's). A start
+# without --acknowledge-failure is refused with 4; one with it trusts
+# none of the cut state and begins a new one, taking the intent map up,
+# and its holder writes its cuts onto the image the first state's
+# holder left, as an upload onto the newest committed cut. What the
+# check judges of the failure goes to DIR/failure.tsv.
+rec_failed() {
+    local rc=0
+    create_pool
+    load 2
+    holder_wrote_one || { export_pool; return 0; }
+    holder_leave
+    load 1
+    export_pool
+    # Nobody holds the device: no udev reader of the export's last
+    # writes, and the status a second after them.
+    udevadm settle -t 30 > /dev/null 2>&1 || true
+    sleep 1
+    timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$RDIR/status-failure.txt" 2>&1 || true
+    printf 'cuts_held\t%s\n' "$(sed -n 's/^cuts_held //p' "$RDIR/status-failure.txt" | head -n 1)" > "$RDIR/failure.tsv"
+    kill -USR1 "$SERVE_PID" 2>/dev/null || rig_error "SIGUSR1 to $SERVE_PID failed: the daemon had ended"
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGUSR1"
+    printf 'failed_rc\t%s\n' "$SERVE_RC" >> "$RDIR/failure.tsv"
+    # Without the acknowledgement, and without the request log: a refused
+    # start is no instance of the recording. One that served instead is
+    # stopped at the limit and named by its status.
+    timeout 60 "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" --hold-cuts > "$RDIR/serve-refused.out" \
+        2> "$RDIR/serve-refused.log" || rc=$?
+    printf 'refused_rc\t%s\n' "$rc" >> "$RDIR/failure.tsv"
+    serve_start 2 acknowledged
+    holder_start
+    import_pool
+    load 2
+    export_pool
+    awk -F '\t' '{ print $2 $3 }' "$RDIR/instances.tsv" | tr '\n' ' ' | grep -qx 'added addedacknowledged ' \
+        || rig_error "the instances were $(cut -f 2,3 "$RDIR/instances.tsv" | tr '\n' ' '), not added, then added acknowledging the failure"
 }
 
 rec_full() {

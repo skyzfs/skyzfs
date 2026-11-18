@@ -328,7 +328,10 @@ def holder_files(d, written, blocks, final, log=COMMITTED, held_final='9 9 uploa
     w('holder.log', log)
     w('held.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x['opens']}\t{x['blocks']}\t{x.get('asked', 1)}\t"
                           f"{x.get('asked', 1) + 1}\n" for x in written))
-    w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in blocks.items() for b, h in m.items()))
+    # blocks: {number: map}, or a list of maps in written's order (numbers
+    # that repeat across states, stage 2c)
+    pairs = zip((x['number'] for x in written), blocks) if isinstance(blocks, list) else blocks.items()
+    w('held-blocks.tsv', ''.join(f'{n}\t{b}\t{h}\n' for n, m in pairs for b, h in m.items()))
     w('held-image.tsv', ''.join(f'{b}\t{h}\n' for b, h in sorted(final.items())))
     w('held-final.txt', held_final)
     w('status-held.txt', status_held)
@@ -681,6 +684,18 @@ class HeldLines(HeldFixture):
             self.assertEqual(lines[k][0], 'PASS', (k, lines[k]))
         self.assertEqual(lines['cuts_abandoned'][0], 'INFO')
 
+    def test_a_held_cut_the_daemon_could_not_read(self):
+        """The holder's VERDICT (cut_hold.py: a refused read of a cut still
+        being uploaded) is a FAIL line, not the rig's error, and nothing
+        after it is judged (the holder ended there)."""
+        rc, lines = self.lines(log='1\t> t1 held\n2\tVERDICT cut 9 is still being uploaded after its write was '
+                               'refused (refused: read block 7 of cut 9: Input/output error (os error 5))\n')
+        self.assertEqual(rc, (1, False))
+        self.assertEqual(lines['held_reads'][0], 'FAIL')
+        self.assertIn('read block 7 of cut 9', lines['held_reads'][1])
+        self.assertNotIn('held_content', lines)
+        self.assertEqual(self.lines()[1]['held_reads'][0], 'PASS')
+
     def test_the_state_not_begun(self):
         self.assertEqual(self.lines(cuts_line='taken_up')[1]['cut_state'][0], 'FAIL')
         rc, lines = self.lines(status={'cut_state': 'off', 'cuts_abandoned': '0'})
@@ -874,6 +889,144 @@ class Parse(unittest.TestCase):
         self.assertFalse(cut_ref.is_write(recs[1]))
 
 
+    # A label line of eight sectors as the daemon writes it (some 8 KB),
+    # cut by a kill -9 after 8012 bytes, the next instance's start line
+    # following it with no newline: run 44183715455, takeover, request log
+    # line 43866, with its times. There the line began 180 bytes into a
+    # page of the file, so that the cut fell on the next page's start.
+    LABEL = ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t'
+             + ('0cb1ba00000000008813000000000000' * 128) + ('0' * 4096))
+    BEGIN = '263932000000\t9937\tstart\t0\t-\t-\t-\t64\n'
+    RECV = '263932700000\t9937\trecv\t25\twrite\t1047960\t8\t-\n'
+    START = '264075526204\t10976\tstart\t1\t-\t-\t-\t64'
+    NEXT = '264075546749\t10976\tcuts\t-\t-\t-\t-\ttaken_up\n'
+
+    @staticmethod
+    def filler(n):
+        """recv lines of the first instance, n bytes in all (n >= 40), between BEGIN and RECV."""
+        out, i = [], 0
+        while n:
+            size = n if n <= 80 else min(44, n - 40)
+            out.append(f'2639321{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * (size - 34 - len(str(i))) + '\t8\t-\n')
+            n, i = n - size, i + 1
+        return ''.join(out)
+
+    def torn(self, lost, start=None, after=None, off=0):
+        """The log with the first instance's line `lost` cut short by a kill
+        and the next instance's start line after it, where the cut falls
+        on a page of the file (off bytes after it, where given) -> (text,
+        the torn line's number)."""
+        fill = (-(len(self.BEGIN) + len(self.RECV) + len(lost))) % cdc.PAGE
+        head = self.BEGIN + self.filler(fill + (cdc.PAGE if fill < 40 else 0) + off) + self.RECV
+        return (head + lost + (self.START if start is None else start) + '\n'
+                + (self.NEXT if after is None else after)), head.count('\n') + 1
+
+    def test_a_label_line_torn_by_a_kill(self):
+        self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
+        text, n = self.torn(self.LABEL[:8012])
+        self.assertEqual((len(text.split('\n')[n - 1]) - len(self.START)) % cdc.PAGE, 8012 % cdc.PAGE)
+        torn = []
+        inst = cdc.parse_log(text, torn)
+        self.assertEqual([i['pid'] for i in inst], ['9937', '10976'])
+        self.assertEqual((inst[1]['ns'], inst[1]['line'], inst[1]['device']), (264075526204, n, '1'))
+        self.assertEqual({ln['event'] for ln in inst[0]['lines']}, {'recv'})
+        self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
+        self.assertEqual([ln['event'] for ln in inst[1]['lines']], ['cuts'])
+        self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': 8012,
+                                 'head': '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'}])
+        # Where the caller takes no torn line, it is the rig's error.
+        with self.assertRaisesRegex(RigError, f'line {n}: not eight to ten columns'):
+            cdc.parse_log(text)
+
+    def test_a_line_torn_anywhere_on_a_page(self):
+        """What is left of the torn line may end in anything: a hex digit a
+        to f, a tab, inside its pid, inside its time (the review of #113,
+        T1 and T2)."""
+        barrier = '263932738825\t9937\tbarrier\t26\tflush\t-\t-\t0'
+        cases = {
+            'a hex digit': (self.LABEL[:48], '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t0cb1b'),
+            'the tab before the label': (self.LABEL[:43], '263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t'),
+            'a barrier line before its last column': (barrier[:-1], barrier[:-1]),
+            'inside the pid': ('263932738825\t99', '263932738825\t99'),
+            'after the time': ('263932738825\t', '263932738825\t'),
+            'inside the time': ('2639', '2639'),
+            # two pages before the tear, a page falls on a digit, and the
+            # digits from there to the start line are more than int() takes
+            'a line of digits over three pages': ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t' + '1' * 9000,
+                                                  '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'),
+        }
+        for why, (lost, head) in cases.items():
+            with self.subTest(why):
+                text, n = self.torn(lost)
+                torn = []
+                inst = cdc.parse_log(text, torn)
+                self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': len(lost),
+                                         'head': '\t'.join(head.split('\t')[:7])}])
+                self.assertEqual((inst[1]['ns'], inst[1]['line']), (264075526204, n))
+                self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
+        # Off the page, a tear inside the time is a start line with a time
+        # some digits too long, later than the line after it: the rig's error.
+        for off in (1, -1):
+            with self.subTest('inside the time, off the page', off=off):
+                text, n = self.torn('2639', off=off)
+                with self.assertRaisesRegex(RigError, f'line {n}: a start line later than the line after it'):
+                    cdc.parse_log(text, [])
+        text, n = self.torn('2639')
+        with self.assertRaisesRegex(RigError, f'line {n}: a start line later than the line after it'):
+            cdc.parse_log(text)
+
+    def test_a_torn_line_only_before_a_take_over(self):
+        torn = []
+        text, n = self.torn(self.LABEL[:8012])
+        cdc.parse_log(text, torn)
+        self.assertEqual(cdc.torn_detail(torn, {'10976': True}),
+                         f"1 lines of the request log cut short by a kill -9 and lost with it; line {n}: pid 9937's "
+                         "`263932738825\t9937\tlabel\t25\twrite\t1047960\t8` line after 8012 bytes, then pid 10976's "
+                         'start')
+        self.assertTrue(cdc.torn_detail([], None).startswith('0 lines'))
+        for kinds in ({'10976': False}, {}, None):
+            with self.assertRaisesRegex(RigError, 'did not take the device over'):
+                cdc.torn_detail(torn, kinds)
+
+    def test_a_torn_line_not_followed_by_a_start(self):
+        """Only the next instance's start may follow a torn line, on a page
+        of the file and in time between the lines around it, and the torn
+        line's daemon writes nothing after it."""
+        cut = self.LABEL[:8012]
+        bad = {
+            'the same instance goes on': self.torn(cut, '264075526204\t9937\trecv\t26\twrite\t0\t8\t-'),
+            'a start of a pid already started': self.torn(cut, self.START.replace('10976', '9937')),
+            'the start before the last whole line': self.torn(cut, self.START.replace('264075526204',
+                                                                                      '263932600000')),
+            'the start after the line after it': self.torn(cut, self.START.replace('264075526204',
+                                                                                   '264075546750')),
+            'the torn line after the start': self.torn(cut.replace('263932738825', '264075526205', 1)),
+            'the torn line before the last whole line': self.torn(cut.replace('263932738825', '263932600000', 1)),
+            'the start at the end of the log': self.torn(cut, after=''),
+            'the start not on a page': self.torn(cut, off=1),
+            'the start a page late': self.torn(cut[:-1] + 'x', off=-1),
+            'another pid torn': self.torn(cut.replace('\t9937\t', '\t9999\t', 1)),
+            'a pid that is not the last instance\'s, cut': self.torn('263932738825\t98'),
+            'a whole pid that begins the last instance\'s': self.torn('263932738825\t99\tlabel\t25\twrite\t1047960\t8\t'),
+            'the torn line\'s daemon writes after it': self.torn(cut, after=self.NEXT
+                                                                 + '264075546750\t9937\trecv\t26\twrite\t0\t8\t-\n'),
+        }
+        for why, (text, n) in bad.items():
+            with self.subTest(why):
+                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 2}: pid 9937 writes after'):
+                    cdc.parse_log(text, [])
+        # A tear that left eight columns and a newline parses as a line,
+        # and its label is short of its sectors.
+        text = self.BEGIN + self.RECV + cut + '\n' + self.START + '\n' + self.NEXT
+        torn = []
+        inst = cdc.parse_log(text, torn)
+        self.assertEqual(torn, [])
+        with self.assertRaisesRegex(RigError, 'label line'):
+            cdc.records_of(inst[0]['lines'] + [{'ns': 263932738900, 'pid': '9937', 'event': 'applied', 'tag': '25',
+                                               'op': 'write', 'sector': '-', 'sectors': '-', 'result': '-',
+                                               'extra': [], 'line': 4}], [])
+
+
 PID2 = '4343'
 
 
@@ -898,6 +1051,175 @@ def split_log(text, k, lose_line=False):
     second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up']
     second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
     return '\n'.join(first + second) + '\n'
+
+
+def split_begun(text, k):
+    """The log of one instance as two, the second begun after the k-th
+    cut's line as a start that acknowledged a failure does (stage 2c): no
+    flush of the first under way, and the second's cut lines count from 1
+    again. -> (text, the second's start ns)."""
+    lines = text.splitlines()
+    ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
+    first, rest = lines[:ci + 1], lines[ci + 1:]
+    ns = int(first[-1].split('\t')[0])
+
+    def moved(ln, at=None):
+        f = ln.split('\t')
+        f[1] = PID2
+        if at is not None:
+            f[0] = str(at)
+        if f[2] == 'cut':
+            f[6] = str(int(f[6]) - k)
+        return '\t'.join(f)
+    second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\tbegun']
+    second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
+    return '\n'.join(first + second) + '\n', ns + 1
+
+
+class AcknowledgedFailure(unittest.TestCase):
+    """A later start that acknowledged a failure begins a state (stage 2c):
+    the fixture life's log split after a cut, the second instance begun."""
+
+    def setUp(self):
+        self.records, self.read, self.dev = fixture('life')
+        self.cs, at = daemon_cuts_of(self.records, self.read, self.dev)
+        text, self.marks = request_log(self.records, self.read, self.dev, at, hashes=True)
+        # the first start's cuts line, as a daemon that holds cuts writes it
+        start = f'\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+        self.text = text.replace(start, f'{start}1015\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n', 1)
+        self.k = len(self.cs) // 2
+
+    def judge(self, text):
+        inst = cdc.parse_log(text)
+        recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: False}, {PID2}), cdc.read_marks(self.marks))
+        starts = cdc.epochs(dcuts, recs)
+        rread = cdc.read_of(recs, self.dev)
+        rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+        return inst, recs, dcuts, starts, cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev, rcs))
+
+    def test_the_count_starts_again(self):
+        text, _ = split_begun(self.text, self.k)
+        inst, recs, dcuts, starts, ref = self.judge(text)
+        self.assertEqual([r['begun'] for r in recs if 'instance' in r['flags']], [True])
+        self.assertEqual(len(starts), 1)
+        self.assertTrue(cdc.compare(dcuts, ref)[0])
+        self.assertEqual([d['number'] for d in dcuts], [str(n + 1) for n in range(len(self.cs))])
+        self.assertEqual([d['local'] for d in dcuts][self.k:self.k + 2], ['1', '2'])
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        self.assertIn('state 2 counts from 1 again', cdc.numbers_verdict(dcuts)[1])
+        # the status holds the new state's count
+        last = ref[-1]
+        st = {'cuts': str(len(self.cs) - self.k), 'cut_group': str(last['txg']),
+              'cut_opens': 'itself' if last['itself'] else 'rewind'}
+        self.assertTrue(cdc.status_verdict(st, ref, since=starts[0]['i'])[0])
+        self.assertFalse(cdc.status_verdict(st, ref)[0])
+
+    def test_a_count_that_goes_on_or_is_wrong(self):
+        # pinned on #113: a new state counts from 1 again
+        text, _ = split_begun(self.text, self.k)
+        lines = text.splitlines()
+        for i, ln in enumerate(lines):
+            f = ln.split('\t')
+            if f[1] == PID2 and f[2] == 'cut':
+                f[6] = str(int(f[6]) + self.k)
+                lines[i] = '\t'.join(f)
+        dcuts = self.judge('\n'.join(lines) + '\n')[2]
+        verdict, detail = cdc.numbers_verdict(dcuts)
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn(f"carries the number '{self.k + 1}', not 1", detail)
+        lines = text.splitlines()
+        for i, ln in enumerate(lines):
+            f = ln.split('\t')
+            if f[1] == PID2 and f[2] == 'cut':
+                f[6] = str(int(f[6]) + 1)
+                lines[i] = '\t'.join(f)
+                break
+        self.assertEqual(cdc.numbers_verdict(self.judge('\n'.join(lines) + '\n')[2])[0], 'FAIL')
+
+    def test_held_cuts_keyed_by_state(self):
+        text, ns = split_begun(self.text, self.k)
+        _, _, dcuts, starts, _ = self.judge(text)
+        written = [{'number': 1, 'group': 5, 'opens': 'itself', 'blocks': 2, 'asked': 1},
+                   {'number': 1, 'group': 6, 'opens': 'itself', 'blocks': 1, 'asked': ns + 5}]
+        h = '0123456789abcdef'
+        blocks = f'1\t3\t{h}\n1\t4\t{h}\n1\t9\t{h}\n'
+        out, b, stale = cdc.held_by_epoch(written, blocks, dcuts, starts)
+        self.assertEqual(stale, [])
+        self.assertEqual([w['number'] for w in out], [1, self.k + 1])
+        self.assertEqual(b, {1: {3: h, 4: h}, self.k + 1: {9: h}})
+        with self.assertRaisesRegex(RigError, 'does not hold the 1 blocks'):
+            cdc.held_by_epoch(written, blocks.replace('1\t9', '2\t9'), dcuts, starts)
+        with self.assertRaisesRegex(RigError, 'lines after the last cut'):
+            cdc.held_by_epoch(written, blocks + f'1\t10\t{h}\n', dcuts, starts)
+        written[1]['number'] = 99
+        with self.assertRaisesRegex(RigError, 'cut 99 of state 2, which has no cut line'):
+            cdc.held_by_epoch(written, blocks.replace('1\t9', '99\t9'), dcuts, starts)
+
+    def test_the_second_instance_begins(self):
+        import shutil
+        import tempfile
+        text, _ = split_begun(self.text, self.k)
+        inst, recs, dcuts, _, _ = self.judge(text)
+        begun = [True, True]
+        good = 'cuts 0\ncut_state begun\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        for second, want in ((good, 0), (good.replace('cut_state begun', 'cut_state taken_up'), 1),
+                             (good.replace('intent_state taken_up', 'intent_state begun'), 1)):
+            d = tempfile.mkdtemp(prefix='cdc-ack-')
+            try:
+                for k, st in enumerate((START_STATUS, second)):
+                    with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                        f.write(st)
+                with open(os.path.join(d, 'holder.log'), 'w') as f:
+                    f.write(COMMITTED)
+                got = []
+                rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs, begun)
+                self.assertEqual(rc, want, got)
+                self.assertIn('acknowledging a failure', got[1][2])
+            finally:
+                shutil.rmtree(d)
+
+    def test_kinds_with_the_acknowledgement(self):
+        text = f'{PID}\tadded\n{PID2}\tadded\tacknowledged\n'
+        self.assertEqual(cdc.read_kinds(text), {PID: False, PID2: False})
+        self.assertEqual(cdc.read_acknowledged(text), {PID2})
+        with self.assertRaises(RigError):
+            cdc.read_kinds(f'{PID2}\tadded\tacked\n')
+
+
+class FirstCommit(unittest.TestCase):
+    def test_the_first_release_answered(self):
+        self.assertEqual(cdc.first_commit(COMMITTED), 3)
+        self.assertIsNone(cdc.first_commit('1\t> t1 held\n2\t< t1 ok (1 lines)\n3\t> t2 release 1\n'))
+        self.assertIsNone(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: not uploading\n'))
+        self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
+                                          '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
+
+
+class FailureLine(unittest.TestCase):
+    def run_on(self, text):
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix='cdc-fail-')
+        try:
+            with open(os.path.join(d, 'failure.tsv'), 'w') as f:
+                f.write(text)
+            got = []
+            rc = cdc.failure_line(lambda k, v, t: got.append((k, v, t)), d)
+            return rc, got
+        finally:
+            shutil.rmtree(d)
+
+    def test_failure(self):
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t3\nrefused_rc\t4\n')
+        self.assertEqual((rc, got[0][:2]), (0, ('failure', 'PASS')))
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t3\nrefused_rc\t0\n')
+        self.assertEqual((rc, got[0][1]), (1, 'FAIL'))
+        self.assertIn('ended with 0, wanted 4', got[0][2])
+        rc, got = self.run_on('cuts_held\t2\nfailed_rc\t1\nrefused_rc\t4\n')
+        self.assertEqual(rc, 1)
+        for bad in ('cuts_held\t0\nfailed_rc\t3\nrefused_rc\t4\n', 'failed_rc\t3\nrefused_rc\t4\n', 'x\n'):
+            with self.assertRaises(RigError):
+                self.run_on(bad)
 
 
 class TwoInstances(unittest.TestCase):
@@ -995,7 +1317,7 @@ class TwoInstances(unittest.TestCase):
                   'intent_named_at_start 3\n')
         # With no release answered before the second start, the daemon
         # begins the intent map anew ("the intent map has no committed
-        # cut"), and may: either is taken.
+        # cut"), and may: either is taken (the push run of 78b4dac).
         late = f'1\t> t1 release 1\n{inst[1]["ns"] + 1}\t< t1 ok (0 lines)\n'
         begun_map = second.replace('intent_state taken_up', 'intent_state begun')
         for starts, want, log in (((START_STATUS, second), 0, COMMITTED),
@@ -1020,15 +1342,6 @@ class TwoInstances(unittest.TestCase):
                 self.assertEqual('no cut committed before it' in got[1][2], log is late)
             finally:
                 shutil.rmtree(d)
-
-
-class FirstCommit(unittest.TestCase):
-    def test_the_first_release_answered(self):
-        self.assertEqual(cdc.first_commit(COMMITTED), 3)
-        self.assertIsNone(cdc.first_commit('1\t> t1 held\n2\t< t1 ok (1 lines)\n3\t> t2 release 1\n'))
-        self.assertIsNone(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: not uploading\n'))
-        self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
-                                          '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
 
 
 class NoFlush(unittest.TestCase):
