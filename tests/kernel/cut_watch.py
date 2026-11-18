@@ -25,9 +25,11 @@ in the files, and ends. Out:
 - OUT/uploaded.tsv: one line per cut fetched, `number group state head
   blocks ns_begin ns_end` (the blocks that are not zeros; the times
   bracket the fetch, on the monotonic clock of the request log);
-- OUT/uploaded-blocks.tsv: `number block hash` for each block that
-  changed since the cut fetched before, the hash being the first 8 bytes
-  of SHA-256 in hex, as the request log's `applied` lines give them;
+- OUT/uploaded-blocks.tsv: `fetch number block hash` for each block that
+  changed since the cut fetched before, fetch being the line of
+  uploaded.tsv (from 0; a cut another writer put at head can carry a
+  number of the daemon's) and the hash the first 8 bytes of SHA-256 in
+  hex, as the request log's `applied` lines give them;
 - OUT/rows.tsv: `ns head row lease` as `row` printed them;
 - OUT/watch.log: what it did, and a line `VERDICT ...` where node B
   could not read the content of the cut head named (`get` exit 4: the
@@ -110,6 +112,7 @@ class Watcher:
         self.last = None        # (head, row) of the last cut fetched
         self.blocks = {}        # its blocks that are not zeros
         self.failures = 0
+        self.fetched = 0        # lines of uploaded.tsv
 
     def log(self, text):
         with open(os.path.join(self.out, 'watch.log'), 'a') as f:
@@ -165,11 +168,12 @@ class Watcher:
         state, number, group = row_cut(before['row'])
         diff = changed(self.blocks, blocks)
         with open(os.path.join(self.out, 'uploaded-blocks.tsv'), 'a') as f:
-            f.write(''.join(f'{number}\t{b}\t{h}\n' for b, h in sorted(diff.items())))
+            f.write(''.join(f'{self.fetched}\t{number}\t{b}\t{h}\n' for b, h in sorted(diff.items())))
         with open(os.path.join(self.out, 'uploaded.tsv'), 'a') as f:
             f.write(f"{number}\t{group}\t{state}\t{before['head'].split()[0]}\t{len(blocks)}\t{t0}\t{t1}\n")
         self.log(f'fetched cut {number} (group {group}, state {state}): {len(blocks)} blocks, {len(diff)} changed')
         self.last, self.blocks = key, blocks
+        self.fetched += 1
         return True
 
 

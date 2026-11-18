@@ -119,8 +119,9 @@ class Steps(unittest.TestCase):
         self.assertEqual([(ln[0], ln[1], ln[2], ln[4]) for ln in lines],
                          [('1', '10', STATE, '2'), ('2', '11', STATE, '1')])
         blocks = [ln.split('\t') for ln in self.read('uploaded-blocks.tsv').splitlines()]
-        self.assertEqual([(n, b) for n, b, _ in blocks], [('1', '0'), ('1', '1'), ('2', '0'), ('2', '1')])
-        self.assertEqual(blocks[2][2], cw.ZERO)
+        self.assertEqual([(k, n, b) for k, n, b, _ in blocks],
+                         [('0', '1', '0'), ('0', '1', '1'), ('1', '2', '0'), ('1', '2', '1')])
+        self.assertEqual(blocks[2][3], cw.ZERO)
         self.assertEqual(len(self.read('rows.tsv').splitlines()), 6)
 
     def test_head_moved_under_the_read(self):
