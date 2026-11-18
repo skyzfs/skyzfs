@@ -4,7 +4,8 @@
 #   tests/bench/minio.sh up DIR BUCKET    start it on DIR, make BUCKET
 #   tests/bench/minio.sh usage DIR BUCKET one line: MiB on DIR, objects
 #                                         in BUCKET, uploads not finished
-#   tests/bench/minio.sh down DIR         stop it and delete DIR
+#   tests/bench/minio.sh down DIR         stop it and delete DIR (named
+#                                         minio-data, or exit 64)
 #
 # The data is on DIR, a directory of the runner, so that what a row
 # left there is measured from outside the container and is gone with
@@ -50,6 +51,9 @@ usage() { # dir bucket
 }
 
 down() { # dir
+    # Deleted as root: only a directory named minio-data, as the
+    # workflow names it, so that a wrong argument deletes nothing else.
+    [ "$(basename -- "${1:?}")" = minio-data ] || { echo "minio.sh down deletes only a directory named minio-data, not: $1" >&2; exit 64; }
     docker rm -f minio > /dev/null 2>&1 || true
     sudo rm -rf -- "${1:?}"
 }

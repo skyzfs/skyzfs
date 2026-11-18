@@ -441,6 +441,8 @@ jobs:
             # MinIO anew, so that the next row starts with nothing there.
             if [[ " $assigns " == *" TB_SKZ_UPLOAD=1 "* ]] && [ -n "${TB_MINIO_DIR:-}" ]; then
               used="$(bash tests/bench/minio.sh usage "$TB_MINIO_DIR" "$TB_S3_BUCKET" || echo "minio usage not read") work_free_mib $(df -Pm "$TB_WORK" | awk 'NR==2 {print $4}')"
+              # A row refused before it ran has made no output directory.
+              sudo mkdir -p "$TB_OUT/$i"
               echo "$used" | sudo tee "$TB_OUT/$i/minio.txt" > /dev/null
               [ -n "$minio_rows" ] || echo "MinIO after each upload row, then started anew: its data in MiB, the objects in the bucket, uploads not finished, and the work disk's free MiB." >> "$GITHUB_STEP_SUMMARY"
               minio_rows=1
