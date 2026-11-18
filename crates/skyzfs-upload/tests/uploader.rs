@@ -1787,12 +1787,15 @@ async fn a_publish_after_another_took_the_lease_is_fenced_and_ends() {
 /// refused with a conflict, as a refs store that fences writes answers
 /// while the volume has no lease row; otherwise both go to the engine.
 /// While `cuts_fail` is set, every PUT of sealed segments fails, so that
-/// a cut waits in its backoff.
+/// a cut waits in its backoff; each PUT of them takes `cut_slow` first.
 struct Publishes<R> {
     inner: R,
     refuse: fn(&str) -> bool,
     /// How long a refused publish takes to fail.
     slow: Duration,
+    /// How long each PUT of sealed segments takes: a slice's step makes
+    /// two.
+    cut_slow: Duration,
     cuts_fail: Arc<AtomicBool>,
     sent: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
 }
@@ -1811,6 +1814,9 @@ impl<R: Remote> Remote for Publishes<R> {
     }
 
     async fn put_sealed(&mut self) -> Result<(), RemoteError> {
+        if !self.cut_slow.is_zero() {
+            tokio::time::sleep(self.cut_slow).await;
+        }
         if self.cuts_fail.load(Ordering::SeqCst) {
             return Err(RemoteError::Store("the segments' PUT failed".into()));
         }
@@ -1881,6 +1887,7 @@ async fn ten_minutes_of_a_publish_that_fails(
             inner: make(epoch),
             refuse: if refuse { every_name } else { no_name },
             slow: Duration::ZERO,
+            cut_slow: Duration::ZERO,
             cuts_fail: Arc::new(AtomicBool::new(false)),
             sent: Arc::clone(&times),
         },
@@ -2383,12 +2390,46 @@ async fn the_channels_requests_do_not_hold_back_the_leases_renewal() {
 
 /// An uploader of `store` whose remote notes the publishes in `sent`,
 /// refuses those of the names `refuse` holds for, each after `slow`, and
-/// fails the cuts' segment PUTs while `cuts_fail` is set.
+/// fails the cuts' segment PUTs while `cuts_fail` is set. Slices of 16
+/// blocks, and PUTs that take no time.
 fn noting(
     fx: &Fixture,
     clock: &Clock,
     store: InPlace<SimDisk>,
     (refuse, slow): (fn(&str) -> bool, Duration),
+    cuts_fail: &Arc<AtomicBool>,
+    sent: &Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
+) -> Uploader<InPlace<SimDisk>, Publishes<Fenced>, LeaseRefs, impl FnMut(u64) -> Publishes<Fenced>>
+{
+    let shape = Shape {
+        refuse,
+        slow,
+        cut_slow: Duration::ZERO,
+        slices: 16,
+    };
+    noting_shaped(fx, clock, store, shape, cuts_fail, sent)
+}
+
+/// How the remote of [`noting_shaped`] answers, and the uploader's
+/// slices.
+#[derive(Clone, Copy)]
+struct Shape {
+    /// The names whose publishes it refuses.
+    refuse: fn(&str) -> bool,
+    /// How long a refused publish takes to fail.
+    slow: Duration,
+    /// How long each PUT of a cut's sealed segments takes.
+    cut_slow: Duration,
+    /// The blocks of a slice.
+    slices: usize,
+}
+
+/// As [`noting`], of the `shape` given.
+fn noting_shaped(
+    fx: &Fixture,
+    clock: &Clock,
+    store: InPlace<SimDisk>,
+    shape: Shape,
     cuts_fail: &Arc<AtomicBool>,
     sent: &Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
 ) -> Uploader<InPlace<SimDisk>, Publishes<Fenced>, LeaseRefs, impl FnMut(u64) -> Publishes<Fenced>>
@@ -2401,15 +2442,30 @@ fn noting(
         keeper(fx, clock),
         move |epoch| Publishes {
             inner: make(epoch),
-            refuse,
-            slow,
+            refuse: shape.refuse,
+            slow: shape.slow,
+            cut_slow: shape.cut_slow,
             cuts_fail: Arc::clone(&cuts_fail),
             sent: Arc::clone(&sent),
         },
-        16,
+        shape.slices,
     );
     *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     up
+}
+
+/// One turn of `up`, the lease kept on its own clock, and the time
+/// moved on by the wait it asks for (a millisecond at least).
+async fn one_turn<L, R, F, M>(up: &mut Uploader<L, R, F, M>, clock: &Clock)
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    let wait = up.turn().await;
+    clock.pass(wait.as_millis() as u64);
+    tokio::time::advance(wait.max(Duration::from_millis(1))).await;
 }
 
 /// Turn `up` for `time`, the lease kept on its own clock.
@@ -2583,13 +2639,14 @@ async fn a_publishs_wait_wakes_the_uploader_while_the_cut_waits_longer() {
 }
 
 /// F1 of the review of #126 (its v1): publishes that fail slowly hold the
-/// cut back for no more than one publish step at each of the cut's
-/// steps. N publishes, carried by cut 1, each fail after T (a store that
-/// lets their transaction time out), and cut 2 is written: it goes up
-/// within one round of the publishes, N × T, while they go on being
-/// sent. With a wait of each publish's own and a publish's step always
-/// taken before the cut's, 10 publishes failing after 20 s kept cut 2
-/// back for over half an hour: there was always another publish due.
+/// cut back for one publish step at most. N publishes, carried by cut 1,
+/// each fail after T (a store that lets their transaction time out), and
+/// cut 2, of one slice, is written: it goes up within T and a second,
+/// while they go on being sent. With a wait of each publish's own and a
+/// publish's step always taken before the cut's, 10 publishes failing
+/// after 20 s kept cut 2 back for over half an hour: there was always
+/// another publish due. The bound is one step (F6 of the review's next
+/// look); a long cut is [`publishes_that_fail_slowly_slow_a_long_cut_by_one_step_at_most`].
 #[tokio::test(start_paused = true)]
 async fn publishes_that_fail_slowly_hold_the_cut_back_for_one_step_at_most() {
     let cases = [
@@ -2617,16 +2674,14 @@ async fn publishes_that_fail_slowly_hold_the_cut_back_for_one_step_at_most() {
             fx.group(local, 8);
         }
         let began = tokio::time::Instant::now();
-        let round = slow * n;
+        let bound = slow + Duration::from_secs(1);
         while up.shown().figures.uploaded < 2 {
             assert!(
-                began.elapsed() <= round,
+                began.elapsed() <= bound,
                 "{case}: cut 2 is not up after {:?}",
                 began.elapsed()
             );
-            let wait = up.turn().await;
-            clock.pass(wait.as_millis() as u64);
-            tokio::time::advance(wait.max(Duration::from_millis(1))).await;
+            one_turn(&mut up, &clock).await;
         }
         let up_at = began.elapsed();
         let sends = sent.lock().expect("the times").len();
@@ -2635,6 +2690,148 @@ async fn publishes_that_fail_slowly_hold_the_cut_back_for_one_step_at_most() {
         assert!(sends >= 1, "{case}: the publishes are sent meanwhile");
         assert_eq!(up.publishing().pending().0, n as usize, "{case}");
     }
+}
+
+/// F4 of the review of #126 (its w6): publishes that fail slowly slow a
+/// long cut by one publish step at most, not by one for each of its
+/// steps. Ten publishes, carried by cut 1, each fail after 20 s; cut 2 is
+/// 124 blocks in slices of one, about 130 steps. It goes up within one
+/// publish step and a second: the cut's steps take no time here, so
+/// after a publish's step of 20 s the cut has the next 20 s, which is the
+/// whole cut. With turns counted in steps the cut took one slice for each
+/// failed publish step, and went up only when the publishes expired, ten
+/// minutes after they were asked. Once the cut is idle, the publishes go
+/// on being sent.
+#[tokio::test(start_paused = true)]
+async fn publishes_that_fail_slowly_slow_a_long_cut_by_one_step_at_most() {
+    let (n, slow) = (10, Duration::from_secs(20));
+    let mut fx = Fixture::new(93).await;
+    let store = one_cut(&mut fx);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let (cuts_fail, sent) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let shape = Shape {
+        refuse: every_name,
+        slow,
+        cut_slow: Duration::ZERO,
+        slices: 1,
+    };
+    let mut up = noting_shaped(&fx, &clock, store, shape, &cuts_fail, &sent);
+    // Cut 1, whole, in slices of one block.
+    until_idle(&mut up, 1000).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    for i in 0..n {
+        let request = asked(state, &format!("p{i}"), 0, 7);
+        assert_eq!(up.publishing().ask(request), Answer::Accepted);
+    }
+    {
+        let local = up.driver().expect("the driver").local();
+        for block in 20..144 {
+            fx.write(local, block, 0x20);
+        }
+        fx.group(local, 8);
+    }
+    let began = tokio::time::Instant::now();
+    let bound = slow + Duration::from_secs(1);
+    let mut turns = 0;
+    while up.shown().figures.uploaded < 2 {
+        assert!(
+            began.elapsed() <= bound,
+            "cut 2 is not up after {:?}",
+            began.elapsed()
+        );
+        one_turn(&mut up, &clock).await;
+        turns += 1;
+    }
+    let up_at = began.elapsed();
+    let sends = sent.lock().expect("the times").len();
+    println!("cut 2 up at {up_at:?}, after {turns} turns and {sends} publishes sent");
+    assert!(turns > 124, "a step for each slice: {turns} turns");
+    fx.assert_uploaded(8, "cut 2").await;
+    let idle_at = tokio::time::Instant::now();
+    turns_for(&mut up, &clock, Duration::from_secs(120)).await;
+    let after = sent
+        .lock()
+        .expect("the times")
+        .iter()
+        .filter(|(_, at)| *at >= idle_at)
+        .count();
+    println!("{after} publishes sent in the two minutes after");
+    // One every 20 s, each sent once the last has failed: six at most.
+    assert!(
+        after >= 5,
+        "the publishes go on being sent once the cut is idle: {after}"
+    );
+    assert_eq!(up.publishing().pending().0, n);
+}
+
+/// F5 of the review of #126 (its w4): slow steps of the cut slow the
+/// publishes by one step of the cut at most, not by one for each publish
+/// step. Cut 2, 40 blocks in slices of one, goes up while each of its
+/// steps takes 10 s (two PUTs of 5 s); 64 publishes carried by cut 1 are
+/// asked once it is under way. All are made within one of the cut's steps
+/// and a second, before cut 2 is up: the publishes' steps take no time
+/// here, so after a step of the cut's they have the next 10 s. With turns
+/// counted in steps, a step of the cut's came between a publish's lookup
+/// and its transaction, and between two publishes.
+#[tokio::test(start_paused = true)]
+async fn slow_steps_of_the_cut_slow_the_publishes_by_one_step_at_most() {
+    let (n, put) = (64, Duration::from_secs(5));
+    let mut fx = Fixture::new(94).await;
+    let store = one_cut(&mut fx);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let (cuts_fail, sent) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let shape = Shape {
+        refuse: no_name,
+        slow: Duration::ZERO,
+        cut_slow: put,
+        slices: 1,
+    };
+    let mut up = noting_shaped(&fx, &clock, store, shape, &cuts_fail, &sent);
+    // Cut 1, whole, in slices of one block.
+    until_idle(&mut up, 1000).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    {
+        let local = up.driver().expect("the driver").local();
+        for block in 20..60 {
+            fx.write(local, block, 0x20);
+        }
+        fx.group(local, 8);
+    }
+    for _ in 0..4 {
+        one_turn(&mut up, &clock).await;
+    }
+    assert!(
+        up.driver().expect("the driver").under_way().is_some(),
+        "cut 2 is under way"
+    );
+    for i in 0..n {
+        let request = asked(state, &format!("p{i}"), 0, 7);
+        assert_eq!(up.publishing().ask(request), Answer::Accepted);
+    }
+    let began = tokio::time::Instant::now();
+    let bound = 2 * put + Duration::from_secs(1);
+    while up.publishing().figures().published < n {
+        assert!(
+            began.elapsed() <= bound,
+            "{} of {n} made after {:?}",
+            up.publishing().figures().published,
+            began.elapsed()
+        );
+        one_turn(&mut up, &clock).await;
+    }
+    println!("{n} publishes made in {:?}", began.elapsed());
+    assert_eq!(up.shown().figures.uploaded, 1, "cut 2 is still going up");
+    for _ in 0..200 {
+        if up.shown().figures.uploaded == 2 {
+            break;
+        }
+        one_turn(&mut up, &clock).await;
+    }
+    fx.assert_uploaded(8, "cut 2").await;
+    let figures = up.publishing().figures();
+    assert_eq!((figures.published, figures.expired), (n, 0));
 }
 
 /// F2 of the review of #126 (its v5): a failed step's wait goes to the
