@@ -1311,8 +1311,8 @@ class AcknowledgedFailure(unittest.TestCase):
         self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
         begun = [True, True, False]
         good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
-        for third_status, want in (('cuts 2\ncut_state taken_up\nintent_state taken_up\n', 0),
-                                   ('cuts 1\ncut_state taken_up\nintent_state taken_up\n', 1)):
+        for third_status, want in (('cuts 2\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\n', 0),
+                                   ('cuts 1\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\n', 1)):
             d = tempfile.mkdtemp(prefix='cdc-ack-')
             try:
                 for k, st in enumerate((START_STATUS, good, third_status)):
@@ -1673,7 +1673,7 @@ class TwoInstances(unittest.TestCase):
         import tempfile
         inst, recs, dcuts, _ = self.judge(split_log(self.text, self.k))
         inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
-        second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
+        second = (f'cuts {self.k - 1}\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\nintent_regions 128\n'
                   'intent_named_at_start 3\n')
         # With no release answered before the second start, the daemon
         # begins the intent map anew ("the intent map has no committed
@@ -1687,7 +1687,20 @@ class TwoInstances(unittest.TestCase):
                                   ((START_STATUS, second.replace(f'cuts {self.k - 1}', f'cuts {self.k - 2}')), 1,
                                    COMMITTED),
                                   ((START_STATUS.replace('cut_state begun', 'cut_state taken_up'), second), 1,
-                                   COMMITTED)):
+                                   COMMITTED),
+                                  # the state's newest cut, not released, is
+                                  # held across the start (the review of
+                                  # #115, S2) ...
+                                  ((START_STATUS, second.replace('cuts_held 1', 'cuts_held 0')), 1, COMMITTED),
+                                  ((START_STATUS, second.replace('cuts_held 1\n', '')), 1, COMMITTED),
+                                  ((START_STATUS, second.replace('cuts_held 1', 'cuts_held 2')), 0, COMMITTED),
+                                  # ... and none need be once it was released
+                                  ((START_STATUS, second.replace('cuts_held 1', 'cuts_held 0')), 0,
+                                   f'1\t> t1 release {self.k - 1}\n{inst[1]["ns"] - 1}\t< t1 ok (0 lines)\n'),
+                                  ((START_STATUS, second.replace('cuts_held 1', 'cuts_held 0')), 1,
+                                   f'1\t> t1 release {self.k - 2}\n{inst[1]["ns"] - 1}\t< t1 ok (0 lines)\n'),
+                                  ((START_STATUS, second.replace('cuts_held 1', 'cuts_held 0')), 1,
+                                   f'1\t> t1 release {self.k - 1}\n{inst[1]["ns"] + 1}\t< t1 ok (0 lines)\n')):
             d = tempfile.mkdtemp(prefix='cdc-inst-')
             try:
                 for k, st in enumerate(starts):
@@ -1699,7 +1712,11 @@ class TwoInstances(unittest.TestCase):
                 rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs)
                 self.assertEqual(rc, want, got)
                 self.assertEqual([k for k, _, _ in got], ['instance_1', 'instance_2'])
-                self.assertEqual('no cut committed before it' in got[1][2], log is late)
+                if log in (COMMITTED, late):
+                    self.assertEqual('no cut committed before it' in got[1][2], log is late)
+                if 'cuts_held 1' not in starts[1] and want:
+                    self.assertIn(f'wanted at least 1: cut {self.k - 1} was counted before it and not released',
+                                  got[1][2])
             finally:
                 shutil.rmtree(d)
 
@@ -1713,7 +1730,7 @@ class TwoInstances(unittest.TestCase):
         inst, recs, dcuts, _ = self.judge(split_log(self.text, self.k))
         inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
         t0, t1 = inst[0]['ns'], inst[1]['ns']
-        second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
+        second = (f'cuts {self.k - 1}\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\nintent_regions 128\n'
                   'intent_named_at_start 3\n')
         begun_map = second.replace('intent_state taken_up', 'intent_state begun')
         between = f'1\t> t1 release 1\n{(t0 + t1) // 2}\t< t1 ok (0 lines)\n'   # after the first start

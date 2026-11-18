@@ -147,8 +147,10 @@ it is placed when that one runs it). Then:
 - `instance_K`: the K-th start's `cuts` line, and its status read once
   it was ready (DIR/status-start-K.txt): `begun` for the first, then
   `taken_up` for the cut state and the intent map, and `cuts` no lower
-  than the cuts counted before it; the intent map's regions named at
-  the start, as information;
+  than the cuts counted before it; `cuts_held` at least 1 at a start
+  that takes the state up where the newest cut counted before it was
+  not released before it (the holder's log); the intent map's regions
+  named at the start, as information;
 - the controls `mark-dropped` (no mark kept at a take-over) and
   `mark-kept` (the mark kept on a created device), caught in takeover,
   which makes a mark wait across each (zfs_nocacheflush, between the
@@ -1102,6 +1104,22 @@ def first_commit(log):
     return None
 
 
+def releases(log):
+    """holder.log -> [(the time the daemon answered `ok`, the cut's number)]
+    for each release answered."""
+    asked, out = {}, []
+    for ln in log.splitlines():
+        f = ln.split('\t')
+        if len(f) != 2 or not f[0].isdigit():
+            continue
+        w = f[1].split()
+        if len(w) >= 4 and w[0] == '>' and w[2] == 'release' and w[3].isdigit():
+            asked[w[1]] = int(w[3])
+        elif len(w) >= 3 and w[0] == '<' and w[1] in asked and w[2] == 'ok':
+            out.append((int(f[0]), asked.pop(w[1])))
+    return out
+
+
 def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     """Each instance's start with --hold-cuts (stage 2b): its `cuts` line,
     and its status read once it was ready (DIR/status-start-K.txt) ->
@@ -1120,11 +1138,16 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     at any start (the daemon: "the intent map has no committed cut"), so a
     later start wants it taken up only where the holder's log shows a
     release answered before that start (the request log's clock), and
-    takes either otherwise."""
+    takes either otherwise. A start that takes the state up holds the
+    cuts the state held: at least one where the newest cut of the state
+    counted before it was not released before it (the review of #115,
+    S2; the daemon keeps its newest cut until it is released)."""
     rc = 0
     bounds = [r for r in records if 'instance' in r['flags']]
     begun = begun or [True] + [False] * (len(instances) - 1)
-    committed = first_commit(read_file(rdir, 'holder.log'))
+    hlog = read_file(rdir, 'holder.log')
+    committed = first_commit(hlog)
+    released = releases(hlog)
     for k, inst in enumerate(instances):
         said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
         st = read_status(read_file(rdir, f'status-start-{k + 1}.txt'))
@@ -1150,6 +1173,14 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
             # It trusts none of the cut state: nothing of the old one is
             # held (the review of #113, G3).
             bad.append(f"cuts_held {st.get('cuts_held')!r} at a start that acknowledged a failure, wanted '0'")
+        if k and not begun[k]:
+            counted = [int(d['number']) for d in dcuts if lo < d['prefix'] < bounds[k - 1]['i']
+                       and d['number'].isdigit()]
+            gone = [n for t, n in released if t < inst['ns']]
+            held = st.get('cuts_held', '')
+            if counted and max(counted) > max(gone, default=0) and not (held.isdigit() and int(held) >= 1):
+                bad.append(f'cuts_held {held!r} at a start that took the state up, wanted at least 1: cut '
+                           f'{max(counted)} was counted before it and not released')
         how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
         if k and begun[k]:
             how += ', acknowledging a failure'
@@ -1160,7 +1191,7 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
         put(f'instance_{k + 1}', 'FAIL' if bad else 'PASS',
             (f"pid {inst['pid']} ({how}): " + '; '.join(bad) + f'; wanted {want}') if bad else
             f"pid {inst['pid']} ({how}): {want} by its cuts line and the status's cut_state and intent_state; "
-            f"cuts {n} at the start, {before} counted before it; the intent map named "
+            f"cuts {n} at the start, {before} counted before it, cuts_held {st.get('cuts_held')!r}; the intent map named "
             f"{st.get('intent_named_at_start')!r} of {st.get('intent_regions')!r} regions at the start")
         rc = 1 if bad else rc
     return rc

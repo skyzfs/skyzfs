@@ -91,7 +91,7 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                     written = tamper_written(written, ns)
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
                     f.write(f'{t.PID2}\t{split[1]}\n')
-                starts += (f'cuts {split[0] - 1}\ncut_state taken_up\nintent_state taken_up\n',)
+                starts += (f'cuts {split[0] - 1}\ncut_state taken_up\ncuts_held 1\nintent_state taken_up\n',)
             if tamper_starts:
                 starts = tamper_starts(starts)
             t.holder_files(d, written, blocks, final, starts=starts,
