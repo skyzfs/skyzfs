@@ -66,7 +66,7 @@ def recording(tamper_log=None, status=None, name='life', tamper_kstat=None, as_n
                 if tamper_written:
                     written = tamper_written(written, ns)
             elif split:
-                text = t.split_log(text, split[0])
+                text = t.split_log(text, split[0], shape=split[2] if len(split) > 2 else None)
                 if tamper_split:
                     text = tamper_split(text)
                 with open(os.path.join(d, 'instances.tsv'), 'w') as f:
@@ -163,6 +163,34 @@ def numbered(numbers):
             out.append('\t'.join(f))
         return '\n'.join(out) + '\n'
     return tamper
+
+
+def tearer(seen, keep=20, back=0):
+    """-> tear(text): the first instance's last line cut short by its kill
+    after `keep` bytes, on a page of the file, and the next instance's
+    start line after it with no newline (cut_daemon_check.torn_line).
+    `send` lines of the first instance, which the check reads past, are
+    put `back` lines before it to bring the cut onto a page (in the
+    daemon's log nothing stands between a barrier and its cut line). seen
+    gets the lost bytes and the torn line's number."""
+    def tear(text):
+        lines = text.split('\n')
+        j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [t.PID2, 'start'])
+        ns = lines[j - 1].split('\t')[0]
+        at = sum(len(ln) + 1 for ln in lines[:j - 1])
+        n = (-(at + keep)) % cdc.PAGE
+        n += cdc.PAGE if n < 40 else 0
+        fill = []
+        while n:
+            size = n if n <= 80 else min(44, n - 40)
+            fill.append(f'{ns}\t{t.PID}\tsend\t-\t-\t-\t-\t' + '1' * (size - len(ns) - len(t.PID) - 16))
+            n -= size
+        seen['lost'] = lines[j - 1][:keep]
+        seen['line'] = j + len(fill)
+        lines[j - 1:j + 1] = [seen['lost'] + lines[j]]
+        lines[j - 1 - back:j - 1 - back] = fill
+        return '\n'.join(lines)
+    return tear
 
 
 class Main(unittest.TestCase):
@@ -351,6 +379,52 @@ class Main(unittest.TestCase):
         rc, lines = recording(holder=none, split=(k, 'taken-over'), as_name='takeover')
         self.assertEqual(lines['cut_state'][0], 'FAIL', lines['cut_state'])
 
+    def test_a_kill_before_the_state_stored_the_cut(self):
+        """The take-over after a kill between the barrier and the state
+        storing the cut (windows B and C of the review of #111, D1): the
+        right daemon passes, and obs_unstored_at_kill names the line."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
+        for shape, said in (('B', 'barrier with no cut line'), ('C', f'cut {k} (group')):
+            with self.subTest(shape):
+                rc, lines = recording(holder=none, split=(k, 'taken-over', shape), status=status,
+                                      as_name='takeover')
+                for key in ('cuts', 'cut_numbers', 'status', 'cut_state', 'held_content', 'instance_1',
+                            'instance_2'):
+                    self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+                self.assertIn('1 flushes the daemon was killed at', lines['obs_unstored_at_kill'][1])
+                self.assertIn(said, lines['obs_unstored_at_kill'][1])
+                self.assertEqual(rc, 1)    # ctl_mark-kept, as test_two_instances
+        rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover')
+        self.assertIn('0 flushes', lines['obs_unstored_at_kill'][1])
+        # The cut counted past with no line (shape A): the rig's error, not a kill.
+        rc, lines = recording(holder=none, split=(k, 'taken-over', 'A'), status=status, as_name='takeover')
+        self.assertEqual(rc, 2, lines)
+        self.assertIn(f'no line of cut {k}', lines['rig_error'][1])
+        self.assertIn('no kill leaves this', lines['rig_error'][1])
+
+    def test_a_cut_line_torn_at_the_take_over(self):
+        """A kill that tears the cut line (window B by another way): the
+        line is lost, and the flush is one with no barrier."""
+        k = 13
+        none = lambda written, blocks, final: None    # noqa: E731
+        records, read, dev = t.fixture('life')
+        cs, _ = t.daemon_cuts_of(records, read, dev)
+        status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
+        seen = {}
+        rc, lines = recording(holder=none, split=(k, 'taken-over', 'C'), status=status, as_name='takeover',
+                              tamper_split=tearer(seen, back=1))
+        self.assertIn(f"line {seen['line']}: pid {t.PID}'s `{cdc.flat(seen['lost'])}` line after 20 bytes",
+                      lines['obs_torn_at_kill'][1])
+        self.assertIn('\tcut\t', seen['lost'])
+        self.assertIn('barrier with no cut line', lines['obs_unstored_at_kill'][1])
+        for key in ('cuts', 'cut_numbers', 'status', 'instance_1', 'instance_2'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertEqual(rc, 1)    # ctl_mark-kept
+
     def test_a_line_torn_at_the_take_over(self):
         """The first instance's last line cut short by its kill, on a page
         of the file, and the next instance's start line after it with no
@@ -363,18 +437,7 @@ class Main(unittest.TestCase):
         cs, _ = t.daemon_cuts_of(records, read, dev)
         status = held_status(records, read, dev, cs).replace('cut_state begun', 'cut_state taken_up')
         seen = {}
-
-        def tear(text):
-            # The daemon writes no leading zero; they stand here for the
-            # bytes before the page boundary that a longer line would have.
-            lines = text.split('\n')
-            j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [t.PID2, 'start'])
-            at = sum(len(ln) + 1 for ln in lines[:j - 1])
-            zeros = (-(at + 20)) % cdc.PAGE
-            seen['lost'] = ('0' * zeros + lines[j - 1])[:zeros + 20]
-            seen['line'] = j
-            lines[j - 1:j + 1] = [seen['lost'] + lines[j]]
-            return '\n'.join(lines)
+        tear = tearer(seen)
         rc, lines = recording(holder=none, split=(k, 'taken-over'), status=status, as_name='takeover',
                               tamper_split=tear)
         self.assertEqual(lines['obs_torn_at_kill'][0], 'INFO')

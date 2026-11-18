@@ -241,9 +241,10 @@ START_LINE = re.compile(r'([1-9]\d*)\t([1-9]\d*)\tstart\t(\d+)\t-\t-\t-\t(\d+)')
 # written of a line ends at a multiple of this in the file. The hosted
 # images have 4 KiB pages; a larger page is a multiple of it.
 PAGE = 4096
-# What is left of a torn line: its time, then perhaps its pid, whole or not,
-# then perhaps more of its columns.
-TORN_HEAD = re.compile(r'(\d+)(?:\t(\d*)(\t.*)?)?', re.S)
+# What is left of a torn line: its time (no leading zero, as the daemon
+# writes it), then perhaps its pid, whole or not, then perhaps more of its
+# columns.
+TORN_HEAD = re.compile(r'([1-9]\d*)(?:\t(\d*)(\t.*)?)?', re.S)
 
 
 def torn_line(ln, k, lines, offset, instances, by_pid):
@@ -289,7 +290,7 @@ def torn_line(ln, k, lines, offset, instances, by_pid):
             continue
         if h.group(2) is not None and not last['pid'].startswith(h.group(2)):
             continue
-        if len(m.group(1)) > len(nxt) or len(h.group(1).lstrip('0')) > len(nxt):
+        if len(m.group(1)) > len(nxt) or len(h.group(1)) > len(nxt):
             continue
         ns = int(m.group(1))
         if not before <= ns <= int(nxt):
@@ -916,12 +917,72 @@ def held_content(records, dcuts, written, blocks, final=None):
     return ok, '; '.join(bad + notes), controls, wrong_blocks
 
 
-def lost_at_kill(dcuts, ref, records):
-    """A cut the daemon counted and was killed before it wrote its line ->
-    a message, or None. Its count is in the state, so the next instance
-    counts on past it and the reference has one cut more than the lines
-    at the old instance's last barrier: the log cannot show that cut,
-    which is the rig's error and not the daemon's."""
+def unstored_at_kill(instances, acked=frozenset()):
+    """The instances, with what a kill left of a cut that the state never
+    stored taken out -> (instances, [note]).
+
+    At a flush's barrier the store writes the `barrier` line, counts in
+    the rule and writes the `cut` line, then stores the count, the newest
+    cut and the cleared mark in its state, and only then answers the
+    flush with its `commit` line (inplace.rs, cuts.rs; the review of
+    #111, D1). The log is written from one thread, so a barrier with no
+    commit after it ends its instance. Where it does:
+    - with no cut line (window B, or the cut line torn by the kill), the
+      cut, if the rule took one, was not stored: the flush is one with
+      no barrier, which the kernel hands to the next instance again.
+      Where the next instance takes the same state up and its first cut
+      counts on past one more (the shape no kill leaves,
+      cut_line_missing), the barrier is kept for that error;
+    - with cut line K (window C), the cut was stored or not: the next
+      instance says which. Where it takes the same state up and its first
+      cut is K again, at the same group, the first line was no cut and
+      both lines are taken out; anything else keeps them, and a cut K+1
+      there means the state had stored K.
+    A note: {'line', 'pid', 'shape', 'number', 'group'}."""
+    out, notes, last = [], [], 0
+    for k, inst in enumerate(instances):
+        lines = inst['lines']
+        if k and inst['pid'] in acked:
+            last = 0
+        if k + 1 < len(instances):
+            nxt = instances[k + 1]
+            tail = lines[-2:]
+            again = next((ln for ln in nxt['lines'] if ln['event'] == 'cut'), None)
+            counted = [ln['sectors'] for ln in lines if ln['event'] == 'cut']
+            n = int(counted[-1]) if counted and counted[-1].isdigit() else last
+            skips = nxt['pid'] not in acked and again is not None and again['sectors'] == str(n + 2)
+            if lines and lines[-1]['event'] == 'barrier' and not skips:
+                notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'B', 'number': None,
+                              'group': None})
+                lines = lines[:-1]
+            elif len(tail) == 2 and [ln['event'] for ln in tail] == ['barrier', 'cut'] \
+                    and tail[0]['tag'] == tail[1]['tag'] and nxt['pid'] not in acked:
+                if again is not None and (again['sectors'], again['result']) == (tail[1]['sectors'],
+                                                                                 tail[1]['result']):
+                    notes.append({'line': tail[1]['line'], 'pid': inst['pid'], 'shape': 'C',
+                                  'number': tail[1]['sectors'], 'group': tail[1]['result']})
+                    lines = lines[:-2]
+        counted = [ln['sectors'] for ln in lines if ln['event'] == 'cut']
+        last = int(counted[-1]) if counted and counted[-1].isdigit() else last
+        out.append(dict(inst, lines=lines))
+    return out, notes
+
+
+def unstored_detail(notes):
+    """unstored_at_kill's notes -> the line obs_unstored_at_kill's detail."""
+    return (f'{len(notes)} flushes the daemon was killed at, between the barrier and the state storing the cut'
+            + ''.join(f"; line {n['line']}: pid {n['pid']}'s barrier with no cut line, a flush with no barrier"
+                      if n['shape'] == 'B' else
+                      f"; line {n['line']}: pid {n['pid']}'s cut {n['number']} (group {n['group']}), cut again "
+                      'by the next instance: no cut' for n in notes))
+
+
+def cut_line_missing(dcuts, ref, records):
+    """A cut the next instance counts past and the log has no line for ->
+    a message, or None. The daemon writes a cut's line before it stores
+    the cut in its state (unstored_at_kill), so no kill leaves this: a
+    line of the log was lost, or the daemon counts a cut before it says
+    so. Either is the rig's error until it is known which."""
     bounds = [r['i'] for r in records if 'instance' in r['flags']]
     for b in bounds:
         before = sum(1 for d in dcuts if d['prefix'] < b)
@@ -930,8 +991,9 @@ def lost_at_kill(dcuts, ref, records):
         last = max((r['i'] for r in records[:b] if 'flush' in r['flags']), default=None)
         if len(rbefore) == before + 1 and rbefore[-1]['prefix'] == last and after \
                 and after[0].get('local', after[0]['number']) == str(before + 2):
-            return (f'the daemon was killed between counting cut {before + 1} (group {rbefore[-1]["txg"]}) and '
-                    f'writing its line: the next instance counts on from {before + 2}')
+            return (f'the next instance counts on from {before + 2}, and the log has no line of cut {before + 1} '
+                    f'(group {rbefore[-1]["txg"]}): the daemon writes a cut\'s line before it stores the cut, so '
+                    'no kill leaves this; a line was lost, or the daemon counted the cut before it said so')
     return None
 
 
@@ -959,7 +1021,8 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     The first start of a new volume begins a cut state and an intent
     map; each later one takes both up, whether it took the device over
     or created it, and its count goes on from the cuts counted before it
-    (the status was read after the start, so it may have counted more).
+    (the status was read after the start, so it may have counted more):
+    the cuts of its state, since the start that began it.
     A later start that acknowledges a failure (begun, stage 2c) trusts
     none of the cut state and begins one, and takes the intent map up
     (`skyzfsd help`: after a failure that is acknowledged the next cut
@@ -980,7 +1043,11 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
         want_intent = 'begun' if k == 0 else 'taken_up'
         if k and (committed is None or committed > inst['ns']):
             want_intent = ('begun', 'taken_up')
-        before = 0 if begun[k] else sum(1 for d in dcuts if d['prefix'] < bounds[k - 1]['i'])
+        # The cuts of this state before it: since the start that began the
+        # state (the first, or the last that acknowledged a failure).
+        j = max(i for i in range(k + 1) if begun[i])
+        lo = bounds[j - 1]['i'] if j else -1
+        before = 0 if begun[k] else sum(1 for d in dcuts if lo < d['prefix'] < bounds[k - 1]['i'])
         bad = []
         if said != [want]:
             bad.append(f"its cuts line says {said or 'nothing'}")
@@ -1285,6 +1352,8 @@ def main():
         marks_path = os.path.join(rdir, 'marks.tsv')
         with open(marks_path) as f:
             marks = read_marks(f.read())
+        instances, unstored = unstored_at_kill(instances, acked)
+        put('obs_unstored_at_kill', 'INFO', unstored_detail(unstored))
         records, dcuts = records_of(log_lines(instances, kinds, acked), marks)
         starts = epochs(dcuts, records)
         begun = [True] + [r['begun'] for r in records if 'instance' in r['flags']]
@@ -1298,7 +1367,7 @@ def main():
             f"{len(taken)}; {sum(1 for r in records if 'mark' in r['flags'])} marks")
         ok, detail = compare(dcuts, ref)
         if not ok:
-            lost = lost_at_kill(dcuts, ref, records)
+            lost = cut_line_missing(dcuts, ref, records)
             if lost:
                 raise RigError(lost)
         cannot = [] if ok else unplaced(records, dev)
