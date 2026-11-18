@@ -1,0 +1,2 @@
+X3 a failed write of the map at a commit does not fail the volume: KILLED by 1: a_failed_write_of_the_map_at_a_commit_fails_the_volume
+git status --short: clean

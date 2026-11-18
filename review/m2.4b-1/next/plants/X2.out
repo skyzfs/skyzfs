@@ -1,0 +1,2 @@
+X2 release_cut says false where the map could not be written: KILLED by 2: a_failed_write_of_the_map_at_a_commit_fails_the_volume, after_a_power_cut_the_next_cut_holds_every_block_changed_since_the_newest_commit
+git status --short: clean

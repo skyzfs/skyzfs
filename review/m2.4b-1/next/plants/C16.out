@@ -1,0 +1,2 @@
+C16 a whole cut's map is listed from block 0 whatever block is asked: KILLED by 5: a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded, a_map_is_listed_from_any_block_over_several_words_of_summary, a_slice_of_a_cut_not_held_or_into_a_short_buffer_is_refused, a_slice_of_a_cut_reads_each_run_in_one_read
+git status --short: clean

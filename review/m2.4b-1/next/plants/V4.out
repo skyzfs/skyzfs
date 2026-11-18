@@ -1,0 +1,2 @@
+V4 a cut state of version 1 is read as version 2: KILLED by 2: a_region_of_another_version_volume_or_boot_is_refused, the_start_names_the_version_of_a_cut_state_only_where_it_is_another
+git status --short: clean

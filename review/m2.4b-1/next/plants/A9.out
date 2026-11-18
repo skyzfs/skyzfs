@@ -1,0 +1,2 @@
+A9 a start counts a cut that waits when a newer cut replaces it there (the count with a flush under way): KILLED by 3: a_death_at_any_store_leaves_every_held_cut_whole, a_death_while_a_mismatch_abandons_the_held_cuts, the_rules_of_the_bound_and_of_replacing_hold_on_fixed_programs
+git status --short: clean

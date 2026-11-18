@@ -456,3 +456,57 @@ fn review_t8_a_release_whose_map_cannot_be_written() {
         assert!(phases(&store).is_empty(), "no cut is held for the uploader's check to find");
     }
 }
+
+/// T9. The same release where the failure is not marked on the disk
+/// (the mutant that leaves the marker out stands for a daemon that
+/// dies before the marker is written, or a disk that takes no marker):
+/// the next start is not refused, takes the cut state up, and holds the
+/// cut for the uploader's check. With a death of the daemon alone
+/// (the page cache lives) and with the unsynced pages lost.
+#[test]
+fn review_t9_the_same_release_where_the_failure_is_not_marked() {
+    for pages_lost in [false, true] {
+        let disk = created(78, 0);
+        let region = region();
+        let mut store = start_on(&disk, Mutants::FAIL_UNMARKED, &region, ON_CALLER);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(store.release_cut(1));
+        write(&mut store, 6, 0x66).unwrap();
+        group(&mut store, 200, 8, 80);
+        write(&mut store, 7, 0x77).unwrap();
+        group(&mut store, 300, 9, 90);
+        let named = |store: &InPlace<SimDisk>| store.committed_cut().map(|c| (c.number, c.group));
+        disk.fail_write_of(intent::INTENT_NAME);
+        assert!(store.release_cut(2));
+        assert!(store.is_failed());
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading), (3, CutPhase::Waiting)]);
+        disk.clear_faults();
+        drop(store);
+        if pages_lost {
+            disk.kill();
+        }
+        let mut store = try_start(&disk, &region, TAKING_OVER).expect("no marker: the start serves");
+        println!(
+            "T9 (unsynced pages lost: {pages_lost}): the start that acknowledges nothing serves: cuts {:?}; intent {:?}; \
+             held {:?}; the map names {:?}",
+            store.cuts_at_start(),
+            store.intent_at_start(),
+            phases(&store),
+            named(&store)
+        );
+        assert_eq!(phases(&store), [(2, CutPhase::Uploading), (3, CutPhase::Waiting)]);
+        let released = store.release_cut(2);
+        println!(
+            "T9 (unsynced pages lost: {pages_lost}): release_cut(2) at that start says {released}; failed {}; held {:?}; \
+             the map names {:?}",
+            store.is_failed(),
+            phases(&store),
+            named(&store)
+        );
+        assert!(released);
+        assert!(!store.is_failed());
+        assert_eq!(phases(&store), [(3, CutPhase::Uploading)]);
+        assert_eq!(named(&store), Some((2, 8)));
+    }
+}

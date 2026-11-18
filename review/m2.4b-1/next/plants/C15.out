@@ -1,0 +1,2 @@
+C15 a slice takes one block more than the buffer holds: KILLED by 7: a_copy_never_follows_a_block_of_the_image, a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_failed_read_of_the_cut_being_uploaded_abandons_it, a_failed_sync_of_the_copies_abandons_the_cut_being_uploaded, a_slice_of_a_cut_reads_each_run_in_one_read, blocks_of_the_image_are_one_read_only_where_their_numbers_follow, copies_are_one_read_only_where_their_slots_follow
+git status --short: clean

@@ -1,0 +1,2 @@
+C2 a place follows any earlier place of its file (a run over a gap): KILLED by 3: a_cut_read_in_slices_holds_each_block_as_it_reads_alone, blocks_of_the_image_are_one_read_only_where_their_numbers_follow, copies_are_one_read_only_where_their_slots_follow
+git status --short: clean

@@ -31,6 +31,10 @@ as the head has it:
   T8 (a second release, the file writable again): release_cut(2) once more says true; held [(3, Uploading)]; the map in memory names Some((2, 8))
   T8 (a second release, the file writable again): the start that acknowledges nothing: the open is refused: MarkedFailed
   T8 (a second release, the file writable again): the start that acknowledges the failure: cuts Some(Begun("the start acknowledges a failure")); intent Some(TakenUp { named: 4, regions: 4 }); held []; the map names Some((2, 8))
+  test inplace::tests::cuts::review_m24b1::review_t9_the_same_release_where_the_failure_is_not_marked ... T9 (unsynced pages lost: false): the start that acknowledges nothing serves: cuts Some(TakenUp); intent Some(TakenUp { named: 4, regions: 4 }); held [(2, Uploading), (3, Waiting)]; the map names Some((1, 7))
+  T9 (unsynced pages lost: false): release_cut(2) at that start says true; failed false; held [(3, Uploading)]; the map names Some((2, 8))
+  T9 (unsynced pages lost: true): the start that acknowledges nothing serves: cuts Some(TakenUp); intent Some(TakenUp { named: 4, regions: 4 }); held [(2, Uploading), (3, Waiting)]; the map names Some((1, 7))
+  T9 (unsynced pages lost: true): release_cut(2) at that start says true; failed false; held [(3, Uploading)]; the map names Some((2, 8))
   test review_r1_old_short_and_odd_headers_of_the_cut_state ... R1: a state of this version is 1051856 bytes
   R1: version 1, two words shorter (as version 1 left it) (1051840 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
   R1: version 1, the length of version 2 (1051856 bytes): Some(Begun("the cut state is of version 1, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
@@ -45,5 +49,5 @@ as the head has it:
   R1: version 3, two words shorter (1051840 bytes): Some(Begun("the cut state is of version 3, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
   R1: version u64::MAX, two words shorter (1051840 bytes): Some(Begun("the cut state is of version 18446744073709551615, and this daemon reads version 2")); the file is 1051856 bytes; the start after: Some(TakenUp)
   R1: another magic, version 1, two words shorter (1051840 bytes): Some(Begun("the region was not there with the volume's length")); the file is 1051856 bytes; the start after: Some(TakenUp)
-  in all: 11 passed, 0 failed
+  in all: 12 passed, 0 failed
 git status --short: clean

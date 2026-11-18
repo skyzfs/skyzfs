@@ -1,0 +1,2 @@
+C13 blocks_from reads the summary from the word after the block asked's: KILLED by 7: a_copy_never_follows_a_block_of_the_image, a_cut_read_in_slices_holds_each_block_as_it_reads_alone, a_death_while_a_mismatch_abandons_the_held_cuts, a_failed_read_of_the_cut_being_uploaded_abandons_it, a_map_is_listed_from_any_block_over_several_words_of_summary, blocks_of_the_image_are_one_read_only_where_their_numbers_follow, copies_are_one_read_only_where_their_slots_follow
+git status --short: clean
