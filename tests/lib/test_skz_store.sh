@@ -130,6 +130,16 @@ is "  and that it ended" "$(skz_release_line "$T/rel.tsv" "$live" | cut -d' ' -f
 printf '1\t%s\n' "$(head -c 400 /dev/zero | tr '\0' x)" > "$T/long.tsv"
 # "skzrel 1 0 ", 300 characters and the newline
 is "  the last line is cut at 300 characters" "$(skz_release_line "$T/long.tsv" "" | wc -c)" 312
+# its blanks squeezed, none left at its ends (the review of #111, B4)
+printf '1\t2\n\t# a  line\t with blanks \t\n' > "$T/blanks.tsv"
+is "  the last line's blanks squeezed and its ends bare" "$(skz_release_line "$T/blanks.tsv" "")" \
+    "skzrel 1 0 # a line with blanks"
+# and the snapshot of a row with the releaser writes it (B5)
+snap=$(sed -n '/^snapshot() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")
+# shellcheck disable=SC2016  # the script's own text
+has "the snapshot writes the releaser's line" "$snap" 'skz_release_line "$OUT/skz-releases.tsv" "$SKZ_RELEASER"'
+# shellcheck disable=SC2016  # the script's own text
+has "  where the daemon serves and the releaser was asked for" "$snap" 'if [ -n "$SKZ_UP" ] && [ -n "$SKZ_RELEASE" ]; then'
 # skz_start, which serves each row, uses the same check and adds
 # --store in-place for a build from before M1.3t-d.
 start=$(sed -n '/^skz_start() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")

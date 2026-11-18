@@ -24,7 +24,10 @@ import cut_hold as ch  # noqa: E402
 # `release` lets the uploading cut go. A cut in REFUSE is refused at the
 # end of its write, as one abandoned under it; one in FAIL is refused as
 # for a full disk and stays held; one in STUCK has its release refused
-# and stays held.
+# and stays held; one in UNREAD is refused for the daemon's read of it
+# and stays held; one in UNREAD_RIG is refused with those words after
+# the rig's image, and stays held; one in UNREAD_GONE is
+# refused for the daemon's read of it and is gone.
 FAKE = r'''
 import os, signal, sys, time, json
 vrun = sys.argv[1]
@@ -32,6 +35,8 @@ cuts = {int(k): v for k, v in json.loads(sys.argv[2]).items()}
 refuse = set(json.loads(sys.argv[3]))
 fail = set(json.loads(sys.argv[4]))
 unread = set(json.loads(sys.argv[6])) if len(sys.argv) > 6 else set()
+unread_rig = set(json.loads(sys.argv[7])) if len(sys.argv) > 7 else set()
+unread_gone = set(json.loads(sys.argv[8])) if len(sys.argv) > 8 else set()
 stuck = set(json.loads(sys.argv[5]))
 asked = []
 signal.signal(signal.SIGUSR2, lambda *a: asked.append(1))
@@ -62,8 +67,14 @@ while not os.path.exists(os.path.join(vrun, 'stop')):
         if n in fail:
             reply(f'{token} refused: {path}: write block 0: No space left on device (os error 28)\n')
             continue
-        if n in unread:
+        if n in unread or n in unread_gone:
             reply(f'{token} refused: read block 7 of cut {n}: Input/output error (os error 5)\n')
+            if n in unread_gone:
+                del cuts[n]
+            continue
+        if n in unread_rig:
+            reply(f'{token} refused: {path}: copy after refused: read block 7 of cut {n}: Input/output error '
+                  '(os error 5)\n')
             continue
         blocks = sorted(int(b) for b in cuts[n][2])
         with open(path, 'r+b') as f:
@@ -194,11 +205,12 @@ class AgainstAFake(unittest.TestCase):
             self.proc.wait(timeout=10)
         shutil.rmtree(self.d)
 
-    def fake(self, cuts, refuse=(), fail=(), stuck=(), unread=()):
+    def fake(self, cuts, refuse=(), fail=(), stuck=(), unread=(), unread_rig=(), unread_gone=()):
         import json
         self.proc = subprocess.Popen([sys.executable, '-I', '-c', FAKE, self.vrun, json.dumps(cuts),
                                       json.dumps(list(refuse)), json.dumps(list(fail)), json.dumps(list(stuck)),
-                                      json.dumps(list(unread))])
+                                      json.dumps(list(unread)), json.dumps(list(unread_rig)),
+                                      json.dumps(list(unread_gone))])
         end = time.monotonic() + 10
         while not os.path.exists(os.path.join(self.vrun, 'ready')):
             self.assertLess(time.monotonic(), end, 'the fake did not start')
@@ -250,7 +262,28 @@ class AgainstAFake(unittest.TestCase):
         # a refusal that names the rig's image stays the rig's error
         self.assertIsNone(ch.READ_REFUSED.match('refused: /mnt/x/held.img: read block 7 of cut 1: no'))
 
-    def program(self, cuts, at_stop, **kw):
+    def test_a_read_refused_that_is_not_the_daemons_own(self):
+        """A refusal that names the rig's image first is the rig's error,
+        though the daemon's words for a refused read of its own come
+        after: only a reply that begins with them is a verdict (the plant
+        K3 of the review of #113)."""
+        holder = self.fake({'1': [5, 'itself', {'0': 1}]}, unread_rig=[1])
+        with self.assertRaisesRegex(ch.HolderError, 'cut 1 is still being uploaded after its write was refused '
+                                    r'\(refused: /'):
+            holder.step()
+
+    def test_a_read_refused_of_a_cut_that_went(self):
+        """The daemon refused to read a cut that was then no longer held
+        (abandoned under its write): gone, as any cut abandoned under its
+        write, and the holder goes on (the plant K5 of the review of
+        #113)."""
+        holder = self.fake({'1': [5, 'itself', {'0': 1}], '2': [6, 'itself', {'1': 3}]}, unread_gone=[1])
+        self.assertTrue(holder.step())
+        self.assertEqual([c['number'] for c in holder.held()], [2])
+        self.assertTrue(holder.step())
+        self.assertEqual(holder.written, [2])
+
+    def program(self, cuts, at_stop, leave=False, **kw):
         """cut_hold.py run as the rig runs it, against the fake; AT_STOP:
         the stop file exists before it starts, so a refusal comes in its
         drain and not in its loop -> (exit status, its log's lines)."""
@@ -263,6 +296,9 @@ class AgainstAFake(unittest.TestCase):
         if at_stop:
             open(stop, 'w').close()
         env = {k: v for k, v in os.environ.items() if not k.startswith('CUT_HOLD_')}
+        if leave:
+            env['CUT_HOLD_LEAVE'] = os.path.join(self.d, 'leave')
+            open(env['CUT_HOLD_LEAVE'], 'w').close()
         p = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'cut_hold.py'), self.out, str(self.proc.pid),
                             vdir, rdir, self.image, str(16 * 4096), stop, shutil.which('true') or '/bin/true'],
                            env=env, capture_output=True, timeout=60, check=False)
@@ -281,6 +317,17 @@ class AgainstAFake(unittest.TestCase):
                 self.assertIn('read block 7 of cut 1: ', [ln for ln in log if '\tVERDICT ' in ln][0])
                 self.tearDown()
                 self.setUp()
+
+    def test_the_program_ends_at_a_leave(self):
+        """A leave ends the holder with 0 and holds on to what it holds: no
+        drain, no final listing (the plant H4 of #111). The recording
+        `takeover` leaves its cuts held for the next instance."""
+        rc, log = self.program({'1': [5, 'itself', {'0': 1}]}, False, leave=True)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual([ln.split('\t', 1)[1] for ln in log if ln.split('\t', 1)[1] == 'left'], ['left'])
+        self.assertFalse([ln for ln in log if '\tdrained' in ln or ' release ' in ln or ' write ' in ln], log)
+        for name in ('held-final.txt', 'status-held.txt', 'held-image.tsv'):
+            self.assertFalse(os.path.exists(os.path.join(self.out, name)), name)
 
     def test_the_program_ends_with_2_at_the_rigs_error(self):
         for at_stop in (False, True):

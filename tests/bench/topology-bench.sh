@@ -2400,12 +2400,12 @@ fsync_test() { # the commit path with nothing else running: pg_test_fsync on the
 # The releaser's line in a snapshot: "skzrel COUNT RUNNING LAST", COUNT
 # the lines of FILE that begin with a digit (cut_release.py writes one
 # per release), RUNNING 1 while PID lives, LAST the file's last line
-# with its blanks squeezed, at most 300 characters (a row's JSON reads
-# it: `release`).
+# with its blanks squeezed and none at its ends, at most 300 characters
+# (a row's JSON reads it: `release`).
 skz_release_line() { # FILE PID
     local n last
     n=$(awk '/^[0-9]/ { n++ } END { print n + 0 }' "$1" 2>/dev/null) || n=0
-    last=$(tail -n 1 "$1" 2>/dev/null | tr -s ' \t' ' ' | cut -c1-300) || last=""
+    last=$(tail -n 1 "$1" 2>/dev/null | tr -s ' \t' ' ' | sed 's/^ //; s/ $//' | cut -c1-300) || last=""
     echo "skzrel ${n:-0} $( { [ -n "$2" ] && kill -0 "$2" 2>/dev/null; } && echo 1 || echo 0) $last"
 }
 snapshot() { # file

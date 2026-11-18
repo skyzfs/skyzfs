@@ -5,6 +5,7 @@ out as the daemon's request log would hold it, read back, and held to
 the reference."""
 import hashlib
 import os
+import re
 import sys
 import unittest
 
@@ -901,13 +902,15 @@ class Parse(unittest.TestCase):
     START = '264075526204\t10976\tstart\t1\t-\t-\t-\t64'
     NEXT = '264075546749\t10976\tcuts\t-\t-\t-\t-\ttaken_up\n'
 
-    @staticmethod
-    def filler(n):
+    FILL = '2639321'    # the filler's times, with five digits more
+
+    def filler(self, n):
         """recv lines of the first instance, n bytes in all (n >= 40), between BEGIN and RECV."""
         out, i = [], 0
         while n:
             size = n if n <= 80 else min(44, n - 40)
-            out.append(f'2639321{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * (size - 34 - len(str(i))) + '\t8\t-\n')
+            pad = size - 27 - len(self.FILL) - len(str(i))
+            out.append(f'{self.FILL}{i:05d}\t9937\trecv\t{i}\tread\t' + '1' * pad + '\t8\t-\n')
             n, i = n - size, i + 1
         return ''.join(out)
 
@@ -920,6 +923,41 @@ class Parse(unittest.TestCase):
         head = self.BEGIN + self.filler(fill + (cdc.PAGE if fill < 40 else 0) + off) + self.RECV
         return (head + lost + (self.START if start is None else start) + '\n'
                 + (self.NEXT if after is None else after)), head.count('\n') + 1
+
+    def retimed(self, f):
+        """This case with each time t of its lines, and of LABEL, made f(t)."""
+        import copy
+        o = copy.copy(self)
+        for a in ('LABEL', 'BEGIN', 'RECV', 'START', 'NEXT'):
+            setattr(o, a, re.sub(r'^\d+', lambda m: f(m.group(0)), getattr(self, a)))
+        o.FILL = f(self.FILL + '00000')[:-5]
+        return o
+
+    def test_a_time_of_more_than_20_digits(self):
+        """No u64 of nanoseconds has more than 20 digits: such a time is
+        the rig's error and not int()'s, whole or after a start line."""
+        begin = f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+        for digits in (21, 5000):
+            with self.subTest(digits=digits):
+                with self.assertRaisesRegex(RigError, f'line 2: a time of {digits} digits'):
+                    cdc.parse_log(begin + '9' * digits + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
+        cdc.parse_log(begin + '9' * 20 + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
+
+    def test_a_tear_on_a_page_of_4_kib(self):
+        """A start line at byte 4096, 8192 or 12288 of the file after a
+        line cut short is a tear: the page is 4 KiB, written here as a
+        number (the review of #115, G1: the fixtures above take the page
+        from cdc.PAGE and move with it)."""
+        lost = '263932738825\t9937\tlab'
+        for at in (4096, 8192, 12288):
+            with self.subTest(at=at):
+                text = (self.BEGIN + self.filler(at - len(self.BEGIN) - len(self.RECV) - len(lost)) + self.RECV
+                        + lost + self.START + '\n' + self.NEXT)
+                self.assertEqual(text.index(self.START), at)
+                torn = []
+                inst = cdc.parse_log(text, torn)
+                self.assertEqual([i['pid'] for i in inst], ['9937', '10976'])
+                self.assertEqual([x['bytes'] for x in torn], [len(lost)])
 
     def test_a_label_line_torn_by_a_kill(self):
         self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
@@ -955,15 +993,20 @@ class Parse(unittest.TestCase):
             'a line of digits over three pages': ('263932738825\t9937\tlabel\t25\twrite\t1047960\t8\t' + '1' * 9000,
                                                   '263932738825\t9937\tlabel\t25\twrite\t1047960\t8'),
         }
-        for why, (lost, head) in cases.items():
-            with self.subTest(why):
-                text, n = self.torn(lost)
+        # and the same after 1000 s of uptime, times of 13 digits (the
+        # review of #113's next look, B8)
+        later = self.retimed(lambda t: '1' + t)
+        for (why, (lost, head)), (o, d) in [(c, (self, '')) for c in cases.items()] + \
+                [(c, (later, '1')) for c in cases.items()]:
+            with self.subTest(why, digits=12 + len(d)):
+                lost, head = d + lost, d + head
+                text, n = o.torn(lost)
                 torn = []
                 inst = cdc.parse_log(text, torn)
                 self.assertEqual(torn, [{'line': n, 'pid': '9937', 'next': '10976', 'bytes': len(lost),
                                          'head': '\t'.join(head.split('\t')[:7])}])
-                self.assertEqual((inst[1]['ns'], inst[1]['line']), (264075526204, n))
-                self.assertEqual(inst[0]['lines'][-1]['ns'], 263932700000)
+                self.assertEqual((inst[1]['ns'], inst[1]['line']), (int(d + '264075526204'), n))
+                self.assertEqual(inst[0]['lines'][-1]['ns'], int(d + '263932700000'))
         # Off the page, a tear inside the time is a start line with a time
         # some digits too long, later than the line after it: the rig's error.
         for off in (1, -1):
@@ -1004,16 +1047,34 @@ class Parse(unittest.TestCase):
             'the torn line before the last whole line': self.torn(cut.replace('263932738825', '263932600000', 1)),
             'the start at the end of the log': self.torn(cut, after=''),
             'the start not on a page': self.torn(cut, off=1),
+            # half a page off: a page of 2048 bytes would take it (the
+            # review of #113's next look, P3)
+            'the start half a page off': self.torn(cut, off=2048),
             'the start a page late': self.torn(cut[:-1] + 'x', off=-1),
             'another pid torn': self.torn(cut.replace('\t9937\t', '\t9999\t', 1)),
             'a pid that is not the last instance\'s, cut': self.torn('263932738825\t98'),
             'a whole pid that begins the last instance\'s': self.torn('263932738825\t99\tlabel\t25\twrite\t1047960\t8\t'),
             'the torn line\'s daemon writes after it': self.torn(cut, after=self.NEXT
                                                                  + '264075546750\t9937\trecv\t26\twrite\t0\t8\t-\n'),
+            # what is left of the time has more digits than the next
+            # line's (the review of #113's next look, B3)
+            'a cut time longer than the next line\'s': self.torn('2639327388251'),
+            # a start with a leading zero, the next line's time a digit
+            # longer than the start's (P6): at 999.99 s and 1000.0 s
+            'a start with a leading zero': self.retimed(
+                lambda t: {'263932738825': '999980000000', '263932000000': '999900000000',
+                           '263932700000': '999970000000', '264075526204': '0999990000000',
+                           '264075546749': '1000000000000', '263932100000': '999932100000'}[t]).torn(
+                self.LABEL[:8012].replace('263932738825', '999980000000', 1)),
+            # a next line with a time no daemon writes (B7): before
+            # parse_log reaches it, torn_line must not int() it
+            'a next line of 5000 digits': self.torn(cut, after='9' * 5000 + self.NEXT[12:]),
+            'a next line of 21 digits': self.torn(cut, after='9' * 21 + self.NEXT[12:]),
         }
         for why, (text, n) in bad.items():
             with self.subTest(why):
-                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 2}: pid 9937 writes after'):
+                with self.assertRaisesRegex(RigError, f'line {n}: |line {n + 1}: a time of |'
+                                            f'line {n + 2}: pid 9937 writes after'):
                     cdc.parse_log(text, [])
         # A tear that left eight columns and a newline parses as a line,
         # and its label is short of its sectors.
@@ -1030,16 +1091,28 @@ class Parse(unittest.TestCase):
 PID2 = '4343'
 
 
-def split_log(text, k, lose_line=False):
-    """The log of one instance as two: the daemon killed after its k-th cut's
-    flush was received (the next instance is handed the flush again), or,
-    with lose_line, after that flush's barrier and before its cut line was
-    written. The next instance takes the state up and counts on."""
+def split_log(text, k, lose_line=False, shape=None):
+    """The log of one instance as two, the daemon killed at its k-th cut's
+    flush; the next instance takes the state up and counts on. Where:
+    - shape None: after the flush was received; the next instance is
+      handed the flush again and cuts it;
+    - 'A' (lose_line): after the barrier, the cut line lost and the cut
+      counted, so that the next instance counts on past it, which no kill
+      leaves (cut_line_missing);
+    - 'B': after the barrier line, before the cut line; the cut was not
+      stored, and the next instance is handed the flush again and cuts it
+      with the same number (unstored_at_kill);
+    - 'C': after the cut line, before the state stored the cut: the same;
+    - 'stored': after the state stored the cut, before the flush's answer:
+      the next instance is handed the flush again and cuts nothing at it."""
+    shape = 'A' if lose_line else shape
     lines = text.splitlines()
     ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
     assert [lines[ci - 2].split('\t')[2], lines[ci - 1].split('\t')[2]] == ['recv', 'barrier']
-    first = lines[:ci] if lose_line else lines[:ci - 1]
-    rest = lines[ci + 1:] if lose_line else lines[ci - 2:]
+    first = {None: lines[:ci - 1], 'A': lines[:ci], 'B': lines[:ci], 'C': lines[:ci + 1],
+             'stored': lines[:ci + 1]}[shape]
+    rest = {'A': lines[ci + 1:], 'stored': lines[ci - 2:ci] + lines[ci + 1:]}.get(shape, lines[ci - 2:])
+    again = {None: 1, 'A': 1, 'B': 3, 'C': 3, 'stored': 2}[shape]
     ns = int(first[-1].split('\t')[0])
 
     def moved(ln, at=None):
@@ -1049,15 +1122,18 @@ def split_log(text, k, lose_line=False):
             f[0] = str(at)
         return '\t'.join(f)
     second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up']
-    second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
+    second += [moved(ln, ns + 3 + j) for j, ln in enumerate(rest[:again])] + [moved(ln) for ln in rest[again:]]
     return '\n'.join(first + second) + '\n'
 
 
-def split_begun(text, k):
+def split_begun(text, k, pid=PID2, minus=None):
     """The log of one instance as two, the second begun after the k-th
     cut's line as a start that acknowledged a failure does (stage 2c): no
     flush of the first under way, and the second's cut lines count from 1
-    again. -> (text, the second's start ns)."""
+    again. -> (text, the second's start ns). pid: the second's; minus:
+    what its cut lines' numbers lose (k), where the first's state began
+    at another cut than the log's first."""
+    minus = k if minus is None else minus
     lines = text.splitlines()
     ci = [i for i, ln in enumerate(lines) if ln.split('\t')[2] == 'cut'][k - 1]
     first, rest = lines[:ci + 1], lines[ci + 1:]
@@ -1065,13 +1141,13 @@ def split_begun(text, k):
 
     def moved(ln, at=None):
         f = ln.split('\t')
-        f[1] = PID2
+        f[1] = pid
         if at is not None:
             f[0] = str(at)
         if f[2] == 'cut':
-            f[6] = str(int(f[6]) - k)
+            f[6] = str(int(f[6]) - minus)
         return '\t'.join(f)
-    second = [f'{ns + 1}\t{PID2}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{PID2}\tcuts\t-\t-\t-\t-\tbegun']
+    second = [f'{ns + 1}\t{pid}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{pid}\tcuts\t-\t-\t-\t-\tbegun']
     second += [moved(rest[0], ns + 3)] + [moved(ln) for ln in rest[1:]]
     return '\n'.join(first + second) + '\n', ns + 1
 
@@ -1161,9 +1237,11 @@ class AcknowledgedFailure(unittest.TestCase):
         text, _ = split_begun(self.text, self.k)
         inst, recs, dcuts, _, _ = self.judge(text)
         begun = [True, True]
-        good = 'cuts 0\ncut_state begun\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
         for second, want in ((good, 0), (good.replace('cut_state begun', 'cut_state taken_up'), 1),
-                             (good.replace('intent_state taken_up', 'intent_state begun'), 1)):
+                             (good.replace('intent_state taken_up', 'intent_state begun'), 1),
+                             (good.replace('cuts_held 0', 'cuts_held 2'), 1),
+                             (good.replace('cuts_held 0\n', ''), 1)):
             d = tempfile.mkdtemp(prefix='cdc-ack-')
             try:
                 for k, st in enumerate((START_STATUS, second)):
@@ -1177,6 +1255,54 @@ class AcknowledgedFailure(unittest.TestCase):
                 self.assertIn('acknowledging a failure', got[1][2])
             finally:
                 shutil.rmtree(d)
+
+    def test_a_third_instance_takes_the_new_state_up(self):
+        """A take-over after the acknowledged start, past the new state's
+        cut 2: its count at the start is the new state's, and the status
+        after it counts the new state's cuts (the review of #113, G1)."""
+        import shutil
+        import tempfile
+        text, _ = split_begun(self.text, self.k)
+        lines = text.splitlines()
+        ci = [i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [PID2, 'cut']][1]
+        ns = int(lines[ci].split('\t')[0])
+        pid3 = '4444'
+        third = [f'{ns + 1}\t{pid3}\tstart\t0\t-\t-\t-\t64', f'{ns + 2}\t{pid3}\tcuts\t-\t-\t-\t-\ttaken_up']
+        third += ['\t'.join([f[0], pid3] + f[2:]) for f in (ln.split('\t') for ln in lines[ci + 1:])]
+        inst = cdc.parse_log('\n'.join(lines[:ci + 1] + third) + '\n')
+        recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: False, pid3: True}, {PID2}),
+                                     cdc.read_marks(self.marks))
+        starts = cdc.epochs(dcuts, recs)
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        begun = [True, True, False]
+        good = 'cuts 0\ncut_state begun\ncuts_held 0\nintent_state taken_up\nintent_regions 128\nintent_named_at_start 3\n'
+        for third_status, want in (('cuts 2\ncut_state taken_up\nintent_state taken_up\n', 0),
+                                   ('cuts 1\ncut_state taken_up\nintent_state taken_up\n', 1)):
+            d = tempfile.mkdtemp(prefix='cdc-ack-')
+            try:
+                for k, st in enumerate((START_STATUS, good, third_status)):
+                    with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                        f.write(st)
+                with open(os.path.join(d, 'holder.log'), 'w') as f:
+                    f.write(COMMITTED)
+                got = []
+                rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, inst, dcuts, recs, begun)
+                self.assertEqual(rc, want, got)
+                self.assertIn('cuts 2 at the start, 2 counted before it' if want == 0 else
+                              "cuts '1' at the start, with 2 counted before it", got[2][2])
+            finally:
+                shutil.rmtree(d)
+        # The status after it counts the new state's cuts: since the
+        # acknowledged start, whichever instance counted them.
+        rread = cdc.read_of(recs, self.dev)
+        rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+        ref = cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev, rcs))
+        self.assertTrue(cdc.compare(dcuts, ref)[0])
+        last = ref[-1]
+        st = {'cuts': str(len(self.cs) - self.k), 'cut_group': str(last['txg']),
+              'cut_opens': 'itself' if last['itself'] else 'rewind'}
+        self.assertTrue(cdc.status_verdict(st, ref, since=starts[-1]['i'])[0], cdc.status_verdict(st, ref,
+                                                                                                    since=starts[-1]['i']))
 
     def test_kinds_with_the_acknowledgement(self):
         text = f'{PID}\tadded\n{PID2}\tadded\tacknowledged\n'
@@ -1193,6 +1319,19 @@ class FirstCommit(unittest.TestCase):
         self.assertIsNone(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: not uploading\n'))
         self.assertEqual(cdc.first_commit('1\t> t2 release 1\n2\t< t2 refused: x\n3\t> t3 release 2\n'
                                           '4\tleft\n5\t< t3 ok (0 lines)\n'), 5)
+
+    def test_the_first_of_several_and_only_a_release(self):
+        """The plants F4-F6 of the second look at #111: the first release
+        answered, not the last; a write's `ok` is no commit (every real log
+        has one before its release); a line that is not a time and a text
+        is passed over, not the end of the reading."""
+        two = '1\t> t2 release 1\n2\t< t2 ok (0 lines)\n9\t> t3 release 2\n10\t< t3 ok (0 lines)\n'
+        self.assertEqual(cdc.first_commit(two), 2)
+        write = '1\t> t1 write 1 /img\n2\t< t1 ok (0 lines)\n3\t> t2 release 1\n4\t< t2 ok (0 lines)\n'
+        self.assertEqual(cdc.first_commit(write), 4)
+        self.assertIsNone(cdc.first_commit('1\t> t1 write 1 /img\n2\t< t1 ok (0 lines)\n'))
+        self.assertEqual(cdc.first_commit('a line torn\n1\t> t2 release 1\n2\t< t2 ok (0 lines)\n'), 2)
+        self.assertEqual(cdc.first_commit('1\tx\ty\n1\t> t2 release 1\n2\t< t2 ok (0 lines)\n'), 2)
 
 
 class FailureLine(unittest.TestCase):
@@ -1233,7 +1372,7 @@ class TwoInstances(unittest.TestCase):
         self.k = len(self.cs) // 2
 
     def judge(self, text, taken_over=True):
-        inst = cdc.parse_log(text)
+        inst, self.unstored = cdc.unstored_at_kill(cdc.parse_log(text))
         lines = cdc.log_lines(inst, {PID2: taken_over})
         recs, dcuts = cdc.records_of(lines, cdc.read_marks(self.marks))
         rread = cdc.read_of(recs, self.dev)
@@ -1275,10 +1414,95 @@ class TwoInstances(unittest.TestCase):
         _, recs, dcuts, ref = self.judge(split_log(self.text, self.k, lose_line=True))
         self.assertFalse(cdc.compare(dcuts, ref)[0])
         self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'FAIL')
-        self.assertIn(f'counting cut {self.k}', cdc.lost_at_kill(dcuts, ref, recs))
+        self.assertIn(f'no line of cut {self.k}', cdc.cut_line_missing(dcuts, ref, recs))
         # a daemon that skips a number with no cut lost is not excused
         _, recs, dcuts, ref = self.judge(split_log(self.text, self.k))
-        self.assertIsNone(cdc.lost_at_kill(dcuts[:self.k - 1] + dcuts[self.k:], ref, recs))
+        self.assertIsNone(cdc.cut_line_missing(dcuts[:self.k - 1] + dcuts[self.k:], ref, recs))
+
+    def test_a_missing_cut_line_by_hand(self):
+        """cut_line_missing names one missing line, of the cut at the last
+        barrier before the kill, where the next instance counts past it;
+        anything else is a verdict for compare (the plants K3 and K4 of
+        the review of #111)."""
+        flush = lambda i: {'i': i, 'flags': ['flush']}    # noqa: E731
+        records = [flush(0), flush(1), {'i': 2, 'flags': []}, flush(3), {'i': 4, 'flags': []},
+                   {'i': 5, 'flags': ['instance']}, flush(6), flush(7)]
+        after = [{'prefix': 7, 'number': '3'}]
+        ref = [{'prefix': 1, 'txg': 5}, {'prefix': 3, 'txg': 6}, {'prefix': 7, 'txg': 7}]
+        got = cdc.cut_line_missing([{'prefix': 1, 'number': '1'}] + after, ref, records)
+        self.assertIn('no line of cut 2 (group 6)', got)
+        # the next instance counts on from the cut whose line is there
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 1, 'number': '1'}, {'prefix': 7, 'number': '2'}], ref,
+                                               records))
+        # the reference's cut the daemon has no line of is not at the last
+        # barrier before the kill
+        ref2 = [{'prefix': 0, 'txg': 4}, {'prefix': 1, 'txg': 5}, {'prefix': 7, 'txg': 7}]
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 0, 'number': '1'}] + after, ref2, records))
+        # two cuts with no line
+        ref3 = [{'prefix': 0, 'txg': 4}, {'prefix': 1, 'txg': 5}, {'prefix': 3, 'txg': 6}, {'prefix': 7, 'txg': 7}]
+        self.assertIsNone(cdc.cut_line_missing([{'prefix': 0, 'number': '1'}] + after, ref3, records))
+
+    def test_a_kill_before_the_state_stored_the_cut(self):
+        """Killed after the barrier line (window B), or after the cut line
+        (C), before the state stored the cut: the next instance is handed
+        the flush again and cuts it with the same number at the same group.
+        The flush is one with no barrier, the first cut line none, and the
+        daemon is right (the review of #111, D1)."""
+        for shape in ('B', 'C'):
+            with self.subTest(shape):
+                inst, recs, dcuts, ref = self.judge(split_log(self.text, self.k, shape=shape))
+                self.assertEqual([n['shape'] for n in self.unstored], [shape])
+                ok, detail = cdc.compare(dcuts, ref)
+                self.assertTrue(ok, detail)
+                self.assertEqual(len(dcuts), len(self.cs))
+                self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+                b = next(r['i'] for r in recs if 'instance' in r['flags'])
+                self.assertGreater(ref[self.k - 1]['prefix'], b)
+                self.assertIn('1 flushes killed after their barrier and before their answer', cdc.unstored_detail(self.unstored))
+                # As the log stood, a verdict against the right daemon.
+                inst = cdc.parse_log(split_log(self.text, self.k, shape=shape))
+                recs, dcuts = cdc.records_of(cdc.log_lines(inst, {PID2: True}), cdc.read_marks(self.marks))
+                rread = cdc.read_of(recs, self.dev)
+                rcs, _ = cut_ref.cuts(recs, cut_ref.scan(recs, rread, self.dev))
+                self.assertFalse(cdc.compare(dcuts, cdc.reference(rcs, cut_ref.opens(recs, rread, self.dev,
+                                                                                       rcs)))[0])
+
+    def test_a_kill_after_the_state_stored_the_cut(self):
+        """Killed after the state stored cut k and before the flush's
+        answer: the next instance is handed the flush again and cuts
+        nothing there; its next cut is k + 1. The cut line stands."""
+        inst, recs, dcuts, ref = self.judge(split_log(self.text, self.k, shape='stored'))
+        self.assertEqual(self.unstored, [])
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertTrue(ok, detail)
+        self.assertEqual(cdc.numbers_verdict(dcuts)[0], 'PASS')
+        b = next(r['i'] for r in recs if 'instance' in r['flags'])
+        self.assertLess(dcuts[self.k - 1]['prefix'], b)
+
+    def test_a_cut_line_that_is_not_cut_again(self):
+        """The barrier and cut line of window C kept where the next
+        instance does not cut the same number at the same group, and
+        window B's barrier kept where the next instance counts on past one
+        more, for the errors and verdicts after."""
+        def first_cut(text, f):
+            lines = text.splitlines()
+            j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [PID2, 'cut'])
+            c = lines[j].split('\t')
+            lines[j] = '\t'.join(f(c))
+            return '\n'.join(lines) + '\n'
+        for why, f in (('another group', lambda c: c[:7] + [str(int(c[7]) + 1)]),
+                       ('another number', lambda c: c[:6] + [str(int(c[6]) + 1)] + c[7:])):
+            with self.subTest(why):
+                self.judge(first_cut(split_log(self.text, self.k, shape='C'), f))
+                self.assertEqual(self.unstored, [])
+        self.judge(split_log(self.text, self.k, shape='A'))
+        self.assertEqual(self.unstored, [])
+        # A start that acknowledged a failure counts from 1: its first cut
+        # says nothing of the cut before it.
+        inst = cdc.parse_log(split_log(self.text, self.k, shape='C'))
+        self.assertEqual(cdc.unstored_at_kill(inst, {PID2})[1], [])
+        self.assertEqual([n['shape'] for n in cdc.unstored_at_kill(
+            cdc.parse_log(split_log(self.text, self.k, shape='B')), {PID2})[1]], ['B'])
 
     def test_what_the_first_instance_did_not_finish(self):
         """A write received and not applied, and a write-zeroes behind a
@@ -1295,6 +1519,50 @@ class TwoInstances(unittest.TestCase):
         recs, _ = cdc.records_of(cdc.log_lines(cdc.parse_log(text), {PID2: True}), [])
         kinds = [('instance' if 'instance' in r['flags'] else r['flags'][0] if r['flags'] else 'write') for r in recs]
         self.assertEqual(kinds, ['receipt', 'instance', 'write', 'receipt', 'flush', 'discard'])
+
+    def test_nothing_of_the_first_instance_carries_over(self):
+        """What the first instance received and did not finish is not the
+        next one's: a flush with no barrier holds back none of its
+        requests, a write with no `applied` line is none of its writes,
+        and its last barrier is no barrier of its cut lines (the plants
+        C2 to C4 of the review of #111)."""
+        z = cdc.ZERO
+        first = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n'
+                 f'3\t{PID}\trecv\t4\tflush\t0\t0\t-\n4\t{PID}\tbarrier\t4\tflush\t-\t-\t-\n'
+                 f'5\t{PID}\tcut\t4\tflush\titself\t1\t5\n'
+                 f'6\t{PID}\trecv\t1\twrite\t8\t8\t-\n7\t{PID}\trecv\t2\tflush\t0\t0\t-\n'
+                 f'10\t{PID2}\tstart\t0\t-\t-\t-\t64\n11\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up\n')
+
+        def records(rest):
+            return cdc.records_of(cdc.log_lines(cdc.parse_log(first + rest), {PID2: True}), [])[0]
+
+        def kinds(recs):
+            return [('instance' if 'instance' in r['flags'] else r['flags'][0] if r['flags'] else 'write')
+                    for r in recs]
+        # a write-zeroes the next instance receives with no flush of its
+        # own waiting is placed at its receipt, not behind the old flush
+        recs = records(f'12\t{PID2}\trecv\t13\twrite_zeroes\t8\t8\t-\n'
+                       f'13\t{PID2}\trecv\t11\twrite\t32\t8\t-\n14\t{PID2}\tapplied\t11\twrite\t-\t-\t-\t{z}\n')
+        self.assertEqual(kinds(recs), ['receipt', 'flush', 'receipt', 'instance', 'discard', 'write'])
+        # ... and over the old instance's write, which is not pending
+        self.assertEqual(recs[4]['ambiguous'], set())
+        # the old instance's write is applied by none of the next's lines
+        with self.assertRaisesRegex(RigError, 'line 10: write 1 applied with no recv before it'):
+            records(f'12\t{PID2}\tapplied\t1\twrite\t-\t-\t-\t{z}\n')
+        # nor does the old instance's barrier stand before the next's cut
+        with self.assertRaisesRegex(RigError, 'line 10: a cut that does not follow its own barrier'):
+            records(f'12\t{PID2}\tcut\t4\tflush\titself\t2\t5\n')
+
+    def test_instances_do_not_interleave(self):
+        """A serve begins once the one before has ended: a line of the
+        first instance after the second's start is the rig's error (the
+        plant C9 of the review of #111)."""
+        text = (f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n2\t{PID}\tcuts\t-\t-\t-\t-\tbegun\n'
+                f'3\t{PID2}\tstart\t0\t-\t-\t-\t64\n4\t{PID}\trecv\t2\tflush\t0\t0\t-\n'
+                f'5\t{PID2}\tcuts\t-\t-\t-\t-\ttaken_up\n')
+        with self.assertRaisesRegex(RigError, f'line 3: pid {PID2} started before pid {PID}\'s last line '
+                                    '\\(line 4\\)'):
+            cdc.log_lines(cdc.parse_log(text), {PID2: True})
 
     def test_the_log_must_say_which_took_over(self):
         text = split_log(self.text, self.k)
@@ -1343,6 +1611,60 @@ class TwoInstances(unittest.TestCase):
             finally:
                 shutil.rmtree(d)
 
+    def test_instance_lines_and_the_commit(self):
+        """The plants L3, L4, L6, L7, L9, L10 and L13 of the second look at
+        #111: what a start's intent map may say, by where the first commit
+        falls (the holder's log, on the request log's clock)."""
+        import copy
+        import shutil
+        import tempfile
+        inst, recs, dcuts, _ = self.judge(split_log(self.text, self.k))
+        inst[0]['lines'].insert(0, {'event': 'cuts', 'result': 'begun'})
+        t0, t1 = inst[0]['ns'], inst[1]['ns']
+        second = (f'cuts {self.k - 1}\ncut_state taken_up\nintent_state taken_up\nintent_regions 128\n'
+                  'intent_named_at_start 3\n')
+        begun_map = second.replace('intent_state taken_up', 'intent_state begun')
+        between = f'1\t> t1 release 1\n{(t0 + t1) // 2}\t< t1 ok (0 lines)\n'   # after the first start
+        late = f'1\t> t1 release 1\n{t1 + 1}\t< t1 ok (0 lines)\n'               # after the second
+        none = '1\t> t1 held\n2\t< t1 ok (1 lines)\n'                             # no release at all
+        first_taken = START_STATUS.replace('intent_state begun', 'intent_state taken_up')
+        cuts_begun = copy.deepcopy(inst)
+        for ln in cuts_begun[1]['lines']:
+            if ln['event'] == 'cuts':
+                ln['result'] = 'begun'
+        self.assertIn('cuts', [ln['event'] for ln in inst[1]['lines']])
+        cases = (
+            # L6, L7: a commit between the two starts; the second must take the map up
+            ('between, a begun map', inst, (START_STATUS, begun_map), between, 1),
+            ('between, taken up', inst, (START_STATUS, second), between, 0),
+            # L4: with no release at all, the map may be begun anew
+            ('no release, a begun map', inst, (START_STATUS, begun_map), none, 0),
+            # L9: where the map takes either, the cuts line still says taken_up
+            ('late, the cuts line begun', cuts_begun, (START_STATUS, second), late, 1),
+            # L10: where the map takes either, it must say one of the two
+            ('late, the map off', inst, (START_STATUS, second.replace('taken_up\nintent_regions',
+                                                                       'off\nintent_regions')), late, 1),
+            ('late, the map not said', inst, (START_STATUS, second.replace('intent_state taken_up\n', '')),
+             late, 1),
+            # L3, L13: the first start's map is begun, whenever the commit
+            ('late, the first start takes the map up', inst, (first_taken, second), late, 1),
+            ('committed, the first start takes the map up', inst, (first_taken, second), COMMITTED, 1),
+        )
+        for name, ins, starts, log, want in cases:
+            with self.subTest(name):
+                d = tempfile.mkdtemp(prefix='cdc-inst-')
+                try:
+                    for k, st in enumerate(starts):
+                        with open(os.path.join(d, f'status-start-{k + 1}.txt'), 'w') as f:
+                            f.write(st)
+                    with open(os.path.join(d, 'holder.log'), 'w') as f:
+                        f.write(log)
+                    got = []
+                    rc = cdc.instance_lines(lambda k, v, t: got.append((k, v, t)), d, ins, dcuts, recs)
+                    self.assertEqual(rc, want, got)
+                finally:
+                    shutil.rmtree(d)
+
 
 class NoFlush(unittest.TestCase):
     def test_groups_synced_with_no_flush_and_not_cut(self):
@@ -1353,6 +1675,12 @@ class NoFlush(unittest.TestCase):
         self.assertEqual((ks, left), ({1: [6, 8, 9]}, [7]))
         with self.assertRaises(RigError):
             cdc.noflush_kstats({}, recs[:2], taken, [])
+        # a group not cut after the span is not one of them (the plants N2
+        # and N3 of the review of #111)
+        recs.append({'i': 5, 'flags': []})
+        ks, left = cdc.noflush_kstats({1: [6, 7, 8, 9, 10]}, recs, taken + [{'record': 5, 'txg': 10}],
+                                      [{'txg': 8}, {'txg': 9}])
+        self.assertEqual((ks, left), ({1: [6, 8, 9, 10]}, [7]))
 
 
 class Status(unittest.TestCase):
@@ -1370,6 +1698,17 @@ class Status(unittest.TestCase):
 
     def test_no_cut(self):
         self.assertTrue(cdc.status_verdict(cdc.read_status('cuts 0\n'), [])[0])
+
+    def test_the_cuts_since_a_new_state(self):
+        """Since a start that began a state, the count is of the reference's
+        cuts after it, not before (the plant S3 of the review of #113)."""
+        ref = self.REF + [{'txg': 11, 'itself': False, 'prefix': 9}]
+        self.assertTrue(cdc.status_verdict(cdc.read_status('cuts 2\ncut_group 11\ncut_opens rewind\n'), ref,
+                                           since=5)[0])
+        self.assertFalse(cdc.status_verdict(cdc.read_status('cuts 1\ncut_group 11\ncut_opens rewind\n'), ref,
+                                            since=5)[0])
+        self.assertFalse(cdc.status_verdict(cdc.read_status('cuts 3\ncut_group 11\ncut_opens rewind\n'), ref,
+                                            since=5)[0])
 
     def test_a_status_written_before_the_last_cut(self):
         """Run 43675273810: the status read at once after the export was
@@ -1412,6 +1751,83 @@ class Numbers(unittest.TestCase):
         self.assertEqual(cdc.numbers_verdict([])[0], 'INFO')
         for wrong in (('1', '3'), ('2', '3'), ('1', '1'), ('1', '-')):
             self.assertEqual(cdc.numbers_verdict(self.cuts(*wrong))[0], 'FAIL', wrong)
+
+    def test_every_line_of_a_new_state(self):
+        """A new state's lines after its first are held to its count too
+        (the plant N5 of the review of #113)."""
+        def states(*nums):
+            return [{'number': str(k + 1), 'local': n, 'epoch': e, 'line': k + 10}
+                    for k, (e, n) in enumerate(nums)]
+        self.assertEqual(cdc.numbers_verdict(states((0, '1'), (0, '2'), (1, '1'), (1, '2'), (1, '3')))[0], 'PASS')
+        verdict, detail = cdc.numbers_verdict(states((0, '1'), (0, '2'), (1, '1'), (1, '3')))
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn("cut line 4 (request log line 13) carries the number '3'", detail)
+
+
+class AcrossStarts(unittest.TestCase):
+    """held_across_start and across_failure on a few records made by hand."""
+
+    A, B, C = 'a' * 16, 'b' * 16, 'c' * 16
+
+    def records(self, hashes=True):
+        def wr(i, ns, block, h, n=1):
+            r = {'i': i, 'ns': ns, 'flags': [], 'pos': 0, 'offset': block * 4096, 'bytes': n * 4096}
+            if hashes:
+                r['hashes'] = h
+            return r
+        # a record `instance` marks each start after the first
+        return [{'i': 0, 'ns': 0, 'flags': [], 'op': 'flush'},
+                wr(1, 10, 1, [self.A]),
+                wr(2, 20, 1, [self.B]),            # after cut 1's instant (prefix 1): changes block 1
+                wr(3, 30, 2, [self.A, None], 2),   # block 2 as the cut holds it; block 3 in part
+                {'i': 4, 'ns': 40, 'flags': ['instance']},
+                wr(5, 50, 4, [self.C])]            # after the next start: not the copies' doing
+
+    def test_held_across_start(self):
+        recs = self.records()
+        dcuts = [{'number': '1', 'prefix': 1}, {'number': '2', 'prefix': 3}, {'number': '-', 'prefix': 3}]
+        blocks = {1: {1: self.A, 2: self.A, 3: self.A, 4: self.A}, 2: {1: self.B}}
+        # cut 1 written after the second start, cut 2 before it
+        written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 35}]
+        # block 1 differs; block 2 is as the cut holds it; block 3, written
+        # in part, is not known
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 1)])
+        # both after: cut 2 (counted after block 1's write) has nothing changed
+        written = [{'number': 1, 'asked': 45}, {'number': 2, 'asked': 46}]
+        self.assertEqual(cdc.held_across_start(recs, dcuts, written, blocks), [(1, 1, 2, 1), (2, 1, 2, 0)])
+        # a log with no hashes: nothing is known to differ
+        self.assertEqual(cdc.held_across_start(self.records(hashes=False), dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # a block written back to the cut's content before the next start
+        # is read from the home, not from a copy (Codex on #115)
+        back = recs[:4] + [{'i': 4, 'ns': 35, 'flags': [], 'pos': 0, 'offset': 4096, 'bytes': 4096,
+                            'hashes': [self.A]}] + [dict(r, i=r['i'] + 1) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(back, dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # ... and one a write-zeroes touched last is not known
+        zeroed = recs[:4] + [{'i': 4, 'ns': 35, 'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096,
+                              'bytes': 4096}] + [dict(r, i=r['i'] + 1) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(zeroed, dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # a cut counted by the second instance is no cut held across it
+        dcuts = [{'number': '1', 'prefix': 5}]
+        self.assertEqual(cdc.held_across_start(recs, dcuts, [{'number': 1, 'asked': 60}], blocks), [])
+        # a written cut with no cut line is passed over
+        self.assertEqual(cdc.held_across_start(recs, [], [{'number': 1, 'asked': 60}], blocks), [])
+
+    def test_across_failure(self):
+        Z = cdc.ZERO
+        dcuts = [{'number': '1', 'epoch': 0}, {'number': '2', 'epoch': 0}, {'number': '3', 'epoch': 1},
+                 {'number': '4', 'epoch': 1}]
+        blocks = {1: {1: self.A, 2: self.A}, 2: {2: self.B}, 3: {1: self.A, 2: self.B, 3: Z, 4: self.C},
+                  4: {1: self.C}}
+        written = [{'number': n} for n in (1, 2, 3, 4)]
+        # block 3 reads zeros in the old image; block 4 differs
+        self.assertEqual(cdc.across_failure(dcuts, written, blocks), (3, 4, 1))
+        # the first written of the new state, not the first counted
+        self.assertEqual(cdc.across_failure(dcuts, [w for w in written if w['number'] != 3], blocks), (4, 1, 1))
+        # an old cut not written is not in the image
+        self.assertEqual(cdc.across_failure(dcuts, [w for w in written if w['number'] != 2], blocks), (3, 4, 2))
+        # nothing of the new state written
+        self.assertIsNone(cdc.across_failure(dcuts, written[:2], blocks))
+        self.assertIsNone(cdc.across_failure(dcuts, [], blocks))
 
 
 class Expected(unittest.TestCase):

@@ -334,6 +334,14 @@ class Instances(unittest.TestCase):
         steps[3] = ('over',)
         self.assertEqual(self.run_on(steps), [(5, 2)])
 
+    def test_a_cut_clears_only_its_own_mark_from_the_state(self):
+        """A mark made after a flush's receipt is not the one its barrier
+        cuts: the state keeps it, and the next instance's flush cuts it
+        (the plant R7 of the review of #111: any cut cleared the stored
+        mark)."""
+        steps = [('ub', 5), ('recv', 'a'), ('ub', 6), ('barrier', 'a'), ('over',), ('recv', 'b'), ('barrier', 'b')]
+        self.assertEqual(self.run_on(steps), [(5, 3), (6, 6)])
+
     def test_a_take_over_keeps_the_mark(self):
         steps = [('ub', 5), ('over',), ('recv', 'a'), ('barrier', 'a')]
         self.assertEqual(self.run_on(steps), [(5, 3)])
