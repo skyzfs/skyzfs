@@ -232,3 +232,35 @@ test upload::tests::the_start_takes_a_lease_nobody_holds ... ok
 test upload::tests::the_status_shows_the_uploader_as_it_is ... ok
 test upload::tests::a_store_out_of_reach_or_silent_serves_with_no_lease_yet ... ok
 test serve::tests::the_volumes_lock_outlives_the_queues_thread_until_the_joiner_lets_go ... ok
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 122 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.34s
+
+     Running unittests src/main.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfsd/05a78392a0f1762a/out/skyzfsd-05a78392a0f1762a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/closed_output.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfsd/105cc7097a0b45d1/out/closed_output-105cc7097a0b45d1)
+
+running 3 tests
+test help_into_a_closed_pipe_exits_0 ... ok
+test a_usage_error_with_standard_error_closed_exits_with_the_usage_status ... ok
+test an_error_of_a_command_with_its_output_closed_keeps_its_status ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests skyzfs_upload
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfsd
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit 0

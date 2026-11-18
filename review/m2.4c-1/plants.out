@@ -43,3 +43,4 @@ X1s	SURVIVED	as X1 (the clock is not read again after the lease is kept), with t
 B1	KILLED	the wait does not double	by 5: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure, backoff::tests::a_success_starts_the_waits_again, backoff::tests::the_wait_doubles_from_a_second_to_five_minutes, no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held
 B2	KILLED	the wait has no upper bound	by 1: backoff::tests::the_wait_doubles_from_a_second_to_five_minutes
 B3	KILLED	a success does not reset the wait	by 2: a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, backoff::tests::a_success_starts_the_waits_again
+Q1	KILLED	close leaves the call waiting	by 1: a_closed_desk_answers_as_a_store_that_holds_nothing
