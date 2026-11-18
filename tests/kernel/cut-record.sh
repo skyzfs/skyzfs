@@ -1012,11 +1012,24 @@ nudge_until() {
     return 1
 }
 # The volume's state and its newest uploaded cut before another writer
-# acts: DIR/STEP-status.txt after a drain, DIR/STEP-row.txt.
+# acts: DIR/STEP-status.txt after a drain, DIR/STEP-row.txt. Then up to
+# 120 s for the watcher to have fetched that cut under that head: a
+# commit, the row's read and the other writer's act can all fall
+# between two of its looks (run 44253158409, umoved), and the cuts after
+# it are not the daemon's to upload.
 before_other() {
+    local st n g h _i
     drain "$1-status.txt" idle 1
     nbrow "$1-row.txt"
-    [ -n "$(rowcut "$1-row.txt")" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
+    read -r st n g <<< "$(rowcut "$1-row.txt")"
+    [ -n "$st" ] || rig_error "no cut in the row before $1: $(tr '\t\n' '  ' < "$RDIR/$1-row.txt")"
+    h=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/$1-row.txt")
+    for _i in $(seq 1 240); do
+        awk -F '\t' -v n="$n" -v g="$g" -v s="$st" -v h="$h" '$1 == n && $2 == g && $3 == s && $4 == h { f = 1 }
+            END { exit !f }' "$RDIR/uploaded.tsv" 2>/dev/null && return 0
+        sleep 0.5
+    done
+    rig_error "the watcher had not fetched cut $n (group $g) under head $h 120 s after $1's row named it"
 }
 
 # umoved (b): another writer moves head. The uploader finds head's group
