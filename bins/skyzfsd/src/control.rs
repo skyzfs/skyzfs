@@ -74,7 +74,9 @@
 //!   this daemon's uploader, or its end has left the 1024 kept.
 //! - `withdraw`: end the publish of T, unless it is made already. One
 //!   whose transaction may have landed is looked up first, and so may
-//!   still read `pending` and then `done`.
+//!   still read `pending` and then `done`. While it still pends so, the
+//!   same `publish` asked again undoes the withdrawal, and its `accepted`
+//!   holds: the publish goes on (D1 of the review of #122).
 //!
 //! `refused stopped`, to a `publish` or as a publish's `progress`: this
 //! daemon's uploader steps no more (its lease lost, a commit or a publish
