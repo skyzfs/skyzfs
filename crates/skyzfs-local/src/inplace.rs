@@ -269,8 +269,9 @@ use state::CutState;
 pub use cuts::{Cut, Cuts, Seen, Watcher};
 pub use intent::Base as CommittedCut;
 pub use state::{
-    records_for, words_for, Figures as CutFigures, HeldCut, Lost, MemRegion, Phase as CutPhase,
-    DEFAULT_INTENT_REGION, MAX_INTENT_REGION, MIN_INTENT_REGION,
+    records_for, words_for, Figures as CutFigures, HeldCut, Holes as CutHoles, Lost, MemRegion,
+    Phase as CutPhase, DEFAULT_INTENT_REGION, HOLE_BLOCKS, MAX_INTENT_REGION, MIN_INTENT_REGION,
+    SLICE_ZERO_RUNS,
 };
 
 pub use start::{
@@ -1096,9 +1097,15 @@ pub struct IntentFigures {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CutSlice {
     /// The blocks read, in order: the `i`-th is in the buffer's `i`-th
-    /// block. Empty only where the map has no block from the slice's
-    /// first on.
+    /// block. Empty where the map has no block from the slice's first
+    /// on, or where the slice is all zeros.
     pub blocks: Vec<u64>,
+    /// Runs of blocks that read as zeros in the cut, as `(first,
+    /// count)`, in order, beside `blocks`: holes of the image when the
+    /// cut state began that nothing wrote up to the cut's instant
+    /// (M2.4e). The upload writes zeros there; nothing is read for
+    /// them.
+    pub zeroes: Vec<(u64, u64)>,
     /// The block of the cut's map to read from next; `None` once the map
     /// is read to its end.
     pub next: Option<u64>,
@@ -2384,7 +2391,7 @@ impl<D: Dir> InPlace<D> {
             Err(("the start acknowledges a failure".to_owned(), region))
         } else if !kept {
             let why = match found_version {
-                Some(version) if version != state::VERSION => {
+                Some(version) if !(state::OLDEST_READ..=state::VERSION).contains(&version) => {
                     state::RegionError::Version(version).to_string()
                 }
                 _ => "the region was not there with the volume's length".to_owned(),
@@ -2433,6 +2440,13 @@ impl<D: Dir> InPlace<D> {
                         .map(|region| shape.blocks_of(region))
                         .collect()
                 });
+                // With the whole volume counted as changed, the image's
+                // holes now read as zeros in the first cut wherever
+                // nothing writes them before its instant (M2.4e).
+                let holes = match changed {
+                    None => self.image_holes(size),
+                    Some(_) => None,
+                };
                 CutState::begin_with(
                     region,
                     size,
@@ -2440,6 +2454,7 @@ impl<D: Dir> InPlace<D> {
                     state::Owner { start, ..owner },
                     self.mutants,
                     changed.as_deref(),
+                    holes.as_deref(),
                 )
             }
         };
@@ -2448,6 +2463,48 @@ impl<D: Dir> InPlace<D> {
         self.state = Some(cut_state);
         self.keep_intent(shape, start, found_map, map_file, intent_header_sync)
             .map_err(|e| StartError::Intent(e.to_string()))
+    }
+
+    /// The holes of the image as this start finds it, as ranges of
+    /// whole blocks `(first, count)` inside the volume's `size` bytes
+    /// and the image's length: what a cut state begun with the whole
+    /// volume records (M2.4e). `None` where the image's file system
+    /// cannot say where its holes are, or a call to ask fails: the
+    /// state then has no hole set, and its first cut reads every block
+    /// of the image, as before M2.4e. A file system that has no holes
+    /// of its own answers that the whole image is data. A preallocated
+    /// image's unwritten extents count as holes where its file system
+    /// says so (ext4 and XFS do): they read as zeros. An image written
+    /// through, as `create --zero-fill` makes it, has none.
+    fn image_holes(&self, size: u64) -> Option<Vec<(u64, u64)>> {
+        let block = skyzfs_blk::BLOCK_SIZE;
+        let end = self.home.len().ok()?.min(size);
+        let mut holes = Vec::new();
+        let mut hole = |from: u64, to: u64| {
+            let (first, last) = (from.div_ceil(block), to / block);
+            if last > first {
+                holes.push((first, last - first));
+            }
+        };
+        let mut at = 0;
+        while at < end {
+            match self.home.data_from(at) {
+                Ok(Some((start, data_end))) => {
+                    if start < at || data_end <= start {
+                        // An answer this cannot use: no hole set.
+                        return None;
+                    }
+                    hole(at, start.min(end));
+                    at = data_end;
+                }
+                Ok(None) => {
+                    hole(at, end);
+                    at = end;
+                }
+                Err(_) => return None,
+            }
+        }
+        Some(holes)
     }
 
     /// The intent map this start finds, and its file: `None` where
@@ -2965,6 +3022,10 @@ impl<D: Dir> InPlace<D> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such held cut"))?;
         match read {
             state::Read::Unchanged => Ok(false),
+            state::Read::Zero => {
+                buf.fill(0);
+                Ok(true)
+            }
             state::Read::Image => {
                 let at = block * skyzfs_blk::BLOCK_SIZE;
                 if self.io.direct {
@@ -3005,6 +3066,10 @@ impl<D: Dir> InPlace<D> {
     /// made) is refused at the next. A read that fails abandons the cut
     /// if it is the one being uploaded (M2.4): its map goes to the cut
     /// that waits, which reads those blocks again.
+    ///
+    /// A cut that reads holes of the image as zeros (M2.4e) names them
+    /// as runs ([`CutSlice::zeroes`]), at most
+    /// [`state::SLICE_ZERO_RUNS`] a slice, and reads nothing for them.
     pub fn read_cut_from(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice> {
         let block_bytes = skyzfs_blk::BLOCK_USIZE;
         if buf.blocks() == 0 {
@@ -3015,8 +3080,12 @@ impl<D: Dir> InPlace<D> {
         }
         let not_held = || io::Error::new(io::ErrorKind::NotFound, "no such held cut");
         let state = self.state.as_ref().ok_or_else(not_held)?;
-        let (blocks, next) = state
-            .map_from(number, from, buf.len() / block_bytes)
+        let state::Slice {
+            blocks,
+            zeroes,
+            next,
+        } = state
+            .slice_from(number, from, buf.len() / block_bytes)
             .ok_or_else(not_held)?;
         let reads = blocks
             .iter()
@@ -3028,6 +3097,10 @@ impl<D: Dir> InPlace<D> {
                 Some(state::Read::Unchanged) | None => Err(io::Error::other(
                     "a block of the cut's map reads as not in it",
                 )),
+                // Not reached: a block that reads as zeros is in a run.
+                Some(state::Read::Zero) => {
+                    Err(io::Error::other("a block to read reads as a hole's zeros"))
+                }
             })
             .collect::<io::Result<Vec<Place>>>()?;
         let copied = reads.iter().any(|read| matches!(read, Place::Copy(_)));
@@ -3041,6 +3114,7 @@ impl<D: Dir> InPlace<D> {
         }
         Ok(CutSlice {
             blocks,
+            zeroes,
             next,
             copied,
         })

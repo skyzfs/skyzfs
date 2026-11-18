@@ -1384,8 +1384,9 @@ fn a_write_over_a_held_cut_copies_its_blocks_in_one_read_and_one_write() {
     }
 }
 
-/// What a cut read in slices gave: each block with its content, and
-/// each slice's blocks with whether it said it read a copy.
+/// What a cut read in slices gave: each block with its content, a
+/// block of a run of zeros with zeros, in order; and each slice's blocks
+/// read with whether it said it read a copy.
 type Sliced = (Vec<(u64, Vec<u8>)>, Vec<(Vec<u64>, bool)>);
 
 /// Held cut `number` read in slices of `size` blocks from block 0 on.
@@ -1397,15 +1398,26 @@ fn sliced(store: &mut InPlace<SimDisk>, number: u64, size: usize) -> Sliced {
     while let Some(at) = from {
         let slice = store.read_cut_from(number, at, &mut buf).expect("reads");
         assert!(
-            !slice.blocks.is_empty() && slice.blocks.len() <= size,
+            slice.blocks.len() <= size,
             "a slice of {} blocks in a buffer of {size}",
             slice.blocks.len()
         );
-        assert!(slice.blocks.iter().all(|&block| block >= at));
-        for (i, &block) in slice.blocks.iter().enumerate() {
-            let content = buf[i * BLOCK_USIZE..(i + 1) * BLOCK_USIZE].to_vec();
-            blocks.push((block, content));
-        }
+        assert!(
+            !(slice.blocks.is_empty() && slice.zeroes.is_empty()),
+            "an empty slice from {at}"
+        );
+        let mut got: Vec<(u64, Vec<u8>)> = slice
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, &block)| (block, buf[i * BLOCK_USIZE..(i + 1) * BLOCK_USIZE].to_vec()))
+            .collect();
+        got.extend(slice.zeroes.iter().flat_map(|&(first, count)| {
+            (first..first + count).map(|block| (block, vec![0; BLOCK_USIZE]))
+        }));
+        got.sort_by_key(|(block, _)| *block);
+        assert!(got.iter().all(|(block, _)| *block >= at));
+        blocks.extend(got);
         slices.push((slice.blocks, slice.copied));
         from = slice.next;
     }
@@ -1417,12 +1429,16 @@ fn sliced(store: &mut InPlace<SimDisk>, number: u64, size: usize) -> Sliced {
 /// new state's first cut after writes over it that made copies, and the
 /// second cut's few blocks, in slices of 1, 7 and 64 blocks. A slice
 /// says where the map goes on, and whether it read a copy: exactly when
-/// one of its blocks changed after the cut's instant.
+/// one of its blocks changed after the cut's instant. On a disk that
+/// says where the image's holes are, cut 1 reads them as runs of zeros
+/// (M2.4e); on one that cannot, it reads every block.
 #[test]
 fn a_cut_read_in_slices_holds_each_block_as_it_reads_alone() {
-    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
-        let case = format!("{io:?}");
+    let ios = [IoMode::default()].into_iter().chain(OTHER_IO);
+    for (io, holes) in ios.flat_map(|io| [(io, true), (io, false)]) {
+        let case = format!("{io:?}, holes {holes}");
         let disk = created(61, 0);
+        disk.set_seek_data(holes);
         let mut store = start_on(&disk, 0, &region(), io);
         for block in 64..96 {
             write(&mut store, block, block as u8).unwrap();
@@ -1472,6 +1488,8 @@ fn a_cut_read_in_slices_holds_each_block_as_it_reads_alone() {
                 }
             }
         }
+        let zeros = store.cut_figures().hole_chunks;
+        assert_eq!(zeros > 0, holes, "{case}: {zeros} hole chunks");
         assert_eq!(
             store
                 .read_cut_from(1, 70, &mut Buf::filled(1, 0))
@@ -2594,6 +2612,9 @@ fn a_held_cut_reads_as_the_volume_at_its_instant_after_a_write_zeroes() {
 fn the_newest_cut_says_it_opens_as_itself_after_it_is_let_go() {
     for abandon in [false, true] {
         let disk = created(37, 0);
+        // No hole set: every block outside the rings is one cut 1 reads,
+        // and copies for it reach the bound (M2.4e).
+        disk.set_seek_data(false);
         let region = region();
         let mut store = start_on(&disk, 0, &region, ON_CALLER);
         group(&mut store, 100, 7, 70);

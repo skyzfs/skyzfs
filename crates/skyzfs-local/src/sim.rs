@@ -2035,7 +2035,10 @@ impl File for SimFile {
         if state.no_seek_data {
             return Err(io::ErrorKind::Unsupported.into());
         }
-        let unit = state.block_size_of(self.inode).unwrap_or(SECTOR).max(SECTOR);
+        let unit = state
+            .block_size_of(self.inode)
+            .unwrap_or(SECTOR)
+            .max(SECTOR);
         let inode = state.inodes.get(&self.inode).ok_or_else(gone)?;
         if offset >= inode.len {
             return Ok(None);

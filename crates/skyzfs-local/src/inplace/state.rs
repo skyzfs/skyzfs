@@ -132,6 +132,37 @@
 //! blocks of the regions the map names, in the open map: the rest of
 //! the volume is as the newest committed cut holds it.
 //!
+//! # The image's holes
+//!
+//! A state begun with the whole volume records which chunks of
+//! [`HOLE_BLOCKS`] blocks were holes of the home image as the start
+//! found it (M2.4e, the lead's approval of M2.4b's question on seeding
+//! under load): the hole set. A cut that holds the whole volume from
+//! the state's beginning (its `lo` is 0) reads a block of a hole chunk
+//! that is not in its map as zeros ([`Read::Zero`]): such a map holds
+//! every block written or zeroed since the state began, up to the cut's
+//! instant, so the block was not changed since the hole was seen. The
+//! bit that says a block of a hole was written is that block's bit in
+//! the open map, which a change sets before the write is begun: no
+//! other bit is kept, and none is cleared. So a write into a hole needs
+//! no copy for such a cut, and its upload sends no block of a hole that
+//! nothing wrote: a seed of a sparse image under load copies only what
+//! changes in its data. A cut whose `lo` is not 0 reads the blocks
+//! outside its map from the image it is uploaded onto and never so.
+//!
+//! The set lives in the region after the records: a word that says what
+//! it is ([`Holes`]: none, held or dropped), the count of chunks it named,
+//! and a bit a chunk. It is stored before the state's magic, so a death
+//! in a begin leaves no state or the whole set; a start that takes the
+//! state up keeps it, and one that begins a state anew records the holes
+//! anew. Once no held cut has `lo` 0 and the next cut's `lo` is not 0
+//! (the first cut that held the whole volume is uploaded), no cut reads
+//! by it again, and it is dropped, in one store. A state begun from an
+//! intent map has none, nor does one on a file system that cannot say
+//! where its holes are: the whole image is data. A volume that is not
+//! sparse, an image written through as `create --zero-fill` makes it,
+//! has no holes, and behaves as before M2.4e.
+//!
 //! # The region, and its size
 //!
 //! The state lives in a [`Region`] of 64-bit words, which a death of the
@@ -153,8 +184,9 @@
 //! The region is locked in memory (design §5.2), so its size is a
 //! figure of the design ([`words_for`]): [`MAPS`] bits a block and,
 //! in the flat layout of the maps, a summary bit for every 64 of them,
-//! 130 MiB for a TiB at 4 KiB blocks; and 16 bytes for each block of
-//! the bound on the copies.
+//! 130 MiB for a TiB at 4 KiB blocks; 16 bytes for each block of the
+//! bound on the copies; and a bit for each 64 KiB of the hole set, 2 MiB
+//! for a TiB (version 3, M2.4e).
 
 // Reading and letting go of held cuts is for the uploader (M2.4) and,
 // until then, the test-hooks build's commands (M2.2b); a test region's
@@ -308,13 +340,15 @@ impl Region for StoreRegion {
 #[derive(Debug)]
 pub(crate) struct Taken {
     pub(crate) region: StoreRegion,
-    /// Whether the region was there with the length the volume needs:
-    /// only then can it hold a state to take up.
+    /// Whether the region was there with the length the volume needs,
+    /// or with the length a state of version 2 needs and such a state
+    /// in it (M2.4e): only then can it hold a state to take up.
     pub(crate) kept: bool,
     /// The version of the state a named region held when it was there
-    /// with another length, read before it was made again: a state of
-    /// another version is refused for its version, which the start
-    /// says, whatever its length (version 1 is two words shorter).
+    /// with another length, read before it was made again: a state of a
+    /// version this code does not read is refused for its version,
+    /// which the start says, whatever its length (version 1 is two
+    /// words shorter).
     pub(crate) found_version: Option<u64>,
     /// Whose a state must be to be taken up: with the start token this
     /// open found.
@@ -369,15 +403,29 @@ impl Taken {
                  from {MIN_INTENT_REGION} to {MAX_INTENT_REGION} bytes"
             ));
         }
-        let words = words_for(size / BLOCK_SIZE, records_for(bound));
+        let (blocks, records) = (size / BLOCK_SIZE, records_for(bound));
+        let words = words_for(blocks, records);
+        // A state of version 2 is kept at its own length, shorter by the
+        // hole set (M2.4e): a start takes it up as it was.
+        let old_words = words_of(OLDEST_READ, blocks, records);
         let mut found_version = None;
         let (region, kept) = match &hold.region {
-            super::CutRegion::Memory(region) if region.words() >= words => {
+            super::CutRegion::Memory(region)
+                if region.words() >= words
+                    || (region.words() >= old_words
+                        && region.load(at::MAGIC) == MAGIC
+                        && region.load(at::VERSION) == OLDEST_READ) =>
+            {
                 (StoreRegion::Memory(region.clone()), true)
             }
             super::CutRegion::Memory(_) => (StoreRegion::Memory(MemRegion::new(words)), false),
             super::CutRegion::Named(path) => {
-                found_version = version_in(path);
+                let found = found_in(path);
+                found_version = found.map(|(version, _)| version);
+                let words = match found {
+                    Some((OLDEST_READ, len)) if len == old_words as u64 * 8 => old_words,
+                    _ => words,
+                };
                 let (region, opened) =
                     skyzfs_mapped::Mapped::open(path, words).map_err(|e| e.to_string())?;
                 (
@@ -406,28 +454,42 @@ impl Taken {
 }
 
 /// The version of the cut state in the file at `path`, read from its
-/// header; `None` where there is no file, or no state's magic in it.
-fn version_in(path: &std::path::Path) -> Option<u64> {
+/// header, and the file's length in bytes; `None` where there is no
+/// file, or no state's magic in it.
+fn found_in(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::io::Read;
     let mut header = [0u8; 16];
-    std::fs::File::open(path)
-        .ok()?
-        .read_exact(&mut header)
-        .ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    file.read_exact(&mut header).ok()?;
+    let len = file.metadata().ok()?.len();
     let (words, _) = header.as_chunks::<8>();
     let word = |i: usize| words.get(i).map(|word| u64::from_le_bytes(*word));
     (word(at::MAGIC) == Some(MAGIC))
         .then(|| word(at::VERSION))
         .flatten()
+        .map(|version| (version, len))
 }
 
 /// The region's magic: `SKYZCUT1`.
 const MAGIC: u64 = u64::from_le_bytes(*b"SKYZCUT1");
-/// The version of the region's format this code reads and writes.
-/// Version 2 (M2.4) added the state's name, [`CutState::id`]. A state
-/// of version 1 is not read: its volume counts as changed once, as for
-/// any state that is not taken up.
-pub const VERSION: u64 = 2;
+/// The version of the region's format this code writes. Version 2
+/// (M2.4) added the state's name, [`CutState::id`]; version 3 (M2.4e)
+/// the image's holes at the state's beginning, in words after the
+/// records (see the module documentation). A state of version 2 is
+/// still read and kept as it is, with no holes, and a state begun in a
+/// region of a version 2 state's length is of version 2
+/// ([`CutState::begin_with`]). A state of version 1 is not read: its
+/// volume counts as changed once, as for any state that is not taken
+/// up.
+pub const VERSION: u64 = 3;
+/// The oldest version of the region's format this code reads.
+pub const OLDEST_READ: u64 = 2;
+/// The blocks of a chunk of the hole set: 64 KiB. A chunk is a hole
+/// only where all of it was one (M2.4e).
+pub const HOLE_BLOCKS: u64 = 16;
+/// The hole set's words before its bits: what it is ([`Holes`]), and
+/// the chunks it named when the state began.
+const HOLE_HEADER: usize = 2;
 
 /// The words of a pool state: its group, then its root block pointer.
 const STATE_WORDS: usize = 1 + ROOT_WORDS;
@@ -510,7 +572,53 @@ mod at {
 /// The words a state needs for a volume of `blocks` blocks with room
 /// for `records` records: what is locked.
 pub fn words_for(blocks: u64, records: usize) -> usize {
-    at::HEADER + Maps::words(blocks) + records * RECORD_WORDS
+    words_of(VERSION, blocks, records)
+}
+
+/// The words a state of `version` needs: a state of version 3 has the
+/// hole set after its records.
+pub(crate) fn words_of(version: u64, blocks: u64, records: usize) -> usize {
+    let words = at::HEADER + Maps::words(blocks) + records * RECORD_WORDS;
+    if version >= 3 {
+        words + HOLE_HEADER + hole_words(blocks)
+    } else {
+        words
+    }
+}
+
+/// The chunks of the hole set of a volume of `blocks` blocks.
+fn hole_chunks(blocks: u64) -> u64 {
+    blocks.div_ceil(HOLE_BLOCKS)
+}
+
+/// The words of the hole set's bits, a bit a chunk.
+fn hole_words(blocks: u64) -> usize {
+    hole_chunks(blocks).div_ceil(64) as usize
+}
+
+/// Where the hole set begins in a state of version 3: after the
+/// records.
+fn holes_base(blocks: u64, capacity: usize) -> usize {
+    at::HEADER + Maps::words(blocks) + capacity * RECORD_WORDS
+}
+
+/// The hole set's bits for `holes`, ranges of blocks as `(first,
+/// count)`: a chunk's bit is set where one range holds all of the
+/// chunk's blocks inside the volume.
+fn hole_bits(blocks: u64, holes: &[(u64, u64)]) -> Vec<u64> {
+    let mut bits = vec![0u64; hole_words(blocks)];
+    let chunks = hole_chunks(blocks);
+    for &(first, count) in holes {
+        let end = first.saturating_add(count).min(blocks);
+        let mut chunk = first.div_ceil(HOLE_BLOCKS);
+        while chunk < chunks && (chunk * HOLE_BLOCKS + HOLE_BLOCKS).min(blocks) <= end {
+            if let Some(word) = bits.get_mut((chunk / 64) as usize) {
+                *word |= 1 << (chunk % 64);
+            }
+            chunk += 1;
+        }
+    }
+    bits
 }
 
 /// How many records a state keeps room for, with a bound of `bound`
@@ -581,6 +689,11 @@ pub enum Read {
     Image,
     /// The block's content is the copy in this slot of the copies file.
     Copy(u32),
+    /// The block lay in a hole of the image when the state began, and
+    /// nothing wrote it up to the cut's instant: it reads as zeros
+    /// (M2.4e). Only a cut that holds the whole volume, with `lo` 0,
+    /// reads so.
+    Zero,
 }
 
 /// The I/O the state asks for when it keeps blocks' content: read a run
@@ -688,7 +801,64 @@ pub struct Figures {
     /// instance of the state was opened, in memory only: not kept across
     /// a start, unlike `abandoned`.
     pub replaced: u64,
+    /// The hole set (M2.4e).
+    pub holes: Holes,
+    /// The chunks of [`HOLE_BLOCKS`] blocks it named when the state
+    /// began: 0 where there is none.
+    pub hole_chunks: u64,
 }
+
+/// The image's holes at the state's beginning, as the state holds them
+/// (M2.4e).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Holes {
+    /// None: the state did not begin with the whole volume (an intent
+    /// map named what changed), the image's file system could not say
+    /// where its holes are, or the state is of version 2.
+    #[default]
+    None,
+    /// The set holds: the first cut holds the whole volume, and a block
+    /// of a hole chunk that nothing wrote reads as zeros in it.
+    Held,
+    /// The set was dropped: no cut reads by it any more, since the
+    /// first cut that held the whole volume was uploaded.
+    Dropped,
+}
+
+impl Holes {
+    /// The word the region holds for it, and the status's code.
+    pub fn code(self) -> u64 {
+        match self {
+            Holes::None => 0,
+            Holes::Held => 1,
+            Holes::Dropped => 2,
+        }
+    }
+
+    fn of(code: u64) -> Holes {
+        match code {
+            1 => Holes::Held,
+            2 => Holes::Dropped,
+            _ => Holes::None,
+        }
+    }
+}
+
+/// What a slice of a held cut reads ([`CutState::slice_from`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Slice {
+    /// The blocks to read, in order.
+    pub blocks: Vec<u64>,
+    /// Runs of blocks, as `(first, count)`, that read as zeros, in
+    /// order; none of them is in `blocks`.
+    pub zeroes: Vec<(u64, u64)>,
+    /// The block to go on from; `None` once the cut is read to its end.
+    pub next: Option<u64>,
+}
+
+/// The most runs of zeros a slice names: a slice is small whatever the
+/// holes.
+pub const SLICE_ZERO_RUNS: usize = 256;
 
 /// A record, as read from the region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -750,6 +920,8 @@ pub struct CutState<R: Region> {
     /// Where the records begin.
     records_base: usize,
     capacity: usize,
+    /// Where the hole set begins: none in a state of version 2.
+    holes_base: Option<usize>,
     bound: u64,
     mutants: Mutants,
     /// Where each block's records are, by block.
@@ -778,7 +950,9 @@ impl<R: Region> std::fmt::Debug for CutState<R> {
 pub enum RegionError {
     #[error("the region holds no cut state (no magic)")]
     Empty,
-    #[error("the cut state is of version {0}, and this daemon reads version {VERSION}")]
+    #[error(
+        "the cut state is of version {0}, and this daemon reads versions {OLDEST_READ} to {VERSION}"
+    )]
     Version(u64),
     #[error("the cut state is of another volume: {0}")]
     Shape(String),
@@ -831,7 +1005,7 @@ impl<R: Region> CutState<R> {
     /// and the whole volume counted as changed in the first epoch.
     #[cfg(test)]
     pub fn begin(region: R, size: u64, bound: u64, owner: Owner, mutants: Mutants) -> Self {
-        Self::begin_with(region, size, bound, owner, mutants, None)
+        Self::begin_with(region, size, bound, owner, mutants, None, None)
     }
 
     /// The same, with only the blocks of `changed`, each a `(first,
@@ -840,6 +1014,19 @@ impl<R: Region> CutState<R> {
     /// the rest of the volume being as the newest committed cut holds it
     /// (M2.3). They are put in the open map before the state is marked
     /// as one, so a death in between leaves no state to take up.
+    ///
+    /// Where the whole volume counts as changed (`changed` is `None`),
+    /// `holes` are the ranges of blocks, each a `(first, count)`, that
+    /// were holes of the image as the start found it, if its file
+    /// system could say (M2.4e): the hole set is recorded with them,
+    /// before the state is marked as one. With `holes` `None`, or
+    /// `changed` given, the state has no hole set.
+    ///
+    /// The state is of the version the region has room for: a region of
+    /// a version 2 state's length, which a start keeps as it was, holds
+    /// a state of version 2, with no hole set (coding's reading, M2.4e:
+    /// it needs no new way for a start to fail, and the region lies on
+    /// tmpfs, so that the next boot makes it anew).
     pub(crate) fn begin_with(
         mut region: R,
         size: u64,
@@ -847,15 +1034,21 @@ impl<R: Region> CutState<R> {
         owner: Owner,
         mutants: Mutants,
         changed: Option<&[(u64, u64)]>,
+        holes: Option<&[(u64, u64)]>,
     ) -> Self {
         let blocks = size / BLOCK_SIZE;
         let capacity = records_for(bound);
+        let version = if region.words() >= words_of(VERSION, blocks, capacity) {
+            VERSION
+        } else {
+            OLDEST_READ
+        };
         for i in 0..region.words() {
             if region.load(i) != 0 {
                 region.store(i, 0);
             }
         }
-        region.store(at::VERSION, VERSION);
+        region.store(at::VERSION, version);
         region.store(at::BLOCKS, blocks);
         region.store(at::RECORDS, capacity as u64);
         for (i, word) in id_words(owner.boot).into_iter().enumerate() {
@@ -879,8 +1072,21 @@ impl<R: Region> CutState<R> {
                 }
             }
         }
+        if let (None, Some(holes), true) = (changed, holes, version >= 3) {
+            let base = holes_base(blocks, capacity);
+            let bits = hole_bits(blocks, holes);
+            let mut chunks = 0;
+            for (i, word) in bits.into_iter().enumerate() {
+                if word != 0 {
+                    region.store(base + HOLE_HEADER + i, word);
+                    chunks += u64::from(word.count_ones());
+                }
+            }
+            region.store(base + 1, chunks);
+            region.store(base, Holes::Held.code());
+        }
         region.store(at::MAGIC, MAGIC);
-        Self::new(region, blocks, capacity, bound, mutants)
+        Self::new(region, blocks, capacity, bound, mutants, version)
     }
 
     /// The words of the maps that hold changes after held cut
@@ -926,8 +1132,8 @@ impl<R: Region> CutState<R> {
         mutants: Mutants,
     ) -> Result<Self, (RegionError, R)> {
         match Self::check(&region, size, owner, mutants) {
-            Ok((blocks, capacity)) => {
-                let mut state = Self::new(region, blocks, capacity, bound, mutants);
+            Ok((blocks, capacity, version)) => {
+                let mut state = Self::new(region, blocks, capacity, bound, mutants, version);
                 state.index();
                 Ok(state)
             }
@@ -936,18 +1142,19 @@ impl<R: Region> CutState<R> {
     }
 
     /// Whether `region` holds a state this daemon reads, for a volume of
-    /// `size` bytes, owned by `owner`: its blocks and its records.
+    /// `size` bytes, owned by `owner`: its blocks, its records and its
+    /// version.
     fn check(
         region: &R,
         size: u64,
         owner: Owner,
         mutants: Mutants,
-    ) -> Result<(u64, usize), RegionError> {
+    ) -> Result<(u64, usize, u64), RegionError> {
         if region.load(at::MAGIC) != MAGIC {
             return Err(RegionError::Empty);
         }
         let version = region.load(at::VERSION);
-        if version != VERSION {
+        if !(OLDEST_READ..=VERSION).contains(&version) {
             return Err(RegionError::Version(version));
         }
         let blocks = size / BLOCK_SIZE;
@@ -958,7 +1165,7 @@ impl<R: Region> CutState<R> {
             )));
         }
         let capacity = region.load(at::RECORDS) as usize;
-        if region.words() < words_for(blocks, capacity) {
+        if region.words() < words_of(version, blocks, capacity) {
             return Err(RegionError::Shape(format!(
                 "{} words, too few for {blocks} blocks and {capacity} records",
                 region.words()
@@ -976,7 +1183,7 @@ impl<R: Region> CutState<R> {
         if words(at::START) != id_words(owner.start) && !mutants.has(Mutants::START_UNCHECKED) {
             return Err(RegionError::Start);
         }
-        Ok((blocks, capacity))
+        Ok((blocks, capacity, version))
     }
 
     /// The region, given back.
@@ -1017,13 +1224,21 @@ impl<R: Region> CutState<R> {
         self
     }
 
-    fn new(region: R, blocks: u64, capacity: usize, bound: u64, mutants: Mutants) -> Self {
+    fn new(
+        region: R,
+        blocks: u64,
+        capacity: usize,
+        bound: u64,
+        mutants: Mutants,
+        version: u64,
+    ) -> Self {
         Self {
             region,
             blocks,
             maps: Maps::new(at::HEADER, blocks, mutants),
             records_base: at::HEADER + Maps::words(blocks),
             capacity,
+            holes_base: (version >= 3).then(|| holes_base(blocks, capacity)),
             bound,
             mutants,
             by_block: BTreeMap::new(),
@@ -1240,6 +1455,94 @@ impl<R: Region> CutState<R> {
             || parts
                 .also
                 .is_some_and(|also| self.maps.contains(&self.region, also, block))
+    }
+
+    // ---- the hole set (M2.4e) ----
+
+    /// What the hole set is.
+    fn holes(&self) -> Holes {
+        self.holes_base
+            .map_or(Holes::None, |base| Holes::of(self.load(base)))
+    }
+
+    /// Whether `block` lay in a hole chunk of the image when the state
+    /// began, while the set holds.
+    fn in_hole(&self, block: u64) -> bool {
+        let Some(base) = self.holes_base else {
+            return false;
+        };
+        if block >= self.blocks || self.holes() != Holes::Held {
+            return false;
+        }
+        let chunk = block / HOLE_BLOCKS;
+        let word = self.load(base + HOLE_HEADER + (chunk / 64) as usize);
+        (word >> (chunk % 64)) & 1 == 1
+    }
+
+    /// The end of the run of hole chunks that holds `block`, in blocks,
+    /// within the volume: `block` itself where its chunk is no hole.
+    fn hole_run_end(&self, block: u64) -> u64 {
+        let Some(base) = self.holes_base else {
+            return block;
+        };
+        if !self.in_hole(block) {
+            return block;
+        }
+        let chunks = hole_chunks(self.blocks);
+        let mut chunk = block / HOLE_BLOCKS;
+        while chunk < chunks {
+            let word = self.load(base + HOLE_HEADER + (chunk / 64) as usize);
+            let left = 64 - chunk % 64;
+            let ones = u64::from((word >> (chunk % 64)).trailing_ones());
+            if ones < left {
+                chunk += ones;
+                break;
+            }
+            chunk += left;
+        }
+        (chunk.min(chunks) * HOLE_BLOCKS).min(self.blocks)
+    }
+
+    /// Whether `cut` reads `block` as zeros where its map does not hold
+    /// it: the cut holds the whole volume from the state's beginning
+    /// (`lo` 0), and the block lay in a hole chunk then. A map whose
+    /// `lo` is 0 holds every block written or zeroed since the state
+    /// began up to the cut's instant, and a block's bit is set before
+    /// the write that changes it is begun; so a block of a hole chunk
+    /// that is not in the map was not changed up to the instant, and
+    /// held zeros at it. A cut whose `lo` is not 0 reads the blocks
+    /// outside its map from the image it is uploaded onto, or from the
+    /// image, and never so.
+    fn hole_of(&self, cut: &HeldCut, block: u64) -> bool {
+        cut.lo == 0 && self.is_whole(cut) && self.in_hole(block)
+    }
+
+    /// Whether `held` reads `block`'s content: its map holds the block,
+    /// or the whole volume counts as changed in its epochs and the
+    /// block is no hole it reads as zeros.
+    fn reads_content(&self, held: &Held, block: u64) -> bool {
+        self.in_parts(held.parts, block)
+            || (self.is_whole(&held.cut) && !self.hole_of(&held.cut, block))
+    }
+
+    /// Drop the hole set once no cut can read by it: no held cut has
+    /// `lo` 0, and the next cut's `lo` is not 0. Only a cut with `lo` 0
+    /// gives another cut, or the open map with no cut held, a `lo` of
+    /// 0, so no later cut reads by the set. One store; the bits stay,
+    /// unread.
+    fn drop_unneeded_holes(&mut self) {
+        let Some(base) = self.holes_base else {
+            return;
+        };
+        if self.holes() != Holes::Held {
+            return;
+        }
+        let holds = self.holds();
+        let needed = holds.iter().any(|h| h.cut.lo == 0)
+            || (holds.is_empty() && self.load(at::OPEN_LO) == 0);
+        if !needed {
+            self.store(base, Holes::Dropped.code());
+        }
     }
 
     /// Which maps the open map and the held cuts name.
@@ -1530,6 +1833,7 @@ impl<R: Region> CutState<R> {
             self.set_phase(waiting.cut.number, Phase::Uploading);
         }
         self.free_unneeded(None);
+        self.drop_unneeded_holes();
         true
     }
 
@@ -1723,6 +2027,7 @@ impl<R: Region> CutState<R> {
             self.let_go(map);
         }
         self.free_unneeded(None);
+        self.drop_unneeded_holes();
     }
 
     // ---- records ----
@@ -1763,7 +2068,7 @@ impl<R: Region> CutState<R> {
         holds.iter().any(|h| {
             record.lo <= h.cut.number
                 && h.cut.number < record.hi
-                && (self.in_parts(h.parts, record.block) || self.is_whole(&h.cut))
+                && self.reads_content(h, record.block)
         })
     }
 
@@ -1848,6 +2153,8 @@ impl<R: Region> CutState<R> {
             bound: self.bound(),
             abandoned: self.abandoned(),
             replaced: self.replaced,
+            holes: self.holes(),
+            hole_chunks: self.holes_base.map_or(0, |base| self.load(base + 1)),
         }
     }
 
@@ -1857,12 +2164,16 @@ impl<R: Region> CutState<R> {
     /// reads that content: the newest held cut whose map holds the block
     /// wrote it after its own `lo`; with none, it dates from before
     /// every held cut, and a held cut reads it only if the whole volume
-    /// counts as changed in its epochs.
+    /// counts as changed in its epochs, and the block is not a hole
+    /// that the cut reads as zeros (M2.4e).
     fn wanted(&self, holds: &[Held], block: u64) -> Option<u64> {
         if let Some(newest) = holds.iter().rev().find(|h| self.in_parts(h.parts, block)) {
             return Some(newest.cut.lo + 1);
         }
-        holds.iter().any(|h| self.is_whole(&h.cut)).then_some(0)
+        holds
+            .iter()
+            .any(|h| self.reads_content(h, block))
+            .then_some(0)
     }
 
     /// Blocks `first` to `first + count` are about to be written or
@@ -2055,12 +2366,12 @@ impl<R: Region> CutState<R> {
     /// content of the block (their copy, or the image they are uploaded
     /// onto), so they stay. Where no held cut's map holds the block, the
     /// cut that reads it is the newest that counts the whole volume as
-    /// changed.
+    /// changed and does not read the block as a hole's zeros.
     fn abandon_needing(&mut self, holds: &[Held], block: u64) {
         let needing = holds
             .iter()
             .rposition(|h| self.in_parts(h.parts, block))
-            .or_else(|| holds.iter().rposition(|h| self.is_whole(&h.cut)));
+            .or_else(|| holds.iter().rposition(|h| self.reads_content(h, block)));
         let Some(from) = needing else {
             return;
         };
@@ -2080,8 +2391,13 @@ impl<R: Region> CutState<R> {
         let holds = self.holds();
         let at = holds.iter().position(|h| h.cut.number == number)?;
         let cut = holds[at];
-        if !(self.in_parts(cut.parts, block) || self.is_whole(&cut.cut)) {
-            return Some(Read::Unchanged);
+        if !self.in_parts(cut.parts, block) {
+            if !self.is_whole(&cut.cut) {
+                return Some(Read::Unchanged);
+            }
+            if self.hole_of(&cut.cut, block) {
+                return Some(Read::Zero);
+            }
         }
         let changed = self.in_parts(self.open(), block)
             || holds[at + 1..]
@@ -2128,6 +2444,69 @@ impl<R: Region> CutState<R> {
             .chain(cut.parts.also)
             .collect();
         Some(self.maps.blocks_from(&self.region, &maps, from, limit))
+    }
+
+    /// A slice of held cut `number` from block `from` on: the blocks to
+    /// read, at most `limit` of them (at least one), and the runs of
+    /// blocks that read as zeros ([`Read::Zero`]), at most
+    /// [`SLICE_ZERO_RUNS`]; `None` if no such cut is held. A cut that
+    /// reads no hole as zeros has no runs, and its blocks are those of
+    /// [`CutState::map_from`]. A run ends at the next block of the
+    /// cut's map, which is read. The cut being uploaded reads the same
+    /// whatever the queue does between two slices: its map does not
+    /// change while it is held, and the hole set does not change while
+    /// a cut reads by it.
+    pub fn slice_from(&self, number: u64, from: u64, limit: usize) -> Option<Slice> {
+        let cut = self.hold(number)?;
+        if !self.hole_reader(&cut) {
+            let (blocks, next) = self.map_from(number, from, limit)?;
+            return Some(Slice {
+                blocks,
+                zeroes: Vec::new(),
+                next,
+            });
+        }
+        let maps: Vec<usize> = std::iter::once(cut.parts.first)
+            .chain(cut.parts.also)
+            .collect();
+        let limit = limit.max(1);
+        let mut block = from.min(self.blocks);
+        let mut slice = Slice::default();
+        // The next block of the map at or after `block`, once looked for.
+        let mut mapped: Option<Option<u64>> = None;
+        while block < self.blocks
+            && slice.blocks.len() < limit
+            && slice.zeroes.len() < SLICE_ZERO_RUNS
+        {
+            if !self.hole_of(&cut.cut, block) || self.in_parts(cut.parts, block) {
+                slice.blocks.push(block);
+                block += 1;
+                continue;
+            }
+            let next_mapped = match mapped {
+                Some(Some(next)) if next > block => Some(next),
+                Some(None) => None,
+                _ => {
+                    let (found, _) = self.maps.blocks_from(&self.region, &maps, block, 1);
+                    let next = found.first().copied();
+                    mapped = Some(next);
+                    next
+                }
+            };
+            let end = next_mapped.map_or(self.hole_run_end(block), |next| {
+                next.min(self.hole_run_end(block))
+            });
+            slice.zeroes.push((block, end - block));
+            block = end;
+        }
+        slice.next = (block < self.blocks).then_some(block);
+        Some(slice)
+    }
+
+    /// Whether `held` reads holes as zeros: a block of a hole chunk may
+    /// be one it reads so.
+    fn hole_reader(&self, held: &Held) -> bool {
+        held.cut.lo == 0 && self.is_whole(&held.cut) && self.holes() == Holes::Held
     }
 
     /// The blocks in held cut `number`'s map, in order.
