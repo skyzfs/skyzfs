@@ -1,0 +1,13 @@
+P2 | crates/skyzfs-upload/src/uploader.rs | a cut found committed does not end the refusals' wait | KILLED by a_cut_found_committed_ends_the_wait_of_the_refusals
+P3 | crates/skyzfs-upload/src/uploader.rs | a cut committed and gone does not end the refusals' wait | KILLED by a_cut_committed_and_gone_ends_the_wait_of_the_refusals
+P3b | crates/skyzfs-upload/src/uploader.rs | a cut uploaded does not end the refusals' wait | KILLED by a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle
+P3c | crates/skyzfs-upload/src/uploader.rs | any step that goes on ends the refusals' wait | KILLED by a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, a_cut_committed_and_gone_ends_the_wait_of_the_refusals, a_cut_found_committed_ends_the_wait_of_the_refusals
+W01 | bins/skyzfsd/src/serve.rs | the queue's thread never answers the desk | SURVIVED
+E1 | crates/skyzfs-upload/src/uploader.rs | the errors' wait is never reset | KILLED by a_cut_committed_and_gone_before_its_release_ends_the_wait, a_cut_found_committed_ends_the_wait, a_put_that_fails_now_and_then_waits_a_second_each_time_and_the_cut_goes_up
+E2 | crates/skyzfs-upload/src/uploader.rs | a give-up waits in the errors' backoff | KILLED by a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle, a_cut_committed_and_gone_ends_the_wait_of_the_refusals, a_cut_found_committed_ends_the_wait_of_the_refusals
+W02 | bins/skyzfsd/src/serve.rs | the queue's thread does not close the desk at its end | SURVIVED
+E3 | crates/skyzfs-upload/src/uploader.rs | an error waits in the refusals' backoff | KILLED by a_put_that_fails_now_and_then_waits_a_second_each_time_and_the_cut_goes_up
+W03 | bins/skyzfsd/src/serve.rs | the desk's wake does nothing | SURVIVED
+E4 | crates/skyzfs-upload/src/uploader.rs | a conflict right after a refused commit is not waited after | KILLED by a_conflict_right_after_a_refused_commit_is_waited_after
+E5 | crates/skyzfs-upload/src/uploader.rs | a conflict anywhere but at the commit is followed at once by another step | SURVIVED
+W04 | bins/skyzfsd/src/serve.rs | the lease is let go at every exit that reaches the end | SURVIVED
