@@ -696,6 +696,16 @@ class HeldLines(HeldFixture):
         rc, lines = self.lines(begun=[True, True])
         self.assertEqual(lines['carried_across_failure'], ('ERROR', 'no cut of the new state was written'))
         self.assertEqual(rc, (0, True), {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        # a cut written across the start with no block from a copy is under
+        # the floor too, and only one with blocks is named (G2: plant H8)
+        from unittest import mock
+        with mock.patch.object(cdc, 'held_across_start', lambda *a: [(9, 1, 2, 0)]):
+            rc, lines = self.lines(name='takeover')
+        self.assertEqual((rc, lines['held_across_start'][0]), ((0, True), 'ERROR'))
+        with mock.patch.object(cdc, 'held_across_start', lambda *a: [(9, 1, 2, 0), (10, 1, 2, 4)]):
+            rc, lines = self.lines(name='takeover')
+        self.assertEqual((rc, lines['held_across_start']), ((0, False), (
+            'INFO', 'cut 10, counted by instance 1 and written by instance 2: 4 blocks from copies instance 1 made')))
         # and neither is asked where its recording is not
         rc, lines = self.lines()
         self.assertEqual(rc, (0, False))
@@ -1083,6 +1093,14 @@ class Parse(unittest.TestCase):
                            '263932700000': '999970000000', '264075526204': '0999990000000',
                            '264075546749': '1000000000000', '263932100000': '999932100000'}[t]).torn(
                 self.LABEL[:8012].replace('263932738825', '999980000000', 1)),
+            # what is left of the time begins with 0, which the daemon
+            # never writes, though its value lies between the lines around
+            # it (the review of #115, G5: T5)
+            'a torn time with a leading zero': self.retimed(
+                lambda t: {'263932738825': '999980000000', '263932000000': '999900000000',
+                           '263932700000': '999970000000', '264075526204': '999990000000',
+                           '264075546749': '1000000000000', '263932100000': '999932100000'}[t]).torn(
+                self.LABEL[:8012].replace('263932738825', '0999980000000', 1)),
             # a next line with a time no daemon writes (B7): before
             # parse_log reaches it, torn_line must not int() it
             'a next line of 5000 digits': self.torn(cut, after='9' * 5000 + self.NEXT[12:]),
@@ -1823,6 +1841,14 @@ class AcrossStarts(unittest.TestCase):
         zeroed = recs[:4] + [{'i': 4, 'ns': 35, 'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096,
                               'bytes': 4096}] + [dict(r, i=r['i'] + 1) for r in recs[4:]]
         self.assertEqual(cdc.held_across_start(zeroed, dcuts, written, blocks)[0], (1, 1, 2, 0))
+        # a block outside the cut's map is not counted, and one written in
+        # part and then whole is known again (the review of #115, G5: H7 and
+        # L7)
+        more = recs[:4] + [{'i': 4, 'ns': 33, 'flags': [], 'pos': 0, 'offset': 3 * 4096, 'bytes': 4096,
+                            'hashes': [self.C]},
+                           {'i': 5, 'ns': 34, 'flags': [], 'pos': 0, 'offset': 5 * 4096, 'bytes': 4096,
+                            'hashes': [self.C]}] + [dict(r, i=r['i'] + 2) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(more, dcuts, written, blocks)[0], (1, 1, 2, 2))
         # a cut counted by the second instance is no cut held across it
         dcuts = [{'number': '1', 'prefix': 5}]
         self.assertEqual(cdc.held_across_start(recs, dcuts, [{'number': 1, 'asked': 60}], blocks), [])
