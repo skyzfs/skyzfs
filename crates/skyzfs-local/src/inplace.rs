@@ -267,6 +267,7 @@ use skyzfs_uberblock::State;
 use state::CutState;
 
 pub use cuts::{Cut, Cuts, Seen, Watcher};
+pub use intent::Base as CommittedCut;
 pub use state::{
     Figures as CutFigures, HeldCut, MemRegion, Phase as CutPhase, DEFAULT_INTENT_REGION,
     MAX_INTENT_REGION, MIN_INTENT_REGION,
@@ -667,6 +668,9 @@ pub struct InPlace<D: Dir> {
     state: Option<CutState<state::StoreRegion>>,
     /// The copies file, once opened.
     copies: Option<D::File>,
+    /// The sync of the copies file for an upload, under way or ended
+    /// ([`InPlace::sync_cut_copies`]).
+    copies_sync: Option<CopiesSync>,
     /// The intent map and its file, kept beside the cut state (M2.3,
     /// `intent.rs`).
     intent: Option<Intent<D::File>>,
@@ -1055,6 +1059,31 @@ pub struct IntentFigures {
     pub waits: u64,
 }
 
+/// What [`InPlace::read_cut_from`] read of a held cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutSlice {
+    /// The blocks read, in order: the `i`-th is in the buffer's `i`-th
+    /// block. Empty only where the map has no block from the slice's
+    /// first on.
+    pub blocks: Vec<u64>,
+    /// The block of the cut's map to read from next; `None` once the map
+    /// is read to its end.
+    pub next: Option<u64>,
+    /// Whether a block was read from a copy: the upload syncs the copies
+    /// file before it commits a cut it read copies for (M2.4).
+    pub copied: bool,
+}
+
+/// A sync of the copies file for the upload of a cut, by its number.
+#[derive(Debug)]
+enum CopiesSync {
+    /// Under way on the file's helper.
+    UnderWay(u64),
+    /// Ended where it began: the file could not begin it on a helper,
+    /// or failed at once.
+    Ended(u64, io::Result<()>),
+}
+
 /// The copies file as the start found it.
 enum CopiesAtStart {
     Synced,
@@ -1117,6 +1146,7 @@ impl<D: Dir> InPlace<D> {
             cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
             state: None,
             copies: None,
+            copies_sync: None,
             intent: None,
             intent_at_start: None,
             flushing: BTreeMap::new(),
@@ -2154,6 +2184,25 @@ fn open_copies<'a, D: Dir>(
         .ok_or_else(|| io::Error::other("the copies file is not open"))
 }
 
+/// Where a block of a held cut is read: a block of the image, or a slot
+/// of the copies file.
+#[derive(Debug, Clone, Copy)]
+enum Place {
+    Image(u64),
+    Copy(u64),
+}
+
+impl Place {
+    /// Whether this place is the one after `before` in the same file, so
+    /// that one read takes both.
+    fn follows(self, before: Place) -> bool {
+        match (before, self) {
+            (Place::Image(a), Place::Image(b)) | (Place::Copy(a), Place::Copy(b)) => b == a + 1,
+            _ => false,
+        }
+    }
+}
+
 /// The cut state's I/O: the home image read as the store reads it, and
 /// the copies file written the same way, by direct I/O in the daemon
 /// (M2.2c; `read_cut` reads the copies so too).
@@ -2276,6 +2325,7 @@ impl<D: Dir> InPlace<D> {
                 state::Taken {
                     region,
                     kept,
+                    found_version,
                     owner,
                     start,
                     bound,
@@ -2299,10 +2349,13 @@ impl<D: Dir> InPlace<D> {
         let trusted = if acknowledged && !self.mutants.has(Mutants::ACKNOWLEDGED_TRUSTED) {
             Err(("the start acknowledges a failure".to_owned(), region))
         } else if !kept {
-            Err((
-                "the region was not there with the volume's length".to_owned(),
-                region,
-            ))
+            let why = match found_version {
+                Some(version) if version != state::VERSION => {
+                    state::RegionError::Version(version).to_string()
+                }
+                _ => "the region was not there with the volume's length".to_owned(),
+            };
+            Err((why, region))
         } else {
             // Read as it is: nothing is stored until it is trusted.
             match CutState::view(region, size, bound, owner, self.mutants) {
@@ -2762,9 +2815,49 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// The held cuts, oldest first.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn held_cuts(&self) -> Vec<HeldCut> {
         self.state.as_ref().map(CutState::held).unwrap_or_default()
+    }
+
+    /// The cut state's name (`CutState::id`), which the uploader puts in
+    /// a cut's row with its number and group: the numbers of cuts begin
+    /// again with each state. `None` for a store that holds no cut.
+    pub fn cut_state_id(&self) -> Option<[u8; 16]> {
+        self.state.as_ref().map(CutState::id)
+    }
+
+    /// The newest cut committed in object storage, as the intent map
+    /// names it: the base the held cuts were made against (M2.4: the
+    /// uploader's assumed base), which needs no object store to know.
+    /// `None` for a map that names none (one begun anew, before its
+    /// first commit) or a store that holds no cut.
+    pub fn committed_cut(&self) -> Option<CommittedCut> {
+        self.intent.as_ref().and_then(|intent| intent.map.base())
+    }
+
+    /// Whether held cut `number` holds the whole volume, so that its
+    /// upload needs no base: the first cut of a state begun with
+    /// nothing known, the first after [`InPlace::abandon_all_cuts`], or
+    /// a cut that took such a cut's map.
+    pub fn cut_is_whole(&self, number: u64) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.is_whole_cut(number))
+    }
+
+    /// The row in object storage is not what the held cuts were made
+    /// against (M2.4, the uploader's check): every held cut is
+    /// abandoned, each counted among the cuts abandoned, their copies
+    /// let go, and the next cut holds the whole volume. The numbers of
+    /// the cuts abandoned, oldest first. The intent map is left as it
+    /// is: nothing new was committed, and a start that does not take up
+    /// the cut state counts what the map names against a base the
+    /// uploader's check will find again that the row does not match.
+    pub fn abandon_all_cuts(&mut self) -> Vec<u64> {
+        self.state
+            .as_mut()
+            .map(CutState::abandon_all)
+            .unwrap_or_default()
     }
 
     /// The cut state's figures, for the status: all 0 for a store that
@@ -2838,41 +2931,220 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
-    /// Held cut `number`, the one being uploaded, is uploaded: let it
-    /// go. Whether it was that cut.
+    /// Read the blocks of held cut `number`'s map from block `from` on,
+    /// as they were at the cut's instant, as many as `buf` has whole
+    /// blocks: what the upload reads, a slice a turn of the queue's
+    /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
+    /// and each run of blocks the image holds, or of copies in adjacent
+    /// slots, in one read. A cut that is not held, and a buffer of no
+    /// block, are refused. The buffer is a [`Buf`], whole blocks aligned
+    /// for direct I/O, so that a caller's buffer cannot make a read fail
+    /// and abandon the cut being uploaded (review of M2.4b-1, N1).
     ///
-    /// The release stands in for the commit in object storage (M2.4):
-    /// after it the intent map names the cut as its base, and clears the
-    /// bits of the regions in which nothing changed after the cut's
-    /// instant (`intent.rs`). The pages are written without a sync; one
-    /// that cannot be written fails the volume, as on the write path.
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// Slices of the cut being uploaded hold the cut whatever the queue
+    /// does between them: that cut is the oldest held, so its map does
+    /// not change while it is held, and each block is read from its copy
+    /// once a write has changed it. A cut that goes between two slices
+    /// (abandoned at the bound, or let go at a copy that could not be
+    /// made) is refused at the next. A read that fails abandons the cut
+    /// if it is the one being uploaded (M2.4): its map goes to the cut
+    /// that waits, which reads those blocks again.
+    pub fn read_cut_from(&mut self, number: u64, from: u64, buf: &mut Buf) -> io::Result<CutSlice> {
+        let block_bytes = skyzfs_blk::BLOCK_USIZE;
+        if buf.blocks() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a cut is read into a buffer of at least one block",
+            ));
+        }
+        let not_held = || io::Error::new(io::ErrorKind::NotFound, "no such held cut");
+        let state = self.state.as_ref().ok_or_else(not_held)?;
+        let (blocks, next) = state
+            .map_from(number, from, buf.len() / block_bytes)
+            .ok_or_else(not_held)?;
+        let reads = blocks
+            .iter()
+            .map(|&block| match state.read(number, block) {
+                Some(state::Read::Image) => Ok(Place::Image(block)),
+                Some(state::Read::Copy(slot)) => Ok(Place::Copy(u64::from(slot))),
+                // Not reached: the block is in the cut's map. An upload
+                // that read the image the cut lies on would be wrong.
+                Some(state::Read::Unchanged) | None => Err(io::Error::other(
+                    "a block of the cut's map reads as not in it",
+                )),
+            })
+            .collect::<io::Result<Vec<Place>>>()?;
+        let copied = reads.iter().any(|read| matches!(read, Place::Copy(_)));
+        if let Err(e) = self.read_places(&reads, buf) {
+            if self.uploading(number) {
+                if let Some(state) = self.state.as_mut() {
+                    state.abandon_uploading(number);
+                }
+            }
+            return Err(e);
+        }
+        Ok(CutSlice {
+            blocks,
+            next,
+            copied,
+        })
+    }
+
+    /// Read the blocks at `places` into `buf`, a block each, in order:
+    /// each run of the image, or of adjacent slots of the copies file,
+    /// in one read.
+    fn read_places(&mut self, places: &[Place], buf: &mut [u8]) -> io::Result<()> {
+        let block_bytes = skyzfs_blk::BLOCK_USIZE;
+        let mut i = 0;
+        while i < places.len() {
+            let mut end = i + 1;
+            while end < places.len() && places[end].follows(places[end - 1]) {
+                end += 1;
+            }
+            let into = &mut buf[i * block_bytes..end * block_bytes];
+            let (file, at) = match places[i] {
+                Place::Image(block) => (&mut self.home, block),
+                Place::Copy(slot) => (open_copies(&self.dir, &mut self.copies)?, slot),
+            };
+            let at = at * skyzfs_blk::BLOCK_SIZE;
+            if self.io.direct {
+                file.read_direct_at(at, into)?;
+            } else {
+                file.read_at(at, into)?;
+            }
+            i = end;
+        }
+        Ok(())
+    }
+
+    /// Whether held cut `number` is the one being uploaded.
+    fn uploading(&self, number: u64) -> bool {
+        self.state.as_ref().is_some_and(|state| {
+            state
+                .held()
+                .first()
+                .is_some_and(|cut| cut.number == number && cut.phase == state::Phase::Uploading)
+        })
+    }
+
+    /// Begin a sync of the copies file before held cut `number`, the one
+    /// being uploaded, is committed in object storage, where the upload
+    /// read a copy for it ([`CutSlice::copied`]): the upload commits a
+    /// cut it read copies for only once they are durable, and abandons
+    /// it if the sync fails (M2.4, the review of M2.2b-1). A copy read
+    /// through the kernel's cache, as test builds can, is the page in
+    /// the cache, and a writeback that failed can leave a disk that does
+    /// not hold it; the sync says so. On the file's helper, as the
+    /// image's syncs are, so that the queue goes on meanwhile;
+    /// [`InPlace::cut_copies_synced`] is its end. Refused where a sync
+    /// for an upload is under way or has not been asked for its end,
+    /// and where cut `number` is not the one being uploaded.
+    pub fn sync_cut_copies(&mut self, number: u64) -> io::Result<()> {
+        if self.copies_sync.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a sync of the copies for an upload is under way",
+            ));
+        }
+        if !self.uploading(number) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the cut is not the one being uploaded",
+            ));
+        }
+        let wake = self.wake.clone();
+        let file = open_copies(&self.dir, &mut self.copies)?;
+        let begun = file.sync_begin(Box::new(move || {
+            if let Some(wake) = wake {
+                wake();
+            }
+        }));
+        self.copies_sync = Some(match begun {
+            Ok(()) => CopiesSync::UnderWay(number),
+            Err(e) if NotBegun::is(&e) => CopiesSync::Ended(number, file.sync()),
+            Err(e) => CopiesSync::Ended(number, Err(e)),
+        });
+        Ok(())
+    }
+
+    /// The end of the sync that [`InPlace::sync_cut_copies`] began:
+    /// `None` while it is under way, which only a call with `wait` false
+    /// can answer, and where none was begun; else its outcome. Where it
+    /// failed, its cut is abandoned if it is still the one being
+    /// uploaded: its map goes to the cut that waits, which uploads its
+    /// blocks. The file's helper wakes the store's caller when the sync
+    /// ends, as for the image's syncs.
+    pub fn cut_copies_synced(&mut self, wait: bool) -> Option<io::Result<()>> {
+        let (number, result) = match self.copies_sync.take()? {
+            CopiesSync::Ended(number, result) => (number, result),
+            CopiesSync::UnderWay(number) => {
+                let ended = match self.copies.as_mut() {
+                    Some(file) => file.sync_end(wait),
+                    None => Some(Err(io::Error::other("the copies file is not open"))),
+                };
+                let Some(result) = ended else {
+                    self.copies_sync = Some(CopiesSync::UnderWay(number));
+                    return None;
+                };
+                (number, result)
+            }
+        };
+        if result.is_err() && self.uploading(number) {
+            if let Some(state) = self.state.as_mut() {
+                state.abandon_uploading(number);
+            }
+        }
+        Some(result)
+    }
+
+    /// Held cut `number`, the one being uploaded, is committed in object
+    /// storage: let it go. Whether it was that cut; false changes
+    /// nothing. Called only after the commit (M2.4); the test-hooks
+    /// build's `release` command calls it without one.
+    ///
+    /// After it the intent map names the cut as its base (the cut
+    /// state's id, the cut's number and its group), and clears the bits
+    /// of the regions in which nothing changed after the cut's instant
+    /// (`intent.rs`). The pages are written without a sync; one that
+    /// cannot be written fails the volume, as on the write path, and the
+    /// cut stays held (review of M2.4b-1).
+    ///
+    /// The intent map names the cut before the cut state lets it go, so
+    /// that a death between, or a failed write of the map's pages, leaves
+    /// the cut held for the uploader's check to find in the row, and
+    /// never a cut gone that the map does not name: the regions it clears
+    /// are those in which nothing changed after the cut's instant, the
+    /// same whether the cut is held or not.
     pub fn release_cut(&mut self, number: u64) -> bool {
-        let group = self
+        let Some(group) = self
             .held_cuts()
             .into_iter()
-            .find(|cut| cut.number == number)
-            .map(|cut| cut.state.txg);
-        let released = self
-            .state
-            .as_mut()
-            .is_some_and(|state| state.release(number));
-        if let (true, Some(group)) = (released, group) {
-            self.intent_committed(number, group);
+            .find(|cut| cut.number == number && cut.phase == CutPhase::Uploading)
+            .map(|cut| cut.state.txg)
+        else {
+            return false;
+        };
+        if !self.intent_committed(number, group) {
+            // The volume has failed, and the cut stays held for the next
+            // start's check, which finds it in the row.
+            return true;
         }
-        released
+        self.state
+            .as_mut()
+            .is_some_and(|state| state.release(number))
     }
 
     /// Cut `number` of group `group` is committed in object storage:
-    /// see [`InPlace::release_cut`].
-    #[cfg(any(test, feature = "test-hooks"))]
-    fn intent_committed(&mut self, number: u64, group: u64) {
-        let changed = self
-            .state
-            .as_ref()
-            .and_then(|state| state.changed_after(number));
+    /// see [`InPlace::release_cut`]. False where the map's pages could
+    /// not be written, and the volume has failed.
+    fn intent_committed(&mut self, number: u64, group: u64) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return true;
+        };
+        let changed = state.changed_after(number);
+        let id = state.id();
         let Some(intent) = &mut self.intent else {
-            return;
+            return true;
         };
         let region_blocks = intent.map.shape().region_blocks;
         let changed: Option<BTreeSet<u64>> = changed.map(|words| {
@@ -2881,7 +3153,11 @@ impl<D: Dir> InPlace<D> {
                 .map(|&word| word as u64 * 64 / region_blocks)
                 .collect()
         });
-        intent.map.commit(intent::Base { number, group });
+        intent.map.commit(intent::Base {
+            state: id,
+            number,
+            group,
+        });
         intent.commits += 1;
         intent.map.clear(|first, _| {
             changed
@@ -2891,7 +3167,9 @@ impl<D: Dir> InPlace<D> {
         if self.write_intent(false).is_err() {
             self.fail();
             self.settle_failed();
+            return false;
         }
+        true
     }
 }
 
