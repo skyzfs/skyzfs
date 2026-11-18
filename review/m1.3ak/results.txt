@@ -11,8 +11,8 @@ binaries 4 passed 62 failed 0
 === tests skyzfsd test-hooks
 rc 0
 binaries 4 passed 75 failed 0
-/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr91/tests-plain.log:3
-/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr91/tests-hooks.log:3
+/scratch/pr91/tests-plain.log:3
+/scratch/pr91/tests-hooks.log:3
 === repeats of the three new tests: 30 alone, then 30 with every CPU busy
      30 ok
 nproc 4

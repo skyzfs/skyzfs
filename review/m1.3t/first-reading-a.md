@@ -1,4 +1,4 @@
-Read-only first reading of the 26 rows. Nothing was built or run; every verdict is from reading the bodies at base 3b98588 and head 45b67f2. Every test the author names exists at the head. "Base" lines are in `crates/skyzfs-local/src/store/tests.rs` at 3b98588 (copy: /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr69/agent-a/base-store-tests.rs).
+Read-only first reading of the 26 rows. Nothing was built or run; every verdict is from reading the bodies at base 3b98588 and head 45b67f2. Every test the author names exists at the head. "Base" lines are in `crates/skyzfs-local/src/store/tests.rs` at 3b98588 (copy: /scratch/pr69/agent-a/base-store-tests.rs).
 
 Tally: 19 HELD, 3 PARTLY (rows 11, 20, 25), 1 reversed by design (row 8), 1 NOT HELD by declared decision (row 26), 2 with nothing left to hold beyond the suite runs (rows 17, 23 are counted in HELD).
 

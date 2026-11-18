@@ -1,5 +1,5 @@
 --- crates/skyzfs-blk/src/model.rs	2026-11-13 17:12:12.384705552 +0000
-+++ /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr60/model-with-experiment.rs	2026-11-13 17:12:12.383315183 +0000
++++ /scratch/pr60/model-with-experiment.rs	2026-11-13 17:12:12.383315183 +0000
 @@ -73,6 +73,8 @@
      Base, BlkError, Completion, Geometry, Op, Request, RequestId, BLOCK_SIZE, BLOCK_USIZE,
  };

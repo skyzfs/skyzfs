@@ -1,0 +1,105 @@
+head e42ea6ac21524f2ba4f1b73b7e12e98247bac25a
+$ cargo test -p skyzfsd --test review_m24c2 --no-fail-fast -- --nocapture --test-threads=1
+
+running 11 tests
+test d1_a_cut_goes_up_through_the_queue_loop_and_the_stop_lets_the_lease_go ... D1: cut 7 (whole) uploaded 260.126485ms after its first write, 9 calls answered on the queue's thread; states [Idle, Reading, Committing, Checking, Idle]
+D1: cut 8 uploaded from a copy; states [Reading, Syncing, Committing, Checking, Idle]
+D1: stop in order, Released in 188.913µs; held cuts 0
+ok
+test d2_without_the_desks_wake_an_idle_queue_answers_nothing ... D2: with no wake, nothing uploaded in 4 s on an idle queue; 1 calls answered
+ok
+test d3_a_stop_under_a_commit_ends_in_time_and_the_next_instance_uploads_the_cut ... D3: stop under a commit: Released in 704.788906ms; head's group None, 1 cut held
+D3: the next instance: uploaded 1, found committed 0, lease epoch 1
+ok
+test d4_a_stop_between_the_swap_and_the_release_is_found_committed_by_the_next_instance ... D4: stop between the swap and the release: Released in 146.166µs; head's group Some(7), the row's Some(7), 1 cut still held
+D4: the next instance found cut 7 committed and let it go
+ok
+test d5_a_queue_thread_that_panics_leaves_the_desk_open_and_the_drop_ends_the_uploader ... D5: after a panic of the queue's thread the desk was left open; the drop ended the uploader in 89.916µs, lease kept
+ok
+test defect_s1_create_takes_a_clone_that_holds_data_as_empty ... S1: create --volume pg-clone on a clone that holds data: Ok(Found)
+FAILED
+test defect_s2_the_status_names_no_holder_while_the_lease_is_held ... S2: lease held: lease_holder at the start "", after a turn ""
+FAILED
+test s3_a_refusal_after_an_acknowledging_open_has_removed_the_stores_marker ... S3: after exit 10 on an acknowledging start: marker removed, start token new, the next start without --acknowledge-failure opens the volume
+ok
+test s4_a_take_that_landed_unheard_is_held_at_the_same_epoch_by_the_uploader ... S4: the start said Unreached("object storage did not answer within 100 ms"); the row names node-a at epoch 1; the uploader's take: Held { epoch: 1, expires_at_ms: 1794982672913 }
+ok
+test s5_a_start_that_fails_after_the_take_keeps_the_lease_for_its_time ... S5: after a start that took the lease and failed: node-b refused (another holder has the volume's lease in object storage: node-a at epoch 1), still refused 29999 ms later: true; node-a again: Some(Taken { epoch: 1 }); node-b after the lease's time: Some(Taken { epoch: 2 })
+ok
+test s6_two_creates_of_one_name_before_a_serve_both_succeed ... S6: the first create: Ok(Made); a second, of another directory or node: Ok(Found)
+ok
+
+failures:
+
+failures:
+    defect_s1_create_takes_a_clone_that_holds_data_as_empty
+    defect_s2_the_status_names_no_holder_while_the_lease_is_held
+
+test result: FAILED. 9 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s
+
+
+thread 'defect_s1_create_takes_a_clone_that_holds_data_as_empty' (27474) panicked at bins/skyzfsd/tests/review_m24c2.rs:753:5:
+a clone that holds data was taken as a volume a create left: Ok(Found)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'defect_s2_the_status_names_no_holder_while_the_lease_is_held' (27475) panicked at bins/skyzfsd/tests/review_m24c2.rs:783:5:
+assertion `left == right` failed: at the start
+  left: ""
+ right: "node-a"
+error: test failed, to rerun pass `-p skyzfsd --test review_m24c2`
+error: 1 target failed:
+    `-p skyzfsd --test review_m24c2`
+exit 101
+
+$ cargo test -p skyzfsd --features skyzfsd/test-hooks --test review_m24c2 --no-fail-fast -- --nocapture --test-threads=1
+
+running 11 tests
+test d1_a_cut_goes_up_through_the_queue_loop_and_the_stop_lets_the_lease_go ... D1: cut 7 (whole) uploaded 259.610567ms after its first write, 9 calls answered on the queue's thread; states [Idle, Reading, Committing, Checking, Idle]
+D1: cut 8 uploaded from a copy; states [Reading, Syncing, Committing, Checking, Idle]
+D1: stop in order, Released in 161.792µs; held cuts 0
+ok
+test d2_without_the_desks_wake_an_idle_queue_answers_nothing ... D2: with no wake, nothing uploaded in 4 s on an idle queue; 1 calls answered
+ok
+test d3_a_stop_under_a_commit_ends_in_time_and_the_next_instance_uploads_the_cut ... D3: stop under a commit: Released in 702.000118ms; head's group None, 1 cut held
+D3: the next instance: uploaded 1, found committed 0, lease epoch 1
+ok
+test d4_a_stop_between_the_swap_and_the_release_is_found_committed_by_the_next_instance ... D4: stop between the swap and the release: Released in 206.685µs; head's group Some(7), the row's Some(7), 1 cut still held
+D4: the next instance found cut 7 committed and let it go
+ok
+test d5_a_queue_thread_that_panics_leaves_the_desk_open_and_the_drop_ends_the_uploader ... D5: after a panic of the queue's thread the desk was left open; the drop ended the uploader in 91.825µs, lease kept
+ok
+test defect_s1_create_takes_a_clone_that_holds_data_as_empty ... S1: create --volume pg-clone on a clone that holds data: Ok(Found)
+FAILED
+test defect_s2_the_status_names_no_holder_while_the_lease_is_held ... S2: lease held: lease_holder at the start "", after a turn ""
+FAILED
+test s3_a_refusal_after_an_acknowledging_open_has_removed_the_stores_marker ... S3: after exit 10 on an acknowledging start: marker removed, start token new, the next start without --acknowledge-failure opens the volume
+ok
+test s4_a_take_that_landed_unheard_is_held_at_the_same_epoch_by_the_uploader ... S4: the start said Unreached("object storage did not answer within 100 ms"); the row names node-a at epoch 1; the uploader's take: Held { epoch: 1, expires_at_ms: 1794982698409 }
+ok
+test s5_a_start_that_fails_after_the_take_keeps_the_lease_for_its_time ... S5: after a start that took the lease and failed: node-b refused (another holder has the volume's lease in object storage: node-a at epoch 1), still refused 29999 ms later: true; node-a again: Some(Taken { epoch: 1 }); node-b after the lease's time: Some(Taken { epoch: 2 })
+ok
+test s6_two_creates_of_one_name_before_a_serve_both_succeed ... S6: the first create: Ok(Made); a second, of another directory or node: Ok(Found)
+ok
+
+failures:
+
+failures:
+    defect_s1_create_takes_a_clone_that_holds_data_as_empty
+    defect_s2_the_status_names_no_holder_while_the_lease_is_held
+
+test result: FAILED. 9 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.32s
+
+
+thread 'defect_s1_create_takes_a_clone_that_holds_data_as_empty' (27748) panicked at bins/skyzfsd/tests/review_m24c2.rs:753:5:
+a clone that holds data was taken as a volume a create left: Ok(Found)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'defect_s2_the_status_names_no_holder_while_the_lease_is_held' (27749) panicked at bins/skyzfsd/tests/review_m24c2.rs:783:5:
+assertion `left == right` failed: at the start
+  left: ""
+ right: "node-a"
+error: test failed, to rerun pass `-p skyzfsd --test review_m24c2`
+error: 1 target failed:
+    `-p skyzfsd --test review_m24c2`
+exit 101
+

@@ -1,0 +1,10 @@
+W01 | bins/skyzfsd/src/serve.rs | the queue's thread never answers the desk | SURVIVED
+W02 | bins/skyzfsd/src/serve.rs | the queue's thread does not close the desk at its end | SURVIVED
+W03 | bins/skyzfsd/src/serve.rs | the desk's wake does nothing | SURVIVED
+W04 | bins/skyzfsd/src/serve.rs | the lease is let go at every exit that reaches the end | SURVIVED
+W05 | bins/skyzfsd/src/serve.rs | the lease is never let go | SURVIVED
+W06 | bins/skyzfsd/src/serve.rs | a volume with a place does not hold its cuts unless --hold-cuts | KILLED by the_intent_region_reaches_the_store
+W07 | bins/skyzfsd/src/serve.rs | the lease's time is counted in the start's `devices` time | SURVIVED
+W08 | bins/skyzfsd/src/serve.rs | a start refused for the lease exits 8, not 10 | SURVIVED
+W09 | bins/skyzfsd/src/serve.rs | the lease's options are taken for a volume with no place | KILLED by the_uploads_come_from_the_file_remote_and_the_lease_options_need_one
+W10 | bins/skyzfsd/src/serve.rs | --kill-at-upload is taken for a volume with no place | KILLED by the_uploads_come_from_the_file_remote_and_the_lease_options_need_one

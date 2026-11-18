@@ -50,4 +50,4 @@ Most doubtful:
 
 Stale text at the head, outside the 25 rows: `crates/skyzfs-local/tests/inplace_real.rs:357` and `:376-377` still point to the deleted `store_real.rs`, and `crates/skyzfs-local/src/fs.rs:1045-1046` still gives "one of the log's files holds the log's key" as the reason for mode 0600.
 
-The base files I read are extracted under /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr69/agent-c/.
+The base files I read are extracted under /scratch/pr69/agent-c/.

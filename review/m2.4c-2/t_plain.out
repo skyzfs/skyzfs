@@ -1,4 +1,4 @@
-   Compiling skyzfs-local v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118/crates/skyzfs-local)
+   Compiling skyzfs-local v0.0.1 (/scratch/wt118/crates/skyzfs-local)
    Compiling wait-timeout v0.2.1
    Compiling bit-vec v0.8.0
    Compiling quick-error v1.2.3
@@ -7,13 +7,13 @@
    Compiling rusty-fork v0.3.1
    Compiling unarray v0.1.4
    Compiling regex-syntax v0.8.11
-   Compiling skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118/crates/skyzfs-upload)
-   Compiling skyzfs-ublk v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118/crates/skyzfs-ublk)
-   Compiling skyzfs-ublk-sys v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118/crates/skyzfs-ublk-sys)
-   Compiling skyzfsd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118/bins/skyzfsd)
+   Compiling skyzfs-upload v0.0.1 (/scratch/wt118/crates/skyzfs-upload)
+   Compiling skyzfs-ublk v0.0.1 (/scratch/wt118/crates/skyzfs-ublk)
+   Compiling skyzfs-ublk-sys v0.0.1 (/scratch/wt118/crates/skyzfs-ublk-sys)
+   Compiling skyzfsd v0.0.1 (/scratch/wt118/bins/skyzfsd)
    Compiling proptest v1.11.0
     Finished `test` profile [optimized + debuginfo] target(s) in 1m 36s
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-ublk/6cb862f8c90e09ca/out/skyzfs_ublk-6cb862f8c90e09ca)
+     Running unittests src/lib.rs (/scratch/wt118-target/debug/build/skyzfs-ublk/6cb862f8c90e09ca/out/skyzfs_ublk-6cb862f8c90e09ca)
 
 running 152 tests
 test features::tests::a_delete_the_driver_does_not_know_is_told_as_such ... ok
@@ -171,21 +171,21 @@ test status::tests::a_write_asked_for_again_that_fails_is_tried_again_an_interva
 
 test result: ok. 152 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.18s
 
-     Running tests/failure_note.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-ublk/e98ee144784cd843/out/failure_note-e98ee144784cd843)
+     Running tests/failure_note.rs (/scratch/wt118-target/debug/build/skyzfs-ublk/e98ee144784cd843/out/failure_note-e98ee144784cd843)
 
 running 1 test
 test a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boot ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
 
-     Running tests/pump_store.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-ublk/6065aa04c2d57c49/out/pump_store-6065aa04c2d57c49)
+     Running tests/pump_store.rs (/scratch/wt118-target/debug/build/skyzfs-ublk/6065aa04c2d57c49/out/pump_store-6065aa04c2d57c49)
 
 running 1 test
 test the_pump_serves_the_in_place_store ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-upload/bf9cef4b13197857/out/skyzfs_upload-bf9cef4b13197857)
+     Running unittests src/lib.rs (/scratch/wt118-target/debug/build/skyzfs-upload/bf9cef4b13197857/out/skyzfs_upload-bf9cef4b13197857)
 
 running 21 tests
 test check::tests::a_cut_of_part_of_the_volume_is_uploaded_onto_the_base_the_row_names ... ok
@@ -212,7 +212,7 @@ test lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_neve
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/crash.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-upload/3d23db25046a8685/out/crash-3d23db25046a8685)
+     Running tests/crash.rs (/scratch/wt118-target/debug/build/skyzfs-upload/3d23db25046a8685/out/crash-3d23db25046a8685)
 
 running 3 tests
 test a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most ... ok
@@ -221,7 +221,7 @@ test a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_uploa
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
 
-     Running tests/driver.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-upload/6f10ff6a60b38bcb/out/driver-6f10ff6a60b38bcb)
+     Running tests/driver.rs (/scratch/wt118-target/debug/build/skyzfs-upload/6f10ff6a60b38bcb/out/driver-6f10ff6a60b38bcb)
 
 running 22 tests
 test a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded ... ok
@@ -249,7 +249,7 @@ test a_lost_cut_leaves_the_next_check_to_find_head_as_it_is ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
-     Running tests/queued.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-upload/3389c0ad0e088775/out/queued-3389c0ad0e088775)
+     Running tests/queued.rs (/scratch/wt118-target/debug/build/skyzfs-upload/3389c0ad0e088775/out/queued-3389c0ad0e088775)
 
 running 2 tests
 test a_closed_desk_answers_as_a_store_that_holds_nothing ... ok
@@ -257,7 +257,7 @@ test a_cut_goes_up_through_the_desk_answered_on_the_stores_thread ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/uploader.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfs-upload/559e9d2f48192e9d/out/uploader-559e9d2f48192e9d)
+     Running tests/uploader.rs (/scratch/wt118-target/debug/build/skyzfs-upload/559e9d2f48192e9d/out/uploader-559e9d2f48192e9d)
 
 running 9 tests
 test after_a_step_that_outlasts_the_renewal_the_lease_is_kept_at_once_and_the_backoff_counts_from_the_failure ... ok
@@ -272,7 +272,7 @@ test the_lease_is_kept_every_third_of_its_time ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfsd/8146c061ac83520b/out/skyzfsd-8146c061ac83520b)
+     Running unittests src/lib.rs (/scratch/wt118-target/debug/build/skyzfsd/8146c061ac83520b/out/skyzfsd-8146c061ac83520b)
 
 running 86 tests
 test cli::tests::create_takes_a_place_in_object_storage_whole_or_not_at_all ... ok
@@ -384,13 +384,13 @@ test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_
 
 test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.21s
 
-     Running unittests src/main.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfsd/2e7f37e57c3c5c09/out/skyzfsd-2e7f37e57c3c5c09)
+     Running unittests src/main.rs (/scratch/wt118-target/debug/build/skyzfsd/2e7f37e57c3c5c09/out/skyzfsd-2e7f37e57c3c5c09)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/closed_output.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/wt118-target/debug/build/skyzfsd/7c317b54e2467f81/out/closed_output-7c317b54e2467f81)
+     Running tests/closed_output.rs (/scratch/wt118-target/debug/build/skyzfsd/7c317b54e2467f81/out/closed_output-7c317b54e2467f81)
 
 running 3 tests
 test help_into_a_closed_pipe_exits_0 ... ok
