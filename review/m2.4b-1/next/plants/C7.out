@@ -1,0 +1,2 @@
+C7 a block of the image that follows after one block skipped joins the run: KILLED by 1: blocks_of_the_image_are_one_read_only_where_their_numbers_follow
+git status --short: clean
