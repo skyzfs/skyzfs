@@ -933,6 +933,16 @@ class Parse(unittest.TestCase):
         o.FILL = f(self.FILL + '00000')[:-5]
         return o
 
+    def test_a_time_of_more_than_20_digits(self):
+        """No u64 of nanoseconds has more than 20 digits: such a time is
+        the rig's error and not int()'s, whole or after a start line."""
+        begin = f'1\t{PID}\tstart\t0\t-\t-\t-\t64\n'
+        for digits in (21, 5000):
+            with self.subTest(digits=digits):
+                with self.assertRaisesRegex(RigError, f'line 2: a time of {digits} digits'):
+                    cdc.parse_log(begin + '9' * digits + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
+        cdc.parse_log(begin + '9' * 20 + f'\t{PID}\trecv\t2\tflush\t0\t0\t-\n')
+
     def test_a_label_line_torn_by_a_kill(self):
         self.assertEqual(len(self.LABEL), 8235)    # 4096 bytes in hex after seven columns
         text, n = self.torn(self.LABEL[:8012])
