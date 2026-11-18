@@ -771,7 +771,10 @@ def held_across_start(records, dcuts, written, blocks):
     earlier one made (the review of #111, G1). Only what is known counts:
     a block a write covered in part, or a write-zeroes touched, last in
     that span is not known, and a block written back to the cut's content
-    is not counted (Codex on #115)."""
+    is not counted (Codex on #115). Nor is a block a write-zeroes left
+    unplaced (records_of's ambiguous set) and that a write received before
+    it was applied to after it in the log: the store ran that write first,
+    and the block may hold the zeros (the review of #115, R2)."""
     starts = [r for r in records if 'instance' in r['flags']]
     by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
     out = []
@@ -786,15 +789,22 @@ def held_across_start(records, dcuts, written, blocks):
         end = starts[counted]['i']
         held = blocks.get(w['number'], {})
         home = {}               # block -> its content as last written, None where not known
+        unplaced = {}           # block -> the recv line of the write-zeroes that left it unplaced
         for r in records[d['prefix'] + 1:end]:
             zeroes = r.get('op') == 'write_zeroes'
             if not (cut_ref.is_write(r) or zeroes):
                 continue
             hs = None if zeroes else r.get('hashes')
+            seq = r.get('seq')
             first = r['offset'] // BLOCK
             for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+                # a write received before the write-zeroes ran before it
+                before = not zeroes and seq is not None and b in unplaced and seq < unplaced[b]
                 if b in held:
-                    home[b] = None if hs is None else hs[k]
+                    home[b] = None if hs is None or before else hs[k]
+            if zeroes:
+                for b in r.get('ambiguous', ()):
+                    unplaced[b] = seq
         hit = sum(1 for b, h in home.items() if h is not None and h != held[b])
         out.append((w['number'], counted + 1, wrote + 1, hit))
     return out
@@ -998,10 +1008,16 @@ def unstored_at_kill(instances, acked=frozenset()):
       counts on past one more (the shape no kill leaves,
       cut_line_missing), the barrier is kept for that error;
     - with cut line K (window C), the cut was stored or not: the next
-      instance says which. Where it takes the same state up and its first
-      cut is K again, at the same group, the first line was no cut and
-      both lines are taken out; anything else keeps them, and a cut K+1
-      there means the state had stored K.
+      cut line of the same state says which, in whichever later instance
+      it comes (the next may be killed before it cuts, the review of
+      #115, R1). Where it is K again, the first line was no cut and both
+      lines are taken out, at whatever group: a device created at the
+      next start drops the mark and cuts K at a later group (R1's Cc),
+      and the reference judges where the cut falls. Anything else keeps
+      them, and a cut K+1 there means the state had stored K.
+    The next cut line of the same state is the first in a later instance;
+    there is none where a start that acknowledged a failure comes first,
+    as it begins a state of its own.
     A note: {'line', 'pid', 'shape', 'number', 'group'}."""
     out, notes, last = [], [], 0
     for k, inst in enumerate(instances):
@@ -1009,20 +1025,24 @@ def unstored_at_kill(instances, acked=frozenset()):
         if k and inst['pid'] in acked:
             last = 0
         if k + 1 < len(instances):
-            nxt = instances[k + 1]
             tail = lines[-2:]
-            again = next((ln for ln in nxt['lines'] if ln['event'] == 'cut'), None)
+            again = None
+            for later in instances[k + 1:]:
+                if later['pid'] in acked:
+                    break
+                again = next((ln for ln in later['lines'] if ln['event'] == 'cut'), None)
+                if again is not None:
+                    break
             counted = [ln['sectors'] for ln in lines if ln['event'] == 'cut']
             n = int(counted[-1]) if counted and counted[-1].isdigit() else last
-            skips = nxt['pid'] not in acked and again is not None and again['sectors'] == str(n + 2)
+            skips = again is not None and again['sectors'] == str(n + 2)
             if lines and lines[-1]['event'] == 'barrier' and not skips:
                 notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'B', 'number': None,
                               'group': None})
                 lines = lines[:-1]
             elif len(tail) == 2 and [ln['event'] for ln in tail] == ['barrier', 'cut'] \
-                    and tail[0]['tag'] == tail[1]['tag'] and nxt['pid'] not in acked:
-                if again is not None and (again['sectors'], again['result']) == (tail[1]['sectors'],
-                                                                                 tail[1]['result']):
+                    and tail[0]['tag'] == tail[1]['tag']:
+                if again is not None and again['sectors'] == tail[1]['sectors']:
                     notes.append({'line': tail[1]['line'], 'pid': inst['pid'], 'shape': 'C',
                                   'number': tail[1]['sectors'], 'group': tail[1]['result']})
                     lines = lines[:-2]

@@ -1516,20 +1516,25 @@ class TwoInstances(unittest.TestCase):
 
     def test_a_cut_line_that_is_not_cut_again(self):
         """The barrier and cut line of window C kept where the next
-        instance does not cut the same number at the same group, and
-        window B's barrier kept where the next instance counts on past one
-        more, for the errors and verdicts after."""
+        instance does not cut the same number, and window B's barrier kept
+        where the next instance counts on past one more, for the errors
+        and verdicts after. The same number at another group is window C
+        (the review of #115, R1: a created device cuts K at a later
+        group), and the reference judges where it falls."""
         def first_cut(text, f):
             lines = text.splitlines()
             j = next(i for i, ln in enumerate(lines) if ln.split('\t')[1:3] == [PID2, 'cut'])
             c = lines[j].split('\t')
             lines[j] = '\t'.join(f(c))
             return '\n'.join(lines) + '\n'
-        for why, f in (('another group', lambda c: c[:7] + [str(int(c[7]) + 1)]),
-                       ('another number', lambda c: c[:6] + [str(int(c[6]) + 1)] + c[7:])):
-            with self.subTest(why):
-                self.judge(first_cut(split_log(self.text, self.k, shape='C'), f))
-                self.assertEqual(self.unstored, [])
+        _, _, dcuts, ref = self.judge(first_cut(split_log(self.text, self.k, shape='C'),
+                                                lambda c: c[:7] + [str(int(c[7]) + 1)]))
+        self.assertEqual([n['shape'] for n in self.unstored], ['C'])
+        ok, detail = cdc.compare(dcuts, ref)
+        self.assertFalse(ok)
+        self.assertIn(f'cut {self.k}: ', detail)
+        self.judge(first_cut(split_log(self.text, self.k, shape='C'), lambda c: c[:6] + [str(int(c[6]) + 1)] + c[7:]))
+        self.assertEqual(self.unstored, [])
         self.judge(split_log(self.text, self.k, shape='A'))
         self.assertEqual(self.unstored, [])
         # A start that acknowledged a failure counts from 1: its first cut
@@ -1572,6 +1577,24 @@ class TwoInstances(unittest.TestCase):
         out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10'), barrier(2), cut(2, '5', '11')),
                                            inst(PID2, cut(1, '5', '11'))])
         self.assertEqual(([n['shape'] for n in notes], len(out[0]['lines'])), (['C'], 1))
+        # the next instance killed too before it cut: the next cut line of
+        # the state, in the third, says whether K was stored (R1's C2) ...
+        killed = inst(PID, cut(1, '4', '10'), barrier(2), cut(2, '5', '11'))
+        out, notes = cdc.unstored_at_kill([killed, inst(PID2, ('recv', 1, '0', '0')),
+                                           inst('9999', cut(1, '5', '11'))])
+        self.assertEqual(([n['shape'] for n in notes], len(out[0]['lines'])), (['C'], 1))
+        out, notes = cdc.unstored_at_kill([killed, inst(PID2, ('recv', 1, '0', '0')),
+                                           inst('9999', cut(1, '6', '12'))])
+        self.assertEqual(notes, [])
+        # ... unless a start that acknowledged a failure comes first
+        out, notes = cdc.unstored_at_kill([killed, inst(PID2, ('recv', 1, '0', '0')),
+                                           inst('9999', cut(1, '5', '11'))], {PID2})
+        self.assertEqual(notes, [])
+        # window B: the third counts on past one more, and the barrier is
+        # kept for that error
+        out, notes = cdc.unstored_at_kill([inst(PID, cut(1, '4', '10'), barrier(2)), inst(PID2, ('recv', 1, '0', '0')),
+                                           inst('9999', cut(1, '6', '12'))])
+        self.assertEqual((notes, out[0]['lines'][-1]['event']), ([], 'barrier'))
 
     def test_what_the_first_instance_did_not_finish(self):
         """A write received and not applied, and a write-zeroes behind a
@@ -1883,6 +1906,20 @@ class AcrossStarts(unittest.TestCase):
                            {'i': 5, 'ns': 34, 'flags': [], 'pos': 0, 'offset': 5 * 4096, 'bytes': 4096,
                             'hashes': [self.C]}] + [dict(r, i=r['i'] + 2) for r in recs[4:]]
         self.assertEqual(cdc.held_across_start(more, dcuts, written, blocks)[0], (1, 1, 2, 2))
+        # a write received before a write-zeroes that left its block
+        # unplaced and applied after it in the log: the store ran it first,
+        # and the block may hold zeros (the review of #115, R2); one
+        # received after the write-zeroes places the block again
+        def zeroed_by(*writes):
+            z = {'i': 4, 'ns': 33, 'flags': ['discard'], 'op': 'write_zeroes', 'offset': 4096, 'bytes': 4096,
+                 'ambiguous': {1}, 'seq': 20}
+            ws = [{'i': 5 + j, 'ns': 34 + j, 'flags': [], 'pos': 0, 'offset': 4096, 'bytes': 4096, 'hashes': [h],
+                   'seq': seq} for j, (seq, h) in enumerate(writes)]
+            return recs[:4] + [z] + ws + [dict(r, i=r['i'] + 1 + len(ws)) for r in recs[4:]]
+        self.assertEqual(cdc.held_across_start(zeroed_by((19, self.C)), dcuts, written, blocks)[0], (1, 1, 2, 0))
+        self.assertEqual(cdc.held_across_start(zeroed_by((21, self.C)), dcuts, written, blocks)[0], (1, 1, 2, 1))
+        self.assertEqual(cdc.held_across_start(zeroed_by((19, self.C), (22, self.B)), dcuts, written, blocks)[0],
+                         (1, 1, 2, 1))
         # a cut counted by the second instance is no cut held across it
         dcuts = [{'number': '1', 'prefix': 5}]
         self.assertEqual(cdc.held_across_start(recs, dcuts, [{'number': 1, 'asked': 60}], blocks), [])
