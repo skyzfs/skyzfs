@@ -147,8 +147,10 @@ it is placed when that one runs it). Then:
 - `instance_K`: the K-th start's `cuts` line, and its status read once
   it was ready (DIR/status-start-K.txt): `begun` for the first, then
   `taken_up` for the cut state and the intent map, and `cuts` no lower
-  than the cuts counted before it; the intent map's regions named at
-  the start, as information;
+  than the cuts counted before it; `cuts_held` at least 1 at a start
+  that takes the state up where the newest cut counted before it was
+  not released before it (the holder's log); the intent map's regions
+  named at the start, as information;
 - the controls `mark-dropped` (no mark kept at a take-over) and
   `mark-kept` (the mark kept on a created device), caught in takeover,
   which makes a mark wait across each (zfs_nocacheflush, between the
@@ -771,7 +773,10 @@ def held_across_start(records, dcuts, written, blocks):
     earlier one made (the review of #111, G1). Only what is known counts:
     a block a write covered in part, or a write-zeroes touched, last in
     that span is not known, and a block written back to the cut's content
-    is not counted (Codex on #115)."""
+    is not counted (Codex on #115). Nor is a block a write-zeroes left
+    unplaced (records_of's ambiguous set) and that a write received before
+    it was applied to after it in the log: the store ran that write first,
+    and the block may hold the zeros (the review of #115, R2)."""
     starts = [r for r in records if 'instance' in r['flags']]
     by_number = {int(d['number']): d for d in dcuts if d['number'] != '-'}
     out = []
@@ -786,15 +791,22 @@ def held_across_start(records, dcuts, written, blocks):
         end = starts[counted]['i']
         held = blocks.get(w['number'], {})
         home = {}               # block -> its content as last written, None where not known
+        unplaced = {}           # block -> the recv line of the write-zeroes that left it unplaced
         for r in records[d['prefix'] + 1:end]:
             zeroes = r.get('op') == 'write_zeroes'
             if not (cut_ref.is_write(r) or zeroes):
                 continue
             hs = None if zeroes else r.get('hashes')
+            seq = r.get('seq')
             first = r['offset'] // BLOCK
             for k, b in enumerate(range(first, (r['offset'] + r['bytes'] - 1) // BLOCK + 1)):
+                # a write received before the write-zeroes ran before it
+                before = not zeroes and seq is not None and b in unplaced and seq < unplaced[b]
                 if b in held:
-                    home[b] = None if hs is None else hs[k]
+                    home[b] = None if hs is None or before else hs[k]
+            if zeroes:
+                for b in r.get('ambiguous', ()):
+                    unplaced[b] = seq
         hit = sum(1 for b, h in home.items() if h is not None and h != held[b])
         out.append((w['number'], counted + 1, wrote + 1, hit))
     return out
@@ -981,6 +993,44 @@ def held_content(records, dcuts, written, blocks, final=None):
     return ok, '; '.join(bad + notes), controls, wrong_blocks
 
 
+def reapplied(inst, later):
+    """Whether the mark the write whose `applied` line ends instance inst
+    may set was not stored: instance later applies the write again (the
+    same range, the same hashes), and no flush that later received before
+    that cuts.
+
+    A flush takes the mark out of the state at its receipt and cuts at
+    its barrier, after the writes on the threads (inplace.rs, cuts.rs). A
+    flush received before the second `applied` line had the stored mark,
+    if there was one, whether its `cut` line comes before or after that
+    line (the review of #116, D1: the write handed over first, the flush
+    received while it was on the threads); a flush received after it has
+    the mark of the second application. So the first line is taken out
+    when the write is applied again and no cut line of an earlier flush
+    follows, before a flush received after it cuts."""
+    last = inst['lines'][-1]
+    recv = next((ln for ln in reversed(inst['lines']) if ln['event'] == 'recv' and ln['tag'] == last['tag']), None)
+    if recv is None or recv['op'] != 'write':
+        return False
+    rng, early, again = {}, set(), False
+    for ln in later['lines']:
+        if ln['event'] == 'cut':
+            if not again or ln['tag'] in early:
+                return False
+            return True
+        if ln['event'] == 'recv':
+            rng[ln['tag']] = (ln['op'], ln['sector'], ln['sectors'])
+            if ln['op'] == 'flush' and not again:
+                early.add(ln['tag'])
+            else:
+                early.discard(ln['tag'])
+        elif not again and ln['event'] == 'applied' \
+                and rng.get(ln['tag']) == (recv['op'], recv['sector'], recv['sectors']) \
+                and ln['extra'][:1] == last['extra'][:1]:
+            again = True
+    return again
+
+
 def unstored_at_kill(instances, acked=frozenset()):
     """The instances, with what a kill left of a cut that the state never
     stored taken out -> (instances, [note]).
@@ -998,10 +1048,27 @@ def unstored_at_kill(instances, acked=frozenset()):
       counts on past one more (the shape no kill leaves,
       cut_line_missing), the barrier is kept for that error;
     - with cut line K (window C), the cut was stored or not: the next
-      instance says which. Where it takes the same state up and its first
-      cut is K again, at the same group, the first line was no cut and
-      both lines are taken out; anything else keeps them, and a cut K+1
-      there means the state had stored K.
+      cut line of the same state says which, in whichever later instance
+      it comes (the next may be killed before it cuts, the review of
+      #115, R1). Where it is K again, the first line was no cut and both
+      lines are taken out, at whatever group: a device created at the
+      next start drops the mark and cuts K at a later group (R1's Cc),
+      and the reference judges where the cut falls. Anything else keeps
+      them, and a cut K+1 there means the state had stored K.
+    The next cut line of the same state is the first in a later instance;
+    there is none where a start that acknowledged a failure comes first,
+    as it begins a state of its own.
+    A write is answered with its `commit` line, after the store applied
+    it (`applied`) and stored the mark an uberblock write sets
+    (inplace.rs; the review of #115, F2). An instance that ends with an
+    `applied` line was killed before the answer, and the mark may not
+    have been stored: where the next instance takes the state up and
+    applies the same write again (the same range and hashes: the kernel
+    handed it over), and no flush it received before that cuts, the
+    first `applied` line is taken out (window M), and the write is
+    placed where it was applied again (reapplied). Where such a flush
+    cuts, before or after the second `applied` line, it had the mark
+    from the state, and the line is kept.
     A note: {'line', 'pid', 'shape', 'number', 'group'}."""
     out, notes, last = [], [], 0
     for k, inst in enumerate(instances):
@@ -1009,20 +1076,29 @@ def unstored_at_kill(instances, acked=frozenset()):
         if k and inst['pid'] in acked:
             last = 0
         if k + 1 < len(instances):
-            nxt = instances[k + 1]
             tail = lines[-2:]
-            again = next((ln for ln in nxt['lines'] if ln['event'] == 'cut'), None)
+            again = None
+            for later in instances[k + 1:]:
+                if later['pid'] in acked:
+                    break
+                again = next((ln for ln in later['lines'] if ln['event'] == 'cut'), None)
+                if again is not None:
+                    break
             counted = [ln['sectors'] for ln in lines if ln['event'] == 'cut']
             n = int(counted[-1]) if counted and counted[-1].isdigit() else last
-            skips = nxt['pid'] not in acked and again is not None and again['sectors'] == str(n + 2)
+            skips = again is not None and again['sectors'] == str(n + 2)
             if lines and lines[-1]['event'] == 'barrier' and not skips:
                 notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'B', 'number': None,
                               'group': None})
                 lines = lines[:-1]
+            elif lines and lines[-1]['event'] == 'applied' and k + 1 < len(instances) \
+                    and instances[k + 1]['pid'] not in acked and reapplied(dict(inst, lines=lines), instances[k + 1]):
+                notes.append({'line': lines[-1]['line'], 'pid': inst['pid'], 'shape': 'M', 'number': None,
+                              'group': None})
+                lines = lines[:-1]
             elif len(tail) == 2 and [ln['event'] for ln in tail] == ['barrier', 'cut'] \
-                    and tail[0]['tag'] == tail[1]['tag'] and nxt['pid'] not in acked:
-                if again is not None and (again['sectors'], again['result']) == (tail[1]['sectors'],
-                                                                                 tail[1]['result']):
+                    and tail[0]['tag'] == tail[1]['tag']:
+                if again is not None and again['sectors'] == tail[1]['sectors']:
                     notes.append({'line': tail[1]['line'], 'pid': inst['pid'], 'shape': 'C',
                                   'number': tail[1]['sectors'], 'group': tail[1]['result']})
                     lines = lines[:-2]
@@ -1037,11 +1113,18 @@ def unstored_detail(notes):
     # Most flushes carry no cut, and every flush writes its barrier and
     # then syncs: a kill on a barrier line says a cut was not stored only
     # where the flush carried one (the review of #115, F1).
-    return (f'{len(notes)} flushes killed after their barrier and before their answer; a cut such a flush carried '
+    flushes = [n for n in notes if n['shape'] != 'M']
+    writes = len(notes) - len(flushes)
+    return (f'{len(flushes)} flushes killed after their barrier and before their answer; a cut such a flush carried '
             'was not stored'
+            + (f'; {writes} writes killed after their applied line and before their answer, applied again by the '
+               'next instance before it cut: a mark such a write set was not stored' if writes else '')
             + ''.join(f"; line {n['line']}: pid {n['pid']}'s barrier with no cut line, taken as a flush with no "
                       'barrier (whether or not it carried a cut)'
                       if n['shape'] == 'B' else
+                      f"; line {n['line']}: pid {n['pid']}'s applied line with no answer, taken as a write not "
+                      'applied (the next instance applied it again)'
+                      if n['shape'] == 'M' else
                       f"; line {n['line']}: pid {n['pid']}'s cut {n['number']} (group {n['group']}), cut again "
                       'by the next instance: no cut' for n in notes))
 
@@ -1082,6 +1165,22 @@ def first_commit(log):
     return None
 
 
+def releases(log):
+    """holder.log -> [(the time the daemon answered `ok`, the cut's number)]
+    for each release answered."""
+    asked, out = {}, []
+    for ln in log.splitlines():
+        f = ln.split('\t')
+        if len(f) != 2 or not f[0].isdigit():
+            continue
+        w = f[1].split()
+        if len(w) >= 4 and w[0] == '>' and w[2] == 'release' and w[3].isdigit():
+            asked[w[1]] = int(w[3])
+        elif len(w) >= 3 and w[0] == '<' and w[1] in asked and w[2] == 'ok':
+            out.append((int(f[0]), asked.pop(w[1])))
+    return out
+
+
 def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     """Each instance's start with --hold-cuts (stage 2b): its `cuts` line,
     and its status read once it was ready (DIR/status-start-K.txt) ->
@@ -1100,11 +1199,19 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
     at any start (the daemon: "the intent map has no committed cut"), so a
     later start wants it taken up only where the holder's log shows a
     release answered before that start (the request log's clock), and
-    takes either otherwise."""
+    takes either otherwise. A start that takes the state up holds the
+    cuts the state held: at least one where the newest cut of the state
+    counted before it was not released before it (the review of #115,
+    S2; the daemon keeps its newest cut until it is released). Numbers
+    and releases are the state's own: since the start that began it. A
+    newest cut the daemon abandoned at its bound would rightly leave none
+    held; no recording that starts the daemon again reaches the bound."""
     rc = 0
     bounds = [r for r in records if 'instance' in r['flags']]
     begun = begun or [True] + [False] * (len(instances) - 1)
-    committed = first_commit(read_file(rdir, 'holder.log'))
+    hlog = read_file(rdir, 'holder.log')
+    committed = first_commit(hlog)
+    released = releases(hlog)
     for k, inst in enumerate(instances):
         said = [ln['result'] for ln in inst['lines'] if ln['event'] == 'cuts']
         st = read_status(read_file(rdir, f'status-start-{k + 1}.txt'))
@@ -1130,6 +1237,18 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
             # It trusts none of the cut state: nothing of the old one is
             # held (the review of #113, G3).
             bad.append(f"cuts_held {st.get('cuts_held')!r} at a start that acknowledged a failure, wanted '0'")
+        if k and not begun[k]:
+            # The state's own numbers, which the holder's are (epochs keeps
+            # them as `local`), and the releases answered since the state
+            # began (Codex and D2 of the review of #116).
+            counted = [int(d.get('local', d['number'])) for d in dcuts if lo < d['prefix'] < bounds[k - 1]['i']
+                       and d.get('local', d['number']).isdigit()]
+            since = instances[j]['ns'] if j else -1
+            gone = [n for t, n in released if since < t < inst['ns']]
+            held = st.get('cuts_held', '')
+            if counted and max(counted) > max(gone, default=0) and not (held.isdigit() and int(held) >= 1):
+                bad.append(f'cuts_held {held!r} at a start that took the state up, wanted at least 1: cut '
+                           f'{max(counted)} was counted before it and not released')
         how = 'the first' if k == 0 else ('took the device over' if bounds[k - 1]['taken_over'] else 'created the device')
         if k and begun[k]:
             how += ', acknowledging a failure'
@@ -1140,7 +1259,7 @@ def instance_lines(put, rdir, instances, dcuts, records, begun=None):
         put(f'instance_{k + 1}', 'FAIL' if bad else 'PASS',
             (f"pid {inst['pid']} ({how}): " + '; '.join(bad) + f'; wanted {want}') if bad else
             f"pid {inst['pid']} ({how}): {want} by its cuts line and the status's cut_state and intent_state; "
-            f"cuts {n} at the start, {before} counted before it; the intent map named "
+            f"cuts {n} at the start, {before} counted before it, cuts_held {st.get('cuts_held')!r}; the intent map named "
             f"{st.get('intent_named_at_start')!r} of {st.get('intent_regions')!r} regions at the start")
         rc = 1 if bad else rc
     return rc
