@@ -760,6 +760,8 @@ rec_takeover() {
     # (a)
     holder_wrote_one || { export_pool; return 0; }
     holder_leave
+    g0=$(committed | tail -n 1)
+    [ -n "$g0" ] || rig_error "no group committed in $POOL's txgs before the writer"
     # Files of 1 MiB, each synced, until the stop file (at most 2000).
     rm -f "$WORK/writer.stop"
     ( k=0
@@ -770,8 +772,21 @@ rec_takeover() {
       done
       echo "$k files" ) > "$RDIR/takeover-writer.log" 2>&1 &
     w=$!
-    sleep 3
+    # The kill waits for 40 groups after the holder left, whatever the
+    # runner's speed: the held cut's own slot of the uberblock ring is
+    # written again 31 groups after it, and held_across_start's floor
+    # needs a block of the held cut changed before the kill (the review
+    # of #115, S1; at 3 s the slowest run went 95 cuts past it).
+    g=$g0
+    for k in $(seq 1 600); do
+        g=$(committed | tail -n 1)
+        [ "${g:-0}" -ge $((g0 + 40)) ] && break
+        kill -0 "$w" 2>/dev/null || break
+        sleep 0.5
+    done
     kill -0 "$w" 2>/dev/null || rig_error "the writer had ended before the kill: $(tail -n 2 "$RDIR/takeover-writer.log")"
+    [ "${g:-0}" -ge $((g0 + 40)) ] || rig_error "$POOL committed $((${g:-0} - g0)) groups in 300 s after the holder left; the kill waits for 40"
+    log "takeover: the kill at group $g, $((g - g0)) after the holder left"
     kill_serve
     serve_start 2
     holder_start
