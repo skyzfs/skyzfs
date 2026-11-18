@@ -25,3 +25,7 @@ Y3 a holder that ended with 0 before a cut ends the recording for the check too:
 Y4 after a verdict before the first cut the wait says "wrote one" (the recording goes on): NOT APPLIED (found [0] times)
 Y5 a verdict before the first cut is the rig's error (as before, said at once): NOT APPLIED (found [0] times)
 Y6 takeover does not take the wait's 1 (set -e ends the recording with it, and no line): KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y7 failed does not take the wait's 1: KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y8 takeover ends at the verdict without exporting the pool: KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y9 failed goes on after the verdict (the wait's 1 is dropped): KILLED by 1: test_cut_record.sh: FAIL the recordings end at a verdict before the first cut: got '1', want '2'
+Y10 the ended holder's status is taken by a bare wait: NOT APPLIED (found [0] times)

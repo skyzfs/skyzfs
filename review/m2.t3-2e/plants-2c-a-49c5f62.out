@@ -29,3 +29,18 @@ I4 the acknowledged start's count is held to the cuts before it: NOT APPLIED (fo
 I5 the line does not say that the start acknowledged a failure: KILLED by 1: test_the_second_instance_begins
 I6 main passes no begun list to instance_lines: KILLED by 2: test_an_acknowledged_failure, test_the_failure_and_later_states
 C1 cut_state wants every later start taken up: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+C2 cut_state does not look at the last status: KILLED by 1: test_the_state_not_begun
+C3 main passes no begun list to held_lines: NOT APPLIED (found [2] times)
+F1 serve may end with any status at the failure: KILLED by 1: test_failure
+F2 a start without the acknowledgement may end with any status: KILLED by 1: test_failure
+F3 a start without the acknowledgement that ends with 0 or 4: KILLED by 1: test_failure
+F4 no cut held before the failure is no error of the rig: KILLED by 1: test_failure
+F5 a failure.tsv without its keys is no error of the rig: KILLED by 1: test_failure
+F6 main does not judge the failure: NOT APPLIED (found [0] times)
+F7 main judges the failure and drops the verdict: NOT APPLIED (found [0] times)
+F8 main judges a failure in every recording that held cuts: NOT APPLIED (found [0] times)
+V1 a VERDICT of the holder is not looked for: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V2 held_reads fails and the check goes on to the lines after it: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V3 held_reads fails and is no verdict (rc 0): KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+V4 a refused read is the rig's ERROR line: KILLED by 1: test_a_held_cut_the_daemon_could_not_read
+A1 main reads no acknowledgement from instances.tsv: KILLED by 5: test_a_failed_instance_line_is_a_verdict, test_an_acknowledged_failure, test_an_acknowledged_start_cuts_nothing_again, test_carried_across_failure_must_show_something, test_the_failure_and_later_states

@@ -38,3 +38,11 @@ I8 cut_state: only the first start's cuts line is looked at: KILLED by 1: test_a
 I9 cut_state: the last status may say begun after a take-up: KILLED by 1: test_two_instances
 I10 several instances with no holder are no error: KILLED by 1: test_what_cannot_be_judged
 I11 a held stage on a log with no hashes is judged: KILLED by 1: test_what_cannot_be_judged
+I12 the last cut written is held to the count of cut lines, not the last line's number: SURVIVED
+N1 every group written in a noflush span is left out, cut or not: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N2 every group the reference does not cut is left out, in a noflush span or not: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N3 a noflush span reaches to the end of the record: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N4 a noflush-begin with no end is no error: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+N5 main does not take the groups out of the kstats: KILLED by 1: test_a_group_synced_with_no_flush
+N6 nothing is left out of the kstats: KILLED by 1: test_groups_synced_with_no_flush_and_not_cut
+E1 takeover expects mark-dropped the same: KILLED by 1: test_two_instances

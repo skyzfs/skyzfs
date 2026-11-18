@@ -27,3 +27,16 @@ H12 the instance that wrote is counted by the starts before the cut line, not be
 A1 the old state's image is left empty (every block of the first cut that is not zeros differs): KILLED by 1: test_across_failure
 A2 the blocks that are the same are counted: KILLED by 1: test_across_failure
 A3 a block the old image does not hold differs whatever it holds (zeros too): KILLED by 1: test_across_failure
+A4 a first cut of the new state that differs in no block meets the floor: KILLED by 1: test_carried_across_failure_must_show_something
+A5 the floor's line is INFO whatever it found: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+A6 a failure that carries nothing is no error of the rig (the exit): KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+A7 no recording is asked for it: KILLED by 1: test_a_floor_not_met_is_the_rigs_error
+A8 the old image is the cuts of every state but the last written: KILLED by 1: test_across_failure
+G1 the cuts before a start are counted from the log's first line (as before): KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G2 the cuts before a start are counted from the first start that began a state: KILLED by 1: test_a_third_instance_takes_the_new_state_up
+G3 a start that acknowledged a failure is not asked what it holds: KILLED by 1: test_the_second_instance_begins
+G4 a status with no cuts_held passes at an acknowledged start: KILLED by 1: test_the_second_instance_begins
+G5 every later start must hold nothing: KILLED by 3: test_a_third_instance_takes_the_new_state_up, test_instance_lines, test_instance_lines_and_the_commit
+T1 parse_log takes a time of any length: KILLED by 1: test_a_time_of_more_than_20_digits
+T2 parse_log refuses a time of more than 12 digits: KILLED by 2: test_a_line_torn_anywhere_on_a_page, test_a_time_of_more_than_20_digits
+T3 parse_log refuses a time of 20 digits: KILLED by 1: test_a_time_of_more_than_20_digits
