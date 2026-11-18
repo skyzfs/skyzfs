@@ -1,7 +1,8 @@
 //! What the uploader asks of the in-place store: the cut being uploaded,
 //! its blocks in slices, the copies synced before its commit, its
-//! release (or its naming, where it went after its commit), and the step
-//! of a mismatch.
+//! release (or its naming, where it went after its commit), the step
+//! of a mismatch, and the count of cuts that the daemon's channel
+//! answers with (M2.5-2).
 //!
 //! The store lives on the queue's thread and the uploader off it. The
 //! daemon (M2.4c) answers these calls on the queue's thread between its
@@ -12,7 +13,7 @@
 use std::io;
 
 use skyzfs_blk::Buf;
-use skyzfs_local::inplace::{CommittedCut, CutPhase, CutSlice, InPlace};
+use skyzfs_local::inplace::{CommittedCut, Cut, CutPhase, CutSlice, InPlace};
 use skyzfs_local::io::Dir;
 
 /// The cut being uploaded, as the store holds it, with what the check
@@ -45,6 +46,22 @@ impl Uploadable {
             group: self.group,
         }
     }
+}
+
+/// The store's count of cuts, as the daemon's channel answers `cuts`
+/// with it (M2.5-2): what an agent reads before it takes a snapshot, as
+/// *C* of a publish ([`crate::publish::Request::after`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CutsNow {
+    /// The cut state's name (`CutState::id`); `None` where the store
+    /// holds no cuts.
+    pub state: Option<[u8; 16]>,
+    /// The cuts counted, in the state's numbering: the newest cut's
+    /// number, 0 before the first. A cut counted later has a higher
+    /// number.
+    pub count: u64,
+    /// The newest cut; `None` before the first.
+    pub newest: Option<Cut>,
 }
 
 /// What [`Local::release`] did with a cut committed in object storage.
@@ -103,6 +120,11 @@ pub trait Local {
     /// A mismatch: abandon every held cut, so that the next holds the
     /// whole volume (`InPlace::abandon_all_cuts`). The cuts abandoned.
     async fn abandon_all(&mut self) -> Vec<u64>;
+
+    /// The store's count of cuts now ([`CutsNow`]): taken where the store
+    /// lives when the call comes, so that a cut counted before the call
+    /// was made is in it.
+    async fn cuts(&mut self) -> CutsNow;
 }
 
 /// [`Local`] answered where the store lives: the store's side of each
@@ -130,6 +152,8 @@ pub trait Store {
     fn name_committed(&mut self, number: u64, group: u64) -> bool;
     /// [`Local::abandon_all`].
     fn abandon_all(&mut self) -> Vec<u64>;
+    /// [`Local::cuts`].
+    fn cuts(&mut self) -> CutsNow;
 }
 
 /// A sync waited for that found none under way.
@@ -162,6 +186,10 @@ impl<S: Store> Local for S {
 
     async fn abandon_all(&mut self) -> Vec<u64> {
         Store::abandon_all(self)
+    }
+
+    async fn cuts(&mut self) -> CutsNow {
+        Store::cuts(self)
     }
 }
 
@@ -212,5 +240,14 @@ impl<D: Dir> Store for InPlace<D> {
 
     fn abandon_all(&mut self) -> Vec<u64> {
         self.abandon_all_cuts()
+    }
+
+    fn cuts(&mut self) -> CutsNow {
+        let cuts = InPlace::cuts(self);
+        CutsNow {
+            state: self.cut_state_id(),
+            count: cuts.count,
+            newest: cuts.newest,
+        }
     }
 }

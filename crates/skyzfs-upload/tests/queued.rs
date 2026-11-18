@@ -10,12 +10,11 @@ use std::time::{Duration, Instant};
 
 use skynbd_refs::ObjectRefStore;
 use skyzfs_blk::Buf;
-use skyzfs_local::inplace::CutSlice;
-use skyzfs_local::inplace::InPlace;
+use skyzfs_local::inplace::{Cut, CutSlice, InPlace};
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
 use skyzfs_upload::uploader::{State, Uploader};
-use skyzfs_upload::{Desk, Local, Queued, Released, Store, Uploadable};
+use skyzfs_upload::{CutsNow, Desk, Local, Queued, Released, Store, Uploadable};
 
 use common::*;
 
@@ -297,6 +296,7 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     assert_eq!(after.release(1).await, Released::Gone);
     assert!(!after.name_committed(1, 7).await);
     assert!(after.abandon_all().await.is_empty());
+    assert_eq!(after.cuts().await, CutsNow::default(), "no state, no cuts");
     assert!(woken.try_recv().is_err(), "no call after the close woke it");
     assert_eq!(desk.answered(), 0);
 }
@@ -334,6 +334,10 @@ impl Store for ClosingAtTheSync {
 
     fn abandon_all(&mut self) -> Vec<u64> {
         Vec::new()
+    }
+
+    fn cuts(&mut self) -> CutsNow {
+        CutsNow::default()
     }
 }
 
@@ -391,4 +395,52 @@ async fn a_queue_that_turns_only_when_woken_answers_every_call() {
     desk.close();
     let _ = last.send(());
     queue.join().expect("the queue's thread");
+}
+
+/// The count of cuts a request on the daemon's channel reads (M2.5-2) is
+/// the store's, taken on the store's own thread when the call comes:
+/// its cut state, the cuts counted in it, and the newest. Before the
+/// first cut the count is 0 and there is no newest. Mutant: a count one
+/// short of the store's.
+#[tokio::test]
+async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
+    let mut fx = Fixture::new(53).await;
+    let mut store = fx.start();
+    let state = store.cut_state_id();
+    assert!(state.is_some(), "the store holds cuts");
+    assert_eq!(
+        Store::cuts(&mut store),
+        CutsNow {
+            state,
+            count: 0,
+            newest: None
+        },
+        "no cut yet"
+    );
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    fx.write(&mut store, 11, 0x11);
+    fx.group(&mut store, 8);
+
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), store, woken);
+    let mut up = Queued::new(Arc::clone(&desk));
+    let now = up.cuts().await;
+    assert_eq!(
+        now,
+        CutsNow {
+            state,
+            count: 2,
+            newest: Some(Cut {
+                number: 2,
+                group: 8,
+                itself: true
+            })
+        }
+    );
+    desk.close();
+    let _ = queue.join();
 }

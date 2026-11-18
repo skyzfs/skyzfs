@@ -37,7 +37,7 @@ use skyzfs_blk::Buf;
 use skyzfs_local::inplace::CutSlice;
 use tokio::sync::oneshot;
 
-use crate::local::{not_ended, Local, Released, Store, Uploadable};
+use crate::local::{not_ended, CutsNow, Local, Released, Store, Uploadable};
 
 /// A call of [`Local`], as it travels.
 #[derive(Debug)]
@@ -66,6 +66,8 @@ pub enum Call {
     },
     /// [`Local::abandon_all`].
     AbandonAll,
+    /// [`Local::cuts`].
+    Cuts,
 }
 
 /// The answer to a [`Call`].
@@ -83,6 +85,8 @@ pub enum Answer {
     NameCommitted(bool),
     /// To [`Call::AbandonAll`].
     AbandonAll(Vec<u64>),
+    /// To [`Call::Cuts`].
+    Cuts(CutsNow),
 }
 
 /// Answer `call` from `store` at once. A sync of the copies is begun
@@ -110,6 +114,7 @@ pub fn answer_from(store: &mut impl Store, call: Call) -> Answer {
             Answer::NameCommitted(store.name_committed(number, group))
         }
         Call::AbandonAll => Answer::AbandonAll(store.abandon_all()),
+        Call::Cuts => Answer::Cuts(store.cuts()),
     }
 }
 
@@ -244,7 +249,8 @@ impl Desk {
 ///
 /// Once the desk is closed each call answers as a store that holds
 /// nothing: no cut to upload, a read or a sync that fails, a release that
-/// finds the cut gone, a naming that does not name, and no cut abandoned.
+/// finds the cut gone, a naming that does not name, no cut abandoned, and
+/// no cut state and no cut counted.
 /// None of these lands anything in object storage: the uploader idles
 /// from its next turn.
 pub struct Queued {
@@ -307,6 +313,13 @@ impl Local for Queued {
         match self.desk.ask(Call::AbandonAll).await {
             Some(Answer::AbandonAll(abandoned)) => abandoned,
             _ => Vec::new(),
+        }
+    }
+
+    async fn cuts(&mut self) -> CutsNow {
+        match self.desk.ask(Call::Cuts).await {
+            Some(Answer::Cuts(now)) => now,
+            _ => CutsNow::default(),
         }
     }
 }

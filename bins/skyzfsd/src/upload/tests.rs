@@ -1079,6 +1079,10 @@ impl Store for Empty {
     fn abandon_all(&mut self) -> Vec<u64> {
         Vec::new()
     }
+
+    fn cuts(&mut self) -> skyzfs_upload::CutsNow {
+        skyzfs_upload::CutsNow::default()
+    }
 }
 
 /// The queue's thread: answers after each wake until the desk closes.

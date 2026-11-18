@@ -386,6 +386,10 @@ impl Local for Racing {
     async fn abandon_all(&mut self) -> Vec<u64> {
         self.store.abandon_all().await
     }
+
+    async fn cuts(&mut self) -> skyzfs_upload::CutsNow {
+        skyzfs_upload::Local::cuts(&mut self.store).await
+    }
 }
 
 /// The blocks of data cut 2 holds in [`committed_unheard`]: more than the
