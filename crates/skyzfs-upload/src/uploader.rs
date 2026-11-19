@@ -36,15 +36,32 @@
 //!    lease. A cut the store kept at its release (`Step::Kept`) stops the
 //!    driver for good.
 //!
-//!    **A publish** (M2.5) takes its step before the cut's when it has
-//!    one ([`Driver::step_publish`]), with a wait of its own (F3 of #122's
-//!    review): a publish step that fails waits one second doubling to five
-//!    minutes before the publishes step again, and that wait is reset only
-//!    when a publish ends (published, found, or refused), not by its
-//!    lookup, which can succeed while its transaction cannot be made. The
+//!    **A publish** (M2.5) takes its step ([`Driver::step_publish`])
+//!    when it has one and the cut's step is not due. While both are due
+//!    they share the time: the side that has had less of it while both
+//!    were due takes the next step, the publishes on a tie when the cut
+//!    stepped last. Time counts only while both are due, so neither side
+//!    is owed the time of a step it took alone, nor the other's waits;
+//!    but a wait does not wipe what one side is owed from before it (F7
+//!    of the review of #126). The count starts again from nothing only
+//!    at an idle cut's step, when the cut has nothing left to do. So
+//!    while both have work, each has half the time, give or take one step
+//!    of the other's: publishes whose steps fail slowly, however many,
+//!    slow the cut to half its pace and no more, and slow steps of the
+//!    cut slow the publishes the same way. Neither paces the other a step
+//!    at a time (F1 and F4 of the review of #126). A publish has a wait
+//!    of its own (F3 of #122's review): a publish whose step fails takes
+//!    no step for one second, doubling to five minutes at each failure
+//!    of it
+//!    ([`crate::publish::Publishing::wait_after`]). The wait is that
+//!    publish's alone (D2 of the review of #122): the other publishes
+//!    step meanwhile, oldest first, and a publish that ends, however it
+//!    ends, takes its wait with it. Its lookup does not reset it, since
+//!    the lookup can succeed while the transaction cannot be made. The
 //!    cut's steps go on meanwhile, and their wait is not touched by a
-//!    publish's: a publish that cannot be made does not hold the uploads.
-//!    A publish refused by the fence loses the lease, as a commit does.
+//!    publish's: publishes that cannot be made hold up no other publish,
+//!    and slow the uploads to half their pace at most. A publish refused
+//!    by the fence loses the lease, as a commit does.
 //! 3. With no cut to upload, the next turn comes after [`IDLE`].
 //!
 //! An uploader that will upload nothing more (its lease lost, or its
@@ -81,6 +98,65 @@ pub const IDLE: Duration = Duration::from_millis(250);
 /// The wait of an uploader that will do nothing more: its lease is lost
 /// or its driver stopped. It still turns, for the status.
 pub const AT_REST: Duration = Duration::from_secs(60);
+
+/// Whose step comes next, a publish's or the cut's ([module docs](self)):
+/// while both are due, the side that has had less time since both became
+/// due; on a tie, the side that did not step last.
+#[derive(Debug, Clone, Copy, Default)]
+struct Turns {
+    /// The time the publishes' steps have taken since both became due.
+    publish: Duration,
+    /// The time the cut's steps have taken since both became due.
+    cut: Duration,
+    /// The last step chosen was a publish's.
+    published_last: bool,
+    /// Both were due when the last step was chosen, so its time counts.
+    shared: bool,
+}
+
+impl Turns {
+    /// Whether the next step is a publish's, given which are due: `None`
+    /// when neither is. While only one is due, its steps are not counted,
+    /// and the count from before is kept: a side waiting out its own wait
+    /// still has work, and what it is owed outlives the wait.
+    fn next(&mut self, publish_due: bool, cut_due: bool) -> Option<bool> {
+        self.shared = publish_due && cut_due;
+        let publish = if self.shared {
+            match self.publish.cmp(&self.cut) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Greater => false,
+                std::cmp::Ordering::Equal => !self.published_last,
+            }
+        } else {
+            if !publish_due && !cut_due {
+                return None;
+            }
+            publish_due
+        };
+        self.published_last = publish;
+        Some(publish)
+    }
+
+    /// The step [`Turns::next`] chose took `time`.
+    fn took(&mut self, time: Duration) {
+        if !self.shared {
+            return;
+        }
+        let side = if self.published_last {
+            &mut self.publish
+        } else {
+            &mut self.cut
+        };
+        *side = side.saturating_add(time);
+    }
+
+    /// The cut has nothing to do (an idle cut's step): the count starts
+    /// again.
+    fn restart(&mut self) {
+        self.publish = Duration::ZERO;
+        self.cut = Duration::ZERO;
+    }
+}
 
 /// What the uploader is doing, for the status.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,8 +211,6 @@ pub struct Uploader<L, R, F, M> {
     errors: Backoff,
     /// After a commit given up.
     refused: Backoff,
-    /// After a publish's step that failed.
-    publish_errors: Backoff,
     /// A commit was refused, and the step after it, which reads the row
     /// and head again, has not ended yet.
     rereading: bool,
@@ -147,8 +221,8 @@ pub struct Uploader<L, R, F, M> {
     lease_at: Instant,
     /// When the driver may next take a cut's step.
     step_at: Instant,
-    /// When the driver may next take a publish's step.
-    publish_at: Instant,
+    /// Whose step comes next, a publish's or the cut's.
+    turns: Turns,
     /// The publishes asked before the driver is made, which it then takes
     /// ([`Uploader::publishing`]).
     publishing: Option<Publishing>,
@@ -178,13 +252,12 @@ where
             slice_blocks: blocks,
             errors: Backoff::new(),
             refused: Backoff::new(),
-            publish_errors: Backoff::new(),
             rereading: false,
             lease_backoff: Backoff::new(),
             state: State::NoLease("not tried yet".into()),
             lease_at: now,
             step_at: now,
-            publish_at: now,
+            turns: Turns::default(),
             publishing: Some(Publishing::default()),
         }
     }
@@ -272,10 +345,14 @@ where
             driver.publishing().stop();
             return AT_REST;
         }
-        let publish = driver.publish_due() && now >= self.publish_at;
-        if !publish && now < self.step_at {
+        // A publish and the cut share the time while both are due:
+        // several publishes whose steps fail slowly, each with its own
+        // wait, would otherwise always have one due (F1 and F4 of the
+        // review of #126).
+        let Some(publish) = self.turns.next(driver.publish_due(), now >= self.step_at) else {
             return self.next_wait(now, self.step_at);
-        }
+        };
+        let began = now;
         let (step, ended) = Self::step_keeping(
             driver,
             publish,
@@ -285,6 +362,7 @@ where
         )
         .await;
         let now = Instant::now();
+        self.turns.took(ended.saturating_duration_since(began));
         if publish {
             return self.after_publish(step, ended);
         }
@@ -295,6 +373,7 @@ where
         let rereading = std::mem::take(&mut self.rereading);
         match step {
             Ok(Step::Idle) => {
+                self.turns.restart();
                 self.state = State::Idle;
                 self.next_wait(now, ended + IDLE)
             }
@@ -348,19 +427,17 @@ where
         }
     }
 
-    /// After a publish's step that ended at `ended`: its wait, where it
-    /// failed; nothing else waits on it ([module docs](self)).
+    /// After a publish's step that ended at `ended`: where it failed, the
+    /// wait of that publish alone; nothing else waits on it ([module
+    /// docs](self)). A publish that ends takes its wait with it.
     fn after_publish(&mut self, step: Result<Step, RemoteError>, ended: Instant) -> Duration {
         match step {
-            Ok(Step::Published { .. } | Step::PublishRefused { .. }) => {
-                self.publish_errors.succeeded();
-            }
-            // A lookup: the publish goes on, and its wait is not reset.
             Ok(_) => {}
             Err(RemoteError::Fenced { holder, epoch }) => return self.fenced(holder, epoch),
             Err(_) => {
-                let wait = self.publish_errors.failed();
-                self.publish_at = ended + wait;
+                if let Some(driver) = self.driver.as_mut() {
+                    driver.publish_failed(ended);
+                }
             }
         }
         Duration::ZERO
@@ -460,8 +537,8 @@ where
     /// publish with a step to take may take it, if that comes first.
     fn next_wait(&self, now: Instant, until: Instant) -> Duration {
         let mut until = until.min(self.lease_at);
-        if self.driver.as_ref().is_some_and(Driver::publish_due) {
-            until = until.min(self.publish_at);
+        if let Some(at) = self.driver.as_ref().and_then(Driver::publish_due_at) {
+            until = until.min(at);
         }
         until.saturating_duration_since(now)
     }
@@ -492,5 +569,108 @@ where
             }
         }
         self.lease
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const S: Duration = Duration::from_secs(1);
+
+    /// `steps` steps of `turns` while both are due, a publish's taking
+    /// `publish` and the cut's `cut`: whose each was, `P` or `C`.
+    fn run(turns: &mut Turns, steps: usize, publish: Duration, cut: Duration) -> String {
+        (0..steps)
+            .map(|_| {
+                let p = turns.next(true, true).expect("both are due");
+                turns.took(if p { publish } else { cut });
+                if p {
+                    'P'
+                } else {
+                    'C'
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn steps_of_the_same_time_take_turns() {
+        assert_eq!(run(&mut Turns::default(), 6, S, S), "PCPCPC");
+        let zero = Duration::ZERO;
+        assert_eq!(run(&mut Turns::default(), 6, zero, zero), "PCPCPC");
+    }
+
+    /// F4 of the review of #126: after a publish's step of 20 s, the cut
+    /// has the next 20 s, however many steps that is.
+    #[test]
+    fn a_slow_step_of_a_publish_gives_the_cut_as_long() {
+        let mut turns = Turns::default();
+        let cuts = "C".repeat(20);
+        let expected = format!("P{cuts}P{cuts}P");
+        assert_eq!(run(&mut turns, expected.len(), 20 * S, S), expected);
+    }
+
+    /// F5 of the review of #126: after a cut's step of 10 s, the
+    /// publishes have the next 10 s.
+    #[test]
+    fn a_slow_step_of_the_cut_gives_the_publishes_as_long() {
+        let mut turns = Turns::default();
+        let expected = format!("PC{}C{}C", "P".repeat(9), "P".repeat(10));
+        assert_eq!(run(&mut turns, expected.len(), S, 10 * S), expected);
+    }
+
+    /// Over a long run each side has half the time, give or take one step
+    /// of the longer.
+    #[test]
+    fn each_side_has_half_the_time_give_or_take_a_step() {
+        let mut turns = Turns::default();
+        let (publish, cut) = (7 * S, 3 * S);
+        let (mut p, mut c) = (Duration::ZERO, Duration::ZERO);
+        for step in 0..1000 {
+            if turns.next(true, true).expect("both are due") {
+                turns.took(publish);
+                p += publish;
+            } else {
+                turns.took(cut);
+                c += cut;
+            }
+            let apart = p.abs_diff(c);
+            assert!(apart <= publish, "step {step}: {p:?} and {c:?}");
+        }
+    }
+
+    /// Time taken while only one side was due is not owed to it, nor is
+    /// a wait owed to anyone; but what one side was owed before a wait is
+    /// kept across it (F7 of the review of #126). Only an idle cut's step
+    /// starts the count again.
+    #[test]
+    fn a_wait_keeps_the_count_and_an_idle_cuts_step_starts_it_again() {
+        let c20 = "C".repeat(20);
+        // The publishes alone, the cut waiting in its backoff: the cut is
+        // still owed the publish's step of 20 s from before.
+        let mut turns = Turns::default();
+        assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
+        assert_eq!(turns.next(true, false), Some(true));
+        turns.took(20 * S);
+        assert_eq!(run(&mut turns, 22, S, S), format!("{c20}PC"));
+        // The cut alone, no publish due (one waiting out its wait, say):
+        // the publishes are still owed 19 s of the cut's step from before,
+        // the tie then goes to the cut, and the turns go on.
+        let mut turns = Turns::default();
+        assert_eq!(run(&mut turns, 2, S, 20 * S), "PC");
+        assert_eq!(turns.next(false, true), Some(false));
+        turns.took(20 * S);
+        assert_eq!(run(&mut turns, 21, S, S), format!("{}CP", "P".repeat(19)));
+        // Neither due.
+        let mut turns = Turns::default();
+        assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
+        assert_eq!(turns.next(false, false), None);
+        assert_eq!(run(&mut turns, 22, S, S), format!("{c20}PC"));
+        // An idle cut's step.
+        let mut turns = Turns::default();
+        assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
+        turns.restart();
+        assert_eq!(run(&mut turns, 4, S, S), "CPCP");
     }
 }
