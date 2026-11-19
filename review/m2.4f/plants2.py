@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plants for the next look at #129 (M2.4f), at ef8b227.
 
-    plants2.py WORKTREE [--with=FILE ...] [ID ...]
+    plants2.py WORKTREE [--with=FILE ...] [--out=NAME] [ID ...]
 
 As plants.py, with two differences. By default nothing is appended to
 the tests: the review's R1 to R4 are now the author's own tests (lifted
@@ -41,6 +41,11 @@ LIFTED = {
     "a_whole_cut_gone_at_its_commit_waits": "R4",
     "a_cut_found_committed_ends_the_whole_waits": "T4-found",
     "a_cut_committed_and_gone_ends_the_whole_waits": "T4-gone",
+    # Lifted at ee90899 from scenarios_next.rs.
+    "an_error_between_two_whole_cuts_lost_does_not_end_the_waits": "S1",
+    "a_mismatch_between_two_whole_cuts_lost_does_not_end_the_waits": "S2",
+    "a_give_up_between_two_whole_cuts_lost_does_not_end_the_waits": "S3",
+    "a_publish_between_two_whole_cuts_lost_does_not_end_the_waits": "S4",
 }
 
 LOST_WHOLE_ARM = ("                    wait,\n"
@@ -239,17 +244,31 @@ class Edited:
                 f.write(text)
 
 
+def first_look():
+    """The first look's other plants (plants.py, W2 to W8 bar W4 and W5,
+    Z06, Z07 and the slices' G plants), as they were written there, run
+    here without anything appended."""
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, HERE)
+    import plants
+    done = {p[0] for p in PLANTS}
+    return [(pid, [(path, old, new)], what, suite)
+            for pid, path, old, new, what, suite in plants.PLANTS if pid not in done]
+
+
 def main():
     tree = sys.argv[1]
-    wanted = [a for a in sys.argv[2:] if not a.startswith("--with=")]
+    wanted = [a for a in sys.argv[2:] if not a.startswith("--")]
     # --with=FILE: FILE (beside this script) is appended to the upload
     # crate's tests/uploader.rs for the plants of that crate.
     extra = [a[len("--with="):] for a in sys.argv[2:] if a.startswith("--with=")]
     if status(tree):
         sys.exit("the worktree is not clean")
-    out_path = os.path.join(HERE, "plants2.out")
+    # --out=NAME: the results go to NAME beside this script.
+    outs = [a[len("--out="):] for a in sys.argv[2:] if a.startswith("--out=")]
+    out_path = os.path.join(HERE, outs[-1] if outs else "plants2.out")
     try:
-        for pid, edits, what, suite in PLANTS:
+        for pid, edits, what, suite in PLANTS + first_look():
             if wanted and pid not in wanted:
                 continue
             result, detail = "SURVIVED", ""
