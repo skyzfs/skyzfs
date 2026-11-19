@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1408
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1416
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,15 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's eighteenth version (M2.5-2). It adds, after the
+//! This is the file's nineteenth version (M2.4f). It adds, after the
+//! eighteenth's fields, the uploader's whole cuts that went before their
+//! commit, and a state of the uploader: waiting after one of them. A
+//! reader of an earlier version refuses the file by its magic, so it
+//! never meets the state; a reader of `status`'s text meets a new word,
+//! `whole_lost`. Nothing is dropped or moved. The eighteenth
+//! (`SKYZST18`, 1408 bytes) is still read, without the count.
+//!
+//! The eighteenth version (M2.5-2) added, after the
 //! seventeenth's fields, the uploader's cuts not offered for a publish,
 //! its publishes (the requests accepted, published, found, refused,
 //! expired and withdrawn, those pending and the oldest of them, and the
@@ -99,7 +107,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST15` |
+//! | 0 | 8 | magic `SKYZST19` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -137,16 +145,16 @@
 //! | 384 | 8 | `intent_named_at_start`: the regions the map named when the start took it up (every region where it began one) |
 //! | 392 | 24 | the map's syncs on the write path since this daemon started serving: how many, their summed time from the first page's write to the sync's end, the longest. A sync runs on the map's file's helper, not on the queue's thread, and covers every bit set since the one before it began |
 //! | 416 | 8 | `intent_waits`: the writes and write-zeroes that waited for a sync of the map since this daemon started serving, those into a region whose bit was not durable. Only they and the requests behind them (one that overlaps them, a flush) waited |
-//! | 424 | 8 | `upload_state`: what the uploader is doing (M2.4c). 0 off: this daemon does not upload; 1 no lease yet; 2 the lease is lost, for the rest of this instance; 3 idle: no cut to upload; 4 checking a cut against head's row; 5 reading one; 6 syncing the copies it was read from; 7 committing it; 8 waiting after an error or a commit given up; 9 stopped: the store kept a committed cut. Any other value is read as "not said" |
+//! | 424 | 8 | `upload_state`: what the uploader is doing (M2.4c). 0 off: this daemon does not upload; 1 no lease yet; 2 the lease is lost, for the rest of this instance; 3 idle: no cut to upload; 4 checking a cut against head's row; 5 reading one; 6 syncing the copies it was read from; 7 committing it; 8 waiting after an error or a commit given up; 9 stopped: the store kept a committed cut; 10 (from the nineteenth version, M2.4f) waiting after a whole cut went before its commit: no whole cut can be uploaded now (under a load that fills the bound on copies before one is committed, say, or after its copies' sync failed), and the next whole cut is tried after the wait (one minute, doubling to fifteen; reset when a cut is committed). Any other value is read as "not said" |
 //! | 432 | 8 | `upload_cut`: the cut under way, while checking, reading, syncing or committing; 0 otherwise |
-//! | 440 | 8 | `upload_wait_ms`: while waiting (state 8), the wait as it began |
+//! | 440 | 8 | `upload_wait_ms`: while waiting (state 8 or 10), the wait as it began |
 //! | 448 | 8 | `lease`: 0 none held; 1 held; 2 held, and the last renewal failed on object storage (the uploads go on under its epoch); 3 lost. Any other value is read as "not said" |
 //! | 456 | 8 | `lease_epoch`: the epoch held, or, when lost, the epoch of the holder that has it (0 where not known) |
 //! | 464 | 8 | `lease_expires_unix_ms`: while held, when the lease expires by the refs object's clock, in milliseconds since the Unix epoch |
 //! | 472 | 96 | the uploader's figures since this daemon started serving: cuts uploaded, among them those of the whole volume, their blocks, cuts found committed already, cuts committed that had gone before their release, among them those the intent map names now, cuts committed that the store kept, mismatches, the cuts they abandoned, cuts lost before their commit, commits given up, steps that failed on object storage |
 //! | 568 | 8 | `upload_checked`: what the last check found: 0 no check yet; 1 matched; a mismatch: 2 no row, 3 the row names another cut, 4 head's commit is not the row's, 5 the row cannot be read. Any other value is read as "not said" |
 //! | 576 | 8 | `upload_rule`: how the last cut uploaded went up: 0 none yet; 1 a delta onto the cut the row named; 2 the whole volume. Any other value is read as "not said" |
-//! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error or commit given up the uploader waits after |
+//! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error, commit given up or whole cut lost the uploader waits after |
 //! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost. A holder's name means one daemon (`--holder`, or the host's name and its machine id): a copy of a volume's files, a cloned VM image among them, must not be served under the same name |
 //! | 840 | 128 | `upload_last_error`: the last step that failed on object storage |
 //! | 968 | 8 | `cuts_replaced`: the cuts replaced by a newer cut before they were uploaded, since this daemon started serving (not kept across a start): the cut that waits when a newer cut's flush completes, and a cut whose flush is still under way at the next cut's instant; the newer cut takes the map either way. Over a window between two looks at one daemon whose flushes did not fail (a cut whose flush failed, which fails the volume, is in no count), the cuts the store counted balance: `cuts` = (`uploaded` + `upload_found_committed` − `upload_committed_gone` − `upload_committed_kept`) + `cuts_replaced` + `cuts_abandoned` + `cuts_held`, the first group being the cuts committed and let go. The counts come from the store and the uploader at slightly different times: compare them while the uploader is idle |
@@ -163,6 +171,7 @@
 //! | 1248 | 128 | `publish_last`: the name of the last snapshot published or found; empty before the first |
 //! | 1376 | 8 | `control`: the daemon's channel (`DIR/control` under the volume's run directory, M2.5-2): 0 none (a daemon that did not reach serving, or one whose file is of an earlier version); 1 it answers through the uploader; 2 it refuses every request `no-upload` (this daemon does not upload, another holds the lease, or the attachment record could not be read); 3 the socket could not be made, and the volume is served without it. Any other value is read as "not said" |
 //! | 1384 | 24 | the channel's counts since this daemon started serving: requests answered, refusals included (`control_answered`); connections refused for their peer's user before they were read (`control_peer`); requests refused as `version` or `malformed` (`control_malformed`) |
+//! | 1408 | 8 | `upload_cuts_lost_whole`: among the cuts lost before their commit (`upload_cuts_lost`), those that held the whole volume, since this daemon started serving (M2.4f). Each left the segments it PUT in object storage, in no commit |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -214,10 +223,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST18";
+const MAGIC: &[u8; 8] = b"SKYZST19";
 /// The version this crate writes.
-pub const VERSION: u32 = 18;
-const LEN: usize = 1408;
+pub const VERSION: u32 = 19;
+const LEN: usize = 1416;
+
+/// The eighteenth version, still read: up to the whole cuts lost, at
+/// the same places.
+const EIGHTEENTH_MAGIC: &[u8; 8] = b"SKYZST18";
+const EIGHTEENTH_LEN: usize = 1408;
 
 /// The seventeenth version, still read: up to the publishes, at the
 /// same places.
@@ -457,6 +471,9 @@ coded! {
         /// The store kept a committed cut: nothing more is uploaded by
         /// this instance.
         Stopped = 9, "stopped";
+        /// Waiting after a whole cut went before its commit (M2.4f): no
+        /// whole cut can be uploaded now.
+        WholeLost = 10, "whole_lost";
     }
 }
 
@@ -543,6 +560,10 @@ pub struct UploadFigures {
     /// no publish is made (M2.5-1). `None` in a file of a version before
     /// the eighteenth.
     pub not_offered: Option<u64>,
+    /// Among the cuts lost before their commit, those that held the
+    /// whole volume (M2.4f). `None` in a file of a version before the
+    /// nineteenth.
+    pub lost_whole: Option<u64>,
 }
 
 impl UploadFigures {
@@ -579,6 +600,7 @@ impl UploadFigures {
             errors: f[11],
             zero_blocks: None,
             not_offered: None,
+            lost_whole: None,
         }
     }
 }
@@ -713,6 +735,11 @@ impl UploadShown {
                  instance"
                     .to_string()
             }
+            UploadStateShown::WholeLost => format!(
+                "{}: no whole cut can be uploaded now, next whole cut after a wait of {} s",
+                self.why.said(),
+                self.wait_ms.div_ceil(1000)
+            ),
             UploadStateShown::Unsaid => "unsaid".to_string(),
         }
     }
@@ -1140,6 +1167,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     {
         bytes[1376 + 8 * i..1384 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
+    bytes[1408..1416].copy_from_slice(&upload.figures.lost_whole.unwrap_or(0).to_le_bytes());
     bytes
 }
 
@@ -1174,6 +1202,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        19
+    } else if is(EIGHTEENTH_LEN, EIGHTEENTH_MAGIC) {
         18
     } else if is(SEVENTEENTH_LEN, SEVENTEENTH_MAGIC) {
         17
@@ -1284,6 +1314,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             figures: UploadFigures {
                 zero_blocks: (version >= 17).then(|| field(1024)),
                 not_offered: (version >= 18).then(|| field(1032)),
+                lost_whole: (version >= 19).then(|| field(1408)),
                 ..UploadFigures::of(std::array::from_fn(|i| field(472 + 8 * i)))
             },
             checked: CheckedShown::of(field(568)),
@@ -2075,6 +2106,10 @@ pub fn report(
             // From a file of the eighteenth version on (M2.5-2).
             if let Some(not_offered) = f.not_offered {
                 lines.push(("upload_not_offered", not_offered.to_string()));
+            }
+            // From a file of the nineteenth version on (M2.4f).
+            if let Some(lost_whole) = f.lost_whole {
+                lines.push(("upload_cuts_lost_whole", lost_whole.to_string()));
             }
             if let Some(p) = upload.publish {
                 for (key, value) in [

@@ -944,6 +944,11 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
             out.why = Text::new(why);
             out.wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
         }
+        State::WholeLost { why, wait } => {
+            out.state = UploadStateShown::WholeLost;
+            out.why = Text::new(why);
+            out.wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+        }
         State::Stopped => out.state = UploadStateShown::Stopped,
     }
     let f = &shown.figures;
@@ -962,6 +967,7 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
         errors: f.errors,
         zero_blocks: Some(f.zero_blocks),
         not_offered: Some(f.not_offered),
+        lost_whole: Some(f.lost_whole),
     };
     out.checked = match f.checked {
         Checked::Unchecked => CheckedShown::Unchecked,

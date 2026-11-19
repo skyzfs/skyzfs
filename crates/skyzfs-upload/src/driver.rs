@@ -167,10 +167,15 @@ pub enum Step {
         abandoned: Vec<u64>,
     },
     /// The cut went before its commit: its writes are dropped, and the
-    /// cut that took its map is uploaded next.
+    /// cut that took its map is uploaded next. What it PUT stays in
+    /// object storage, in no commit (M4's collection). After a whole
+    /// cut, the uploader waits before the next ([`crate::backoff`],
+    /// M2.4f).
     Lost {
         /// The cut.
         number: u64,
+        /// How it was being uploaded.
+        rule: Rule,
         /// Why.
         why: String,
     },
@@ -270,6 +275,8 @@ pub struct Figures {
     pub abandoned_at_mismatch: u64,
     /// The cuts that went before their commit.
     pub lost: u64,
+    /// Among them, those that held the whole volume (M2.4f).
+    pub lost_whole: u64,
     /// The commits given up because the row or head moved.
     pub gave_up: u64,
     /// The steps that failed on object storage.
@@ -648,7 +655,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
         self.buf = buf;
         let slice = match read {
             Ok(slice) => slice,
-            Err(e) => return (Stage::Check, Ok(self.lost(number, e.to_string()))),
+            Err(e) => return (Stage::Check, Ok(self.lost(&upload, e.to_string()))),
         };
         if let Err(e) = write_slice(&mut self.remote, &slice.blocks, &slice.zeroes, &self.buf) {
             // Not reached for a cut of this volume: the engine refuses only
@@ -695,7 +702,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
                 },
                 Ok(Step::CopiesSynced { number }),
             ),
-            Err(e) => (Stage::Check, Ok(self.lost(number, e.to_string()))),
+            Err(e) => (Stage::Check, Ok(self.lost(&upload, e.to_string()))),
         }
     }
 
@@ -729,7 +736,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
         if held.map(|cut| cut.row()) != Some(upload.cut.row()) {
             return (
                 Stage::Check,
-                Ok(self.lost(number, "it went before its commit".into())),
+                Ok(self.lost(&upload, "the store no longer held it at its commit".into())),
             );
         }
         let row = row::encode(&upload.cut.row());
@@ -778,11 +785,18 @@ impl<L: Local, R: Remote> Driver<L, R> {
         }
     }
 
-    /// Cut `number` went before its commit: drop its writes.
-    fn lost(&mut self, number: u64, why: String) -> Step {
+    /// `upload`'s cut went before its commit: drop its writes.
+    fn lost(&mut self, upload: &Upload, why: String) -> Step {
         self.remote.discard();
         self.figures.lost += 1;
-        Step::Lost { number, why }
+        if upload.rule == Rule::Whole {
+            self.figures.lost_whole += 1;
+        }
+        Step::Lost {
+            number: upload.cut.number,
+            rule: upload.rule,
+            why,
+        }
     }
 }
 

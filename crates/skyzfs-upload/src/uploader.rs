@@ -32,6 +32,20 @@
 //!      committed: a store that refuses every commit does not have the
 //!      whole cut uploaded again at every cycle (G7 of #114's review).
 //!
+//!    - **A whole cut that goes before its commit** (abandoned at the
+//!      bound, or its read or its sync failed) is followed by a wait of
+//!      its own before the next cut's check: one minute, doubling to
+//!      fifteen ([`crate::backoff::WHOLE_FIRST`]; the lead's decision
+//!      for M2.4f). It is reset only when a cut is committed or found
+//!      committed. Under a load that fills the bound of copies before a
+//!      whole cut can be read, every attempt is abandoned and leaves the
+//!      segments it PUT in object storage, in no commit; the wait bounds
+//!      them to one attempt's in each wait, and once the load drops the
+//!      seed begins within fifteen minutes. The lease and the publishes
+//!      go on meanwhile. A delta cut that goes before its commit does
+//!      not wait: its heir goes up onto the same base at once, as before
+//!      (the lead's decision names whole cuts only).
+//!
 //!    A commit refused by the fence (`RemoteError::Fenced`) loses the
 //!    lease. A cut the store kept at its release (`Step::Kept`) stops the
 //!    driver for good.
@@ -106,7 +120,8 @@ use tokio::time::Instant;
 
 use skynbd_refs::RefStore;
 
-use crate::backoff::Backoff;
+use crate::backoff::{self, Backoff};
+use crate::check::Rule;
 use crate::driver::{Doing, Driver, Figures, Step};
 use crate::lease::{Keeper, LeaseState};
 use crate::local::Local;
@@ -205,6 +220,16 @@ pub enum State {
         /// The wait.
         wait: Duration,
     },
+    /// Waiting after a whole cut went before its commit (M2.4f): no
+    /// whole cut can be uploaded now (under a load that fills the bound
+    /// on copies before one is committed, say, or after its copies' sync
+    /// failed). Why, and how long the wait was when it began.
+    WholeLost {
+        /// The cut, and why it went.
+        why: String,
+        /// The wait.
+        wait: Duration,
+    },
     /// The store kept a committed cut ([`Step::Kept`]): nothing more is
     /// uploaded by this instance.
     Stopped,
@@ -263,6 +288,8 @@ pub struct Uploader<L, R, F, M> {
     errors: Backoff,
     /// After a commit given up.
     refused: Backoff,
+    /// After a whole cut went before its commit (M2.4f).
+    whole_lost: Backoff,
     /// A commit was refused, and the step after it, which reads the row
     /// and head again, has not ended yet.
     rereading: bool,
@@ -304,6 +331,7 @@ where
             slice_blocks: blocks,
             errors: Backoff::new(),
             refused: Backoff::new(),
+            whole_lost: Backoff::between(backoff::WHOLE_FIRST, backoff::WHOLE_LAST),
             rereading: false,
             lease_backoff: Backoff::new(),
             state: State::NoLease("not tried yet".into()),
@@ -496,11 +524,24 @@ where
                     format!("commit of cut {number} refused: conflict"),
                 )
             }
+            Ok(Step::Lost {
+                number,
+                rule: Rule::Whole,
+                why,
+            }) => {
+                let wait = self.whole_lost.failed();
+                self.step_at = ended + wait;
+                self.state = State::WholeLost {
+                    why: format!("whole cut {number} went before its commit: {why}"),
+                    wait,
+                };
+                self.next_wait(now, self.step_at)
+            }
             Ok(step) => {
                 // Only a cut committed, or found committed, ends the wait
-                // of a refusal: a read that goes on after a refused commit
-                // is not a success, or the whole cut would go up again at
-                // every cycle.
+                // of a refusal or of a whole cut lost: a read that goes on
+                // after a refused commit is not a success, or the whole
+                // cut would go up again at every cycle.
                 if matches!(
                     step,
                     Step::Uploaded { .. }
@@ -508,6 +549,7 @@ where
                         | Step::FoundCommitted { .. }
                 ) {
                     self.refused.succeeded();
+                    self.whole_lost.succeeded();
                 }
                 self.state = State::Working(doing, under_way);
                 Duration::ZERO

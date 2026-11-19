@@ -1028,6 +1028,23 @@ fn the_status_shows_the_uploader_as_it_is() {
     assert_eq!(s.said(), "commit of cut 3 refused: conflict, retry in 2 s");
     assert_eq!(s.wait_ms, 1500);
 
+    let s = shown(
+        State::WholeLost {
+            why: "whole cut 3 went before its commit: the store no longer held it at its commit"
+                .into(),
+            wait: Duration::from_secs(120),
+        },
+        held.clone(),
+        Figures::default(),
+    );
+    assert_eq!(s.state, UploadStateShown::WholeLost);
+    assert_eq!(
+        s.said(),
+        "whole cut 3 went before its commit: the store no longer held it at its commit: no \
+         whole cut can be uploaded now, next whole cut after a wait of 120 s"
+    );
+    assert_eq!(s.wait_ms, 120_000);
+
     let s = shown(State::Stopped, held.clone(), Figures::default());
     assert_eq!(s.state, UploadStateShown::Stopped);
 
@@ -1060,6 +1077,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         mismatches: 8,
         abandoned_at_mismatch: 9,
         lost: 10,
+        lost_whole: 14,
         gave_up: 11,
         errors: 12,
         zero_blocks: 13,
@@ -1087,6 +1105,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
     assert_eq!(f.zero_blocks, Some(13));
+    assert_eq!(f.lost_whole, Some(14));
     assert_eq!(
         (s.checked, s.rule),
         (CheckedShown::HeadMoved, RuleShown::Whole)
