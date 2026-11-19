@@ -897,6 +897,11 @@ class Log(unittest.TestCase):
         # zdb at the end that timed out or could not start judged nothing
         for rc in replay_check.RIG_RC:
             self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': rc}), 2, rc)
+        # zdb at the end killed by a signal is not excused (only 124 and 127 are)
+        self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': -6}), 1)
+        # in the main pass, only signal 6 counts against the image: another signal is the rig's
+        self.assertEqual(replay_check.exit_code(
+            **{**two, 'failures': two['failures'] + [{'n': 9, 'failed': 'rig: zdb died with signal 9'}]}), 2)
         # caught by another check than the table's, with rig errors: they may have hidden the table's
         other = {**ctl_err[0], 'caught': True, 'failed_by': {'verify': 1}}
         self.assertEqual(replay_check.exit_code(**{**two, 'controls': [other, ctl_err[1]]}), 2)
