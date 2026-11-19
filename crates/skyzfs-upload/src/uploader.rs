@@ -222,7 +222,7 @@ pub enum State {
     },
     /// Waiting after a whole cut went before its commit (M2.4f): no
     /// whole cut can be uploaded now (under a load that fills the bound
-    /// on copies before one is read, say, or after its copies' sync
+    /// on copies before one is committed, say, or after its copies' sync
     /// failed). Why, and how long the wait was when it began.
     WholeLost {
         /// The cut, and why it went.
