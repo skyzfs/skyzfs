@@ -87,14 +87,25 @@ class Embedded(unittest.TestCase):
             two = self.row(d, {'.before': before, '.after': after.replace('skz pid 7', 'skz pid 8'), '.pgbench': ''})
             self.assertIs(two['skyzfsd']['pid_same'], False)
             two['workload'] = 'select'
-            # review of #128, L1: a status read with no pid at one end is
-            # not a second daemon, though pid_same is False
-            unread = self.row(d, {'.before': before, '.after': after.replace('skz pid 7\n', ''), '.pgbench': ''})
+            # review of #128, L1: a status with no pid at one end is not a
+            # second daemon, though pid_same is False; one that failed to
+            # be read leaves its clock line alone (review of #132, D2)
+            unread = self.row(d, {'.before': before, '.after': devs + 'skz read_at_ns 2000\n', '.pgbench': ''})
             self.assertIs(unread['skyzfsd']['pid_same'], False)
             unread['workload'] = 'update'
+            # Review of #132, D2: a status read at the end that shows the
+            # daemon gone is no serving daemon, not a status not read.
+            gone = self.row(d, {'.before': before, '.after': devs + 'skz read_at_ns 2000\n'
+                                'skz counters left_by_a_daemon_that_is_gone,_pid_7\n', '.pgbench': ''})
+            gone['workload'] = 'gone'
+            # The lead's decision on #132: a row with no upload at its
+            # window's start is a seed row, counted apart from the median.
+            seed = self.row(d, {'.before': before.replace('skz uploaded 3\n', 'skz uploaded 0\n'), '.after': after,
+                                '.pgbench': ''})
+            seed['workload'] = 'seed'
             out = os.path.join(d, 'out', '1')
             os.makedirs(out)
-            for name, row in (('tpcb', r), ('select', two), ('update', unread)):
+            for name, row in (('tpcb', r), ('select', two), ('update', unread), ('gone', gone), ('seed', seed)):
                 with open(os.path.join(out, f'{name}-zfs-skyzfsd.json'), 'w') as f:
                     json.dump(row, f)
             p = subprocess.run(['bash', SCRIPT, 'summarize', os.path.join(d, 'out')], capture_output=True, text=True,
@@ -109,9 +120,17 @@ class Embedded(unittest.TestCase):
                              ['zfs-skyzfsd [x] (TWO DAEMONS in the window)'])
             self.assertEqual([ln.split(' | ')[1] for ln in table if ln.startswith('| update | ')],
                              ['zfs-skyzfsd [x] (its status not read at an end of the window)'])
+            self.assertEqual([ln.split(' | ')[1] for ln in table if ln.startswith('| gone | ')],
+                             ['zfs-skyzfsd [x] (NO SERVING DAEMON at an end of the window)'])
             status = p.stdout.split('one server throughout', 1)[1].split('\n\n')[0].splitlines()
             self.assertEqual(sorted(ln.split(' | ')[13] for ln in status if 'zfs-skyzfsd' in ln),
-                             ['NO: the pid changed', 'status not read', 'yes'], p.stdout[-3000:])
+                             ['NO: the pid changed', 'no serving daemon at an end', 'status not read', 'yes', 'yes'],
+                             p.stdout[-3000:])
+            self.assertIn("\nRows for design §9's median (the steady state): 0 with a verdict (0 at least, 0 below), "
+                          "4 with none.\n", p.stdout)
+            self.assertIn("Seed rows, not in the median (0 with a verdict (0 at least, 0 below), 1 with none): seed "
+                          "zfs-skyzfsd [x] (row 1): no upload had committed at its window's start.", p.stdout)
+            self.assertIn('is not one of design §9\'s median', p.stdout)
             # a row whose object storage was frozen until the workload began
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-18\nbuild abc\n'

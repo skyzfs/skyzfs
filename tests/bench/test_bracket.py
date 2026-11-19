@@ -256,6 +256,13 @@ class AnUploadRow(unittest.TestCase):
             k['before'], k['after'] = before, after
             self.assertEqual(bk.one_server(k), 'status not read', (before, after))
         self.assertEqual(bk.one_server({}), 'status not read')
+        # Review of #132, D2: a status read that shows the daemon gone is
+        # no serving daemon, not a status not read.
+        gone = {'read_at_ns': '2000', 'counters': 'left_by_a_daemon_that_is_gone,_pid_4242'}
+        for before, after in (({'pid': '4242'}, gone), (gone, {'pid': '4242'}), (gone, {}), ({}, gone)):
+            k = uploading()
+            k['before'], k['after'] = before, after
+            self.assertEqual(bk.one_server(k), 'no serving daemon at an end', (before, after))
 
     def test_an_epoch_that_is_not_a_number(self):
         """Review's D1 on #128: an epoch unread at both ends is no one epoch."""
@@ -290,6 +297,34 @@ def seeding(sb=None, sa=None, pid_same=True, from_load='window'):
     return k
 
 
+class SeedRows(unittest.TestCase):
+    """The lead's decision on #132: a row whose seed ran in its window is
+    not one of design §9's median; bracketed says so."""
+
+    def test_a_row_with_no_upload_at_its_start_is_a_seed_row(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=seeding()), row(3, 'zfs-slog', 1000)]
+        self.assertEqual(bk.bracketed(rows[1], rows)['seed_row'], "no upload had committed at its window's start")
+        # whatever its verdict, and whatever its mode
+        rows[1]['skyzfsd'] = seeding(from_load=None)
+        self.assertIsNotNone(bk.bracketed(rows[1], rows)['seed_row'])
+        rows[1]['skyzfsd'] = uploading(sb={'uploaded': '0'})
+        b = bk.bracketed(rows[1], rows)
+        self.assertEqual((b['verdict'], b['seed_row'] is not None), ('at least 0.90', True))
+
+    def test_steady_rows_are_not(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=uploading()), row(3, 'zfs-slog', 1000)]
+        self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'])
+        for k in ({'before': {'uploaded': '0'}, 'after': {}, 'pid_same': True}, None):
+            rows[1]['skyzfsd'] = k
+            if k is None:
+                del rows[1]['skyzfsd']
+            self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'])
+        k = uploading()
+        del k['before']['uploaded']
+        rows[1]['skyzfsd'] = k
+        self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'])
+
+
 class ASeedInTheWindow(unittest.TestCase):
     """The lead's decision on #132: a row whose seed was let go at its
     first window measures the seed's cost there, so a lease taken in the
@@ -303,9 +338,25 @@ class ASeedInTheWindow(unittest.TestCase):
         self.assertEqual(self.judge(seeding())['verdict'], f'at least 0.90 ({seed})')
         self.assertEqual(self.judge(seeding(), tps=850)['verdict'], f'BELOW 0.90 ({seed})')
         self.assertEqual(self.judge(seeding(sa={'lease': 'unsure'}))['verdict'], f'at least 0.90 ({seed})')
-        # A lease already held at the start under the end's epoch is the same lease.
-        self.assertEqual(self.judge(seeding(sb={'lease': 'held', 'lease_epoch': '1'}))['verdict'],
-                         f'at least 0.90 ({seed})')
+        # A lease already held at the start was not taken at the release
+        # (review of #132, D1; the lead's option (i)): the plain rule
+        # judges it, with no marker.
+        for lease in ('held', 'unsure'):
+            self.assertEqual(self.judge(seeding(sb={'lease': lease, 'lease_epoch': '1'}))['verdict'], 'at least 0.90')
+            self.assertIsNone(bk.seed_in_window(dict(skyzfsd=seeding(sb={'lease': lease, 'lease_epoch': '1'}))))
+        for lease in ('lost', 'not read'):
+            sb = {'lease': lease} if lease != 'not read' else {}
+            k = seeding(sb=sb)
+            if lease == 'not read':
+                del k['before']['lease']
+            self.assertIsNone(bk.seed_in_window(dict(skyzfsd=k)), lease)
+        # A seed row in a bracket too wide, or with no model row after it,
+        # has no verdict and no marker (review of #132, S17).
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=seeding()), row(3, 'zfs-slog', 1300)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertTrue(b['verdict'].startswith('NO VERDICT: bracket too wide'), b['verdict'])
+        self.assertNotIn('seed inside', b['verdict'])
+        self.assertTrue(bk.bracketed(rows[1], rows[:2])['verdict'].startswith('NO VERDICT: no zfs-slog row'))
         # The plain rule still judges a window row that held one lease
         # throughout and uploaded after an earlier commit: no marker.
         k = seeding(sb={'lease': 'held', 'lease_epoch': '1', 'uploaded': '3'}, sa={'uploaded': '27'})

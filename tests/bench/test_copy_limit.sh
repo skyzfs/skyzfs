@@ -259,10 +259,15 @@ done
 # release and the read before, to the read that saw it.
 BEGAN=30 REL=60 first_upload 100 3600 watch; rc=$?
 check "  let go at the window's start before the read before: from that read" \
-    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 20 to 50 s after MinIO was let go at the first window'"'"'s start (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 20 to 50 s after MinIO was let go at the start of the window that released it (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
 BEGAN=30 REL=95 first_upload 100 3600 watch; rc=$?
 check "  let go between the two reads: from the release" \
-    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 0 to 15 s after MinIO was let go at the first window'"'"'s start (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 0 to 15 s after MinIO was let go at the start of the window that released it (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+# Review of #132, D5: a commit seen before the release time says the
+# freeze did not hold, and does not drop the clause silently.
+BEGAN=30 REL=120 first_upload 100 3600 watch; rc=$?
+check "  seen before the release time: said, the freeze did not hold" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; BEFORE MinIO was let go (at 120, the read at 110): the freeze did not hold (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
 BEGAN=30 REL=x first_upload 100 3600 watch; rc=$?
 check "  a release time that is not a number: not said" \
     'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'

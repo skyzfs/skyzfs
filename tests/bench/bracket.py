@@ -30,11 +30,18 @@ A row whose seed was let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD
 it counts (the lead's decision on #132): such a row is judged when its
 own window let MinIO go (`released_here`; a later row whose window
 saw the tail of a seed released earlier is not such a row: Codex on
-#132), no upload had committed at the window's start, a whole upload
-had by its end, and the lease was held at its end, at any lease at
-its start. Its
+#132), the volume had no lease at the window's start (`none`: MinIO
+was frozen until after that read), no upload had committed by then, a
+whole upload had by its end, and the lease was held at its end. Its
 verdict says "seed inside window, lease at release" and the lease's
 epoch. Any other row keeps the rule above.
+
+A seed row is a row that says it uploads and had committed no upload
+at its window's start (`uploaded` 0 there): whatever it uploaded in
+the window began with the seed. Its verdict stands on its own line
+and is not one of the median of design §9, which is the steady
+state's ratio (the lead's decision on #132); `bracketed` says so in
+`seed_row`.
 
 `enclose` finds the two rows; `bracketed` forms the ratio and says
 whether it may be judged. Rows are the benchmark's result dicts, with
@@ -96,14 +103,19 @@ LEASE_HELD = ('held', 'unsure')
 def one_server(k):
     """-> whether a daemon row's window had one server, as its tables say it.
 
-    Read as not_uploading reads it: 'status not read' when either end's
-    status shows no pid (a reading that failed leaves no more than its
-    clock line), 'NO: the pid changed' only when both pids were read and
-    differ, else 'yes' (review of #128, L1).
+    Read as not_uploading reads it: when either end's status shows no
+    pid, 'no serving daemon at an end' if such an end was read (it has
+    fields beside the clock line `read_at_ns`: a daemon that died in
+    the window), else 'status not read' (a reading that failed leaves no
+    more than its clock line; review of #132, D2); 'NO: the pid changed'
+    only when both pids were read and differ, else 'yes' (review of
+    #128, L1).
     """
     sb, sa = k.get('before') or {}, k.get('after') or {}
-    if not sb.get('pid') or not sa.get('pid'):
-        return 'status not read'
+    nopid = [s for s in (sb, sa) if not s.get('pid')]
+    if nopid:
+        read = [s for s in nopid if set(s) - {'read_at_ns', 'pid'}]
+        return 'no serving daemon at an end' if read else 'status not read'
     return 'yes' if sb['pid'] == sa['pid'] else 'NO: the pid changed'
 
 
@@ -150,10 +162,24 @@ def not_uploading(row):
     return None
 
 
+def seed_row(row):
+    """-> why a row is a seed row (not in design §9's median), or None.
+
+    A row that says it uploads whose status shows `uploaded` 0 at its
+    window's start: no upload had committed, so what it uploaded in the
+    window began with the seed (the lead's decision on #132)."""
+    k = row.get('skyzfsd') or {}
+    if not k.get('upload'):
+        return None
+    if (k.get('before') or {}).get('uploaded') == '0':
+        return 'no upload had committed at its window\'s start'
+    return None
+
+
 def seed_in_window(row):
     """-> 'seed inside window, lease at release (epoch N)' for a row whose
     seed was let go at its window's start and committed inside it under
-    the lease it held at the window's end; else None.
+    the lease it took in the window; else None.
 
     Only the row whose window let MinIO go (`released_here`, from the
     file topology-bench.sh's skz_minio_resume writes for that window): a
@@ -162,10 +188,12 @@ def seed_in_window(row):
 
     The release comes after the status read at the window's start
     (topology-bench.sh, skz_minio_resume), so no upload at that read and
-    a whole one at the end's is a seed committed inside the window. A
-    lease held at both ends must be one epoch: a lease lost and taken
-    again in the window is no lease at the release. Read only when the
-    daemon was read at both ends and was the same (not_uploading).
+    a whole one at the end's is a seed committed inside the window. The
+    lease must be `none` at the start: in the window that let MinIO go
+    the daemon cannot have taken it before that read, so a lease held
+    there is not one taken at the release (review of #132, D1, the
+    lead's option (i)). Read only when the daemon was read at both ends
+    and was the same (not_uploading).
     """
     k = row.get('skyzfsd') or {}
     if (k.get('upload') or {}).get('from_load') != 'window' or k.get('released_here') is not True:
@@ -176,7 +204,7 @@ def seed_in_window(row):
     start, end = (sb.get('lease', 'not read'), sb.get('lease_epoch')), (sa.get('lease', 'not read'), sa.get('lease_epoch'))
     if end[0] not in LEASE_HELD or not str(end[1]).isdigit():
         return None
-    if start[0] in LEASE_HELD and start[1] != end[1]:
+    if start[0] != 'none':
         return None
     if sb.get('uploaded') != '0' or not str(sa.get('uploaded_whole', '')).isdigit() or int(sa['uploaded_whole']) < 1:
         return None
@@ -193,9 +221,11 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     no origin under it, and a model row slowed at its origin reads would
     flatter the daemon), and a row that says it uploads uploaded over its
     window (`not_uploading`). Otherwise it starts with NO VERDICT and says
-    why; a row that did not upload keeps its ratio and width.
+    why; a row that did not upload keeps its ratio and width. `seed_row`
+    says why the row is a seed row, whose verdict is not one of design
+    §9's median, or is None.
     """
-    out = {'before': None, 'after': None, 'ratio': None, 'width': None}
+    out = {'before': None, 'after': None, 'ratio': None, 'width': None, 'seed_row': seed_row(row)}
     if not row.get('tps'):
         out['verdict'] = 'no tps: the run did not measure'
         return out

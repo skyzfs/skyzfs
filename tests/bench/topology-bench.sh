@@ -711,7 +711,8 @@ if drows:
     # two reads) shows no one daemon's figures: said in the row's name.
     def one(r):
         said = bracket.one_server(r['skyzfsd'])
-        return label(r) + {'yes': '', 'status not read': " (its status not read at an end of the window)"}.get(
+        return label(r) + {'yes': '', 'status not read': " (its status not read at an end of the window)",
+                           'no serving daemon at an end': " (NO SERVING DAEMON at an end of the window)"}.get(
             said, ' (TWO DAEMONS in the window)')
     if ups:
         print('\nWhat the uploader did in the window (TB_SKZ_UPLOAD), from the daemon\'s status at its two ends: '
@@ -929,13 +930,16 @@ if skz:
           'committed in the window, its uploads cannot be read, its daemon did not hold the lease at both of its '
           'ends under one epoch, or the daemon was not shown to be the same at both (bracket.py). A row whose seed was '
           'let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD=window) measures the seed in that window: it is judged '
-          'when its own window let MinIO go, no upload had committed at the window\'s start and a whole one had by '
-          'its end, with the lease held at '
-          'its end and taken at the release, whatever the lease at its start; its verdict says '
-          '"seed inside window, lease at release" and the lease\'s epoch.\n')
+          'when its own window let MinIO go, the volume had no lease and no upload had committed at the window\'s '
+          'start, and a whole upload had committed by its end under the lease held there, which the daemon took in '
+          'the window; its verdict says "seed inside window, lease at release" and the lease\'s epoch. A seed row '
+          '(one that says it uploads and had committed no upload at its window\'s start, so that its window began '
+          'with the seed) keeps its verdict on its line but is not one of design §9\'s median, which is the steady '
+          'state\'s ratio: the count after the table puts it apart.\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|---|')
     mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
+    judged = []
     for r in sorted(skz, key=lambda r: (r['workload'], r.get('machine') or '', r.get('_seq') or 0)):
         b = bracket.bracketed(r, runs)
         tps_ = 'none' if not r['tps'] else f"{r['tps']:.0f}"
@@ -943,6 +947,20 @@ if skz:
         wid = '-' if b['width'] is None else f"{b['width']:.1%}"
         where = '' if r.get('_seq') is None else f" (row {r['_seq']})"
         print(f"| {r['workload']} | {label(r)}{where} | {lim(r)} | {tps_} | {mrow(b['before'])} | {mrow(b['after'])} | {wid} | {rat} | {b['verdict']} |")
+        judged.append((r, b))
+    # Design §9's median is the steady state's: a seed row's verdict is
+    # counted apart (the lead's decision on #132).
+    def count(rs):
+        at = sum(1 for _, b in rs if b['verdict'].startswith('at least'))
+        below = sum(1 for _, b in rs if b['verdict'].startswith('BELOW'))
+        return f"{at + below} with a verdict ({at} at least, {below} below), {len(rs) - at - below} with none"
+    steady = [(r, b) for r, b in judged if not b['seed_row']]
+    seeds = [(r, b) for r, b in judged if b['seed_row']]
+    print(f"\nRows for design §9's median (the steady state): {count(steady)}.")
+    if seeds:
+        print(f"Seed rows, not in the median ({count(seeds)}): "
+              + '; '.join(f"{r['workload']} {label(r)}{'' if r.get('_seq') is None else ' (row ' + str(r['_seq']) + ')'}: "
+                          f"{b['seed_row']}" for r, b in seeds) + '.')
     print('\nThe daemon\'s rows against each row of the model and of the other stacks on their machine (not judged; '
           'rows of other machines are counted and not compared):\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio |')
@@ -2014,12 +2032,17 @@ skz_first_upload() { # [watch]
                     how=" from the import, before the workload began"
                 fi
             fi
-            # =window: MinIO was let go at the first window's start, and
-            # the seed cannot commit before it: it came in the later of
-            # that and the read before, to the read that saw it.
+            # =window: MinIO was let go at a window's start (the first
+            # one whose release did not fail), and the seed cannot commit
+            # before it: it came in the later of that and the read
+            # before, to the read that saw it. A commit seen before the
+            # release time says the freeze did not hold (review of #132,
+            # D4 and D5).
             rel=$(cat "$SKZ_SEED_RELEASED" 2> /dev/null || true)
             if [ "${1:-}" = watch ] && [[ $rel =~ ^[0-9]+$ ]] && [ "$now" -ge "$rel" ]; then
-                how="$how; $(( prev > rel ? prev - rel : 0 )) to $(( now - rel )) s after MinIO was let go at the first window's start"
+                how="$how; $(( prev > rel ? prev - rel : 0 )) to $(( now - rel )) s after MinIO was let go at the start of the window that released it"
+            elif [ "${1:-}" = watch ] && [[ $rel =~ ^[0-9]+$ ]]; then
+                how="$how; BEFORE MinIO was let go (at $rel, the read at $now): the freeze did not hold"
             fi
             echo "first_upload after $(( now - t0 )) s$how (uploaded $up, cuts lost ${lost:-n/a})" >> "$OUT/$TOPO.skzinfo"
             log "skyzfsd: the first upload committed after $(( now - t0 )) s$how (cuts lost ${lost:-n/a})"
