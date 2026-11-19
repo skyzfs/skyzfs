@@ -269,9 +269,11 @@ Runs on d65ffb9, all green:
 - `coverage`, `e2e`, `k3s-smoke`, `skyzfs-ci`;
 - `skyzfs-control-rig` and `skyzfs-replay-rig`;
 - `skyzfs-daemon-rig` (run 44430413263): ubuntu-24.04, ubuntu-26.04 and
-  ubuntu-26.04-arm, on the daemon. Each table has 54 PASS and the one
-  documented WAITING (`pin_failed_volume_while_a_request_is_held`). Its
-  five FAIL lines are all negative controls (`ctl_*`).
+  ubuntu-26.04-arm, on the daemon. Each table has 53 PASS, 2 NA (the
+  in-place store's, both in the expected table) and the one documented
+  WAITING (`pin_failed_volume_while_a_request_is_held`). Its five FAIL
+  lines are all negative controls (`ctl_*`). (Corrected in the second
+  next look: this line first said 54 PASS and left out the NA lines.)
 - `skyzfs-cut-daemon` (run 44430413355): green on all three images.
   - On ubuntu-26.04 and ubuntu-26.04-arm, `bound: cuts_abandoned`
     passes: one cut abandoned at the bound, on a `--zero-fill` volume.
