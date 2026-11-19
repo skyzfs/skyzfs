@@ -24,10 +24,11 @@ against run 44412222348's artifacts and logs.
 behaviour claimed under (1) to (4) holds, and so do the tests behind
 it. What remains:
 
-- **CI is not all green yet.** One job is red for a reason outside this
-  pull request: the replay rig's "replay, product layout" job had a pool
+- **CI is green but for one job, red for a reason outside this pull
+  request.** The replay rig's "replay, product layout" job had a pool
   export that failed as busy, which is the rig's own error state. That
-  job should be rerun. Two rigs were still running when I stopped. See
+  job should be rerun. Every other run on the head has ended green,
+  among them the daemon rig on five jobs and the cut rig on four. See
   "CI and Codex at 0325c40".
 - **Codex's one finding (P2, `bracket.py:94`) needs an answer on its
   thread.** I checked it. It does not arise from rows the benchmark
@@ -373,8 +374,8 @@ What needs correcting:
 
 ## CI and Codex at 0325c40
 
-I read the runs at 23:56 UTC and again before committing; see the end
-of this section for the second reading.
+I read the runs at 23:56 UTC, and again at 00:22 UTC when the last one
+had ended. The head was still 0325c40.
 
 | run | state |
 |---|---|
@@ -382,9 +383,9 @@ of this section for the second reading.
 | push: control rig 44411672312 | success |
 | pull request: ci 44421456230 | success: lint (the bench's tests and shellcheck), test, unit-arm64, chart-lint, s3-backends |
 | coverage, e2e, kernel probe, nodeb rig, cut-daemon, control rig (44421455946, three images) | success |
-| **replay rig 44421456349** | **one job failed**: "replay, product layout (local log device)", job 135215364067. The daemon jobs ("through skyzfsd" on both images, "write into a hole" on both) passed. |
-| daemon rig 44421460750 | running (five jobs) |
-| cut rig 44421456076 | running (four "record and check" jobs) |
+| **replay rig 44421456349** | **one job failed**: "replay, product layout (local log device)", job 135215364067. "Replay, whole-pool layout" and the four daemon jobs ("through skyzfsd" and "write into a hole", each on both images) passed. |
+| daemon rig 44421460750 | success, five jobs. The judge exited 0 in each. On the daemon (ubuntu-24.04, 26.04 and 26.04-arm), its table has 55 PASS, 1 WAITING (`pin_failed_volume_while_a_request_is_held`, "not built") and 2 NA, as `EXPECTED` has them. On the stand-in (24.04 and 26.04) it has 32 PASS. Every FAIL line is a negative control (`ctl_*`). These are my counts of the table's lines in the job logs. |
+| cut rig 44421456076 | success, the four "record and check" jobs and the reference |
 
 **The failed replay job.**
 
