@@ -14,7 +14,13 @@ Scenarios: `next_scenarios.py` (output in `next_scenarios.out`). Plants:
 
 ## Verdict
 
-VERDICT
+**No blocking finding. It can merge once the rigs at `09860a0` are
+green.** F1 to F4 are fixed, with tests that kill the plants, and so is
+every test gap from the first look. Before the merge I recommend one
+small fix, N1 (the S4 cap). I asked for that cap in the first look, and
+I was wrong: `-f` cannot clear the kernel's "pool is busy". Without the
+fix, a job can again end with the pool left imported. N2 to N4 do not
+block.
 
 | | What | Certainty | Blocks |
 |---|---|---|---|
@@ -218,6 +224,28 @@ causes cannot make signal 6:
   - Suggested words: "K went to -f (W after every wait, the rest at
     once); -f exit codes …".
 
+**S7 (suggestion).** `replay_daemon.py` uses the same `Rig.export` but
+writes neither `export_busy` nor `export_forced` to its results or its
+summary. In the daemon jobs, a busy export shows only in the log, and
+there it says "at prefix 0", because the daemon rig never moves
+`Rig.at`.
+
+This pull request's replay run at `09860a0` (44445511640) shows it:
+
+- "through skyzfsd, ubuntu-24.04" (job 135297925802) logged four busy
+  exports and "through skyzfsd, ubuntu-26.04" (135297925735) one.
+- Every one of them reads "export of skzreplay busy at prefix 0: tried
+  again in 1 s; its file systems already unmounted; ZFS commands
+  running: none; mounts under the alternate root: none", and each was
+  exported when tried again.
+
+That is F3's new record on a real kernel:
+
+- the pool already unmounted;
+- no ZFS command running;
+- so the hold was the kernel's own, as the comment says;
+- and none needed `-f`.
+
 ### N1: the cap on waiting (S4) (does not block; fix in this PR)
 
 **N1 (certain).** `EXPORT_BUSY_THROUGHOUT_MAX` (`:469`, used at
@@ -308,8 +336,76 @@ two rows S3 changed from FAIL to ERROR. Nothing else changed there.
 
 ## Tests, shellcheck, plants
 
-PLANTS
+At `09860a0`:
+
+- Every `test_*.py` under `tests/kernel` and `tests/bench` passes, among
+  them `test_replay.py` (53), `test_cut_daemon_check.py` (104),
+  `test_cut_daemon_main.py` (38) and `test_cut_plan.py` (11).
+- Every `test_*.sh` under `tests/kernel`, `tests/lib` and `tests/bench`
+  passes.
+- shellcheck 0.11 on every tracked `*.sh` is clean.
+
+Plants (`next_plants.py`, `next_plants.out`): one at a time, the file
+restored in a `finally`, each test under a limit. The worktree was clean
+afterwards. The first look's plants were redone on the new text, and new
+ones were added for what changed.
+
+| area | plants | result |
+|---|---|---|
+| `bound_lines` (J01 to J21, J22b) | the first look's, on the new text | all 22 KILLED |
+| S3 (J23, J24) | `cut_holes` not required; a missing `cuts_abandoned` read as none | both KILLED |
+| `rec_bound` (R01 to R10) | the first look's seven, R06 (the pause after the create) among them, and S2's wait left out, after the reading, or 0.1 s | all 10 KILLED |
+| `cut_plan.py` (P01, P02) | as in the first look | both KILLED |
+| busy export (X01 to X10) | as in the first look; X07 redone as X07b and X07c (its text is in two records now) | all 11 KILLED |
+| exit 2 (X11 to X23) | as in the first look, X16 and X23 among them | all 13 KILLED |
+| F1 (A01 to A08) | `after_cleanup` always replacing, each of its five call sites going back to replacing, the cleanup's failure dropped from the detail, a passed check whose cleanup failed passing | all 8 KILLED |
+| F2 (B01 to B07) | each exclusion dropped, the old rule, a control without rig errors or not run excused, the table argument ignored | 6 KILLED. B06 (the default class changed) SURVIVED: every control has a class, so the default is never used |
+| the lead's rule and S5 (C01 to C06) | `ZDB_ABORT` not counted; not a catch in a control; zdb's 124 and 127 at the end not excused, or every code excused | 4 KILLED. C02 (any zdb signal in the main pass counted against) and C06 (zdb `-bcc` killed by a signal at the end excused) SURVIVED |
+| F3 (E01 to E12) | fuser on an unmounted directory, the header, the kernel mount line or the path kept, `ps` matched by arguments or not asked, `zed` or `zpool` out of the set, `mounted` not recorded, the words | 11 KILLED. E09 (fuser's tail kept, not its head) SURVIVED: no test output is over 1000 characters, and the holders are read from the whole output anyway |
+| F4 and S4 (G01 to G06, H01 to H04) | refusals counted, the export number, `forced` and `export_forced`, `waited`, the `-f` exit code; no cap, a cap of one, busy-throughout not counted, the last refusal not recorded | all 10 KILLED |
+
+In all: 99 KILLED, 4 SURVIVED, 1 NOT APPLIED (X07, redone as X07b and
+X07c).
+
+Every test gap from the first look is now closed. Two new small gaps:
+
+- C02: no test has a zdb signal other than 6 in the main pass with a
+  pool left. One `exit_code` case with signal 9 and a pool left,
+  expecting 2, would pin it.
+- C06: no test has zdb `-bcc` killed by a signal at the end. A case with
+  `zdb_cc_rc=-6` and a pool left, expecting 1, would pin the lead's rule
+  there.
+
+Both depend on N4's answer.
 
 ## CI and Codex at 09860a0
 
-CI_STATE
+Read-only, at `09860a0`, at the time of writing (no events subscribed):
+
+- **Done and green:**
+  - on the pull request: `coverage`, `e2e`, `skyzfs-kernel-probe` and
+    `skyzfs-nodeb-rig`;
+  - on the push: `skyzfs-ci`, `skyzfs-cut-daemon` and `skyzfs-nodeb-rig`.
+- **`skyzfs-replay-rig` (44445511640):** all four daemon jobs are green.
+  - "through skyzfsd" on 24.04 and on 26.04: exit 0, every checked
+    prefix passed, `zdb -bcc` 0. Their busy exports are in S7.
+  - The two "write into a hole" jobs.
+  - The product and whole-pool layouts, which run `replay_check.py`'s
+    `main` and so its exit code and its summary lines, were still
+    running.
+- **`skyzfs-cut-daemon` (PR run):** the logic job, 26.04-arm and upload
+  are green; 26.04 was still running.
+- **`skyzfs-cut-rig`:** the reference job and 26.04-arm are green; the
+  others were still running.
+- **`ci`:** all jobs are green except `test`, which was still running.
+- **`skyzfs-daemon-rig`:** all five kernel jobs were still running.
+  - The run at `c205682` was cancelled by the new push, so this run is
+    the daemon rig's first on this pull request.
+- **Codex** reviewed `09860a0` with no findings (the review summary's
+  state: `has_any_findings: false`), and its security review completed.
+  The author answered its P2 thread (review comment 4623636731).
+  Resolution is not visible through REST.
+- **No rigs' tables comment from the author yet.**
+
+Before the merge, read the summaries of the product and whole-pool
+jobs: the exit line, and the "Busy exports" line if there is one.
