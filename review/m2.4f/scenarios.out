@@ -1,0 +1,5 @@
+test review_m24f_r3_a_whole_cut_lost_at_its_sync_waits ... ok
+test review_m24f_r4_a_whole_cut_gone_at_its_commit_waits ... ok
+test review_m24f_r2_a_publish_is_made_during_a_whole_wait ... ok
+test review_m24f_r1_the_row_never_lapses_in_whole_waits ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.03s

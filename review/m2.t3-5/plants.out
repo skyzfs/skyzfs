@@ -1,0 +1,24 @@
+J01 the limit is 8 MiB: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J02 the limit is inclusive: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J03 no cut need be held: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J04 the holes need not be held: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J05 a cut may have been abandoned: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J06 the copies are not judged: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J07 the copies judged on status-held.txt (read after the stop, before the drain): KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J08 a missing held reading is an ERROR line, not the rig's error: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J09 a FAIL of the copies does not set the exit: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J10 a held reading that cannot be judged is not an error: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J11 bound's copies are judged as boundsparse's: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J12 bound's premise asks nothing: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J13 boundsparse's premise does not ask for held holes: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J14 boundsparse's premise does not ask for chunks: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J15 the premise is read from the held reading: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J16 a premise that cannot be read is not an error: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J17 a premise FAIL does not set the exit (bound): KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J18 a premise FAIL does not set the exit (boundsparse): KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J19 the gate is version 18: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J20 no gate on the version: KILLED by 1: test_a_daemon_before_version_17_has_no_held_or_premise_line
+J21 the bound lines are never written: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J22 bound's abandoned line prints the copies read after the let-go again: KILLED by 1: test_cut_daemon_check.py exit 1: et('cut_bound_bytes')!r}; the holder kept the '
+    ^
+SyntaxError: unterminated f-string literal (detected at line 1569)
