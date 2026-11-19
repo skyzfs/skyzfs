@@ -57,8 +57,9 @@ pub enum LeaseOutcome {
 /// The answer to [`RefStore::lease_renew`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenewOutcome {
-    /// The row named this holder at this epoch, expired or not, and its
-    /// expiry was pushed out. The epoch is unchanged.
+    /// The row named this holder at this epoch, live, expired or
+    /// released (a released lease is an expired one), and its expiry was
+    /// pushed out. The epoch is unchanged.
     Renewed(Lease),
     /// The row names another holder or another epoch, or there is none:
     /// nothing was written. The row as it was read.
@@ -144,10 +145,13 @@ pub(crate) mod lease {
     }
 
     /// A renewal that is one conditional write: the row is renewed only
-    /// where it is `(holder, epoch)`, expired or not, and the epoch is
-    /// kept. Unlike [`acquire`], it never takes a lease: a holder whose
-    /// row was taken between its read and its renewal must not take it
-    /// back at a newer epoch from the holder that took it.
+    /// where it is `(holder, epoch)`, live, expired or released, and the
+    /// epoch is kept. A released row of the same holder and epoch is
+    /// renewed as [`acquire`] renews it: nobody took the lease in
+    /// between, or its epoch would differ. Unlike [`acquire`], it never
+    /// takes a lease: a holder whose row was taken between its read and
+    /// its renewal must not take it back at a newer epoch from the holder
+    /// that took it.
     pub(crate) fn renew(
         current: Option<&Lease>,
         holder: &str,
@@ -276,8 +280,8 @@ pub trait RefStore: Send + Sync {
     async fn lease_acquire(&self, vol: VolumeId, holder: &str, ttl_ms: u64)
         -> Result<LeaseOutcome>;
 
-    /// Renew the lease only if its row is `(holder, epoch)`, expired or
-    /// not, in one conditional write ([`lease::renew`]). Never takes the
+    /// Renew the lease only if its row is `(holder, epoch)`, live,
+    /// expired or released, in one conditional write ([`lease::renew`]). Never takes the
     /// lease: a row of another holder or another epoch, or no row, is
     /// [`RenewOutcome::NotHeld`] and nothing is written. A holder that
     /// keeps a lease it already holds renews it here and not with
@@ -1147,6 +1151,80 @@ pub mod conformance {
         assert!(r3.expires_at_ms > 0);
     }
 
+    /// A renewal of an expired lease raced against a take by another
+    /// holder, each round on a volume of its own (G3 of the review of
+    /// #131): exactly one of the two wins, and the row is the winner's.
+    /// A store that reads the row apart from its write, outside one
+    /// critical section, lets the take land between the two, and the
+    /// renewal then writes over it: both say they won, and the row is
+    /// the renewal's.
+    ///
+    /// A race need not show that in a given round, so it runs many. The
+    /// two calls run on threads of their own, each with a runtime of its
+    /// own, and start when both have spun up to a shared count: a
+    /// barrier that wakes one of them lets the other's call end before
+    /// the woken one starts, and a window of a few instructions is then
+    /// never run into.
+    pub fn race_lease_renew_against_take(
+        s: Arc<dyn RefStore>,
+        advance_ms: &(dyn Fn(u64) + Send + Sync),
+        rounds: u32,
+    ) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        const TTL: u64 = 10_000;
+        fn runtime() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+        }
+        fn start_together(ready: &AtomicU32) {
+            ready.fetch_add(1, Ordering::SeqCst);
+            while ready.load(Ordering::SeqCst) < 2 {
+                std::hint::spin_loop();
+            }
+        }
+        let here = runtime();
+        for round in 0..rounds {
+            let v = VolumeId(ulid::Ulid::from_parts(0xD3, 0x1000 + u128::from(round)));
+            match here.block_on(s.lease_acquire(v, "node-a", TTL)).unwrap() {
+                LeaseOutcome::Acquired(l) => assert_eq!(l.epoch, 1),
+                other => panic!("round {round}, the first take: {other:?}"),
+            }
+            advance_ms(TTL + 1);
+            let ready = Arc::new(AtomicU32::new(0));
+            let renew = {
+                let (s, ready) = (Arc::clone(&s), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    let rt = runtime();
+                    start_together(&ready);
+                    rt.block_on(s.lease_renew(v, "node-a", 1, TTL))
+                })
+            };
+            let take = {
+                let (s, ready) = (Arc::clone(&s), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    let rt = runtime();
+                    start_together(&ready);
+                    rt.block_on(s.lease_acquire(v, "node-b", TTL))
+                })
+            };
+            let renewed = renew.join().unwrap().unwrap();
+            let taken = take.join().unwrap().unwrap();
+            let row = here.block_on(s.lease_get(v)).unwrap();
+            match (&renewed, &taken) {
+                (RenewOutcome::Renewed(mine), LeaseOutcome::Held(seen)) => {
+                    assert_eq!((seen.holder.as_str(), seen.epoch), ("node-a", 1));
+                    assert_eq!(row.as_ref(), Some(mine), "round {round}");
+                }
+                (RenewOutcome::NotHeld(_), LeaseOutcome::Acquired(theirs)) => {
+                    assert_eq!((theirs.holder.as_str(), theirs.epoch), ("node-b", 2));
+                    assert_eq!(row.as_ref(), Some(theirs), "round {round}");
+                }
+                other => panic!("round {round}: both or neither won: {other:?}; the row {row:?}"),
+            }
+        }
+    }
+
     /// The Invariant F fenced transaction (task 15h), uniform across
     /// stores: `transact_as` commits only under the exact `(holder,
     /// epoch)` the lease row records, fails closed with the *actual*
@@ -1322,6 +1400,21 @@ mod tests {
         let advance = move |ms: u64| _ = now.fetch_add(ms, std::sync::atomic::Ordering::SeqCst);
         conformance::exercise_lease(&s, &advance).await;
         conformance::exercise_lease_renew(&s, &advance).await;
+    }
+
+    /// The memory store renews under one write lock: a take cannot land
+    /// between the renewal's read and its write (G3 of the review of
+    /// #131).
+    #[test]
+    fn memory_store_renews_in_one_critical_section() {
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
+        let clock: Clock = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        let s: Arc<dyn RefStore> = Arc::new(MemoryRefStore::new().with_clock(clock));
+        let advance = move |ms: u64| _ = now.fetch_add(ms, std::sync::atomic::Ordering::SeqCst);
+        conformance::race_lease_renew_against_take(s, &advance, 300);
     }
 
     #[tokio::test]
