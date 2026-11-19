@@ -284,16 +284,18 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     });
     let mut waiting = Queued::new(Arc::clone(&desk));
     let call = tokio::spawn(async move { waiting.uploadable().await });
-    woken
-        .recv()
+    // Each wake within a limit: a call or ask that does not wake the
+    // queue's thread fails here, rather than hanging the suite.
+    tokio::time::timeout(Duration::from_secs(10), woken.recv())
         .await
+        .expect("the call wakes the queue's thread")
         .expect("the call woke the queue's thread");
     assert!(!call.is_finished(), "nobody has answered");
     let asking = Arc::clone(&desk);
     let count = tokio::spawn(async move { asking.cuts_now().await });
-    woken
-        .recv()
+    tokio::time::timeout(Duration::from_secs(10), woken.recv())
         .await
+        .expect("the ask of the count wakes the queue's thread")
         .expect("the ask of the count woke the queue's thread");
     assert!(!count.is_finished(), "nobody has given the count");
 
@@ -379,9 +381,9 @@ async fn a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close() {
     });
     let mut up = Queued::new(Arc::clone(&desk));
     let call = tokio::spawn(async move { up.sync_copies(7).await });
-    woken
-        .recv()
+    tokio::time::timeout(Duration::from_secs(10), woken.recv())
         .await
+        .expect("the call wakes the queue's thread")
         .expect("the call woke the queue's thread");
     desk.answer(&mut ClosingAtTheSync(Arc::clone(&desk)));
     assert!(desk.closed());

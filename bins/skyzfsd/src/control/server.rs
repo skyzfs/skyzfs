@@ -319,7 +319,9 @@ fn serve(
 
 /// Whether `accept` failed for a connection its peer gave up, or for a
 /// signal, and not for the socket's own error: the next is taken at once.
-fn gave_up(e: &io::Error) -> bool {
+/// After any other error (out of descriptors, say) the thread pauses
+/// first, so that it does not spin on an error that lasts.
+pub(super) fn gave_up(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock

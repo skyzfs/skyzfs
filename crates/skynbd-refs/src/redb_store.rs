@@ -11,7 +11,7 @@ use skynbd_types::{CommitHash, VolumeId};
 
 use crate::{
     lease, CasOutcome, Clock, Lease, LeaseOutcome, RefError, RefEvent, RefOp, RefStore, RefValue,
-    Result, TxnOutcome,
+    RenewOutcome, Result, TxnOutcome,
 };
 
 /// key: (volume ulid as u128, ref name) → value: (generation, commit bytes)
@@ -340,6 +340,33 @@ impl RefStore for RedbRefStore {
         Ok(outcome)
     }
 
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        let now = (self.clock)();
+        let txn = self.db.begin_write().map_err(backend)?;
+        let outcome = {
+            let mut table = txn.open_table(OWNER).map_err(backend)?;
+            let current = table
+                .get(vol.0 .0)
+                .map_err(backend)?
+                .map(|g| decode_lease(g.value()));
+            let (write, outcome) = lease::renew(current.as_ref(), holder, epoch, ttl_ms, now);
+            if let Some(l) = write {
+                table
+                    .insert(vol.0 .0, (l.holder.as_str(), l.epoch, l.expires_at_ms))
+                    .map_err(backend)?;
+            }
+            outcome
+        };
+        txn.commit().map_err(backend)?;
+        Ok(outcome)
+    }
+
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> Result<()> {
         let txn = self.db.begin_write().map_err(backend)?;
         {
@@ -403,6 +430,7 @@ mod tests {
             .with_clock(clock);
         let advance = move |ms: u64| _ = now.fetch_add(ms, Ordering::SeqCst);
         conformance::exercise_lease(&store, &advance).await;
+        conformance::exercise_lease_renew(&store, &advance).await;
     }
 
     #[tokio::test]

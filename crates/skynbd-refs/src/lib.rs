@@ -54,6 +54,17 @@ pub enum LeaseOutcome {
     Held(Lease),
 }
 
+/// The answer to [`RefStore::lease_renew`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewOutcome {
+    /// The row named this holder at this epoch, expired or not, and its
+    /// expiry was pushed out. The epoch is unchanged.
+    Renewed(Lease),
+    /// The row names another holder or another epoch, or there is none:
+    /// nothing was written. The row as it was read.
+    NotHeld(Option<Lease>),
+}
+
 /// Identity + TTL a store or provisioner acts under.
 #[derive(Debug, Clone)]
 pub struct LeaseConfig {
@@ -79,7 +90,7 @@ pub fn system_clock() -> Clock {
 /// The one lease state machine, shared by every store so the semantics
 /// cannot drift between backends.
 pub(crate) mod lease {
-    use super::{Lease, LeaseOutcome, RefError};
+    use super::{Lease, LeaseOutcome, RefError, RenewOutcome};
     use skynbd_types::VolumeId;
 
     /// The Invariant F fence (task 15h), shared by every store's
@@ -129,6 +140,31 @@ pub(crate) mod lease {
             // land here too) — epoch bumps, staying monotonic forever.
             Some(cur) if cur.expires_at_ms <= now_ms => granted(fresh(cur.epoch + 1)),
             Some(cur) => (None, LeaseOutcome::Held(cur.clone())),
+        }
+    }
+
+    /// A renewal that is one conditional write: the row is renewed only
+    /// where it is `(holder, epoch)`, expired or not, and the epoch is
+    /// kept. Unlike [`acquire`], it never takes a lease: a holder whose
+    /// row was taken between its read and its renewal must not take it
+    /// back at a newer epoch from the holder that took it.
+    pub(crate) fn renew(
+        current: Option<&Lease>,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+        now_ms: u64,
+    ) -> (Option<Lease>, RenewOutcome) {
+        match current {
+            Some(cur) if cur.holder == holder && cur.epoch == epoch => {
+                let renewed = Lease {
+                    holder: holder.to_string(),
+                    epoch,
+                    expires_at_ms: now_ms.saturating_add(ttl_ms),
+                };
+                (Some(renewed.clone()), RenewOutcome::Renewed(renewed))
+            }
+            other => (None, RenewOutcome::NotHeld(other.cloned())),
         }
     }
 
@@ -239,6 +275,21 @@ pub trait RefStore: Send + Sync {
     /// three because the semantics are one state machine: [`lease::acquire`].
     async fn lease_acquire(&self, vol: VolumeId, holder: &str, ttl_ms: u64)
         -> Result<LeaseOutcome>;
+
+    /// Renew the lease only if its row is `(holder, epoch)`, expired or
+    /// not, in one conditional write ([`lease::renew`]). Never takes the
+    /// lease: a row of another holder or another epoch, or no row, is
+    /// [`RenewOutcome::NotHeld`] and nothing is written. A holder that
+    /// keeps a lease it already holds renews it here and not with
+    /// [`RefStore::lease_acquire`], whose steal could take back, at a
+    /// newer epoch, a lease another holder took in between.
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome>;
 
     /// Zero the expiry, keeping `(holder, epoch)` so epochs stay
     /// monotonic. No-op unless `holder` holds the lease.
@@ -375,6 +426,15 @@ impl<T: RefStore + ?Sized> RefStore for Arc<T> {
         ttl_ms: u64,
     ) -> Result<LeaseOutcome> {
         (**self).lease_acquire(vol, holder, ttl_ms).await
+    }
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        (**self).lease_renew(vol, holder, epoch, ttl_ms).await
     }
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> Result<()> {
         (**self).lease_release(vol, holder).await
@@ -639,6 +699,22 @@ impl RefStore for MemoryRefStore {
         let now = (self.clock)();
         let mut leases = self.leases.write().await;
         let (write, outcome) = lease::acquire(leases.get(&vol), holder, ttl_ms, now);
+        if let Some(l) = write {
+            leases.insert(vol, l);
+        }
+        Ok(outcome)
+    }
+
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        let now = (self.clock)();
+        let mut leases = self.leases.write().await;
+        let (write, outcome) = lease::renew(leases.get(&vol), holder, epoch, ttl_ms, now);
         if let Some(l) = write {
             leases.insert(vol, l);
         }
@@ -984,6 +1060,93 @@ pub mod conformance {
         }
     }
 
+    /// [`RefStore::lease_renew`], uniform across stores: it renews only
+    /// the row `(holder, epoch)`, expired or not, keeps the epoch, and
+    /// never takes a lease. Another holder's row, live or expired, another
+    /// epoch of the same holder, and no row are each
+    /// [`RenewOutcome::NotHeld`] with the row as it was, and nothing is
+    /// written. The last case is F5 of the review of M2.4c-1: a holder
+    /// whose expired lease another took, and whose taker's lease expired
+    /// in turn before the renewal, is not given the lease back at a newer
+    /// epoch, as [`RefStore::lease_acquire`] would give it.
+    pub async fn exercise_lease_renew(s: &dyn RefStore, advance_ms: &(dyn Fn(u64) + Send + Sync)) {
+        let v = VolumeId(ulid::Ulid::from_parts(0xD3, 2));
+        const TTL: u64 = 10_000;
+        let renewed = |o: RenewOutcome| match o {
+            RenewOutcome::Renewed(l) => l,
+            other => panic!("expected renewed, got {other:?}"),
+        };
+
+        // No row: not held, and none is made.
+        assert_eq!(
+            s.lease_renew(v, "node-a", 1, TTL).await.unwrap(),
+            RenewOutcome::NotHeld(None)
+        );
+        assert_eq!(s.lease_get(v).await.unwrap(), None);
+
+        let a = match s.lease_acquire(v, "node-a", TTL).await.unwrap() {
+            LeaseOutcome::Acquired(l) => l,
+            other => panic!("expected acquired, got {other:?}"),
+        };
+        assert_eq!((a.holder.as_str(), a.epoch), ("node-a", 1));
+
+        // A live lease: the expiry is pushed out, the epoch kept, and the
+        // row is what the answer says.
+        advance_ms(4_000);
+        let r1 = renewed(s.lease_renew(v, "node-a", 1, TTL).await.unwrap());
+        assert_eq!((r1.holder.as_str(), r1.epoch), ("node-a", 1));
+        assert!(r1.expires_at_ms > a.expires_at_ms);
+        assert_eq!(s.lease_get(v).await.unwrap(), Some(r1.clone()));
+
+        // Expired, and still the row: renewed. The epoch, not the clock,
+        // says whose the lease is.
+        advance_ms(TTL + 1);
+        let r2 = renewed(s.lease_renew(v, "node-a", 1, TTL).await.unwrap());
+        assert_eq!(r2.epoch, 1);
+        assert!(r2.expires_at_ms > r1.expires_at_ms);
+
+        // Another epoch of the same holder, and another holder, live and
+        // expired: not held, nothing written.
+        let row = s.lease_get(v).await.unwrap();
+        for (holder, epoch) in [("node-a", 2), ("node-a", 0), ("node-b", 1)] {
+            assert_eq!(
+                s.lease_renew(v, holder, epoch, TTL).await.unwrap(),
+                RenewOutcome::NotHeld(row.clone()),
+                "{holder} at {epoch} on a live row"
+            );
+            assert_eq!(s.lease_get(v).await.unwrap(), row);
+        }
+        advance_ms(TTL + 1);
+        assert_eq!(
+            s.lease_renew(v, "node-b", 1, TTL).await.unwrap(),
+            RenewOutcome::NotHeld(row.clone()),
+            "another holder on an expired row"
+        );
+        assert_eq!(s.lease_get(v).await.unwrap(), row);
+
+        // F5: node-b takes the expired lease (epoch 2), its own expires
+        // too, and node-a's renewal at epoch 1 comes after. Not held, and
+        // node-b's row stands.
+        let b = match s.lease_acquire(v, "node-b", TTL).await.unwrap() {
+            LeaseOutcome::Acquired(l) => l,
+            other => panic!("expected steal, got {other:?}"),
+        };
+        assert_eq!((b.holder.as_str(), b.epoch), ("node-b", 2));
+        advance_ms(TTL + 1);
+        assert_eq!(
+            s.lease_renew(v, "node-a", 1, TTL).await.unwrap(),
+            RenewOutcome::NotHeld(Some(b.clone()))
+        );
+        assert_eq!(s.lease_get(v).await.unwrap(), Some(b.clone()));
+
+        // A released row keeps (holder, epoch): no other holder has acted,
+        // and its holder's renewal renews it, as its lease_acquire would.
+        s.lease_release(v, "node-b").await.unwrap();
+        let r3 = renewed(s.lease_renew(v, "node-b", 2, TTL).await.unwrap());
+        assert_eq!((r3.holder.as_str(), r3.epoch), ("node-b", 2));
+        assert!(r3.expires_at_ms > 0);
+    }
+
     /// The Invariant F fenced transaction (task 15h), uniform across
     /// stores: `transact_as` commits only under the exact `(holder,
     /// epoch)` the lease row records, fails closed with the *actual*
@@ -1158,6 +1321,7 @@ mod tests {
         let s = MemoryRefStore::new().with_clock(clock);
         let advance = move |ms: u64| _ = now.fetch_add(ms, std::sync::atomic::Ordering::SeqCst);
         conformance::exercise_lease(&s, &advance).await;
+        conformance::exercise_lease_renew(&s, &advance).await;
     }
 
     #[tokio::test]

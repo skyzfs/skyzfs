@@ -521,6 +521,15 @@ impl RefStore for FailNextMetaPut {
     ) -> skynbd_refs::Result<skynbd_refs::LeaseOutcome> {
         self.inner.lease_acquire(vol, holder, ttl_ms).await
     }
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> skynbd_refs::Result<skynbd_refs::RenewOutcome> {
+        self.inner.lease_renew(vol, holder, epoch, ttl_ms).await
+    }
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> skynbd_refs::Result<()> {
         self.inner.lease_release(vol, holder).await
     }

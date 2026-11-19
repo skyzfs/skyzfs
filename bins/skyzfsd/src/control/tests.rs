@@ -394,6 +394,82 @@ mod socket {
         tempfile::tempdir().expect("a directory")
     }
 
+    /// A daemon whose socket's backlog is full, and that takes no more
+    /// connections: an ask gives up within its limit, and is not held by
+    /// the connect (Codex on #129). Mutant: a blocking connect, which
+    /// waits for room before any timeout applies.
+    #[test]
+    fn an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit() {
+        use rustix::io::Errno;
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+        let dir = dir();
+        let path = dir.path().join("full.sock");
+        let socket = |flags| {
+            rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)
+                .expect("a socket")
+        };
+        let listener = socket(SocketFlags::CLOEXEC);
+        let address = SocketAddrUnix::new(&path).expect("an address");
+        rustix::net::bind(&listener, &address).expect("bound");
+        rustix::net::listen(&listener, 0).expect("listening");
+        // Connections the listener never takes, until the next would
+        // wait for room.
+        let mut held = Vec::new();
+        loop {
+            let peer = socket(SocketFlags::NONBLOCK | SocketFlags::CLOEXEC);
+            match rustix::net::connect(&peer, &address) {
+                Ok(()) => held.push(peer),
+                Err(Errno::AGAIN) => break,
+                Err(e) => panic!("a connection to fill the backlog: {e}"),
+            }
+            assert!(held.len() < 1000, "the backlog does not fill");
+        }
+        let limit = Duration::from_millis(300);
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            let answer = ask(&path, &Request::Cuts, &[], limit);
+            let _ = done.send((answer, began.elapsed()));
+        });
+        let (answer, took) = ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the ask ends, and is not held by the connect");
+        let e = answer.expect_err("no connection was taken");
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(e.to_string().contains("backlog is full"), "{e}");
+        assert!(
+            took >= limit && took < limit + Duration::from_secs(2),
+            "{took:?}"
+        );
+        drop(held);
+        drop(listener);
+    }
+
+    /// The errors of `accept` after which the channel's thread takes the
+    /// next connection at once: a peer that gave up, a signal, nothing
+    /// waiting, and a protocol error of the peer's. After the socket's own
+    /// errors, such as no descriptor left, it pauses first, and does not
+    /// spin while they last. Mutant: every error retried at once (N5 of
+    /// the review of #127), or none.
+    #[test]
+    fn accept_is_tried_again_at_once_only_after_a_peer_or_a_signal() {
+        use rustix::io::Errno;
+        let error = |errno: Errno| io::Error::from_raw_os_error(errno.raw_os_error());
+        for errno in [Errno::CONNABORTED, Errno::INTR, Errno::AGAIN, Errno::PROTO] {
+            assert!(server::gave_up(&error(errno)), "{errno:?}: at once");
+        }
+        for errno in [
+            Errno::MFILE,
+            Errno::NFILE,
+            Errno::NOBUFS,
+            Errno::NOMEM,
+            Errno::BADF,
+            Errno::INVAL,
+        ] {
+            assert!(!server::gave_up(&error(errno)), "{errno:?}: after a pause");
+        }
+    }
+
     /// Mutant: the socket left with the umask's mode, or answers not
     /// counted.
     #[test]

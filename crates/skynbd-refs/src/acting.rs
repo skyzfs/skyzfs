@@ -17,7 +17,8 @@
 use skynbd_types::{CommitHash, VolumeId};
 
 use crate::{
-    CasOutcome, Lease, LeaseOutcome, RefEvent, RefOp, RefStore, RefValue, Result, TxnOutcome,
+    CasOutcome, Lease, LeaseOutcome, RefEvent, RefOp, RefStore, RefValue, RenewOutcome, Result,
+    TxnOutcome,
 };
 
 pub struct ActingRefStore<R> {
@@ -124,6 +125,16 @@ impl<R: RefStore> RefStore for ActingRefStore<R> {
         ttl_ms: u64,
     ) -> Result<LeaseOutcome> {
         self.inner.lease_acquire(vol, holder, ttl_ms).await
+    }
+
+    async fn lease_renew(
+        &self,
+        vol: VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<RenewOutcome> {
+        self.inner.lease_renew(vol, holder, epoch, ttl_ms).await
     }
 
     async fn lease_release(&self, vol: VolumeId, holder: &str) -> Result<()> {
