@@ -25,8 +25,9 @@ Plants: `next_plants2.py` (output in `next_plants2.out`).
 
 ## Verdict
 
-**No blocking finding. The pull request can merge once the rigs at
-`9710a24` are green** (state in (8)).
+**No blocking finding. The pull request can merge.** Every rig at
+`9710a24` is green, the product and whole-pool layouts included (see
+(8)).
 
 - N1 and N3 are fixed. The lead's rule on zdb's signals is built as
   decided, at every site but one.
@@ -338,9 +339,32 @@ Locally, on a clean worktree:
   passes, and so does every `test_*.sh`.
 - This round changed no shell file.
 
-CI at `9710a24`:
+CI at `9710a24`: every run is green.
 
-CI_TABLE
+- `ci` (with `unit-arm64`), `coverage`, `e2e`, `skyzfs-ci` (the push).
+- `skyzfs-kernel-probe` and `skyzfs-nodeb-rig`.
+- `skyzfs-cut-rig`: four images and the reference.
+- `skyzfs-cut-daemon`: 26.04, 26.04-arm and 26.04-upload.
+- `skyzfs-daemon-rig`: the daemon on 24.04, 26.04 and 26.04-arm, and
+  the stand-in on 24.04 and 26.04.
+- `skyzfs-replay-rig` (run 44450250278): every job.
+
+The replay rig's summaries:
+
+| Job | Exit | zdb -bcc | Controls | Busy exports |
+|---|---|---|---|---|
+| product layout (`replay-rig-slog`) | 0; every checked prefix imported and verified (110 of 110 flush boundaries, 3076 of 3076 near an uberblock write) | 0 | data, drop, reorder: as expected; intent: not built, as expected | 2 (prefixes 56 and 1274), each exported when tried again after 1 s; none forced |
+| whole-pool layout (`replay-rig-whole`) | 0; every checked prefix imported and verified | 0 | data, drop, intent, reorder: as expected | 4 (prefixes 37, 189, 1401, 1478), each exported after 1 s; none forced |
+| through skyzfsd, 24.04 | 0; 126 of 2272 prefixes (the pull-request budget); every checked prefix passed | 0 | | 1 (prefix 1607), exported after 1 s |
+| through skyzfsd, 26.04 | 0; 124 of 2227 prefixes; every checked prefix passed | 0 | | 1 (prefix 4), exported after 1 s |
+| write into a hole, 24.04 and 26.04 | success | | | |
+
+So busy exports are common on the real kernel: one to four a job, and
+every one cleared on the first wait. That fits N1's reading: what holds
+the pool is short-lived, and the waits clear it.
+
+The daemon jobs' "Every record prefix" line says that the pull-request
+budget does not show design §9's criterion. That is as intended.
 
 ## (9) Codex
 
