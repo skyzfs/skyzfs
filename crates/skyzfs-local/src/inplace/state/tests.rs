@@ -2939,6 +2939,229 @@ fn a_run_of_zeros_goes_on_over_the_looks_to_the_next_block_of_the_map() {
     }
 }
 
+/// The slices of the first cut over an empty volume, one hole from end
+/// to end, read the cut's map and the hole set once over, though its
+/// one run of zeros crosses every stretch of [`RUN_LOOK`] blocks: each
+/// look goes on from where the last one stopped, in the map and in the
+/// hole set. So with one block written, in the middle or last (G3 of
+/// the review of #125: a look into the hole set, or into the map, from
+/// the run's first block at every stretch made 33.6 million loads, or
+/// 8.4 million, at 64 GiB, where the code makes about 29,000; no other
+/// cost test has a run longer than a stretch).
+#[test]
+fn a_run_of_zeros_over_an_empty_volume_reads_the_map_and_hole_set_once_over() {
+    // 64 GiB: 4096 stretches, a summary of 4096 words, a hole set of
+    // 16384.
+    const LARGE: u64 = 1 << 24;
+    for written in [None, Some(LARGE / 2 + 3), Some(LARGE - 1)] {
+        let (loads, once) = empty_slicing(LARGE, written);
+        assert!(
+            loads <= 4 * once,
+            "written {written:?}: {loads} loads for {once}"
+        );
+    }
+    // A quarter of the volume costs about a quarter: either look from
+    // the run's first block makes it a sixteenth.
+    let (loads, _) = empty_slicing(LARGE, None);
+    let (quarter, _) = empty_slicing(LARGE / 4, None);
+    assert!(
+        loads <= 5 * quarter,
+        "{loads} loads at 64 GiB, {quarter} at 16 GiB"
+    );
+}
+
+/// The loads that the slices of the first cut over an empty volume of
+/// `large` blocks take, in slices of 64 blocks, with block `written`
+/// written before the cut; and one pass over the open map's summary
+/// and the hole set.
+fn empty_slicing(large: u64, written: Option<u64>) -> (u64, u64) {
+    let bound = 64 * BLOCK_SIZE;
+    let region = MemRegion::new(words_for(large, records_for(bound)));
+    let mut state = CutState::begin_with(
+        region.clone(),
+        large * BLOCK_SIZE,
+        bound,
+        OWNER,
+        Mutants(0),
+        None,
+        Some(&[(0, large)]),
+    );
+    if let Some(block) = written {
+        state.change(block, 1, &mut NoCopies).expect("the change");
+    }
+    let number = state.freeze(&marked(1), true);
+    state.flushed(number);
+    let before = region.loads();
+    let (mut from, mut zeroes, mut blocks) = (Some(0), Vec::new(), Vec::new());
+    while let Some(at) = from {
+        let slice = state.slice_from(number, at, 64).expect("held");
+        zeroes.extend(slice.zeroes);
+        blocks.extend(slice.blocks);
+        from = slice.next;
+    }
+    let loads = region.loads() - before;
+    let runs: Vec<(u64, u64)> = match written {
+        None => vec![(0, large)],
+        Some(block) => [(0, block), (block + 1, large - block - 1)]
+            .into_iter()
+            .filter(|&(_, count)| count > 0)
+            .collect(),
+    };
+    assert_eq!(zeroes, runs, "written {written:?}");
+    assert_eq!(blocks, Vec::from_iter(written), "written {written:?}");
+    (loads, large / 64 / 64 + hole_words(large) as u64)
+}
+
+/// Slices of the first cut over volumes of a few stretches of
+/// [`RUN_LOOK`] blocks and part of one, with holes and writes at
+/// random, many of them at or beside the edge of a stretch, of a hole
+/// or of a chunk, taken from the volume's start with limits at random:
+/// together they read every block once and in order, as zeros where it
+/// lay in a hole and was not written before the cut, as a block
+/// otherwise; a run of zeros goes on as long as the zeros do; and no
+/// slice has more blocks than its limit or more runs than
+/// [`SLICE_ZERO_RUNS`] (G4 of the review of #125: no other test slices
+/// at random across the edge of a stretch).
+#[test]
+fn random_slices_over_several_stretches_read_each_block_once_as_the_holes_say() {
+    let bound = 64 * BLOCK_SIZE;
+    let (mut crossing, mut at_edges) = (0, 0);
+    for seed in 0..64u64 {
+        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n.max(1)
+        };
+        let stretches = 1 + next(4);
+        let blocks = stretches * RUN_LOOK + next(RUN_LOOK);
+        let chunks = blocks.div_ceil(HOLE_BLOCKS);
+        // The edges of the stretches, the volume's end among them.
+        let edges: Vec<u64> = (1..=stretches)
+            .map(|k| k * RUN_LOOK)
+            .chain([blocks])
+            .collect();
+        let mut holes = Vec::new();
+        for _ in 0..=next(12) {
+            let first = match next(3) {
+                0 => next(chunks),
+                // At a stretch's edge, or a chunk or two before it.
+                _ => {
+                    (edges[next(edges.len() as u64) as usize] / HOLE_BLOCKS).saturating_sub(next(3))
+                }
+            };
+            let count = 1 + match next(3) {
+                0 => next(4),
+                1 => next(RUN_LOOK / HOLE_BLOCKS),
+                _ => next(chunks),
+            };
+            holes.push((first * HOLE_BLOCKS, count * HOLE_BLOCKS));
+        }
+        if next(8) == 0 {
+            holes.push((0, blocks));
+        }
+        let mut writes = Vec::new();
+        for _ in 0..next(48) {
+            let edge = edges[next(edges.len() as u64) as usize];
+            let (first, count) = holes[next(holes.len() as u64) as usize];
+            let at = match next(4) {
+                0 => next(blocks),
+                // At a stretch's edge, or a block or two either side.
+                1 => (edge + next(5)).saturating_sub(2),
+                // At a hole's first or last block, or just outside.
+                2 if next(2) == 0 => (first + next(3)).saturating_sub(1),
+                2 => (first + count + next(3)).saturating_sub(2),
+                // Inside the chunk before or after a stretch's edge.
+                _ => (edge + HOLE_BLOCKS / 2).saturating_sub(next(2) * HOLE_BLOCKS),
+            };
+            let count = if next(4) == 0 { 1 + next(40) } else { 1 };
+            if at < blocks {
+                writes.push((at, count.min(blocks - at)));
+            }
+        }
+        // What the cut reads as zeros, from the holes as given: a chunk
+        // a hole holds whole, up to the volume's end.
+        let in_hole = |block: u64| {
+            let start = block / HOLE_BLOCKS * HOLE_BLOCKS;
+            let end = (start + HOLE_BLOCKS).min(blocks);
+            holes
+                .iter()
+                .any(|&(first, count)| first <= start && end <= (first + count).min(blocks))
+        };
+        let mut zero: Vec<bool> = (0..blocks).map(in_hole).collect();
+        for &(at, count) in &writes {
+            for block in at..at + count {
+                zero[block as usize] = false;
+            }
+        }
+        let zero = |block: u64| zero.get(block as usize).copied().unwrap_or(false);
+        let region = MemRegion::new(words_for(blocks, records_for(bound)));
+        let mut state = CutState::begin_with(
+            region,
+            blocks * BLOCK_SIZE,
+            bound,
+            OWNER,
+            Mutants(0),
+            None,
+            Some(&holes),
+        );
+        for &(at, count) in &writes {
+            state.change(at, count, &mut NoCopies).expect("the change");
+        }
+        let number = state.freeze(&marked(1), true);
+        state.flushed(number);
+        let case = format!("seed {seed}, {blocks} blocks");
+        let (mut from, mut at) = (Some(0), 0);
+        while let Some(start) = from {
+            assert_eq!(start, at, "{case}");
+            let limit = match next(3) {
+                0 => 1,
+                1 => 1 + next(64) as usize,
+                _ => usize::MAX,
+            };
+            let slice = state.slice_from(number, start, limit).expect("held");
+            assert!(slice.blocks.len() <= limit, "{case}: from {start}");
+            assert!(
+                slice.zeroes.len() <= SLICE_ZERO_RUNS,
+                "{case}: from {start}"
+            );
+            let mut read: Vec<(u64, u64, bool)> = slice
+                .zeroes
+                .iter()
+                .map(|&(first, count)| (first, count, true))
+                .chain(slice.blocks.iter().map(|&block| (block, 1, false)))
+                .collect();
+            read.sort_unstable();
+            assert!(!read.is_empty(), "{case}: from {start}");
+            for (first, count, zeros) in read {
+                assert_eq!(first, at, "{case}: a gap or an overlap");
+                assert!(count > 0, "{case}: an empty run at {first}");
+                let end = first + count;
+                if zeros {
+                    assert!(
+                        (first..end).all(zero),
+                        "{case}: the run ({first}, {count}) reads a block"
+                    );
+                    assert!(!zero(end), "{case}: the run ({first}, {count}) stops short");
+                    crossing += u64::from(first / RUN_LOOK < (end - 1) / RUN_LOOK);
+                    at_edges += u64::from(end % RUN_LOOK == 0 && end < blocks);
+                } else {
+                    assert!(!zero(first), "{case}: block {first} read, not zeros");
+                }
+                at = end;
+            }
+            assert_eq!(slice.next, (at < blocks).then_some(at), "{case}");
+            from = slice.next;
+        }
+        assert_eq!(at, blocks, "{case}");
+    }
+    // The cases reach what they are for: runs across a stretch's edge,
+    // and runs that end at one.
+    assert!(crossing >= 20, "{crossing} runs cross an edge");
+    assert!(at_edges >= 5, "{at_edges} runs end at an edge");
+}
+
 /// The loads that the slices of the first cut over a volume of `large`
 /// blocks take, a chunk of data in every MiB, in slices of 64 blocks;
 /// and what they would be at a few loads for each block read and each
