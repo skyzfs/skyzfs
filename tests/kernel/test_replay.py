@@ -897,8 +897,16 @@ class Log(unittest.TestCase):
         # zdb at the end that timed out or could not start judged nothing
         for rc in replay_check.RIG_RC:
             self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': rc}), 2, rc)
-        # zdb at the end killed by a signal is not excused (only 124 and 127 are)
+        # zdb's signals at the end, the same rule as in the main pass (the lead, #130): an abort counts
+        # against the image; an out-of-memory kill or the tool's crash is the rig's
         self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': -6}), 1)
+        for sig in (-9, -11, -7):
+            self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': sig}), 2, sig)
+            # with no pool left, a job whose failures are the rig's stays 1
+            self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': sig, 'failures': [], 'controls': [],
+                                                       'control_rows': []}), 1, sig)
+        self.assertEqual([replay_check.zdb_rig_code(c) for c in (0, 1, 124, 127, -6, -9, -11, -7, None)],
+                         [False, False, True, True, False, True, True, True, False])
         # in the main pass, only signal 6 counts against the image: another signal is the rig's
         self.assertEqual(replay_check.exit_code(
             **{**two, 'failures': two['failures'] + [{'n': 9, 'failed': 'rig: zdb died with signal 9'}]}), 2)

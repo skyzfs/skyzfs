@@ -183,6 +183,13 @@ class Pure(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn('did not finish', why[0])
             self.assertEqual(rd.verdict([{'n': 1}], [], True, [], True, rc_)[0], 1)
+        # zdb's signals, one rule with the main pass (the lead, #130): an abort counts against the image;
+        # an out-of-memory kill or the tool's crash is the rig's
+        self.assertEqual(rd.verdict([], [], True, [], True, -6)[0], 1)
+        for rc_ in (-9, -11, -7):
+            code, why = rd.verdict([], [], True, [], True, rc_)
+            self.assertEqual(code, 2, rc_)
+            self.assertIn(f'killed by signal {-rc_}', why[0])
 
     def test_controls_against_the_table(self):
         def ctl(name, caught, by=None):

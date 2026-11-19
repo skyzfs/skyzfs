@@ -300,13 +300,15 @@ def verdict(failures, rig_errors, controls_ok, coverage_errors, witness_ok, zdb_
         against.append(f'{len(failures)} prefix(es) failed a check')
     if not controls_ok:
         against.append('a control is not as the table has it')
-    if zdb_cc_rc not in (0, None) and zdb_cc_rc not in rc.RIG_RC:
+    # zdb's signals: replay_check.ZDB_ABORT's rule, the same in the main pass and here
+    if zdb_cc_rc not in (0, None) and not rc.zdb_rig_code(zdb_cc_rc):
         against.append(f'zdb -bcc on the final image: exit code {zdb_cc_rc}')
     if zdb_cc_rc is None:
         rig.append('zdb -bcc did not run on the final image')
-    elif zdb_cc_rc in rc.RIG_RC:
-        rig.append(f'zdb -bcc on the final image did not finish (exit code {zdb_cc_rc}: '
-                   f'{"timed out" if zdb_cc_rc == 124 else "could not start"})')
+    elif rc.zdb_rig_code(zdb_cc_rc):
+        why = ('timed out' if zdb_cc_rc == 124 else 'could not start' if zdb_cc_rc == 127
+               else f'killed by signal {-zdb_cc_rc}')
+        rig.append(f'zdb -bcc on the final image did not finish (exit code {zdb_cc_rc}: {why})')
     if rig_errors:
         rig.append(f'the rig failed at {len(rig_errors)} prefix(es), first: {rig_errors[0]["failed"]}')
     if coverage_errors:

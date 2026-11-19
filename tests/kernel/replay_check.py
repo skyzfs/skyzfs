@@ -469,14 +469,25 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 # were busy before it.
 EXPORT_WAITS = (1, 2, 4, 8)
 LEFT_IMPORTED = 'is still imported'
-# zdb aborting (SIGABRT, an assertion or any other abort of its own):
-# evidence about the pool it read, not about the rig. A catch in a control
-# (tally_control); against the image in the main pass, even with a pool
-# left imported (exit_code). Any signal 6 counts because the rig never
+# zdb's signals, one rule for the main pass and the end of the job (the
+# lead, #130): zdb aborting (SIGABRT, an assertion or any other abort of
+# its own) is evidence about the pool it read, not about the rig. It is a
+# catch in a control (tally_control), and against the image in the main
+# pass and at the end, even with a pool left imported (exit_code). Any
+# other signal (9 an out-of-memory kill, 11 or 7 the tool's own crash) is
+# the rig's, as a timeout or a command that could not start is
+# (zdb_rig_code); then the rule for the rig's errors applies: exit 2 with a
+# pool left imported, else 1. Any signal 6 counts because the rig never
 # sends one: run() ends a command past its limit with SIGKILL (exit 124),
 # and a job cancelled from outside sends TERM or KILL. A rig that ever
 # sends zdb SIGABRT must change this rule.
 ZDB_ABORT = 'rig: zdb died with signal 6'
+
+
+def zdb_rig_code(rc):
+    """Whether zdb's exit code is the rig's and not a verdict: it timed out,
+    could not start, or was killed by a signal other than SIGABRT (ZDB_ABORT)."""
+    return rc is not None and (rc in RIG_RC or (rc < 0 and rc != -6))
 # The commands that can hold a reference to a pool from user space: a
 # process inside a ZFS ioctl. The kernel's own holds show in no process.
 ZFS_COMMANDS = ('zpool', 'zfs', 'zdb', 'zed')
@@ -896,8 +907,8 @@ def exit_code(ok, failures, controls, control_rows, witness_ok, zdb_cc_rc, expec
     zdb abort on an assertion (ZDB_ABORT; a failure found before a
     failed export stays the prefix's, see after_cleanup), every control that differs from the table differs in
     a way its rig errors explain (rig_errors_explain), the witness
-    agreed and zdb at the end found no fault (or timed out or could not
-    start, which is never a verdict). Every check after such a pool says
+    agreed and zdb at the end found no fault (or ended as the rig's:
+    zdb_rig_code). Every check after such a pool says
     only that it is there, and a coverage short of its floor follows
     from the pass that stopped. A job whose failures are all the rig's,
     with no pool left imported, stays 1: a rig that could not finish its
@@ -910,7 +921,7 @@ def exit_code(ok, failures, controls, control_rows, witness_ok, zdb_cc_rc, expec
     seen = {c['name']: c for c in controls}
     if (left and not any(r['failed'] in JUDGING or r['failed'] == ZDB_ABORT for r in failures)
             and all(r['match'] or rig_errors_explain(seen.get(r['name']), expected) for r in control_rows)
-            and witness_ok and (zdb_cc_rc == 0 or zdb_cc_rc in RIG_RC)):
+            and witness_ok and (zdb_cc_rc == 0 or zdb_rig_code(zdb_cc_rc))):
         return 2
     return 1
 
