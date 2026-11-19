@@ -771,9 +771,10 @@ class Log(unittest.TestCase):
         self.assertIn('Busy exports: 2 (3 refused attempts), each exported when tried again. The first at prefix 2486: '
                       'its file systems already unmounted; ZFS commands running: pid 777, 3 s: zpool list', lines)
         self.assertNotIn('USER', lines)
-        res['export_forced'] = [{'export': 1, 'at': 2486, 'rc': 0}, {'export': 2, 'at': 2600, 'rc': 1}]
-        self.assertIn('Busy exports: 2 (3 refused attempts), 2 of them still busy after every wait and sent to -f, '
-                      'which exported 1 and left 1 imported (-f exit codes 0, 1)', ''.join(replay_check.rig_lines(res)))
+        res['export_forced'] = [{'export': 1, 'at': 2486, 'rc': 0}, {'export': 2, 'at': 2600, 'rc': 1},
+                                {'export': 3, 'at': 2700, 'rc': 0}]
+        self.assertIn('Busy exports: 2 (3 refused attempts), 3 of them still busy after every wait and sent to -f, '
+                      'which exported 2 and left 1 imported (-f exit codes 0, 1, 0)', ''.join(replay_check.rig_lines(res)))
         mounted = {**unmounted, 'mounted': True, 'holders': ['udisksd (pid 4242, ..c..)'], 'zfs_processes': []}
         self.assertIn('its file system still mounted, held by udisksd (pid 4242, ..c..); ZFS commands running: none',
                       ''.join(replay_check.rig_lines({'export_busy': [mounted]})))

@@ -476,11 +476,13 @@ LEFT_IMPORTED = 'is still imported'
 # pass and at the end, even with a pool left imported (exit_code). Any
 # other signal (9 an out-of-memory kill, 11 or 7 the tool's own crash) is
 # the rig's, as a timeout or a command that could not start is
-# (zdb_rig_code); then the rule for the rig's errors applies: exit 2 with a
-# pool left imported, else 1. Any signal 6 counts because the rig never
-# sends one: run() ends a command past its limit with SIGKILL (exit 124),
-# and a job cancelled from outside sends TERM or KILL. A rig that ever
-# sends zdb SIGABRT must change this rule.
+# (zdb_rig_code); then each rig's own rule for its errors applies: here
+# exit 2 with a pool left imported, else 1 (exit_code); in the daemon jobs
+# exit 2 whenever nothing stands against the daemon (replay_daemon.verdict
+# and its stopped path, which use this rule too). Any signal 6 counts
+# because the rig never sends one: run() ends a command past its limit
+# with SIGKILL (exit 124), and a job cancelled from outside sends TERM or
+# KILL. A rig that ever sends zdb SIGABRT must change this rule.
 ZDB_ABORT = 'rig: zdb died with signal 6'
 
 

@@ -267,7 +267,7 @@ def tally(results):
     for r in results:
         if r['ok']:
             continue
-        if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
+        if r['failed'] in JUDGING or r['failed'] == rc.ZDB_ABORT:
             key = 'copies' if r['failed'].startswith('rig: zdb') else r['failed'].split(': ')[0]
             by[key] = by.get(key, 0) + 1
             if first is None:
@@ -651,6 +651,7 @@ class Checker:
 
     def deep(self, p, marks=None, fmarks=None):
         """The scrub (with the fsync check) and the every-copy check on the image kept for point p."""
+        self.rig.at = p['n']            # run after the next prefix was made: name p in a busy export's record
         self.use(p['dir'])
         failed, detail, p['t_deep'] = self.rig.deep(self.due(p['n'], marks, fmarks), scrub=True)
         p['deep'] = True
@@ -716,7 +717,7 @@ def what_stopped(e):
 
 def classify(r, failures, rig_errors):
     """A failed point -> a verdict against the daemon (failures) or the rig's error (rig_errors)."""
-    if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
+    if r['failed'] in JUDGING or r['failed'] == rc.ZDB_ABORT:
         failures.append(r)
     else:
         rig_errors.append(r)
@@ -744,9 +745,12 @@ def check(a):
     # zdb -bcc at the end judges the pool even when a later step (a
     # control) stops the rig: its failure is a verdict too.
     zcc = (st['res'].get('zdb_cc') or {}).get('rc')
-    zdb_against = zcc not in (0, None) and zcc not in rc.RIG_RC
+    zdb_against = zcc not in (0, None) and not rc.zdb_rig_code(zcc)
     code = 1 if failures or zdb_against else 2
-    res = dict(st['res'], stopped=why, exit=code,
+    # What held the pool at a busy export: most wanted where the rig stopped
+    rig = st.get('rig')
+    busy = {'export_busy': rig.busy, 'export_forced': rig.forced} if rig is not None else {}
+    res = dict(st['res'], stopped=why, exit=code, **busy,
                failures=[{k: v for k, v in p.items() if k != 'dir'} for p in failures],
                rig_errors=[{'n': p['n'], 'failed': p['failed'], 'detail': p['detail']} for p in rig_errors],
                points=[{k: v for k, v in p.items() if k != 'dir'} for p in st['points']])
@@ -756,6 +760,7 @@ def check(a):
            f'The run stopped: {why}\n',
            f"Prefixes checked before it stopped: {len(st['points'])} in the main pass.\n",
            "Design §9's replay criterion: **not shown by this run** (it stopped before the end).\n"]
+    out.extend(rc.rig_lines(busy))
     if failures:
         out.append(f'Before it stopped, {len(failures)} prefix(es) failed a check. That is a verdict against the daemon, '
                    'whatever stopped the rig after it:\n')
@@ -782,6 +787,7 @@ def _check(a, st):
     records = idx['records']
     total = len(records)
     ck = Checker(a, idx, records)
+    st['rig'] = ck.rig
     marks, fmarks = ck.marks, ck.fmarks
     res = {'mode': 'daemon', 'records': total, 'marks': len(marks), 'fsync_marks': len(fmarks), 'files': len(ck.rig.manifest),
            'write_bytes': sum(r['bytes'] for r in records if rc.is_write(r)), 'steps': a.steps,
