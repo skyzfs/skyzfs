@@ -155,6 +155,18 @@ has "  and says why" "$r" "TB_SKZ_UPLOAD is 1 or unset, not: 0"
 r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_WAIT_S=abc)
 is "TB_SKZ_UPLOAD_WAIT_S=abc: 64" "${r%%|*}" 64
 has "  and says why" "$r" "TB_SKZ_UPLOAD_WAIT_S is a number of seconds, not: abc"
+# TB_SKZ_UPLOAD_FROM_LOAD: MinIO frozen until the workload begins.
+r=$(bench_upload "zfs-skyzfsd no-such-topology" TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=1)
+has "the seed from the load, with uploads and no wait: past the checks" "$r" "unknown topology: no-such-topology"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=yes)
+is "TB_SKZ_UPLOAD_FROM_LOAD=yes: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD is 1 or unset, not: yes"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD= TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=1)
+is "the seed from the load without uploads: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD=1 needs TB_SKZ_UPLOAD=1"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_FROM_LOAD=1)
+is "the seed from the load with the wait's default (900): 64" "${r%%|*}" 64
+has "  and says why: the wait could not end" "$r" "TB_SKZ_UPLOAD_FROM_LOAD=1 needs TB_SKZ_UPLOAD_WAIT_S=0, not 900"
 # The check after the loop, alone: the runs above end in the loop before
 # it for a row the loop lets through (review of #123, R9).
 eval "$(sed -n '/^skz_upload_topologies() {/,/^}$/p' "$ROOT/tests/bench/topology-bench.sh")"
