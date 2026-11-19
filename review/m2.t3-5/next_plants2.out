@@ -1,0 +1,128 @@
+J01 the limit is 8 MiB: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J02 the limit is inclusive: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J03 no cut need be held: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J04 the holes need not be held: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J05 a cut may have been abandoned: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J06 the copies are not judged: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J07 the copies judged on status-held.txt (read after the stop, before the drain): KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J08 a missing held reading is an ERROR line, not the rig's error: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J09 a FAIL of the copies does not set the exit: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J10 a held reading that cannot be judged is not an error: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J11 bound's copies are judged as boundsparse's: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J12 bound's premise asks nothing: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J13 boundsparse's premise does not ask for held holes: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J14 boundsparse's premise does not ask for chunks: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J15 the premise is read from the held reading: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J16 a premise that cannot be read is not an error: KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J17 a premise FAIL does not set the exit (bound): KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J18 a premise FAIL does not set the exit (boundsparse): KILLED by 1: test_the_premise_of_bound_and_boundsparse
+J19 the gate is version 18: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J20 no gate on the version: KILLED by 1: test_a_daemon_before_version_17_has_no_held_or_premise_line
+J21 the bound lines are never written: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
+J22b bound's abandoned line prints the copies read after the let-go again: KILLED by 1: test_bound_says_no_copies_read_after_the_let_go
+J23 (S3) a held reading without cut_holes is judged: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+J24 (S3) a missing cuts_abandoned counts as none abandoned: KILLED by 1: test_boundsparse_judges_the_copies_while_the_first_cut_is_held
+R01 the held reading after the let-go: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R02 the held reading before the last sync: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R03 no held reading: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R04 the held reading under another name: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R05 the held reading after the loads: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R06 the pause after the create: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R07 nine writes: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R08 (S2) no wait before the held reading: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R09 (S2) the wait after the held reading: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+R10 (S2) a wait shorter than the status interval and a write: KILLED by 1: test_cut_record.sh: FAIL rec_bound: paused before the create, the writes, a wait, then the status while paused
+P01 a docs/ path in UPLOAD_PATHS: KILLED by 1: test_every_upload_path_starts_the_workflow
+P02 a tests/kernel/ path that the workflow does not name: KILLED by 1: test_every_upload_path_starts_the_workflow
+X01 no retry: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X02 any failure is retried: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X03 nothing recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X04 no -f after the waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X05 no waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X06 fuser not asked on a mounted file system: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X07b the record has prefix 0 for every busy export (in held): KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X07c the forced record has prefix 0: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X08 the mounts are not recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X09 the record does not say what the kernel said: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X10 one wait fewer: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X11 a judging failure does not keep exit 1: KILLED by 2: test_a_pool_left_imported_ends_the_job_with_exit_2, test_a_verdict_stays_when_the_cleanup_after_it_fails
+X12 a control judged otherwise does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X13 the witness does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X14 zdb does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X15 a leftover seen only in a control is missed: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X16 a leftover seen only in the main pass is missed: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X17 never 2: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X18 2 whenever a pool was left: KILLED by 2: test_a_pool_left_imported_ends_the_job_with_exit_2, test_a_verdict_stays_when_the_cleanup_after_it_fails
+X19 leftover() says it otherwise: KILLED by 2: test_a_pool_left_imported_is_a_rig_error_not_a_verdict, test_a_verdict_stays_when_the_cleanup_after_it_fails
+X20 main exits 0 or 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X21 the summary has no rig lines: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X22 the summary does not say exit 2: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X23 export_busy not in the results: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+A01 (F1) a cleanup failure always replaces the result: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A02 (F1) light_on: the export replaces: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A03 (F1) deep_snapshot: the export replaces: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A04 (F1) light: losetup -d replaces: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A05 (F1) deep: losetup -d replaces: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A06 (F1) deep_loops: dm-snapshot remove replaces: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A07 (F1) the cleanup's failure left out of the detail: KILLED by 1: test_a_verdict_stays_when_the_cleanup_after_it_fails
+A08 (F1) a passing check whose cleanup failed passes: KILLED by 2: test_a_pool_left_imported_is_a_rig_error_not_a_verdict, test_a_verdict_stays_when_the_cleanup_after_it_fails
+B01 (F2) a catch the table does not expect is explained: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+B02 (F2) a class the table does not name is explained: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+B03 (F2) the old rule: any rig error excuses: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+B04 (F2) a control without rig errors is explained: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+B05 (F2) a control that did not run is explained: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+B06 (F2) the class defaults otherwise: SURVIVED
+B07 (F2) exit_code ignores the table it is given: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+C01 (lead) zdb's abort in the main pass is not counted: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+C02 (lead) any zdb signal in the main pass counts: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+C03 (lead) zdb's abort in a control is not a catch: KILLED by 2: test_a_pool_left_imported_ends_the_job_with_exit_2, test_zdb_aborting_on_a_control_is_a_catch
+C04 (S5) zdb's rig codes at the end are not excused: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+C05 (S5) every zdb exit code at the end is excused: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+C06 (S5, lead) zdb's abort at the end is excused too: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+E01 (F3) fuser asked on an unmounted directory: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+E02 (F3) fuser's header kept: KILLED by 2: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded, test_fuser_and_ps_are_read_as_they_print
+E03 (F3) the kernel mount line kept: KILLED by 2: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded, test_fuser_and_ps_are_read_as_they_print
+E04 (F3) the path on the first line not dropped: KILLED by 2: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded, test_fuser_and_ps_are_read_as_they_print
+E05 (F3) ps matched by arguments: KILLED by 1: test_fuser_and_ps_are_read_as_they_print
+E06 (F3) ps not asked: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+E07 (F3) zed not in the set: KILLED by 1: test_fuser_and_ps_are_read_as_they_print
+E08 (F3) zpool not in the set: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+E09 (F3) fuser's tail kept, not its head: SURVIVED
+E10 (F3) mounted never recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+E11 (F3) the summary says unmounted whatever was seen: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+E12 (F3) the ZFS commands left out of the words: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G01 (F4) refusals counted as exports: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G02 (F4) the export number not counted: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G03 (F4) forced exports not recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G04 (F4) export_forced not in the results: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G06 (F4) the -f exit code not recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+H05 (N1) the cap planted again: after two forced, no waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+H06 (N1) only the first export waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+H07 (N1) a refusal on the last try not recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G07 (N3) every forced export counted as exported: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G08 (N3) the failed -f counted as exported: SURVIVED
+G09 (N3) the line does not say how many were left: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+G10 (N3) the line says "exported with -f" again: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+K01 (N4) SIGABRT counted as the rig's: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+K02 (N4) no signal counted as the rig's: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+K03 (N4) a timeout or a missing zdb counted against the image: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+K04 (N4) None counted as the rig's: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+K05 (N4) exit_code back to RIG_RC at the end: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+K06 (N4) the daemon judge counts a signal against the daemon again: KILLED by 1: test_exit_codes
+K07 (N4) the daemon judge's rig line back to RIG_RC: KILLED by 1: test_exit_codes
+K08 (N4) the daemon judge's line does not say the signal: KILLED by 1: test_exit_codes
+K09 (N4) the daemon judge counts any signal both ways: KILLED by 1: test_exit_codes
+K10 (N4) the daemon judge's main pass: zdb's abort is the rig's: NOT APPLIED (found [2] times)
+K11 (N4) the main pass: a signal is a finding of zdb: KILLED by 1: test_every_copy_never_passes_what_it_could_not_check
+K12 (N4, M1) the stopped path judged by zdb_rig_code (the fix; should survive): SURVIVED
+K13 (N4, M1) the stopped path: any nonzero zdb against the daemon: KILLED by 1: test_a_timed_out_zdb_at_the_end_in_a_stopped_run_is_the_rigs
+K14 (N4, M1) the stopped path: zdb never against the daemon: KILLED by 1: test_a_failed_zdb_at_the_end_survives_a_later_rig_error
+L01 (S7) the prefix not set: KILLED by 1: test_busy_exports_reach_the_results_and_the_summary
+L02 (S7) the prefix set after the image is made: KILLED by 1: test_busy_exports_reach_the_results_and_the_summary
+L03 (S7) export_busy not in the daemon's results: KILLED by 1: test_busy_exports_reach_the_results_and_the_summary
+L04 (S7) export_forced not in the daemon's results: SURVIVED
+L05 (S7) the daemon's summary has no busy-export line: KILLED by 1: test_busy_exports_reach_the_results_and_the_summary
+L06 (S7) the daemon's summary passes the whole results (an exit 2 line from a daemon exit): SURVIVED
+L07 (S7, M2) the deep check names its own prefix (the fix; should survive): SURVIVED
+K10b (N4) the daemon judge's main pass: zdb's abort is the rig's (classify): SURVIVED
+K10c (N4) the daemon's controls: zdb's abort is not a catch (tally): SURVIVED

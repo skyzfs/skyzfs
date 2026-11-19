@@ -42,3 +42,6 @@
 == Z5. S7: the prefix a busy export's record names in the daemon jobs
   7 deep checks, each with one busy export: (the prefix deep-checked, the prefix recorded): [(0, 0), (13, 14), (14, 14), (24, 25), (25, 25), (35, 36), (36, 36)]
   recorded under another prefix: 3 of 7
+
+== Z6. S7 on the daemon jobs' stopped path: a busy export, then the rig stops on its own error
+  exit 2; stopped: 'the stuck control at prefix 36: dd did not end'; export_busy in the results: False; a 'Busy exports' line in the summary: False

@@ -185,3 +185,32 @@ try:
     print(f"  recorded under another prefix: {len(wrong)} of {len(pairs)}")
 finally:
     t.tearDown()
+
+print("\n== Z6. S7 on the daemon jobs' stopped path: a busy export, then the rig stops on its own error")
+t = trd.Pass('test_a_clean_pass')
+t.setUp()
+try:
+    t.fake()
+    fdeep, fstuck = rd.Checker.deep, rd.stuck_control
+
+    def deep(ck, p, *a, **k):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ck.rig.held("cannot export 'p': pool is busy", 1)
+        return fdeep(ck, p, *a, **k)
+
+    def stuck(ck, n):
+        raise rd.RigError(f'the stuck control at prefix {n}: dd did not end')
+    rd.Checker.deep, rd.stuck_control = deep, stuck
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = rd.check(t.args())
+    finally:
+        rd.Checker.deep, rd.stuck_control = fdeep, fstuck
+    with open(os.path.join(t.dir.name, 'out', 'replay-results.json')) as f:
+        res = json.load(f)
+    with open(os.path.join(t.dir.name, 'out', 'replay-summary.md')) as f:
+        text = f.read()
+    print(f"  exit {code}; stopped: {res.get('stopped', '')[:60]!r}; export_busy in the results: "
+          f"{'export_busy' in res}; a 'Busy exports' line in the summary: {'Busy exports' in text}")
+finally:
+    t.tearDown()

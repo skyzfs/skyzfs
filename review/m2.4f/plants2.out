@@ -1,0 +1,38 @@
+V1	KILLED	a cut found committed does not end the whole wait (the author's W14)	a_cut_found_committed_ends_the_whole_waits (T4-found)
+V2	KILLED	a cut committed and no longer held does not end the whole wait (the author's W15)	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone)
+V3	KILLED	a cut uploaded does not end the whole wait (the two others still do)	a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed
+U4	KILLED	only Uploaded ends the whole wait, not UploadedNotHeld or FoundCommitted	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found)
+X1	SURVIVED	a mismatch ends the whole wait	
+X2	SURVIVED	a commit given up ends the whole wait	
+X3	SURVIVED	a step that fails with an error ends the whole wait	
+X4	SURVIVED	a delta cut lost ends the whole wait	
+X5	SURVIVED	an idle step ends the whole wait	
+X6	KILLED	a cut begun ends the whole wait (a part of U1)	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed, the_leases_row_never_lapses_in_the_whole_waits (R1)
+X7	SURVIVED	a commit refused, read again at once, ends the whole wait	
+X8	SURVIVED	a publish's step that succeeds ends the whole wait	
+C1	NOT APPLIED	V1 with X1: the mismatch after the found cut stands in for it	a text is not there exactly once
+C2	SURVIVED	V1 with X2: the give-up before the found cut stands in for it	
+C3	SURVIVED	V2 with X3: the failed head swap before the cut gone stands in for it	
+U1	KILLED	any step of the cut that succeeds (a Began, a Read) ends the whole wait	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed, the_leases_row_never_lapses_in_the_whole_waits (R1)
+U2	KILLED	no publish steps during a whole wait (the lease is still kept)	a_publish_is_made_during_a_whole_wait (R2)
+U3	KILLED	during a whole wait the uploader wakes at each renewal's time but renews nothing	the_leases_row_never_lapses_in_the_whole_waits (R1)
+U5	KILLED	a whole cut lost at its sync is taken for a delta (no wait, not counted)	a_whole_cut_lost_at_its_sync_waits (R3)
+U6	KILLED	a whole cut gone at its commit is taken for a delta (no wait, not counted)	a_whole_cut_gone_at_its_commit_waits (R4)
+U7	KILLED	a whole cut lost at a read is taken for a delta (no wait, not counted)	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_publish_is_made_during_a_whole_wait (R2), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed, the_leases_row_never_lapses_in_the_whole_waits (R1)
+U8	KILLED	the whole wait capped at the error wait's five minutes	a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed, a_whole_cuts_wait_doubles_from_a_minute_to_fifteen, the_leases_row_never_lapses_in_the_whole_waits (R1)
+U9	KILLED	a file of the eighteenth version is read with the count (past its end)	a_file_of_the_eighteenth_version_is_read_without_the_whole_cuts_lost, status_prints_the_version_of_the_file_it_read
+U10	KILLED	the daemon does not show the whole wait in upload_wait_ms	the_status_shows_the_uploader_as_it_is
+W1	KILLED	no commit ends the whole wait	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed
+W4	KILLED	no wait after a whole cut lost, the state kept	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_publish_is_made_during_a_whole_wait (R2), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed
+W5	KILLED	the turn that loses a whole cut sleeps out its wait (no renewal, no publish meanwhile)	a_cut_committed_and_gone_ends_the_whole_waits (T4-gone), a_cut_found_committed_ends_the_whole_waits (T4-found), a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed, the_leases_row_never_lapses_in_the_whole_waits (R1)
+X1	KILLED	a mismatch ends the whole wait [with scenarios_next.rs]	review_m24f_s2_a_mismatch_does_not_end_the_whole_waits
+X2	KILLED	a commit given up ends the whole wait [with scenarios_next.rs]	review_m24f_s3_a_give_up_does_not_end_the_whole_waits
+X3	KILLED	a step that fails with an error ends the whole wait [with scenarios_next.rs]	review_m24f_s1_an_error_does_not_end_the_whole_waits
+X4	SURVIVED	a delta cut lost ends the whole wait [with scenarios_next.rs]	
+X5	KILLED	an idle step ends the whole wait [with scenarios_next.rs]	review_m24f_s2_a_mismatch_does_not_end_the_whole_waits
+X7	KILLED	a commit refused, read again at once, ends the whole wait [with scenarios_next.rs]	review_m24f_s3_a_give_up_does_not_end_the_whole_waits
+X8	KILLED	a publish's step that succeeds ends the whole wait [with scenarios_next.rs]	review_m24f_s4_a_publish_does_not_end_the_whole_waits
+C1	KILLED	V1 with X1: the mismatch after the found cut stands in for it [with scenarios_next.rs]	review_m24f_s2_a_mismatch_does_not_end_the_whole_waits
+C2	KILLED	V1 with X2: the give-up before the found cut stands in for it [with scenarios_next.rs]	review_m24f_s3_a_give_up_does_not_end_the_whole_waits
+C3	KILLED	V2 with X3: the failed head swap before the cut gone stands in for it [with scenarios_next.rs]	review_m24f_s1_an_error_does_not_end_the_whole_waits
+C1	SURVIVED	V1 with X1: the mismatch after the found cut stands in for it	
