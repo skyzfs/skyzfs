@@ -653,6 +653,104 @@ class Log(unittest.TestCase):
         ok, against = replay_check.job_verdict([{'n': 1}], False, False, ['x'], 2)
         self.assertEqual((ok, len(against)), (False, 5))
 
+    def test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded(self):
+        """Run 44421456349: one busy export at prefix 2486 left the pool
+        imported and stopped every later check. A busy export is tried
+        again after each of EXPORT_WAITS, with what held the pool
+        recorded before each wait; any other failure goes to -f at once."""
+        import argparse
+        work = os.path.join(self.dir.name, 'work-busy')
+        os.makedirs(work)
+        manifest = os.path.join(self.dir.name, 'manifest-busy')
+        open(manifest, 'w').close()
+        rig = replay_check.Rig(argparse.Namespace(provider='', work=work, manifest=manifest, pool='p', mountpoint='/p'))
+        state = {}
+
+        def fake(cmd, timeout=300):
+            state['calls'].append(cmd)
+            if cmd[:2] == ['zpool', 'export']:
+                state['exports'] += 1
+                if state['exports'] <= state['busy_for']:
+                    return 1, state['said'], 0.0
+                return 0, '', 0.0
+            if cmd[0] == 'fuser':
+                return 0, f"{rig.alt}/p:  root  4242 ..c.. udisksd\n", 0.0
+            return 0, '', 0.0
+
+        sleeps = []
+        real, real_sleep = replay_check.run, replay_check.time.sleep
+        replay_check.run, replay_check.time.sleep = fake, sleeps.append
+        try:
+            # busy twice, then exported: no -f, two waits, two records
+            state.update(calls=[], exports=0, busy_for=2, said="cannot export 'p': pool is busy")
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual(sleeps, [1, 2])
+            self.assertNotIn(['zpool', 'export', '-f', 'p'], state['calls'])
+            self.assertEqual([b['retry_in_s'] for b in rig.busy], [1, 2])
+            self.assertIn('udisksd', rig.busy[0]['fuser'])
+            self.assertEqual(state['calls'][1][:2], ['fuser', '-vm'])
+            self.assertEqual(state['calls'][1][2], rig.alt + '/p')
+            # busy throughout: every wait, then -f, which fails too
+            rig.busy, sleeps[:] = [], []
+            state.update(calls=[], exports=0, busy_for=99)
+            rc, out = rig.export()
+            self.assertEqual(rc, 1)
+            self.assertEqual(sleeps, list(replay_check.EXPORT_WAITS))
+            self.assertEqual(len(rig.busy), len(replay_check.EXPORT_WAITS))
+            exports = [c for c in state['calls'] if c[:2] == ['zpool', 'export']]
+            self.assertEqual(len(exports), len(replay_check.EXPORT_WAITS) + 2)
+            self.assertEqual(exports[-1], ['zpool', 'export', '-f', 'p'])
+            # another failure: no wait, no record, straight to -f
+            rig.busy, sleeps[:] = [], []
+            state.update(calls=[], exports=0, busy_for=1, said="cannot export 'p': I/O error")
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual((sleeps, rig.busy), ([], []))
+            self.assertEqual([c for c in state['calls'] if c[:2] == ['zpool', 'export']],
+                             [['zpool', 'export', 'p'], ['zpool', 'export', '-f', 'p']])
+        finally:
+            replay_check.run, replay_check.time.sleep = real, real_sleep
+        # the summary says so
+        res = {'export_busy': [{'at': 2486, 'fuser': f"{rig.alt}/p:  root  4242 ..c.. udisksd\n", 'retry_in_s': 1}]}
+        lines = ''.join(replay_check.rig_lines(res))
+        self.assertIn('Busy exports: 1, each tried again (the first at prefix 2486, held by: ', lines)
+        self.assertIn('udisksd', lines)
+        self.assertNotIn('Exit 2', lines)
+        self.assertIn('Exit 2: a pool was left imported', ''.join(replay_check.rig_lines({'exit_code': 2})))
+        self.assertEqual(replay_check.rig_lines({'exit_code': 1, 'export_busy': []}), [])
+        # and the summary has them, after its result line
+        import inspect
+        src = inspect.getsource(replay_check.summary)
+        self.assertLess(src.index("out.append(f\"Result: {verdict}"), src.index('out.extend(rig_lines(res))'))
+
+    def test_a_pool_left_imported_ends_the_job_with_exit_2(self):
+        """The lead's decision after run 44421456349: a pool left imported
+        is the rig's own error (exit 2) when nothing else stands against
+        the image; any verdict besides it keeps exit 1."""
+        left = {'n': 2487, 'failed': 'rig: a pool named p is still imported'}
+        ctl_err = [{'name': 'drop', 'rig_errors': [left]}, {'name': 'data', 'rig_errors': []}]
+        rows = [{'name': 'drop', 'match': False}, {'name': 'data', 'match': True}]
+        two = dict(ok=False, failures=[{'n': 2486, 'failed': 'export'}, left], controls=ctl_err, control_rows=rows,
+                   witness_ok=True, zdb_cc_rc=0)
+        self.assertEqual(replay_check.exit_code(**two), 2)
+        # as in the run: the controls' rig errors alone
+        self.assertEqual(replay_check.exit_code(**{**two, 'failures': []}), 2)
+        self.assertEqual(replay_check.exit_code(**{**two, 'ok': True}), 0)
+        for change in (
+                dict(failures=two['failures'] + [{'n': 9, 'failed': 'verify'}]),       # a verdict on a prefix
+                dict(failures=two['failures'] + [{'n': 9, 'failed': 'deep: scrub'}]),
+                dict(control_rows=rows[:1] + [{'name': 'data', 'match': False}]),     # a control judged otherwise
+                dict(witness_ok=False), dict(zdb_cc_rc=1),
+                dict(failures=[{'n': 3, 'failed': 'export'}], controls=[], control_rows=[]),  # no pool left
+                dict(failures=[{'n': 3, 'failed': 'rig: zdb died with signal 9'}], controls=[], control_rows=[])):
+            self.assertEqual(replay_check.exit_code(**{**two, **change}), 1, change)
+        # the job exits with it, and once
+        import inspect
+        src = inspect.getsource(replay_check.main)
+        self.assertIn("res['exit_code'] = code = exit_code(ok, failures, ctl, res['control_rows'], witness_ok, "
+                      "res['zdb_cc']['rc'])", src)
+        self.assertEqual([ln.strip() for ln in src.splitlines() if 'sys.exit(' in ln and 'code' in ln], ['sys.exit(code)'])
+        self.assertNotIn('sys.exit(0 if ok else 1)', src)
+
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
         self.assertEqual(rc, 124)
