@@ -468,6 +468,10 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 EXPORT_WAITS = (1, 2, 4, 8)
 EXPORT_BUSY_THROUGHOUT_MAX = 2
 LEFT_IMPORTED = 'is still imported'
+# zdb aborting on an assertion: evidence about the pool it read, not about
+# the rig. A catch in a control (tally_control); against the image in the
+# main pass, even with a pool left imported (exit_code).
+ZDB_ABORT = 'rig: zdb died with signal 6'
 # The commands that can hold a reference to a pool from user space: a
 # process inside a ZFS ioctl. The kernel's own holds show in no process.
 ZFS_COMMANDS = ('zpool', 'zfs', 'zdb', 'zed')
@@ -680,7 +684,7 @@ def tally_control(results):
     for r in results:
         if r['ok']:
             continue
-        if r['failed'] == 'rig: zdb died with signal 6':
+        if r['failed'] == ZDB_ABORT:
             # zdb aborts on an assertion when the pool it reads is damaged. In a
             # control the image is damaged on purpose, so this is a catch.
             by['copies'] = by.get('copies', 0) + 1
@@ -883,21 +887,23 @@ def exit_code(ok, failures, controls, control_rows, witness_ok, zdb_cc_rc, expec
     """The job's exit code: 0 it passes, 1 a verdict, 2 the rig's own error.
 
     2 when a pool was left imported (`Rig.leftover`) and nothing else
-    stands against the image: no prefix failed a judging stage (a
-    failure found before a failed export stays the prefix's, see
-    after_cleanup), every control that differs from the table differs in
+    stands against the image: no prefix failed a judging stage or had
+    zdb abort on an assertion (ZDB_ABORT; a failure found before a
+    failed export stays the prefix's, see after_cleanup), every control that differs from the table differs in
     a way its rig errors explain (rig_errors_explain), the witness
     agreed and zdb at the end found no fault (or timed out or could not
     start, which is never a verdict). Every check after such a pool says
     only that it is there, and a coverage short of its floor follows
-    from the pass that stopped.
+    from the pass that stopped. A job whose failures are all the rig's,
+    with no pool left imported, stays 1: a rig that could not finish its
+    own checks has not shown the image whole.
     """
     if ok:
         return 0
     left = (any(LEFT_IMPORTED in r['failed'] for r in failures)
             or any(LEFT_IMPORTED in e['failed'] for c in controls for e in c.get('rig_errors') or []))
     seen = {c['name']: c for c in controls}
-    if (left and not any(r['failed'] in JUDGING for r in failures)
+    if (left and not any(r['failed'] in JUDGING or r['failed'] == ZDB_ABORT for r in failures)
             and all(r['match'] or rig_errors_explain(seen.get(r['name']), expected) for r in control_rows)
             and witness_ok and (zdb_cc_rc == 0 or zdb_cc_rc in RIG_RC)):
         return 2

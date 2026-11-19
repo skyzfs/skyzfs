@@ -916,8 +916,16 @@ class Log(unittest.TestCase):
                      failures=two['failures']),
                 dict(witness_ok=False), dict(zdb_cc_rc=1),
                 dict(failures=[{'n': 3, 'failed': 'export'}], controls=[], control_rows=[]),  # no pool left
-                dict(failures=[{'n': 3, 'failed': 'rig: zdb died with signal 9'}], controls=[], control_rows=[])):
+                dict(failures=[{'n': 3, 'failed': 'rig: zdb died with signal 9'}], controls=[], control_rows=[]),
+                # the lead on #130: zdb aborting on an assertion in the main pass is evidence about the pool
+                dict(failures=two['failures'] + [{'n': 9, 'failed': replay_check.ZDB_ABORT}]),
+                # and a job whose failures are all the rig's, with no pool left, stays 1
+                dict(failures=[{'n': 3, 'failed': 'export'}, {'n': 4, 'failed': 'losetup'}], controls=[],
+                     control_rows=[], zdb_cc_rc=124)):
             self.assertEqual(replay_check.exit_code(**{**two, **change}), 1, change)
+        self.assertEqual(replay_check.ZDB_ABORT, 'rig: zdb died with signal 6')
+        by, _, _ = replay_check.tally_control([{'n': 1, 'ok': False, 'failed': replay_check.ZDB_ABORT, 'detail': ''}])
+        self.assertEqual(by, {'copies': 1})
         # F2 as the review drove it, through judge_controls: a superseded drop caught at 5, the pool left at 7
         drop = {'name': 'drop', 'class': 'superseded', 'caught': True, 'failed_by': {'copies': 1},
                 'rig_errors': [{'n': 7, 'failed': left['failed']}]}
