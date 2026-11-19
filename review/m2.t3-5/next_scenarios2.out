@@ -1,0 +1,44 @@
+== Z1. zdb_rig_code, and what each rig makes of zdb's exit code (old = 09860a0, new = 9710a24)
+  At the end (zdb -bcc): the reference judge's exit with a pool left and nothing else / with no pool left;
+  the daemon judge's exit with nothing else. In the main pass (zdb -bbbbb): the failure every_copy_verdict
+  writes, the reference exit with a pool left, and the daemon's classify.
+     rc rig code | end: ref, left ref, no left    daemon | main pass failure                ref, left   daemon
+      0    False |              2            0         0 | None                                  None     None
+      1    False |              1            1         1 | copies: zdb                              1  failure
+      2    False |              1            1         1 | copies: zdb                              1  failure
+    124     True |              2            1         2 | rig: zdb timed out                       2      rig
+    127     True |              2            1         2 | rig: zdb could not start                 2      rig
+    134    False |              1            1         1 | copies: zdb                              1  failure
+    135    False |              1            1         1 | copies: zdb                              1  failure
+    137    False |              1            1         1 | copies: zdb                              1  failure
+    139    False |              1            1         1 | copies: zdb                              1  failure
+     -6    False |              1            1         1 | rig: zdb died with signal 6              1  failure
+     -7     True |           1->2            1      1->2 | rig: zdb died with signal 7              2      rig
+     -9     True |           1->2            1      1->2 | rig: zdb died with signal 9              2      rig
+    -11     True |           1->2            1      1->2 | rig: zdb died with signal 11             2      rig
+    -15     True |           1->2            1      1->2 | rig: zdb died with signal 15             2      rig
+  None: zdb_rig_code False; the daemon judge: (2, ['zdb -bcc did not run on the final image'])
+
+== Z2. What run() gives for a signal, directly and through a shell
+  SIGABRT: the command itself -6 (rig code False); a wrapper's exit 134 (rig code False)
+  SIGKILL: the command itself -9 (rig code True); a wrapper's exit 137 (rig code False)
+  SIGSEGV: the command itself -11 (rig code True); a wrapper's exit 139 (rig code False)
+  SIGBUS: the command itself -7 (rig code True); a wrapper's exit 135 (rig code False)
+  Both rigs run zdb as run(['zdb', ...]), never through a shell.
+
+== Z3. The daemon judge stopped by the rig's own error after zdb -bcc ran (check(), its except path)
+  zdb -bcc rc   -9: stopped path exit 1, says "a verdict against the daemon"; the same rc where the run ends normally: 2
+  zdb -bcc rc  -11: stopped path exit 1, says "a verdict against the daemon"; the same rc where the run ends normally: 2
+  zdb -bcc rc   -6: stopped path exit 1, says "a verdict against the daemon"; the same rc where the run ends normally: 1
+  zdb -bcc rc  124: stopped path exit 2, says the rig's error; the same rc where the run ends normally: 2
+  zdb -bcc rc    0: stopped path exit 2, says the rig's error; the same rc where the run ends normally: 2
+
+== Z4. N1 again: every busy export waits
+  two exports busy through every wait whose -f then worked, then one busy for under a second: exit codes [0, 0, 0]; pool left: False; forced [{'export': 1, 'at': 0, 'rc': 0}, {'export': 2, 'at': 0, 'rc': 0}]
+  Busy exports: 3 (11 refused attempts), 2 of them still busy after every wait and sent to -f, which exported 2 and left 0 imported (-f exit codes 0, 0). The first at prefix 0: its file systems already unmounted; ZFS commands running: none. What was seen at each is in `replay-results.json`, `export_bu
+  one busy through every wait and through -f: exit codes [1]; pool left: True
+  Busy exports: 1 (5 refused attempts), 1 of them still busy after every wait and sent to -f, which exported 0 and left 1 imported (-f exit codes 1). The first at prefix 0: its file systems already unmounted; ZFS commands 
+
+== Z5. S7: the prefix a busy export's record names in the daemon jobs
+  7 deep checks, each with one busy export: (the prefix deep-checked, the prefix recorded): [(0, 0), (13, 14), (14, 14), (24, 25), (25, 25), (35, 36), (36, 36)]
+  recorded under another prefix: 3 of 7
