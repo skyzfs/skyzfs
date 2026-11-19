@@ -1,0 +1,81 @@
+== N1. F1: a verdict, then a failed cleanup
+  C1 again: verify fails at 100, the export busy throughout and -f refused: [(100, 'verify'), (101, 'rig: a pool named skzreplay is still imported'), (102, 'rig: a pool named skzreplay is still imported')]
+     its detail: "f.0: [Errno 2] No such file or directory: 'TMP then export "
+     exit_code = 1 (it was 2 at c205682)
+  light: mount fails, then the export: 'mount' (a verdict); the next prefix: 'rig: a pool named skzreplay is still imported'
+  light: verify fails, then losetup -d: 'verify' (a verdict); the next prefix: 'losetup -d'
+  light: passes, then the export fails: 'export' (the rig); the next prefix: 'rig: a pool named skzreplay is still imported'
+  deep: scrub finds errors, then the export: 'deep: scrub' (a verdict); the next prefix: 'rig: a pool named skzreplay is still imported'
+  deep: scrub finds errors, then dmsetup remove: 'deep: scrub' (a verdict); the next prefix: None
+  deep: scrub finds errors, then losetup -d: 'deep: scrub' (a verdict); the next prefix: None
+  deep: fsync files missing, then the export: 'fsync: files' (a verdict); the next prefix: 'rig: a pool named skzreplay is still imported'
+  deep: zpool status fails (the rig), then the export: 'deep: status' (the rig); the next prefix: 'rig: a pool named skzreplay is still imported'
+  deep: passes, then the export fails: 'deep: export' (the rig); the next prefix: 'rig: a pool named skzreplay is still imported'
+
+== N2. F2: which differing controls the rig errors excuse
+  C2 again: a superseded drop caught at 5, the pool left at 7: exit_code = 1 (it was 2)
+  C2b again: reorder of a class the table does not name, pool left: exit_code = 1 (it was 2)
+  Every row of the table, with rig errors (a pool left at the control's last prefix):
+    drop     block             expected 'caught'                                   not caught                   -> exit 2
+    drop     block             expected 'caught'                                   caught by another check      -> exit 2
+    drop     unknown           expected 'either: not judged'                       not caught                   -> exit 2
+    drop     unknown           expected 'either: not judged'                       caught by another check      -> exit 2
+    drop     intent-log block  expected 'either: not judged'                       not caught                   -> exit 2
+    drop     intent-log block  expected 'either: not judged'                       caught by another check      -> exit 2
+    drop     superseded        expected 'not caught'                               not caught                   -> exit 2
+    drop     superseded        expected 'not caught'                               caught by another check      -> exit 1
+    drop     never reached     expected 'not caught'                               not caught                   -> exit 2
+    drop     never reached     expected 'not caught'                               caught by another check      -> exit 1
+    reorder  block             expected 'caught, and by the every-copy check'      not caught                   -> exit 2
+    reorder  block             expected 'caught, and by the every-copy check'      caught by the table's check  -> exit 2
+    reorder  block             expected 'caught, and by the every-copy check'      caught by another check      -> exit 2
+    reorder  never reached     expected 'not caught'                               not caught                   -> exit 2
+    reorder  never reached     expected 'not caught'                               caught by another check      -> exit 1
+    reorder  unknown           expected 'either: not judged'                       not caught                   -> exit 2
+    reorder  unknown           expected 'either: not judged'                       caught by another check      -> exit 2
+    reorder  intent-log block  expected 'either: not judged'                       not caught                   -> exit 2
+    reorder  intent-log block  expected 'either: not judged'                       caught by another check      -> exit 2
+    data     block             expected "caught, and by the files' checksums"      not caught                   -> exit 2
+    data     block             expected "caught, and by the files' checksums"      caught by the table's check  -> exit 2
+    data     block             expected "caught, and by the files' checksums"      caught by another check      -> exit 2
+    intent   intent-log block  expected 'caught, and by the fsynced files after the intent log is replayed' not caught                   -> exit 2
+    intent   intent-log block  expected 'caught, and by the fsynced files after the intent log is replayed' caught by the table's check  -> exit 2
+    intent   intent-log block  expected 'caught, and by the fsynced files after the intent log is replayed' caught by another check      -> exit 2
+  N2a reorder, copies run at 10 and 15 and not caught, the export busy at 19 (light only), left at 20: exit_code = 2
+
+== N3. The lead's rule: zdb's signal 6 in the main pass
+  main pass 'rig: zdb died with signal 6' with a pool left: exit_code = 1
+  main pass 'rig: zdb died with signal 9' with a pool left: exit_code = 2
+  main pass 'rig: zdb died with signal 11' with a pool left: exit_code = 2
+  main pass 'rig: zdb timed out' with a pool left: exit_code = 2
+  main pass 'rig: zdb could not start' with a pool left: exit_code = 2
+  zdb -bcc at the end rc -6, a pool left, nothing else: exit_code = 1
+  zdb -bcc at the end rc -9, a pool left, nothing else: exit_code = 1
+  zdb -bcc at the end rc -11, a pool left, nothing else: exit_code = 1
+  zdb -bcc at the end rc 124, a pool left, nothing else: exit_code = 2
+  zdb -bcc at the end rc 127, a pool left, nothing else: exit_code = 2
+  zdb -bcc at the end rc 1, a pool left, nothing else: exit_code = 1
+  run() on a command past its limit: rc 124 after 1.0 s (so the rig's own timeout is never a signal)
+  a SIGABRT from outside zdb's assertions: run() says rc -6; every_copy_verdict says ('rig: zdb died with signal 6', '')
+  with an assertion line printed: ('rig: zdb died with signal 6', 'ASSERT at module/zfs/dbuf.c:99:x()')
+
+== N4. F3: what Rig.held records on this machine
+  the pool's mount point a plain directory: mounted False, fuser 'not asked: not mounted', holders [], ZFS commands []
+  its log line: export of skzreplay busy at prefix 0: tried again in 1 s; its file systems already unmounted; ZFS commands running: none; mounts under the alternate root: none
+  real `fuser -vm /proc` through run() (4 lines; the first two: [['USER', 'PID', 'ACCESS', 'COMMAND'], ['/proc:', 'root', 'kernel', 'mount', '/proc']]):
+    fuser_holders keeps 2 processes, the first ['7', 'claude']; header or kernel mount kept: False
+  real `fuser -vm /` through run() (107 lines; the first two: [['USER', 'PID', 'ACCESS', 'COMMAND'], ['/:', 'root', 'kernel', 'mount', '/']]):
+    fuser_holders keeps 105 processes, the first ['kthreadd', 'pool_workqueue_release', 'kworker/R-rcu_gp']; header or kernel mount kept: False
+  real `ps` with stand-ins running (zdb, zpool, a 17-character name, mount.zfs, a comm with a space "zed watcher", a shell whose arguments say zpool):
+    matched: pid N, 0 s: BIN/zdb 30
+    matched: pid N, 0 s: BIN/zpool 30
+    matched: pid N, 0 s: watcher     /usr/local/bin/python3 -c import ctypes,time; ctypes.CDLL(None).prctl(15, b"zed watcher", 0, 0, 0); time.sleep(30)
+    their comm as ps prints it: ['zdb', 'zpool', 'zfs_ids_to_path', 'mount.zfs', 'zed', 'sh']
+    kernel threads matched: [] (of 74)
+
+== N5. F4 and S4: the count, and the cap on waiting
+  two exports busy through every wait whose -f then worked, then one busy for under a second:
+    cap 2: export exit codes [0, 0, 1]; pool left imported: True; forced [(1, 0, True), (2, 0, True), (3, 1, False)]
+      Busy exports: 3 (11 refused attempts), 3 of them still busy after every wait and exported with -f (exit codes 0, 0, 1). The first at prefix 0: its file systems already unmounted; ZFS commands running: none. What was seen at each is in `replay-results.json`, `export_busy` and `export_forced`.
+    cap none: export exit codes [0, 0, 0]; pool left imported: False; forced [(1, 0, True), (2, 0, True)]
+      Busy exports: 3 (11 refused attempts), 2 of them still busy after every wait and exported with -f (exit codes 0, 0). The first at prefix 0: its file systems already unmounted; ZFS commands running: none. What was seen at each is in `replay-results.json`, `export_busy` and `export_forced`.
