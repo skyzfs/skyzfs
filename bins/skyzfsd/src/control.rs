@@ -100,8 +100,10 @@
 //! within [`ANSWER_LIMIT`], since it answers between two of its steps
 //! and a step can wait on object storage. After `no-answer` a `publish`
 //! may still have been taken: ask again, which answers as asking once,
-//! or withdraw it. The other codes are a publish's refusals
-//! (`skyzfs_upload::Refusal`).
+//! or withdraw it. For `cuts`, which the store's queue answers and not
+//! the uploader, `ended` says that the store is no longer served, and
+//! `no-answer` that its queue took no turn within the limit. The other
+//! codes are a publish's refusals (`skyzfs_upload::Refusal`).
 //!
 //! # What the daemon decides here, and the design does not
 //!
@@ -116,7 +118,7 @@ use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skyzfs_upload::publish::{valid_name, EXPIRY_MAX, MANIFEST_MAX};
 use skyzfs_upload::{Progress, Refusal};
@@ -244,9 +246,14 @@ pub enum Code {
     Peer,
     /// The daemon has no uploader.
     NoUpload,
-    /// The uploader has ended.
+    /// What answers the request has ended: the uploader, for a publish,
+    /// its progress or its withdrawal; for `cuts`, the store's queue,
+    /// whose desk is closed once the store is no longer served.
     Ended,
-    /// The uploader did not answer in time.
+    /// What answers the request did not answer within the limit: the
+    /// uploader, for a publish, its progress or its withdrawal; for
+    /// `cuts`, the store's queue, which gives the count between two of
+    /// its turns.
     NoAnswer,
 }
 
@@ -654,10 +661,10 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Result<(Request, Vec<u8
 }
 
 /// Ask the daemon behind the socket at `path`: `request`, with
-/// `manifest` after it for `publish`, waiting at most `limit` for each
-/// read and write. The answer, or why none came.
+/// `manifest` after it for `publish`, waiting at most `limit` for the
+/// connection and for each read and write. The answer, or why none came.
 pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> io::Result<Reply> {
-    let mut stream = UnixStream::connect(path)?;
+    let mut stream = connect(path, limit)?;
     stream.set_read_timeout(Some(limit))?;
     stream.set_write_timeout(Some(limit))?;
     let mut sent = format!("{HELLO}\n{}\n", request.line()).into_bytes();
@@ -686,6 +693,55 @@ pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> 
         )
     })
 }
+
+/// A connection to the socket at `path`, made within `limit`. A blocking
+/// connect to a socket whose backlog is full waits for room, before any
+/// timeout of the stream applies: a daemon that has stopped taking
+/// connections would hold it without end (Codex on #129). So the connect
+/// is made without blocking, and made again while the backlog is full,
+/// at most until the limit; then the stream blocks, and `ask` bounds its
+/// reads and writes with timeouts.
+fn connect(path: &Path, limit: Duration) -> io::Result<UnixStream> {
+    use rustix::io::Errno;
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+    let socket = rustix::net::socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+        None,
+    )?;
+    let address = SocketAddrUnix::new(path)?;
+    let until = Instant::now() + limit;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        match rustix::net::connect(&socket, &address) {
+            Ok(()) => break,
+            Err(Errno::AGAIN | Errno::INTR) => {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "the daemon's socket took no connection within {} s: \
+                             its backlog is full",
+                            limit.as_secs_f64()
+                        ),
+                    ));
+                }
+                std::thread::sleep(pause.min(left));
+                pause = (pause * 2).min(CONNECT_PAUSE);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let stream = UnixStream::from(socket);
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
+/// The longest pause between two tries of a connect while the daemon's
+/// backlog is full.
+const CONNECT_PAUSE: Duration = Duration::from_millis(50);
 
 pub mod handler;
 #[cfg(target_os = "linux")]
