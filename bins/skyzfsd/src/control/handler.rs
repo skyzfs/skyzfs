@@ -153,7 +153,10 @@ fn count(waiter: &Waiter<'_>, desk: &Desk) -> Result<skyzfs_upload::CutsNow, Rep
         .block_on(async move { tokio::time::timeout(limit, desk.cuts_now()).await })
     {
         Ok(Some(now)) => Ok(now),
-        Ok(None) => Err(ended()),
+        Ok(None) => Err(Reply::Refused(
+            Code::Ended,
+            "the store is no longer served".into(),
+        )),
         Err(_) => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
