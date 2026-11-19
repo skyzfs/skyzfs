@@ -112,7 +112,7 @@ class AFlow(unittest.TestCase):
     def tearDown(self):
         self.d.cleanup()
 
-    def run_flow(self, answers, sync=False, limit=300, expiry=None, hold=True):
+    def run_flow(self, answers, sync=False, limit=300, expiry=None, hold=True, group_plus=0, twice=False):
         fake = Fake(*answers)
         ag = pa.Agent('skyzfsd', 'VOL', 'RUN', self.log, clock=lambda: 1, runner=fake)
         shell = []
@@ -126,7 +126,8 @@ class AFlow(unittest.TestCase):
             return ''
         clock = iter(range(0, 100000, 100))
         end = pa.flow(ag, 'p', 't1', sync=sync, limit=limit, expiry=expiry, hold=hold, sleep=lambda s: None,
-                      shell=sh, files=lambda root: f'{"0" * 64}  f1\n'.encode(), now=lambda: next(clock))
+                      shell=sh, files=lambda root: f'{"0" * 64}  f1\n'.encode(), now=lambda: next(clock),
+                      group_plus=group_plus, twice=twice, nudge=lambda path: shell.append(f'nudge {path}'))
         return end, fake.calls, shell
 
     def test_the_order_and_the_request(self):
@@ -140,11 +141,24 @@ class AFlow(unittest.TestCase):
         self.assertEqual(pub[pub.index('--attachment') + 1], A)
         self.assertEqual(shell, ['zfs snapshot p@t1', 'zfs hold skyzfs-publish p@t1',
                                  'zfs get -Hp -o value createtxg p@t1', 'zfs get -H -o value mountpoint p',
-                                 'zpool sync p', 'zfs release skyzfs-publish p@t1'])
+                                 'nudge /p/publish-nudge', 'zpool sync p', 'zfs release skyzfs-publish p@t1'])
         with open(os.path.join(self.d.name, 'manifest-t1'), 'rb') as f:
             self.assertEqual(f.read(), f'{"0" * 64}  f1\n'.encode())
         with open(os.path.join(self.d.name, 'published.tsv')) as f:
-            self.assertEqual(f.read().split('\t')[:5], ['t1', '55', A, S, '7'])
+            self.assertEqual(f.read().rstrip('\n').split('\t'), ['t1', '55', A, S, '7',
+                                                                 os.path.join(self.d.name, 'manifest-t1'), '55'])
+
+    def test_a_group_above_the_snapshots_and_asking_twice(self):
+        end, calls, _ = self.run_flow([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
+                                       (0, 'accepted\n'), (0, 'accepted\n'), (0, f'done commit={H}\n')],
+                                      group_plus=100, twice=True)
+        self.assertEqual(end, f'done commit={H}')
+        self.assertEqual([c[1] for c in calls], ['cuts', 'publish', 'publish', 'publish-progress'])
+        self.assertEqual(calls[1], calls[2])
+        self.assertEqual(calls[1][calls[1].index('--group') + 1], '155')
+        with open(os.path.join(self.d.name, 'published.tsv')) as f:
+            row = f.read().rstrip('\n').split('\t')
+        self.assertEqual((row[1], row[6]), ('155', '55'))
 
     def test_no_sync_unless_asked_and_the_limit(self):
         end, calls, shell = self.run_flow([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),

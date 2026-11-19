@@ -12,7 +12,8 @@ of the pool's present history":
    with N bytes of a manifest (the snapshot's files and their SHA-256,
    which the rig's check compares with what node B reads);
 4. `progress name=T` until it is no longer `pending`, syncing the pool
-   a group at a time when asked (`--sync`: after a rewind import no cut
+   a group at a time when asked (`--sync`: 4 KiB written to
+   MOUNTPOINT/publish-nudge, then `zpool sync`; after a rewind import no cut
    opens as itself until the pool's groups have passed the abandoned
    ones, and an idle pool makes no next cut);
 5. `zfs release`.
@@ -24,10 +25,18 @@ reads what was asked and answered from it, and nothing else.
 Usage:
   publish_agent.py flow  SKYZFSD VOL RUN AGENT.tsv POOL T [--sync] [--expiry-s E]
                          [--limit-s S] [--manifest-out FILE] [--no-hold]
+                         [--group-plus K] [--twice]
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv cuts
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw T
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv publish T A S C G MANIFEST [E]
   publish_agent.py raw   RUN AGENT.tsv LABEL  (stdin: the bytes to send, as given)
+
+`--group-plus K` asks with G+K in place of the snapshot's createtxg G
+(the rig's course on the group: no cut below G+K may be published);
+`--twice` sends the same publish twice before the first look (asking
+twice is asking once). Each publish asked is a line of DIR/published.tsv
+(DIR: AGENT.tsv's): T, the G asked, A, S, C, the manifest's path, and
+the snapshot's createtxg.
 
 `flow` prints the publish's end (`done commit=H`, `expired`, ...) and
 exits 0 when it was answered at all, 1 when a request was refused (the
@@ -189,6 +198,9 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
 
 
 def socket_path(run):
+    """The socket `control` under RUN, or RUN itself where it is one."""
+    if os.path.basename(run) == 'control' and os.path.exists(run):
+        return run
     found = []
     for d, _, files in os.walk(run):
         if 'control' in files:
@@ -196,6 +208,11 @@ def socket_path(run):
     if len(found) != 1:
         raise RigError(f'not one socket `control` under {run}: {found}')
     return found[0]
+
+
+def write_nudge(path):
+    with open(path, 'wb') as f:
+        f.write(os.urandom(4096))
 
 
 def sh(cmd, timeout=120):
@@ -206,7 +223,7 @@ def sh(cmd, timeout=120):
 
 
 def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=None, hold=True, sleep=time.sleep,
-         shell=None, files=manifest_of, now=time.monotonic):
+         shell=None, files=manifest_of, now=time.monotonic, group_plus=0, twice=False, nudge=None):
     """One publish, as design §5.2 has the agent make it -> its end line."""
     sh_ = shell or sh
     verb, cuts, code, text = agent.cuts()
@@ -216,19 +233,22 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
     if hold:
         sh_(['zfs', 'hold', 'skyzfs-publish', f'{pool}@{name}'])
     try:
-        group = sh_(['zfs', 'get', '-Hp', '-o', 'value', 'createtxg', f'{pool}@{name}']).strip()
-        if not group.isdigit():
-            raise RigError(f'createtxg of {pool}@{name} is not a number: {group!r}')
+        txg = sh_(['zfs', 'get', '-Hp', '-o', 'value', 'createtxg', f'{pool}@{name}']).strip()
+        if not txg.isdigit():
+            raise RigError(f'createtxg of {pool}@{name} is not a number: {txg!r}')
+        group = int(txg) + group_plus
         mnt = sh_(['zfs', 'get', '-H', '-o', 'value', 'mountpoint', pool]).strip()
         body = files(os.path.join(mnt, '.zfs', 'snapshot', name))
         path = manifest_out or os.path.join(os.path.dirname(agent.log), f'manifest-{name}')
         with open(path, 'wb') as f:
             f.write(body)
         with open(os.path.join(os.path.dirname(agent.log), 'published.tsv'), 'a') as f:
-            f.write(f'{name}\t{group}\t{cuts["attachment"]}\t{cuts["state"]}\t{cuts["count"]}\t{path}\n')
-        verb, _, code, text = agent.publish(name, cuts['attachment'], cuts['state'], cuts['count'], group, path, expiry)
-        if verb == 'refused':
-            return f'refused {code} {text}'
+            f.write(f'{name}\t{group}\t{cuts["attachment"]}\t{cuts["state"]}\t{cuts["count"]}\t{path}\t{txg}\n')
+        for _ in range(2 if twice else 1):
+            verb, _, code, text = agent.publish(name, cuts['attachment'], cuts['state'], cuts['count'], group, path,
+                                                expiry)
+            if verb == 'refused':
+                return f'refused {code} {text}'
         t0 = now()
         while True:
             verb, fields, code, text = agent.progress(name)
@@ -239,6 +259,9 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
             if now() - t0 > limit:
                 return f'pending after {limit} s'
             if sync:
+                # A group with something in it: an idle pool's sync makes
+                # no cut.
+                (nudge or write_nudge)(os.path.join(mnt, 'publish-nudge'))
                 sh_(['zpool', 'sync', pool])
             sleep(1)
     finally:
@@ -264,7 +287,8 @@ def main(argv):
             end = flow(agent, pool, name, sync='--sync' in opts,
                        expiry=int(val('--expiry-s')) if val('--expiry-s') else None,
                        limit=int(val('--limit-s') or 300), manifest_out=val('--manifest-out'),
-                       hold='--no-hold' not in opts)
+                       hold='--no-hold' not in opts, group_plus=int(val('--group-plus') or 0),
+                       twice='--twice' in opts)
             print(end)
             return 1 if end.startswith('refused ') else 0
         if what == 'ask':

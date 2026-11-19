@@ -99,6 +99,12 @@
 # are made only then: the uploader beside another writer, a kill between
 # a commit and its cut's release, the lease, and a row of version 1 (the
 # upload courses, below rec_failed).
+# The publish courses (the channel rig, skyzfs-publish-rig.yml; below
+# rec_ufailed) are made then too, by name only: pplain, prewind, pkill,
+# pkillman, pkillpub and pchannel. An agent (publish_agent.py) asks the
+# daemon through its channel to publish snapshots of the pool, and
+# DIR/ends.tsv gets each answer under the course's label for it, for
+# publish_check.py (their CUT_CHECK).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -169,8 +175,10 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 # By name only, until they have run stable: object storage down at the
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
+# The channel rig's (skyzfs-publish-rig.yml), by name only.
+PUBLISH_NAMED="pplain prewind pkill pkillman pkillpub pchannel"
 KNOWN=$ALL
-[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED"; }
+[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED"; }
 RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
@@ -197,6 +205,9 @@ VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
 # between the create and the first serve, the uploader's rest (drain), a
 # writer in the background.
 SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""
+# Set while a course has taken object storage down (CUT_S3_DOWN): the
+# cleanup brings it back.
+S3_IS_DOWN=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds.
 rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
@@ -265,6 +276,7 @@ cleanup() {
     [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
     [ -z "$WATCH_PID" ] || { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
     [ -z "$WRITER" ] || { touch "$WORK/writer.stop"; kill "$WRITER" 2>/dev/null; }
+    [ -z "$S3_IS_DOWN" ] || bash -c "$S3_UP" > /dev/null 2>&1
     [ -z "$SERVE_PID" ] || kill -CONT "$SERVE_PID" 2>/dev/null
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     if [ -n "$SERVE_PID" ]; then
@@ -1391,6 +1403,261 @@ rec_ufailed() {
     export_pool
 }
 
+# The publish courses (the channel rig; design §5.2, "A snapshot is
+# published by a cut of the pool's present history"). The agent is
+# publish_agent.py, through skyzfsd's commands; every request and answer
+# goes to DIR/agent.tsv, each publish asked to DIR/published.tsv, and the
+# answers the check judges to DIR/ends.tsv as LABEL and the answer
+# (publish_check.py's EXPECTED names the labels).
+pagent() { python3 -I "$HERE/publish_agent.py" "$1" "$SKYZFSD" "$VOL" "$RUN" "$RDIR/agent.tsv" "${@:2}"; }
+pend() { printf '%s\t%s\n' "$1" "$2" >> "$RDIR/ends.tsv"; }
+# LABEL T [OPTION...]: the agent's whole publish of POOL@T; its end.
+pflow() {
+    local label=$1 t=$2 out rc=0
+    shift 2
+    out=$(timeout 1200 python3 -I "$HERE/publish_agent.py" flow "$SKYZFSD" "$VOL" "$RUN" "$RDIR/agent.tsv" \
+        "$POOL" "$t" "$@" 2>> "$RDIR/agent.err") || rc=$?
+    [ "$rc" -le 1 ] || rig_error "the agent's publish of $t ended $rc: $(tail -n 2 "$RDIR/agent.err")"
+    pend "$label" "$out"
+}
+# LABEL REQUEST ARGS...: one request (publish_agent.py ask); its answer.
+pask() {
+    local label=$1 out rc=0
+    shift
+    out=$(pagent ask "$@" 2>> "$RDIR/agent.err") || rc=$?
+    [ "$rc" -le 1 ] || rig_error "the agent's $1 ($label) ended $rc: $(tail -n 2 "$RDIR/agent.err")"
+    pend "$label" "$out"
+}
+# T K: field K of T's last request in published.tsv (2 G, 3 A, 4 S, 5 C,
+# 6 the manifest, 7 the snapshot's createtxg).
+preq() { awk -F '\t' -v t="$1" -v k="$2" '$1 == t { v = $k } END { print v }' "$RDIR/published.tsv"; }
+# LABEL T G [record]: T asked again as it was last asked, with G; with
+# `record`, as the request its publish is judged by.
+pagain() {
+    local a s c m x
+    a=$(preq "$2" 3); s=$(preq "$2" 4); c=$(preq "$2" 5); m=$(preq "$2" 6); x=$(preq "$2" 7)
+    [ -n "$a" ] || rig_error "no request of $2 in published.tsv"
+    [ "${4:-}" != record ] || printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$a" "$s" "$c" "$m" "$x" >> "$RDIR/published.tsv"
+    pask "$1" publish "$2" "$a" "$s" "$c" "$3" "$m"
+}
+# LABEL T SECONDS [sync]: how T stands, asked until it no longer pends
+# (`pending after N s` when it still does); with sync, 4 KiB written and
+# the pool synced between two looks, so that the pool cuts.
+pwait() {
+    local t0=$SECONDS out rc
+    while :; do
+        rc=0
+        out=$(pagent ask progress "$2" 2>> "$RDIR/agent.err") || rc=$?
+        [ "$rc" -le 1 ] || rig_error "the agent's look at $2 ended $rc: $(tail -n 2 "$RDIR/agent.err")"
+        [ "$out" = pending ] || break
+        [ $((SECONDS - t0)) -lt "$3" ] || { out="pending after $3 s"; break; }
+        if [ "${4:-}" = sync ]; then
+            dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
+            z 60 zpool sync "$POOL"
+        fi
+        sleep 1
+    done
+    pend "$1" "$out"
+}
+# LABEL BYTES: BYTES (printf %b) sent as they are to the socket.
+praw() {
+    local out rc=0
+    out=$(printf '%b' "$2" | python3 -I "$HERE/publish_agent.py" raw "$RUN" "$RDIR/agent.tsv" "$1" 2>> "$RDIR/agent.err") || rc=$?
+    [ "$rc" -le 1 ] || rig_error "the raw request $1 ended $rc: $(tail -n 2 "$RDIR/agent.err")"
+    pend "$1" "$out"
+}
+
+# pplain (P1): publishes on a pool going on as it is. t1 plainly, then
+# asked again (asking twice is asking once: done on the same commit),
+# then asked with another manifest (accepted with no I/O, then refused
+# `taken` by the lookup). t2 asked twice before the first look. t3 of
+# another attachment and of another cut state: refused, and never there.
+# t4 asked with G 20 above its snapshot's createtxg, so that cuts counted
+# after C fall below G and must be passed over (the lead's addition: a
+# cut below G is never what snap/t names). t5 can never be carried and
+# expires in 5 s. t7 likewise pends; asked with other parameters it is
+# refused `asked`; withdrawn; then asked anew with its snapshot's G, and
+# published.
+rec_pplain() {
+    local zero
+    zero=$(printf '0%.0s' $(seq 1 32))
+    create_pool
+    load 2
+    pflow t1 t1 --limit-s 300
+    pagain t1-again t1 "$(preq t1 2)"
+    pwait t1-again-end t1 120
+    { cat "$RDIR/manifest-t1"; printf '%064d  another\n' 0; } > "$RDIR/manifest-t1-other"
+    pask t1-other publish t1 "$(preq t1 3)" "$(preq t1 4)" "$(preq t1 5)" "$(preq t1 2)" "$RDIR/manifest-t1-other"
+    pwait t1-other-end t1 120
+    pflow t2 t2 --twice --limit-s 300
+    pask att publish t3 "$zero" "$(preq t1 4)" "$(preq t1 5)" "$(preq t1 2)" "$RDIR/manifest-t1"
+    pask state publish t3 "$(preq t1 3)" "$zero" "$(preq t1 5)" "$(preq t1 2)" "$RDIR/manifest-t1"
+    pflow t4 t4 --group-plus 20 --sync --limit-s 600
+    pflow t5 t5 --group-plus 1000000 --expiry-s 5 --limit-s 120
+    pflow t7 t7 --group-plus 1000000 --expiry-s 900 --limit-s 3
+    pask t7-other publish t7 "$(preq t7 3)" "$(preq t7 4)" "$(preq t7 5)" "$(preq t7 7)" "$(preq t7 6)"
+    pask t7-withdraw withdraw t7
+    pagain t7-again t7 "$(preq t7 7)" record
+    pwait t7-end t7 300 sync
+    load 1
+    export_pool
+}
+
+# prewind (P2): object storage down (CUT_S3_DOWN) while the pool goes
+# on, so that the daemon holds the cuts of a history that a rewind then
+# abandons (an import at a group a few back, zpool import -T). With the
+# store still down, the agent takes r1 and asks; then the store comes
+# back (CUT_S3_UP), the daemon uploads the abandoned cuts and the
+# present history's, and r1 must be published by a cut of the present
+# history: counted after C, of group G or later, opening as itself. The
+# agent syncs a group at a time while it waits (after the rewind no cut
+# opens as itself until the pool's groups pass the abandoned ones). The
+# lease is 900 s, so the outage does not take it away. The status with
+# the store down goes to DIR/rewind-status.txt.
+rec_prewind() {
+    local groups t pid _i
+    [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "prewind needs CUT_S3_DOWN and CUT_S3_UP"
+    create_pool
+    load 3
+    touch "$WORK/watch.pause"
+    S3_IS_DOWN=1
+    bash -c "$S3_DOWN" > "$RDIR/s3-down.log" 2>&1 || rig_error "CUT_S3_DOWN failed: $(tail -n 2 "$RDIR/s3-down.log")"
+    load 3
+    mapfile -t groups < <(committed)
+    [ "${#groups[@]}" -ge 6 ] || rig_error "only ${#groups[@]} groups committed before the rewind"
+    t=${groups[$(( ${#groups[@]} - 4 ))]}
+    echo "$t" > "$RDIR/rewind-txg"
+    export_pool
+    log "prewind: importing at group $t of ${groups[-1]}, object storage down"
+    import_pool -T "$t"
+    ustatus rewind-status.txt
+    pflow r1 r1 --sync --limit-s 900 &
+    pid=$!
+    sleep 20
+    bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
+    S3_IS_DOWN=""
+    for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
+    rm -f "$WORK/watch.pause"
+    wait "$pid"
+    load 1
+    export_pool
+}
+
+# pkill (P3): two publishes pend, each with G 30 above its snapshot's:
+# tw is withdrawn, tk is not. The daemon is killed (kill -9) and the next
+# instance takes over: neither is known to it (pending publishes are in
+# memory). tk asked again is published; tw, never asked again, must read
+# withdrawn or unknown, and never be there, although the pool's cuts go
+# past its G while tk waits (the lead's addition: a kill after the
+# withdrawal was answered and before the publish could land).
+rec_pkill() {
+    create_pool
+    load 1
+    pflow tw tw --group-plus 30 --expiry-s 900 --limit-s 3
+    pask tw-withdraw withdraw tw
+    pflow tk tk --group-plus 30 --expiry-s 900 --limit-s 3
+    kill_serve
+    serve_start 2
+    pask tw-after progress tw
+    pask tk-after progress tk
+    pagain tk-again tk "$(preq tk 2)" record
+    pwait tk-end tk 600 sync
+    pask tw-last progress tw
+    load 1
+    export_pool
+}
+
+# pkillman, pkillpub (P3): the daemon kills itself inside its first
+# publish (--kill-at-upload): manifest:1 after the snapshot's framed
+# manifest landed and before the transaction that makes snap/T,
+# publish:1 once that transaction landed and before the uploader knew.
+# Node B reads snap/T between the kill and the take-over
+# (DIR/T-between.txt). The next instance does not know T; asked again,
+# the publish is made (manifest:1) or found (publish:1), done on the
+# commit snap/T names.
+rec_pkillat() {
+    local t=$1 fpid _i
+    create_pool
+    load 1
+    ( rc=0
+      out=$(timeout 1200 python3 -I "$HERE/publish_agent.py" flow "$SKYZFSD" "$VOL" "$RUN" "$RDIR/agent.tsv" \
+          "$POOL" "$t" --sync --limit-s 600 2>> "$RDIR/agent.err") || rc=$?
+      pend "$t" "${out:-none (exit $rc)}" ) &
+    fpid=$!
+    for _i in $(seq 1 2400); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done
+    kill -0 "$SERVE_PID" 2>/dev/null && rig_error "the daemon had not killed itself in its first publish 600 s on"
+    serve_end 5 || rig_error "the daemon's pid went away and serve_end did not see it end"
+    printf 'killed_rc\t%s\n' "$SERVE_RC" > "$RDIR/kill.tsv"
+    nodeb snap-row --snapshot "$t" > "$RDIR/$t-between.txt" 2> "$RDIR/$t-between.err" \
+        || rig_error "node B snap-row failed: $(tail -n 2 "$RDIR/$t-between.err")"
+    SERVE_ARGS=()
+    serve_start 2
+    for _i in $(seq 1 300); do kill -0 "$fpid" 2>/dev/null || break; sleep 1; done
+    kill -0 "$fpid" 2>/dev/null && rig_error "the agent had not ended 300 s after the take-over"
+    wait "$fpid" || true
+    pask "$t-after" progress "$t"
+    pagain "$t-again" "$t" "$(preq "$t" 2)" record
+    pwait "$t-end" "$t" 600 sync
+    load 1
+    export_pool
+}
+rec_pkillman() { rec_pkillat m1; }
+rec_pkillpub() { rec_pkillat p1; }
+
+# pchannel (P4): the channel itself. First served while another holder
+# has the lease (ulease_other, --serve-without-upload): `cuts` is refused
+# `no-upload`. Then, served with the lease, requests that the daemon's
+# commands would not send: another greeting (`version`), a key the
+# request does not take (`malformed`), a name no publish can have
+# (`name`), a well-formed `cuts` (that the raw path works), and one from
+# a peer of another user (`peer`: nobody, with the socket made 0666 and
+# the directories above it searchable for the request, and put back).
+# The status after them goes to DIR/channel-status.txt.
+ppeer() {
+    local sock dir tmp out rc=0 m modes=()
+    sock=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import publish_agent as p; print(p.socket_path(sys.argv[2]))' \
+        "$HERE" "$RUN") || rig_error "no socket under $RUN"
+    dir=$(dirname "$sock")
+    while [ "$dir" != / ]; do modes+=("$(stat -c %a "$dir") $dir"); chmod o+x "$dir"; dir=$(dirname "$dir"); done
+    chmod 0666 "$sock"
+    tmp=$(mktemp -d)
+    cp "$HERE/publish_agent.py" "$tmp/"
+    chmod 0755 "$tmp"; chmod 0644 "$tmp/publish_agent.py"; chown nobody "$tmp"
+    out=$(printf 'skyzfs-control 1\ncuts\n' | runuser -u nobody -- python3 -I "$tmp/publish_agent.py" raw "$sock" \
+        "$tmp/agent.tsv" peer 2>> "$RDIR/agent.err") || rc=$?
+    cat "$tmp/agent.tsv" >> "$RDIR/agent.tsv" 2>/dev/null || true
+    rm -rf "${tmp:?}"
+    chmod 0600 "$sock"
+    for m in "${modes[@]}"; do chmod "${m%% *}" "${m#* }"; done
+    [ "$rc" -le 1 ] || rig_error "nobody's request ended $rc: $(tail -n 2 "$RDIR/agent.err")"
+    pend peer "$out"
+}
+rec_pchannel() {
+    create_pool
+    load 1
+    pask nu cuts
+    export_pool
+    kill -TERM "$SERVE_PID" 2>/dev/null || true
+    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
+    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve.log")"
+    timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach-1.log" 2>&1 \
+        || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach-1.log")"
+    nodeb release --holder other-node > "$RDIR/other-release.txt" 2>&1 \
+        || rig_error "node B could not let the lease go: $(tail -n 2 "$RDIR/other-release.txt")"
+    SERVE_ARGS=()
+    serve_start 2
+    drain balance-start.txt idle 1
+    import_pool
+    praw version 'skyzfs-control 9\ncuts\n'
+    praw malformed 'skyzfs-control 1\ncuts extra=1\n'
+    praw name 'skyzfs-control 1\nprogress name=a/b\n'
+    praw cuts 'skyzfs-control 1\ncuts\n'
+    ppeer
+    ustatus channel-status.txt
+    load 1
+    export_pool
+}
+
 rec_full() {
     local k
     create_pool
@@ -1415,6 +1682,10 @@ record() {
         ukill) SERVE_ARGS=(--kill-at-upload swap:3) ;;
         ukillput) SERVE_ARGS=(--kill-at-upload put:5) ;;
         unostore) PRE_SERVE=unostore_down ;;
+        prewind) SERVE_ARGS=(--lease-ttl-s 900) ;;
+        pkillman) SERVE_ARGS=(--kill-at-upload manifest:1) ;;
+        pkillpub) SERVE_ARGS=(--kill-at-upload publish:1) ;;
+        pchannel) PRE_SERVE=ulease_other ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
     esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
