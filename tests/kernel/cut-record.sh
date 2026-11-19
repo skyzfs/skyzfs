@@ -1524,8 +1524,10 @@ rec_prewind() {
     bash -c "$S3_DOWN" > "$RDIR/s3-down.log" 2>&1 || rig_error "CUT_S3_DOWN failed: $(tail -n 2 "$RDIR/s3-down.log")"
     load 3
     mapfile -t groups < <(committed)
-    [ "${#groups[@]}" -ge 6 ] || rig_error "only ${#groups[@]} groups committed before the rewind"
-    t=${groups[$(( ${#groups[@]} - 4 ))]}
+    # Eight groups back, so that the abandoned history's groups reach past
+    # those the import and the snapshot sync (the check's premise).
+    [ "${#groups[@]}" -ge 10 ] || rig_error "only ${#groups[@]} groups committed before the rewind"
+    t=${groups[$(( ${#groups[@]} - 8 ))]}
     echo "$t" > "$RDIR/rewind-txg"
     export_pool
     log "prewind: importing at group $t of ${groups[-1]}, object storage down"

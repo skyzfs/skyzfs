@@ -109,13 +109,15 @@ EXPECTED = {
         'tw-last': ('withdrawn', 'unknown'),
     },
     'pkillman': {
-        'm1': ('none ',),                     # the daemon killed itself under it
+        # The daemon killed itself under the agent: no answer, or the
+        # next instance's to its last look (it does not know m1).
+        'm1': ('none ', 'unknown'),
         'm1-after': ('unknown',),
         'm1-again': ('accepted',),
         'm1-end': ('done ',),
     },
     'pkillpub': {
-        'p1': ('none ',),
+        'p1': ('none ', 'unknown'),
         'p1-after': ('unknown',),
         'p1-again': ('accepted',),            # the lookup finds what landed
         'p1-end': ('done ',),
