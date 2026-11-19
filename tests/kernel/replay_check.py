@@ -469,9 +469,13 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 # were busy before it.
 EXPORT_WAITS = (1, 2, 4, 8)
 LEFT_IMPORTED = 'is still imported'
-# zdb aborting on an assertion: evidence about the pool it read, not about
-# the rig. A catch in a control (tally_control); against the image in the
-# main pass, even with a pool left imported (exit_code).
+# zdb aborting (SIGABRT, an assertion or any other abort of its own):
+# evidence about the pool it read, not about the rig. A catch in a control
+# (tally_control); against the image in the main pass, even with a pool
+# left imported (exit_code). Any signal 6 counts because the rig never
+# sends one: run() ends a command past its limit with SIGKILL (exit 124),
+# and a job cancelled from outside sends TERM or KILL. A rig that ever
+# sends zdb SIGABRT must change this rule.
 ZDB_ABORT = 'rig: zdb died with signal 6'
 # The commands that can hold a reference to a pool from user space: a
 # process inside a ZFS ioctl. The kernel's own holds show in no process.
