@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -75,10 +76,14 @@ class Embedded(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n'
+                        'first_upload not committed by the window\'s end (watched from the import)\n'
                         'first_upload after 40 s (uploaded 1, cuts lost 0)\n')
             r = self.row(d, {'.before': before, '.after': after, '.pgbench': 'tps = 812.5 (without initial connection time)\n'})
+            # the last line of a key is the one kept: the watcher's commit after its first word
+            self.assertEqual(r['skyzfsd']['info']['first_upload'], 'after 40 s (uploaded 1, cuts lost 0)')
             self.assertEqual(r['skyzfsd']['upload'], {'endpoint': 'http://127.0.0.1:9000', 'bucket': 'tb-1-1', 'volume': 'tb-17'})
             self.assertTrue(r['skyzfsd']['serve_args'].endswith('(uploads to tb-17)'), r['skyzfsd']['serve_args'])
+            self.assertNotIn('from_load', r['skyzfsd']['upload'])
             two = self.row(d, {'.before': before, '.after': after.replace('skz pid 7', 'skz pid 8'), '.pgbench': ''})
             self.assertIs(two['skyzfsd']['pid_same'], False)
             two['workload'] = 'select'
@@ -97,6 +102,51 @@ class Embedded(unittest.TestCase):
                              p.stdout[-3000:])
             self.assertEqual([ln.split(' | ')[1] for ln in table if ln.startswith('| select | ')],
                              ['zfs-skyzfsd [x] (TWO DAEMONS in the window)'])
+            # a row whose object storage was frozen until the workload began
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-18\nbuild abc\n'
+                        'upload_from_load 1\n')
+            r = self.row(d, {'.before': before, '.after': after, '.pgbench': ''})
+            self.assertIs(r['skyzfsd']['upload'].get('from_load'), True)
+            self.assertTrue(r['skyzfsd']['serve_args'].endswith(
+                "(uploads to tb-18) (object storage frozen from the daemon's start to the workload's)"),
+                r['skyzfsd']['serve_args'])
+            # a row whose status was not read at the window's end (Codex
+            # on #128): it still says it uploads, and gets no verdict
+            r = self.row(d, {'.before': before, '.after': devs, '.pgbench': 'tps = 950 (without initial connection time)\n'})
+            self.assertEqual(r['skyzfsd']['upload']['volume'], 'tb-18')
+            self.assertIs(r['skyzfsd']['upload'].get('from_load'), True)
+            self.assertEqual(r['skyzfsd']['after'], {})
+            self.assertIsNone(r['skyzfsd']['pid_same'])
+            self.assertIn("THE DAEMON'S STATUS WAS NOT READ at the window's end", r['skyzfsd']['serve_args'])
+            sys.path.insert(0, HERE)
+            import bracket
+            r['_seq'], r['machine'] = 2, 'm'
+            model = lambda seq: {'_seq': seq, 'topology': 'zfs-slog', 'workload': 'tpcb', 'tps': 1000.0, 'machine': 'm',
+                                 'origin_delay_ms': 0}
+            v = bracket.bracketed(r, [model(1), r, model(3)])['verdict']
+            self.assertTrue(v.startswith("NO VERDICT: the row says it uploads, but its daemon's status was not read at "
+                                         "the window's end"), v)
+            # as a failed status read really leaves the .after (review on
+            # #128): its clock line alone
+            r2 = self.row(d, {'.before': before, '.after': devs + 'skz read_at_ns 2000\n',
+                              '.pgbench': 'tps = 950 (without initial connection time)\n'})
+            self.assertEqual(r2['skyzfsd']['upload']['volume'], 'tb-18')
+            r2['_seq'], r2['machine'] = 2, 'm'
+            v = bracket.bracketed(r2, [model(1), r2, model(3)])['verdict']
+            self.assertTrue(v.startswith("NO VERDICT: the row says it uploads, but its daemon's status was not read at "
+                                         "the window's end"), v)
+            out = os.path.join(d, 'out2', '1')
+            os.makedirs(out)
+            with open(os.path.join(out, 'tpcb-zfs-skyzfsd.json'), 'w') as f:
+                json.dump(r, f)
+            p = subprocess.run(['bash', SCRIPT, 'summarize', os.path.join(d, 'out2')], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+            # a row with no status at either end and no uploads has no skyzfsd part
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')
+            self.assertNotIn('skyzfsd', self.row(d, {'.before': before, '.after': devs, '.pgbench': ''}))
             # a row without uploads
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')

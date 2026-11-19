@@ -19,6 +19,12 @@ while the row ran between them. Such a row keeps its ratio, printed,
 and has no verdict ("bracket too wide"), so it gives nothing to a
 median of verdicts.
 
+A row that says it uploads (TB_SKZ_UPLOAD) keeps its ratio, printed,
+and has no verdict when its window was not a window of a daemon that
+uploads (review's G4 on #123, the lead's decision (c)): no upload
+committed in it, the volume's lease was not held at both of its ends
+under one epoch, or the daemon was not the same at its two ends.
+
 `enclose` finds the two rows; `bracketed` forms the ratio and says
 whether it may be judged. Rows are the benchmark's result dicts, with
 `_seq` (the row's place in its sequence, or None), `machine`,
@@ -71,6 +77,45 @@ def width(before, after):
     return abs(before['tps'] - after['tps']) / ((before['tps'] + after['tps']) / 2)
 
 
+# The lease as the status says it while the uploader holds it: "unsure"
+# is held, its last renewal failed, and the uploads go on under its epoch.
+LEASE_HELD = ('held', 'unsure')
+
+
+def not_uploading(row):
+    """-> why a row that says it uploads did not upload over its window, or None.
+
+    None also for a row that does not say it uploads. Read from the
+    daemon's status at the window's two ends (`skyzfsd.before` and
+    `.after`) and whether its pid was the same at both (`pid_same`). A
+    status not read at either end (no pid in it) shows no upload, and an
+    epoch that is not a number shows no one lease: no verdict.
+    """
+    k = row.get('skyzfsd') or {}
+    if not k.get('upload'):
+        return None
+    sb, sa = k.get('before') or {}, k.get('after') or {}
+    # A reading that failed leaves its clock line (`read_at_ns`) and no
+    # more: a status read shows the daemon's pid.
+    unread = [end for end, s in (('start', sb), ('end', sa)) if not s.get('pid')]
+    if unread:
+        return f"its daemon's status was not read at the window's {' and '.join(unread)}"
+    if k.get('pid_same') is not True:
+        return (f"its daemon was not shown to be the same at the window's two ends (pid {sb['pid']} "
+                f"and {sa['pid']})")
+    lease = [(s.get('lease', 'not read'), s.get('lease_epoch', 'not read')) for s in (sb, sa)]
+    if (any(state not in LEASE_HELD for state, _ in lease) or lease[0][1] != lease[1][1]
+            or not str(lease[0][1]).isdigit()):
+        return (f'it did not hold the lease for the whole window (at its start {lease[0][0]} at epoch {lease[0][1]}, '
+                f'at its end {lease[1][0]} at epoch {lease[1][1]})')
+    a, b = sa.get('uploaded', ''), sb.get('uploaded', '')
+    if not (a.isdigit() and b.isdigit()):
+        return f"its uploads cannot be read at the window's two ends ('{b}' and '{a}')"
+    if int(a) - int(b) <= 0:
+        return f'no upload committed in its window (uploaded {b} at its start and {a} at its end)'
+    return None
+
+
 def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     """-> dict: before, after (rows or None), ratio and width (floats or None), verdict (text).
 
@@ -79,7 +124,9 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     differ by at most `widest` of their mean, and both had no origin
     delay (the daemon row has
     no origin under it, and a model row slowed at its origin reads would
-    flatter the daemon). Otherwise it starts with NO VERDICT and says why.
+    flatter the daemon), and a row that says it uploads uploaded over its
+    window (`not_uploading`). Otherwise it starts with NO VERDICT and says
+    why; a row that did not upload keeps its ratio and width.
     """
     out = {'before': None, 'after': None, 'ratio': None, 'width': None}
     if not row.get('tps'):
@@ -105,14 +152,19 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     if row.get('_seq') is None:
         out['verdict'] = 'NO VERDICT: the row is not in a sequence, so no model rows enclose it'
         return out
+    idle = not_uploading(row)
+    idle = idle and f'NO VERDICT: the row says it uploads, but {idle}'
     before, after = enclose(row, rows, model)
     out['before'], out['after'] = before, after
     if before is None or after is None:
         missing = ' and '.join(w for w, o in (('before', before), ('after', after)) if o is None)
-        out['verdict'] = f'NO VERDICT: no {model} row of this machine and workload {missing} it in the sequence'
+        out['verdict'] = idle or f'NO VERDICT: no {model} row of this machine and workload {missing} it in the sequence'
         return out
     out['ratio'] = row['tps'] / ((before['tps'] + after['tps']) / 2)
     out['width'] = width(before, after)
+    if idle:
+        out['verdict'] = idle
+        return out
     other = [f'the model row {w} it: ' + ', '.join(d) for w, o in (('before', before), ('after', after))
              for d in [unlike(row, o)] if d]
     delays = [before.get('origin_delay_ms'), after.get('origin_delay_ms')]
