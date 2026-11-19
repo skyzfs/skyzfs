@@ -116,6 +116,7 @@ fn sample_upload() -> UploadShown {
         figures: UploadFigures {
             zero_blocks: Some(62),
             not_offered: Some(64),
+            lost_whole: Some(78),
             ..UploadFigures::of(std::array::from_fn(|i| 50 + i as u64))
         },
         checked: CheckedShown::NotTheBase,
@@ -150,8 +151,8 @@ fn sample_publish() -> PublishShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 1408);
-    assert_eq!(&bytes[..8], b"SKYZST18");
+    assert_eq!(bytes.len(), 1416);
+    assert_eq!(&bytes[..8], b"SKYZST19");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -232,6 +233,7 @@ fn the_file_has_the_documented_layout() {
         (1384, 70),
         (1392, 71),
         (1400, 72),
+        (1408, 78),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -425,7 +427,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 11] = [
+    let versions: [(&[u8; 8], usize); 12] = [
+        (b"SKYZST19", 1416),
         (b"SKYZST18", 1408),
         (b"SKYZST17", 1032),
         (b"SKYZST16", 1008),
@@ -615,14 +618,101 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
         .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
 }
 
+/// What a file before the nineteenth version does not say: the whole
+/// cuts lost (M2.4f).
+fn without_whole_lost(status: &mut Status) {
+    if let Some(upload) = &mut status.shown.upload {
+        upload.figures.lost_whole = None;
+    }
+}
+
 /// What a file before the eighteenth version does not say: the cuts not
-/// offered, the publishes and the channel (M2.5-2).
+/// offered, the publishes and the channel (M2.5-2), and what a file
+/// before the nineteenth does not say.
 fn without_publishes(status: &mut Status) {
+    without_whole_lost(status);
     if let Some(upload) = &mut status.shown.upload {
         upload.figures.not_offered = None;
         upload.publish = None;
     }
     status.shown.channel = None;
+}
+
+/// A file of the eighteenth version (1408 bytes, `SKYZST18`): this
+/// version's fields up to the whole cuts lost, at the same places.
+fn eighteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..1408].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST18");
+    bytes
+}
+
+/// A file of the eighteenth version is still read, with the publishes
+/// and the channel and without the whole cuts lost (M2.4f), whose key
+/// `status` does not print for it.
+#[test]
+fn a_file_of_the_eighteenth_version_is_read_without_the_whole_cuts_lost() {
+    let read = decode(&eighteenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 18;
+    without_whole_lost(&mut expected);
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "upload_cuts_lost"), Some("59"));
+    assert_eq!(value(&lines, "publish_accepted"), Some("65"));
+    assert_eq!(value(&lines, "control_malformed"), Some("72"));
+    assert_eq!(value(&lines, "upload_cuts_lost_whole"), None);
+}
+
+/// The whole cuts lost are printed from a nineteenth file, after the
+/// cuts not offered, zero where none was; and the uploader that waits
+/// after one says so, with the wait (M2.4f).
+#[test]
+fn status_prints_the_whole_cuts_lost_and_the_wait_after_one() {
+    let lines_of = |status: &Status| {
+        let read = decode(&encode(status)).expect("a status");
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(&sample());
+    assert_eq!(value(&lines, "upload_cuts_lost_whole"), Some("78"));
+    let at = |key: &str| lines.iter().position(|(k, _)| *k == key).expect(key);
+    assert!(at("upload_not_offered") < at("upload_cuts_lost_whole"));
+    assert!(at("upload_cuts_lost_whole") < at("publish_accepted"));
+
+    let mut waiting = sample();
+    let mut upload = UploadShown {
+        state: UploadStateShown::WholeLost,
+        wait_ms: 120_000,
+        why: Text::new("whole cut 3 went before its commit: abandoned at the bound"),
+        ..UploadShown::default()
+    };
+    upload.figures.lost_whole = Some(0);
+    waiting.shown.upload = Some(upload);
+    let lines = lines_of(&waiting);
+    assert_eq!(value(&lines, "upload_state"), Some("whole_lost"));
+    assert_eq!(value(&lines, "upload_wait_ms"), Some("120000"));
+    assert_eq!(value(&lines, "upload_cuts_lost_whole"), Some("0"));
+    assert_eq!(
+        value(&lines, "upload"),
+        Some(
+            "whole cut 3 went before its commit: abandoned at the bound: the volume cannot be \
+             seeded under this load, next whole cut in 120 s"
+        )
+    );
+    assert_eq!(UploadStateShown::of(10), UploadStateShown::WholeLost);
+    assert_eq!(UploadStateShown::WholeLost.code(), 10);
+    assert_eq!(UploadStateShown::of(11), UploadStateShown::Unsaid);
 }
 
 /// A file of the seventeenth version (1032 bytes, `SKYZST17`): this
@@ -1729,6 +1819,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "upload_rule",
             "upload_last_error",
             "upload_not_offered",
+            "upload_cuts_lost_whole",
             "publish_accepted",
             "publish_published",
             "publish_found",
@@ -2155,7 +2246,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut eighteenth = encode(&sample()).to_vec();
+    let mut nineteenth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -2168,6 +2259,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("16", b"SKYZST16"),
         ("17", b"SKYZST17"),
         ("18", b"SKYZST18"),
+        ("19", b"SKYZST19"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -2180,7 +2272,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "15" => fifteenth_file(),
             "16" => sixteenth_file(),
             "17" => seventeenth_file(),
-            _ => std::mem::take(&mut eighteenth),
+            "18" => eighteenth_file(),
+            _ => std::mem::take(&mut nineteenth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -2195,7 +2288,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 18);
+    assert_eq!(VERSION, 19);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.
