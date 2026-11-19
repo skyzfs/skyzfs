@@ -458,7 +458,7 @@ def main():
         nb.put(f'{name}-early', ck.image, 't')
         got['early'] = (nb.verify(f'{name}-early', ref, snap, want, damaged=True),
                         f"cut {early['n']} (group {early['txg']})")
-        v = cut_check.pick_withheld(ck.records, cut, bps)
+        v = cut_check.pick_withheld(ck.records, cut, bps, cut_check.withholding_changes(ck.records, ck.read, ck.base_read, cut, bps))
         if v is None:
             got['lacks'] = (None, 'no write before the uberblock write holds a block the cut reaches')
         else:
