@@ -290,17 +290,18 @@ rb=$(sed -n '/^rec_bound() {$/,/^}$/p' "$SCRIPT")
 # shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are rec_bound's, run through eval
 bound_trace() { (
     WORK=$(mktemp -d); MNT=/nonexistent; POOL=p
-    create_pool() { echo create; }
+    create_pool() { echo "create paused=$([ -e "$WORK/hold.pause" ] && echo yes || echo no)"; }
     dd() { echo dd; }
+    sleep() { echo "sleep $1"; }
     z() { echo "z $*"; }
     ustatus() { echo "status $1 paused=$([ -e "$WORK/hold.pause" ] && echo yes || echo no)"; }
     load() { echo "load $1"; }
     export_pool() { echo export; }
     eval "$rb"; rec_bound; rm -rf "${WORK:?}"
 ) 2>&1; }
-is "rec_bound: the writes, then the status while the holder is paused, then the let-go" \
-    "$(bound_trace | grep -c '^dd$') $(bound_trace | head -n 1) $(bound_trace | tail -n 4 | tr '\n' ';')" \
-    "10 create z 60 zpool sync p;status status-bound-held.txt paused=yes;load 2;export;"
+is "rec_bound: paused before the create, the writes, a wait, then the status while paused, then the let-go" \
+    "$(bound_trace | grep -c '^dd$') $(bound_trace | head -n 1) $(bound_trace | tail -n 5 | tr '\n' ';')" \
+    "10 create paused=yes z 60 zpool sync p;sleep 0.3;status status-bound-held.txt paused=yes;load 2;export;"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

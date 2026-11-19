@@ -57,9 +57,10 @@ a command that timed out) is never a verdict in either direction.
 Exit codes: 0 the job passes, 1 something stands against the image, 2
 the rig's own error. Exit 2 is a pool left imported with nothing else
 against the image: after it, every check says only that the pool is
-there (exit_code()). An export the kernel refuses as busy is tried again
-first, with what held the pool recorded (Rig.export, `export_busy` in
-the results).
+there (exit_code()). A verdict found before a failed export stays a
+verdict (after_cleanup). An export the kernel refuses as busy is tried
+again first, with what can hold the pool recorded (Rig.export and
+Rig.held; `export_busy` and `export_forced` in the results).
 
 What the rig does not show: anything about the uberblock's own four
 label copies beyond the import choosing one; intent-log blocks'
@@ -461,9 +462,43 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 # An export the kernel refuses as busy is tried again after each of these
 # waits, with what held the pool recorded each time (run 44421456349: one
 # busy export at prefix 2486 left the pool imported, and every later check
-# of the job could only say so). Then `-f`, as before.
+# of the job could only say so). Then `-f`, as before. After this many
+# exports busy through every wait, a job goes to `-f` without waiting, so
+# that a cause `-f` clears cannot cost every export 15 s.
 EXPORT_WAITS = (1, 2, 4, 8)
+EXPORT_BUSY_THROUGHOUT_MAX = 2
 LEFT_IMPORTED = 'is still imported'
+# The commands that can hold a reference to a pool from user space: a
+# process inside a ZFS ioctl. The kernel's own holds show in no process.
+ZFS_COMMANDS = ('zpool', 'zfs', 'zdb', 'zed')
+
+
+def fuser_holders(text):
+    """What `fuser -vm` printed -> the processes it names, as 'COMMAND (pid PID, ACCESS)'.
+
+    fuser -v prints a header (USER PID ACCESS COMMAND), then one line
+    per process, the first after the path and a colon. The file system
+    itself shows as a "kernel mount" line, which holds nothing.
+    """
+    out = []
+    for line in text.splitlines():
+        w = line.split()
+        if w and w[0].endswith(':'):
+            w = w[1:]
+        if len(w) < 4 or w[:2] == ['USER', 'PID'] or w[1] == 'kernel':
+            continue
+        out.append(f"{' '.join(w[3:])} (pid {w[1]}, {w[2]})")
+    return out
+
+
+def zfs_processes(text):
+    """What `ps -eo pid=,etimes=,comm=,args=` printed -> the ZFS commands running, with their age."""
+    out = []
+    for line in text.splitlines():
+        w = line.split(None, 3)
+        if len(w) >= 3 and w[2] in ZFS_COMMANDS:
+            out.append(f"pid {w[0]}, {w[1]} s: {w[3] if len(w) > 3 else w[2]}"[:200])
+    return out
 
 # The deep check must run at no less than this share of the flush
 # boundaries. Half, evenly spread: the one fault the deep check has
@@ -621,6 +656,22 @@ def stage(name, rc):
     if rc == 127:
         return f'rig: {name} could not start'
     return name
+
+
+def after_cleanup(res, what, out):
+    """The result of a check whose cleanup (`what`, which printed `out`) then failed -> (failure, detail).
+
+    A failure found before the cleanup stays the prefix's result, with
+    the cleanup's failure added to its detail: the check ran on the
+    image before the cleanup, and a verdict must not read as the rig's
+    error (exit_code). A check that passed becomes the cleanup's
+    failure. Whatever the cleanup left behind reaches the next prefix
+    (Rig.leftover).
+    """
+    detail = out.strip()[-400:]
+    if res[0]:
+        return res[0], f'{res[1]}; then {what} failed: {detail}'
+    return what, detail
 
 
 def tally_control(results):
@@ -809,24 +860,46 @@ def job_verdict(failures, controls_ok, witness_ok, coverage_errors, zdb_cc_rc):
     return not against, against
 
 
-def exit_code(ok, failures, controls, control_rows, witness_ok, zdb_cc_rc):
+def rig_errors_explain(c, expected=None):
+    """Whether a control's rig errors can explain its differing from the table.
+
+    They can when the prefixes the rig could not judge might have held
+    what the table expects: a catch that is missing, or a catch by the
+    table's check. They cannot when the control was caught although the
+    table says it is not (prefixes the rig could not judge do not make a
+    control caught), nor when its class is not in the table (the class
+    comes from zdb on the true image, not from the checks that stopped).
+    """
+    expected = EXPECTED if expected is None else expected
+    if not c or not c.get('rig_errors'):
+        return False
+    want = expected.get(c['name'], {}).get(c.get('class', 'block'))
+    if want is None:
+        return False
+    return not (want['by'] is None and c['caught'])
+
+
+def exit_code(ok, failures, controls, control_rows, witness_ok, zdb_cc_rc, expected=None):
     """The job's exit code: 0 it passes, 1 a verdict, 2 the rig's own error.
 
     2 when a pool was left imported (`Rig.leftover`) and nothing else
-    stands against the image: no prefix failed a judging stage, every
-    control that differs from the table differs by the rig's errors, the
-    witness agreed and zdb found no fault. Every check after such a pool
-    says only that it is there, and a coverage short of its floor
-    follows from the pass that stopped.
+    stands against the image: no prefix failed a judging stage (a
+    failure found before a failed export stays the prefix's, see
+    after_cleanup), every control that differs from the table differs in
+    a way its rig errors explain (rig_errors_explain), the witness
+    agreed and zdb at the end found no fault (or timed out or could not
+    start, which is never a verdict). Every check after such a pool says
+    only that it is there, and a coverage short of its floor follows
+    from the pass that stopped.
     """
     if ok:
         return 0
     left = (any(LEFT_IMPORTED in r['failed'] for r in failures)
             or any(LEFT_IMPORTED in e['failed'] for c in controls for e in c.get('rig_errors') or []))
-    errored = {c['name'] for c in controls if c.get('rig_errors')}
+    seen = {c['name']: c for c in controls}
     if (left and not any(r['failed'] in JUDGING for r in failures)
-            and all(r['match'] or r['name'] in errored for r in control_rows)
-            and witness_ok and zdb_cc_rc == 0):
+            and all(r['match'] or rig_errors_explain(seen.get(r['name']), expected) for r in control_rows)
+            and witness_ok and (zdb_cc_rc == 0 or zdb_cc_rc in RIG_RC)):
         return 2
     return 1
 
@@ -992,7 +1065,10 @@ class Rig:
             self.manifest = [line.split()[:2] for line in f if line.strip()]
         self.at = 0
         self.sched_path = None
-        self.busy = []                  # what held the pool at each busy export
+        self.busy = []                  # what held the pool at each refused export attempt
+        self.exports = 0                # exports tried, so that the records of one export can be told apart
+        self.busy_throughout = 0        # exports still busy after every wait
+        self.forced = []                # busy exports that went to -f
         os.makedirs(self.imgdir, exist_ok=True)
         os.makedirs(self.alt, exist_ok=True)
         # zdb cannot open a pool without its log device. Where the log
@@ -1050,38 +1126,63 @@ class Rig:
         A busy export says nothing of the image, but a pool left imported
         stops every later check. So an export the kernel calls busy is
         tried again after each of EXPORT_WAITS, and what held the pool
-        is recorded before each wait (`held`). Then `-f`, as before.
+        is recorded at each refusal (`held`). Then `-f`, as before. Once
+        EXPORT_BUSY_THROUGHOUT_MAX exports were busy throughout, a busy
+        export goes to `-f` at once. Any other failure goes to `-f` at
+        once.
         """
-        for wait in EXPORT_WAITS + (None,):
+        self.exports += 1
+        waits = EXPORT_WAITS if self.busy_throughout < EXPORT_BUSY_THROUGHOUT_MAX else ()
+        busy = False
+        for wait in waits + (None,):
             rc, out, _ = run(['zpool', 'export', self.a.pool], 120)
             if rc == 0:
                 return rc, out
-            if 'busy' not in out or wait is None:
+            if 'busy' not in out:
                 break
+            busy = True
             self.held(out, wait)
+            if wait is None:
+                break
             time.sleep(wait)
         rc, out, _ = run(['zpool', 'export', '-f', self.a.pool], 120)
+        if busy:
+            self.busy_throughout += 1
+            self.forced.append({'export': self.exports, 'at': self.at, 'rc': rc, 'waited': bool(waits)})
         return rc, out
 
     def held(self, said, wait):
-        """What holds the pool at a busy export -> recorded in `self.busy` and printed.
+        """What can hold the pool at a refused export -> recorded in `self.busy` and printed.
 
-        The processes that have a file or directory open in its mounted
-        file systems (`fuser -vm`), and its mounts under the rig's
-        alternate root.
+        Its mounts under the rig's alternate root. When its file system
+        is still mounted there, the processes with a file open in it
+        (`fuser -vm`); on a directory that is no longer a mount point,
+        fuser would name every process on the runner's own disk, so it
+        is not asked. And the ZFS commands running (ZFS_COMMANDS), the
+        only processes that can hold the pool once it is unmounted:
+        "pool is busy" comes from the export ioctl, after the unmount.
+        `wait` None means `-f` comes next.
         """
-        _, fu, _ = run(['fuser', '-vm', self.alt + self.a.mountpoint], 30)
         try:
             with open('/proc/mounts') as f:
                 mounts = [w[1] for w in (line.split() for line in f) if len(w) > 1 and w[1].startswith(self.alt)]
         except OSError as e:
             mounts = [f'/proc/mounts: {e}']
-        b = {'at': self.at, 'said': said.strip()[-200:], 'retry_in_s': wait, 'fuser': fu.strip()[-1000:],
+        mp = self.alt + self.a.mountpoint
+        if mp in mounts:
+            _, fu, _ = run(['fuser', '-vm', mp], 30)
+            holders = fuser_holders(fu)
+        else:
+            fu, holders = 'not asked: not mounted', []
+        _, ps, _ = run(['ps', '-eo', 'pid=,etimes=,comm=,args='], 30)
+        procs = zfs_processes(ps)
+        b = {'export': self.exports, 'at': self.at, 'said': said.strip()[-200:], 'retry_in_s': wait,
+             'mounted': mp in mounts, 'fuser': fu.strip()[:1000], 'holders': holders, 'zfs_processes': procs,
              'mounts': mounts}
         self.busy.append(b)
-        held_by = ' | '.join(x.strip() for x in fu.splitlines()[:6] if x.strip()) or 'fuser named nothing'
-        print(f"export of {self.a.pool} busy at prefix {self.at}: tried again in {wait} s; held by: {held_by}; "
-              f"mounts under the alternate root: {', '.join(mounts) or 'none'}", flush=True)
+        print(f"export of {self.a.pool} busy at prefix {self.at}: "
+              + (f'tried again in {wait} s' if wait is not None else 'now -f') + '; '
+              + held_text(b) + f"; mounts under the alternate root: {', '.join(mounts) or 'none'}", flush=True)
 
     def leftover(self):
         """Why an import now could not be judged, or None.
@@ -1102,8 +1203,10 @@ class Rig:
 
     # Each check below is layered: a step that sets something up, the
     # steps inside it, and its cleanup. Cleanup that fails replaces the
-    # result of what ran inside, because the pool, snapshot or loop
-    # device it left behind makes everything after it untrustworthy.
+    # result of what ran inside only when that passed (after_cleanup): a
+    # failure found inside stays, since it was found before the cleanup.
+    # What a failed cleanup left behind (a pool, a snapshot, a loop
+    # device) is found by the next prefix.
     def light(self, files):
         """Read-only import, mount, verify -> (stage that failed or None, detail, seconds by stage)."""
         t = {}
@@ -1121,7 +1224,7 @@ class Rig:
             raise
         rc, out, _ = run(['losetup', '-d', loop])
         if rc:
-            res = ('losetup -d', out.strip()[-400:])
+            res = after_cleanup(res, 'losetup -d', out)
         return res[0], res[1], t
 
     def light_on(self, loop, files, t):
@@ -1136,7 +1239,7 @@ class Rig:
             raise
         rc, out = self.export()
         if rc:
-            res = ('export', out.strip()[-400:])
+            res = after_cleanup(res, 'export', out)
         return res
 
     def verify(self, files):
@@ -1193,7 +1296,7 @@ class Rig:
                 os.unlink(cow)
         for lo, (rc, out, _) in failed:
             if rc:
-                res = ('losetup -d', out.strip()[-400:])
+                res = after_cleanup(res, 'losetup -d', out)
         return res[0], res[1], time.monotonic() - t0
 
     def deep_loops(self, cow, loops):
@@ -1217,7 +1320,7 @@ class Rig:
                 break
             time.sleep(0.25)
         if rc:
-            res = ('dm-snapshot remove', out.strip()[-400:])
+            res = after_cleanup(res, 'dm-snapshot remove', out)
         return res
 
     def deep_snapshot(self):
@@ -1232,7 +1335,7 @@ class Rig:
             raise
         rc, out = self.export()
         if rc:
-            res = ('export', out.strip()[-400:])
+            res = after_cleanup(res, 'export', out)
         return res
 
     def deep_imported(self):
@@ -1556,6 +1659,7 @@ def main():
     res['points'] = points
     res['failures'] = failures
     res['export_busy'] = rig.busy
+    res['export_forced'] = rig.forced
     ok, against = job_verdict(failures, controls_ok, witness_ok, cov['errors'], res['zdb_cc']['rc'])
     res['exit_code'] = code = exit_code(ok, failures, ctl, res['control_rows'], witness_ok, res['zdb_cc']['rc'])
     with open(os.path.join(args.out, 'replay-results.json'), 'w') as f:
@@ -1570,6 +1674,15 @@ def main():
     sys.exit(code)
 
 
+def held_text(b):
+    """One refused export's record -> what it shows held the pool, in words."""
+    if b.get('mounted'):
+        fs = 'its file system still mounted, held by ' + (', '.join(b['holders'][:4]) or 'no process fuser named')
+    else:
+        fs = 'its file systems already unmounted'
+    return fs + '; ZFS commands running: ' + ('; '.join(b.get('zfs_processes', [])[:4]) or 'none')
+
+
 def rig_lines(res):
     """The summary's lines on the rig's own state: an exit 2, and the busy exports."""
     out = []
@@ -1579,9 +1692,14 @@ def rig_lines(res):
     busy = res.get('export_busy') or []
     if busy:
         b = busy[0]
-        held = next((x.strip() for x in b['fuser'].splitlines() if x.strip()), 'fuser named nothing')
-        out.append(f"Busy exports: {len(busy)}, each tried again (the first at prefix {b['at']}, held by: {held}). "
-                   'What held the pool is in `replay-results.json`, `export_busy`.\n')
+        exports = len({x['export'] for x in busy})
+        forced = res.get('export_forced') or []
+        out.append(f"Busy exports: {exports} ({len(busy)} refused attempts), "
+                   + (f'{len(forced)} of them still busy after every wait and exported with -f'
+                      f" (exit codes {', '.join(str(f['rc']) for f in forced[:6])})" if forced
+                      else 'each exported when tried again')
+                   + f". The first at prefix {b['at']}: {held_text(b)}. "
+                   'What was seen at each is in `replay-results.json`, `export_busy` and `export_forced`.\n')
     return out
 
 

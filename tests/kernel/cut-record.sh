@@ -775,6 +775,10 @@ rec_autotrim() {
 # read once the writes are synced and before the holder lets the first
 # cut go (DIR/status-bound-held.txt): the copies are judged there, while
 # the cut that made them is held (cut_daemon_check.py, cut_copied_held).
+# The status file shows a change within 200 ms (one 100 ms interval and
+# a write), so the read waits a little longer than that after the last
+# sync. The holder is paused before the create, so that the first cut is
+# the one it holds.
 rec_bound() {
     local k
     touch "$WORK/hold.pause"
@@ -783,6 +787,7 @@ rec_bound() {
         dd if=/dev/urandom of="$MNT/b$k" bs=1M count=32 status=none
         z 60 zpool sync "$POOL"
     done
+    sleep 0.3
     ustatus status-bound-held.txt
     rm -f "$WORK/hold.pause"
     load 2

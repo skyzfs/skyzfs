@@ -1441,11 +1441,15 @@ def read_file(rdir, name):
         raise RigError(f'no {name}: the holder did not get as far') from None
 
 
-# The copies boundsparse's first cut may hold once the 320 MiB are
-# written: the blocks the pool wrote before the cut and wrote again
-# (labels, uberblocks, metadata), 0.75 to 1 MiB in 44378510338. A daemon
-# that copied the writes into holes would hold about 320 MiB, or have
-# abandoned the cut at its bound.
+# The copies boundsparse's held cuts may hold once the 320 MiB are
+# written: the blocks the pool wrote before a cut and wrote again
+# (labels, uberblocks, metadata). The status read there in run
+# 44439786541 (#130) said 798720 bytes on ubuntu-26.04 and 806912 on
+# ubuntu-26.04-arm, with two cuts held; the request log of 44378510338
+# gave 0.75 to 1 MiB for the first cut. A daemon that copied the writes
+# into holes would hold about 320 MiB, or have abandoned the cut at its
+# bound (bound, whose volume has no holes, held 80 to 84 MiB and
+# abandoned one in 44439786541).
 HELD_COPY_LIMIT = 4 << 20
 
 
@@ -1476,12 +1480,11 @@ def bound_lines(put, rdir, name, rc, errored):
     if name == 'bound':
         put('cut_copied_held', 'INFO', f'{said}, read before the holder let the first cut go')
         return rc, errored
-    held, cp = sh.get('cuts_held', ''), sh.get('cut_copied_bytes', '')
-    if not (held.isdigit() and cp.isdigit()):
+    held, cp, ab = sh.get('cuts_held', ''), sh.get('cut_copied_bytes', ''), sh.get('cuts_abandoned', '')
+    if not (held.isdigit() and cp.isdigit() and ab.isdigit()) or sh.get('cut_holes') is None:
         put('cut_copied_held', 'ERROR', f'{said}: the status read while the first cut was held cannot be judged')
         return rc, True
-    ok = (int(held) >= 1 and sh.get('cut_holes') == 'held' and sh.get('cuts_abandoned') == '0'
-          and int(cp) < HELD_COPY_LIMIT)
+    ok = int(held) >= 1 and sh.get('cut_holes') == 'held' and int(ab) == 0 and int(cp) < HELD_COPY_LIMIT
     put('cut_copied_held', 'PASS' if ok else 'FAIL', f'{said}, read after 320 MiB of new data went into the holes '
         'and before the holder let the first cut go; a cut must be held, its holes held, none abandoned, and the '
         f'copies under {HELD_COPY_LIMIT >> 20} MiB: a write into a hole is not copied')

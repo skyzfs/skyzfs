@@ -824,9 +824,14 @@ class HeldLines(HeldFixture):
                                bound_held=with_held(cut_copied_bytes=str((4 << 20) - 1)))
         self.assertEqual((rc[0], lines['cut_copied_held'][0]), (0, 'PASS'))
         # figures that cannot be read: the rig's error, not a verdict
-        for bad in (dict(cut_copied_bytes=''), dict(cuts_held='x')):
+        for bad in (dict(cut_copied_bytes=''), dict(cuts_held='x'), dict(cuts_abandoned='')):
             rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held=with_held(**bad))
             self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'), bad)
+        # a reading without the hole set or the abandoned count cannot show the property (review of #130, S3)
+        for gone in ('cut_holes', 'cuts_abandoned'):
+            rc, lines = self.lines(name='boundsparse', status=self.bound_st(),
+                                   bound_held=''.join(f'{k} {v}\n' for k, v in held.items() if k != gone))
+            self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'), gone)
         rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held='cuts_held 1\n')
         self.assertEqual((rc, lines['cut_copied_held'][0]), ((0, True), 'ERROR'))
         rc, lines = self.lines(name='boundsparse', status=self.bound_st(), bound_held='')
