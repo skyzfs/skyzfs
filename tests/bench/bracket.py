@@ -87,17 +87,25 @@ def not_uploading(row):
 
     None also for a row that does not say it uploads. Read from the
     daemon's status at the window's two ends (`skyzfsd.before` and
-    `.after`) and whether its pid was the same at both (`pid_same`).
+    `.after`) and whether its pid was the same at both (`pid_same`). A
+    status not read at either end (no pid in it) shows no upload, and an
+    epoch that is not a number shows no one lease: no verdict.
     """
     k = row.get('skyzfsd') or {}
     if not k.get('upload'):
         return None
     sb, sa = k.get('before') or {}, k.get('after') or {}
+    # A reading that failed leaves its clock line (`read_at_ns`) and no
+    # more: a status read shows the daemon's pid.
+    unread = [end for end, s in (('start', sb), ('end', sa)) if not s.get('pid')]
+    if unread:
+        return f"its daemon's status was not read at the window's {' and '.join(unread)}"
     if k.get('pid_same') is not True:
-        return (f"its daemon was not the same at the window's two ends (pid {sb.get('pid', 'not read')} "
-                f"and {sa.get('pid', 'not read')})")
+        return (f"its daemon was not shown to be the same at the window's two ends (pid {sb['pid']} "
+                f"and {sa['pid']})")
     lease = [(s.get('lease', 'not read'), s.get('lease_epoch', 'not read')) for s in (sb, sa)]
-    if any(state not in LEASE_HELD for state, _ in lease) or lease[0][1] != lease[1][1]:
+    if (any(state not in LEASE_HELD for state, _ in lease) or lease[0][1] != lease[1][1]
+            or not str(lease[0][1]).isdigit()):
         return (f'it did not hold the lease for the whole window (at its start {lease[0][0]} at epoch {lease[0][1]}, '
                 f'at its end {lease[1][0]} at epoch {lease[1][1]})')
     a, b = sa.get('uploaded', ''), sb.get('uploaded', '')

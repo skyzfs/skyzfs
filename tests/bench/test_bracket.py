@@ -220,10 +220,40 @@ class AnUploadRow(unittest.TestCase):
 
     def test_two_daemons_in_the_window(self):
         b = self.judge(uploading(sa={'pid': '5151'}, pid_same=False))
-        self.assert_no_verdict(b, "its daemon was not the same at the window's two ends (pid 4242 and 5151)")
+        self.assert_no_verdict(b, "its daemon was not shown to be the same at the window's two ends (pid 4242 and 5151)")
         k = uploading()
         del k['pid_same']
-        self.assert_no_verdict(self.judge(k), 'its daemon was not the same')
+        self.assert_no_verdict(self.judge(k), 'its daemon was not shown to be the same')
+
+    def test_a_status_not_read_at_either_end(self):
+        """Codex on #128: a row whose status was not read at an end has
+        no proof of an upload, whatever its other figures say."""
+        for sb, sa, said in (({}, None, 'end'), (None, {}, 'start'), (None, None, 'start and end')):
+            k = uploading()
+            if sb is None:
+                k['before'] = {}
+            if sa is None:
+                k['after'] = {}
+            self.assert_no_verdict(self.judge(k), f"its daemon's status was not read at the window's {said}")
+        # As the row generator writes such a row: no `after`, pid_same None.
+        k = uploading()
+        k['after'], k['pid_same'] = {}, None
+        self.assert_no_verdict(self.judge(k), "not read at the window's end")
+        # As a failed read leaves it (review on #128): the clock line alone.
+        k = uploading()
+        k['after'], k['pid_same'] = {'read_at_ns': '2000'}, False
+        self.assert_no_verdict(self.judge(k), "its daemon's status was not read at the window's end")
+
+    def test_an_epoch_that_is_not_a_number(self):
+        """Review's D1 on #128: an epoch unread at both ends is no one epoch."""
+        for epoch in (None, '', 'x'):
+            k = uploading()
+            for s in (k['before'], k['after']):
+                if epoch is None:
+                    del s['lease_epoch']
+                else:
+                    s['lease_epoch'] = epoch
+            self.assert_no_verdict(self.judge(k), 'it did not hold the lease for the whole window')
 
     def test_the_rows_own_reason_comes_before_a_missing_model_row(self):
         rows = [row(1, 'zfs-skyzfsd', 950, skyzfsd=uploading(sa={'uploaded': '3'})), row(2, 'zfs-slog', 1000)]

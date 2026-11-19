@@ -282,9 +282,12 @@
 #                           load: the daemon starts with no lease (its
 #                           start waits 10 s for one, then serves) and
 #                           takes it, and uploads, once MinIO answers.
-#                           The pool's import, postgres's setup and
-#                           pgbench's init all write under the first cut
-#                           before then. The row's serve arguments say
+#                           The image's copy onto the device, the
+#                           pool's import, postgres's start and
+#                           pg_test_fsync write under the first cut
+#                           before then (pgbench's init ran on the
+#                           origin, before the daemon). The row's serve
+#                           arguments say
 #                           so; the watcher says when the seed committed
 #   TB_SKZ_RELEASE=N        zfs-skyzfsd with --hold-cuts in TB_SKYZFSD_ARGS
 #                           and a build with the test hooks
@@ -911,8 +914,9 @@ if skz:
           'run with no origin delay (TB_ORIGIN_DELAY_MS=0). A row that no two model rows enclose has no verdict, '
           'and neither has a row whose two model rows differ by more than a tenth of their mean (bracket too wide): '
           'the machine moved by more than is judged while it ran. A row that says it uploads (TB_SKZ_UPLOAD) keeps its '
-          'ratio and has no verdict when no upload committed in its window, its daemon did not hold the lease at both '
-          'of its ends under one epoch, or the daemon changed in it (bracket.py).\n')
+          'ratio and has no verdict when its daemon\'s status was not read at either end of its window, no upload '
+          'committed in the window, its uploads cannot be read, its daemon did not hold the lease at both of its '
+          'ends under one epoch, or the daemon was not shown to be the same at both (bracket.py).\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|---|')
     mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
@@ -1310,12 +1314,19 @@ ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOO
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""; PR_PID=""
 SKZ_MINIO_PAUSED=""
 SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_SEED_WATCH=""; SKZ_SEED_T0=0; SKZ_SEED_INFO=/dev/null; SKZ_SEED_BEGAN=$WORK/skz-workload-began; SKZ_CGROUP=""; SKZ_RELEASER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
-# The seed's watcher at the teardown. A seed that has not committed by
-# the end of the rows is said in the record, since the watcher's own NONE
-# needs 3600 s; a watcher that has ended wrote its own line.
 # MinIO frozen or let go (TB_SKZ_UPLOAD_FROM_LOAD).
 skz_minio() { # pause|unpause
     bash "$HERE/minio.sh" "$1"
+}
+# MinIO frozen after the volume's create, before the daemon starts. The
+# flag is set before the pause, so that a pause that froze MinIO and
+# still failed, or a signal between the two, leaves the teardown to let
+# it go (its unpause is `|| true`).
+skz_minio_freeze() {
+    SKZ_MINIO_PAUSED=1
+    skz_minio pause || { echo "MinIO could not be frozen (TB_SKZ_UPLOAD_FROM_LOAD)" >&2; return 1; }
+    echo "upload_from_load 1" >> "$OUT/$TOPO.skzinfo"
+    log "skyzfsd: MinIO frozen until the workload begins"
 }
 # The workload begins: MinIO, frozen since the daemon's start, answers
 # again. Called once the seed's watcher has its mark, so the commit
@@ -1330,6 +1341,9 @@ skz_minio_resume() {
         log "WARNING: MinIO could not be let go as the workload began; the seed waits"
     fi
 }
+# The seed's watcher at the teardown. A seed that has not committed by
+# the end of the rows is said in the record, since the watcher's own NONE
+# needs 3600 s; a watcher that has ended wrote its own line.
 skz_seed_watch_stop() {
     [ -n "$SKZ_SEED_WATCH" ] || return 0
     if kill -0 "$SKZ_SEED_WATCH" 2>/dev/null; then
@@ -1935,8 +1949,10 @@ skz_settle() {
 # The status is read once a round, every 5 s, so a time is to 5 s. The
 # commit came after the start of the read before the one that shows it
 # and by the end of that one: "under the workload" only when the first
-# was at or after the mark, "as the workload began" when the mark lies
-# between the two (review's N1 on #123).
+# was after the mark, "as the workload began" when the mark lies between
+# the two (review's N1 on #123) or in the first's own second, since times
+# are to the second and that read may have begun before the mark
+# (review's D2 on #128).
 skz_first_upload() { # [watch]
     local t0 now all up st lost how="" unread=0 began rs prev
     kv() { awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }' <<< "$all"; }
@@ -1961,7 +1977,7 @@ skz_first_upload() { # [watch]
         if [[ $up =~ ^[0-9]+$ ]] && [ "$up" -ge 1 ]; then
             if [ "${1:-}" = watch ]; then
                 began=$(cat "$SKZ_SEED_BEGAN" 2> /dev/null || true)
-                if [[ $began =~ ^[0-9]+$ ]] && [ "$prev" -ge "$began" ]; then
+                if [[ $began =~ ^[0-9]+$ ]] && [ "$prev" -gt "$began" ]; then
                     how=" from the import, under the workload, $(( prev - began )) to $(( now - began )) s after its warm-up began"
                 elif [[ $began =~ ^[0-9]+$ ]] && [ "$now" -ge "$began" ]; then
                     how=" from the import, as the workload began (within $(( now - prev )) s of its warm-up)"
@@ -2190,13 +2206,8 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
                 || { echo "skyzfsd create failed or did not end in its limit" >&2; return 1; }
             echo "create_args ${SKYZFSD_CREATE_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
             echo "create_said $(cat "$WORK/skyzfsd-create.out" "$WORK/skyzfsd-create.err" | tr '\n' ' ')" >> "$OUT/$TOPO.skzinfo"
-            if [ -n "$SKZ_UPLOAD_FROM_LOAD" ]; then
-                # Frozen until the workload begins (skz_minio_resume).
-                skz_minio pause || { echo "MinIO could not be frozen (TB_SKZ_UPLOAD_FROM_LOAD)" >&2; return 1; }
-                SKZ_MINIO_PAUSED=1
-                echo "upload_from_load 1" >> "$OUT/$TOPO.skzinfo"
-                log "skyzfsd: MinIO frozen until the workload begins"
-            fi
+            # Frozen until the workload begins (skz_minio_resume).
+            if [ -n "$SKZ_UPLOAD_FROM_LOAD" ]; then skz_minio_freeze || return 1; fi
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
@@ -2903,7 +2914,35 @@ txt = open(base + '.pgbench').read()
 m = re.search(r'tps = ([\d.]+)', txt); r['tps'] = float(m.group(1)) if m else None
 m = re.search(r'latency average = ([\d.]+)', txt); r['latency_ms'] = float(m.group(1)) if m else None
 r['cache_stats'] = {'before': bo, 'after': ao}
-# zfs-skyzfsd: the daemon's own account of the window.
+# zfs-skyzfsd: the daemon's own account of the window. What the row
+# was started with is in its .skzinfo, read whether or not the status
+# was: a row that says it uploads says so even when its status could not
+# be read, so that bracket.py gives it no verdict.
+def skzinfo():
+    info, path = {}, os.path.join(os.path.dirname(base), topo + '.skzinfo')
+    if os.path.exists(path):
+        for line in open(path):
+            key, _, value = line.strip().partition(' ')
+            if key: info[key] = value
+    return info
+def upload_of(info):
+    """TB_SKZ_UPLOAD: where the volume is in object storage, or None."""
+    up = info.get('upload', 'none').split()
+    if not up or up[0] == 'none':
+        return None
+    u = {'endpoint': up[0], 'bucket': up[1] if len(up) > 1 else '', 'volume': up[2] if len(up) > 2 else ''}
+    if info.get('upload_from_load') == '1':
+        u['from_load'] = True
+    return u
+def upload_args(u):
+    return (f" (uploads to {u['volume']})"
+            + (" (object storage frozen from the daemon's start to the workload's)" if u.get('from_load') else ''))
+if not skz[base + '.after'] and upload_of(skzinfo()):
+    info = skzinfo()
+    r['skyzfsd'] = {'before': skz[base + '.before'], 'after': {}, 'pid_same': None, 'info': info,
+                    'upload': upload_of(info), 'build': info.get('build', 'not said'),
+                    'serve_args': info.get('serve_args', '') + upload_args(upload_of(info))
+                    + " (THE DAEMON'S STATUS WAS NOT READ at the window's end)"}
 if skz[base + '.after']:
     sb, sa = skz[base + '.before'], skz[base + '.after']
     num = lambda d, k: int(d[k]) if d.get(k, '').isdigit() else None
@@ -2928,11 +2967,7 @@ if skz[base + '.after']:
     for key in ('nr_dirty', 'nr_writeback'):  # pages of 4 KiB, machine-wide
         v = [int(x[key]) for x in samples if x.get(key, '').isdigit()]
         k['window'][key] = {'mean': sum(v) / len(v), 'max': max(v), 'n': len(v)} if v else None
-    info = os.path.join(os.path.dirname(base), topo + '.skzinfo')
-    if os.path.exists(info):
-        for line in open(info):
-            key, _, value = line.strip().partition(' ')
-            if key: k['info'][key] = value
+    k['info'] = skzinfo()
     k['serve_args'] = k['info'].get('serve_args', '')
     k['build'] = k['info'].get('build', 'not said')
     if k['info'].get('status_reader'):
@@ -2954,13 +2989,9 @@ if skz[base + '.after']:
             k['release']['ended'] = k['release']['last'] or 'no line from the releaser'
             k['serve_args'] += f" (cuts released every {every}: THE RELEASER ENDED, {k['release']['ended']})"
     # The uploads (TB_SKZ_UPLOAD): where the volume is in object storage.
-    up = k['info'].get('upload', 'none').split()
-    if up and up[0] != 'none':
-        k['upload'] = {'endpoint': up[0], 'bucket': up[1] if len(up) > 1 else '', 'volume': up[2] if len(up) > 2 else ''}
-        k['serve_args'] += f" (uploads to {k['upload']['volume']})"
-        if k['info'].get('upload_from_load') == '1':
-            k['upload']['from_load'] = True
-            k['serve_args'] += " (object storage frozen from the daemon's start to the workload's)"
+    if upload_of(k['info']):
+        k['upload'] = upload_of(k['info'])
+        k['serve_args'] += upload_args(k['upload'])
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k
