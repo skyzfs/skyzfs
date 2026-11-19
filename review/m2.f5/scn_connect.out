@@ -1,0 +1,20 @@
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+   Compiling skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `test` profile [optimized + debuginfo] target(s) in 20.88s
+     Running unittests src/lib.rs (target/debug/build/skyzfsd/21ba31c98362de32/out/skyzfsd-21ba31c98362de32)
+
+running 4 tests
+test control::tests::review_connect::review_a_daemon_gone_during_the_wait_is_said_within_a_pause ... ## C4: listener closed at 300 ms: ConnectionRefused (Connection refused (os error 111)) after 314.004451ms
+ok
+test control::tests::review_connect::review_a_full_backlog_for_two_seconds ... ## C5: limit 2 s: TimedOut after 2.000123745s, 1.383805ms of CPU
+ok
+test control::tests::review_connect::review_no_daemon_is_said_at_once ... ## C2: stale socket: ConnectionRefused (Connection refused (os error 111)) after 4.424µs
+## C2: plain file: ConnectionRefused (Connection refused (os error 111)) after 3.074µs
+## C2: no file: NotFound (No such file or directory (os error 2)) after 3.5µs
+ok
+test control::tests::review_connect::review_room_made_in_the_backlog_is_taken ... ## C1: room made after 400 ms; connected true after 414.310905ms
+ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 178 filtered out; finished in 2.73s
+
+exit 0

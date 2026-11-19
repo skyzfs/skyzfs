@@ -1,0 +1,121 @@
+   Compiling skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.92s
+     Running tests/review_f5.rs (target/debug/build/skynbd-refs/9f55dde4874b71a7/out/review_f5-9f55dde4874b71a7)
+
+running 6 tests
+test e1_every_interleaving_between_the_renewals_read_and_write_content_etag ... ## E1 content etag (as S3): 6560 cases; matched the renewal after the others 4575, before them 1985; renewed 2038, not held 4522, errors 0; a write refused and judged again in 2217; mismatches 0 (0 without a delete)
+ok
+test e1_every_interleaving_between_the_renewals_read_and_write_memory_store ... ## E1 MemoryStore: 6560 cases; matched the renewal after the others 4531, before them 1985; renewed 2082, not held 4478, errors 0; a write refused and judged again in 2737; mismatches 44 (0 without a delete)
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Acq("b"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["Held(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["Held(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Acq("a"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["Acquired(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["Acquired(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Rel("a"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["released", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["released", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Rel("b"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["released", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["released", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [RenCur("a"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["Renewed(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["Renewed(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [RenCur("b"), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["NotHeld(Some(Row { holder: \"a\", epoch: 1, exp: 1010000 }))", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["NotHeld(Some(Row { holder: \"a\", epoch: 1, exp: 1010000 }))", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Tick(10001), Del, Acq("b")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1020001 }) row Some(Row { holder: "a", epoch: 1, exp: 1020001 }) others ["tick", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1020001 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1020001 })) row Some(Row { holder: "b", epoch: 1, exp: 1020001 }) others ["tick", "deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1020001 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1020001 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Del, Acq("b"), Acq("a")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "Held(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "Held(Row { holder: \"b\", epoch: 1, exp: 1010000 })"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Del, Acq("b"), Rel("a")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "released"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "released"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Del, Acq("b"), RenCur("a")]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "a", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "NotHeld(Some(Row { holder: \"b\", epoch: 1, exp: 1010000 }))"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "NotHeld(Some(Row { holder: \"b\", epoch: 1, exp: 1010000 }))"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+  MemoryStore: start [Acq("a")], renew a at 1, between read and write [Del, Acq("b"), Tick(10001)]
+    got Renewed(Row { holder: "a", epoch: 1, exp: 1020001 }) row Some(Row { holder: "a", epoch: 1, exp: 1020001 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "tick"]
+    after-order NotHeld(Some(Row { holder: "b", epoch: 1, exp: 1010000 })) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }) others ["deleted", "Acquired(Row { holder: \"b\", epoch: 1, exp: 1010000 })", "tick"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row Some(Row { holder: "b", epoch: 1, exp: 1010000 }); writes 1 refused 0
+ok
+test e1_live_s3 ... ## E1 live S3: 728 cases; after 492, before 172; renewed 263, not held 401, errors 64; refused and judged again 133; mismatches 64 (0 without a delete)
+  live S3: start [Acq("a")], renew a at 1, between read and write [Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["deleted"]
+    after-order NotHeld(None) row None others ["deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Acq("b"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["Held(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    after-order NotHeld(None) row None others ["Held(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Acq("a"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["Acquired(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    after-order NotHeld(None) row None others ["Acquired(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Rel("a"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["released", "deleted"]
+    after-order NotHeld(None) row None others ["released", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Rel("b"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["released", "deleted"]
+    after-order NotHeld(None) row None others ["released", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [RenCur("a"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["Renewed(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    after-order NotHeld(None) row None others ["Renewed(Row { holder: \"a\", epoch: 1, exp: 1010000 })", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [RenCur("b"), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["NotHeld(Some(Row { holder: \"a\", epoch: 1, exp: 1010000 }))", "deleted"]
+    after-order NotHeld(None) row None others ["NotHeld(Some(Row { holder: \"a\", epoch: 1, exp: 1010000 }))", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Tick(10001), Del]
+    got Err(backend error: backend error: put_if: 404) row None others ["tick", "deleted"]
+    after-order NotHeld(None) row None others ["tick", "deleted"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Del, Rel("a")]
+    got Err(backend error: backend error: put_if: 404) row None others ["deleted", "released"]
+    after-order NotHeld(None) row None others ["deleted", "released"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Del, Rel("b")]
+    got Err(backend error: backend error: put_if: 404) row None others ["deleted", "released"]
+    after-order NotHeld(None) row None others ["deleted", "released"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Del, RenCur("a")]
+    got Err(backend error: backend error: put_if: 404) row None others ["deleted", "NotHeld(None)"]
+    after-order NotHeld(None) row None others ["deleted", "NotHeld(None)"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+  live S3: start [Acq("a")], renew a at 1, between read and write [Del, RenCur("b")]
+    got Err(backend error: backend error: put_if: 404) row None others ["deleted", "NotHeld(None)"]
+    after-order NotHeld(None) row None others ["deleted", "NotHeld(None)"]
+    before-order Renewed(Row { holder: "a", epoch: 1, exp: 1010000 }) row None; writes 1 refused 0
+ok
+test e1_without_deletes_memory_store ... ## E1 MemoryStore without deletes: 4680 cases; after 3448, before 1232; renewed 1966, not held 2714, errors 0; refused and judged again 1886; mismatches 0
+ok
+test e2_one_sequence_on_every_store_and_the_model ... ## E2: 600 sequences, 24000 operations on four stores and the model; 6012 renewals, 1038 renewed; no difference
+ok
+test e3_races_at_the_write ... ## E3 F5: b takes the expired lease and lets it run out: renewed 0, not held 1, refused then judged 1, mismatches 0
+## E3 b takes and releases at once: renewed 0, not held 1, refused then judged 1, mismatches 0
+## E3 b takes, releases, and a second daemon named a takes: renewed 0, not held 1, refused then judged 1, mismatches 0
+## E3 a second daemon named a renews first (same epoch): renewed 1, not held 0, refused then judged 0, mismatches 0
+## E3 a releases itself first (a stop elsewhere under the name): renewed 1, not held 0, refused then judged 1, mismatches 0
+## E3 the clock only moves (nothing written in between): renewed 1, not held 0, refused then judged 0, mismatches 0
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.45s
+

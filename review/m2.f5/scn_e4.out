@@ -1,0 +1,11 @@
+   Compiling skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.89s
+     Running tests/review_f5.rs (target/debug/build/skynbd-refs/6481250f4226092d/out/review_f5-6481250f4226092d)
+
+running 1 test
+## E4 live S3: exercise_lease and exercise_lease_renew pass
+test e4_the_renewal_conformance_over_live_s3 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.09s
+
+exit 0

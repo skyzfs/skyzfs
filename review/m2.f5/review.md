@@ -4,7 +4,7 @@
 
 F5 is closed. A keeper that holds the lease, or is unsure of it, now only renews, and a renewal can only push out the expiry of the row `(holder, epoch)` it last held. It never changes the holder or the epoch, and it never writes over a row it did not judge. Epochs only grow, so once the row has left `(holder, epoch)` it never comes back to it, short of the refs object being deleted. That makes `NotHeld` final, and "lost for good" is the right reading of it. I could not make two holders hold one lease through the renewal, on any store, in any order of the operations around it. The object store's retry judges the rule again on the row it reads after a refused write, with the clock read again: it does not retry blindly. The connect loop is right for a Unix socket on Linux.
 
-What I have is a stale doc and two wrong references (suggestions S1 to S3), two gaps in the tests (G1, G2), and three notes on code that this pull request does not change (P1 to P3). None blocks.
+What I have is a stale doc, a word missing from the rule's docs and some wrong references in the description (suggestions S1 to S4), three gaps in the tests (G1 to G3), and three notes on code that this pull request does not change (P1 to P3). None blocks.
 
 I read the diff against 8e4638d first, then D-M3 (`docs/skynbd-multinode-design.md`), the notes' M2.4c entries, and my notes on #117 (L4, N1). The description came last. Everything below was run at c973611 unless said otherwise.
 
@@ -12,12 +12,16 @@ I read the diff against 8e4638d first, then D-M3 (`docs/skynbd-multinode-design.
   - skynbd-refs: unit 18, cadence 1, object_refs 15, object_refs_s3 2 (skipped without an endpoint).
   - skyzfs-upload: unit 51, crash 5, driver 22, holes 5, publish 17, queued 9, uploader 58.
   - skyzfsd: lib 178, closed_output 3.
-  - The plain run and the gates are under "Gates".
+  - The plain run is the same apart from skyzfsd's lib, 139 without the hooks (`t_plain.out`). The gates are under "Gates".
 - **Scenarios the head's tests do not have.** All pass on the head except where said.
   - **E1 to E4** are on the refs stores (`scenarios_refs.rs`, `scn_refs.out`).
   - **K1 to K3** are on two real keepers (`scenarios_keeper.rs`, `scn_keeper.out`).
   - **C1 to C5** are on the connect (`scenarios_connect.rs`, `scn_connect.out`).
-- **Plants.** 33 plants were each planted alone, against the tests of the crates they touch, with the file restored in a `finally`. Each suite ran in its own process group, killed whole at 900 s (`plants.py`, `plants.out`). Twelve of them are the author's (seventeen are claimed), written again from the description's table. Twenty-one are mine. PENDING
+- **Plants.** 31 plants were each planted alone, against the tests of the crates they touch, with the file restored in a `finally`. Each suite ran in its own process group, killed whole at 900 s (`plants.py`, `plants.out`; the worktree was clean after).
+  - Twelve are a sample of the author's seventeen, written again from the description's table. All twelve are killed, by tests the description names.
+  - Nineteen are mine: thirteen are killed and six survive (U8, U9, U17, CA, CB, CD; G2 and G3).
+  - None was not applied.
+  - CA and CB were run once more against my connect scenarios, which kill both (`plants_scn_connect.out`).
 
 ### Defects
 
@@ -63,11 +67,24 @@ None.
 - Adding `exercise_lease_renew` to `object_refs_s3.rs`'s MinIO job is a few lines.
 
 **G2. No test asks a socket where no daemon listens, or none exists, through `connect`.**
-- Plant CA tries a refused or missing socket again until the limit. It turns "no daemon" (stale socket, no file) into a 40 s wait for `skyzfsd cuts` and `publish`, and it survives every test. PENDING
+- Plant CA tries a refused or missing socket again until the limit. It turns "no daemon" (a stale socket, no file) into a 40 s wait for `skyzfsd cuts` and `publish`, with the message "its backlog is full". It survives every test.
 - The commands' tests use a fake asker.
-- Scenario C2 shows that the head answers at once: ECONNREFUSED for a stale socket and for a plain file, ENOENT for no file, in under a millisecond.
+- Scenario C2 shows that the head answers at once: ECONNREFUSED for a stale socket and for a plain file, ENOENT for no file, each in under 10 µs. C2 and C4 fail with CA (5 s each, at their limit).
+- Two more plants on the loop survive:
+  - CB has no pause, which is a busy loop. With it, C5 spends 1.99 s of CPU in a 2 s wait, against 1.4 ms on the head.
+  - CD keeps the pause at 1 ms.
+- Neither is a wrong answer, only waste. A test like C2 would hold CA, and C5's bound on the CPU would hold CB. I did not run CD against C5.
 
-PENDING: other survivors.
+**G3. Nothing holds the memory and redb stores' renewal to one critical section, or the acting store's pass-through.**
+- These plants survive:
+  - U8: redb reads the row outside its write transaction.
+  - U9: the memory store reads under a read lock, then writes under another.
+  - U17: the acting store renews at its own epoch, not the one asked.
+- The risk is low:
+  - `MemoryRefStore` is a store for tests.
+  - A redb file has one process.
+  - Nobody renews through an acting store: the daemon's keeper is given the plain refs (`bins/skyzfsd/src/upload.rs:746`).
+- A race test like `steal_race_has_one_winner` for renew against acquire on each store would hold U8 and U9.
 
 ### Notes on code this pull request does not change
 
@@ -105,11 +122,11 @@ Why no other path opens:
   - a steal moves to another name at epoch + 1;
   - a release keeps the name and the epoch.
 
-  Once the row is not `(a, e)`, every later row has an epoch above `e`, or another name at `e + 1` or more. The one way back to `(a, e)` is a delete followed by a take at epoch 1 (P1, P2). So `NotHeld`, even on a stale read, is true from that read on. A keeper that calls it lost for good is right.
+  Once the row's holder and epoch are not `(a, e)`, its epoch is above `e`, and so is that of every later row. The one way back to `(a, e)` is a delete followed by a take at epoch 1 (P1, P2). So `NotHeld`, even on a stale read, is true from that read on. A keeper that calls it lost for good is right.
 - **`Renewed` is true at the instant of its write.**
   - On the object store the write is conditional on the etag of the read the rule judged.
   - On the memory store it is made under one write lock.
-  - On redb it is one write transaction (`redb_store.rs`).
+  - On redb it is one write transaction (`redb_store.rs:343` to `368`).
   - The cadenced and acting stores pass the call to their authority and their inner store (`cadence.rs:297` to `305`, `acting.rs:130` to `138`). Plant U16, the cadenced store renewing in its cache, is killed.
 
 Every interleaving, the keeper `a` renewing at epoch `e`:
@@ -139,7 +156,7 @@ E2 adds random programs: 600 sequences of 40 operations (acquire, renew at a fix
 Yes (`object_store.rs:315` to `370`):
 1. A refused write (`PreconditionFailed`) goes back to the top of the loop.
 2. `load` reads the object and its etag again.
-3. The renewal's closure reruns on that state: `current` is taken from `state.owner`, and `clock()` is read again (`object_store.rs:708` to `744`). A `NotHeld` ends the call with nothing written.
+3. The renewal's closure reruns on that state: `current` is taken from `state.owner`, and `clock()` is read again (`object_store.rs:551` to `577`). A `NotHeld` ends the call with nothing written.
 4. After sixteen refused writes the answer is an error, so `Unsure`.
 5. With no object, `load` gives `IfNoneMatch`, and the rule says `NotHeld(None)` before any write.
 6. `fenced: false` is right for the call. The ambient fence would answer `LeaseLost` and not `NotHeld`, and its free renewal would add nothing.
@@ -151,8 +168,8 @@ The racing take put between the read and the write, on each store:
 | `MemoryStore` (version counter) | `put_if` compares versions under its lock | E1: 6560 interleavings, 2737 of them with the write refused and judged again; 0 differences without a delete (P1 with one) |
 | a store whose etag is the content's hash, as S3's | the same, on the hash | E1: 6560 interleavings, 2217 refused and judged again; 0 differences |
 | live S3 (moto, If-Match / If-None-Match) | 412 and 409 → `PreconditionFailed` (`s3.rs:262` to `266`) | E1 (up to two operations in between): 728 interleavings, 133 refused and judged again; 0 differences apart from the 64 deletes of P2. E4: both conformance cases pass |
-| redb, the file store of the refs | one write transaction: no read and write apart to put a take between | E2; plant U8, the row read outside the transaction, PENDING |
-| `MemoryRefStore` | one write lock | E2; plant U9 PENDING |
+| redb, the file store of the refs | one write transaction: no read and write apart to put a take between | E2; plant U8, the row read outside the transaction, survives (G3) |
+| `MemoryRefStore` | one write lock | E2; plant U9 survives (G3) |
 
 The two plants that make the retry blind are killed by the head's `a_take_between_the_renewals_read_and_its_write_is_not_undone`:
 - U1: on a refused write, the state judged before is written again under the new etag.
@@ -163,33 +180,79 @@ U3, the renewal made a take in one write with `lease::acquire`, is killed by the
 ### (3) The connect's loop, for a Unix socket on Linux
 
 `control.rs:704` to `740`. My reading of the kernel's `unix_stream_connect`, held up by C1 to C5:
-- **A full backlog on a non-blocking socket is `EAGAIN`.** The listener's queue is full (`unix_recvq_full`), and the timeout is 0, so the kernel returns at once. There is no `EINPROGRESS` for `AF_UNIX` stream sockets: the connect either completes or answers `EAGAIN`. A socket that got `EAGAIN` is still unconnected and can be connected again. C1: room made in the backlog after 400 ms, connected at about 400 ms.
+- **A full backlog on a non-blocking socket is `EAGAIN`.** The listener's queue is full (`unix_recvq_full`), and the timeout is 0, so the kernel returns at once. There is no `EINPROGRESS` for `AF_UNIX` stream sockets: the connect either completes or answers `EAGAIN`. A socket that got `EAGAIN` is still unconnected and can be connected again. C1: room made in the backlog after 400 ms, connected at 414 ms.
 - **`ECONNREFUSED`** comes from a socket file nobody listens on, a listener closed while the client waits, or a file that is not a socket. **`ENOENT`** comes from no file. Both return at once:
-  - C2: under 1 ms each.
+  - C2: under 10 µs each.
   - C4: the listener closed 300 ms into a wait at a full backlog; the client is told within one pause.
   - Plant CA, which retries them until the limit, is G2.
 - **`EINTR`** cannot come from a non-blocking connect, which never sleeps. Handling it costs nothing.
-- **The limit** is read on the monotonic clock. The last pause is cut to what is left, so the connect ends within the limit plus one try. C5 asks a full backlog with a limit of 2 s and gets `TimedOut` after 2.00x s. PENDING figures.
-- **Backoff, not a busy loop.** The pause starts at 1 ms and doubles to 50 ms (`CONNECT_PAUSE`). That is about 800 tries in 40 s, and C5 measures the thread's CPU over 2 s. PENDING figures. Plant CB, no pause, PENDING; CD, the pause not growing, PENDING.
+- **The limit** is read on the monotonic clock. The last pause is cut to what is left, so the connect ends within the limit plus one try. C5 asks a full backlog with a limit of 2 s and gets `TimedOut` after 2.0001 s. The author's test, A2 and CC pin the same.
+- **Backoff, not a busy loop.** The pause starts at 1 ms and doubles to 50 ms (`CONNECT_PAUSE`). That is about 800 tries in 40 s. C5 measures 1.4 ms of the thread's CPU over a 2 s wait. Plants CB (no pause) and CD (the pause not growing) survive the head's tests (G2).
 - **Once connected the socket is set back to blocking.** The read and write timeouts then apply, as before. Plant A4, the socket left non-blocking, is killed by four tests.
 - **One deadline per request:** see S4.
 
 ### (4) Do the follow-ups' tests fail when the code is broken?
 
-Yes, for every part I planted. The table is below. The author's sample: all twelve I wrote again are killed, by the tests the description names. PENDING
+Yes, for each follow-up, and for F5. The table is below. All twelve of the author's plants that I wrote again are killed, by tests the description names. My suites stop at the first test binary that fails, so they list fewer tests than the description does.
 
-- **#127 (a).** The two waits for the queue's wake have a limit of 10 s. N2, the ask of the count not waking the queue's thread, now fails `a_closed_desk_answers_as_a_store_that_holds_nothing` in 42 s of the suite instead of hanging it. QW, a call that does not wake it, PENDING.
+- **#127 (a).** The two waits for the queue's wake have a limit of 10 s. N2, the ask of the count not waking the queue's thread, now fails `a_closed_desk_answers_as_a_store_that_holds_nothing` in 42 s of the suite instead of hanging it. QW, a call that does not wake it, fails three tests of `queued.rs` and hangs none.
 - **#127 (b).** `gave_up` is tested on six errors that pause and four that do not. N5, every error tried again at once, is killed.
 - **#127 (c).** The `cuts` docs (`control.rs:103` to `106`, `249` to `257`) now say that for `cuts` it is the store's queue that ends or does not answer. That agrees with the server's code as I read it in #127.
 - **#126 y3.** `cut_steps_that_fail_slowly_slow_the_publishes_by_one_step_at_most`. K13, the turns' count started again at a failure of the cut's step, is killed by it.
 - **The 100-turn limit** in `the_uploads_go_on_while_the_lease_is_unsure`. K3, a failed renewal taken as lost, now fails four lease tests in 34 s and does not hang.
 
-PENDING plant table.
+| Plant | What is planted | Result |
+|---|---|---|
+| R1 (author) | the renewal compares the epoch alone | KILLED: the memory, redb and cadenced conformance (11 s) |
+| R3 (author) | an expired row of this holder and epoch is not renewed | KILLED: the same (10 s) |
+| R6 (author) | not held: the row read is written back | KILLED: `a_take_between_the_renewals_read_and_its_write_is_not_undone` (10 s) |
+| O1 (author) | the object store renews without looking at the row | KILLED: cadenced conformance (10 s) |
+| K3 (author) | the keeper takes a failed renewal as lost | KILLED: four lease tests (34 s), no hang |
+| A1 (author) | `ask` connects blocking | KILLED: `an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit` |
+| A2 (author) | the tries do not stop at the limit | KILLED: the same |
+| A3 (author) | a full backlog is an error at once | KILLED: the same |
+| A4 (author) | the stream is left non-blocking | KILLED: four tests |
+| N5 (author) | every error of accept is tried again at once | KILLED: `accept_is_tried_again_at_once_only_after_a_peer_or_a_signal` |
+| K13 (author) | the turns' count starts again at a failure of the cut's step | KILLED: `cut_steps_that_fail_slowly_slow_the_publishes_by_one_step_at_most` |
+| N2 (author) | an ask of the count does not wake the queue's thread | KILLED: `a_closed_desk_answers_as_a_store_that_holds_nothing` (42 s), no hang |
+| U1 | `update_inner` retries blindly: on a refused write the state judged before is written under the new etag | KILLED: `a_take_between…`, `concurrent_pins_are_not_lost` |
+| U2 | the object store's renewal judges the rule once and keeps that answer on a retry | KILLED: `a_take_between…` |
+| U3 | the object store's renewal is a take in one write (`lease::acquire`) | KILLED: cadenced conformance |
+| U5 | the keeper adopts a newer epoch of its own name | KILLED: `this_holders_name_at_another_epoch_is_lost` |
+| U6 | a released row is not renewed | KILLED: the memory, redb and cadenced conformance |
+| U7 | NotHeld answers no row in place of the row read | KILLED: the same |
+| U8 | redb reads the row outside the write transaction | SURVIVED (G3) |
+| U9 | the memory store reads under a read lock, then writes under another | SURVIVED (G3) |
+| U12 | an unsure keeper takes (`lease_acquire`) instead of renewing | KILLED: the keeper's outage tests |
+| U13 | the renewal renews a newer epoch of its holder, writing its own older one | KILLED: the conformance |
+| U15 | the renewal pushes the row's old expiry out, not the time now | KILLED: the conformance |
+| U16 | the cadenced store renews in its cache, not the authority | KILLED: cadenced conformance |
+| U17 | the acting store renews at its own epoch, not the one asked | SURVIVED (G3; nobody renews through it) |
+| U18 | the keeper reads the row, then takes (two calls; the read decides) | KILLED: the keeper's race tests |
+| CA | a refused or missing socket is tried again until the limit | SURVIVED (G2); my C2 and C4 kill it |
+| CB | no pause between tries | SURVIVED (G2); my C5 kills it (1.99 s of CPU) |
+| CC | the limit's error is not `TimedOut` | KILLED: the author's backlog test |
+| CD | the pause does not grow | SURVIVED (G2) |
+| QW | a call does not wake the queue's thread | KILLED: three tests of `queued.rs`, no hang |
 
 ### CI and Codex at c973611
 
-PENDING
+- **Codex:** its code review and its security review of c973611 are complete, with no finding. The pull request has no review comments.
+- **CI:** every check is green:
+  - `ci`: lint, test, unit-arm64, gate, s3-backends.
+  - `skyzfs-ci`, coverage, e2e, k3s.
+  - The cut rig on the daemon, its upload job included.
+  - The replay rig's jobs through skyzfsd.
+  - The node B rig.
+  - The daemon rig on ubuntu-24.04, ubuntu-26.04 and ubuntu-26.04-arm (run 44466442020; the judge ended 0 on all three).
 
 ### Gates
 
-PENDING
+In a worktree of c973611, on rustc 1.100.0 (2026-11-09), which `rustup check` reports as the current stable (`gates.out`):
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings`: clean.
+- `cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings`: clean.
+- `cargo test -p skynbd-refs -p skyzfs-upload -p skyzfsd`, plain (`t_plain.out`) and with the test hooks (`t_hooks.out`): 0 failed.
+
+The build directory was deleted afterwards.

@@ -1,0 +1,11 @@
+== clippy_plain
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 25s
+exit 0
+== clippy_hooks
+    Finished `dev` profile [optimized + debuginfo] target(s) in 25.22s
+exit 0
+== clippy_ctp
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.03s
+exit 0
+== fmt
+exit 0

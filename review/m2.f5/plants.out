@@ -17,3 +17,17 @@ U5 the keeper adopts a newer epoch of its own name: KILLED (u): lease::tests::th
 U6 a released row is not renewed: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (11s)
 U7 NotHeld answers no row in place of the row read: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (10s)
 U8 redb reads the row outside the write transaction: SURVIVED (44s)
+U9 the memory store reads the row under a read lock, then writes under another: SURVIVED (45s)
+U12 an unsure keeper takes (lease_acquire) instead of renewing: KILLED (u): lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back, lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it (31s)
+U13 the renewal renews a newer epoch of its holder, writing its own older epoch: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (10s)
+U15 the renewal pushes the row's old expiry out, not the time now: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (10s)
+U16 the cadenced store renews in its cache, not the authority: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance (10s)
+U17 the acting store renews at its own epoch, not the one asked: SURVIVED (86s)
+U18 the keeper's renewal reads the row and then renews (two calls; the read decides): KILLED (u): lease::tests::a_lease_another_holder_took_before_the_renewal_is_lost_to_it, lease::tests::a_lease_another_took_and_let_run_out_before_the_renewal_stays_with_it (34s)
+CA a refused or missing socket is tried again until the limit: SURVIVED (39s)
+CB no pause between tries (a busy loop): SURVIVED (32s)
+CC the limit's refusal is not TimedOut: KILLED (d): control::tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit (32s)
+CD the pause does not grow: SURVIVED (33s)
+QW a call does not wake the queue's thread (the sync's test, given a limit): KILLED (u): a_closed_desk_answers_as_a_store_that_holds_nothing, a_queue_that_turns_only_when_woken_answers_every_call, a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close (45s)
+worktree after: clean
+done

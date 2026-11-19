@@ -1,0 +1,12 @@
+CB with the scenarios: exit 101; failed: none
+    ## C4: listener closed at 300 ms: ConnectionRefused (Connection refused (os error 111)) after 300.152608ms
+    ## C5: limit 2 s: TimedOut after 2.000048183s, 1.991392731s of CPU
+    ## C2: stale socket: ConnectionRefused (Connection refused (os error 111)) after 7.692µs
+    ## C2: plain file: ConnectionRefused (Connection refused (os error 111)) after 3.66µs
+    ## C2: no file: NotFound (No such file or directory (os error 2)) after 3.276µs
+    ## C1: room made after 400 ms; connected true after 400.238058ms
+CA with the scenarios: exit 101; failed: none
+    ## C4: listener closed at 300 ms: TimedOut (the daemon's socket took no connection within 5 s: its backlog is full) after 5.00033974s
+    ## C5: limit 2 s: TimedOut after 2.000134607s, 1.766554ms of CPU
+    ## C2: stale socket: TimedOut (the daemon's socket took no connection within 5 s: its backlog is full) after 5.000137135s
+    ## C1: room made after 400 ms; connected true after 417.179214ms

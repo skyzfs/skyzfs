@@ -1,0 +1,48 @@
+   Compiling generic-array v0.14.7
+   Compiling syn v2.0.119
+   Compiling typenum v1.20.1
+   Compiling cc v1.3.0
+   Compiling rustix v1.1.4
+   Compiling linux-raw-sys v0.12.1
+   Compiling blake3 v1.8.5
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+   Compiling futures-core v0.3.33
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.33
+   Compiling tokio-macros v2.7.1
+   Compiling tokio v1.53.1
+   Compiling tracing-attributes v0.1.31
+   Compiling skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+   Compiling skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+   Compiling tracing v0.1.44
+   Compiling skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+   Compiling skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+   Compiling skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+   Compiling skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.84s
+     Running tests/review_f5k.rs (target/debug/build/skyzfs-upload/d8ae56e8b279a094/out/review_f5k-d8ae56e8b279a094)
+
+running 3 tests
+test k1_l4_on_two_keepers ... ## L4 (skew 0 ms): A's first take Held { epoch: 1, expires_at_ms: 1030000 }
+## L4: B's first take, between A's read and A's write: Some(Held { epoch: 2, expires_at_ms: 1090000 })
+## L4: A after its renewal: Lost { holder: "node-b", epoch: 2 }; the row Some(("node-b", 2, 1090000))
+## L4: B at its next renewal: Held { epoch: 2, expires_at_ms: 1150000 }
+## L4: ten leases later: B not held at epoch 2 in 0 of 30 renewals, A held in 0 of 30; A Lost { holder: "node-b", epoch: 2 }; the row Some(("node-b", 2, 1450000))
+ok
+test k2_l4_with_a_clock_ahead ... ## L4 (skew 60000 ms): A's first take Held { epoch: 1, expires_at_ms: 1090000 }
+## L4: B's first take, between A's read and A's write: Some(Held { epoch: 2, expires_at_ms: 1150000 })
+## L4: A after its renewal: Lost { holder: "node-b", epoch: 2 }; the row Some(("node-b", 2, 1150000))
+## L4: B at its next renewal: Held { epoch: 2, expires_at_ms: 1210000 }
+## L4: ten leases later: B not held at epoch 2 in 0 of 30 renewals, A held in 0 of 30; A Lost { holder: "node-b", epoch: 2 }; the row Some(("node-b", 2, 1510000))
+ok
+test k3_two_daemons_of_one_name ... ## N1: takes Held { epoch: 1, expires_at_ms: 1030000 } / Held { epoch: 1, expires_at_ms: 1030000 }; renewals Held { epoch: 1, expires_at_ms: 1040000 } / Held { epoch: 1, expires_at_ms: 1040000 }
+## N1: a2 releases: row Some(("node-a", 1, 0)); a1 renews: Held { epoch: 1, expires_at_ms: 1050000 }; row Some(("node-a", 1, 1050000))
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

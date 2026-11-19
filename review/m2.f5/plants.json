@@ -1,0 +1,126 @@
+[
+ [
+  "R1 (author) the renewal compares the epoch alone",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "R3 (author) an expired row of this holder and epoch is not renewed",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "R6 (author) not held: the row read is written back",
+  "KILLED (r): a_take_between_the_renewals_read_and_its_write_is_not_undone"
+ ],
+ [
+  "O1 (author) the object store renews without looking at the row",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance"
+ ],
+ [
+  "K3 (author) the keeper takes a failed renewal as lost",
+  "KILLED (u): lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back, lease::tests::a_renewal_whose_write_fails_after_its_read_is_unsure, lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it, lease::tests::an_unsure_lease_is_let_go_at_a_release"
+ ],
+ [
+  "A1 (author) ask connects blocking",
+  "KILLED (d): control::tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit"
+ ],
+ [
+  "A2 (author) the connect's tries do not stop at the limit",
+  "KILLED (d): control::tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit"
+ ],
+ [
+  "A3 (author) a full backlog is an error at once",
+  "KILLED (d): control::tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit"
+ ],
+ [
+  "A4 (author) the stream is left non-blocking",
+  "KILLED (d): commands::tests::channel::ask_reaches_a_channel_in_the_volumes_run_directory, control::tests::socket::a_peer_of_another_user_is_refused_and_its_request_not_asked, control::tests::socket::a_refusal_before_the_manifest_is_read_reaches_the_client, control::tests::socket::a_request_that_stops_part_way_holds_the_thread_no_longer_than_its_limit and 5 more"
+ ],
+ [
+  "N5 (author) every error of accept is tried again at once",
+  "KILLED (d): control::tests::socket::accept_is_tried_again_at_once_only_after_a_peer_or_a_signal"
+ ],
+ [
+  "K13 (author) the turns' count starts again at a failure of the cut's step",
+  "KILLED (u): cut_steps_that_fail_slowly_slow_the_publishes_by_one_step_at_most"
+ ],
+ [
+  "N2 (author) an ask of the count does not wake the queue's thread",
+  "KILLED (u): a_closed_desk_answers_as_a_store_that_holds_nothing"
+ ],
+ [
+  "U1 update_inner retries blindly: on a refused write, the state judged before is written again under the new etag",
+  "KILLED (r): a_take_between_the_renewals_read_and_its_write_is_not_undone, concurrent_pins_are_not_lost"
+ ],
+ [
+  "U2 the object store's renewal judges the rule once and keeps that decision on a retry",
+  "KILLED (r): a_take_between_the_renewals_read_and_its_write_is_not_undone"
+ ],
+ [
+  "U3 the object store's renewal is a take in one write (lease::acquire)",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance"
+ ],
+ [
+  "U5 the keeper adopts a newer epoch of its own name",
+  "KILLED (u): lease::tests::this_holders_name_at_another_epoch_is_lost"
+ ],
+ [
+  "U6 a released row is not renewed",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "U7 NotHeld answers no row in place of the row read",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "U8 redb reads the row outside the write transaction",
+  "SURVIVED"
+ ],
+ [
+  "U9 the memory store reads the row under a read lock, then writes under another",
+  "SURVIVED"
+ ],
+ [
+  "U12 an unsure keeper takes (lease_acquire) instead of renewing",
+  "KILLED (u): lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back, lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it"
+ ],
+ [
+  "U13 the renewal renews a newer epoch of its holder, writing its own older epoch",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "U15 the renewal pushes the row's old expiry out, not the time now",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance"
+ ],
+ [
+  "U16 the cadenced store renews in its cache, not the authority",
+  "KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance"
+ ],
+ [
+  "U17 the acting store renews at its own epoch, not the one asked",
+  "SURVIVED"
+ ],
+ [
+  "U18 the keeper's renewal reads the row and then renews (two calls; the read decides)",
+  "KILLED (u): lease::tests::a_lease_another_holder_took_before_the_renewal_is_lost_to_it, lease::tests::a_lease_another_took_and_let_run_out_before_the_renewal_stays_with_it"
+ ],
+ [
+  "CA a refused or missing socket is tried again until the limit",
+  "SURVIVED"
+ ],
+ [
+  "CB no pause between tries (a busy loop)",
+  "SURVIVED"
+ ],
+ [
+  "CC the limit's refusal is not TimedOut",
+  "KILLED (d): control::tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit"
+ ],
+ [
+  "CD the pause does not grow",
+  "SURVIVED"
+ ],
+ [
+  "QW a call does not wake the queue's thread (the sync's test, given a limit)",
+  "KILLED (u): a_closed_desk_answers_as_a_store_that_holds_nothing, a_queue_that_turns_only_when_woken_answers_every_call, a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close"
+ ]
+]
