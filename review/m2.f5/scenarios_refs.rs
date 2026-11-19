@@ -3,7 +3,7 @@
 //!
 //! E1: every sequence of up to three other operations put between the
 //!     renewal's read of the refs object and its conditional write, from
-//!     seven starting rows, on the real ObjectRefStore over three object
+//!     eight starting rows, on the real ObjectRefStore over three object
 //!     stores: MemoryStore (a version counter as the etag), a store whose
 //!     etag is a hash of the content (as S3's is), and, where
 //!     REVIEW_S3_ENDPOINT is set, a live S3 endpoint. Each result is
@@ -16,6 +16,9 @@
 //! E3: the F5 race on the object store with the other holder's take put
 //!     between the read and the write, where the PUT is then refused and
 //!     the store must judge again: the renewal's own decision is counted.
+//! E4: the head's own conformance (`exercise_lease`,
+//!     `exercise_lease_renew`) on the object store over a live S3
+//!     endpoint (REVIEW_S3_ENDPOINT), which no job of CI runs.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
