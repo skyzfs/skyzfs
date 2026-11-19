@@ -15,7 +15,35 @@ below are at 73ebf56.
 
 ## Verdict
 
-VERDICT_PLACEHOLDER
+**Can merge. Nothing blocks.**
+
+- **Codex's P2 is fixed,** both in the row generator and in
+  `not_uploading`.
+  - My comparison against the rule as now stated agrees on all
+    1,600,000 combinations and on 31 of 33 named edges. The other two
+    raise on input the parser never makes, as at 0325c40.
+  - The check neither denies a row that uploaded nor judges a row that
+    did not.
+- **D1 to D6 are fixed.**
+- **T1 is closed.** The freeze is a function, tested with MinIO stood in
+  for, and M10 to M13 are now killed. So are W8 and W9.
+- **Plants:** 76 at 73ebf56, of which 70 are killed. The 6 survivors are
+  the 5 the answer leaves as harmless, needing docker, or text, and G9
+  (L1).
+- **Three new findings, none blocking:**
+  - L1 (low, text): a status not read reads as a pid change in the
+    summary's status table.
+  - L2 (nit): the reason "status was not read" also covers a status that
+    showed no serving daemon.
+  - L3 (nit): D3's comment names `pg_test_fsync` without its condition.
+- **R1 to R3** are corrected in the description, and in the notes at
+  `zfs-topology` 26723a8.
+- **CI is green on every run at 73ebf56.** The replay rig's "product
+  layout" job, which failed at 0325c40 on the rig's own busy export,
+  passed here, with all 104 flush boundaries checked. The rerun at
+  0325c40 was cancelled by the push of 73ebf56 before that job ended.
+- **Codex** finished its review of 73ebf56 with no finding, and the
+  author answered its P2 on the thread.
 
 ## The status-not-read check (Codex's P2)
 
@@ -109,9 +137,11 @@ NOT READ at the window's end". Its status table is the subject of L1.
 - A daemon that served through its window is live at both reads. So a
   row that uploaded, read at both ends, has a pid at both ends and passes
   the check.
-- The rows that the check newly denies are the ones with no pid at either
-  end. At 0325c40, a row with no pid at both ends had `pid_same` True and
-  could be judged.
+- A row with no pid at one end was denied at 0325c40 too, on the pid
+  (`pid_same` False). The rows that the check newly denies are those with
+  no pid at both ends. At 0325c40 they had `pid_same` True (`None ==
+  None`) and could be judged. Such a status shows no serving daemon at
+  either end, so none of them is a row that uploaded.
 
 **Does it let a row through that did not upload?** No: the table above.
 
@@ -178,7 +208,7 @@ the tests, or text.
     column said "n/a".
   - A failed read at one end (`read_at_ns` alone) has `pid_same` False.
     It gives "NO: the pid changed", and "(TWO DAEMONS in the window)" in
-    the uploader's and the intent map's tables. This is as at 0325c40.
+    the uploader's table. This is as at 0325c40.
   - Failed reads at both ends give `pid_same` True (`None == None`,
     `:2952`), so the column says "yes".
 - **Scenario:** `codex_p2b.py`, case "end: no `skz` line". The status
@@ -225,7 +255,30 @@ R2 and R3.
 The answer's local figures match mine: `test_bracket.py` 21 OK,
 `test_embedded_python.py` 7 OK.
 
-CI_PLACEHOLDER
+## CI and Codex at 73ebf56
+
+I read the runs at 01:36 UTC, when the last one had ended. The head was
+still 73ebf56.
+
+| run | state |
+|---|---|
+| push: skyzfs-ci 44430956147 | success |
+| pull request: ci 44430962419, coverage 44430962436, e2e 44430962445 | success |
+| kernel probe 44430962187, nodeb rig 44430962372, control rig 44430962437 | success |
+| cut rig 44430962288 (the reference and four "record and check" jobs) | success |
+| cut-daemon 44430962357 (three "record through skyzfsd and check" jobs) | success |
+| **replay rig 44430962379** | **success, every job.** "Replay, product layout (local log device)", job 135249046134, checked 104 of 104 flush boundaries, with the scrub and every-copy checks clean and `zdb -e -bcc` exiting 0. Its three block controls were caught as `EXPECTED` says. "Replay, whole-pool layout" and the four daemon jobs passed. |
+| daemon rig 44430962257 | success, five jobs. On the three daemon jobs (24.04, 26.04 and 26.04-arm), the WAITING line is `pin_failed_volume_while_a_request_is_held` ("not built"), and the NA lines are `ctl_delay_before_apply` and `pin_c_kill_with_applied_unacknowledged`. On every job, the FAIL lines are only the five negative controls (`ctl_*`). This is as at 0325c40. |
+
+**The replay rig at 0325c40.** Its second attempt (run 44421456349,
+attempt 2) passed every job but the product layout one. That job was
+cancelled when 73ebf56 was pushed, so the rerun never ended. The run at
+73ebf56 above is the answer: the same job passed. The busy export
+remains a one-off of the rig.
+
+**Codex.** Its summary comment says its code review of 73ebf56 completed
+at 00:44 UTC with no finding. Its one thread, P2 on 0325c40, has the
+author's answer (fixed in 73ebf56), which matches what I found.
 
 ## Local gates at 73ebf56
 
