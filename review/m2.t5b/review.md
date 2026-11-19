@@ -37,10 +37,11 @@ These remain open but do not block:
   the verdict is the plain rule's; only the words "seed inside window,
   lease at release" are wrong. The fix is cheap, but it narrows the
   lead's rule, so it is **a decision for the lead** (below).
-- **CI at 27fe831 had not finished** when I last read it (06:2x UTC; see
-  "CI and Codex"). Every run that had ended was green. The runs at
-  861b537 were cancelled by the push of 27fe831, except the control rig
-  and the node B rig, which were green.
+- **CI at 27fe831 is green:** all ten pull request runs, among them the
+  daemon rig on three images and the stand-in on two, the replay rig,
+  the cut rig and the cut daemon (see "CI and Codex"). Most runs at
+  861b537 were cancelled by the push of 27fe831. The control rig and
+  the node B rig were green there.
 - **Low defects** (D1 to D5), **description items** R2 and R3, and
   **test gaps** (six surviving plants that are not equivalent). None
   of them changes a figure of run 44462902930 or a verdict that the
@@ -443,19 +444,26 @@ S19 survived.
 - ci, coverage, e2e, kernel probe, daemon rig, replay rig, cut rig and
   cut daemon: cancelled at 06:04 by the push of 27fe831.
 
-**CI at 27fe831** (pull request runs from 06:04, read at 06:28):
+**CI at 27fe831** (pull request runs from 06:04; all ended by 06:52,
+all green):
 
-- **Green:** control rig 44469506374, node B rig 44469506626, kernel
-  probe 44469506641, e2e 44469506690, coverage 44469506392.
-- **In progress:** ci 44469506544 (lint, s3-backends and chart-lint
-  green; test and unit-arm64 running), daemon rig 44469506429, replay
-  rig 44469506418, cut rig 44469506945 and cut daemon 44469506753.
-- The push run skyzfs-ci 44469498825 skipped its jobs, because a pull
-  request is open.
+- ci 44469506544: changes, lint, s3-backends, chart-lint, test and
+  unit-arm64;
+- coverage 44469506392, e2e 44469506690, kernel probe 44469506641,
+  control rig 44469506374 and node B rig 44469506626;
+- daemon rig 44469506429: the daemon on ubuntu-24.04, 26.04 and
+  26.04-arm, the stand-in on 24.04 and 26.04, and the table and its
+  judge;
+- replay rig 44469506418: both reference layouts, and through skyzfsd
+  and "write into a hole" on 24.04 and 26.04;
+- cut rig 44469506945: four images and the reference;
+- cut daemon 44469506753: 26.04, 26.04-arm and 26.04-upload.
 
-The rigs run because `tests/lib/test_skz_store.sh` is under
-`tests/lib/`. The pull request changes no file they drive, so a red
-rig here would be the rig's, not this pull request's.
+The push run skyzfs-ci 44469498825 skipped its jobs, because a pull
+request is open. I read the jobs' conclusions, not the rigs' summary
+tables; the lead reads those. The rigs run because
+`tests/lib/test_skz_store.sh` is under `tests/lib/`, but the pull
+request changes no file that they drive.
 
 ## Local gates
 
