@@ -2955,18 +2955,30 @@ where
     F: RefStore,
     M: FnMut(u64) -> R,
 {
+    until_doing(up, Doing::Reading, limit).await;
+}
+
+/// Turn until the driver is about to take `doing` on a cut, moving
+/// tokio's time by each wait; at most `limit` turns.
+async fn until_doing<L, R, F, M>(up: &mut Uploader<L, R, F, M>, doing: Doing, limit: usize)
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
     let mut states = Vec::new();
     for _ in 0..limit {
         let wait = up.turn().await;
         let state = up.shown().state;
-        if matches!(state, State::Working(Doing::Reading, Some(_))) {
+        if matches!(&state, State::Working(d, Some(_)) if *d == doing) {
             return;
         }
         states.push(state);
         tokio::time::advance(wait).await;
     }
     panic!(
-        "not reading after {limit} turns: {states:?}, {:?}",
+        "not {doing:?} after {limit} turns: {states:?}, {:?}",
         up.driver().map(|d| d.figures().clone())
     );
 }
@@ -2974,7 +2986,16 @@ where
 /// Overwrite more blocks of the cut being read than the bound has room
 /// for copies of, so that the store abandons it, and hold its heir at
 /// group `group`.
-fn over_the_bound(fx: &mut Fixture, up: &mut Turned, byte: u8, group: u64) {
+fn over_the_bound<R, F, M>(
+    fx: &mut Fixture,
+    up: &mut Uploader<InPlace<SimDisk>, R, F, M>,
+    byte: u8,
+    group: u64,
+) where
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
     let store = up.driver().expect("the driver").local();
     for block in 0..OVER {
         fx.write(store, 100 + block, byte);
@@ -2990,7 +3011,13 @@ type Turned = Uploader<InPlace<SimDisk>, Fenced, LeaseRefs, Box<dyn FnMut(u64) -
 /// the turns between (the lease's, which go on). Each sleep the uploader
 /// asks for meanwhile, the one of the turn that lost the cut first, must
 /// leave the lease's renewal on time: a third of the lease at most.
-async fn a_whole_cut_lost(up: &mut Turned) -> (Duration, Duration, usize) {
+async fn a_whole_cut_lost<L, R, F, M>(up: &mut Uploader<L, R, F, M>) -> (Duration, Duration, usize)
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
     let mut lost = None;
     for _ in 0..10 {
         let wait = up.turn().await;
@@ -3154,4 +3181,353 @@ async fn a_delta_cut_lost_does_not_wait() {
     let figures = up.driver().expect("the driver").figures().clone();
     assert_eq!((figures.lost, figures.lost_whole), (1, 0));
     assert_eq!((figures.uploaded, figures.uploaded_whole), (2, 1));
+}
+
+// ------------------------------- the review of #129: T1 to T4 of M2.4f
+
+/// Move tokio's time and the refs object's clock together.
+async fn both_pass(clock: &Clock, by: Duration) {
+    tokio::time::advance(by).await;
+    clock.pass(u64::try_from(by.as_millis()).expect("ms"));
+}
+
+/// Turn until the uploader's state is one that `want` holds for, both
+/// clocks moving by each wait; at most `limit` turns. The wait the turn
+/// that reached it asked for.
+async fn until_state(
+    up: &mut Turned,
+    clock: &Clock,
+    limit: usize,
+    want: impl Fn(&State) -> bool,
+) -> Duration {
+    let mut states = Vec::new();
+    for _ in 0..limit {
+        let wait = up.turn().await;
+        let state = up.shown().state;
+        if want(&state) {
+            return wait;
+        }
+        states.push(state);
+        both_pass(clock, wait).await;
+    }
+    panic!("not reached after {limit} turns: {states:?}");
+}
+
+/// T2 of the review of #129 (its R1): through whole waits up to the
+/// longest, the lease is kept by the refs object's clock. Whenever the
+/// uploader wakes during a wait, the row as last kept is still ahead of
+/// that clock: checked after each sleep and before the turn, which would
+/// take a lapsed lease again. [The test of the waits][waits] moves
+/// tokio's time alone, so a lease that lapsed would not show there.
+///
+/// [waits]: a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed
+#[tokio::test(start_paused = true)]
+async fn the_leases_row_never_lapses_in_the_whole_waits() {
+    let mut fx = Fixture::new(201).await;
+    let mut store = fx.start();
+    for block in 0..OVER {
+        fx.write(&mut store, 100 + block, 0x07);
+    }
+    fx.group(&mut store, 7);
+    let clock = Clock::new();
+    let make: Box<dyn FnMut(u64) -> Fenced> = Box::new(fenced(&fx, &clock));
+    let mut up: Turned = Uploader::with_slices(store, keeper(&fx, &clock), make, 8);
+    let mut waits = Vec::new();
+    for group in 8..14u64 {
+        until_state(&mut up, &clock, 100, |s| {
+            matches!(s, State::Working(Doing::Reading, Some(_)))
+        })
+        .await;
+        over_the_bound(&mut fx, &mut up, group as u8, group);
+        let mut sleep = until_state(&mut up, &clock, 20, |s| {
+            matches!(s, State::WholeLost { .. })
+        })
+        .await;
+        let State::WholeLost { wait, .. } = up.shown().state else {
+            panic!("{:?}", up.shown().state)
+        };
+        waits.push(wait.as_secs());
+        let mut turns = 0;
+        loop {
+            both_pass(&clock, sleep).await;
+            let now = clock.0.load(Ordering::SeqCst);
+            match up.shown().lease {
+                LeaseState::Held { expires_at_ms, .. } => assert!(
+                    expires_at_ms > now,
+                    "wait {wait:?}, turn {turns}: the row expired at {expires_at_ms}, now {now}"
+                ),
+                other => panic!("wait {wait:?}, turn {turns}: {other:?}"),
+            }
+            sleep = up.turn().await;
+            if !matches!(up.shown().state, State::WholeLost { .. }) {
+                break;
+            }
+            turns += 1;
+            assert!(turns < 1000, "the wait does not end");
+        }
+    }
+    assert_eq!(waits, [60, 120, 240, 480, 900, 900]);
+}
+
+/// T1 of the review of #129 (its R2): a publish asked during a whole
+/// wait, carried by a cut committed before it, is made during the wait,
+/// not at its end: the publishes go on meanwhile.
+#[tokio::test(start_paused = true)]
+async fn a_publish_is_made_during_a_whole_wait() {
+    let mut fx = Fixture::new(202).await;
+    let mut store = fx.start();
+    for block in 0..OVER {
+        fx.write(&mut store, 100 + block, 0x07);
+    }
+    fx.group(&mut store, 7);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let make: Box<dyn FnMut(u64) -> Fenced> = Box::new(fenced(&fx, &clock));
+    let mut up: Turned = Uploader::with_slices(store, keeper(&fx, &clock), make, 8);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_state(&mut up, &clock, 1000, |s| *s == State::Idle).await;
+    fx.assert_uploaded(7, "cut 1, whole").await;
+    // Another writer names another state's cut of head's group: the next
+    // cut's check finds the mismatch, and the cut after it is whole.
+    fx.put_row(row::encode(&CommittedCut {
+        state: *b"another state...",
+        number: 1,
+        group: 7,
+    }))
+    .await;
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 30, 0x30);
+        fx.group(store, 20);
+    }
+    until_state(&mut up, &clock, 1000, |s| *s == State::Idle).await;
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 31, 0x31);
+        fx.group(store, 21);
+    }
+    until_state(&mut up, &clock, 100, |s| {
+        matches!(s, State::Working(Doing::Reading, Some(_)))
+    })
+    .await;
+    over_the_bound(&mut fx, &mut up, 0x40, 22);
+    let mut sleep = until_state(&mut up, &clock, 20, |s| {
+        matches!(s, State::WholeLost { .. })
+    })
+    .await;
+    let lost_at = tokio::time::Instant::now();
+    let State::WholeLost { wait, .. } = up.shown().state else {
+        panic!("{:?}", up.shown().state)
+    };
+    assert_eq!(wait, Duration::from_secs(60));
+    // The agent asks for a publish carried by cut 1 (after 0, group 7).
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    if up.control(Control::Ask(asked(state, "p", 0, 7), reply)) {
+        sleep = Duration::ZERO;
+    }
+    assert_eq!(answer.await.expect("an answer"), Answer::Accepted);
+    let mut turns = 0;
+    loop {
+        both_pass(&clock, sleep).await;
+        sleep = up.turn().await;
+        if let Progress::Done(_) = up.publishing().progress("p") {
+            break;
+        }
+        assert!(
+            matches!(up.shown().state, State::WholeLost { .. }),
+            "the wait ended ({:?} after the loss, {turns} turns) before the publish was made: {:?}",
+            lost_at.elapsed(),
+            up.publishing().progress("p")
+        );
+        turns += 1;
+        assert!(turns < 1000, "the publish is not made");
+    }
+    assert!(
+        lost_at.elapsed() < wait,
+        "made {:?} after the loss",
+        lost_at.elapsed()
+    );
+    assert!(matches!(up.shown().state, State::WholeLost { .. }));
+    let (found, _) = snap(&fx, "p").await;
+    assert!(found.is_some(), "snap/p");
+}
+
+/// T3 of the review of #129 (its R3): a whole cut whose copies fail to
+/// sync is lost before its commit and is followed by the whole wait (the
+/// test of the waits loses a whole cut at a read).
+#[tokio::test(start_paused = true)]
+async fn a_whole_cut_lost_at_its_sync_waits() {
+    let mut fx = Fixture::new(203).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 200, 0x20);
+    fx.group(&mut store, 7);
+    let clock = Clock::new();
+    let make: Box<dyn FnMut(u64) -> Fenced> = Box::new(fenced(&fx, &clock));
+    let mut up: Turned = Uploader::with_slices(store, keeper(&fx, &clock), make, 8);
+    until_doing(&mut up, Doing::Reading, 100).await;
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 200, 0x21);
+        fx.group(store, 8);
+    }
+    until_doing(&mut up, Doing::Syncing, 200).await;
+    fx.disk.fail_sync_of("copies.img");
+    let sleep = up.turn().await;
+    let state = up.shown().state;
+    let State::WholeLost { wait, why } = state else {
+        panic!("{state:?}, sleep {sleep:?}")
+    };
+    assert!(why.contains("went before its commit"), "{why}");
+    assert_eq!(wait, Duration::from_secs(60));
+    assert_eq!(up.driver().expect("the driver").figures().lost_whole, 1);
+}
+
+/// T3 of the review of #129 (its R4): a whole cut abandoned at the bound
+/// after its last slice and before its commit is lost at the commit and
+/// is followed by the whole wait.
+#[tokio::test(start_paused = true)]
+async fn a_whole_cut_gone_at_its_commit_waits() {
+    let mut fx = Fixture::new(204).await;
+    let mut store = fx.start();
+    for block in 0..OVER {
+        fx.write(&mut store, 100 + block, 0x07);
+    }
+    fx.group(&mut store, 7);
+    let clock = Clock::new();
+    let make: Box<dyn FnMut(u64) -> Fenced> = Box::new(fenced(&fx, &clock));
+    let mut up: Turned = Uploader::with_slices(store, keeper(&fx, &clock), make, 64);
+    until_doing(&mut up, Doing::Committing, 100).await;
+    over_the_bound(&mut fx, &mut up, 0x09, 8);
+    let sleep = up.turn().await;
+    let state = up.shown().state;
+    let State::WholeLost { wait, why } = state else {
+        panic!("{state:?}, sleep {sleep:?}")
+    };
+    assert!(
+        why.contains("went before its commit: the store no longer held it at its commit"),
+        "{why}"
+    );
+    assert_eq!(wait, Duration::from_secs(60));
+    assert_eq!(fx.uploaded().await.group, None, "nothing was committed");
+}
+
+/// T4 of the review of #129: a cut found committed, or committed and no
+/// longer held, ends the whole waits as a cut committed does. Two whole
+/// cuts are lost (waits of 1 and 2 min), and the heir, whole, reaches its
+/// commit. Then, as `gone` says:
+///
+/// - its commit lands, the answer is a conflict and the row and head
+///   read after it are those from before: the commit is given up, and
+///   the next check finds the cut committed and still held
+///   ([`skyzfs_upload::Step::FoundCommitted`]);
+/// - its head swap lands and the reply is lost, and the bound takes it
+///   before the commit is tried again, which finds it committed and gone
+///   from the store ([`skyzfs_upload::Step::UploadedNotHeld`]).
+///
+/// No other cut is committed after it, and the next whole cut is lost:
+/// the cut that took the heir's map when it was gone, or, when the heir
+/// was let go, the cut after one that another writer's row makes a
+/// mismatch. Lost, it waits a minute, not the four of a third whole cut
+/// lost in a row.
+async fn a_cut_committed_unheard_ends_the_whole_waits(seed: u64, gone: bool) {
+    let mut fx = Fixture::new(seed).await;
+    let mut store = fx.start();
+    for block in 0..OVER {
+        fx.write(&mut store, 100 + block, 0x07);
+    }
+    fx.group(&mut store, 7);
+    let clock = Clock::new();
+    // The lease apart, so that a fault armed on the store's refs fails
+    // the head swap alone.
+    let way = Leasing::apart(&fx);
+    let mode = Arc::new(AtomicU8::new(PASS));
+    let make = Refusals::make(fenced(&fx, &clock), &mode);
+    let mut up = Uploader::with_slices(store, way.keeper(&fx), make, 8);
+    let mut waits = Vec::new();
+    for group in 8..10 {
+        until_reading(&mut up, 100).await;
+        over_the_bound(&mut fx, &mut up, group as u8, group);
+        waits.push(a_whole_cut_lost(&mut up).await.0.as_secs());
+    }
+    assert_eq!(waits, [60, 120]);
+    until_doing(&mut up, Doing::Committing, 100).await;
+    if gone {
+        fx.store
+            .arm_when(FaultOp::Put, "refs", 0, skynbd_store::FaultWhen::After)
+            .await;
+        let wait = up.turn().await;
+        assert!(
+            matches!(up.shown().state, State::Backoff { wait, .. } if wait == SECOND),
+            "{:?}",
+            up.shown().state
+        );
+        fx.store.disarm().await;
+        fx.assert_uploaded(9, "the heir's swap landed").await;
+        over_the_bound(&mut fx, &mut up, 0x0a, 10);
+        tokio::time::advance(wait).await;
+        up.turn().await;
+    } else {
+        mode.store(LAND_UNSEEN, Ordering::SeqCst);
+        assert_eq!(give_ups(&mut up, 1).await, [SECOND]);
+        fx.assert_uploaded(9, "the heir's commit given up had landed")
+            .await;
+        mode.store(PASS, Ordering::SeqCst);
+        up.turn().await;
+    }
+    let figures = up.driver().expect("the driver").figures().clone();
+    assert_eq!(
+        (
+            figures.found_committed,
+            figures.not_held,
+            figures.lost_whole
+        ),
+        (u64::from(!gone), u64::from(gone), 2)
+    );
+    let uploaded = figures.uploaded;
+    if !gone {
+        // The heir was let go, and the next cut would be a delta onto
+        // it: another writer's row makes its check a mismatch, and the
+        // cut after it is whole.
+        fx.put_row(row::encode(&CommittedCut {
+            state: *b"another state...",
+            number: 1,
+            group: 9,
+        }))
+        .await;
+        {
+            let store = up.driver().expect("the driver").local();
+            fx.write(store, 30, 0x30);
+            fx.group(store, 20);
+        }
+        until_idle(&mut up, 1000).await;
+        assert_eq!(up.driver().expect("the driver").figures().mismatches, 1);
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 31, 0x31);
+        fx.group(store, 21);
+    }
+    // Gone, the heir left its map to the cut after it, which is whole.
+    until_reading(&mut up, 100).await;
+    over_the_bound(&mut fx, &mut up, 0x40, 22);
+    let (wait, waited, _) = a_whole_cut_lost(&mut up).await;
+    assert_eq!(
+        (wait, waited),
+        (Duration::from_secs(60), wait),
+        "the waits start again"
+    );
+    let figures = up.driver().expect("the driver").figures().clone();
+    assert_eq!(
+        (figures.lost_whole, figures.uploaded),
+        (3, uploaded),
+        "no cut committed since the heir"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cut_found_committed_ends_the_whole_waits() {
+    a_cut_committed_unheard_ends_the_whole_waits(205, false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cut_committed_and_gone_ends_the_whole_waits() {
+    a_cut_committed_unheard_ends_the_whole_waits(206, true).await;
 }
