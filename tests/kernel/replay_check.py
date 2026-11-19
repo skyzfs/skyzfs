@@ -462,11 +462,12 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 # An export the kernel refuses as busy is tried again after each of these
 # waits, with what held the pool recorded each time (run 44421456349: one
 # busy export at prefix 2486 left the pool imported, and every later check
-# of the job could only say so). Then `-f`, as before. After this many
-# exports busy through every wait, a job goes to `-f` without waiting, so
-# that a cause `-f` clears cannot cost every export 15 s.
+# of the job could only say so). Then `-f`, as before. Only the waits can
+# clear "pool is busy": it is the export ioctl's EBUSY, which comes after
+# the unmount and whatever `-f` says (OpenZFS 2.2.2, spa_export_common);
+# `-f` forces only the unmount. So every busy export waits, however many
+# were busy before it.
 EXPORT_WAITS = (1, 2, 4, 8)
-EXPORT_BUSY_THROUGHOUT_MAX = 2
 LEFT_IMPORTED = 'is still imported'
 # zdb aborting on an assertion: evidence about the pool it read, not about
 # the rig. A catch in a control (tally_control); against the image in the
@@ -1073,8 +1074,7 @@ class Rig:
         self.sched_path = None
         self.busy = []                  # what held the pool at each refused export attempt
         self.exports = 0                # exports tried, so that the records of one export can be told apart
-        self.busy_throughout = 0        # exports still busy after every wait
-        self.forced = []                # busy exports that went to -f
+        self.forced = []                # busy exports that went to -f after every wait
         os.makedirs(self.imgdir, exist_ok=True)
         os.makedirs(self.alt, exist_ok=True)
         # zdb cannot open a pool without its log device. Where the log
@@ -1132,15 +1132,13 @@ class Rig:
         A busy export says nothing of the image, but a pool left imported
         stops every later check. So an export the kernel calls busy is
         tried again after each of EXPORT_WAITS, and what held the pool
-        is recorded at each refusal (`held`). Then `-f`, as before. Once
-        EXPORT_BUSY_THROUGHOUT_MAX exports were busy throughout, a busy
-        export goes to `-f` at once. Any other failure goes to `-f` at
-        once.
+        is recorded at each refusal (`held`). Then `-f`, as before, which
+        cannot clear a busy pool (see EXPORT_WAITS) but does no harm. Any
+        other failure goes to `-f` at once.
         """
         self.exports += 1
-        waits = EXPORT_WAITS if self.busy_throughout < EXPORT_BUSY_THROUGHOUT_MAX else ()
         busy = False
-        for wait in waits + (None,):
+        for wait in EXPORT_WAITS + (None,):
             rc, out, _ = run(['zpool', 'export', self.a.pool], 120)
             if rc == 0:
                 return rc, out
@@ -1153,8 +1151,7 @@ class Rig:
             time.sleep(wait)
         rc, out, _ = run(['zpool', 'export', '-f', self.a.pool], 120)
         if busy:
-            self.busy_throughout += 1
-            self.forced.append({'export': self.exports, 'at': self.at, 'rc': rc, 'waited': bool(waits)})
+            self.forced.append({'export': self.exports, 'at': self.at, 'rc': rc})
         return rc, out
 
     def held(self, said, wait):
@@ -1700,9 +1697,11 @@ def rig_lines(res):
         b = busy[0]
         exports = len({x['export'] for x in busy})
         forced = res.get('export_forced') or []
+        gone = sum(1 for f in forced if f['rc'] == 0)
         out.append(f"Busy exports: {exports} ({len(busy)} refused attempts), "
-                   + (f'{len(forced)} of them still busy after every wait and exported with -f'
-                      f" (exit codes {', '.join(str(f['rc']) for f in forced[:6])})" if forced
+                   + (f'{len(forced)} of them still busy after every wait and sent to -f, which exported {gone} '
+                      f"and left {len(forced) - gone} imported (-f exit codes "
+                      f"{', '.join(str(f['rc']) for f in forced[:6])})" if forced
                       else 'each exported when tried again')
                    + f". The first at prefix {b['at']}: {held_text(b)}. "
                    'What was seen at each is in `replay-results.json`, `export_busy` and `export_forced`.\n')

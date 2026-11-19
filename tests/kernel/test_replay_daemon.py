@@ -3,6 +3,7 @@
 
     python3 tests/kernel/test_replay_daemon.py
 """
+import json
 import os
 import subprocess
 import sys
@@ -511,6 +512,33 @@ class Pass(unittest.TestCase):
     def summary_text(self):
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             return f.read()
+
+    def test_busy_exports_reach_the_results_and_the_summary(self):
+        """The daemon jobs use replay_check's Rig.export: what held the
+        pool at a busy export goes to their results and their summary as
+        in the reference jobs, and names the prefix (review of #130, S7)."""
+        self.fake()
+        inner = rd.Checker.point
+
+        def point(ck, n, kind, *a, **k):
+            if not ck.rig.busy and kind != 'calibration':
+                ck.rig.exports += 1
+                ck.rig.busy.append({'export': ck.rig.exports, 'at': n, 'said': "cannot export 'p': pool is busy",
+                                    'retry_in_s': 1, 'mounted': False, 'fuser': 'not asked: not mounted',
+                                    'holders': [], 'zfs_processes': [], 'mounts': []})
+            return inner(ck, n, kind, *a, **k)
+        rd.Checker.point = point
+        self.assertEqual(rd.check(self.args()), 0)
+        with open(os.path.join(self.dir.name, 'out', 'replay-results.json')) as f:
+            res = json.load(f)
+        self.assertEqual(len(res['export_busy']), 1)
+        self.assertEqual(res['export_forced'], [])
+        self.assertIn('Busy exports: 1 (1 refused attempts), each exported when tried again. The first at prefix '
+                      f"{res['export_busy'][0]['at']}: its file systems already unmounted", self.summary_text())
+        # and the record names the prefix: the checker sets the Rig's prefix before it makes the image
+        import inspect
+        src = inspect.getsource(self.saved[0])          # the Checker's own point, before the fake
+        self.assertLess(src.index('self.rig.at = n'), src.index('self.daemon.make('))
 
     def test_a_failure_at_the_end_made_for_zdb_counts(self):
         # The main pass is clean; the end, made again for zdb -bcc, does not start.

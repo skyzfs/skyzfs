@@ -623,6 +623,7 @@ class Checker:
         if os.path.exists(self.rig.image):
             os.unlink(self.rig.image)
         res = {'n': n, 'kind': kind, 'files': files_at(marks, n), 'dir': free}
+        self.rig.at = n                 # the prefix a busy export's record names (Rig.held)
         failed, detail, info = self.daemon.make(n, self.rig.image, hooks)
         res.update(info)
         if not failed:
@@ -989,6 +990,7 @@ def _check(a, st):
     code, against = verdict(failures, rig_errors + ctl_errors, controls_ok, cov['errors'], witness_ok,
                             res['zdb_cc']['rc'])
     res['exit'], res['against'] = code, against
+    res['export_busy'], res['export_forced'] = ck.rig.busy, ck.rig.forced
     run(['cp', os.path.join(a.work, 'serve.err'), os.path.join(a.out, 'last-serve.err')])
     with open(os.path.join(a.out, 'replay-results.json'), 'w') as f:
         json.dump(res, f, indent=1)
@@ -1126,6 +1128,7 @@ def summary(res):
     word = ('every checked prefix passed' if not fails else f"**{len(fails)} prefixes FAILED**")
     out.append(f"Result: {word}. Main pass {res['main_pass_s']:.0f} s"
                + (f", {res['skipped_for_time']} planned prefixes skipped for time" if res['skipped_for_time'] else '') + '.\n')
+    out.extend(rc.rig_lines({k: res.get(k) for k in ('export_busy', 'export_forced')}))
     out.append('| kind of prefix | in the log | checked | failed |')
     out.append('|---|---|---|---|')
     have = {'base': av['base'], 'fsync': av['fsync'], 'sync': av['sync'], 'flush': av['flush'],

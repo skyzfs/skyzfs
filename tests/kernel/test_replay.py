@@ -740,7 +740,7 @@ class Log(unittest.TestCase):
             exports = [c for c in state['calls'] if c[:2] == ['zpool', 'export']]
             self.assertEqual(len(exports), len(replay_check.EXPORT_WAITS) + 2)
             self.assertEqual(exports[-1], ['zpool', 'export', '-f', 'p'])
-            self.assertEqual(rig.forced, [{'export': 3, 'at': 2486, 'rc': 1, 'waited': True}])
+            self.assertEqual(rig.forced, [{'export': 3, 'at': 2486, 'rc': 1}])
             # another failure: no wait, no record, straight to -f
             rig.busy, sleeps[:] = [], []
             state.update(calls=[], exports=0, busy_for=1, said="cannot export 'p': I/O error")
@@ -748,18 +748,17 @@ class Log(unittest.TestCase):
             self.assertEqual((sleeps, rig.busy), ([], []))
             self.assertEqual([c for c in state['calls'] if c[:2] == ['zpool', 'export']],
                              [['zpool', 'export', 'p'], ['zpool', 'export', '-f', 'p']])
-            # after EXPORT_BUSY_THROUGHOUT_MAX exports busy throughout, a busy export goes to -f without waiting
-            state.update(calls=[], exports=0, busy_for=99, said=said)
-            rig.export()
-            self.assertEqual(rig.busy_throughout, replay_check.EXPORT_BUSY_THROUGHOUT_MAX)
+            # -f cannot clear "pool is busy" (the export ioctl's EBUSY, after the unmount), so however many
+            # exports were busy throughout before, the next busy export still waits (review of #130, N1)
+            for _ in range(3):
+                state.update(calls=[], exports=0, busy_for=99, said=said)
+                rig.export()
             rig.busy, sleeps[:] = [], []
-            state.update(calls=[], exports=0)
-            rig.export()
-            self.assertEqual(sleeps, [])
-            self.assertEqual([c for c in state['calls'] if c[:2] == ['zpool', 'export']],
-                             [['zpool', 'export', 'p'], ['zpool', 'export', '-f', 'p']])
-            self.assertEqual([b['retry_in_s'] for b in rig.busy], [None])
-            self.assertFalse(rig.forced[-1]['waited'])
+            state.update(calls=[], exports=0, busy_for=1)
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual(sleeps, [1])
+            self.assertNotIn(['zpool', 'export', '-f', 'p'], state['calls'])
+            self.assertFalse(hasattr(replay_check, 'EXPORT_BUSY_THROUGHOUT_MAX'))
         finally:
             replay_check.run, replay_check.time.sleep = real, real_sleep
             del replay_check.open
@@ -772,9 +771,9 @@ class Log(unittest.TestCase):
         self.assertIn('Busy exports: 2 (3 refused attempts), each exported when tried again. The first at prefix 2486: '
                       'its file systems already unmounted; ZFS commands running: pid 777, 3 s: zpool list', lines)
         self.assertNotIn('USER', lines)
-        res['export_forced'] = [{'export': 2, 'at': 2600, 'rc': 1, 'waited': True}]
-        self.assertIn('Busy exports: 2 (3 refused attempts), 1 of them still busy after every wait and exported with -f '
-                      '(exit codes 1)', ''.join(replay_check.rig_lines(res)))
+        res['export_forced'] = [{'export': 1, 'at': 2486, 'rc': 0}, {'export': 2, 'at': 2600, 'rc': 1}]
+        self.assertIn('Busy exports: 2 (3 refused attempts), 2 of them still busy after every wait and sent to -f, '
+                      'which exported 1 and left 1 imported (-f exit codes 0, 1)', ''.join(replay_check.rig_lines(res)))
         mounted = {**unmounted, 'mounted': True, 'holders': ['udisksd (pid 4242, ..c..)'], 'zfs_processes': []}
         self.assertIn('its file system still mounted, held by udisksd (pid 4242, ..c..); ZFS commands running: none',
                       ''.join(replay_check.rig_lines({'export_busy': [mounted]})))
