@@ -929,7 +929,8 @@ if skz:
           'committed in the window, its uploads cannot be read, its daemon did not hold the lease at both of its '
           'ends under one epoch, or the daemon was not shown to be the same at both (bracket.py). A row whose seed was '
           'let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD=window) measures the seed in that window: it is judged '
-          'when no upload had committed at the window\'s start and a whole one had by its end, with the lease held at '
+          'when its own window let MinIO go, no upload had committed at the window\'s start and a whole one had by '
+          'its end, with the lease held at '
           'its end and taken at the release, whatever the lease at its start; its verdict says '
           '"seed inside window, lease at release" and the lease\'s epoch.\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
@@ -1354,12 +1355,15 @@ skz_minio_freeze() {
 # mark, so the commit cannot come before the mark; a failure is logged
 # and tried again at the next window (=window) or at the teardown, and
 # the row then shows what was uploaded. With =window the time of the
-# release is written first (SKZ_SEED_RELEASED), for the watcher.
-skz_minio_resume() {
+# release is written first (SKZ_SEED_RELEASED), for the watcher, and the
+# window that let it go is marked ($OUT/<tag>.released): only that row
+# measures the seed from its release (Codex on #132).
+skz_minio_resume() { # [the window's tag]
     [ -n "$SKZ_MINIO_PAUSED" ] || return 0
     [ "$SKZ_UPLOAD_FROM_LOAD" != window ] || date +%s > "$SKZ_SEED_RELEASED"
     if skz_minio unpause; then
         SKZ_MINIO_PAUSED=""
+        [ -z "${1:-}" ] || cp "$SKZ_SEED_RELEASED" "$OUT/$1.released" 2>/dev/null || true
         log "skyzfsd: MinIO answers again, as $(skz_minio_until)"
     else
         rm -f "$SKZ_SEED_RELEASED"
@@ -2811,7 +2815,8 @@ run_workload() { # topology workload [snapshot mode]
     rm -f "$OUT/$tag.snaps"
     # An earlier row's trace or recording in the same directory must not
     # be read as this row's, whatever this row asks for.
-    rm -f "$OUT/$tag.syscalls" "$OUT/$tag.trace" "$OUT/$tag.threads" "$OUT/$tag.perfrec" "$OUT/$tag.perfscript.gz"
+    rm -f "$OUT/$tag.syscalls" "$OUT/$tag.trace" "$OUT/$tag.threads" "$OUT/$tag.perfrec" "$OUT/$tag.perfscript.gz" \
+        "$OUT/$tag.released"
     if [ "$mode" != none ]; then
         SNAP_STOP="$OUT/$tag.snapstop"; rm -f "$SNAP_STOP"
         snap_loop "$OUT/$tag.snaps" "$mode" &
@@ -2833,7 +2838,7 @@ run_workload() { # topology workload [snapshot mode]
     fi
     # =window: the seed begins with the window, after its status was
     # read (uploaded 0 at the start), so that the window pays for it.
-    [ "$SKZ_UPLOAD_FROM_LOAD" != window ] || skz_minio_resume
+    [ "$SKZ_UPLOAD_FROM_LOAD" != window ] || skz_minio_resume "$tag"
     log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
     # The pressure and the cgroups' CPU at the end of the window, before
@@ -2987,6 +2992,8 @@ if skz[base + '.after']:
     k = {'before': sb, 'after': sa, 'steps': diff('checkpoint_steps'), 'syncs': diff('checkpoint_syncs'),
          'writes': diff('writes'), 'log_live_before': num(sb, 'log_live'), 'log_live_after': num(sa, 'log_live'),
          'pid_same': sb.get('pid') == sa.get('pid'), 'info': {}}
+    # =window: whether this row's window let MinIO go (skz_minio_resume).
+    k['released_here'] = os.path.exists(base + '.released')
     # Where a request's time goes: the difference of every time_* key
     # over the window, the end value of the longest ones and their
     # causes, and the two readings as they were. A reading that failed

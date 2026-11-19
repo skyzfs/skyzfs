@@ -130,6 +130,13 @@ class Embedded(unittest.TestCase):
             self.assertTrue(r['skyzfsd']['serve_args'].endswith(
                 "(uploads to tb-18) (object storage frozen from the daemon's start to its first window's: "
                 "the seed in that window)"), r['skyzfsd']['serve_args'])
+            # Only the window that let MinIO go is marked (Codex on #132).
+            self.assertIs(r['skyzfsd']['released_here'], False)
+            with open(os.path.join(d, 'r.released'), 'w') as f:
+                f.write('1795069506\n')
+            r = self.row(d, {'.before': before, '.after': after, '.pgbench': ''})
+            self.assertIs(r['skyzfsd']['released_here'], True)
+            os.unlink(os.path.join(d, 'r.released'))
             # anything else in the record is not from the load
             with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
                 f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-18\nbuild abc\n'

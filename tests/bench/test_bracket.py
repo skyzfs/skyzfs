@@ -286,6 +286,7 @@ def seeding(sb=None, sa=None, pid_same=True, from_load='window'):
     k['before'].update(sb or {}); k['after'].update(sa or {})
     if from_load:
         k['upload']['from_load'] = from_load
+    k['released_here'] = True
     return k
 
 
@@ -331,6 +332,20 @@ class ASeedInTheWindow(unittest.TestCase):
         k = seeding()
         k['after'] = {'read_at_ns': '2000'}
         self.assert_no_verdict(self.judge(k), "its daemon's status was not read")
+
+    def test_a_later_row_than_the_release_keeps_the_plain_rule(self):
+        """Codex on #132: a seed that outlived the window that let it go
+        and committed in a later row's window is not measured from its
+        release there."""
+        for here in (False, None):
+            k = seeding()
+            k['released_here'] = here
+            if here is None:
+                del k['released_here']
+            b = self.judge(k)
+            self.assert_no_verdict(b, 'it did not hold the lease for the whole window',
+                                   'its window did not let MinIO go')
+            self.assertIsNone(bk.seed_in_window(dict(skyzfsd=k)))
 
     def test_a_row_not_let_go_at_its_window_keeps_the_plain_rule(self):
         for from_load in (None, 'workload'):

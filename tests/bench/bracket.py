@@ -27,9 +27,12 @@ under one epoch, or the daemon was not the same at its two ends.
 
 A row whose seed was let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD
 =window) measures the seed's cost in that window, so a lease taken in
-it counts (the lead's decision on #132): such a row is judged when no
-upload had committed at the window's start, a whole upload had by its
-end, and the lease was held at its end, at any lease at its start. Its
+it counts (the lead's decision on #132): such a row is judged when its
+own window let MinIO go (`released_here`; a later row whose window
+saw the tail of a seed released earlier is not such a row: Codex on
+#132), no upload had committed at the window's start, a whole upload
+had by its end, and the lease was held at its end, at any lease at
+its start. Its
 verdict says "seed inside window, lease at release" and the lease's
 epoch. Any other row keeps the rule above.
 
@@ -131,7 +134,9 @@ def not_uploading(row):
     if (any(state not in LEASE_HELD for state, _ in lease) or lease[0][1] != lease[1][1]
             or not str(lease[0][1]).isdigit()):
         seed = ''
-        if (k.get('upload') or {}).get('from_load') == 'window':
+        if (k.get('upload') or {}).get('from_load') == 'window' and k.get('released_here') is not True:
+            seed = "; its window did not let MinIO go, so its seed was not measured from its release"
+        elif (k.get('upload') or {}).get('from_load') == 'window':
             seed = (f"; its seed, let go at the window's start, was not shown to commit inside it under the lease held "
                     f"at its end (uploaded {sb.get('uploaded', 'not read')} at its start, "
                     f"{sa.get('uploaded_whole', 'not read')} whole at its end)")
@@ -150,6 +155,11 @@ def seed_in_window(row):
     seed was let go at its window's start and committed inside it under
     the lease it held at the window's end; else None.
 
+    Only the row whose window let MinIO go (`released_here`, from the
+    file topology-bench.sh's skz_minio_resume writes for that window): a
+    seed that outlived its window and committed in a later one is not
+    measured from its release there (Codex on #132).
+
     The release comes after the status read at the window's start
     (topology-bench.sh, skz_minio_resume), so no upload at that read and
     a whole one at the end's is a seed committed inside the window. A
@@ -158,7 +168,7 @@ def seed_in_window(row):
     daemon was read at both ends and was the same (not_uploading).
     """
     k = row.get('skyzfsd') or {}
-    if (k.get('upload') or {}).get('from_load') != 'window':
+    if (k.get('upload') or {}).get('from_load') != 'window' or k.get('released_here') is not True:
         return None
     sb, sa = k.get('before') or {}, k.get('after') or {}
     if not (sb.get('pid') and sa.get('pid') and k.get('pid_same') is True):
