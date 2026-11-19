@@ -60,9 +60,8 @@ pub enum LeaseState {
         why: String,
     },
     /// Lost for good: the row names `holder` at `epoch`. Nothing more is
-    /// uploaded by this instance. `holder` is empty where the row has
-    /// gone, or where the lease was found taken and given back between
-    /// two of this holder's reads.
+    /// uploaded by this instance. `holder` is empty, and `epoch` 0, where
+    /// the row has gone.
     Lost {
         /// The holder the row names.
         holder: String,

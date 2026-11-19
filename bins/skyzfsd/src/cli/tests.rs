@@ -113,7 +113,8 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
 
 /// `serve --dir DIR` with its defaults: the run directory `/run/skyzfsd`,
 /// one queue of depth 64, no acknowledgement, the deployment rules on,
-/// no hook. Each option changes its own field.
+/// the intent map's header synced, no hook. Each option changes its own
+/// field.
 #[test]
 fn serve_has_the_agreed_defaults_and_options() {
     let default = Serve {
@@ -126,7 +127,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         in_place_io: skyzfs_local::inplace::IoMode::default(),
         hold_cuts: false,
         intent_region_mib: None,
-        intent_header_sync: false,
+        intent_header_sync: true,
         holder: None,
         lease_ttl_s: None,
         serve_without_upload: false,
@@ -417,29 +418,40 @@ fn the_intent_region_is_a_power_of_two_of_mib_with_held_cuts() {
     assert!(help.contains(&said), "the help does not say {said:?}");
 }
 
-/// `--intent-header-sync` (M2.4d) has the intent map's header synced at
-/// each release; off unless given, and only with `--hold-cuts`, as
-/// `--intent-region-mib` is. The help names it.
+/// The intent map's header is synced at each release (M2.4d) unless
+/// `--no-intent-header-sync` is given (Q7, on by default since the bench
+/// showed no cost), and that is taken only with `--hold-cuts`, as
+/// `--intent-region-mib` is. The option that turned it on is gone. The
+/// help names the one that turns it off.
 #[test]
-fn the_header_sync_is_off_unless_given_with_held_cuts() {
-    assert!(!serve("serve --dir /v/a --hold-cuts").intent_header_sync);
-    assert!(serve("serve --dir /v/a --hold-cuts --intent-header-sync").intent_header_sync);
+fn the_header_sync_is_on_unless_turned_off_with_held_cuts() {
+    assert!(serve("serve --dir /v/a").intent_header_sync);
+    assert!(serve("serve --dir /v/a --hold-cuts").intent_header_sync);
+    assert!(!serve("serve --dir /v/a --hold-cuts --no-intent-header-sync").intent_header_sync);
     assert_eq!(
-        plain("serve --dir /v/a --intent-header-sync"),
+        plain("serve --dir /v/a --no-intent-header-sync"),
         Err(UsageError::Value(
-            "--intent-header-sync".into(),
+            "--no-intent-header-sync".into(),
             "only with --hold-cuts"
         ))
     );
     assert!(
         matches!(
-            plain("serve --dir /v/a --hold-cuts --intent-header-sync 1"),
+            plain("serve --dir /v/a --hold-cuts --no-intent-header-sync 1"),
             Err(UsageError::Unknown(..) | UsageError::Value(..))
         ),
         "a flag takes no value"
     );
-    assert!(USAGE.contains("[--intent-header-sync]"), "{USAGE}");
-    assert!(HELP.contains("--intent-header-sync"), "{HELP}");
+    assert!(
+        matches!(
+            plain("serve --dir /v/a --hold-cuts --intent-header-sync"),
+            Err(UsageError::Unknown(name)) if name == "--intent-header-sync"
+        ),
+        "the option that turned it on is gone"
+    );
+    assert!(USAGE.contains("[--no-intent-header-sync]"), "{USAGE}");
+    assert!(HELP.contains("--no-intent-header-sync"), "{HELP}");
+    assert!(!USAGE.contains("[--intent-header-sync]"), "{USAGE}");
 }
 
 /// The default and the bound of `--io-threads` are the store's own

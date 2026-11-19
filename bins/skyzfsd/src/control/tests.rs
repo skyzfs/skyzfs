@@ -400,30 +400,10 @@ mod socket {
     /// waits for room before any timeout applies.
     #[test]
     fn an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit() {
-        use rustix::io::Errno;
-        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
         let dir = dir();
         let path = dir.path().join("full.sock");
-        let socket = |flags| {
-            rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)
-                .expect("a socket")
-        };
-        let listener = socket(SocketFlags::CLOEXEC);
-        let address = SocketAddrUnix::new(&path).expect("an address");
-        rustix::net::bind(&listener, &address).expect("bound");
-        rustix::net::listen(&listener, 0).expect("listening");
-        // Connections the listener never takes, until the next would
-        // wait for room.
-        let mut held = Vec::new();
-        loop {
-            let peer = socket(SocketFlags::NONBLOCK | SocketFlags::CLOEXEC);
-            match rustix::net::connect(&peer, &address) {
-                Ok(()) => held.push(peer),
-                Err(Errno::AGAIN) => break,
-                Err(e) => panic!("a connection to fill the backlog: {e}"),
-            }
-            assert!(held.len() < 1000, "the backlog does not fill");
-        }
+        let listener = small_backlog(&path);
+        let held = fill_backlog(&path);
         let limit = Duration::from_millis(300);
         let (done, ended) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -443,6 +423,68 @@ mod socket {
         );
         drop(held);
         drop(listener);
+    }
+
+    /// While the backlog is full the connect tries again after a pause
+    /// that doubles from 1 ms to 50 ms, not in a busy loop: about a dozen
+    /// tries in 300 ms (G2 of the review of #131). Mutants: no pause (CB,
+    /// thousands of tries), a pause that does not grow (CD, about 300),
+    /// no try again (one).
+    #[test]
+    fn a_full_backlog_is_tried_again_after_pauses_that_grow() {
+        let dir = dir();
+        let path = dir.path().join("full.sock");
+        let listener = small_backlog(&path);
+        let held = fill_backlog(&path);
+        let mut tries = 0;
+        let began = std::time::Instant::now();
+        let e = connect_counted(&path, Duration::from_millis(300), &mut tries)
+            .expect_err("no connection was taken");
+        let took = began.elapsed();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        // 1, 2, 4, 8, 16 and 32 ms, then 50 ms: 13 tries at most in
+        // 300 ms, fewer where a pause runs long.
+        assert!((2..=13).contains(&tries), "{tries} tries in {took:?}");
+        drop(held);
+        drop(listener);
+    }
+
+    /// No daemon at the socket (a socket left by one that has gone, or a
+    /// file that is no socket), or no socket at all: the ask fails at
+    /// once, after one try, and says which. Only a full backlog is tried
+    /// again (G2 of the review of #131). Mutant: every error of the
+    /// connect tried again until the limit (CA), which turns "no daemon"
+    /// into a wait of the whole limit and the message of a full backlog.
+    #[test]
+    fn no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once() {
+        let dir = dir();
+        let stale = dir.path().join("stale.sock");
+        drop(UnixListener::bind(&stale).expect("bound"));
+        let plain = dir.path().join("plain.sock");
+        std::fs::write(&plain, b"").expect("written");
+        let missing = dir.path().join("missing.sock");
+        let limit = Duration::from_secs(5);
+        for (path, kind) in [
+            (&stale, io::ErrorKind::ConnectionRefused),
+            (&plain, io::ErrorKind::ConnectionRefused),
+            (&missing, io::ErrorKind::NotFound),
+        ] {
+            let mut tries = 0;
+            let began = std::time::Instant::now();
+            let e = connect_counted(path, limit, &mut tries).expect_err("no daemon");
+            assert_eq!(e.kind(), kind, "{}: {e}", path.display());
+            assert_eq!(tries, 1, "{}", path.display());
+            let e = ask(path, &Request::Cuts, &[], limit).expect_err("no daemon");
+            assert_eq!(e.kind(), kind, "{}: {e}", path.display());
+            assert!(!e.to_string().contains("backlog"), "{e}");
+            assert!(
+                began.elapsed() < Duration::from_secs(2),
+                "{}: {:?}",
+                path.display(),
+                began.elapsed()
+            );
+        }
     }
 
     /// The errors of `accept` after which the channel's thread takes the
