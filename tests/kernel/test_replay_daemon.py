@@ -3,6 +3,7 @@
 
     python3 tests/kernel/test_replay_daemon.py
 """
+import json
 import os
 import subprocess
 import sys
@@ -155,6 +156,22 @@ class Pure(unittest.TestCase):
         self.assertEqual([e['n'] for e in rig_errors], [3])
         self.assertEqual(first['n'], 2)
 
+    def test_zdb_signals_in_the_daemon_judge(self):
+        """replay_check.ZDB_ABORT's rule in the daemon jobs' main pass
+        (classify) and controls (tally): zdb's abort counts against the
+        daemon, any other signal is the rig's (review of #130, M3)."""
+        ab = {'n': 5, 'ok': False, 'failed': replay_check.ZDB_ABORT, 'detail': ''}
+        k9 = {'n': 6, 'ok': False, 'failed': 'rig: zdb died with signal 9', 'detail': ''}
+        failures, rig_errors = [], []
+        for r in (ab, k9):
+            rd.classify(r, failures, rig_errors)
+        self.assertEqual(([r['n'] for r in failures], [r['n'] for r in rig_errors]), ([5], [6]))
+        by, rig_errors, first = rd.tally([ab, k9])
+        self.assertEqual((by, [e['n'] for e in rig_errors], first['n']), ({'copies': 1}, [6], 5))
+        # the reference rig's text, not a copy of it
+        import inspect
+        self.assertNotIn("'rig: zdb died with signal 6'", inspect.getsource(rd))
+
     def test_a_hook_that_changed_nothing_is_told_apart(self):
         # Run 43279006013: --recover-short 8 after a reboot recovered what the start without it did.
         same = [{'operations_without_hook': 1066, 'start': {'operations': 1066}},
@@ -182,6 +199,13 @@ class Pure(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn('did not finish', why[0])
             self.assertEqual(rd.verdict([{'n': 1}], [], True, [], True, rc_)[0], 1)
+        # zdb's signals, one rule with the main pass (the lead, #130): an abort counts against the image;
+        # an out-of-memory kill or the tool's crash is the rig's
+        self.assertEqual(rd.verdict([], [], True, [], True, -6)[0], 1)
+        for rc_ in (-9, -11, -7):
+            code, why = rd.verdict([], [], True, [], True, rc_)
+            self.assertEqual(code, 2, rc_)
+            self.assertIn(f'killed by signal {-rc_}', why[0])
 
     def test_controls_against_the_table(self):
         def ctl(name, caught, by=None):
@@ -512,6 +536,81 @@ class Pass(unittest.TestCase):
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             return f.read()
 
+    def test_a_deep_check_names_its_own_prefix(self):
+        """The deep check of a group's last prefix runs after the next
+        prefix was made: a busy export there names the prefix checked,
+        not the one made after it (review of #130, M2)."""
+        import types
+        seen = []
+
+        class R:
+            at = 14
+
+            def deep(self, fsynced, scrub=True):
+                seen.append(self.at)
+                return 'scrub', 'x', 0.0
+        ck = types.SimpleNamespace(rig=R(), use=lambda d: None, due=lambda n, m, f: 0)
+        rd.Checker.deep(ck, {'n': 13, 'dir': 'x', 'ok': True})
+        self.assertEqual(seen, [13])
+
+    def test_busy_exports_are_kept_when_the_rig_stops(self):
+        """A run that stops on the rig's own error keeps what held the
+        pool at its busy exports, in its results and its summary (review
+        of #130, M2); and the daemon jobs' exit 2 is not said to be a pool
+        left imported (M4)."""
+        self.fake()
+        inner = rd.Checker.point
+
+        def point(ck, n, kind, hooks=(), marks=None, fmarks=None):
+            if marks is not None:
+                raise rd.RigError('withheld: the snapshot could not be set up')
+            if not ck.rig.busy and kind != 'calibration':
+                ck.rig.exports += 1
+                ck.rig.busy.append({'export': ck.rig.exports, 'at': n, 'said': "cannot export 'p': pool is busy",
+                                    'retry_in_s': None, 'mounted': False, 'fuser': 'not asked: not mounted',
+                                    'holders': [], 'zfs_processes': [], 'mounts': []})
+                ck.rig.forced.append({'export': ck.rig.exports, 'at': n, 'rc': 0})
+            return inner(ck, n, kind, hooks=hooks, marks=marks, fmarks=fmarks)
+        rd.Checker.point = point
+        self.assertEqual(rd.check(self.args()), 2)
+        with open(os.path.join(self.dir.name, 'out', 'replay-results.json')) as f:
+            res = json.load(f)
+        self.assertEqual(len(res['export_busy']), 1)
+        self.assertEqual(len(res['export_forced']), 1)
+        text = self.summary_text()
+        self.assertIn('stopped by the rig', text)
+        self.assertIn('Busy exports: 1 (1 refused attempts), 1 of them still busy after every wait and sent to -f, '
+                      'which exported 1 and left 0 imported', text)
+        self.assertNotIn('a pool was left imported', text)
+
+    def test_busy_exports_reach_the_results_and_the_summary(self):
+        """The daemon jobs use replay_check's Rig.export: what held the
+        pool at a busy export goes to their results and their summary as
+        in the reference jobs, and names the prefix (review of #130, S7)."""
+        self.fake()
+        inner = rd.Checker.point
+
+        def point(ck, n, kind, *a, **k):
+            if not ck.rig.busy and kind != 'calibration':
+                ck.rig.exports += 1
+                ck.rig.busy.append({'export': ck.rig.exports, 'at': n, 'said': "cannot export 'p': pool is busy",
+                                    'retry_in_s': 1, 'mounted': False, 'fuser': 'not asked: not mounted',
+                                    'holders': [], 'zfs_processes': [], 'mounts': []})
+            return inner(ck, n, kind, *a, **k)
+        rd.Checker.point = point
+        self.assertEqual(rd.check(self.args()), 0)
+        with open(os.path.join(self.dir.name, 'out', 'replay-results.json')) as f:
+            res = json.load(f)
+        self.assertEqual(len(res['export_busy']), 1)
+        self.assertEqual(res['export_forced'], [])
+        self.assertNotIn('a pool was left imported', self.summary_text())
+        self.assertIn('Busy exports: 1 (1 refused attempts), each exported when tried again. The first at prefix '
+                      f"{res['export_busy'][0]['at']}: its file systems already unmounted", self.summary_text())
+        # and the record names the prefix: the checker sets the Rig's prefix before it makes the image
+        import inspect
+        src = inspect.getsource(self.saved[0])          # the Checker's own point, before the fake
+        self.assertLess(src.index('self.rig.at = n'), src.index('self.daemon.make('))
+
     def test_a_failure_at_the_end_made_for_zdb_counts(self):
         # The main pass is clean; the end, made again for zdb -bcc, does not start.
         self.fake(kinds={'end': {'ok': False, 'failed': 'start', 'detail': 'exit 1 before it was ready'}})
@@ -581,6 +680,12 @@ class Pass(unittest.TestCase):
         rd.Checker.point, rd.run = control_breaks, zdb_hangs
         self.assertEqual(rd.check(self.args()), 2)
         self.assertNotIn('Exit 1', self.summary_text())
+        # zdb's signals, as on a normal end (review of #130, M1): killed or crashed is the rig's, an abort is not
+        for code, want in ((-9, 2), (-11, 2), (-7, 2), (-6, 1)):
+            def zdb_signal(cmd, timeout=300, code=code):
+                return (code, '', 1.0) if cmd[0] == 'zdb' and '-bcc' in cmd else run(cmd, timeout)
+            rd.run = zdb_signal
+            self.assertEqual(rd.check(self.args()), want, code)
 
     def test_a_failed_zdb_at_the_end_survives_a_later_rig_error(self):
         # zdb -bcc fails on the final image, then the withheld control's setup

@@ -653,6 +653,306 @@ class Log(unittest.TestCase):
         ok, against = replay_check.job_verdict([{'n': 1}], False, False, ['x'], 2)
         self.assertEqual((ok, len(against)), (False, 5))
 
+    def test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded(self):
+        """Run 44421456349: one busy export at prefix 2486 left the pool
+        imported and stopped every later check. A busy export is tried
+        again after each of EXPORT_WAITS, with what can hold the pool
+        recorded at each refusal; any other failure goes to -f at once."""
+        import argparse
+        self.assertEqual(replay_check.EXPORT_WAITS, (1, 2, 4, 8))
+        work = os.path.join(self.dir.name, 'work-busy')
+        os.makedirs(work)
+        manifest = os.path.join(self.dir.name, 'manifest-busy')
+        open(manifest, 'w').close()
+        rig = replay_check.Rig(argparse.Namespace(provider='', work=work, manifest=manifest, pool='p', mountpoint='/p'))
+        rig.at = 2486
+        mp = rig.alt + '/p'
+        # fuser -v as psmisc prints it (its header, then the path on the first process's line)
+        fuser_out = (f"                     USER        PID ACCESS COMMAND\n"
+                     f"{mp}:              root     kernel mount {mp}\n"
+                     f"                     root       4242 ..c.. udisksd\n")
+        ps_out = ("    1   900 systemd         /sbin/init\n"
+                  "  777     3 zpool           zpool list -H -o name p\n"
+                  "  778     2 z_cl_iss        [z_cl_iss]\n"
+                  "  779     1 python3         python3 replay_check.py --pool p\n")
+        state = {}
+
+        def fake(cmd, timeout=300):
+            state['calls'].append(cmd)
+            if cmd[:2] == ['zpool', 'export']:
+                state['exports'] += 1
+                if state['exports'] <= state['busy_for']:
+                    return 1, state['said'], 0.0
+                return 0, '', 0.0
+            if cmd[0] == 'fuser':
+                return 0, fuser_out, 0.0
+            if cmd[0] == 'ps':
+                return 0, ps_out, 0.0
+            return 0, '', 0.0
+
+        sleeps = []
+        mounts = []
+
+        def fake_open(path, *a, **k):
+            if path == '/proc/mounts':
+                import io
+                return io.StringIO(''.join(f'p/x {m} zfs ro 0 0\n' for m in mounts))
+            return real_open(path, *a, **k)
+
+        import builtins
+        real, real_sleep, real_open = replay_check.run, replay_check.time.sleep, builtins.open
+        replay_check.run, replay_check.time.sleep = fake, sleeps.append
+        replay_check.open = fake_open
+        try:
+            # busy twice, then exported: no -f, two waits, two records of one export
+            said = "cannot export 'p': pool is busy"
+            state.update(calls=[], exports=0, busy_for=2, said=said)
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual(sleeps, [1, 2])
+            self.assertNotIn(['zpool', 'export', '-f', 'p'], state['calls'])
+            self.assertEqual([b['retry_in_s'] for b in rig.busy], [1, 2])
+            b = rig.busy[0]
+            self.assertEqual((b['export'], b['at'], b['said'], b['mounts'], b['mounted']), (1, 2486, said, [], False))
+            # unmounted: fuser is not asked (it would name every process on the runner's disk)
+            self.assertFalse([c for c in state['calls'] if c[0] == 'fuser'])
+            self.assertEqual(b['holders'], [])
+            # the ZFS commands running are, by their command name and not their arguments
+            self.assertEqual(b['zfs_processes'], ['pid 777, 3 s: zpool list -H -o name p'])
+            self.assertEqual(rig.forced, [])
+            # still mounted: fuser on the mount point, its header and the kernel mount line left out
+            rig.busy, sleeps[:] = [], []
+            mounts[:] = [mp]
+            state.update(calls=[], exports=0, busy_for=1)
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual([c for c in state['calls'] if c[0] == 'fuser'], [['fuser', '-vm', mp]])
+            self.assertEqual(rig.busy[0]['holders'], ['udisksd (pid 4242, ..c..)'])
+            self.assertTrue(rig.busy[0]['mounted'])
+            self.assertEqual(rig.busy[0]['mounts'], [mp])
+            self.assertEqual(rig.busy[0]['export'], 2)
+            mounts[:] = []
+            # busy throughout: every wait, a record at each refusal (the last before -f), then -f, which fails too
+            rig.busy, sleeps[:] = [], []
+            state.update(calls=[], exports=0, busy_for=99)
+            rc, out = rig.export()
+            self.assertEqual(rc, 1)
+            self.assertEqual(sleeps, list(replay_check.EXPORT_WAITS))
+            self.assertEqual([b['retry_in_s'] for b in rig.busy], list(replay_check.EXPORT_WAITS) + [None])
+            exports = [c for c in state['calls'] if c[:2] == ['zpool', 'export']]
+            self.assertEqual(len(exports), len(replay_check.EXPORT_WAITS) + 2)
+            self.assertEqual(exports[-1], ['zpool', 'export', '-f', 'p'])
+            self.assertEqual(rig.forced, [{'export': 3, 'at': 2486, 'rc': 1}])
+            # another failure: no wait, no record, straight to -f
+            rig.busy, sleeps[:] = [], []
+            state.update(calls=[], exports=0, busy_for=1, said="cannot export 'p': I/O error")
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual((sleeps, rig.busy), ([], []))
+            self.assertEqual([c for c in state['calls'] if c[:2] == ['zpool', 'export']],
+                             [['zpool', 'export', 'p'], ['zpool', 'export', '-f', 'p']])
+            # -f cannot clear "pool is busy" (the export ioctl's EBUSY, after the unmount), so however many
+            # exports were busy throughout before, the next busy export still waits (review of #130, N1)
+            for _ in range(3):
+                state.update(calls=[], exports=0, busy_for=99, said=said)
+                rig.export()
+            rig.busy, sleeps[:] = [], []
+            state.update(calls=[], exports=0, busy_for=1)
+            self.assertEqual(rig.export()[0], 0)
+            self.assertEqual(sleeps, [1])
+            self.assertNotIn(['zpool', 'export', '-f', 'p'], state['calls'])
+            self.assertFalse(hasattr(replay_check, 'EXPORT_BUSY_THROUGHOUT_MAX'))
+        finally:
+            replay_check.run, replay_check.time.sleep = real, real_sleep
+            del replay_check.open
+        # the summary counts exports, not refusals, and names what was seen, not fuser's header
+        unmounted = {'export': 1, 'at': 2486, 'mounted': False, 'holders': [], 'retry_in_s': 1,
+                     'zfs_processes': ['pid 777, 3 s: zpool list -H -o name p'], 'fuser': 'not asked: not mounted'}
+        res = {'export_busy': [unmounted, {**unmounted, 'retry_in_s': 2},
+                               {**unmounted, 'export': 2, 'at': 2600}], 'export_forced': []}
+        lines = ''.join(replay_check.rig_lines(res))
+        self.assertIn('Busy exports: 2 (3 refused attempts), each exported when tried again. The first at prefix 2486: '
+                      'its file systems already unmounted; ZFS commands running: pid 777, 3 s: zpool list', lines)
+        self.assertNotIn('USER', lines)
+        res['export_forced'] = [{'export': 1, 'at': 2486, 'rc': 0}, {'export': 2, 'at': 2600, 'rc': 1},
+                                {'export': 3, 'at': 2700, 'rc': 0}]
+        self.assertIn('Busy exports: 2 (3 refused attempts), 3 of them still busy after every wait and sent to -f, '
+                      'which exported 2 and left 1 imported (-f exit codes 0, 1, 0)', ''.join(replay_check.rig_lines(res)))
+        mounted = {**unmounted, 'mounted': True, 'holders': ['udisksd (pid 4242, ..c..)'], 'zfs_processes': []}
+        self.assertIn('its file system still mounted, held by udisksd (pid 4242, ..c..); ZFS commands running: none',
+                      ''.join(replay_check.rig_lines({'export_busy': [mounted]})))
+        self.assertNotIn('Exit 2', lines)
+        self.assertIn('Exit 2: a pool was left imported', ''.join(replay_check.rig_lines({'exit_code': 2})))
+        self.assertEqual(replay_check.rig_lines({'exit_code': 1, 'export_busy': []}), [])
+        # and the summary has them, after its result line; the results keep both records
+        import inspect
+        src = inspect.getsource(replay_check.summary)
+        self.assertLess(src.index("out.append(f\"Result: {verdict}"), src.index('out.extend(rig_lines(res))'))
+        main_src = inspect.getsource(replay_check.main)
+        self.assertIn("res['export_busy'] = rig.busy", main_src)
+        self.assertIn("res['export_forced'] = rig.forced", main_src)
+        self.assertLess(main_src.index("res['export_forced'] = rig.forced"), main_src.index("res['exit_code'] = code"))
+
+    def test_a_verdict_stays_when_the_cleanup_after_it_fails(self):
+        """F1 of the review of #130: a prefix whose verify, scrub or fsync
+        check failed and whose export (or snapshot removal, or loop
+        detach) then failed keeps its verdict, with the cleanup's failure
+        added to the detail. Else the job would end with exit 2, "not a
+        verdict", although the image was at fault."""
+        import argparse
+        work = os.path.join(self.dir.name, 'work-f1')
+        os.makedirs(work)
+        manifest = os.path.join(self.dir.name, 'manifest-f1')
+        open(manifest, 'w').close()
+        rig = replay_check.Rig(argparse.Namespace(provider='', work=work, manifest=manifest, pool='p', mountpoint='/p'))
+        with open(rig.image, 'wb') as f:
+            f.truncate(DEV)
+        rig.manifest = [['0' * 64, 'f.0']]          # never in the (absent) mounted pool: verify fails
+        state = {'imported': False, 'fail': set()}
+        bad = ' scan: scrub repaired 0B in 00:00:01 with 3 errors on Tue\n\tp DEGRADED 0 0 3\nerrors: 3 data errors\n'
+
+        def fake(cmd, timeout=300):
+            if cmd[:2] == ['zpool', 'list']:
+                return (0, 'p\n', 0.0) if state['imported'] else (1, "cannot open 'p': no such pool\n", 0.0)
+            if cmd[:2] == ['zpool', 'import']:
+                if state['imported']:
+                    return 1, 'a pool with that name already exists', 0.0
+                state['imported'] = True
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'export']:
+                if 'export' in state['fail']:
+                    return 1, "cannot export 'p': pool is busy", 0.0
+                state['imported'] = False
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'status']:
+                return 0, bad, 0.0
+            if cmd[0] == 'losetup' and '--find' in cmd:
+                return 0, '/dev/loop9\n', 0.0
+            if cmd[:2] == ['dmsetup', 'remove'] and 'dmremove' in state['fail']:
+                return 1, 'device busy', 0.0
+            if cmd[:2] == ['losetup', '-d'] and 'detach' in state['fail']:
+                return 1, 'busy', 0.0
+            return 0, '', 0.0
+
+        real, real_sleep, real_advance = replay_check.run, replay_check.time.sleep, rig.advance
+        replay_check.run, replay_check.time.sleep = fake, lambda s: None
+        rig.advance = lambda n: 0.0
+        try:
+            # verify fails at prefix 100, the export stays busy through every wait and -f, as in run 44421456349
+            state.update(fail={'export'})
+            r = rig.point(100, 1, False)
+            self.assertEqual(r['failed'], 'verify')
+            self.assertIn('then export failed', r['detail'])
+            self.assertIn('pool is busy', r['detail'])
+            later = [rig.point(n, 1, False) for n in (101, 102)]
+            self.assertTrue(all(replay_check.LEFT_IMPORTED in x['failed'] for x in later))
+            failures = [x for x in [r] + later if not x['ok']]
+            self.assertEqual(replay_check.exit_code(False, failures, [], [], True, 0), 1)
+            # the scrub's verdict, then the export fails
+            state.update(imported=False, fail={'export'})
+            self.assertEqual(rig.deep()[0], 'scrub')
+            # the scrub's verdict, then the snapshot cannot be removed, or a loop device cannot be detached
+            for fail in ('dmremove', 'detach'):
+                state.update(imported=False, fail={fail})
+                failed, detail, _ = rig.deep()
+                self.assertEqual(failed, 'scrub', fail)
+                self.assertIn('then ', detail)
+            state.update(imported=False, fail={'detach'})
+            failed, detail, _ = rig.light(1)
+            self.assertEqual(failed, 'verify')
+            self.assertIn('then losetup -d failed: busy', detail)
+            # a check that passed becomes the cleanup's failure, as before
+            state.update(imported=False, fail={'export'})
+            self.assertEqual(rig.light(0)[0], 'export')
+        finally:
+            replay_check.run, replay_check.time.sleep, rig.advance = real, real_sleep, real_advance
+        self.assertEqual(replay_check.after_cleanup((None, ''), 'export', ' said \n'), ('export', 'said'))
+        self.assertEqual(replay_check.after_cleanup(('verify', 'f.0: differs'), 'export', 'busy'),
+                         ('verify', 'f.0: differs; then export failed: busy'))
+
+    def test_fuser_and_ps_are_read_as_they_print(self):
+        self.assertEqual(replay_check.fuser_holders(
+            "                     USER        PID ACCESS COMMAND\n"
+            "/a/p:                root     kernel mount /a/p\n"
+            "                     root       4242 ..c.. udisksd\n"
+            "                     me          17 F.... my prog\n"), ['udisksd (pid 4242, ..c..)', 'my prog (pid 17, F....)'])
+        self.assertEqual(replay_check.fuser_holders(''), [])
+        self.assertEqual(replay_check.zfs_processes(" 5 10 zed  /usr/sbin/zed -F\n 6 1 zfsx zfsx\n 7 2 bash bash -c zpool\n"),
+                         ['pid 5, 10 s: /usr/sbin/zed -F'])
+
+    def test_a_pool_left_imported_ends_the_job_with_exit_2(self):
+        """The lead's decision after run 44421456349: a pool left imported
+        is the rig's own error (exit 2) when nothing else stands against
+        the image; any verdict besides it keeps exit 1."""
+        left = {'n': 2487, 'failed': 'rig: a pool named p is still imported'}
+        exp = {'drop': {'superseded': {'by': None}, 'block': {'by': 'copies'}},
+               'reorder': {'block': {'by': 'any'}}, 'data': {'block': {'by': 'verify'}}}
+        ctl_err = [{'name': 'drop', 'class': 'block', 'caught': False, 'rig_errors': [left]},
+                   {'name': 'data', 'class': 'block', 'caught': True, 'rig_errors': []}]
+        rows = [{'name': 'drop', 'match': False}, {'name': 'data', 'match': True}]
+        two = dict(ok=False, failures=[{'n': 2486, 'failed': 'export'}, left], controls=ctl_err, control_rows=rows,
+                   witness_ok=True, zdb_cc_rc=0, expected=exp)
+        self.assertEqual(replay_check.exit_code(**two), 2)
+        # as in the run: the controls' rig errors alone
+        self.assertEqual(replay_check.exit_code(**{**two, 'failures': []}), 2)
+        # a leftover seen only in the main pass
+        self.assertEqual(replay_check.exit_code(**{**two, 'controls': [ctl_err[1]], 'control_rows': rows[1:]}), 2)
+        self.assertEqual(replay_check.exit_code(**{**two, 'ok': True}), 0)
+        # zdb at the end that timed out or could not start judged nothing
+        for rc in replay_check.RIG_RC:
+            self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': rc}), 2, rc)
+        # zdb's signals at the end, the same rule as in the main pass (the lead, #130): an abort counts
+        # against the image; an out-of-memory kill or the tool's crash is the rig's
+        self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': -6}), 1)
+        for sig in (-9, -11, -7):
+            self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': sig}), 2, sig)
+            # with no pool left, a job whose failures are the rig's stays 1
+            self.assertEqual(replay_check.exit_code(**{**two, 'zdb_cc_rc': sig, 'failures': [], 'controls': [],
+                                                       'control_rows': []}), 1, sig)
+        self.assertEqual([replay_check.zdb_rig_code(c) for c in (0, 1, 124, 127, -6, -9, -11, -7, None)],
+                         [False, False, True, True, False, True, True, True, False])
+        # in the main pass, only signal 6 counts against the image: another signal is the rig's
+        self.assertEqual(replay_check.exit_code(
+            **{**two, 'failures': two['failures'] + [{'n': 9, 'failed': 'rig: zdb died with signal 9'}]}), 2)
+        # caught by another check than the table's, with rig errors: they may have hidden the table's
+        other = {**ctl_err[0], 'caught': True, 'failed_by': {'verify': 1}}
+        self.assertEqual(replay_check.exit_code(**{**two, 'controls': [other, ctl_err[1]]}), 2)
+        for change in (
+                dict(failures=two['failures'] + [{'n': 9, 'failed': 'verify'}]),       # a verdict on a prefix
+                dict(failures=two['failures'] + [{'n': 9, 'failed': 'deep: scrub'}]),
+                dict(control_rows=rows[:1] + [{'name': 'data', 'match': False}]),     # a control judged otherwise
+                # F2: caught although the table says not caught; rig errors cannot make a control caught
+                dict(controls=[{**ctl_err[0], 'class': 'superseded', 'caught': True, 'failed_by': {'copies': 1}},
+                               ctl_err[1]]),
+                # F2: a class the table does not name (it comes from zdb on the true image)
+                dict(controls=[{**ctl_err[0], 'class': 'intent-log block'}, ctl_err[1]]),
+                # a differing control that did not run, or has no rig errors
+                dict(controls=[ctl_err[1]]),
+                dict(controls=[{**ctl_err[0], 'rig_errors': []}, ctl_err[1]],
+                     failures=two['failures']),
+                dict(witness_ok=False), dict(zdb_cc_rc=1),
+                dict(failures=[{'n': 3, 'failed': 'export'}], controls=[], control_rows=[]),  # no pool left
+                dict(failures=[{'n': 3, 'failed': 'rig: zdb died with signal 9'}], controls=[], control_rows=[]),
+                # the lead on #130: zdb aborting on an assertion in the main pass is evidence about the pool
+                dict(failures=two['failures'] + [{'n': 9, 'failed': replay_check.ZDB_ABORT}]),
+                # and a job whose failures are all the rig's, with no pool left, stays 1
+                dict(failures=[{'n': 3, 'failed': 'export'}, {'n': 4, 'failed': 'losetup'}], controls=[],
+                     control_rows=[], zdb_cc_rc=124)):
+            self.assertEqual(replay_check.exit_code(**{**two, **change}), 1, change)
+        self.assertEqual(replay_check.ZDB_ABORT, 'rig: zdb died with signal 6')
+        by, _, _ = replay_check.tally_control([{'n': 1, 'ok': False, 'failed': replay_check.ZDB_ABORT, 'detail': ''}])
+        self.assertEqual(by, {'copies': 1})
+        # F2 as the review drove it, through judge_controls: a superseded drop caught at 5, the pool left at 7
+        drop = {'name': 'drop', 'class': 'superseded', 'caught': True, 'failed_by': {'copies': 1},
+                'rig_errors': [{'n': 7, 'failed': left['failed']}]}
+        rows2, _, ok2 = replay_check.judge_controls([drop], {'drop': replay_check.EXPECTED['drop']})
+        self.assertFalse(ok2)
+        self.assertEqual(replay_check.exit_code(False, [], [drop], rows2, True, 0), 1)
+        # the job exits with it, and once
+        import inspect
+        src = inspect.getsource(replay_check.main)
+        self.assertIn("res['exit_code'] = code = exit_code(ok, failures, ctl, res['control_rows'], witness_ok, "
+                      "res['zdb_cc']['rc'])", src)
+        self.assertEqual([ln.strip() for ln in src.splitlines() if 'sys.exit(' in ln and 'code' in ln], ['sys.exit(code)'])
+        self.assertNotIn('sys.exit(0 if ok else 1)', src)
+
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
         self.assertEqual(rc, 124)

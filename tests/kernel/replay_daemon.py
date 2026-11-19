@@ -267,7 +267,7 @@ def tally(results):
     for r in results:
         if r['ok']:
             continue
-        if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
+        if r['failed'] in JUDGING or r['failed'] == rc.ZDB_ABORT:
             key = 'copies' if r['failed'].startswith('rig: zdb') else r['failed'].split(': ')[0]
             by[key] = by.get(key, 0) + 1
             if first is None:
@@ -300,13 +300,15 @@ def verdict(failures, rig_errors, controls_ok, coverage_errors, witness_ok, zdb_
         against.append(f'{len(failures)} prefix(es) failed a check')
     if not controls_ok:
         against.append('a control is not as the table has it')
-    if zdb_cc_rc not in (0, None) and zdb_cc_rc not in rc.RIG_RC:
+    # zdb's signals: replay_check.ZDB_ABORT's rule, the same in the main pass and here
+    if zdb_cc_rc not in (0, None) and not rc.zdb_rig_code(zdb_cc_rc):
         against.append(f'zdb -bcc on the final image: exit code {zdb_cc_rc}')
     if zdb_cc_rc is None:
         rig.append('zdb -bcc did not run on the final image')
-    elif zdb_cc_rc in rc.RIG_RC:
-        rig.append(f'zdb -bcc on the final image did not finish (exit code {zdb_cc_rc}: '
-                   f'{"timed out" if zdb_cc_rc == 124 else "could not start"})')
+    elif rc.zdb_rig_code(zdb_cc_rc):
+        why = ('timed out' if zdb_cc_rc == 124 else 'could not start' if zdb_cc_rc == 127
+               else f'killed by signal {-zdb_cc_rc}')
+        rig.append(f'zdb -bcc on the final image did not finish (exit code {zdb_cc_rc}: {why})')
     if rig_errors:
         rig.append(f'the rig failed at {len(rig_errors)} prefix(es), first: {rig_errors[0]["failed"]}')
     if coverage_errors:
@@ -623,6 +625,7 @@ class Checker:
         if os.path.exists(self.rig.image):
             os.unlink(self.rig.image)
         res = {'n': n, 'kind': kind, 'files': files_at(marks, n), 'dir': free}
+        self.rig.at = n                 # the prefix a busy export's record names (Rig.held)
         failed, detail, info = self.daemon.make(n, self.rig.image, hooks)
         res.update(info)
         if not failed:
@@ -648,6 +651,7 @@ class Checker:
 
     def deep(self, p, marks=None, fmarks=None):
         """The scrub (with the fsync check) and the every-copy check on the image kept for point p."""
+        self.rig.at = p['n']            # run after the next prefix was made: name p in a busy export's record
         self.use(p['dir'])
         failed, detail, p['t_deep'] = self.rig.deep(self.due(p['n'], marks, fmarks), scrub=True)
         p['deep'] = True
@@ -713,7 +717,7 @@ def what_stopped(e):
 
 def classify(r, failures, rig_errors):
     """A failed point -> a verdict against the daemon (failures) or the rig's error (rig_errors)."""
-    if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
+    if r['failed'] in JUDGING or r['failed'] == rc.ZDB_ABORT:
         failures.append(r)
     else:
         rig_errors.append(r)
@@ -741,9 +745,12 @@ def check(a):
     # zdb -bcc at the end judges the pool even when a later step (a
     # control) stops the rig: its failure is a verdict too.
     zcc = (st['res'].get('zdb_cc') or {}).get('rc')
-    zdb_against = zcc not in (0, None) and zcc not in rc.RIG_RC
+    zdb_against = zcc not in (0, None) and not rc.zdb_rig_code(zcc)
     code = 1 if failures or zdb_against else 2
-    res = dict(st['res'], stopped=why, exit=code,
+    # What held the pool at a busy export: most wanted where the rig stopped
+    rig = st.get('rig')
+    busy = {'export_busy': rig.busy, 'export_forced': rig.forced} if rig is not None else {}
+    res = dict(st['res'], stopped=why, exit=code, **busy,
                failures=[{k: v for k, v in p.items() if k != 'dir'} for p in failures],
                rig_errors=[{'n': p['n'], 'failed': p['failed'], 'detail': p['detail']} for p in rig_errors],
                points=[{k: v for k, v in p.items() if k != 'dir'} for p in st['points']])
@@ -753,6 +760,7 @@ def check(a):
            f'The run stopped: {why}\n',
            f"Prefixes checked before it stopped: {len(st['points'])} in the main pass.\n",
            "Design §9's replay criterion: **not shown by this run** (it stopped before the end).\n"]
+    out.extend(rc.rig_lines(busy))
     if failures:
         out.append(f'Before it stopped, {len(failures)} prefix(es) failed a check. That is a verdict against the daemon, '
                    'whatever stopped the rig after it:\n')
@@ -779,6 +787,7 @@ def _check(a, st):
     records = idx['records']
     total = len(records)
     ck = Checker(a, idx, records)
+    st['rig'] = ck.rig
     marks, fmarks = ck.marks, ck.fmarks
     res = {'mode': 'daemon', 'records': total, 'marks': len(marks), 'fsync_marks': len(fmarks), 'files': len(ck.rig.manifest),
            'write_bytes': sum(r['bytes'] for r in records if rc.is_write(r)), 'steps': a.steps,
@@ -989,6 +998,7 @@ def _check(a, st):
     code, against = verdict(failures, rig_errors + ctl_errors, controls_ok, cov['errors'], witness_ok,
                             res['zdb_cc']['rc'])
     res['exit'], res['against'] = code, against
+    res['export_busy'], res['export_forced'] = ck.rig.busy, ck.rig.forced
     run(['cp', os.path.join(a.work, 'serve.err'), os.path.join(a.out, 'last-serve.err')])
     with open(os.path.join(a.out, 'replay-results.json'), 'w') as f:
         json.dump(res, f, indent=1)
@@ -1126,6 +1136,7 @@ def summary(res):
     word = ('every checked prefix passed' if not fails else f"**{len(fails)} prefixes FAILED**")
     out.append(f"Result: {word}. Main pass {res['main_pass_s']:.0f} s"
                + (f", {res['skipped_for_time']} planned prefixes skipped for time" if res['skipped_for_time'] else '') + '.\n')
+    out.extend(rc.rig_lines({k: res.get(k) for k in ('export_busy', 'export_forced')}))
     out.append('| kind of prefix | in the log | checked | failed |')
     out.append('|---|---|---|---|')
     have = {'base': av['base'], 'fsync': av['fsync'], 'sync': av['sync'], 'flush': av['flush'],
