@@ -1030,7 +1030,8 @@ fn the_status_shows_the_uploader_as_it_is() {
 
     let s = shown(
         State::WholeLost {
-            why: "whole cut 3 went before its commit: gone".into(),
+            why: "whole cut 3 went before its commit: the store no longer held it at its commit"
+                .into(),
             wait: Duration::from_secs(120),
         },
         held.clone(),
@@ -1039,8 +1040,8 @@ fn the_status_shows_the_uploader_as_it_is() {
     assert_eq!(s.state, UploadStateShown::WholeLost);
     assert_eq!(
         s.said(),
-        "whole cut 3 went before its commit: gone: the volume cannot be seeded under this \
-         load, next whole cut in 120 s"
+        "whole cut 3 went before its commit: the store no longer held it at its commit: no \
+         whole cut can be uploaded now, next whole cut after a wait of 120 s"
     );
     assert_eq!(s.wait_ms, 120_000);
 

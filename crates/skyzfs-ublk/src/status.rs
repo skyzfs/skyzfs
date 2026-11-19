@@ -21,8 +21,9 @@
 //! This is the file's nineteenth version (M2.4f). It adds, after the
 //! eighteenth's fields, the uploader's whole cuts that went before their
 //! commit, and a state of the uploader: waiting after one of them. A
-//! reader of an earlier version reads that state as "not said". Nothing
-//! is dropped or moved. The eighteenth (`SKYZST18`, 1408 bytes) is still
+//! reader of an earlier version refuses the file by its magic, so it
+//! never meets the state; a reader of `status`'s text meets a new word,
+//! `whole_lost`. Nothing is dropped or moved. The eighteenth (`SKYZST18`, 1408 bytes) is still
 //! read, without the count.
 //!
 //! The eighteenth version (M2.5-2) added, after the
@@ -144,7 +145,7 @@
 //! | 384 | 8 | `intent_named_at_start`: the regions the map named when the start took it up (every region where it began one) |
 //! | 392 | 24 | the map's syncs on the write path since this daemon started serving: how many, their summed time from the first page's write to the sync's end, the longest. A sync runs on the map's file's helper, not on the queue's thread, and covers every bit set since the one before it began |
 //! | 416 | 8 | `intent_waits`: the writes and write-zeroes that waited for a sync of the map since this daemon started serving, those into a region whose bit was not durable. Only they and the requests behind them (one that overlaps them, a flush) waited |
-//! | 424 | 8 | `upload_state`: what the uploader is doing (M2.4c). 0 off: this daemon does not upload; 1 no lease yet; 2 the lease is lost, for the rest of this instance; 3 idle: no cut to upload; 4 checking a cut against head's row; 5 reading one; 6 syncing the copies it was read from; 7 committing it; 8 waiting after an error or a commit given up; 9 stopped: the store kept a committed cut; 10 (from the nineteenth version, M2.4f) waiting after a whole cut went before its commit: the volume cannot be seeded under the load it has, and the next whole cut is tried after the wait (one minute, doubling to fifteen; reset when a cut is committed). Any other value is read as "not said" |
+//! | 424 | 8 | `upload_state`: what the uploader is doing (M2.4c). 0 off: this daemon does not upload; 1 no lease yet; 2 the lease is lost, for the rest of this instance; 3 idle: no cut to upload; 4 checking a cut against head's row; 5 reading one; 6 syncing the copies it was read from; 7 committing it; 8 waiting after an error or a commit given up; 9 stopped: the store kept a committed cut; 10 (from the nineteenth version, M2.4f) waiting after a whole cut went before its commit: no whole cut can be uploaded now (under a load that fills the bound on copies before one is read, say, or after its copies' sync failed), and the next whole cut is tried after the wait (one minute, doubling to fifteen; reset when a cut is committed). Any other value is read as "not said" |
 //! | 432 | 8 | `upload_cut`: the cut under way, while checking, reading, syncing or committing; 0 otherwise |
 //! | 440 | 8 | `upload_wait_ms`: while waiting (state 8 or 10), the wait as it began |
 //! | 448 | 8 | `lease`: 0 none held; 1 held; 2 held, and the last renewal failed on object storage (the uploads go on under its epoch); 3 lost. Any other value is read as "not said" |
@@ -470,8 +471,8 @@ coded! {
         /// The store kept a committed cut: nothing more is uploaded by
         /// this instance.
         Stopped = 9, "stopped";
-        /// Waiting after a whole cut went before its commit (M2.4f): the
-        /// volume cannot be seeded under the load it has.
+        /// Waiting after a whole cut went before its commit (M2.4f): no
+        /// whole cut can be uploaded now.
         WholeLost = 10, "whole_lost";
     }
 }
@@ -735,7 +736,7 @@ impl UploadShown {
                     .to_string()
             }
             UploadStateShown::WholeLost => format!(
-                "{}: the volume cannot be seeded under this load, next whole cut in {} s",
+                "{}: no whole cut can be uploaded now, next whole cut after a wait of {} s",
                 self.why.said(),
                 self.wait_ms.div_ceil(1000)
             ),

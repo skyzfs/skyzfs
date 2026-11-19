@@ -706,8 +706,8 @@ fn status_prints_the_whole_cuts_lost_and_the_wait_after_one() {
     assert_eq!(
         value(&lines, "upload"),
         Some(
-            "whole cut 3 went before its commit: abandoned at the bound: the volume cannot be \
-             seeded under this load, next whole cut in 120 s"
+            "whole cut 3 went before its commit: abandoned at the bound: no whole cut can be \
+             uploaded now, next whole cut after a wait of 120 s"
         )
     );
     assert_eq!(UploadStateShown::of(10), UploadStateShown::WholeLost);

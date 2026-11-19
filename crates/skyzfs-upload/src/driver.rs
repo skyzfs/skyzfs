@@ -736,7 +736,7 @@ impl<L: Local, R: Remote> Driver<L, R> {
         if held.map(|cut| cut.row()) != Some(upload.cut.row()) {
             return (
                 Stage::Check,
-                Ok(self.lost(&upload, "it went before its commit".into())),
+                Ok(self.lost(&upload, "the store no longer held it at its commit".into())),
             );
         }
         let row = row::encode(&upload.cut.row());
