@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume skz_minio_freeze; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume skz_minio_freeze skz_minio_until; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume skz_minio_freeze; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle skz_first_upload skz_seed_watch_stop skz_minio_resume skz_minio_freeze skz_minio_until; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -34,7 +34,7 @@ setup() {
     head -c 3145728 /dev/zero > "$WORK/zfs-origin.img"
     SKZ_DIR=$WORK/vol; SKZ_RUN=$WORK/run; SKZ_PID=$$; SKZ_CGROUP=""; SKZ_DEV=/dev/null; SKZ_UP=""
     SKYZFSD_ARGS="--io-threads,8"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
-    SKZ_UPLOAD=""; SKZ_VOLUME_NAME=""
+    SKZ_UPLOAD=""; SKZ_VOLUME_NAME=""; SKZ_UPLOAD_FROM_LOAD=""; SKZ_SEED_RELEASED=$tt/released
     SKZ_SYSRQ=$tt/sysrq; : > "$SKZ_SYSRQ"
     : > "$tt/calls"; : > "$tt/log"
     rm -f "$tt/hang-on" "$tt/dd-count" "$tt/sync-hang-on" "$tt/sync-count"
@@ -199,6 +199,7 @@ check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "d
 first_upload() { # up_at wait_s [watch] -> rc; the row's line in $OUT/t.skzinfo
     echo "$1" > "$tt/up_at"; echo "${DEAD_UNTIL:-0}" > "$tt/dead"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
     rm -f "$tt/began"; [ -z "${BEGAN:-}" ] || echo "$BEGAN" > "$tt/began"
+    rm -f "$tt/released"; [ -z "${REL:-}" ] || echo "$REL" > "$tt/released"
     # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_first_upload
     (
         TOPO=t; SKZ_UPLOAD_WAIT_S=$2; SKZ_SEED_BEGAN=$tt/began
@@ -253,6 +254,26 @@ for b in 80 81 90 110; do
     check "  begun at $b, between the two reads: as the workload began" \
         'grep -qx "first_upload after 100 s from the import, as the workload began (within 30 s of its warm-up) (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
 done
+# TB_SKZ_UPLOAD_FROM_LOAD=window: MinIO let go at the first window's
+# start (REL). The seed cannot commit before it: from the later of the
+# release and the read before, to the read that saw it.
+BEGAN=30 REL=60 first_upload 100 3600 watch; rc=$?
+check "  let go at the window's start before the read before: from that read" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 20 to 50 s after MinIO was let go at the start of the window that released it (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+BEGAN=30 REL=95 first_upload 100 3600 watch; rc=$?
+check "  let go between the two reads: from the release" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; 0 to 15 s after MinIO was let go at the start of the window that released it (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+# Review of #132, D5: a commit seen before the release time says the
+# freeze did not hold, and does not drop the clause silently.
+BEGAN=30 REL=120 first_upload 100 3600 watch; rc=$?
+check "  seen before the release time: said, the freeze did not hold" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began; BEFORE MinIO was let go (at 120, the read at 110): the freeze did not hold (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+BEGAN=30 REL=x first_upload 100 3600 watch; rc=$?
+check "  a release time that is not a number: not said" \
+    'grep -qx "first_upload after 100 s from the import, under the workload, 50 to 80 s after its warm-up began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
+REL=60 first_upload 100 900; rc=$?
+check "  the wait before the windows says nothing of it" \
+    'grep -qE "^first_upload after [0-9]+ s \(uploaded 1, cuts lost 4\)$" "$OUT/t.skzinfo"'
 BEGAN=111 first_upload 100 3600 watch; rc=$?
 check "  begun after the read that saw it: before" \
     'grep -qx "first_upload after 100 s from the import, before the workload began (uploaded 1, cuts lost 4)" "$OUT/t.skzinfo"'
@@ -315,10 +336,10 @@ rw=$(sed -n '/^run_workload() {/,/^}$/p' "$script")
 bz=$(sed -n '/^build_zfs_direct() {/,/^}$/p' "$script")
 # TB_SKZ_UPLOAD_FROM_LOAD: MinIO, frozen from after the create, answers
 # again once the workload begins, after the seed's watcher has its mark.
-minio_resume() { # paused unpause-rc -> "calls|paused after" ; log in $tt/log
-    : > "$tt/minio"; : > "$tt/log"
+minio_resume() { # paused unpause-rc [from-load] -> "calls|paused after" ; log in $tt/log
+    : > "$tt/minio"; : > "$tt/log"; rm -f "$tt/released"
     # shellcheck disable=SC2317,SC2329  # the stand-in is called by skz_minio_resume
-    ( SKZ_MINIO_PAUSED=$1
+    ( SKZ_MINIO_PAUSED=$1; SKZ_UPLOAD_FROM_LOAD=${3:-1}
       skz_minio() { echo "$1" >> "$tt/minio"; return "$MINIO_RC"; }
       MINIO_RC=$2 skz_minio_resume; echo "$(tr '\n' ' ' < "$tt/minio")|$SKZ_MINIO_PAUSED" > "$tt/resumed" )
     cat "$tt/resumed"
@@ -328,6 +349,12 @@ check "from the load: a frozen MinIO is let go as the workload begins" \
 check "  one that would not go on is said, and left for the teardown" \
     '[ "$(minio_resume 1 1)" = "unpause |1" ] && grep -q "WARNING: MinIO could not be let go" "$tt/log"'
 check "  not frozen: nothing is called" '[ "$(minio_resume "" 0)" = "|" ]'
+check "  =1 writes no release time" '[ "$(minio_resume 1 0)" = "unpause |" ] && [ ! -e "$tt/released" ]'
+check "  =window: let go as the first window begins, its time written for the watcher" \
+    '[ "$(minio_resume 1 0 window)" = "unpause |" ] && grep -qxE "[0-9]+" "$tt/released" && grep -q "MinIO answers again, as the first window begins" "$tt/log"'
+check "    one that would not go on writes no time, and is tried again" \
+    '[ "$(minio_resume 1 1 window)" = "unpause |1" ] && [ ! -e "$tt/released" ] && grep -q "could not be let go as the first window begins" "$tt/log"'
+check "    not frozen: no time is written" '[ "$(minio_resume "" 0 window)" = "|" ] && [ ! -e "$tt/released" ]'
 # The line numbers of the first line holding each text, in order.
 order() { # text with fixed strings... (stdin: the function) -> "n,n,..."
     local body t; body=$(cat)
@@ -337,15 +364,22 @@ order() { # text with fixed strings... (stdin: the function) -> "n,n,..."
 increasing() { awk -F, '{ for (i = 2; i < NF; i++) if ($i == "" || $i <= $(i - 1)) exit 1; exit ($1 == "") }' <<< "$1"; }
 mark_at='date +%s > "$SKZ_SEED_BEGAN"'; warm_at='log "$tag: warm-up'
 check "  run_workload lets it go after the mark, before the first warm-up" \
-    'increasing "$(printf "%s\n" "$rw" | order "$mark_at" "    skz_minio_resume" "$warm_at")"'
+    'increasing "$(printf "%s\n" "$rw" | order "$mark_at" "    [ \"\$SKZ_UPLOAD_FROM_LOAD\" = window ] || skz_minio_resume" "$warm_at")"'
+# =window: after the window's status was read (uploaded 0 at its start),
+# and before its pgbench, so that the window pays for the seed.
+win_at='[ "$SKZ_UPLOAD_FROM_LOAD" != window ] || skz_minio_resume'
+check "  =window: run_workload lets it go after the window's first status, before its pgbench" \
+    'increasing "$(printf "%s\n" "$rw" | order "$warm_at" "snapshot \"\$OUT/\$tag.before\"" "skz_sample \"\$OUT/\$tag.skz\" &" "    $win_at" "log \"\$tag: measuring" "-T \$DURATION")"'
+check "  each at one place only" \
+    '[ "$(grep -cF -e "$win_at" "$script")" = 1 ] && [ "$(grep -cF -e "] || skz_minio_resume" "$script")" = 2 ]'
 check "  frozen after the create and before the daemon starts, and only from the load" \
     '[ "$(printf "%s\n" "$bz" | grep -n -E "^ *skz_create |skz_minio_freeze|^ *skz_start$" | cut -d: -f2 | sed "s/^ *//" | tr "\n" ,)" = "skz_create \"\$(stat -c %s \"\$WORK/zfs-origin.img\")\" \\,if [ -n \"\$SKZ_UPLOAD_FROM_LOAD\" ]; then skz_minio_freeze || return 1; fi,skz_start," ]'
 # The freeze itself (review's T1 on #128), MinIO stood in for: the flag
 # before the pause, the record's line, and a failed pause.
-minio_freeze() { # pause-rc -> "calls|paused|rc" ; the record in $tt/info
+minio_freeze() { # pause-rc [from-load] -> "calls|paused|rc" ; the record in $tt/info
     : > "$tt/minio"; : > "$tt/log"; : > "$tt/info"
     # shellcheck disable=SC2317,SC2329  # the stand-in is called by skz_minio_freeze
-    ( SKZ_MINIO_PAUSED=""; OUT=$tt; TOPO=info0
+    ( SKZ_MINIO_PAUSED=""; OUT=$tt; TOPO=info0; SKZ_UPLOAD_FROM_LOAD=${2:-1}
       skz_minio() { echo "$1:${SKZ_MINIO_PAUSED:-unset}" >> "$tt/minio"; return "$MINIO_RC"; }
       MINIO_RC=$1 skz_minio_freeze 2> "$tt/err"; rc=$?
       echo "$(tr '\n' ' ' < "$tt/minio")|$SKZ_MINIO_PAUSED|$rc" > "$tt/froze" )
@@ -354,6 +388,8 @@ minio_freeze() { # pause-rc -> "calls|paused|rc" ; the record in $tt/info
 }
 check "  the freeze sets its flag before the pause and says so in the record" \
     '[ "$(minio_freeze 0)" = "pause:1 |1|0" ] && [ "$(cat "$tt/info")" = "upload_from_load 1" ] && grep -q "MinIO frozen until the workload begins" "$tt/log"'
+check "  =window says so in the record and the log" \
+    '[ "$(minio_freeze 0 window)" = "pause:1 |1|0" ] && [ "$(cat "$tt/info")" = "upload_from_load window" ] && grep -q "MinIO frozen until the first window begins" "$tt/log"'
 check "  a pause that fails: the row fails, the flag stays for the teardown, and the record says nothing" \
     '[ "$(minio_freeze 1)" = "pause:1 |1|1" ] && [ ! -s "$tt/info" ] && grep -q "MinIO could not be frozen" "$tt/err"'
 unpause_at='if [ -n "$SKZ_MINIO_PAUSED" ]; then skz_minio unpause || true; SKZ_MINIO_PAUSED=""; fi'
@@ -366,7 +402,7 @@ check "the watcher's record and clock are set before it starts" \
 # The mark of a row before is not read by the next (TB_WORK is the job's):
 # it is removed before the watcher starts.
 check "  the last row's mark is removed before the watcher starts" \
-    '[ "$(printf "%s\n" "$bz" | grep -m1 -F -e "rm -f \"\$SKZ_SEED_BEGAN\"" -e "skz_first_upload watch ) &" | grep -c "rm -f")" = 1 ]'
+    '[ "$(printf "%s\n" "$bz" | grep -m1 -F -e "rm -f \"\$SKZ_SEED_BEGAN\" \"\$SKZ_SEED_RELEASED\"" -e "skz_first_upload watch ) &" | grep -c "rm -f")" = 1 ]'
 check "  run_workload marks the start of the workload for it, before the first warm-up" \
     '[ "$(printf "%s\n" "$rw" | grep -m1 -F -e "date +%s > \"\$SKZ_SEED_BEGAN\"" -e "log \"\$tag: warm-up" | grep -c SKZ_SEED_BEGAN)" = 1 ]'
 
