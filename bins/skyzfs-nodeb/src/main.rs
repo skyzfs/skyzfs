@@ -13,6 +13,7 @@
 //! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
 //! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--row ROW] [--expect-row ROW]
 //! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row ROW [--expect-row ROW]
+//! skyzfs-nodeb snap-row --endpoint URL --bucket B --volume NAME --snapshot T [--out FILE]
 //! ```
 //!
 //! The keys are `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The
@@ -38,6 +39,18 @@
 //!   one after the other, not together: a reader that wants them to
 //!   agree reads them again around what it does. Then the volume's
 //!   lease: `lease HOLDER EPOCH EXPIRES_UNIX_MS` or `lease none`.
+//! - `snap-row` (M2.T6, the daemon's publish): the ref `snap/T`, `ref
+//!   HEX GEN` or `ref none`, then the snapshot's row that the daemon
+//!   writes in the same transaction (the meta row `skyzfs/snap/T`,
+//!   `skyzfs-upload`'s publish.rs), decoded here and not by the
+//!   uploader's code: `snaprow STATE NUMBER GROUP COMMIT SNAPID LEN
+//!   HASH` for a row of version 1, `snaprow none`, or `snaprow
+//!   unreadable HEX`. With `--out`, and a row that reads, the ZFS
+//!   manifest it names (`<volume prefix>skyzfs/manifest/<SNAPID>`) is
+//!   written to FILE: `manifest LEN BLAKE3 matches|differs`, whether
+//!   its length and hash are the row's, or `manifest none` when the
+//!   object is not there. The ref and the row are read one after the
+//!   other, not together.
 //!
 //! `bucket` makes the bucket where it is not there (`put` does it too),
 //! for a daemon's `create` that puts the volume there.
@@ -169,6 +182,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         "release" => &[("--holder", &a.holder)],
         "move-head" => &[("--at", &a.at), ("--group", &a.group)],
         "set-row" => &[("--row", &a.row)],
+        "snap-row" => &[("--snapshot", &a.snapshot)],
         c => return Err(format!("unknown command {c}")),
     };
     for (name, v) in need {
@@ -511,6 +525,112 @@ async fn expected_row<S: ObjectStore + Clone + 'static>(
         .await
         .map_err(|e| format!("meta {ROW_KEY}: {e}"))?;
     Ok(row_holds(spec, now.as_deref()).then_some(now))
+}
+
+/// A snapshot's row among the refs object's meta rows (`skyzfs-upload`'s
+/// `SNAP_ROW_PREFIX` and `SNAP_ROW_LEN`), version 1, 118 bytes, little
+/// endian: version u16, the cut state's name 16 bytes, the cut's number
+/// and group u64, the commit 32 bytes, the snapshot's id (a ULID, big
+/// endian) 16 bytes, the ZFS manifest's length u32 and its BLAKE3 hash
+/// 32 bytes. Decoded here so that the rig does not read the row with
+/// the code that wrote it.
+const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
+const SNAP_ROW_LEN: usize = 118;
+
+/// What a snapshot's row of version 1 holds.
+#[derive(Debug, PartialEq, Eq)]
+struct SnapRowRead {
+    snap: ulid::Ulid,
+    manifest_len: u32,
+    manifest_hash: [u8; 32],
+}
+
+/// -> the line, and what the manifest is checked against when the row reads.
+fn snap_row_line(bytes: Option<&[u8]>) -> (String, Option<SnapRowRead>) {
+    let Some(b) = bytes else {
+        return ("snaprow\tnone".to_string(), None);
+    };
+    if b.len() != SNAP_ROW_LEN || b[..2] != 1u16.to_le_bytes() {
+        return (format!("snaprow\tunreadable\t{}", hex(b)), None);
+    }
+    let u64_at = |at: usize| {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&b[at..at + 8]);
+        u64::from_le_bytes(w)
+    };
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&b[66..82]);
+    let mut len = [0u8; 4];
+    len.copy_from_slice(&b[82..86]);
+    let mut manifest_hash = [0u8; 32];
+    manifest_hash.copy_from_slice(&b[86..118]);
+    let r = SnapRowRead {
+        snap: ulid::Ulid::from_bytes(id),
+        manifest_len: u32::from_le_bytes(len),
+        manifest_hash,
+    };
+    let line = format!(
+        "snaprow\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        hex(&b[2..18]),
+        u64_at(18),
+        u64_at(26),
+        hex(&b[34..66]),
+        r.snap,
+        r.manifest_len,
+        hex(&r.manifest_hash)
+    );
+    (line, Some(r))
+}
+
+/// The line for the manifest object's bytes, as checked against the row.
+fn manifest_line(bytes: &[u8], row: &SnapRowRead) -> String {
+    let h = blake3::hash(bytes);
+    let same =
+        bytes.len() as u64 == u64::from(row.manifest_len) && *h.as_bytes() == row.manifest_hash;
+    format!(
+        "manifest\t{}\t{}\t{}",
+        bytes.len(),
+        h.to_hex(),
+        if same { "matches" } else { "differs" }
+    )
+}
+
+async fn snap_row(a: &Args) -> Result<(), String> {
+    let (store, refs) = open(a).await?;
+    let vol = volume_id(&a.volume);
+    let name = format!("snap/{}", a.snapshot);
+    match refs
+        .get(vol, &name)
+        .await
+        .map_err(|e| format!("refs: {e}"))?
+    {
+        Some(v) => println!("ref\t{}\t{}", hex(&v.commit), v.generation),
+        None => println!("ref\tnone"),
+    }
+    let key = format!("{SNAP_ROW_PREFIX}{}", a.snapshot);
+    let b = refs
+        .meta_get(vol, &key)
+        .await
+        .map_err(|e| format!("meta {key}: {e}"))?;
+    let (line, read) = snap_row_line(b.as_deref());
+    println!("{line}");
+    let (Some(r), false) = (read, a.out.is_empty()) else {
+        return Ok(());
+    };
+    let mkey = format!(
+        "{}skyzfs/manifest/{}",
+        skynbd_engine::keys::volume_prefix(vol),
+        r.snap
+    );
+    match store.get(&mkey, None).await {
+        Ok(bytes) => {
+            std::fs::write(&a.out, &bytes).map_err(|e| format!("{}: {e}", a.out))?;
+            println!("{}", manifest_line(&bytes, &r));
+        }
+        Err(skynbd_store::StoreError::NotFound(_)) => println!("manifest\tnone"),
+        Err(e) => return Err(format!("{mkey}: {e}")),
+    }
+    Ok(())
 }
 
 async fn row(a: &Args) -> Result<(), String> {
@@ -904,7 +1024,7 @@ async fn main() -> ExitCode {
     let a = match parse(&argv) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get|row|bucket|lease|release|move-head|set-row (see the source's header)");
+            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get|row|bucket|lease|release|move-head|set-row|snap-row (see the source's header)");
             return ExitCode::from(2);
         }
     };
@@ -917,6 +1037,7 @@ async fn main() -> ExitCode {
         "release" => release(&a).await.map(|()| 0),
         "move-head" => move_head(&a).await,
         "set-row" => set_row(&a).await,
+        "snap-row" => snap_row(&a).await.map(|()| 0),
         _ => get(&a).await,
     };
     match r {
@@ -1026,6 +1147,98 @@ mod tests {
             vec![(0, 2 * BLOCK), (3 * BLOCK, BLOCK), (5 * BLOCK, 512)]
         );
         assert!(runs(&vec![0u8; 3 * BLOCK]).is_empty());
+    }
+
+    fn a_snap_row() -> skyzfs_upload::publish::SnapRow {
+        skyzfs_upload::publish::SnapRow {
+            cut: skyzfs_local::inplace::CommittedCut {
+                state: [0xab; 16],
+                number: 7,
+                group: 4242,
+            },
+            commit: [0xcd; 32],
+            snap: skynbd_types::SnapId(ulid::Ulid::from_parts(1_700_000_000_000, 99)),
+            manifest_len: 1234,
+            manifest_hash: [0xef; 32],
+        }
+    }
+
+    #[test]
+    fn the_snap_row_is_read_as_the_daemon_writes_it() {
+        let row = a_snap_row();
+        let b = row.encode();
+        assert_eq!(b.len(), SNAP_ROW_LEN);
+        assert_eq!(
+            skyzfs_upload::publish::snap_row_key("t1"),
+            format!("{SNAP_ROW_PREFIX}t1")
+        );
+        let (line, read) = snap_row_line(Some(&b));
+        assert_eq!(
+            line,
+            format!(
+                "snaprow\t{}\t7\t4242\t{}\t{}\t1234\t{}",
+                "ab".repeat(16),
+                "cd".repeat(32),
+                row.snap,
+                "ef".repeat(32)
+            )
+        );
+        let read = read.expect("a row of version 1 reads");
+        assert_eq!(read.snap, row.snap.0);
+        // The manifest's object is where the daemon puts it.
+        let vol = volume_id("v");
+        assert_eq!(
+            format!(
+                "{}skyzfs/manifest/{}",
+                skynbd_engine::keys::volume_prefix(vol),
+                read.snap
+            ),
+            skyzfs_upload::publish::manifest_key(vol, row.snap)
+        );
+        assert_eq!(snap_row_line(None), ("snaprow\tnone".to_string(), None));
+        let mut v2 = b.clone();
+        v2[0] = 2;
+        assert!(snap_row_line(Some(&v2))
+            .0
+            .starts_with("snaprow\tunreadable\t02"));
+        assert!(snap_row_line(Some(&b[..117])).1.is_none());
+        let mut long = b.clone();
+        long.push(0);
+        assert!(snap_row_line(Some(&long))
+            .0
+            .starts_with("snaprow\tunreadable\t"));
+    }
+
+    #[test]
+    fn the_manifest_is_checked_against_the_row() {
+        let m = b"0123  a/file\n".to_vec();
+        let mut r = SnapRowRead {
+            snap: ulid::Ulid::nil(),
+            manifest_len: m.len() as u32,
+            manifest_hash: *blake3::hash(&m).as_bytes(),
+        };
+        let line = manifest_line(&m, &r);
+        assert_eq!(
+            line,
+            format!(
+                "manifest\t{}\t{}\tmatches",
+                m.len(),
+                blake3::hash(&m).to_hex()
+            )
+        );
+        r.manifest_len += 1;
+        assert!(manifest_line(&m, &r).ends_with("\tdiffers"));
+        r.manifest_len -= 1;
+        r.manifest_hash[0] ^= 1;
+        assert!(manifest_line(&m, &r).ends_with("\tdiffers"));
+    }
+
+    #[test]
+    fn snap_row_needs_its_snapshot() {
+        let base = "--endpoint e --bucket b --volume v";
+        assert!(parse(&args(&format!("snap-row {base}"))).is_err());
+        let a = parse(&args(&format!("snap-row {base} --snapshot t1 --out m"))).expect("parses");
+        assert_eq!((a.snapshot.as_str(), a.out.as_str()), ("t1", "m"));
     }
 
     fn cut_bytes(version: u16, commit: Option<[u8; 32]>) -> Vec<u8> {
