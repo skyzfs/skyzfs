@@ -72,6 +72,27 @@
 //! ([`crate::publish::Publishing::expire`]), whatever the turn does
 //! next: before the lease is held, and while the uploader is idle.
 //!
+//! **The daemon's channel** (M2.5-2) reaches the uploader through
+//! [`Uploader::run_with`]: a request ([`Control`]) is answered between
+//! two turns, never in the middle of one, so it waits at most for the
+//! step under way. The answer reads the publishes as they stand when it
+//! is given: those whose time is up are ended first. A publish accepted
+//! ends the sleep, and the next turn begins at once, so that a publish
+//! asked of an idle uploader is looked up then and not after the sleep.
+//! A request whose asker has stopped waiting is not taken: the asker was
+//! told that no answer came, and would not hear of it. A withdrawal is
+//! made all the same, since it ends a publish and makes none.
+//!
+//! An answer calls neither the store nor object storage
+//! ([`Uploader::control`] does not wait), so a request between two turns
+//! holds back neither the lease's renewal nor the next step (F1 of the
+//! review of #127): the lease is kept as #117's F4 has it. A publish is
+//! judged against the cut state given at the start
+//! ([`Publishing::set_state`]), which is the store's: a store's state
+//! changes only at a start. The count of cuts is not the uploader's to
+//! answer: the channel asks it of the store at the desk
+//! (`queued::Desk::cuts_now`), beside the uploader's calls.
+//!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
 //! through a step (`Driver::step` is not made to be dropped at an
@@ -80,6 +101,7 @@
 
 use std::time::Duration;
 
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use skynbd_refs::RefStore;
@@ -88,7 +110,7 @@ use crate::backoff::Backoff;
 use crate::driver::{Doing, Driver, Figures, Step};
 use crate::lease::{Keeper, LeaseState};
 use crate::local::Local;
-use crate::publish::Publishing;
+use crate::publish::{Answer, Progress, PublishFigures, Publishing, Request};
 use crate::remote::{Remote, RemoteError};
 
 /// How long an idle uploader waits before it asks the store again for a
@@ -197,6 +219,36 @@ pub struct Shown {
     pub lease: LeaseState,
     /// The driver's figures: zero until the driver is made.
     pub figures: Figures,
+    /// The publishes (M2.5-2).
+    pub publishes: PublishesShown,
+}
+
+/// The publishes, as the status shows them (M2.5-2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublishesShown {
+    /// The publishes pending.
+    pub pending: usize,
+    /// The oldest pending: its name, and how long it has pended.
+    pub oldest: Option<(String, Duration)>,
+    /// The figures since the uploader began.
+    pub figures: PublishFigures,
+    /// The publishes that ended since the last post of
+    /// [`Uploader::run_with`], in the order they ended, each with how it
+    /// ended ([`Publishing::take_ended`]). Empty in what
+    /// [`Uploader::shown`] gives.
+    pub ended: Vec<(String, Progress)>,
+}
+
+/// A request of the daemon's channel (M2.5-2), answered by
+/// [`Uploader::control`] between two turns of [`Uploader::run_with`].
+#[derive(Debug)]
+pub enum Control {
+    /// Ask for a publish ([`Publishing::ask`]).
+    Ask(Request, oneshot::Sender<Answer>),
+    /// How the publish of a name stands ([`Publishing::progress`]).
+    Progress(String, oneshot::Sender<Progress>),
+    /// Withdraw the publish of a name ([`Publishing::withdraw`]).
+    Withdraw(String, oneshot::Sender<Progress>),
 }
 
 /// The driver, the lease and the backoff. `M` makes the remote, fenced by
@@ -275,6 +327,21 @@ where
 
     /// The uploader as the status shows it.
     pub fn shown(&self) -> Shown {
+        let publishes = match (&self.driver, &self.publishing) {
+            (Some(driver), _) => Some(driver.publishes()),
+            (None, publishing) => publishing.as_ref(),
+        };
+        let publishes = publishes
+            .map(|publishing| {
+                let (pending, oldest) = publishing.pending();
+                PublishesShown {
+                    pending,
+                    oldest: oldest.map(|(name, age)| (name.to_string(), age)),
+                    figures: publishing.figures().clone(),
+                    ended: Vec::new(),
+                }
+            })
+            .unwrap_or_default();
         Shown {
             state: self.state.clone(),
             lease: self.lease.state().clone(),
@@ -283,7 +350,45 @@ where
                 .as_ref()
                 .map(|d| d.figures().clone())
                 .unwrap_or_default(),
+            publishes,
         }
+    }
+
+    /// Answer a request of the daemon's channel ([module docs](self)), and
+    /// say whether the next turn should begin at once: a publish was
+    /// accepted. It waits on nothing: no call of the store and none of
+    /// object storage.
+    pub fn control(&mut self, control: Control) -> bool {
+        // The publishes as they stand now: those whose time is up end
+        // before anything is answered.
+        self.publishing().expire(Instant::now());
+        match control {
+            Control::Ask(request, reply) => {
+                if reply.is_closed() {
+                    return false;
+                }
+                let answer = self.publishing().ask(request);
+                let accepted = answer == Answer::Accepted;
+                let _ = reply.send(answer);
+                accepted
+            }
+            Control::Progress(name, reply) => {
+                let _ = reply.send(self.publishing().progress(&name));
+                false
+            }
+            Control::Withdraw(name, reply) => {
+                let _ = reply.send(self.publishing().withdraw(&name));
+                false
+            }
+        }
+    }
+
+    /// What the status shows, with the publishes ended since the last
+    /// post, for `publish`.
+    fn post(&mut self, publish: &mut impl FnMut(Shown)) {
+        let mut shown = self.shown();
+        shown.publishes.ended = self.publishing().take_ended();
+        publish(shown);
     }
 
     /// The lease.
@@ -547,25 +652,57 @@ where
     /// after each turn and sleeping between turns as each turn asks; then
     /// the lease's keeper, for the caller to let go or keep. A turn under
     /// way at the stop is dropped, and the uploader with it: nothing can
-    /// turn a driver left half way through a step.
+    /// turn a driver left half way through a step. [`Uploader::run_with`]
+    /// with no request.
     pub async fn run(
+        self,
+        stop: impl std::future::Future<Output = ()>,
+        publish: impl FnMut(Shown),
+    ) -> Keeper<F> {
+        let (_, requests) = mpsc::channel(1);
+        self.run_with(stop, requests, publish).await
+    }
+
+    /// As [`Uploader::run`], and answering each request from `requests`
+    /// between two turns ([`Uploader::control`]), with what the status
+    /// shows given to `publish` after each. A publish accepted begins
+    /// the next turn at once; any other request leaves the sleep as it
+    /// was. Once every sender of `requests` is dropped, it turns as
+    /// [`Uploader::run`] does.
+    pub async fn run_with(
         mut self,
         stop: impl std::future::Future<Output = ()>,
+        mut requests: mpsc::Receiver<Control>,
         mut publish: impl FnMut(Shown),
     ) -> Keeper<F> {
         let mut stop = std::pin::pin!(stop);
-        loop {
+        let mut open = true;
+        'turns: loop {
             // The stop first: once it has come, no other turn begins.
             let wait = tokio::select! {
                 biased;
                 () = &mut stop => break,
                 wait = self.turn() => wait,
             };
-            publish(self.shown());
-            tokio::select! {
-                biased;
-                () = &mut stop => break,
-                () = tokio::time::sleep(wait) => {}
+            self.post(&mut publish);
+            let until = Instant::now() + wait;
+            loop {
+                tokio::select! {
+                    biased;
+                    () = &mut stop => break 'turns,
+                    control = requests.recv(), if open => {
+                        let Some(control) = control else {
+                            open = false;
+                            continue;
+                        };
+                        let now = self.control(control);
+                        self.post(&mut publish);
+                        if now {
+                            continue 'turns;
+                        }
+                    }
+                    () = tokio::time::sleep_until(until) => continue 'turns,
+                }
             }
         }
         self.lease

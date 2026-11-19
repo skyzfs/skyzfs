@@ -696,3 +696,77 @@ fn a_write_away_from_the_labels_has_its_hashes_and_its_bytes() {
     );
     assert_eq!(std::fs::read(&data_path).expect("the data"), &buf[..]);
 }
+
+/// The channel's requests to publish and to withdraw have their `publish`
+/// lines, with the answer the channel gave (a refusal's code, not its
+/// text); a count of cuts and a look at a publish's progress have none.
+/// A publish that ends has its line too, as the uploader's thread writes
+/// it (M2.5-2).
+#[test]
+fn a_publish_has_its_lines_as_asked_and_as_it_ended() {
+    use crate::control::{Code, Publish, Reply, Request};
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let file = open(&path).expect("open");
+    let mut answers = VecDeque::from([
+        Reply::Accepted,
+        Reply::Refused(Code::Busy, "16 publishes pend".into()),
+        Reply::Pending,
+        Reply::Withdrawn,
+        Reply::Refused(Code::Stopped, "the uploader has ended".into()),
+    ]);
+    let asked = Box::new(move |_: &Request, _: Vec<u8>| answers.pop_front().expect("an answer"));
+    let mut channel = channel(asked, Lines::another(&file));
+    let publish = |name: &str, group: u64, after: u64| {
+        Request::Publish(Publish {
+            name: name.into(),
+            attachment: [1; 16],
+            state: [2; 16],
+            after,
+            group,
+            manifest: 3,
+            expiry: None,
+        })
+    };
+    assert_eq!(channel(&Request::Cuts, Vec::new()), Reply::Accepted);
+    assert_eq!(
+        channel(&publish("snap-a", 77, 5), vec![0; 3]),
+        Reply::Refused(Code::Busy, "16 publishes pend".into())
+    );
+    assert_eq!(
+        channel(&Request::Progress("snap-a".into()), Vec::new()),
+        Reply::Pending
+    );
+    assert_eq!(
+        channel(&Request::Withdraw("snap-a".into()), Vec::new()),
+        Reply::Withdrawn
+    );
+    assert_eq!(
+        channel(&publish("snap-b", 78, 6), vec![0; 3]),
+        Reply::Refused(Code::Stopped, "the uploader has ended".into())
+    );
+    let mut uploader = Lines::another(&file);
+    uploader.publish(PublishLine::Ended, "snap-c", &Reply::Done([0xab; 32]));
+    uploader.publish(PublishLine::Ended, "snap-d", &Reply::Expired);
+    let p = pid();
+    assert_eq!(
+        lines(&path),
+        [
+            format!("{p}\tpublish\t-\tasked\t77\t5\tsnap-a refused busy"),
+            format!("{p}\tpublish\t-\twithdraw\t-\t-\tsnap-a withdrawn"),
+            format!("{p}\tpublish\t-\tasked\t78\t6\tsnap-b refused stopped"),
+            format!(
+                "{p}\tpublish\t-\tended\t-\t-\tsnap-c done commit={}",
+                "ab".repeat(32)
+            ),
+            format!("{p}\tpublish\t-\tended\t-\t-\tsnap-d expired"),
+        ]
+    );
+    let accepted = Box::new(|_: &Request, _: Vec<u8>| Reply::Accepted);
+    let mut channel = super::channel(accepted, Lines::another(&file));
+    channel(&publish("snap-e", 79, 7), vec![0; 3]);
+    assert_eq!(
+        lines(&path).last().map(String::as_str),
+        Some(format!("{p}\tpublish\t-\tasked\t79\t7\tsnap-e accepted").as_str())
+    );
+}

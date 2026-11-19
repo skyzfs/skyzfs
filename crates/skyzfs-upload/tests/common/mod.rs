@@ -508,15 +508,23 @@ fn uberblock(txg: u64) -> Buf {
 
 /// A store in memory that writes down each operation while recording:
 /// its kind and the class of its key ("put seg", "put_if refs"), as the
-/// engine's crash test does (M2.4a).
+/// engine's crash test does (M2.4a). While stalled, a PUT of a segment
+/// waits, written down, until the stall ends.
 #[derive(Clone, Default)]
 pub struct Recording {
     inner: MemoryStore,
     log: Arc<Mutex<Vec<String>>>,
     on: Arc<AtomicBool>,
+    stalled: Arc<AtomicBool>,
 }
 
 impl Recording {
+    /// Stall each PUT of a segment from now on, or no more: object
+    /// storage that does not answer (F4 of the review of #127).
+    pub fn stall(&self, on: bool) {
+        self.stalled.store(on, Ordering::SeqCst);
+    }
+
     /// Record from now on, or no more.
     pub fn record(&self, on: bool) {
         self.on.store(on, Ordering::SeqCst);
@@ -547,6 +555,9 @@ impl Recording {
 impl ObjectStore for Recording {
     async fn put(&self, key: &str, data: Bytes) -> Result<(), StoreError> {
         self.note("put", key);
+        while key.contains("/seg/") && self.stalled.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         self.inner.put(key, data).await
     }
     async fn get(&self, key: &str, range: Option<Range<u64>>) -> Result<Bytes, StoreError> {

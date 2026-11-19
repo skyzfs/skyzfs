@@ -9,9 +9,15 @@
 //! - `swap:N`: once the Nth commit of a cut has landed, which swaps head
 //!   and the cut's row in one transaction, and before the cut is let go
 //!   in the store.
+//! - `manifest:N`: once the Nth PUT of a snapshot's framed manifest (a
+//!   key under `snap/`, the last PUT of a publish) has landed, before the
+//!   transaction that makes its ref (M2.5-2). The ZFS manifest's PUT
+//!   (under `skyzfs/manifest/`) comes before it and is not counted.
+//! - `publish:N`: once the Nth publish's transaction has landed (its ref
+//!   `snap/<name>` and its row), before the uploader knows it (M2.5-2).
 //!
-//! Only a PUT or a commit that came back as landed is counted: one that
-//! failed is not, and is not killed at.
+//! Only a PUT, a commit or a publish that came back as landed is counted:
+//! one that failed or was refused is not, and is not killed at.
 //!
 //! The daemon says on its standard error which point it reached, then
 //! sends itself SIGKILL.
@@ -68,10 +74,37 @@ where
     move |epoch| KillRemote::new(make(epoch), kill, Arc::clone(&die))
 }
 
-/// The objects of the uploader's engine, with `put:N`.
+/// Which PUTs a [`KillStore`] counts.
+#[derive(Debug, Clone, Copy)]
+enum Counted {
+    /// `put:N`: a segment's.
+    Segment,
+    /// `manifest:N`: a snapshot's framed manifest.
+    Manifest,
+}
+
+impl Counted {
+    fn counts(self, key: &str) -> bool {
+        match self {
+            Self::Segment => key.contains("/seg/"),
+            Self::Manifest => key.contains("/snap/"),
+        }
+    }
+
+    fn reached(self, n: u64, key: &str) -> String {
+        match self {
+            Self::Segment => format!("after segment PUT {n} landed ({key})"),
+            Self::Manifest => {
+                format!("after the framed manifest PUT {n} landed ({key}), before its ref was made")
+            }
+        }
+    }
+}
+
+/// The objects of the uploader's engine, with `put:N` and `manifest:N`.
 pub struct KillStore<S> {
     inner: S,
-    at: Option<u64>,
+    at: Option<(Counted, u64)>,
     puts: Arc<AtomicU64>,
     die: Die,
 }
@@ -88,10 +121,12 @@ impl<S: Clone> Clone for KillStore<S> {
 }
 
 impl<S> KillStore<S> {
-    /// `inner`, killed at by `die` where `kill` is `put:N`.
+    /// `inner`, killed at by `die` where `kill` is `put:N` or
+    /// `manifest:N`.
     pub fn new(inner: S, kill: Option<KillAt>, die: Die) -> Self {
         let at = match kill {
-            Some(KillAt::Put(n)) => Some(n),
+            Some(KillAt::Put(n)) => Some((Counted::Segment, n)),
+            Some(KillAt::Manifest(n)) => Some((Counted::Manifest, n)),
             _ => None,
         };
         Self {
@@ -107,10 +142,12 @@ impl<S> KillStore<S> {
 impl<S: ObjectStore> ObjectStore for KillStore<S> {
     async fn put(&self, key: &str, data: Bytes) -> Result<()> {
         self.inner.put(key, data).await?;
-        if key.contains("/seg/") {
-            let n = self.puts.fetch_add(1, Ordering::SeqCst) + 1;
-            if self.at == Some(n) {
-                (self.die)(&format!("after segment PUT {n} landed ({key})"));
+        if let Some((counted, at)) = self.at {
+            if counted.counts(key) {
+                let n = self.puts.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == at {
+                    (self.die)(&counted.reached(n, key));
+                }
             }
         }
         Ok(())
@@ -145,25 +182,31 @@ impl<S: ObjectStore> ObjectStore for KillStore<S> {
     }
 }
 
-/// The uploader's remote, with `swap:N`.
+/// The uploader's remote, with `swap:N` and `publish:N`.
 pub struct KillRemote<R> {
     inner: R,
     at: Option<u64>,
     swaps: u64,
+    publish_at: Option<u64>,
+    publishes: u64,
     die: Die,
 }
 
 impl<R> KillRemote<R> {
-    /// `inner`, killed at by `die` where `kill` is `swap:N`.
+    /// `inner`, killed at by `die` where `kill` is `swap:N` or
+    /// `publish:N`.
     pub fn new(inner: R, kill: Option<KillAt>, die: Die) -> Self {
-        let at = match kill {
-            Some(KillAt::Swap(n)) => Some(n),
-            _ => None,
+        let (at, publish_at) = match kill {
+            Some(KillAt::Swap(n)) => (Some(n), None),
+            Some(KillAt::Publish(n)) => (None, Some(n)),
+            _ => (None, None),
         };
         Self {
             inner,
             at,
             swaps: 0,
+            publish_at,
+            publishes: 0,
             die,
         }
     }
@@ -212,7 +255,15 @@ impl<R: Remote> Remote for KillRemote<R> {
         commit: CommitHash,
         snapshot: &Snapshot<'_>,
     ) -> std::result::Result<(), RemoteError> {
-        self.inner.publish(commit, snapshot).await
+        self.inner.publish(commit, snapshot).await?;
+        self.publishes += 1;
+        if self.publish_at == Some(self.publishes) {
+            (self.die)(&format!(
+                "after the transaction of publish {} ({}) landed, before the uploader knew it",
+                self.publishes, snapshot.name
+            ));
+        }
+        Ok(())
     }
 
     fn discard(&mut self) {

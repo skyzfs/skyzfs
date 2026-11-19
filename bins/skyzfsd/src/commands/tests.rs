@@ -1168,3 +1168,142 @@ fn create_chooses_the_write_unit_by_the_file_systems_block_or_refuses() {
         "{note}"
     );
 }
+
+mod channel {
+    use std::cell::RefCell;
+
+    use crate::cli::Ask;
+    use crate::control::{Code, Publish, Reply, Request};
+    use skyzfs_upload::publish::MANIFEST_MAX;
+
+    use super::*;
+
+    fn volume(dirs: &tempfile::TempDir) -> Volume {
+        let dir = dirs.path().join("vol");
+        std::fs::create_dir_all(&dir).expect("the volume's directory");
+        Volume {
+            dir,
+            run_dir: dirs.path().join("run"),
+        }
+    }
+
+    fn publish(volume: &Volume, manifest: Option<PathBuf>) -> Ask {
+        Ask {
+            volume: volume.clone(),
+            request: Request::Publish(Publish {
+                name: "t".into(),
+                attachment: [1; 16],
+                state: [2; 16],
+                after: 3,
+                group: 4,
+                manifest: 0,
+                expiry: None,
+            }),
+            manifest,
+        }
+    }
+
+    /// Mutant: another socket than the volume's, the manifest not sent or
+    /// its length not the file's, or a refusal that exits 0.
+    #[test]
+    fn ask_sends_the_request_to_the_volumes_socket_and_prints_the_answer() {
+        let dirs = tempfile::tempdir().expect("a directory");
+        let volume = volume(&dirs);
+        let manifest = dirs.path().join("manifest");
+        std::fs::write(&manifest, b"zfs").expect("the manifest");
+        let asked = RefCell::new(None);
+        let output = ask(&publish(&volume, Some(manifest)), |path, request, bytes| {
+            *asked.borrow_mut() = Some((path.to_owned(), request.clone(), bytes.to_vec()));
+            Ok(Reply::Accepted)
+        });
+        assert_eq!(output.exit, Exit::Done);
+        assert_eq!(output.out, "accepted\n");
+        let (path, request, bytes) = asked.into_inner().expect("asked");
+        let run = records::volume_run_dir(&volume.run_dir, &volume.dir).expect("the run dir");
+        assert_eq!(path, run.join(crate::control::SOCKET));
+        let Request::Publish(sent) = request else {
+            panic!("{request:?}");
+        };
+        assert_eq!(sent.manifest, 3);
+        assert_eq!(bytes, b"zfs");
+
+        let output = ask(&publish(&volume, None), |_, request, bytes| {
+            assert!(matches!(request, Request::Publish(p) if p.manifest == 0));
+            assert!(bytes.is_empty());
+            Ok(Reply::Refused(
+                Code::Taken,
+                "the name names another commit".into(),
+            ))
+        });
+        assert_eq!(output.exit, Exit::Error);
+        assert_eq!(output.out, "refused taken the name names another commit\n");
+
+        let output = ask(&publish(&volume, None), |_, _, _| {
+            Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+        });
+        assert_eq!(output.exit, Exit::Error);
+        assert!(
+            output.err.contains("no answer from the daemon's channel"),
+            "{}",
+            output.err
+        );
+    }
+
+    /// Mutant: a manifest over the limit sent (the daemon would refuse it
+    /// only after the whole of it was written), or one that cannot be
+    /// read sent empty.
+    #[test]
+    fn a_manifest_that_cannot_be_sent_is_not() {
+        let dirs = tempfile::tempdir().expect("a directory");
+        let volume = volume(&dirs);
+        let over = dirs.path().join("over");
+        std::fs::write(&over, vec![0u8; MANIFEST_MAX + 1]).expect("the manifest");
+        let exactly = dirs.path().join("exactly");
+        std::fs::write(&exactly, vec![0u8; MANIFEST_MAX]).expect("the manifest");
+        for path in [over, dirs.path().join("missing")] {
+            let output = ask(&publish(&volume, Some(path.clone())), |_, _, _| {
+                panic!("sent {}", path.display())
+            });
+            assert_eq!(output.exit, Exit::Error);
+            assert!(output.err.contains("the manifest"), "{}", output.err);
+        }
+        let output = ask(&publish(&volume, Some(exactly)), |_, _, bytes| {
+            assert_eq!(bytes.len(), MANIFEST_MAX);
+            Ok(Reply::Accepted)
+        });
+        assert_eq!(output.exit, Exit::Done);
+    }
+
+    /// The command and the daemon's channel, through a socket.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ask_reaches_a_channel_in_the_volumes_run_directory() {
+        let dirs = tempfile::tempdir().expect("a directory");
+        let volume = volume(&dirs);
+        let run = records::volume_run_dir(&volume.run_dir, &volume.dir).expect("the run dir");
+        std::fs::create_dir_all(&run).expect("made");
+        let channel = crate::control::Channel::open(
+            &run.join(crate::control::SOCKET),
+            Box::new(|request: &Request, _: Vec<u8>| match request {
+                Request::Progress(name) if name == "t" => Reply::Done([9; 32]),
+                _ => Reply::Unknown,
+            }),
+        )
+        .expect("open");
+        let progress = Ask {
+            volume: volume.clone(),
+            request: Request::Progress("t".into()),
+            manifest: None,
+        };
+        let output = ask(&progress, |path, request, bytes| {
+            crate::control::ask(path, request, bytes, crate::control::IO_LIMIT)
+        });
+        assert_eq!(output.exit, Exit::Done, "{}", output.err);
+        assert_eq!(output.out, format!("done commit={}\n", "09".repeat(32)));
+        assert!(channel.close());
+        let output = ask(&progress, |path, request, bytes| {
+            crate::control::ask(path, request, bytes, crate::control::IO_LIMIT)
+        });
+        assert_eq!(output.exit, Exit::Error);
+    }
+}

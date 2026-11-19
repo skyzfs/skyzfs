@@ -29,6 +29,16 @@
 //! the close (it leaves the call, the desk closes, it wakes), so the wake
 //! must be harmless once the queue has ended: the daemon's is an event
 //! descriptor that outlives the queue's thread.
+//!
+//! **The count of cuts** (M2.5-2) is asked at the desk by the daemon's
+//! channel, not by the uploader ([`Desk::cuts_now`]): it has a slot of
+//! its own, beside the uploader's call, and the turn after the ask
+//! answers it from the store first, whatever the uploader's call waits
+//! for. It reads the store's state in memory and nothing of the disk,
+//! so neither a sync of the copies under way nor the uploader's step
+//! holds it back: a stalled PUT or a slow lookup does not hold up a
+//! `cuts` (F1 and F4 of the review of #127). A closed desk answers it
+//! with nothing, as every call after the close.
 
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -37,7 +47,7 @@ use skyzfs_blk::Buf;
 use skyzfs_local::inplace::CutSlice;
 use tokio::sync::oneshot;
 
-use crate::local::{not_ended, Local, Released, Store, Uploadable};
+use crate::local::{not_ended, CutsNow, Local, Released, Store, Uploadable};
 
 /// A call of [`Local`], as it travels.
 #[derive(Debug)]
@@ -126,6 +136,9 @@ struct Slot {
     /// The reply to a sync of the copies that an earlier turn began,
     /// sent by the turn that finds its end.
     syncing: Option<oneshot::Sender<Answer>>,
+    /// The asks of the count of cuts ([`Desk::cuts_now`]), answered
+    /// together at the next turn.
+    counts: Vec<oneshot::Sender<CutsNow>>,
     closed: bool,
     /// The calls answered, for the status and the tests.
     answered: u64,
@@ -148,19 +161,28 @@ impl Desk {
     }
 
     /// On the queue's thread, after a turn: answer the call waiting, if
-    /// there is one, from `store`, without waiting on the disk. A sync of
-    /// the copies under way is answered first, once it has ended; until
-    /// then a call waiting stays where it is. A sync of the copies asked
-    /// for is begun, and answered here at once only if it has ended
-    /// already. Whether anything was done: a call taken, or a sync's end
-    /// answered.
+    /// there is one, from `store`, without waiting on the disk. The asks
+    /// of the count of cuts are answered first, whatever the call waits
+    /// for. A sync of the copies under way is answered next, once it has
+    /// ended; until then a call waiting stays where it is. A sync of the
+    /// copies asked for is begun, and answered here at once only if it
+    /// has ended already. Whether anything was done: a count given, a
+    /// call taken, or a sync's end answered.
     pub fn answer(&self, store: &mut impl Store) -> bool {
-        let mut done = false;
+        let counts = std::mem::take(&mut self.slot().counts);
+        let mut done = !counts.is_empty();
+        if done {
+            let now = store.cuts();
+            for reply in counts {
+                // An ask whose asker stopped waiting is not wanted.
+                let _ = reply.send(now);
+            }
+        }
         let syncing = self.slot().syncing.take();
         if let Some(reply) = syncing {
             let Some(synced) = store.copies_synced(false) else {
                 self.park(reply);
-                return false;
+                return done;
             };
             self.reply(reply, Answer::SyncCopies(synced));
             done = true;
@@ -200,14 +222,15 @@ impl Desk {
         let _ = reply.send(answer);
     }
 
-    /// The queue's thread serves no more: drop the call waiting and the
-    /// reply to a sync under way, and answer every call after as a store
-    /// that holds nothing would.
+    /// The queue's thread serves no more: drop the call waiting, the
+    /// reply to a sync under way and the asks of the count, and answer
+    /// every call after as a store that holds nothing would.
     pub fn close(&self) {
         let mut slot = self.slot();
         slot.closed = true;
         slot.call = None;
         slot.syncing = None;
+        slot.counts.clear();
     }
 
     /// Whether the desk is closed.
@@ -215,9 +238,33 @@ impl Desk {
         self.slot().closed
     }
 
-    /// The calls answered so far.
+    /// The calls answered so far. The counts given to
+    /// [`Desk::cuts_now`] are not calls, and are not in it.
     pub fn answered(&self) -> u64 {
         self.slot().answered
+    }
+
+    /// The store's count of cuts now ([`CutsNow`]), for the daemon's
+    /// channel: left at the desk, the queue's thread woken, and taken
+    /// from the store at its next turn, before anything else is
+    /// answered ([module docs](self)). A cut counted before the ask is
+    /// in it. `None` where the desk is closed, or closes before the
+    /// answer: the store is no longer served. The caller bounds the
+    /// wait; an ask it stops waiting for is dropped at the next turn.
+    pub async fn cuts_now(&self) -> Option<CutsNow> {
+        let (reply, answer) = oneshot::channel();
+        {
+            let mut slot = self.slot();
+            if slot.closed {
+                return None;
+            }
+            // Asks whose askers stopped waiting while the queue's thread
+            // took no turn are dropped here, so that they do not pile up.
+            slot.counts.retain(|waiting| !waiting.is_closed());
+            slot.counts.push(reply);
+        }
+        (self.wake)();
+        answer.await.ok()
     }
 
     /// Leave `call`, wake the queue's thread and wait for the answer.

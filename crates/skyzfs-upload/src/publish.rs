@@ -468,6 +468,18 @@ enum Outcome {
     Lapsed(Lapse),
 }
 
+impl Outcome {
+    /// How a publish that ended so stands.
+    fn progress(&self) -> Progress {
+        match self {
+            Outcome::Done(_, commit) => Progress::Done(*commit),
+            Outcome::Refused(why) => Progress::Refused(why.clone()),
+            Outcome::Lapsed(Lapse::Expired) => Progress::Expired,
+            Outcome::Lapsed(Lapse::Withdrawn) => Progress::Withdrawn,
+        }
+    }
+}
+
 /// The publishes of one uploader ([module docs](self)).
 #[derive(Debug, Clone)]
 pub struct Publishing {
@@ -479,6 +491,9 @@ pub struct Publishing {
     outcomes: BTreeMap<String, Outcome>,
     order: VecDeque<String>,
     figures: PublishFigures,
+    /// The publishes ended since [`Publishing::take_ended`] last took
+    /// them, in the order they ended: the newest [`OUTCOMES_KEPT`].
+    ended: VecDeque<(String, Progress)>,
 }
 
 impl Default for Publishing {
@@ -502,6 +517,7 @@ impl Publishing {
             outcomes: BTreeMap::new(),
             order: VecDeque::new(),
             figures: PublishFigures::default(),
+            ended: VecDeque::new(),
         }
     }
 
@@ -553,6 +569,14 @@ impl Publishing {
     /// The figures since the uploader began.
     pub fn figures(&self) -> &PublishFigures {
         &self.figures
+    }
+
+    /// The publishes that ended since this was last called, in the order
+    /// they ended, each with how it ended: for the daemon's request log
+    /// (M2.5-2). A request refused at once never pended and is not here.
+    /// The newest [`OUTCOMES_KEPT`] are kept between two calls.
+    pub fn take_ended(&mut self) -> Vec<(String, Progress)> {
+        self.ended.drain(..).collect()
     }
 
     /// The publishes pending, and the oldest's name and age.
@@ -642,13 +666,9 @@ impl Publishing {
         if self.pending.iter().any(|p| p.request.name == name) {
             return Progress::Pending;
         }
-        match self.outcomes.get(name) {
-            Some(Outcome::Done(_, commit)) => Progress::Done(*commit),
-            Some(Outcome::Refused(why)) => Progress::Refused(why.clone()),
-            Some(Outcome::Lapsed(Lapse::Expired)) => Progress::Expired,
-            Some(Outcome::Lapsed(Lapse::Withdrawn)) => Progress::Withdrawn,
-            None => Progress::Unknown,
-        }
+        self.outcomes
+            .get(name)
+            .map_or(Progress::Unknown, Outcome::progress)
     }
 
     /// End each publish whose time is up at `now` ([`Request::expiry`]):
@@ -845,6 +865,10 @@ impl Publishing {
         if let Outcome::Done(row, commit) = &outcome {
             self.figures.last = Some((name.to_string(), row.cut, *commit));
         }
+        if self.ended.len() == OUTCOMES_KEPT {
+            self.ended.pop_front();
+        }
+        self.ended.push_back((name.to_string(), outcome.progress()));
         if self.outcomes.insert(name.to_string(), outcome).is_none() {
             self.order.push_back(name.to_string());
         }

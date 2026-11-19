@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1032
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1408
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,16 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's seventeenth version (M2.4e). It adds, after the
+//! This is the file's eighteenth version (M2.5-2). It adds, after the
+//! seventeenth's fields, the uploader's cuts not offered for a publish,
+//! its publishes (the requests accepted, published, found, refused,
+//! expired and withdrawn, those pending and the oldest of them, and the
+//! last published or found), and the daemon's channel (whether it
+//! answers through the uploader, refuses every request, or could not be
+//! made, and its counts). Nothing is dropped or moved. The seventeenth
+//! (`SKYZST17`, 1032 bytes) is still read, without them.
+//!
+//! The seventeenth version (M2.4e) added, after the
 //! sixteenth's fields, the image's holes as the cut state holds them
 //! (whether the set holds or was dropped, and its hole chunks) and the
 //! uploader's blocks written as zeros with nothing read. Nothing is
@@ -146,6 +155,14 @@
 //! | 1008 | 8 | `cut_holes`: the image's holes as the cut state holds them (M2.4e): 0 none (the store holds no cut, the state began from an intent map that named what changed, the image's file system could not say where its holes are, or the state is of an earlier version); 1 the set holds: the first cut held holds the whole volume, and a block of a hole chunk that nothing wrote since the state began reads as zeros in it, with no copy made at a write there; 2 the set was dropped, once that cut was uploaded or let go. Any other value is read as "not said" |
 //! | 1016 | 8 | `cut_hole_chunks`: the chunks of 64 KiB the set named as holes when the cut state began. The count is kept once the set is dropped (`cut_holes` 2): it is what the state's first cut could read as zeros, not what it reads now. 0 where `cut_holes` is 0, no set having been taken. A volume whose image has no holes (made with `create --zero-fill`, or written through) has none, and its first cut copies every block written under it, as before M2.4e |
 //! | 1024 | 8 | `upload_zero_blocks`: among the blocks of the cuts committed, those written as zeros with nothing read: blocks of a hole chunk that nothing wrote up to the cut's instant. Not in `upload_blocks` |
+//! | 1032 | 8 | `upload_not_offered`: the cuts the check found committed while head's group was not theirs: head had moved past their commit, so no publish is made on them (M2.5-1) |
+//! | 1040 | 56 | the publishes since this daemon started serving (M2.5-2): requests accepted (`publish_accepted`), snapshots published by this uploader (`publish_published`), requests found published already in object storage (`publish_found`), requests refused at once or once looked up (`publish_refused`), publishes dropped at their deadline (`publish_expired`), publishes withdrawn (`publish_withdrawn`), and the publishes pending at the uploader's last post (`publish_pending`) |
+//! | 1096 | 8 | `publish_oldest_ms`: how long the oldest pending publish had pended at the uploader's last post; 0 where none pends |
+//! | 1104 | 16 | the last snapshot published or found: its cut's number in its cut state (`publish_last_cut`) and its transaction group (`publish_last_group`); 0 and 0 before the first |
+//! | 1120 | 128 | `publish_oldest`: UTF-8, padded with zeros: the name of the oldest pending publish; empty where none pends |
+//! | 1248 | 128 | `publish_last`: the name of the last snapshot published or found; empty before the first |
+//! | 1376 | 8 | `control`: the daemon's channel (`DIR/control` under the volume's run directory, M2.5-2): 0 none (a daemon that did not reach serving, or one whose file is of an earlier version); 1 it answers through the uploader; 2 it refuses every request `no-upload` (this daemon does not upload, another holds the lease, or the attachment record could not be read); 3 the socket could not be made, and the volume is served without it. Any other value is read as "not said" |
+//! | 1384 | 24 | the channel's counts since this daemon started serving: requests answered, refusals included (`control_answered`); connections refused for their peer's user before they were read (`control_peer`); requests refused as `version` or `malformed` (`control_malformed`) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -197,10 +214,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST17";
+const MAGIC: &[u8; 8] = b"SKYZST18";
 /// The version this crate writes.
-pub const VERSION: u32 = 17;
-const LEN: usize = 1032;
+pub const VERSION: u32 = 18;
+const LEN: usize = 1408;
+
+/// The seventeenth version, still read: up to the publishes, at the
+/// same places.
+const SEVENTEENTH_MAGIC: &[u8; 8] = b"SKYZST17";
+const SEVENTEENTH_LEN: usize = 1032;
 
 /// The sixteenth version, still read: up to the image's holes, at the
 /// same places.
@@ -308,6 +330,10 @@ pub struct StoreShown {
     /// fifteenth. Posted by the uploader's thread
     /// ([`Board::post_upload`]), not with the rest.
     pub upload: Option<UploadShown>,
+    /// The daemon's channel. `None` in a file of a version before the
+    /// eighteenth. Posted by the channel's thread and by serve
+    /// ([`Board::post_channel`]), not with the rest.
+    pub channel: Option<ChannelShown>,
 }
 
 /// The longest of the status file's texts, in bytes.
@@ -513,6 +539,10 @@ pub struct UploadFigures {
     /// with nothing read (M2.4e). `None` in a file of a version before
     /// the seventeenth.
     pub zero_blocks: Option<u64>,
+    /// Cuts found committed while head's group was not theirs, on which
+    /// no publish is made (M2.5-1). `None` in a file of a version before
+    /// the eighteenth.
+    pub not_offered: Option<u64>,
 }
 
 impl UploadFigures {
@@ -548,6 +578,7 @@ impl UploadFigures {
             gave_up: f[10],
             errors: f[11],
             zero_blocks: None,
+            not_offered: None,
         }
     }
 }
@@ -581,6 +612,68 @@ pub struct UploadShown {
     pub holder: Text,
     /// The last step that failed on object storage.
     pub last_error: Text,
+    /// The publishes (M2.5-2). `None` in a file of a version before the
+    /// eighteenth.
+    pub publish: Option<PublishShown>,
+}
+
+/// The publishes since the daemon started serving, as the status file
+/// says them (M2.5-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PublishShown {
+    /// Requests accepted.
+    pub accepted: u64,
+    /// Snapshots published by this uploader.
+    pub published: u64,
+    /// Requests found published already in object storage.
+    pub found: u64,
+    /// Requests refused, at once or once looked up.
+    pub refused: u64,
+    /// Publishes dropped at their deadline.
+    pub expired: u64,
+    /// Publishes withdrawn.
+    pub withdrawn: u64,
+    /// Publishes pending at the uploader's last post.
+    pub pending: u64,
+    /// How long the oldest pending had pended then; 0 where none did.
+    pub oldest_ms: u64,
+    /// The last snapshot published or found: its cut's number; 0 before
+    /// the first.
+    pub last_cut: u64,
+    /// Its transaction group; 0 before the first.
+    pub last_group: u64,
+    /// The oldest pending's name; empty where none pends.
+    pub oldest: Text,
+    /// The last snapshot's name; empty before the first.
+    pub last: Text,
+}
+
+coded! {
+    /// The daemon's channel (M2.5-2).
+    ChannelStateShown {
+        /// None: the daemon did not reach serving.
+        #[default]
+        None = 0, "none";
+        /// It answers through the uploader.
+        Uploads = 1, "uploads";
+        /// It refuses every request `no-upload`.
+        NoUpload = 2, "no_upload";
+        /// Its socket could not be made: the volume is served without it.
+        Failed = 3, "failed";
+    }
+}
+
+/// The daemon's channel, as the status file says it (M2.5-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChannelShown {
+    /// What it is.
+    pub state: ChannelStateShown,
+    /// Requests answered, refusals included.
+    pub answered: u64,
+    /// Connections refused for their peer's user, before they were read.
+    pub peer: u64,
+    /// Requests refused as `version` or `malformed`.
+    pub malformed: u64,
 }
 
 impl UploadShown {
@@ -1013,6 +1106,40 @@ fn encode(status: &Status) -> [u8; LEN] {
     {
         bytes[1008 + 8 * i..1016 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
+    let publish = upload.publish.unwrap_or_default();
+    for (i, field) in [
+        upload.figures.not_offered.unwrap_or(0),
+        publish.accepted,
+        publish.published,
+        publish.found,
+        publish.refused,
+        publish.expired,
+        publish.withdrawn,
+        publish.pending,
+        publish.oldest_ms,
+        publish.last_cut,
+        publish.last_group,
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[1032 + 8 * i..1040 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
+    for (at, text) in [(1120, publish.oldest), (1248, publish.last)] {
+        bytes[at..at + TEXT].copy_from_slice(&text.0);
+    }
+    let channel = shown.channel.unwrap_or_default();
+    for (i, field) in [
+        channel.state.code(),
+        channel.answered,
+        channel.peer,
+        channel.malformed,
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[1376 + 8 * i..1384 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
     bytes
 }
 
@@ -1047,6 +1174,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        18
+    } else if is(SEVENTEENTH_LEN, SEVENTEENTH_MAGIC) {
         17
     } else if is(SIXTEENTH_LEN, SIXTEENTH_MAGIC) {
         16
@@ -1154,6 +1283,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             expires_unix_ms: field(464),
             figures: UploadFigures {
                 zero_blocks: (version >= 17).then(|| field(1024)),
+                not_offered: (version >= 18).then(|| field(1032)),
                 ..UploadFigures::of(std::array::from_fn(|i| field(472 + 8 * i)))
             },
             checked: CheckedShown::of(field(568)),
@@ -1161,6 +1291,26 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             why: Text::of(&bytes[584..]),
             holder: Text::of(&bytes[712..]),
             last_error: Text::of(&bytes[840..]),
+            publish: (version >= 18).then(|| PublishShown {
+                accepted: field(1040),
+                published: field(1048),
+                found: field(1056),
+                refused: field(1064),
+                expired: field(1072),
+                withdrawn: field(1080),
+                pending: field(1088),
+                oldest_ms: field(1096),
+                last_cut: field(1104),
+                last_group: field(1112),
+                oldest: Text::of(&bytes[1120..]),
+                last: Text::of(&bytes[1248..]),
+            }),
+        });
+        let channel = (version >= 18).then(|| ChannelShown {
+            state: ChannelStateShown::of(field(1376)),
+            answered: field(1384),
+            peer: field(1392),
+            malformed: field(1400),
         });
         let shown = StoreShown {
             zeroes: ZeroesShown::of(field(136)),
@@ -1170,6 +1320,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             held,
             intent,
             upload,
+            channel,
         };
         (field(112), field(120), field(128), shown)
     } else {
@@ -1187,6 +1338,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             held: None,
             intent: None,
             upload: None,
+            channel: None,
         };
         (
             field(tenth::FAILURES),
@@ -1463,6 +1615,7 @@ impl Board {
     pub fn post_store(&self, mut shown: StoreShown) {
         let mut posted = self.lock();
         shown.upload = posted.store.upload;
+        shown.channel = posted.store.channel;
         if posted.store != shown {
             posted.store = shown;
             if posted.awaits_change || posted.every_post_wakes {
@@ -1478,6 +1631,18 @@ impl Board {
         let mut posted = self.lock();
         if posted.store.upload != Some(upload) {
             posted.store.upload = Some(upload);
+            if posted.awaits_change || posted.every_post_wakes {
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    /// Put the channel up, from its own thread or from serve, as
+    /// [`Board::post_upload`] does the uploader's.
+    pub fn post_channel(&self, channel: ChannelShown) {
+        let mut posted = self.lock();
+        if posted.store.channel != Some(channel) {
+            posted.store.channel = Some(channel);
             if posted.awaits_change || posted.every_post_wakes {
                 self.changed.notify_all();
             }
@@ -1907,6 +2072,36 @@ pub fn report(
             lines.push(("upload_checked", upload.checked.said().to_string()));
             lines.push(("upload_rule", upload.rule.said().to_string()));
             lines.push(("upload_last_error", text(upload.last_error)));
+            // From a file of the eighteenth version on (M2.5-2).
+            if let Some(not_offered) = f.not_offered {
+                lines.push(("upload_not_offered", not_offered.to_string()));
+            }
+            if let Some(p) = upload.publish {
+                for (key, value) in [
+                    ("publish_accepted", p.accepted),
+                    ("publish_published", p.published),
+                    ("publish_found", p.found),
+                    ("publish_refused", p.refused),
+                    ("publish_expired", p.expired),
+                    ("publish_withdrawn", p.withdrawn),
+                    ("publish_pending", p.pending),
+                ] {
+                    lines.push((key, value.to_string()));
+                }
+                lines.push(("publish_oldest", text(p.oldest)));
+                lines.push(("publish_oldest_ms", p.oldest_ms.to_string()));
+                lines.push(("publish_last", text(p.last)));
+                lines.push(("publish_last_cut", p.last_cut.to_string()));
+                lines.push(("publish_last_group", p.last_group.to_string()));
+            }
+        }
+        // The channel, from a file that has it: every key, whether or not
+        // the daemon has one.
+        if let Some(channel) = shown.channel {
+            lines.push(("control", channel.state.said().to_string()));
+            lines.push(("control_answered", channel.answered.to_string()));
+            lines.push(("control_peer", channel.peer.to_string()));
+            lines.push(("control_malformed", channel.malformed.to_string()));
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);
         if live {

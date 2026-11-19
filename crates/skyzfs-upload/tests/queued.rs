@@ -10,12 +10,11 @@ use std::time::{Duration, Instant};
 
 use skynbd_refs::ObjectRefStore;
 use skyzfs_blk::Buf;
-use skyzfs_local::inplace::CutSlice;
-use skyzfs_local::inplace::InPlace;
+use skyzfs_local::inplace::{Cut, CutSlice, InPlace};
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
 use skyzfs_upload::uploader::{State, Uploader};
-use skyzfs_upload::{Desk, Local, Queued, Released, Store, Uploadable};
+use skyzfs_upload::{CutsNow, Desk, Local, Queued, Released, Store, Uploadable};
 
 use common::*;
 
@@ -113,7 +112,10 @@ fn timed_queue_thread(
 /// A sync of the copies through the desk is begun at one turn and
 /// answered at a later one: while the disk holds it, the queue's thread
 /// goes on turning, no answer waits for it, and nobody waits at the
-/// sync's end. Once it ends the cut goes up (F1 of #117's review).
+/// sync's end. Once it ends the cut goes up (F1 of #117's review). The
+/// count of cuts is given meanwhile (M2.5-2).
+///
+/// Mutant: the count given only once the sync's end is answered.
 #[tokio::test]
 async fn a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning() {
     const HELD: Duration = Duration::from_millis(400);
@@ -163,6 +165,11 @@ async fn a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning() {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         let at_begin = turns.load(Ordering::SeqCst);
+        let count = tokio::time::timeout(HELD / 2, desk.cuts_now()).await;
+        assert!(
+            matches!(count, Ok(Some(now)) if now.count == 1),
+            "the count while the sync is held: {count:?}"
+        );
         tokio::time::sleep(HELD).await;
         let during = turns.load(Ordering::SeqCst) - at_begin;
         assert_eq!(disk.held_waiters(), 0, "nobody waits at the held sync");
@@ -266,7 +273,9 @@ async fn a_sync_of_the_copies_under_way_at_the_close_ends_as_failed() {
 
 /// A call waiting when the desk closes is dropped and answered as by a
 /// store that holds nothing; so is every call after, and none of them
-/// wakes the queue's thread.
+/// wakes the queue's thread. An ask of the count waiting at the close
+/// ends at once, with no count, and so does every ask after (N3 of the
+/// next look at #127: not after its asker's limit).
 #[tokio::test]
 async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     let (wake, mut woken) = tokio::sync::mpsc::unbounded_channel();
@@ -280,6 +289,13 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
         .await
         .expect("the call woke the queue's thread");
     assert!(!call.is_finished(), "nobody has answered");
+    let asking = Arc::clone(&desk);
+    let count = tokio::spawn(async move { asking.cuts_now().await });
+    woken
+        .recv()
+        .await
+        .expect("the ask of the count woke the queue's thread");
+    assert!(!count.is_finished(), "nobody has given the count");
 
     desk.close();
     let answer = tokio::time::timeout(Duration::from_secs(10), call)
@@ -287,6 +303,11 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
         .expect("the call waiting ends at the close")
         .expect("the task");
     assert!(answer.is_none(), "{answer:?}");
+    let counted = tokio::time::timeout(Duration::from_secs(5), count)
+        .await
+        .expect("the ask of the count waiting ends at the close")
+        .expect("the task");
+    assert_eq!(counted, None, "no count: the store is no longer served");
 
     let mut after = Queued::new(Arc::clone(&desk));
     assert!(after.uploadable().await.is_none());
@@ -297,6 +318,12 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     assert_eq!(after.release(1).await, Released::Gone);
     assert!(!after.name_committed(1, 7).await);
     assert!(after.abandon_all().await.is_empty());
+    let count = tokio::time::timeout(Duration::from_secs(5), desk.cuts_now()).await;
+    assert_eq!(
+        count,
+        Ok(None),
+        "the count, at once: the store is no longer served"
+    );
     assert!(woken.try_recv().is_err(), "no call after the close woke it");
     assert_eq!(desk.answered(), 0);
 }
@@ -334,6 +361,10 @@ impl Store for ClosingAtTheSync {
 
     fn abandon_all(&mut self) -> Vec<u64> {
         Vec::new()
+    }
+
+    fn cuts(&mut self) -> CutsNow {
+        CutsNow::default()
     }
 }
 
@@ -391,4 +422,123 @@ async fn a_queue_that_turns_only_when_woken_answers_every_call() {
     desk.close();
     let _ = last.send(());
     queue.join().expect("the queue's thread");
+}
+
+/// The count of cuts a request on the daemon's channel reads (M2.5-2) is
+/// the store's, taken on the store's own thread when the call comes:
+/// its cut state, the cuts counted in it, and the newest. Before the
+/// first cut the count is 0 and there is no newest. The count is not a
+/// call: [`Desk::answered`] leaves it out. Mutants: a count one short of
+/// the store's; a count counted as a call.
+#[tokio::test]
+async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
+    let mut fx = Fixture::new(53).await;
+    let mut store = fx.start();
+    let state = store.cut_state_id();
+    assert!(state.is_some(), "the store holds cuts");
+    assert_eq!(
+        Store::cuts(&mut store),
+        CutsNow {
+            state,
+            count: 0,
+            newest: None
+        },
+        "no cut yet"
+    );
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    fx.write(&mut store, 11, 0x11);
+    fx.group(&mut store, 8);
+
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), store, woken);
+    let now = tokio::time::timeout(Duration::from_secs(5), desk.cuts_now())
+        .await
+        .expect("the queue's thread gives the count at its next turn, with no call waiting");
+    assert_eq!(
+        now,
+        Some(CutsNow {
+            state,
+            count: 2,
+            newest: Some(Cut {
+                number: 2,
+                group: 8,
+                itself: true
+            })
+        })
+    );
+    assert_eq!(
+        desk.answered(),
+        0,
+        "a count is not a call (N4 of the next look at #127)"
+    );
+    desk.close();
+    let _ = queue.join();
+}
+
+/// The count of cuts is given while the uploader's step waits on object
+/// storage: a PUT that stalls holds the uploader up, but not `cuts`,
+/// which the desk answers at the queue's next turn (F1 and F4 of the
+/// review of #127; its scenario stalled each PUT of the step).
+///
+/// Mutant: the count given only with one of the uploader's calls, which
+/// waits for the uploader's step.
+#[tokio::test]
+async fn the_count_is_given_while_a_put_of_the_uploader_stalls() {
+    let mut fx = Fixture::new(57).await;
+    let mut store = fx.start();
+    let state = store.cut_state_id();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    fx.store.inner().stall(true);
+    fx.store.inner().record(true);
+    let (wake, woken) = std::sync::mpsc::channel();
+    let desk = Desk::new(move || {
+        let _ = wake.send(());
+    });
+    let queue = queue_thread(Arc::clone(&desk), store, woken);
+    let refs = Arc::new(ObjectRefStore::new(fx.store.clone()));
+    let lease = Keeper::new(refs, fx.vol, "node-a", 30_000);
+    let mut remote = Some(fx.remote());
+    let make = move |_epoch| remote.take().expect("made once");
+    let mut up = Uploader::with_slices(Queued::new(Arc::clone(&desk)), lease, make, 4);
+    let uploading = async {
+        for _ in 0..1000 {
+            up.turn().await;
+        }
+    };
+    let asking = async {
+        while !fx.store.inner().log().iter().any(|op| op == "put seg") {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let asked = Instant::now();
+        let now = tokio::time::timeout(Duration::from_secs(5), desk.cuts_now()).await;
+        (asked.elapsed(), now)
+    };
+    let (took, now) = tokio::select! {
+        biased;
+        got = asking => got,
+        () = uploading => panic!("the uploader's step went on: {:?}", up.shown()),
+    };
+    assert_eq!(
+        now,
+        Ok(Some(CutsNow {
+            state,
+            count: 1,
+            newest: Some(Cut {
+                number: 1,
+                group: 7,
+                itself: true
+            })
+        })),
+        "answered while the PUT stalls"
+    );
+    assert!(took < Duration::from_secs(1), "the count took {took:?}");
+    assert_eq!(up.shown().figures.uploaded, 0, "nothing went up");
+    fx.store.inner().stall(false);
+    desk.close();
+    let _ = queue.join();
 }

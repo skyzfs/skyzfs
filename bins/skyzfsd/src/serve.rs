@@ -190,8 +190,8 @@ use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wa
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{
-    self, Board, CutHolesShown, CutStateShown, HeaderSyncShown, HeldShown, HolesShown, IntentShown,
-    Pace, Status, StoreShown, ZeroesShown,
+    self, Board, ChannelShown, ChannelStateShown, CutHolesShown, CutStateShown, HeaderSyncShown,
+    HeldShown, HolesShown, IntentShown, Pace, Status, StoreShown, ZeroesShown,
 };
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
@@ -201,9 +201,12 @@ use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
 use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
+use crate::control::{self, handler, Channel, ChannelFigures};
 use crate::delay::Delayed;
 use crate::timing::{TimedControl, TimedVolume};
-use crate::upload::{Ended, Leased, Uploading, Uploads, END_LIMIT, RELEASE_LIMIT};
+use crate::upload::{
+    AtStart, Ended, Leased, Publishes, Uploading, Uploads, END_LIMIT, RELEASE_LIMIT,
+};
 use skyzfs_upload::Desk;
 
 /// The store that serves the volume: the in-place store, on the
@@ -591,8 +594,10 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         held: Some(held_shown(store)),
         intent: Some(intent_shown(store)),
         // The uploader's thread posts its own (`Board::post_upload`),
-        // which the board keeps.
+        // and the channel its own (`Board::post_channel`), which the
+        // board keeps.
         upload: None,
+        channel: None,
     }
 }
 
@@ -852,6 +857,94 @@ fn uploads_of(serve: &Serve) -> Result<Option<Uploads>, String> {
         .map_err(|e| format!("the uploader's runtime: {e}"))
 }
 
+/// Why the channel answers `no-upload`: the volume has no place in
+/// object storage, or another holder has its lease.
+fn no_upload_why(uploads: Option<&Uploads>) -> String {
+    why_no_upload(uploads.map(|u| u.started().found().map(|(found, _)| found)))
+}
+
+/// [`no_upload_why`] from what the lease's first look found: `None`
+/// with no place in object storage, `Some(None)` before a look.
+fn why_no_upload(found: Option<Option<&AtStart>>) -> String {
+    match found {
+        None => {
+            "the volume has no place in object storage (it was created without --endpoint)".into()
+        }
+        Some(Some(AtStart::Another { holder, epoch })) => format!(
+            "another holder has the volume's lease ({holder} at epoch {epoch}): this daemon \
+             serves it with no upload (--serve-without-upload)"
+        ),
+        Some(_) => "this daemon has no uploader".into(),
+    }
+}
+
+/// Where the channel's figures go: the board (`Board::post_channel`).
+type ChannelPost = Arc<dyn Fn(ChannelShown) + Send + Sync>;
+
+/// Make the channel at `path` (M2.5-2): answered by the uploader through
+/// `requests` where `answers` holds the attachment it serves, with the
+/// count of cuts asked at the store's desk it holds, and refused
+/// `no-upload` with `answers`' reason otherwise. A channel that cannot be
+/// made is said, and the volume is served all the same: serving it comes
+/// before publishing it (this module's reading; the design leaves the
+/// channel to M2.5).
+///
+/// `post` is given what the channel is before it is opened, `failed` if
+/// it cannot be, and its figures after each connection it counts. The
+/// handler is answered through `record` (the request log's, in a build
+/// with the test hooks).
+fn open_channel(
+    path: &Path,
+    answers: Result<([u8; 16], Arc<Desk>), String>,
+    requests: tokio::sync::mpsc::Sender<skyzfs_upload::Control>,
+    post: ChannelPost,
+    record: impl FnOnce(control::Handler) -> control::Handler,
+) -> Option<Channel> {
+    let no_upload = ChannelStateShown::NoUpload;
+    let (handler, state) = match answers {
+        Ok((attachment, desk)) => {
+            match handler::uploader(attachment, requests, desk, control::ANSWER_LIMIT) {
+                Ok(handler) => (handler, ChannelStateShown::Uploads),
+                Err(e) => (
+                    handler::no_upload(format!("the channel's runtime: {e}")),
+                    no_upload,
+                ),
+            }
+        }
+        Err(why) => (handler::no_upload(why), no_upload),
+    };
+    post(ChannelShown {
+        state,
+        ..ChannelShown::default()
+    });
+    let posting = {
+        let post = Arc::clone(&post);
+        Box::new(move |figures: ChannelFigures| {
+            post(ChannelShown {
+                state,
+                answered: figures.answered,
+                peer: figures.peer,
+                malformed: figures.malformed,
+            })
+        })
+    };
+    match Channel::open_posting(path, record(handler), posting) {
+        Ok(channel) => Some(channel),
+        Err(e) => {
+            say(format_args!(
+                "warning: the channel {} could not be made ({e}): the volume is served, and \
+                 nothing can be published while it is",
+                path.display()
+            ));
+            post(ChannelShown {
+                state: ChannelStateShown::Failed,
+                ..ChannelShown::default()
+            });
+            None
+        }
+    }
+}
+
 /// What the end of the uploader's thread says.
 fn upload_ended_said(ended: &Ended) -> String {
     match ended {
@@ -1012,6 +1105,14 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let _lock = ready.store.share_lock();
     let (number, shape) = (ready.number, ready.shape);
     let identity = ready.store.identity();
+    // The attachment this instance serves, for the channel's answers and
+    // the uploader's publishes (M2.5-2): the record's nonce, which the
+    // start has just written or, at a take-over, kept.
+    let attachment = match records.attachment() {
+        Ok(Some(record)) => Ok(record.nonce),
+        Ok(None) => Err("the volume has no attachment record".to_string()),
+        Err(e) => Err(format!("the volume's attachment record: {e}")),
+    };
     // What the log store's start counted and the status file and the
     // start's line still carry: zeros, with no log (M1.3t). Their
     // fields and words stay until the status file's next version, so
@@ -1100,6 +1201,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
              volume as changed): {why}"
         )),
     }
+    // The cut state the uploader's publishes are judged against, from the
+    // start: the store's, which changes only at a start (F5 of the review
+    // of #127).
+    let cut_state = served.cut_state_id();
     let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
         number,
@@ -1120,6 +1225,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
         served
     };
+    // Its `publish` lines: the channel's and the uploader's, each on a
+    // handle of its own.
+    #[cfg(feature = "test-hooks")]
+    let (channel_lines, ended_lines) = (
+        request_log.as_ref().map(crate::record::Lines::another),
+        request_log.as_ref().map(crate::record::Lines::another),
+    );
     // What the start did with the held cuts' state, for the request
     // log's `cuts` line.
     #[cfg(feature = "test-hooks")]
@@ -1135,6 +1247,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if let Some(shown) = uploads.as_ref().and_then(|u| u.started().shown()) {
         board.post_upload(shown);
     }
+    let no_upload = no_upload_why(uploads.as_ref());
     let mut uploads = uploads.filter(|u| u.started().found().is_some_and(|(f, _)| f.uploads()));
     // The uploader's calls on the store, answered on the queue's thread
     // between its turns (M2.4c, decision 8).
@@ -1288,6 +1401,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // The uploader's thread, once the device serves. Dropped at any end
     // but exit 0, which lets the lease go: the drop keeps it.
     let mut uploading: Option<Uploading> = None;
+    // The daemon's channel, once the device serves; closed before the
+    // uploader's thread ends, and at any other end by its drop.
+    let mut channel: Option<Channel> = None;
     let failed_at_start = match waited {
         StartWait::Answered(Ok(())) => false,
         StartWait::Answered(Err(e)) => {
@@ -1357,6 +1473,69 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             Ordering::SeqCst,
         );
         board.write_again();
+        // The uploader's thread and the channel begin before `ready`: a
+        // script that waits for `ready` and then asks `cuts` finds the
+        // socket made, or `control failed` in the status (a minor point
+        // of the review of #127). From here the uploader's thread posts
+        // what the status shows of the upload, and the channel its own.
+        let (requests, inbox) = tokio::sync::mpsc::channel(handler::INBOX);
+        let mut answers = Err(no_upload);
+        if let (Some(begun), Some(desk)) = (uploads.take(), desk) {
+            let board = board.clone();
+            let kill = serve.hooks.kill_at;
+            #[cfg(feature = "test-hooks")]
+            let told: crate::upload::Told = match ended_lines {
+                Some(mut lines) => {
+                    Box::new(move |name: &str, progress: &skyzfs_upload::Progress| {
+                        lines.publish(
+                            crate::record::PublishLine::Ended,
+                            name,
+                            &control::Reply::of(progress),
+                        );
+                    })
+                }
+                None => Box::new(|_, _| {}),
+            };
+            #[cfg(not(feature = "test-hooks"))]
+            let told: crate::upload::Told = Box::new(|_, _| {});
+            let publishes = Publishes {
+                attachment: attachment.as_ref().ok().copied(),
+                state: cut_state,
+                inbox,
+                told,
+            };
+            // The channel asks the store's count of cuts at the desk.
+            let counts = Arc::clone(&desk);
+            match begun.begin(desk, publishes, move |shown| board.post_upload(shown), kill) {
+                Ok(thread) => {
+                    uploading = Some(thread);
+                    answers = attachment.clone().map(|a| (a, counts));
+                }
+                Err(e) => {
+                    say(format_args!(
+                        "warning: the uploader's thread could not start ({e}): the volume is \
+                         served with no upload, and its lease is kept until its time runs out"
+                    ));
+                    answers = Err(format!("the uploader's thread could not start: {e}"));
+                }
+            }
+        }
+        let to_board = board.clone();
+        // The test build's request log hears of the channel's publishes.
+        #[cfg(feature = "test-hooks")]
+        let recorded = move |handler: control::Handler| match channel_lines {
+            Some(lines) => crate::record::channel(handler, lines),
+            None => handler,
+        };
+        #[cfg(not(feature = "test-hooks"))]
+        let recorded = |handler: control::Handler| handler;
+        channel = open_channel(
+            &records.volume_run_dir().join(control::SOCKET),
+            answers,
+            requests,
+            Arc::new(move |shown| to_board.post_channel(shown)),
+            recorded,
+        );
         // The order of a start: the status thread starts and writes the
         // file at once with what the board holds (zeros, or what the
         // queue's thread has posted by then); the device starts; the
@@ -1364,7 +1543,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // post replaces the board's with newer ones of its own; `ready`
         // follows the first write. Only the queue's thread posts, but for
         // the store's state at the start, which the main thread put on the
-        // board before either thread existed.
+        // board before either thread existed, and the upload's and the
+        // channel's, each of its own fields.
         //
         // `ready` only after this instance's first status write was tried,
         // done or failed: until then the status file is the one the
@@ -1413,20 +1593,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // Nothing is posted from here: the queue's thread is running and
         // the board holds its counters. (The publishing thread writes the
         // file once when it starts, whatever is posted then, and after
-        // that whenever the queue's thread posts a change.) The
-        // uploader's thread, from here on, posts what the status shows of
-        // the upload.
-        if let (Some(begun), Some(desk)) = (uploads.take(), desk) {
-            let board = board.clone();
-            let kill = serve.hooks.kill_at;
-            match begun.begin(desk, move |shown| board.post_upload(shown), kill) {
-                Ok(thread) => uploading = Some(thread),
-                Err(e) => say(format_args!(
-                    "warning: the uploader's thread could not start ({e}): the volume is served \
-                     with no upload, and its lease is kept until its time runs out"
-                )),
-            }
-        }
+        // that whenever the queue's thread posts a change.)
     }
 
     #[derive(PartialEq)]
@@ -1533,6 +1700,12 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         let _store = serving.join();
         finish(&board);
         return Ok(Exit::Failed);
+    }
+    // No request is taken from here: the uploader's thread may be ending.
+    if let Some(channel) = channel.take() {
+        if !channel.close() {
+            say("the channel's thread was in a request at the end, and answers nothing more");
+        }
     }
     if why == Why::Stop {
         stopper.stop();
@@ -4187,5 +4360,119 @@ mod tests {
         assert!(said.contains("could not read 2 of the labels' 4"), "{said}");
         assert!(said.contains("byte 393216: Input/output error"), "{said}");
         assert!(said.contains("no cut opens as itself"), "{said}");
+    }
+
+    /// Why the channel answers `no-upload`, for each thing the lease's
+    /// first look can find: another holder is named with its epoch (T2
+    /// of the review of #127).
+    ///
+    /// Mutant: the reason for another holder dropped (it would read "no
+    /// uploader").
+    #[test]
+    fn the_reason_for_no_upload_names_another_holder() {
+        let another = AtStart::Another {
+            holder: "node-b:feed".into(),
+            epoch: 7,
+        };
+        let why = why_no_upload(Some(Some(&another)));
+        assert!(why.contains("(node-b:feed at epoch 7)"), "{why}");
+        assert!(why.contains("--serve-without-upload"), "{why}");
+        let none = why_no_upload(None);
+        assert!(none.contains("no place in object storage"), "{none}");
+        assert_eq!(why_no_upload(Some(None)), "this daemon has no uploader");
+        let taken = AtStart::Taken { epoch: 3 };
+        assert_eq!(
+            why_no_upload(Some(Some(&taken))),
+            "this daemon has no uploader"
+        );
+    }
+
+    /// The channel answers `no-upload` with why there is no uploader; a
+    /// channel that cannot be made is said and the serve goes on. Each
+    /// says what it is to the board: `no_upload` and its figures,
+    /// `uploads`, or `failed`.
+    ///
+    /// Mutant: a reason dropped, a failed bind that ends the serve, a
+    /// state or a figure not posted.
+    #[test]
+    fn the_channel_says_why_it_publishes_nothing_and_a_failed_one_is_left() {
+        use crate::control::{ask, Code, Reply, Request, IO_LIMIT, SOCKET};
+        use std::sync::Mutex;
+        let keep = tempfile::tempdir().expect("a directory");
+        let path = keep.path().join(SOCKET);
+        let (requests, _inbox) = tokio::sync::mpsc::channel(1);
+        let posts = Arc::new(Mutex::new(Vec::new()));
+        let post: ChannelPost = {
+            let posts = Arc::clone(&posts);
+            Arc::new(move |shown| posts.lock().expect("posts").push(shown))
+        };
+        let taken = || std::mem::take(&mut *posts.lock().expect("posts"));
+        let why = no_upload_why(None);
+        assert!(why.contains("no place in object storage"), "{why}");
+        let channel = open_channel(
+            &path,
+            Err(why.clone()),
+            requests.clone(),
+            post.clone(),
+            |h| h,
+        )
+        .expect("made");
+        let reply = ask(&path, &Request::Cuts, &[], IO_LIMIT).expect("answered");
+        assert_eq!(reply, Reply::Refused(Code::NoUpload, why));
+        assert!(channel.close());
+        let quiet = ChannelShown {
+            state: ChannelStateShown::NoUpload,
+            ..ChannelShown::default()
+        };
+        assert_eq!(
+            taken(),
+            [
+                quiet,
+                ChannelShown {
+                    answered: 1,
+                    ..quiet
+                }
+            ]
+        );
+
+        let channel = open_channel(
+            &path,
+            Ok(([1; 16], Desk::new(|| {}))),
+            requests.clone(),
+            post.clone(),
+            |h| h,
+        )
+        .expect("made");
+        assert!(channel.close());
+        assert_eq!(
+            taken(),
+            [ChannelShown {
+                state: ChannelStateShown::Uploads,
+                ..ChannelShown::default()
+            }]
+        );
+
+        let nowhere = keep.path().join("missing").join(SOCKET);
+        assert!(open_channel(
+            &nowhere,
+            Ok(([1; 16], Desk::new(|| {}))),
+            requests,
+            post,
+            |h| h
+        )
+        .is_none());
+        assert_eq!(
+            taken(),
+            [
+                ChannelShown {
+                    state: ChannelStateShown::Uploads,
+                    ..ChannelShown::default()
+                },
+                ChannelShown {
+                    state: ChannelStateShown::Failed,
+                    ..ChannelShown::default()
+                }
+            ]
+        );
     }
 }

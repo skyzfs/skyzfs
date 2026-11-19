@@ -66,6 +66,14 @@
 //! answers after each turn. After each turn the uploader posts what the
 //! status shows ([`shown`]).
 //!
+//! Between its turns it answers the daemon's channel ([`crate::control`],
+//! M2.5-2) through an inbox ([`Publishes`]): the count of cuts, and the
+//! publishes of cuts as snapshots, whose rule is
+//! `skyzfs_upload::publish`'s. It is told the attachment the daemon
+//! serves and the store's cut state before its first turn; a request of
+//! another is refused. Each publish that ends is said on a line of the
+//! daemon's log ([`publish_ended_said`]).
+//!
 //! At the end the desk is closed and the thread stopped; an upload under
 //! way is dropped, and the next start's check takes it up. At exit 0 the
 //! lease is let go, within [`RELEASE_LIMIT`], so that another holder need
@@ -81,11 +89,12 @@ use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
 use skynbd_store::{ObjectStore, Precondition, S3Store, StoreError};
 use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
 use skyzfs_ublk::status::{
-    CheckedShown, LeaseShown, RuleShown, Text, UploadFigures, UploadShown, UploadStateShown,
+    CheckedShown, LeaseShown, PublishShown, RuleShown, Text, UploadFigures, UploadShown,
+    UploadStateShown,
 };
 use skyzfs_upload::{
-    Checked, Desk, Doing, EngineRemote, Figures, Keeper, LeaseState, Mismatch, Queued, Rule, Shown,
-    State, Uploader,
+    Checked, Control, Desk, Doing, EngineRemote, Figures, Keeper, LeaseState, Mismatch, Progress,
+    Queued, Rule, Shown, State, Uploader,
 };
 
 use crate::remote::Remote;
@@ -687,11 +696,13 @@ impl<R: RefStore> Start<R> {
                 state: State::Idle,
                 lease: self.keeper.state().clone(),
                 figures: Figures::default(),
+                publishes: Default::default(),
             },
             AtStart::Unreached(why) => Shown {
                 state: State::NoLease(why.clone()),
                 lease: LeaseState::None(why.clone()),
                 figures: Figures::default(),
+                publishes: Default::default(),
             },
         };
         Some(shown_of(&shown, self.keeper.holder()))
@@ -766,6 +777,7 @@ impl Uploads {
     pub fn begin(
         self,
         desk: Arc<Desk>,
+        publishes: Publishes,
         publish: impl FnMut(UploadShown) + Send + 'static,
         kill: Option<crate::cli::KillAt>,
     ) -> io::Result<Uploading> {
@@ -778,8 +790,41 @@ impl Uploads {
             let _ = kill;
             maker(objects, refs, holder, vol)
         };
-        Uploading::start(runtime, keeper, make, desk, publish)
+        Uploading::start(runtime, keeper, make, desk, publishes, publish)
     }
+}
+
+/// What is told of each publish that ends, after its line on standard
+/// error: the request log's `ended` line in a build with the test hooks
+/// ([`crate::record`]), nothing otherwise.
+pub type Told = Box<dyn FnMut(&str, &Progress) + Send>;
+
+/// What the uploader's thread publishes from: the attachment the daemon
+/// serves (its attachment record's nonce; `None` where the record could
+/// not be read, and every publish is then refused), the store's cut
+/// state at the start (`InPlace::cut_state_id`: named from the start in
+/// a store that holds cuts, as an uploading daemon's does, and changed
+/// only at a start; F5 of the review of #127), and the channel's
+/// requests. An inbox whose sender is gone (the
+/// channel could not be made) is no longer read.
+pub struct Publishes {
+    /// The attachment record's nonce.
+    pub attachment: Option<[u8; 16]>,
+    /// The store's cut state.
+    pub state: Option<[u8; 16]>,
+    /// The channel's requests.
+    pub inbox: tokio::sync::mpsc::Receiver<Control>,
+    /// Told of each publish that ends.
+    pub told: Told,
+}
+
+/// The daemon's line for the publish of `name` that ended as `progress`:
+/// its answer in the channel's words.
+pub fn publish_ended_said(name: &str, progress: &Progress) -> String {
+    format!(
+        "publish {name}: {}",
+        crate::control::Reply::of(progress).line()
+    )
 }
 
 /// The remote the uploader makes at its first take, under the lease's
@@ -916,6 +961,7 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
         gave_up: f.gave_up,
         errors: f.errors,
         zero_blocks: Some(f.zero_blocks),
+        not_offered: Some(f.not_offered),
     };
     out.checked = match f.checked {
         Checked::Unchecked => CheckedShown::Unchecked,
@@ -933,7 +979,40 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
     if let Some(error) = &f.last_error {
         out.last_error = Text::new(&error.to_string());
     }
+    out.publish = Some(publish_shown(&shown.publishes));
     out
+}
+
+/// What the status shows of the publishes (M2.5-2). The oldest pending
+/// one's age is as of this post: the status is written when a post
+/// changes it, not as the age grows.
+fn publish_shown(p: &skyzfs_upload::PublishesShown) -> PublishShown {
+    let f = &p.figures;
+    let (last, last_cut, last_group) = match &f.last {
+        Some((name, cut, _)) => (name.as_str(), cut.number, cut.group),
+        None => ("", 0, 0),
+    };
+    let (oldest, oldest_ms) = match &p.oldest {
+        Some((name, age)) => (
+            name.as_str(),
+            u64::try_from(age.as_millis()).unwrap_or(u64::MAX),
+        ),
+        None => ("", 0),
+    };
+    PublishShown {
+        accepted: f.accepted,
+        published: f.published,
+        found: f.found,
+        refused: f.refused,
+        expired: f.expired,
+        withdrawn: f.withdrawn,
+        pending: u64::try_from(p.pending).unwrap_or(u64::MAX),
+        oldest_ms,
+        last_cut,
+        last_group,
+        oldest: Text::new(oldest),
+        last: Text::new(last),
+    }
 }
 
 /// How the uploader's thread ended.
@@ -962,13 +1041,16 @@ pub struct Uploading {
 impl Uploading {
     /// Start the thread: the uploader of the store behind `desk`, under
     /// the lease `keeper` keeps, uploading through what `make` makes for
-    /// the epoch held, on `runtime`. `publish` is given what the status
-    /// shows after each turn.
+    /// the epoch held, on `runtime`, answering the channel's requests from
+    /// `publishes`. `publish` is given what the status shows after each
+    /// turn, and each publish that ends is said on standard error and
+    /// told to `publishes`' [`Told`].
     pub fn start<F, M, R>(
         runtime: Runtime,
         keeper: Keeper<F>,
         make: M,
         desk: Arc<Desk>,
+        publishes: Publishes,
         mut publish: impl FnMut(UploadShown) + Send + 'static,
     ) -> io::Result<Self>
     where
@@ -984,7 +1066,14 @@ impl Uploading {
         let thread = std::thread::Builder::new()
             .name("skyzfsd-upload".into())
             .spawn(move || {
-                let uploader = Uploader::new(local, keeper, make);
+                let mut uploader = Uploader::new(local, keeper, make);
+                if let Some(attachment) = publishes.attachment {
+                    uploader.publishing().set_attachment(attachment);
+                }
+                if let Some(state) = publishes.state {
+                    uploader.publishing().set_state(state);
+                }
+                let mut told = publishes.told;
                 let end = runtime.block_on(async {
                     let asked = async {
                         let _ = stopped.wait_for(Option::is_some).await;
@@ -994,7 +1083,14 @@ impl Uploading {
                     // gone, where the daemon was only stopping): the
                     // status keeps the last figures from before the close.
                     let mut keeper = uploader
-                        .run(asked, |s| {
+                        .run_with(asked, publishes.inbox, |s| {
+                            for (name, progress) in &s.publishes.ended {
+                                crate::to_stderr(&format!(
+                                    "{}\n",
+                                    publish_ended_said(name, progress)
+                                ));
+                                told(name, progress);
+                            }
                             if !posted.closed() {
                                 publish(shown_of(&s, &holder));
                             }

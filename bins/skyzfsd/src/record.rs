@@ -125,6 +125,24 @@
 //!   `skyzfs-ublk`). The daemon counts both (`status`:
 //!   `commands_aborted`, `commands_failed`).
 //!
+//! - `publish` (M2.5-2): a request to publish a cut, or to withdraw a
+//!   publish, as the daemon's channel answered it ([`crate::control`]),
+//!   and a publish that ended, as the uploader's thread saw it. The tag
+//!   column is `-`; the op column says which: `asked` (a `publish`
+//!   request, with its `group` G in the sector column and its `after`
+//!   C in the sectors column), `withdraw`, or `ended`. The result column
+//!   holds the snapshot's name as asked, a space, and the answer as the
+//!   channel words it without a refusal's text: `accepted`,
+//!   `refused CODE`, `withdrawn`, `done commit=H`, `expired`.
+//!   `asked` and `withdraw` are written on the channel's thread once the
+//!   uploader has answered, so the uploader may have begun the publish
+//!   before its line. `ended` is written on the uploader's thread after
+//!   the turn in which it ended, so after its transaction landed: a kill
+//!   between them leaves a publish that was made and has no `ended`
+//!   line. A count of cuts and a look at a publish's progress have no
+//!   line, nor a request the channel refused before the uploader saw it
+//!   (`malformed`, `version`, `peer`).
+//!
 //! So a commit reaches the kernel no earlier than its own `commit` line
 //! and no later than the `sent` line after it. Mostly that is between
 //! the `send` and the `sent`, but not always. The ring has room for as
@@ -178,6 +196,8 @@ use skyzfs_local::inplace::{Seen, Watcher};
 use skyzfs_uberblock::{Labels, LABEL_SIZE};
 use skyzfs_ublk::pump::{tag_of, Command, Fetched, Queue, QueueDown, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
+
+use crate::control::{Handler, Reply, Request};
 
 /// Open the record at `path` for appending, creating it if need be.
 /// Done before the start, so that a path that cannot be written refuses
@@ -259,6 +279,22 @@ impl Lines {
         }
     }
 
+    /// A `publish` line: `name` as `what` says, with the answer `reply`.
+    pub fn publish(&mut self, what: PublishLine, name: &str, reply: &Reply) {
+        let (op, sector, sectors) = match what {
+            PublishLine::Asked { group, after } => ("asked", group.to_string(), after.to_string()),
+            PublishLine::Withdraw => ("withdraw", "-".into(), "-".into()),
+            PublishLine::Ended => ("ended", "-".into(), "-".into()),
+        };
+        let answer = match reply {
+            Reply::Refused(code, _) => format!("refused {}", code.word()),
+            other => other.line(),
+        };
+        self.line(&format!(
+            "publish\t-\t{op}\t{sector}\t{sectors}\t{name} {answer}"
+        ));
+    }
+
     fn line(&mut self, columns: &str) {
         let Some(file) = &mut self.file else {
             return;
@@ -271,6 +307,44 @@ impl Lines {
             self.file = None;
         }
     }
+}
+
+/// Which `publish` line ([module documentation](self)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishLine {
+    /// A `publish` request answered, of the snapshot `group` G after the
+    /// count `after` C.
+    Asked {
+        /// The request's G.
+        group: u64,
+        /// The request's C.
+        after: u64,
+    },
+    /// A `withdraw` request answered.
+    Withdraw,
+    /// A publish that ended.
+    Ended,
+}
+
+/// The channel's `handler`, with a `publish` line to `lines` for each
+/// request to publish or to withdraw it answers.
+pub fn channel(mut handler: Handler, mut lines: Lines) -> Handler {
+    Box::new(move |request: &Request, manifest: Vec<u8>| {
+        let reply = handler(request, manifest);
+        match request {
+            Request::Publish(p) => lines.publish(
+                PublishLine::Asked {
+                    group: p.group,
+                    after: p.after,
+                },
+                &p.name,
+                &reply,
+            ),
+            Request::Withdraw(name) => lines.publish(PublishLine::Withdraw, name, &reply),
+            Request::Cuts | Request::Progress(_) => {}
+        }
+        reply
+    })
 }
 
 /// The store's events as lines of the record, to `lines`, with what
