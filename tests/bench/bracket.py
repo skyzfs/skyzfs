@@ -82,6 +82,20 @@ def width(before, after):
 LEASE_HELD = ('held', 'unsure')
 
 
+def one_server(k):
+    """-> whether a daemon row's window had one server, as its tables say it.
+
+    Read as not_uploading reads it: 'status not read' when either end's
+    status shows no pid (a reading that failed leaves no more than its
+    clock line), 'NO: the pid changed' only when both pids were read and
+    differ, else 'yes' (review of #128, L1).
+    """
+    sb, sa = k.get('before') or {}, k.get('after') or {}
+    if not sb.get('pid') or not sa.get('pid'):
+        return 'status not read'
+    return 'yes' if sb['pid'] == sa['pid'] else 'NO: the pid changed'
+
+
 def not_uploading(row):
     """-> why a row that says it uploads did not upload over its window, or None.
 
@@ -99,7 +113,7 @@ def not_uploading(row):
     # more: a status read shows the daemon's pid.
     unread = [end for end, s in (('start', sb), ('end', sa)) if not s.get('pid')]
     if unread:
-        return f"its daemon's status was not read at the window's {' and '.join(unread)}"
+        return f"its daemon's status was not read, or showed no serving daemon, at the window's {' and '.join(unread)}"
     if k.get('pid_same') is not True:
         return (f"its daemon was not shown to be the same at the window's two ends (pid {sb['pid']} "
                 f"and {sa['pid']})")

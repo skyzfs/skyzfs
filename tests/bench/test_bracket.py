@@ -234,15 +234,28 @@ class AnUploadRow(unittest.TestCase):
                 k['before'] = {}
             if sa is None:
                 k['after'] = {}
-            self.assert_no_verdict(self.judge(k), f"its daemon's status was not read at the window's {said}")
+            self.assert_no_verdict(self.judge(k), f"its daemon's status was not read, or showed no serving daemon, at the window's {said}")
         # As the row generator writes such a row: no `after`, pid_same None.
         k = uploading()
         k['after'], k['pid_same'] = {}, None
-        self.assert_no_verdict(self.judge(k), "not read at the window's end")
+        self.assert_no_verdict(self.judge(k), "or showed no serving daemon, at the window's end")
         # As a failed read leaves it (review on #128): the clock line alone.
         k = uploading()
         k['after'], k['pid_same'] = {'read_at_ns': '2000'}, False
-        self.assert_no_verdict(self.judge(k), "its daemon's status was not read at the window's end")
+        self.assert_no_verdict(self.judge(k), "its daemon's status was not read, or showed no serving daemon, at the window's end")
+
+    def test_one_server_is_read_as_the_verdict_reads_it(self):
+        """Review of #128, L1: the tables' "one server throughout" and
+        "TWO DAEMONS" read the pids as not_uploading does."""
+        self.assertEqual(bk.one_server(uploading()), 'yes')
+        self.assertEqual(bk.one_server(uploading(sa={'pid': '5151'}, pid_same=False)), 'NO: the pid changed')
+        # an end not read, or read with no pid: not a second daemon
+        for before, after in (({}, {}), ({'pid': '4242'}, {}), ({}, {'pid': '4242'}),
+                              ({'pid': '4242'}, {'read_at_ns': '2000'}), ({'pid': ''}, {'pid': ''})):
+            k = uploading()
+            k['before'], k['after'] = before, after
+            self.assertEqual(bk.one_server(k), 'status not read', (before, after))
+        self.assertEqual(bk.one_server({}), 'status not read')
 
     def test_an_epoch_that_is_not_a_number(self):
         """Review's D1 on #128: an epoch unread at both ends is no one epoch."""
