@@ -1,0 +1,5 @@
+R1 (author) the renewal compares the epoch alone: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (11s)
+R3 (author) an expired row of this holder and epoch is not renewed: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance, tests::memory_store_passes_lease_conformance, redb_store::tests::redb_store_passes_lease_conformance (10s)
+R6 (author) not held: the row read is written back: KILLED (r): a_take_between_the_renewals_read_and_its_write_is_not_undone (10s)
+O1 (author) the object store renews without looking at the row: KILLED (r): cadence::tests::cadenced_store_passes_lease_conformance (10s)
+K3 (author) the keeper takes a failed renewal as lost: KILLED (u): lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back, lease::tests::a_renewal_whose_write_fails_after_its_read_is_unsure, lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it, lease::tests::an_unsure_lease_is_let_go_at_a_release (34s)
