@@ -1,0 +1,18 @@
+1750000 rows; disagreements: 0
+accepted seed rows whose start was not `none` (unreachable from one daemon unless said):
+  end epoch 0: 272
+  start lease held: 48
+  start lease lost: 240
+  start lease missing: 240
+  start lease unsure: 48
+- sw as run 44462902930 had it: at least 0.90 (seed inside window, lease at release (epoch 1))
+- the seed went on into a second window: held at epoch 1 at its start, uploaded 0: at least 0.90 (seed inside window, lease at release (epoch 1))
+- start lost at epoch 5 (lost is final for an instance), end held at 6: at least 0.90 (seed inside window, lease at release (epoch 6))
+- start lease not in the status at all: at least 0.90 (seed inside window, lease at release (epoch 1))
+- end held at epoch 0: at least 0.90 (seed inside window, lease at release (epoch 0))
+- end held, uploaded_whole 1 but uploaded 0 (inconsistent): at least 0.90 (seed inside window, lease at release (epoch 1))
+- end held, uploaded_whole 1, uploaded not in the status: at least 0.90 (seed inside window, lease at release (epoch 1))
+- take-over in the window: held 1 at start, held 2 at end, same pid: NO VERDICT: the row says it uploads, but it did not hold the lease for the whole window (at its start held at epoch 1, at its end held at epoch 2); its seed, let go at the window's start, was not shown to commit inside it under the lease held at its end (uploaded 0 at its start, 1 whole at its end)
+- a whole upload at the start already (uploaded_whole 1, uploaded 1): NO VERDICT: the row says it uploads, but it did not hold the lease for the whole window (at its start none at epoch 0, at its end held at epoch 1); its seed, let go at the window's start, was not shown to commit inside it under the lease held at its end (uploaded 1 at its start, 1 whole at its end)
+- epoch as a JSON int at the end: at least 0.90 (seed inside window, lease at release (epoch 1))
+- uploaded_whole as a JSON int at the end: at least 0.90 (seed inside window, lease at release (epoch 1))

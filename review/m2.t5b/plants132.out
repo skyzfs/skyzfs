@@ -1,0 +1,46 @@
+W1 =window let go at the first warm-up as well (the mark's guard dropped): KILLED by copy_limit
+W2 =window let go before the window's first status read: KILLED by copy_limit
+W3 =window never let go in run_workload (only at the teardown): KILLED by copy_limit
+W4 =window let go after the window's pgbench: KILLED by copy_limit
+W5 the release time written for =1 too: KILLED by copy_limit
+W6 the release time kept when the unpause fails: KILLED by copy_limit
+W7 the release time written after the unpause: SURVIVED
+W8 the last row's release time not removed at the build: KILLED by copy_limit
+W9 the watcher reads the release time without watch: KILLED by copy_limit
+W10 the lower end not floored at 0: KILLED by copy_limit
+W11 the lower end always 0 (the read before ignored): KILLED by copy_limit
+W12 the upper end from the read before: KILLED by copy_limit
+W13 the release time not asked to be before the read that saw it: SURVIVED
+W14 a release time that is not a number taken: SURVIVED
+W15 =window refused (only 1 taken): KILLED by skz_store
+W16 =window lets a wait over 0 through: KILLED by skz_store
+W17 the record says 1 for =window: KILLED by copy_limit
+W18 the row reads window as the workload mode: KILLED by embedded
+W19 the log names the workload for =window: KILLED by copy_limit
+O1 one_server reads pid_same: KILLED by bracket, embedded
+O2 status not read only when both ends are: KILLED by bracket, embedded
+O3 status not read only at the end: KILLED by bracket
+O4 the uploader table prints status not read as one daemon: KILLED by embedded
+O5 the uploader table prints status not read as two daemons: KILLED by embedded
+O6 the status column back to pid_same: KILLED by embedded
+O7 the status column prints n/a for a part with no pid: SURVIVED
+S1 every upload row gets the seed rule: KILLED by bracket
+S2 the start's uploaded not asked: KILLED by bracket
+S3 a whole upload at the end not asked: KILLED by bracket
+S4 whole uploads counted from 0: KILLED by bracket
+S5 the end's lease not asked: KILLED by bracket
+S6 the end's epoch not asked to be a number: KILLED by bracket
+S7 a lease held at the start under another epoch taken: KILLED by bracket
+S8 the epochs compared at any start lease: KILLED by bracket
+S9 unsure at the end not taken: KILLED by bracket
+S10 the seed rule ignores the pids (redundant with not_uploading?): SURVIVED
+S11 the seed rule asked before the status and pid checks: SURVIVED
+S12 the marker not printed: KILLED by bracket
+S13 the seed's reason not appended: KILLED by bracket
+S14 the seed's reason for every row: KILLED by bracket
+S15 a seed row not judged (the rule never holds): KILLED by bracket
+S16 the marker names the start's epoch: KILLED by bracket
+S17 the rule judges past the other reasons (marker on a wide bracket): SURVIVED
+S18 the start's whole uploads asked instead of its uploads: KILLED by bracket
+S19 the summary paragraph says nothing of the seed rule: SURVIVED
+tree clean
