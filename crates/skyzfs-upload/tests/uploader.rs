@@ -2486,6 +2486,73 @@ async fn publishes_that_fail_slowly_slow_a_long_cut_by_one_step_at_most() {
     assert_eq!(up.publishing().pending().0, n);
 }
 
+/// F7 of the review of #126 (its x4): one publish whose steps fail
+/// slowly slows a long cut to half its pace at most, whatever its waits.
+/// Its step fails after 120 s, and its wait after each failure is 1 s,
+/// then 2 s, 4 s and so on; cut 2 is 124 blocks in slices of one, each of
+/// its PUTs taking a second. Cut 2 must go up within twice the time it
+/// takes with no publish, and one publish step. When the count of the
+/// time started again at each of the publish's waits, the cut had only
+/// the waits until one grew longer than a step: 1216 s, against 616 s
+/// with the count kept and 256 s with no publish.
+#[tokio::test(start_paused = true)]
+async fn one_publish_that_fails_slowly_slows_a_long_cut_to_half_its_pace_at_most() {
+    let slow = Duration::from_secs(120);
+    let alone = a_long_cut_beside(0, slow).await;
+    let beside = a_long_cut_beside(1, slow).await;
+    println!("cut 2 up in {alone:?} alone and in {beside:?} beside one publish");
+    assert!(
+        beside <= 2 * alone + slow,
+        "cut 2 up in {beside:?} beside one publish, {alone:?} alone"
+    );
+}
+
+/// How long cut 2, 124 blocks in slices of one with PUTs of a second
+/// each, takes to go up beside `n` publishes, carried by cut 1 and with
+/// the longest expiry, whose steps each fail after `slow`.
+async fn a_long_cut_beside(n: usize, slow: Duration) -> Duration {
+    let mut fx = Fixture::new(95).await;
+    let store = one_cut(&mut fx);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let (cuts_fail, sent) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let shape = Shape {
+        refuse: every_name,
+        slow,
+        cut_slow: Duration::from_secs(1),
+        slices: 1,
+    };
+    let mut up = noting_shaped(&fx, &clock, store, shape, &cuts_fail, &sent);
+    until_idle(&mut up, 1000).await;
+    fx.assert_uploaded(7, "cut 1").await;
+    for i in 0..n {
+        let request = Request {
+            expiry: EXPIRY_MAX,
+            ..asked(state, &format!("p{i}"), 0, 7)
+        };
+        assert_eq!(up.publishing().ask(request), Answer::Accepted);
+    }
+    {
+        let local = up.driver().expect("the driver").local();
+        for block in 20..144 {
+            fx.write(local, block, 0x20);
+        }
+        fx.group(local, 8);
+    }
+    let began = tokio::time::Instant::now();
+    while up.shown().figures.uploaded < 2 {
+        assert!(
+            began.elapsed() <= EXPIRY_MAX,
+            "{n} publishes: cut 2 is not up after {:?}",
+            began.elapsed()
+        );
+        one_turn(&mut up, &clock).await;
+    }
+    fx.assert_uploaded(8, "cut 2").await;
+    assert_eq!(up.publishing().pending().0, n, "the publishes pend still");
+    began.elapsed()
+}
+
 /// F5 of the review of #126 (its w4): slow steps of the cut slow the
 /// publishes by one step of the cut at most, not by one for each publish
 /// step. Cut 2, 40 blocks in slices of one, goes up while each of its

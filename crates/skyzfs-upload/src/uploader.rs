@@ -38,10 +38,13 @@
 //!
 //!    **A publish** (M2.5) takes its step ([`Driver::step_publish`])
 //!    when it has one and the cut's step is not due. While both are due
-//!    they share the time: the side that has had less of it since both
-//!    became due takes the next step, the publishes on a tie when the
-//!    cut stepped last, and the count starts again from nothing whenever
-//!    either side has nothing to do (an idle cut's step is that). So
+//!    they share the time: the side that has had less of it while both
+//!    were due takes the next step, the publishes on a tie when the cut
+//!    stepped last. Time counts only while both are due, so neither side
+//!    is owed the time of a step it took alone, nor the other's waits;
+//!    but a wait does not wipe what one side is owed from before it (F7
+//!    of the review of #126). The count starts again from nothing only
+//!    at an idle cut's step, when the cut has nothing left to do. So
 //!    while both have work, each has half the time, give or take one step
 //!    of the other's: publishes whose steps fail slowly, however many,
 //!    slow the cut to half its pace and no more, and slow steps of the
@@ -113,7 +116,9 @@ struct Turns {
 
 impl Turns {
     /// Whether the next step is a publish's, given which are due: `None`
-    /// when neither is. While only one is due, the count starts again.
+    /// when neither is. While only one is due, its steps are not counted,
+    /// and the count from before is kept: a side waiting out its own wait
+    /// still has work, and what it is owed outlives the wait.
     fn next(&mut self, publish_due: bool, cut_due: bool) -> Option<bool> {
         self.shared = publish_due && cut_due;
         let publish = if self.shared {
@@ -123,7 +128,6 @@ impl Turns {
                 std::cmp::Ordering::Equal => !self.published_last,
             }
         } else {
-            self.restart();
             if !publish_due && !cut_due {
                 return None;
             }
@@ -146,7 +150,8 @@ impl Turns {
         *side = side.saturating_add(time);
     }
 
-    /// One side has nothing to do (an idle cut): the count starts again.
+    /// The cut has nothing to do (an idle cut's step): the count starts
+    /// again.
     fn restart(&mut self) {
         self.publish = Duration::ZERO;
         self.cut = Duration::ZERO;
@@ -635,27 +640,33 @@ mod tests {
         }
     }
 
-    /// Time taken while one side had nothing to do is not owed to it,
-    /// nor is time from before: the count starts again.
+    /// Time taken while only one side was due is not owed to it, nor is
+    /// a wait owed to anyone; but what one side was owed before a wait is
+    /// kept across it (F7 of the review of #126). Only an idle cut's step
+    /// starts the count again.
     #[test]
-    fn the_count_starts_again_while_only_one_side_is_due() {
-        // The publishes alone, the cut waiting in its backoff.
+    fn a_wait_keeps_the_count_and_an_idle_cuts_step_starts_it_again() {
+        let c20 = "C".repeat(20);
+        // The publishes alone, the cut waiting in its backoff: the cut is
+        // still owed the publish's step of 20 s from before.
         let mut turns = Turns::default();
         assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
         assert_eq!(turns.next(true, false), Some(true));
         turns.took(20 * S);
-        assert_eq!(run(&mut turns, 4, S, S), "CPCP");
-        // The cut alone, no publish due.
+        assert_eq!(run(&mut turns, 22, S, S), format!("{c20}PC"));
+        // The cut alone, no publish due (one waiting out its wait, say):
+        // the publishes are still owed 19 s of the cut's step from before,
+        // the tie then goes to the cut, and the turns go on.
         let mut turns = Turns::default();
         assert_eq!(run(&mut turns, 2, S, 20 * S), "PC");
         assert_eq!(turns.next(false, true), Some(false));
         turns.took(20 * S);
-        assert_eq!(run(&mut turns, 4, S, S), "PCPC");
+        assert_eq!(run(&mut turns, 21, S, S), format!("{}CP", "P".repeat(19)));
         // Neither due.
         let mut turns = Turns::default();
         assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
         assert_eq!(turns.next(false, false), None);
-        assert_eq!(run(&mut turns, 4, S, S), "CPCP");
+        assert_eq!(run(&mut turns, 22, S, S), format!("{c20}PC"));
         // An idle cut's step.
         let mut turns = Turns::default();
         assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
