@@ -22,6 +22,9 @@
 == Y3b. The stopped path when the Checker itself could not be made (no Rig in st)
   exit 2; export_busy in the results: False
 
+== Y3c. The stopped path when the run stops in the main pass (a cleanup that left something behind)
+  exit 2; stopped at prefix 18: 'ublk del -n 3: busy'; main pass points: 12; export_busy: 1; the line: True
+
 == Y4. classify and tally over what zdb's every-copy check can write (M3)
   rig: zdb died with signal 6      classify: failure tally: {'copies': 1}
   rig: zdb died with signal 9      classify: rig     tally: rig error

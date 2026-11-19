@@ -145,6 +145,33 @@ with open(os.path.join(d, 'replay-results.json')) as f:
 print(f"  exit {code}; export_busy in the results: {'export_busy' in res}")
 shutil.rmtree(d)
 
+print("\n== Y3c. The stopped path when the run stops in the main pass (a cleanup that left something behind)")
+t = trd.Pass('test_a_clean_pass')
+t.setUp()
+try:
+    import logwrites
+    records = logwrites.index(t.log, 0)['records']
+    later = rc.fsync_marks(records)[2][0]
+    t.fake(at={later: {'ok': False, 'failed': 'rig: ublk del', 'detail': 'busy', 'abort': 'ublk del -n 3: busy'}})
+    inner = rd.Checker.point
+
+    def point(ck, n, kind, *a, **k):
+        if not ck.rig.busy and kind != 'calibration':
+            with contextlib.redirect_stdout(io.StringIO()):
+                ck.rig.at = n
+                ck.rig.held("cannot export 'p': pool is busy", 1)
+        return inner(ck, n, kind, *a, **k)
+    rd.Checker.point = point
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = rd.check(t.args())
+    with open(os.path.join(t.dir.name, 'out', 'replay-results.json')) as f:
+        res = json.load(f)
+    text = t.summary_text()
+    print(f"  exit {code}; stopped at prefix {later}: {res.get('stopped', '')[:40]!r}; main pass points: "
+          f"{len(res['points'])}; export_busy: {len(res.get('export_busy') or [])}; the line: {'Busy exports' in text}")
+finally:
+    t.tearDown()
+
 print("\n== Y4. classify and tally over what zdb's every-copy check can write (M3)")
 for failed in (rc.ZDB_ABORT, 'rig: zdb died with signal 9', 'rig: zdb died with signal 11',
                'rig: zdb died with signal 7', 'rig: zdb timed out', 'copies: zdb'):
