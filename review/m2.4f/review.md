@@ -341,11 +341,42 @@ is their E3. All 11 are caught, by the tests the description names.
 
 ### Gates
 
-GATES_PLACEHOLDER
+All at `b75a128` with rustc 1.100.0, the current stable:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean
+  plain, with `skyzfsd/test-hooks,skyzfs-local/test-hooks`, and with
+  `skyzfs-ublk-sys/control-test-program`.
+- Tests, plain, 0 failed in each:
+  - `skyzfs-upload`: every test file, `uploader.rs` 46.
+  - `skyzfs-local`: 309 in the library, 1 ignored.
+  - `skyzfsd`: 137.
+  - `skyzfs-ublk`: 160 + 1 + 1.
+- With the test hooks, 0 failed: `skyzfs-local` 309 and 16, and
+  `skyzfsd` 176.
 
 ### CI and Codex at b75a128
 
-CI_PLACEHOLDER
+All of it is green. 36 checks passed and 2 were skipped: the replay
+rig's reference jobs, as on a pull request that touches only the
+daemon's code.
+
+- `ci` 44439241462, with `unit-arm64`.
+- `skyzfs-ci` 44439119906, from the push.
+- `coverage` 44439241613.
+- `e2e` 44439241381.
+- `k3s-smoke` 44439241707.
+- The control rig 44439241356, on three images.
+- The cut rig through skyzfsd, 44439241349. It ran on 26.04, on
+  26.04 arm, and on 26.04 with uploads, which runs the upload
+  courses.
+- The replay rig 44439241361: the jobs through skyzfsd and the jobs
+  that write into a hole.
+- The daemon rig 44439241578, on 24.04, 26.04 and 26.04 arm.
+  - I read the 26.04 job's own table, not its colour: 55 PASS,
+    5 FAIL, 2 NA and 1 WAITING, and the job ended with exit 0.
+  - The 5 FAIL are the controls in the table `EXPECTED`, and the
+    WAITING is the pin with a request held.
 
 **Codex** reviewed `b75a128` with no findings
 (`has_any_findings: false`).
