@@ -1,0 +1,49 @@
+== A. bound_lines: inputs -> lines
+  boundsparse  sparse start, held 896 KiB: rc 0 errored False: bound_premise PASS, cut_copied_held PASS
+  boundsparse  sparse start, held 4 MiB - 1: rc 0 errored False: bound_premise PASS, cut_copied_held PASS
+  boundsparse  sparse start, held 4 MiB: rc 1 errored False: bound_premise PASS, cut_copied_held FAIL
+  boundsparse  sparse start, held 320 MiB (copies every hole write): rc 1 errored False: bound_premise PASS, cut_copied_held FAIL
+  boundsparse  abandoned at the bound, map passed on (holes dropped): rc 1 errored False: bound_premise PASS, cut_copied_held FAIL
+  boundsparse  held reading with no cut_holes key (older-format section): rc 1 errored False: bound_premise PASS, cut_copied_held FAIL
+  boundsparse  held reading with no cuts_abandoned key: rc 1 errored False: bound_premise PASS, cut_copied_held FAIL
+  boundsparse  held reading is the error text of a failed status: rc 0 errored True: bound_premise PASS, cut_copied_held ERROR
+  boundsparse  held reading missing: RigError: no status-bound-held.txt: the holder did not get as far
+  boundsparse  start missing: RigError: no status-start-1.txt: the holder did not get as far
+  boundsparse  start: holes none, 0 chunks (no hole set taken): rc 1 errored False: bound_premise FAIL, cut_copied_held PASS
+  boundsparse  start: holes held, 0 chunks: rc 1 errored False: bound_premise FAIL, cut_copied_held PASS
+  boundsparse  start: chunks not a number: rc 0 errored True: bound_premise ERROR, cut_copied_held PASS
+  bound        filled start, held after an abandonment: rc 0 errored False: bound_premise PASS, cut_copied_held INFO
+  bound        filled start: holes none, 0 chunks: rc 0 errored False: bound_premise PASS, cut_copied_held INFO
+  bound        sparse start (the zero fill did not happen): rc 1 errored False: bound_premise FAIL, cut_copied_held INFO
+  bound        held reading missing: RigError: no status-bound-held.txt: the holder did not get as far
+  bound        held reading is an error text: rc 0 errored False: bound_premise PASS, cut_copied_held INFO
+
+== B. Rig.export and Rig.held
+  B0 the log line begins: USER        PID ACCESS COMMAND ...
+  B1 fuser -vm on the unmounted mount point: 19 lines kept of the record (of 1000 chars); mounts under the alternate root: []
+     fuser's whole output: 92 lines; its first: 'USER        PID ACCESS COMMAND'; 'kernel mount /' in it: True
+     the summary's 'held by': the line 'python3', cut at the 1000-character tail
+  B2 'busy' in the output decides a retry:
+     "cannot export 'skzreplay': pool is busy": retried
+     "cannot unmount '/w/alt/skz': pool or dataset is busy": retried
+     'umount: /w/alt/skz: target is busy.': retried
+     "cannot export 'skzreplay': I/O error": straight to -f
+     'internal error: Device or resource busy': retried
+     'TIMEOUT after 120s': straight to -f
+  B3 the waits of one export busy throughout: 15 s, then -f; a pass of 2500 prefixes busy at each: 10.4 h of waits
+
+== C. exit_code
+export of skzreplay busy at prefix 0: tried again in 1 s; held by: fuser named nothing; mounts under the alternate root: none
+export of skzreplay busy at prefix 0: tried again in 2 s; held by: fuser named nothing; mounts under the alternate root: none
+export of skzreplay busy at prefix 0: tried again in 4 s; held by: fuser named nothing; mounts under the alternate root: none
+export of skzreplay busy at prefix 0: tried again in 8 s; held by: fuser named nothing; mounts under the alternate root: none
+  C1 verify fails at 100, the export stays busy: [(100, 'export'), (101, 'rig: a pool named skzreplay is still imported'), (102, 'rig: a pool named skzreplay is still imported')]
+     job_verdict ok=False; exit_code = 2 (the prefix's verify verdict is gone: replaced by 'export')
+  C2 superseded drop caught at 5, pool left at 7: exit_code = 2; without the rig errors its row: match=False (caught by the every-copy check)
+  C2b reorder whose class the table does not name, pool left: row 'nothing: the table does not name a superseded for this control'; exit_code = 2
+  C3 pool left, zdb -bcc rc 124: exit_code = 1
+  C3 pool left, zdb -bcc rc 127: exit_code = 1
+  C3 pool left, zdb -bcc rc 1: exit_code = 1
+  C4 left seen by the deep check: exit_code = 2
+  C5 scrub timed out, then left: exit_code = 2
+  C6 witness differs, pool left: exit_code = 1

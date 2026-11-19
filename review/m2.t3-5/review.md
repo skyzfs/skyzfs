@@ -15,7 +15,7 @@ test) is sound. I found nothing there that blocks.
 |---|---|---|---|
 | F1 | A verdict on a prefix whose export then fails is replaced by `export`, so a job whose image is at fault can end with exit 2 and "Nothing else stands against the image" | high (driven) | yes |
 | F2 | `exit_code` excuses every mismatched control that has a rig error, including mismatches a rig error cannot explain (Codex's P2, confirmed and wider) | high (driven) | yes |
-| F3 | The busy record cannot name what held the pool in the failure that motivated it, and the summary's "held by" is fuser's header or a cut fragment | high (driven, and checked against OpenZFS 2.2.2) | no, but fix it in this pull request |
+| F3 | The busy record cannot name what held the pool in the failure that motivated it, and the summary's "held by" is fuser's header or a cut fragment | certain (seen in this pull request's own replay run; OpenZFS 2.2.2 read) | no, but fix it in this pull request |
 | F4 | "Busy exports: N" counts refused attempts, not exports | high | no |
 
 The suggestions and test gaps (S1 to S6) are below the findings. None of
@@ -47,13 +47,18 @@ C1 verify fails at 100, the export stays busy: [(100, 'export'), (101, 'rig: a p
    job_verdict ok=False; exit_code = 2 (the prefix's verify verdict is gone: replaced by 'export')
 ```
 
-The two events can be linked. A file that fails its checksum in a mounted
-pool makes ZFS post checksum ereports. zed's agents open the pool to
-diagnose them. An open pool holds the spa's reference, and an export
-refuses a held pool as busy. The retries make this rarer. They do not
-make it impossible: 44421456349 shows that `-f` does not help with the
-pool's own "pool is busy". A rerun of the same image could repeat it. A
-real defect would then be filed twice as "not a verdict".
+**How likely.** It needs a busy export that outlasts 15 s of waits and
+`-f`, at the same prefix as a verdict. Busy exports are not rare. In
+this pull request's own product-layout run there were seven in about
+3400 prefixes, on a true image, and each cleared after 1 s. What held
+the pool is not known (F3). zed is probably not there: the jobs install
+`zfsutils-linux` with `--no-install-recommends`. So the cause is likely
+a short-lived reference in the kernel after the unmount. The retries
+make a busy that outlasts them rare. 44421456349 shows only that `-f`
+straight after a busy does not help. I would not call this likely. It
+blocks anyway, for two reasons: the result is a verdict labelled "not a
+verdict", which is the one direction a rig must not err in, and the fix
+is a few lines.
 
 The same holds for the main pass's `rig: zdb died with signal 6`.
 `tally_control` counts that as a catch in a control ("zdb aborts on an
@@ -128,18 +133,27 @@ class is not in the table. A test for each.
    only the last 1000 characters (`fu.strip()[-1000:]`), and the first
    line is a cut fragment.
 
-Driven in `scenarios.py`, B1, with the real `fuser` (psmisc 23.7) on an
-unmounted directory:
+**The pull request's own run shows both.** In replay-rig run
+44439786303, the product layout job (135280787765, success) had seven
+busy exports. Each one exported after the first 1 s wait, so the retry
+itself works. Every log line reads:
 
 ```
-export of skzreplay busy at prefix 0: tried again in 1 s; held by: USER        PID ACCESS COMMAND | /tmp/.../w/alt/skz: | root     kernel mount / | root          2 .rc.. kthreadd | ...
-B1 ... first lines: ['nvironment-man', '                     root        101 Frc.m claude', ...]
-   the summary says: Busy exports: 1, each tried again (the first at prefix 0, held by: nvironment-man). ...
+export of skzreplay busy at prefix 60: tried again in 1 s; held by: USER        PID ACCESS COMMAND | /mnt/skz-replay/check/alt/skzreplay: | root     kernel mount / | root          1 .rce. systemd | root          2 .rc.. kthreadd | root          3 .rc.. pool_workqueue_release; mounts under the alternate root: none
 ```
+
+That is fuser's header, then the runner's root file system (`kernel
+mount /`), systemd and kthreadd. The mounts under the alternate root are
+none: the pool was already unmounted. The summary reads
+"Busy exports: 7, each tried again (the first at prefix 60, held by:
+c.. z_cl_iss)". `z_cl_iss` is a ZFS kernel thread's name cut at the
+1000-character tail. The same happens locally (`scenarios.py`, B0 and
+B1, with the real `fuser`, psmisc 23.7, on an unmounted directory): the
+log line begins with the header, and the summary names a cut fragment.
 
 The unit test's stand-in prints
 `ALT/p:  root  4242 ..c.. udisksd`, which is not fuser's format. That is
-why it passes.
+why the test passes.
 
 The mounts line (`mounts` under the alternate root) is right and useful.
 When it is empty, it says that the busy is the pool's and not a mount's.
@@ -183,13 +197,16 @@ section A):
 - **When each reading is taken.** The held reading is taken after the
   tenth `zpool sync` and before `rm -f hold.pause`. The holder has been
   paused since before `create_pool`, so the first cut is the one being
-  uploaded and is held. `cut_holes held` in that reading can only be
-  true while that cut is held: the daemon drops the set once that cut
-  is uploaded or let go (`status.rs`, offset 1008). So the held reading
-  cannot come from after the let-go. The premise is read from
-  `status-start-1.txt`. On #125's daemon that reading said `held`/8192
-  for boundsparse and `held`/0 for bound (44378510338), so it is taken
-  after the hole set exists.
+  uploaded and is held. In boundsparse, `cut_holes held` together with
+  `cuts_abandoned 0` means that cut is still held: the daemon drops the
+  set once that cut is uploaded or let go (`status.rs`, offset 1008). So
+  a reading from after the let-go cannot pass. (bound's run shows that
+  the set stays `held` after an abandonment: the map, with its holes,
+  passes to the cut that waits. That is why both conditions are needed,
+  and the judge asks for both.) The premise is read from
+  `status-start-1.txt`. It is taken after the hole set exists:
+  `held`/8192 for boundsparse and `held`/0 for bound, in 44378510338 and
+  again in this pull request's run.
 - **The version.** The gate reads the final `status.txt`. The two other
   readings come from the same instance (bound has one start), so their
   version is the same.
@@ -200,11 +217,22 @@ section A):
 - **The 4 MiB limit.** The "0.75 to 1 MiB in 44378510338" that the
   comment cites was computed from the request log (blocks written before
   the first cut's instant and written again while it was held). It is
-  not a status reading. It also covers only the first cut's copies.
-  `cut_copied_bytes` is the copies of every held cut. At rest, after a
-  sync, the cut that waits adds little, but this pull request's
-  cut-daemon run is the first real reading. Read it before the merge
-  (S1).
+  not a status reading, and it covers only the first cut's copies.
+  `cut_copied_bytes` is the copies of every held cut. This pull
+  request's cut-daemon run 44439786541 is the first real reading, and it
+  bears the limit out:
+
+  | job | recording | held reading | lines |
+  |---|---|---|---|
+  | ubuntu-26.04 (135280832083) | boundsparse | `cuts_held 2`, `held`, 0 abandoned, **798720** bytes | premise PASS, copies PASS |
+  | ubuntu-26.04 | bound | `cuts_held 2`, `held`, 1 abandoned, 84439040 bytes | premise PASS, INFO |
+  | ubuntu-26.04-arm (135280832199) | boundsparse | `cuts_held 2`, `held`, 0 abandoned, **806912** bytes | premise PASS, copies PASS |
+  | ubuntu-26.04-arm | bound | `cuts_held 2`, `held`, 1 abandoned, 80252928 bytes | premise PASS, INFO |
+
+  That is 0.76 to 0.77 MiB with two cuts held, five times under the
+  limit. A daemon that copied the hole writes would hold about 80 MiB
+  or more, as bound does here. Only the 26.04 images ran. The comment
+  could cite these readings in place of the estimate (S1).
 
 ### (2) `rec_bound`: ordering, races, a dead daemon, an unreadable status
 
@@ -241,7 +269,9 @@ section A):
   The deep check writes into a throwaway copy-on-write file over a
   read-only loop device. What held the pool is recorded before each wait
   and not before `-f` (the fifth attempt). That would be enough if the
-  record could show the holder, which it cannot (F3).
+  record could show the holder, which it cannot (F3). In this pull
+  request's run every busy export cleared after 1 s, so `-f` was not
+  reached.
 - **The match.** It is a substring, `'busy' in out`, not exact. It
   matches EBUSY in all its forms: "pool is busy", "pool or dataset is
   busy", "target is busy", "Device or resource busy". A timeout
@@ -270,10 +300,10 @@ section A):
 
 ## Suggestions and test gaps (none blocks)
 
-- **S1.** Read `cut_copied_held` in this pull request's cut-daemon run
-  (both images) before the merge, and put the figures in the notes. Only
-  that run shows whether 4 MiB holds a margin over the copies of every
-  held cut.
+- **S1.** Cite the run's readings next to `HELD_COPY_LIMIT`
+  (798720 and 806912 bytes, two cuts held, run 44439786541) in place of
+  the estimate from the request log. Put them in the notes. The 24.04
+  images have not read it yet.
 - **S2.** Judge the held reading's `age_ms`, or wait a quarter of a
   second before the read, as `end_daemon` waits a second.
 - **S3.** In `bound_lines`, read a missing `cut_holes` or
@@ -287,8 +317,10 @@ section A):
   should exit 2, with or without a pool left, is for the lead to decide.
 - **S6.** No test of `main()` in `test_cut_daemon_main.py` covers bound
   or boundsparse at status version 17. A main-level fixture would pin
-  that a missing held reading ends in the rig's error and not in a
-  silent pass.
+  how the new lines combine with the rest. For example, `main` turns a
+  RigError into exit 2 even after a FAIL (`except RigError: rc = 2`), and
+  `bound_lines` adds a place that raises one. That cannot happen for a
+  finished recording, which always has both readings.
 
 ## Tests, shellcheck, plants
 
@@ -307,8 +339,45 @@ At the head, in a worktree:
 Plants (`plants.py`, `plants.out`): one at a time, each file restored in
 a `finally`, each test under a limit. The worktree was clean afterwards.
 
-PLANTS_TABLE
+| area | plants | result |
+|---|---|---|
+| `bound_lines` (J01 to J21, J22b) | the limit (8 MiB, inclusive), each condition of the copies, the reading after the stop (`status-held.txt`), a missing reading as a line, the exit and error flags, bound judged as boundsparse, each condition of the premise, the premise from the held reading, the version gate (18, none), the lines never written, N3's copies back in bound's line | all 22 KILLED |
+| `rec_bound` (R01 to R07) | the reading after the let-go, before the last sync, missing, under another name, after the loads; nine writes | 6 KILLED; R06 (the pause after the create, a line this pull request did not touch) SURVIVED |
+| `cut_plan.py` (P01, P02) | a `docs/` path, and a `tests/kernel/` path the workflow does not name, in `UPLOAD_PATHS` | both KILLED |
+| busy export (X01 to X10) | no retry, any failure retried, nothing recorded, no `-f`, no waits, no fuser | 6 KILLED. SURVIVED: the record's prefix (`at`) always 0 (X07), the mounts not recorded (X08), the kernel's message not recorded (X09), one wait fewer (X10) |
+| exit code (X11 to X23) | each condition of the rule, never 2, 2 whenever left, `leftover()` reworded, `main` exiting 0 or 1, the summary's lines | 11 KILLED. SURVIVED: a leftover seen only in the main pass is missed (X16; every test case has one in a control too), `export_busy` left out of the results (X23) |
+| X24 | F2's fix planted (a caught superseded control keeps exit 1) | SURVIVED: the tests do not pin F2's behaviour, so the fix breaks nothing |
+
+J22 as first written was a syntax error, not a plant. It is marked
+INVALID in `plants.out` and was redone as J22b. The survivors X07 to X10,
+X16 and X23 are small test gaps. One assertion each would pin them: the
+record's `at`, `mounts` and `said`, `EXPORT_WAITS == (1, 2, 4, 8)`, a
+main-pass-only leftover, and `export_busy` in the results.
+
+In all: 47 KILLED, 8 SURVIVED (R06 pre-existing, six test gaps, and X24,
+which is the planted fix and not a defect), 1 INVALID.
 
 ## CI and Codex at the head
 
-CI_STATE
+Read-only, at head c205682 (`gh api`, no events subscribed):
+
+- Done and green: `ci`, `e2e`, `skyzfs-kernel-probe`, `skyzfs-nodeb-rig`
+  (pull request); `skyzfs-ci`, `skyzfs-cut-rig`, `skyzfs-cut-daemon`,
+  `skyzfs-nodeb-rig` (push).
+- `skyzfs-cut-daemon` (run 44439786541): the logic job and the 26.04
+  and 26.04-arm jobs are green; their readings are in point (1). The
+  upload job was still running.
+- `skyzfs-replay-rig` (run 44439786303): the product layout and three of
+  the four daemon jobs (plain 24.04 and 26.04, write into a hole 24.04)
+  are green; F3's log lines come from the product job. The whole-pool
+  layout and the 26.04 write-into-a-hole job were still running.
+- Still running: `skyzfs-cut-rig` on the pull request (24.04 and 26.04
+  green, both arm64 jobs running), `skyzfs-daemon-rig` (all five kernel
+  jobs), `coverage`.
+- Codex: one finding (P2, "Preserve independent control mismatches",
+  review comment 4623344058), open and not answered. It is confirmed and
+  widened in F2. Codex's summary comment has nothing more.
+- No comment from the author with the rigs' tables yet.
+
+A verdict on the merge also needs the running jobs green, and F1 and F2
+settled.

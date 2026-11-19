@@ -19,6 +19,38 @@ J18 a premise FAIL does not set the exit (boundsparse): KILLED by 1: test_the_pr
 J19 the gate is version 18: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
 J20 no gate on the version: KILLED by 1: test_a_daemon_before_version_17_has_no_held_or_premise_line
 J21 the bound lines are never written: KILLED by 2: test_boundsparse_judges_the_copies_while_the_first_cut_is_held, test_the_premise_of_bound_and_boundsparse
-J22 bound's abandoned line prints the copies read after the let-go again: KILLED by 1: test_cut_daemon_check.py exit 1: et('cut_bound_bytes')!r}; the holder kept the '
-    ^
-SyntaxError: unterminated f-string literal (detected at line 1569)
+J22 bound's abandoned line prints the copies read after the let-go again: INVALID (the plant itself was a syntax error; see J22b)
+R01 the held reading after the let-go: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+R02 the held reading before the last sync: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+R03 no held reading: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+R04 the held reading under another name: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+R05 the held reading after the loads: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+R06 (pre-existing) the pause after the create: SURVIVED
+R07 nine writes: KILLED by 1: test_cut_record.sh: FAIL rec_bound: the writes, then the status while the holder is paused, then the let-go: g
+P01 a docs/ path in UPLOAD_PATHS: KILLED by 1: test_every_upload_path_starts_the_workflow
+P02 a tests/kernel/ path that the workflow does not name: KILLED by 1: test_every_upload_path_starts_the_workflow
+X01 no retry: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X02 any failure is retried: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X03 nothing recorded: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X04 no -f after the waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X05 no waits: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X06 fuser not asked: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X07 the record has prefix 0 for every busy export: SURVIVED
+X08 the mounts are not recorded: SURVIVED
+X09 the record does not say what the kernel said: SURVIVED
+X10 one wait fewer: SURVIVED
+X11 a judging failure does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X12 a control judged otherwise does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X13 the witness does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X14 zdb does not keep exit 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X15 a leftover seen only in a control is missed: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X16 a leftover seen only in the main pass is missed: SURVIVED
+X17 never 2: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X18 2 whenever a pool was left: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X19 leftover() says it otherwise: KILLED by 1: test_a_pool_left_imported_is_a_rig_error_not_a_verdict
+X20 main exits 0 or 1: KILLED by 1: test_a_pool_left_imported_ends_the_job_with_exit_2
+X21 the summary has no rig lines: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X22 the summary does not say exit 2: KILLED by 1: test_a_busy_export_is_tried_again_and_what_held_the_pool_recorded
+X23 export_busy not in the results: SURVIVED
+X24 a control whose mismatch the rig errors do not explain is excused (as now; Codex): planted the fix: SURVIVED
+J22b bound's abandoned line prints the copies read after the let-go again: KILLED by 1: test_bound_says_no_copies_read_after_the_let_go

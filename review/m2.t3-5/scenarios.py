@@ -87,13 +87,20 @@ rig = rc.Rig(argparse.Namespace(provider='', work=os.path.join(work, 'w'), manif
 # The pool's mount point under the alternate root, left behind by the
 # unmount: a directory, not a mount point.
 os.makedirs(rig.alt + '/skz', exist_ok=True)
-rig.held("cannot export 'skzreplay': pool is busy", 1)
+import contextlib, io
+with contextlib.redirect_stdout(io.StringIO()) as printed:
+    rig.held("cannot export 'skzreplay': pool is busy", 1)
+print('  B0 the log line begins: ' + printed.getvalue().split('held by: ', 1)[1][:30].replace(rig.alt, 'ALT') + ' ...')
 b = rig.busy[0]
 lines = b['fuser'].splitlines()
 print(f"  B1 fuser -vm on the unmounted mount point: {len(lines)} lines kept of the record "
       f"(of {len(b['fuser'])} chars); mounts under the alternate root: {b['mounts']}")
-print(f"     first lines: {lines[:4]}")
-print(f"     the summary says: {rc.rig_lines({'export_busy': rig.busy})[0].strip()}")
+full = rc.run(['fuser', '-vm', rig.alt + '/skz'], 30)[1]
+print(f"     fuser's whole output: {len(full.splitlines())} lines; its first: {full.splitlines()[0].strip()!r}; "
+      f"'kernel mount /' in it: {'kernel mount /' in full}")
+said = rc.rig_lines({'export_busy': rig.busy})[0].strip()
+named = said.split('held by: ', 1)[1].split(')', 1)[0]
+print(f"     the summary's 'held by': {'fuser header' if named.startswith('USER') else 'the line ' + repr(lines[0].strip()) + ', cut at the 1000-character tail' if named == lines[0].strip() else repr(named)}")
 print("  B2 'busy' in the output decides a retry:")
 for said in ("cannot export 'skzreplay': pool is busy", "cannot unmount '/w/alt/skz': pool or dataset is busy",
              "umount: /w/alt/skz: target is busy.", "cannot export 'skzreplay': I/O error",
@@ -167,6 +174,14 @@ c2b = [dict(c2[0], rig_errors=[])]
 rows2b, _, _ = rc.judge_controls(c2b, absent={'intent': 'x', 'data': 'x', 'reorder': 'x'})
 print(f"  C2 superseded drop caught at 5, pool left at 7: exit_code = {rc.exit_code(ok2, [], c2, rows2, True, 0)}; "
       f"without the rig errors its row: match={rows2b[0]['match']} ({rows2b[0]['observed']})")
+
+# C2b: a class the table does not name for the control (reorder of a
+# superseded write), with rig errors: excused too.
+c3 = [{'name': 'reorder', 'class': 'superseded', 'caught': False, 'failed_by': {}, 'rig_errors': errs[1:]}]
+rows3, _, cok3 = rc.judge_controls(c3, absent={'intent': 'x', 'data': 'x', 'drop': 'x'})
+row3 = next(r for r in rows3 if r['name'] == 'reorder')
+print(f"  C2b reorder whose class the table does not name, pool left: row '{row3['expected']}'; "
+      f"exit_code = {rc.exit_code(False, [], c3, rows3, True, 0)}")
 
 # C3: the reverse: zdb timed out (124) or could not start (127) at the end,
 # with a pool left imported and nothing else.

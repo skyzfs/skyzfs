@@ -86,7 +86,11 @@ PLANTS = [
     ('J22 bound\'s abandoned line prints the copies read after the let-go again', J,
      "abandoned at the bound; the holder kept the '",
      "abandoned at the bound, with the copies '\n            f\"{status.get('cut_copied_bytes')!r} bytes of "
-     "{status.get('cut_bound_bytes')!r}; the holder kept the '"),
+     "{status.get('cut_bound_bytes')!r}; the holder kept the '"),   # a syntax error: not a plant
+    ('J22b bound\'s abandoned line prints the copies read after the let-go again', J,
+     "abandoned at the bound; the holder kept the '",
+     "abandoned at the bound, with the copies '\n            f\"{status.get('cut_copied_bytes')!r} bytes of "
+     "{status.get('cut_bound_bytes')!r}; the holder kept the \""),
     # ---- the recorder: rec_bound's order
     ('R01 the held reading after the let-go', R, RB,
      "        z 60 zpool sync \"$POOL\"\n    done\n    rm -f \"$WORK/hold.pause\"\n    ustatus status-bound-held.txt\n"
