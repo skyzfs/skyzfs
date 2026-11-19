@@ -1041,7 +1041,10 @@ mod uploader {
         desk.close();
         let mut handler = handler::uploader(A, tx, desk, LIMIT).expect("a handler");
         let reply = handler(&Request::Cuts, Vec::new());
-        assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
+        assert!(
+            matches!(&reply, Reply::Refused(Code::Ended, why) if why.contains("store")),
+            "the store's queue has ended, not the uploader: {reply:?}"
+        );
         drop(rx);
     }
 

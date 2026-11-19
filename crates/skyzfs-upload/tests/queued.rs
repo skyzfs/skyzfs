@@ -273,7 +273,9 @@ async fn a_sync_of_the_copies_under_way_at_the_close_ends_as_failed() {
 
 /// A call waiting when the desk closes is dropped and answered as by a
 /// store that holds nothing; so is every call after, and none of them
-/// wakes the queue's thread.
+/// wakes the queue's thread. An ask of the count waiting at the close
+/// ends at once, with no count, and so does every ask after (N3 of the
+/// next look at #127: not after its asker's limit).
 #[tokio::test]
 async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
     let (wake, mut woken) = tokio::sync::mpsc::unbounded_channel();
@@ -287,6 +289,13 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
         .await
         .expect("the call woke the queue's thread");
     assert!(!call.is_finished(), "nobody has answered");
+    let asking = Arc::clone(&desk);
+    let count = tokio::spawn(async move { asking.cuts_now().await });
+    woken
+        .recv()
+        .await
+        .expect("the ask of the count woke the queue's thread");
+    assert!(!count.is_finished(), "nobody has given the count");
 
     desk.close();
     let answer = tokio::time::timeout(Duration::from_secs(10), call)
@@ -294,6 +303,11 @@ async fn a_closed_desk_answers_as_a_store_that_holds_nothing() {
         .expect("the call waiting ends at the close")
         .expect("the task");
     assert!(answer.is_none(), "{answer:?}");
+    let counted = tokio::time::timeout(Duration::from_secs(5), count)
+        .await
+        .expect("the ask of the count waiting ends at the close")
+        .expect("the task");
+    assert_eq!(counted, None, "no count: the store is no longer served");
 
     let mut after = Queued::new(Arc::clone(&desk));
     assert!(after.uploadable().await.is_none());
@@ -413,8 +427,9 @@ async fn a_queue_that_turns_only_when_woken_answers_every_call() {
 /// The count of cuts a request on the daemon's channel reads (M2.5-2) is
 /// the store's, taken on the store's own thread when the call comes:
 /// its cut state, the cuts counted in it, and the newest. Before the
-/// first cut the count is 0 and there is no newest. Mutant: a count one
-/// short of the store's.
+/// first cut the count is 0 and there is no newest. The count is not a
+/// call: [`Desk::answered`] leaves it out. Mutants: a count one short of
+/// the store's; a count counted as a call.
 #[tokio::test]
 async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
     let mut fx = Fixture::new(53).await;
@@ -454,6 +469,11 @@ async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
                 itself: true
             })
         })
+    );
+    assert_eq!(
+        desk.answered(),
+        0,
+        "a count is not a call (N4 of the next look at #127)"
     );
     desk.close();
     let _ = queue.join();
