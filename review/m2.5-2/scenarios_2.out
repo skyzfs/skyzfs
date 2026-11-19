@@ -1,0 +1,38 @@
+review: ten asks: Some(CutsNow { state: Some([245, 23, 236, 42, 98, 86, 34, 106, 54, 201, 90, 36, 213, 120, 223, 246]), count: 1, newest: Some(Cut { number: 1, group: 7, itself: true }) })
+review: counted after the ask: Some(CutsNow { state: Some([100, 179, 181, 240, 252, 3, 83, 52, 87, 3, 19, 11, 0, 151, 26, 220]), count: 2, newest: Some(Cut { number: 2, group: 8, itself: true }) })
+test review_the_count_is_taken_at_the_turn_after_the_ask ... ok
+test review_asks_of_the_count_at_once_are_answered_alike ... ok
+test review_an_ask_of_the_count_ends_at_the_close ... ok
+review: after 1000 given up: Some(CutsNow { state: Some([206, 159, 5, 7, 116, 150, 197, 201, 21, 10, 239, 208, 97, 1, 233, 31]), count: 0, newest: None }) in 76.478µs
+test review_asks_given_up_do_not_pile_up ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 2.09s
+review: before the first cut: CutsNow { state: Some([184, 206, 217, 43, 219, 32, 103, 230, 155, 137, 97, 26, 98, 249, 74, 7]), count: 0, newest: None }
+review: bursts: 48 answered; takes [0ns, 10s, 20s, 30s, 40s, 50s, 60s, 70s, 80s, 90s, 100s, 110s, 120s, 130s, 140s, 150s, 160s, 170s, 180s]
+test review_the_cut_state_is_named_before_the_first_cut ... ok
+test review_bursts_of_requests_do_not_hold_back_the_leases_renewal ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+review: before the first cut: CutsNow { state: Some([213, 141, 246, 113, 45, 217, 129, 194, 55, 169, 9, 49, 51, 45, 11, 10]), count: 0, newest: None }
+review: bursts: 48 answered; takes [0ns, 10s, 20s, 30s, 40s, 50s, 60s, 70s, 80s, 90s, 100s, 110s, 120s, 130s, 140s, 150s, 160s, 170s, 180s]
+test review_the_cut_state_is_named_before_the_first_cut ... ok
+test review_bursts_of_requests_do_not_hold_back_the_leases_renewal ... ok
+review: cuts at a slow desk: Ok(Some(CutsNow { state: Some([20, 86, 132, 48, 95, 2, 140, 125, 63, 220, 4, 176, 255, 60, 240, 72]), count: 0, newest: None })) after 11.25s; publish Accepted; takes [0ns, 10s, 20s, 30s, 40s, 50s, 60s, 70s, 80s]
+test review_cuts_at_a_slow_desk_does_not_hold_back_the_leases_renewal ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+test control::tests::review::review_a_client_queued_behind_a_slow_handler_is_answered ... review: queued behind 12 s: Ok(Pending)
+test control::tests::review::review_a_large_manifest_sent_in_pieces_within_the_limit_is_taken ... review: 1 MiB in pieces over 4.802158496s: "skyzfs-control 1\naccepted\n"
+test control::tests::review::review_a_manifest_late_past_the_limit_is_not_taken ... review: behind a late manifest: Ok(Accepted) after 9.986516005s
+review: the late one: second write ok false, read ok true, back ""
+test control::tests::review::review_a_silent_client_holds_the_next_for_the_request_limit ... review: behind a silent client: 10.097880611s
+test control::tests::review::review_a_slow_handler_is_not_cut_by_the_request_limit ... review: a handler of 12 s: Ok(Pending)
+test control::tests::review::review_a_trickling_client_is_cut_off_at_the_request_limit ... review: behind a trickler, limit 12 s: Ok(Pending) after 9.702559004s
+review: the trickler cut off true after 10.801496494s
+test control::tests::review::review_an_oversized_line_is_refused_and_the_refusal_reaches_the_client ... review: line of 100001: written Ok(()), read Err(Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }), back "skyzfs-control 1\nrefused version this daemon speaks `skyzfs-control 1`\n"
+review: line of 100032: written Err(Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }), read Err(Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }), back "skyzfs-control 1\nrefused malformed no whole line within 4096 bytes\n"
+review: line of 160: written Ok(()), read Ok(25), back "skyzfs-control 1\npending\n"
+review: line of 161: written Ok(()), read Ok(78), back "skyzfs-control 1\nrefused name a snapshot's name is 1 to 128 of [A-Za-z0-9._-]\n"
+review: line of 35: written Ok(()), read Ok(78), back "skyzfs-control 1\nrefused name a snapshot's name is 1 to 128 of [A-Za-z0-9._-]\n"
+test control::tests::review::review_close_with_a_full_backlog ... review: backlog full after 4097 connections
+review: close with a full backlog: Ok((false, 5.000126619s))
+test control::tests::review::review_concurrent_clients_are_each_answered ... review: 20 clients answered in 1.003689812s
+test control::tests::review::review_the_wake_of_nothing_returns ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 67.32s
