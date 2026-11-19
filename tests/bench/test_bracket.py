@@ -277,5 +277,68 @@ class AnUploadRow(unittest.TestCase):
         self.assertIn('no zfs-slog row of this machine and workload before it', bk.bracketed(rows[0], rows)['verdict'])
 
 
+def seeding(sb=None, sa=None, pid_same=True, from_load='window'):
+    """A row whose seed was let go at its first window: the figures of
+    run 44462902930's row sw (no lease at the window's start, the seed
+    committed 10 to 15 s after the release under epoch 1)."""
+    k = uploading({'lease': 'none', 'lease_epoch': '0', 'uploaded': '0'},
+                  {'lease_epoch': '1', 'uploaded': '1', 'uploaded_whole': '1'}, pid_same)
+    k['before'].update(sb or {}); k['after'].update(sa or {})
+    if from_load:
+        k['upload']['from_load'] = from_load
+    return k
+
+
+class ASeedInTheWindow(unittest.TestCase):
+    """The lead's decision on #132: a row whose seed was let go at its
+    first window measures the seed's cost there, so a lease taken in the
+    window counts when the seed committed inside it."""
+
+    judge = AnUploadRow.judge
+    assert_no_verdict = AnUploadRow.assert_no_verdict
+
+    def test_a_seed_that_committed_inside_its_window_is_judged(self):
+        seed = 'seed inside window, lease at release (epoch 1)'
+        self.assertEqual(self.judge(seeding())['verdict'], f'at least 0.90 ({seed})')
+        self.assertEqual(self.judge(seeding(), tps=850)['verdict'], f'BELOW 0.90 ({seed})')
+        self.assertEqual(self.judge(seeding(sa={'lease': 'unsure'}))['verdict'], f'at least 0.90 ({seed})')
+        # A lease already held at the start under the end's epoch is the same lease.
+        self.assertEqual(self.judge(seeding(sb={'lease': 'held', 'lease_epoch': '1'}))['verdict'],
+                         f'at least 0.90 ({seed})')
+        # The plain rule still judges a window row that held one lease
+        # throughout and uploaded after an earlier commit: no marker.
+        k = seeding(sb={'lease': 'held', 'lease_epoch': '1', 'uploaded': '3'}, sa={'uploaded': '27'})
+        self.assertEqual(self.judge(k)['verdict'], 'at least 0.90')
+
+    def test_plants_that_must_have_no_verdict(self):
+        said = 'it did not hold the lease for the whole window'
+        why = "its seed, let go at the window's start, was not shown to commit inside it"
+        for sb, sa, words in (
+                ({}, {'uploaded_whole': '0'}, (said, why, '0 whole at its end')),       # no whole upload by the end
+                ({}, {'uploaded_whole': 'x'}, (said, why)),                               # not read
+                ({'uploaded': '1'}, {}, (said, why, 'uploaded 1 at its start')),        # committed before the window
+                ({}, {'lease': 'lost'}, (said, why, 'at its end lost at epoch 1')),     # lease lost by the end
+                ({}, {'lease': 'none'}, (said, why)),
+                ({}, {'lease_epoch': 'x'}, (said, why)),
+                ({'lease': 'held', 'lease_epoch': '1'}, {'lease_epoch': '2'}, (said, why))):  # lost and taken again
+            self.assert_no_verdict(self.judge(seeding(sb, sa)), *words)
+        k = seeding()
+        del k['after']['uploaded_whole']
+        self.assert_no_verdict(self.judge(k), said, 'not read whole at its end')
+        # Two daemons, or an end not read, are said as before.
+        self.assert_no_verdict(self.judge(seeding(sa={'pid': '5151'}, pid_same=False)),
+                               'its daemon was not shown to be the same')
+        k = seeding()
+        k['after'] = {'read_at_ns': '2000'}
+        self.assert_no_verdict(self.judge(k), "its daemon's status was not read")
+
+    def test_a_row_not_let_go_at_its_window_keeps_the_plain_rule(self):
+        for from_load in (None, 'workload'):
+            b = self.judge(seeding(from_load=from_load))
+            self.assert_no_verdict(b, 'it did not hold the lease for the whole window (at its start none at epoch 0, '
+                                      'at its end held at epoch 1)')
+            self.assertNotIn('seed', b['verdict'])
+
+
 if __name__ == '__main__':
     unittest.main()

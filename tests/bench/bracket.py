@@ -25,6 +25,14 @@ uploads (review's G4 on #123, the lead's decision (c)): no upload
 committed in it, the volume's lease was not held at both of its ends
 under one epoch, or the daemon was not the same at its two ends.
 
+A row whose seed was let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD
+=window) measures the seed's cost in that window, so a lease taken in
+it counts (the lead's decision on #132): such a row is judged when no
+upload had committed at the window's start, a whole upload had by its
+end, and the lease was held at its end, at any lease at its start. Its
+verdict says "seed inside window, lease at release" and the lease's
+epoch. Any other row keeps the rule above.
+
 `enclose` finds the two rows; `bracketed` forms the ratio and says
 whether it may be judged. Rows are the benchmark's result dicts, with
 `_seq` (the row's place in its sequence, or None), `machine`,
@@ -118,16 +126,51 @@ def not_uploading(row):
         return (f"its daemon was not shown to be the same at the window's two ends (pid {sb['pid']} "
                 f"and {sa['pid']})")
     lease = [(s.get('lease', 'not read'), s.get('lease_epoch', 'not read')) for s in (sb, sa)]
+    if seed_in_window(row):
+        return None
     if (any(state not in LEASE_HELD for state, _ in lease) or lease[0][1] != lease[1][1]
             or not str(lease[0][1]).isdigit()):
+        seed = ''
+        if (k.get('upload') or {}).get('from_load') == 'window':
+            seed = (f"; its seed, let go at the window's start, was not shown to commit inside it under the lease held "
+                    f"at its end (uploaded {sb.get('uploaded', 'not read')} at its start, "
+                    f"{sa.get('uploaded_whole', 'not read')} whole at its end)")
         return (f'it did not hold the lease for the whole window (at its start {lease[0][0]} at epoch {lease[0][1]}, '
-                f'at its end {lease[1][0]} at epoch {lease[1][1]})')
+                f'at its end {lease[1][0]} at epoch {lease[1][1]}){seed}')
     a, b = sa.get('uploaded', ''), sb.get('uploaded', '')
     if not (a.isdigit() and b.isdigit()):
         return f"its uploads cannot be read at the window's two ends ('{b}' and '{a}')"
     if int(a) - int(b) <= 0:
         return f'no upload committed in its window (uploaded {b} at its start and {a} at its end)'
     return None
+
+
+def seed_in_window(row):
+    """-> 'seed inside window, lease at release (epoch N)' for a row whose
+    seed was let go at its window's start and committed inside it under
+    the lease it held at the window's end; else None.
+
+    The release comes after the status read at the window's start
+    (topology-bench.sh, skz_minio_resume), so no upload at that read and
+    a whole one at the end's is a seed committed inside the window. A
+    lease held at both ends must be one epoch: a lease lost and taken
+    again in the window is no lease at the release. Read only when the
+    daemon was read at both ends and was the same (not_uploading).
+    """
+    k = row.get('skyzfsd') or {}
+    if (k.get('upload') or {}).get('from_load') != 'window':
+        return None
+    sb, sa = k.get('before') or {}, k.get('after') or {}
+    if not (sb.get('pid') and sa.get('pid') and k.get('pid_same') is True):
+        return None
+    start, end = (sb.get('lease', 'not read'), sb.get('lease_epoch')), (sa.get('lease', 'not read'), sa.get('lease_epoch'))
+    if end[0] not in LEASE_HELD or not str(end[1]).isdigit():
+        return None
+    if start[0] in LEASE_HELD and start[1] != end[1]:
+        return None
+    if sb.get('uploaded') != '0' or not str(sa.get('uploaded_whole', '')).isdigit() or int(sa['uploaded_whole']) < 1:
+        return None
+    return f'seed inside window, lease at release (epoch {end[1]})'
 
 
 def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
@@ -194,4 +237,7 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
                           f'(at most {widest:.0%})')
     else:
         out['verdict'] = f'at least {criterion:.2f}' if out['ratio'] >= criterion else f'BELOW {criterion:.2f}'
+        seed = seed_in_window(row)
+        if seed:
+            out['verdict'] += f' ({seed})'
     return out

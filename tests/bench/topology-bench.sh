@@ -927,7 +927,11 @@ if skz:
           'ratio and has no verdict when its daemon\'s status was not read, or showed no serving daemon, at either '
           'end of its window, no upload '
           'committed in the window, its uploads cannot be read, its daemon did not hold the lease at both of its '
-          'ends under one epoch, or the daemon was not shown to be the same at both (bracket.py).\n')
+          'ends under one epoch, or the daemon was not shown to be the same at both (bracket.py). A row whose seed was '
+          'let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD=window) measures the seed in that window: it is judged '
+          'when no upload had committed at the window\'s start and a whole one had by its end, with the lease held at '
+          'its end and taken at the release, whatever the lease at its start; its verdict says '
+          '"seed inside window, lease at release" and the lease\'s epoch.\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|---|')
     mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
