@@ -1,0 +1,68 @@
+# Gates at acda3e7, main tree, rustc 1.100.0 (2026-11-09), the current stable.
+# The first run of the tests ran out of disk; they were run again with
+# CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 (tests.sh).
+
+== run.sh (fmt and clippy)
+#!/bin/bash
+cd <tree>
+S=$1
+echo "== fmt"; cargo fmt --all -- --check > $S/fmt.out 2>&1; echo "fmt exit $?"
+echo "== clippy plain"; cargo clippy --workspace --all-targets -- -D warnings > $S/clippy_plain.out 2>&1; echo "clippy plain exit $?"
+echo "== clippy hooks"; cargo clippy -p skyzfsd --all-targets --features test-hooks -- -D warnings > $S/clippy_hooks.out 2>&1; echo "clippy hooks exit $?"
+echo "== clippy ctl"; cargo clippy -p skyzfs-ublk-sys --all-targets --features control-test-program -- -D warnings > $S/clippy_ctl.out 2>&1; echo "clippy ctl exit $?"
+echo "== test plain"; cargo test --workspace > $S/test_plain.out 2>&1; echo "test plain exit $?"
+echo "== test hooks"; cargo test -p skyzfsd --features test-hooks > $S/test_hooks.out 2>&1; echo "test hooks exit $?"
+echo "== test ctl"; cargo test -p skyzfs-ublk-sys --features control-test-program > $S/test_ctl.out 2>&1; echo "test ctl exit $?"
+
+== its exits (fmt, clippy; the test lines are the run that ran out of disk)
+== fmt
+fmt exit 0
+== clippy plain
+clippy plain exit 0
+== clippy hooks
+clippy hooks exit 0
+== clippy ctl
+clippy ctl exit 0
+== test plain
+test plain exit 101
+== test hooks
+test hooks exit 101
+== test ctl
+test ctl exit 101
+
+== clippy plain, last lines
+    Checking skynbdd v0.0.1 (<tree>/bins/skynbdd)
+    Checking skyzfs-nodeb v0.0.1 (<tree>/bins/skyzfs-nodeb)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 16s
+== clippy hooks, last lines
+    Checking skyzfs-upload v0.0.1 (<tree>/crates/skyzfs-upload)
+    Checking skyzfsd v0.0.1 (<tree>/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 28.88s
+== clippy ctl, last lines
+    Checking libublk v0.4.8
+    Checking skyzfs-ublk-sys v0.0.1 (<tree>/crates/skyzfs-ublk-sys)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 6.58s
+
+== tests.sh
+#!/bin/bash
+cd <tree>
+S=$1
+export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 RUST_BACKTRACE=0
+echo "== test plain"; cargo test --workspace > $S/test_plain.out 2>&1; echo "test plain exit $?"
+df -h / | tail -1
+echo "== test hooks"; cargo test -p skyzfsd -p skyzfs-local --features skyzfsd/test-hooks,skyzfs-local/test-hooks > $S/test_hooks.out 2>&1; echo "test hooks exit $?"
+df -h / | tail -1
+echo "== test ctl"; cargo test -p skyzfs-ublk-sys --features control-test-program > $S/test_ctl.out 2>&1; echo "test ctl exit $?"
+df -h / | tail -1
+
+== its exits
+== test plain
+test plain exit 0
+/dev/vda        252G   17G   22G  43% /
+== test hooks
+test hooks exit 0
+/dev/vda        252G   18G   22G  45% /
+== test ctl
+test ctl exit 0
+/dev/vda        252G   18G   22G  45% /
+

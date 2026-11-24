@@ -1,0 +1,83 @@
+# The cut rig upload job at acda3e7: run 45485411707, job 138769835317; the course lines of its log.
+[36;1m  { echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo[0m
+[36;1m  { echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo[0m
+[36;1m{ echo "## Cut rig on the daemon: the rig's own error, not a verdict"; echo[0m
+[21:14:11] life: recorded, 7.9M of request log
+life: obs_torn_at_kill: INFO: 0 lines of the request log cut short by a kill -9 and lost with it
+life: obs_unstored_at_kill: INFO: 0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+life: records: INFO: 1420 records from the request log (147 with their bytes), 27 uberblock writes that mark, of 108; 6 marks
+life: cuts: PASS: 27 cuts, each at the same barrier with the same group and the same answer to itself
+life: cut_numbers: PASS: the 27 cut lines are numbered 1 to 27
+life: obs_opens_as_itself: INFO: 27 of 27 cuts open as themselves, by the reference
+life: status: PASS: cuts 27, cut_group 67, cut_opens itself
+life: upload_reads: PASS: node B read the content of every cut it found at head
+life: upload_content: FAIL: node B found no cut of the daemon's at head (0 of another writer's); the daemon counted 27
+life: sessions: PASS: 2 sessions as committed; 22 cuts within the kstats' windows, the others in strictly increasing groups
+life: import_syncs_before_return: PASS: session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 37..39)
+life: ctl_drop: CAUGHT: cut 14: the daemon's is group 35 (itself) at record 779, the reference's group 26 (itself) at record 742 (expected: caught)
+life: ctl_last: CAUGHT: the daemon counted 26 cuts, the reference 27 (expected: caught)
+life: ctl_extra: CAUGHT: the daemon counted 28 cuts, the reference 27 (expected: caught)
+life: ctl_group: CAUGHT: cut 14: the daemon's is group 27 (itself) at record 742, the reference's group 26 (itself) at record 742 (expected: caught)
+life: ctl_opens: CAUGHT: cut 14: the daemon's is group 26 (rewind) at record 742, the reference's group 26 (itself) at record 742 (expected: caught)
+life: ctl_late: CAUGHT: cut 14: the daemon's is group 26 (itself) at record 769, the reference's group 26 (itself) at record 742 (expected: caught)
+life: ctl_early: CAUGHT: the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 66, the reference's group 4 (rewind) at record 60 (expected: caught)
+life: ctl_txg-alone: SAME: the rule txg-alone gives the design's 27 cuts here (expected: same)
+life: ctl_count-repeats: SAME: the rule count-repeats gives the design's 27 cuts here (expected: same)
+life: ctl_previous: SAME: the rule previous gives the design's 27 cuts here (expected: same)
+life: ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 27 cuts here (expected: same)
+life: ctl_mark-kept: SAME: the rule mark-kept gives the design's 27 cuts here (expected: same)
+life: time: INFO: 0 s
+[21:14:13] the rig's own error in umoved: no cut in the row before moved: head d5e362f93ca5aef1a67b4a8679aac44aff091c1488ecace19616cea9a5db231a 3 row unreadable 0200a3ff502bfdc49b14d26e131e8b45a50f09000000000000000e00000000000000d5e362f93ca5aef1a67b4a8679aac44aff091c1488ecace19616cea9a5db231a lease runnervm0hi8g:24249cb7c55242b9884982f925d71331 1 1795554881673  
+[21:14:15] the rig's own error in urow: no cut in the row before row1: head 2f877de133387d6c30b8336cb0092e85c78f7214c99ed4db7109b673cd634847 2 row unreadable 02009f21b2923b75439574b1fca4adb6538708000000000000000e000000000000002f877de133387d6c30b8336cb0092e85c78f7214c99ed4db7109b673cd634847 lease runnervm0hi8g:24249cb7c55242b9884982f925d71331 1 1795554883739  
+[21:14:25] ukill: recorded, 11M of request log
+ukill: obs_torn_at_kill: INFO: 0 lines of the request log cut short by a kill -9 and lost with it
+ukill: obs_unstored_at_kill: INFO: 0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+ukill: records: INFO: 5888 records from the request log (592 with their bytes), 142 uberblock writes that mark, of 568; 3 marks
+ukill: cuts: PASS: 142 cuts, each at the same barrier with the same group and the same answer to itself
+ukill: cut_numbers: PASS: the 142 cut lines are numbered 1 to 142
+ukill: obs_opens_as_itself: INFO: 142 of 142 cuts open as themselves, by the reference
+ukill: status: PASS: cuts 142, cut_group 425, cut_opens itself
+ukill: upload_reads: PASS: node B read the content of every cut it found at head
+ukill: upload_content: FAIL: node B found no cut of the daemon's at head (0 of another writer's); the daemon counted 142
+ukill: sessions: PASS: 1 sessions as committed; 139 cuts within the kstats' windows, the others in strictly increasing groups
+ukill: import_syncs_before_return: PASS: session 1: 2 cuts complete before the command returned (groups 4..5)
+ukill: ctl_drop: CAUGHT: cut 72: the daemon's is group 213 (itself) at record 3010, the reference's group 210 (itself) at record 2970 (expected: caught)
+ukill: ctl_last: CAUGHT: the daemon counted 141 cuts, the reference 142 (expected: caught)
+ukill: ctl_extra: CAUGHT: the daemon counted 143 cuts, the reference 142 (expected: caught)
+ukill: ctl_group: CAUGHT: cut 72: the daemon's is group 211 (itself) at record 2970, the reference's group 210 (itself) at record 2970 (expected: caught)
+ukill: ctl_opens: CAUGHT: cut 72: the daemon's is group 210 (rewind) at record 2970, the reference's group 210 (itself) at record 2970 (expected: caught)
+ukill: ctl_late: CAUGHT: cut 72: the daemon's is group 210 (itself) at record 3004, the reference's group 210 (itself) at record 2970 (expected: caught)
+ukill: ctl_early: CAUGHT: the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 66, the reference's group 4 (rewind) at record 60 (expected: caught)
+ukill: ctl_txg-alone: SAME: the rule txg-alone gives the design's 142 cuts here (expected: same or caught)
+ukill: ctl_count-repeats: SAME: the rule count-repeats gives the design's 142 cuts here (expected: same or caught)
+ukill: ctl_previous: SAME: the rule previous gives the design's 142 cuts here (expected: same or caught)
+ukill: ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 142 cuts here (expected: same or caught)
+ukill: ctl_mark-kept: SAME: the rule mark-kept gives the design's 142 cuts here (expected: same or caught)
+ukill: time: INFO: 0 s
+[21:14:32] ulease: recorded, 7.4M of request log
+ulease: obs_torn_at_kill: INFO: 0 lines of the request log cut short by a kill -9 and lost with it
+ulease: obs_unstored_at_kill: INFO: 0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+ulease: records: INFO: 895 records from the request log (111 with their bytes), 18 uberblock writes that mark, of 72; 6 marks
+ulease: cuts: PASS: 18 cuts, each at the same barrier with the same group and the same answer to itself
+ulease: cut_numbers: PASS: the 18 cut lines are numbered 1 to 18
+ulease: obs_opens_as_itself: INFO: 18 of 18 cuts open as themselves, by the reference
+ulease: status: PASS: cuts 18, cut_group 51, cut_opens itself
+ulease: upload_reads: PASS: node B read the content of every cut it found at head
+ulease: upload_content: FAIL: node B found no cut of the daemon's at head (0 of another writer's); the daemon counted 18
+ulease: sessions: PASS: 2 sessions as committed; 13 cuts within the kstats' windows, the others in strictly increasing groups
+ulease: import_syncs_before_return: PASS: session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 29..31)
+ulease: ctl_drop: CAUGHT: cut 10: the daemon's is group 29 (itself) at record 533, the reference's group 27 (itself) at record 482 (expected: caught)
+ulease: ctl_last: CAUGHT: the daemon counted 17 cuts, the reference 18 (expected: caught)
+ulease: ctl_extra: CAUGHT: the daemon counted 19 cuts, the reference 18 (expected: caught)
+ulease: ctl_group: CAUGHT: cut 10: the daemon's is group 28 (itself) at record 482, the reference's group 27 (itself) at record 482 (expected: caught)
+ulease: ctl_opens: CAUGHT: cut 10: the daemon's is group 27 (rewind) at record 482, the reference's group 27 (itself) at record 482 (expected: caught)
+ulease: ctl_late: CAUGHT: cut 10: the daemon's is group 27 (itself) at record 486, the reference's group 27 (itself) at record 482 (expected: caught)
+ulease: ctl_early: CAUGHT: the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 65, the reference's group 4 (rewind) at record 59 (expected: caught)
+ulease: ctl_txg-alone: SAME: the rule txg-alone gives the design's 18 cuts here (expected: same or caught)
+ulease: ctl_count-repeats: SAME: the rule count-repeats gives the design's 18 cuts here (expected: same or caught)
+ulease: ctl_previous: SAME: the rule previous gives the design's 18 cuts here (expected: same or caught)
+ulease: ctl_mark-dropped: SAME: the rule mark-dropped gives the design's 18 cuts here (expected: same or caught)
+ulease: ctl_mark-kept: SAME: the rule mark-kept gives the design's 18 cuts here (expected: same or caught)
+ulease: time: INFO: 0 s
+[21:14:34] the rig's own error in ulost: no cut in the row before lost: head 2aa7b1cd475e7420415f7e6f74ee9881c70d50c38ca111c06bdfd73ed5eeedde 3 row unreadable 02007af6fd5745c94590260511b5e14192f90a000000000000001b000000000000002aa7b1cd475e7420415f7e6f74ee9881c70d50c38ca111c06bdfd73ed5eeedde lease runnervm0hi8g:24249cb7c55242b9884982f925d71331 1 1795554876961  
+[21:14:34] done: worst exit 2

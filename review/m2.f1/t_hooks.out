@@ -1,0 +1,14 @@
+     Running unittests src/lib.rs (target/debug/build/skyzfs-local/055b5a0cfdfc1ee7/out/skyzfs_local-055b5a0cfdfc1ee7)
+test result: ok. 309 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 71.28s
+     Running tests/inplace_real.rs (target/debug/build/skyzfs-local/631dc8ecf3b86c01/out/inplace_real-631dc8ecf3b86c01)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+     Running unittests src/lib.rs (target/debug/build/skyzfsd/aacf1470803ad6ad/out/skyzfsd-aacf1470803ad6ad)
+test result: ok. 178 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.16s
+     Running unittests src/main.rs (target/debug/build/skyzfsd/571819d0eae45726/out/skyzfsd-571819d0eae45726)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/closed_output.rs (target/debug/build/skyzfsd/7d9bd4502ad0321e/out/closed_output-7d9bd4502ad0321e)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_local
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfsd
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

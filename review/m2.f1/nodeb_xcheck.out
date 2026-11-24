@@ -1,0 +1,13 @@
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Finished `test` profile [optimized] target(s) in 1.22s
+     Running tests/nodeb_xcheck.rs (<target>/debug/build/skyzfs-upload/b610c03bb1b82fa8/out/nodeb_xcheck-b610c03bb1b82fa8)
+
+running 3 tests
+test review_f1_the_daemon_reads_what_node_b_writes ... ok
+node B and the daemon agree on 200000 byte strings: 34133 read, 165867 refused
+test review_f1_node_b_and_the_daemon_accept_the_same_bytes ... ok
+test review_f1_node_b_reads_what_the_daemon_writes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+exit 0

@@ -1,0 +1,25 @@
+== at 4595f55
+== cargo fmt --all --check
+exit 0
+== cargo clippy -p skyzfs-nodeb --all-targets -- -D warnings
+    Checking skynbd-engine v0.0.1 (<tree>/crates/skynbd-engine)
+    Checking skyzfs-nodeb v0.0.1 (<tree>/bins/skyzfs-nodeb)
+    Finished `dev` profile [optimized] target(s) in 31.09s
+exit 0
+== cargo test -p skyzfs-nodeb
+test tests::a_row_is_put_as_the_uploader_reads_it ... ok
+test tests::a_store_that_does_not_answer_is_not_about_content ... ok
+test tests::an_expected_row_holds_for_its_cut_in_either_version ... ok
+test tests::each_command_names_what_it_needs ... ok
+test tests::exit_codes ... ok
+test tests::holes_must_be_sector_aligned ... ok
+test tests::runs_join_adjacent_blocks_and_skip_zeros ... ok
+test tests::the_cut_row_is_read_as_the_uploader_writes_it ... ok
+test tests::a_ref_whose_objects_are_gone_is_unreadable ... ok
+test tests::the_id_is_the_provisioners ... ok
+test tests::a_ref_whose_segments_are_gone_is_unreadable ... ok
+test tests::the_guard_holds_the_row_as_read_in_either_version ... ok
+test tests::the_other_writer_acts_on_the_row_it_read ... ok
+test tests::a_put_image_reads_back_through_a_second_ref_store ... ok
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+exit 0

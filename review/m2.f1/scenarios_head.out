@@ -1,0 +1,34 @@
+   Compiling skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.24s
+     Running tests/review_f1.rs (<target>/debug/build/skyzfs-upload/73b4a6ac983797ed/out/review_f1-73b4a6ac983797ed)
+
+running 5 tests
+test review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta ... S1 z's group None: [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; head holds the volume at cut 2: false; head still the other writer's: false
+S1 z's group Some(7): [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; head holds the volume at cut 2: false; head still the other writer's: false
+S1 z's group Some(99): [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; head holds the volume at cut 2: false; head still the other writer's: false
+
+thread 'review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta' (16810) panicked at crates/skyzfs-upload/tests/review_f1.rs:211:5:
+a delta went up onto another history, z's group [None, Some(7), Some(99)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test review_f1_s2_the_upgrades_whole_cut_with_its_reply_lost_carries_its_publish ... S2 after the lost reply: [Uploaded { number: 3, rule: Whole, blocks: 256 }, Published { name: "t", number: 3, commit: [11, 183, 227, 171, 165, 109, 121, 250, 85, 141, 254, 33, 173, 31, 224, 29, 93, 84, 89, 84, 120, 93, 129, 150, 24, 29, 79, 164, 37, 115, 20, 175], found: false }]; snap/t on head: true; not_offered 0
+ok
+test review_f1_s3_head_back_on_the_rows_own_commit_takes_the_delta ... S3 [Began { number: 2, rule: Delta }, GaveUp { number: 2 }, Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; errors [Conflict]
+ok
+test review_f1_s4_a_version_1_row_on_another_history_of_its_group_ends_right ... S4 cut 2 [Mismatch { why: HeadMoved, abandoned: [2] }]
+S4 cut 3 [Began { number: 3, rule: Whole }, Uploaded { number: 3, rule: Whole, blocks: 256 }] (head the volume at cut 3: true)
+S4 cut 4 [Began { number: 4, rule: Delta }, Uploaded { number: 4, rule: Delta, blocks: 5 }]
+ok
+test review_f1_s5_found_committed_with_head_back_on_its_commit_carries_its_publish ... S5 [Uploaded { number: 1, rule: Whole, blocks: 256 }, Published { name: "t", number: 1, commit: [206, 115, 202, 36, 0, 215, 238, 103, 30, 150, 98, 186, 125, 246, 255, 109, 177, 68, 45, 212, 252, 236, 245, 125, 5, 150, 46, 221, 52, 25, 214, 249], found: false }]; snap/t on cut 1's commit: true
+ok
+
+failures:
+
+failures:
+    review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p skyzfs-upload --test review_f1`
+exit 101

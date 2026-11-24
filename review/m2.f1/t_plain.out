@@ -1,0 +1,228 @@
+     Running unittests src/lib.rs (target/debug/build/skynbd-agent/a10d337288bd7722/out/skynbd_agent-a10d337288bd7722)
+test result: ok. 124 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+     Running tests/advance_cycle.rs (target/debug/build/skynbd-agent/7f81cb5ed663d593/out/advance_cycle-7f81cb5ed663d593)
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+     Running tests/crash_matrix.rs (target/debug/build/skynbd-agent/3d884de8e0fce950/out/crash_matrix-3d884de8e0fce950)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.07s
+     Running tests/crash_matrix_dm.rs (target/debug/build/skynbd-agent/2fde311b1b78b0ea/out/crash_matrix_dm-2fde311b1b78b0ea)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.74s
+     Running tests/cycle_dm_mock.rs (target/debug/build/skynbd-agent/0e9289b136c50c66/out/cycle_dm_mock-0e9289b136c50c66)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/cycle_happy.rs (target/debug/build/skynbd-agent/a697ce7f89837dec/out/cycle_happy-a697ce7f89837dec)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/cycle_progress.rs (target/debug/build/skynbd-agent/5af405c26466543b/out/cycle_progress-5af405c26466543b)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/dm_contract.rs (target/debug/build/skynbd-agent/7a8b3343c0f4177d/out/dm_contract-7a8b3343c0f4177d)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+     Running tests/dm_swing.rs (target/debug/build/skynbd-agent/3370543caf18770d/out/dm_swing-3370543caf18770d)
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+     Running tests/exhaustion.rs (target/debug/build/skynbd-agent/a2722a76ddbbe277/out/exhaustion-a2722a76ddbbe277)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/http_s15.rs (target/debug/build/skynbd-agent/425540691d90a1b9/out/http_s15-425540691d90a1b9)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.69s
+     Running tests/outage_degradation.rs (target/debug/build/skynbd-agent/5a2d8081c689657d/out/outage_degradation-5a2d8081c689657d)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+     Running tests/planner_matrix.rs (target/debug/build/skynbd-agent/934064535d17cfb7/out/planner_matrix-934064535d17cfb7)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/publish_pipeline.rs (target/debug/build/skynbd-agent/2063d881d9204e79/out/publish_pipeline-2063d881d9204e79)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.45s
+     Running tests/rebaseline_seed.rs (target/debug/build/skynbd-agent/b60127ffc771131b/out/rebaseline_seed-b60127ffc771131b)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+     Running tests/restage_cycle.rs (target/debug/build/skynbd-agent/90171c14e24fa3cc/out/restage_cycle-90171c14e24fa3cc)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+     Running tests/state_store.rs (target/debug/build/skynbd-agent/ec973aa4be37d784/out/state_store-ec973aa4be37d784)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/wedged_capture.rs (target/debug/build/skynbd-agent/bebfc51fae8b9b34/out/wedged_capture-bebfc51fae8b9b34)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+     Running unittests src/main.rs (target/debug/build/skynbd-agent-cli/111569e2831e8cc4/out/skynbd_agent-111569e2831e8cc4)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running unittests src/lib.rs (target/debug/build/skynbd-api/012ad0253c7b0e69/out/skynbd_api-012ad0253c7b0e69)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running tests/api.rs (target/debug/build/skynbd-api/60996d2b5ec58a04/out/api-60996d2b5ec58a04)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+     Running tests/auth_oidc.rs (target/debug/build/skynbd-api/0620cc509f331fdc/out/auth_oidc-0620cc509f331fdc)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/catalog.rs (target/debug/build/skynbd-api/cc6f765adb7e9fe4/out/catalog-cc6f765adb7e9fe4)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/engine_tuning.rs (target/debug/build/skynbd-api/676d5ec4b6108e7a/out/engine_tuning-676d5ec4b6108e7a)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/enroll.rs (target/debug/build/skynbd-api/b6035c87d6abf331/out/enroll-b6035c87d6abf331)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/fencing.rs (target/debug/build/skynbd-api/623d94ad9b22fabb/out/fencing-623d94ad9b22fabb)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/handoff.rs (target/debug/build/skynbd-api/c6107d71853dc62b/out/handoff-c6107d71853dc62b)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/origin_serve.rs (target/debug/build/skynbd-api/cc8ba8fd75b71090/out/origin_serve-cc8ba8fd75b71090)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+     Running tests/refs_lost.rs (target/debug/build/skynbd-api/61641a6c38c89040/out/refs_lost-61641a6c38c89040)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/retention.rs (target/debug/build/skynbd-api/f8f954f09d729e69/out/retention-f8f954f09d729e69)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/tls_ca.rs (target/debug/build/skynbd-api/9cbade85f4cfeb0d/out/tls_ca-9cbade85f4cfeb0d)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/volumes.rs (target/debug/build/skynbd-api/4aa370c3bac5cb8b/out/volumes-4aa370c3bac5cb8b)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/main.rs (target/debug/build/skynbd-csi-driver/05667ae4f41a7453/out/skynbd_csi_driver-05667ae4f41a7453)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (target/debug/build/skynbd-engine/2c945186894f2cdd/out/skynbd_engine-2c945186894f2cdd)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/cadence_recovery.rs (target/debug/build/skynbd-engine/f5c24a0d0bb5ead5/out/cadence_recovery-f5c24a0d0bb5ead5)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/clone.rs (target/debug/build/skynbd-engine/3eaa5485005b01c0/out/clone-3eaa5485005b01c0)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/coalesce.rs (target/debug/build/skynbd-engine/88d763ddfce89dac/out/coalesce-88d763ddfce89dac)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/commit_path.rs (target/debug/build/skynbd-engine/e549d2fec7c7fd88/out/commit_path-e549d2fec7c7fd88)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/emap.rs (target/debug/build/skynbd-engine/b495bc5d3399813c/out/emap-b495bc5d3399813c)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/epoch_fence.rs (target/debug/build/skynbd-engine/42ea444a8955ca2e/out/epoch_fence-42ea444a8955ca2e)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/extent_index.rs (target/debug/build/skynbd-engine/97ab9d3a68f7db2d/out/extent_index-97ab9d3a68f7db2d)
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/extent_shape.rs (target/debug/build/skynbd-engine/bbb910b7a27e8759/out/extent_shape-bbb910b7a27e8759)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/gc_fsck.rs (target/debug/build/skynbd-engine/8cd7bfee82778ad5/out/gc_fsck-8cd7bfee82778ad5)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/lazy_open.rs (target/debug/build/skynbd-engine/d23093db8162b79c/out/lazy_open-d23093db8162b79c)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/lease_fence.rs (target/debug/build/skynbd-engine/88cccd29a4fe2e3e/out/lease_fence-88cccd29a4fe2e3e)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/open_walk.rs (target/debug/build/skynbd-engine/7ff4b885f0ec8012/out/open_walk-7ff4b885f0ec8012)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/prepared.rs (target/debug/build/skynbd-engine/0df3e84b1288e638/out/prepared-0df3e84b1288e638)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/read_fanout.rs (target/debug/build/skynbd-engine/72327e6f3ffe1070/out/read_fanout-72327e6f3ffe1070)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+     Running tests/rpo.rs (target/debug/build/skynbd-engine/f5246ef0d14eecc8/out/rpo-f5246ef0d14eecc8)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/shard_geometry.rs (target/debug/build/skynbd-engine/1f2d8e3eb4fff8dd/out/shard_geometry-1f2d8e3eb4fff8dd)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/shard_single_flight.rs (target/debug/build/skynbd-engine/a973abee6c0c3b2b/out/shard_single_flight-a973abee6c0c3b2b)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/snapshots.rs (target/debug/build/skynbd-engine/05d589f72c6450a6/out/snapshots-05d589f72c6450a6)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/upload_path.rs (target/debug/build/skynbd-engine/70395a1b40683359/out/upload_path-70395a1b40683359)
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running unittests src/lib.rs (target/debug/build/skynbd-format/529aa5e360ab3506/out/skynbd_format-529aa5e360ab3506)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running unittests src/lib.rs (target/debug/build/skynbd-nbd/1e3e4e18dad2abee/out/skynbd_nbd-1e3e4e18dad2abee)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running tests/interop.rs (target/debug/build/skynbd-nbd/dbe2a31946f19c8d/out/interop-dbe2a31946f19c8d)
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.68s
+     Running tests/origin.rs (target/debug/build/skynbd-nbd/4faa5b36d86e91dd/out/origin-4faa5b36d86e91dd)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/tls.rs (target/debug/build/skynbd-nbd/281b8df7838c5a44/out/tls-281b8df7838c5a44)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+     Running unittests src/lib.rs (target/debug/build/skynbd-refs/78fb89d0d7c7b9a4/out/skynbd_refs-78fb89d0d7c7b9a4)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+     Running tests/cadence.rs (target/debug/build/skynbd-refs/22797018202df994/out/cadence-22797018202df994)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/object_refs.rs (target/debug/build/skynbd-refs/5d3da471867d83a6/out/object_refs-5d3da471867d83a6)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/object_refs_s3.rs (target/debug/build/skynbd-refs/2f1bea4caacab8e5/out/object_refs_s3-2f1bea4caacab8e5)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/build/skynbd-store/5acffda9ae42ac2f/out/skynbd_store-5acffda9ae42ac2f)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (target/debug/build/skynbd-stream/98927a6cb623a02d/out/skynbd_stream-98927a6cb623a02d)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/roundtrip.rs (target/debug/build/skynbd-stream/4b1e2cd29b8eb9b4/out/roundtrip-4b1e2cd29b8eb9b4)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/build/skynbd-tree/7440a4302f19831f/out/skynbd_tree-7440a4302f19831f)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running unittests src/lib.rs (target/debug/build/skynbd-types/25931261295866e6/out/skynbd_types-25931261295866e6)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/debug/build/skynbdctl/95ded1f7283f4a6c/out/skynbdctl-95ded1f7283f4a6c)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/debug/build/skynbdd/86d550769bdd2886/out/skynbdd-86d550769bdd2886)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-blk/6573543dd59fda82/out/skyzfs_blk-6573543dd59fda82)
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+     Running tests/capabilities.rs (target/debug/build/skyzfs-blk/f2ae7d701987c0c7/out/capabilities-f2ae7d701987c0c7)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.38s
+     Running tests/conformance_mem.rs (target/debug/build/skyzfs-blk/3793e3d7083edf76/out/conformance_mem-3793e3d7083edf76)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.07s
+     Running tests/mutants.rs (target/debug/build/skyzfs-blk/de8c141e0b58ede7/out/mutants-de8c141e0b58ede7)
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 81.02s
+     Running tests/review_probe.rs (target/debug/build/skyzfs-blk/fc272b7ec744985a/out/review_probe-fc272b7ec744985a)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/review_target.rs (target/debug/build/skyzfs-blk/ace6a7292bd0a0a3/out/review_target-ace6a7292bd0a0a3)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.84s
+     Running unittests src/main.rs (target/debug/build/skyzfs-blkcheck/dcd68bf4c3cabc96/out/skyzfs_blkcheck-dcd68bf4c3cabc96)
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-local/5c5649f2a08745f0/out/skyzfs_local-5c5649f2a08745f0)
+test result: ok. 309 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 100.69s
+     Running tests/inplace_real.rs (target/debug/build/skyzfs-local/33bceba00f53782b/out/inplace_real-33bceba00f53782b)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-mapped/992905e9bbdfa9cd/out/skyzfs_mapped-992905e9bbdfa9cd)
+test result: ok. 10 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/main.rs (target/debug/build/skyzfs-nodeb/ec98a96e6a97d87e/out/skyzfs_nodeb-ec98a96e6a97d87e)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-uberblock/3846efce844efee3/out/skyzfs_uberblock-3846efce844efee3)
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-ublk/17d4038f22011ccb/out/skyzfs_ublk-17d4038f22011ccb)
+test result: ok. 160 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.03s
+     Running tests/failure_note.rs (target/debug/build/skyzfs-ublk/20f43989a561278c/out/failure_note-20f43989a561278c)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/pump_store.rs (target/debug/build/skyzfs-ublk/a6f127155da4314c/out/pump_store-a6f127155da4314c)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-ublk-sys/5ee8b266791f4b95/out/skyzfs_ublk_sys-5ee8b266791f4b95)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/kernel.rs (target/debug/build/skyzfs-ublk-sys/232c7c9f20abbe0e/out/kernel-232c7c9f20abbe0e)
+test result: ok. 1 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-upload/79e26c0e9488e73b/out/skyzfs_upload-79e26c0e9488e73b)
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/crash.rs (target/debug/build/skyzfs-upload/4ab2c775636c1547/out/crash-4ab2c775636c1547)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+     Running tests/driver.rs (target/debug/build/skyzfs-upload/e32ccb68193b15e1/out/driver-e32ccb68193b15e1)
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/holes.rs (target/debug/build/skyzfs-upload/91e29caf8ef90679/out/holes-91e29caf8ef90679)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/publish.rs (target/debug/build/skyzfs-upload/2c313941d6f45c6f/out/publish-2c313941d6f45c6f)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.80s
+     Running tests/queued.rs (target/debug/build/skyzfs-upload/761244144d7c1538/out/queued-761244144d7c1538)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/uploader.rs (target/debug/build/skyzfs-upload/90eff418daae635d/out/uploader-90eff418daae635d)
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+     Running unittests src/lib.rs (target/debug/build/skyzfsd/3be9f7a40ee873ee/out/skyzfsd-3be9f7a40ee873ee)
+test result: ok. 139 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.46s
+     Running unittests src/main.rs (target/debug/build/skyzfsd/4bd3847c20fd9e82/out/skyzfsd-4bd3847c20fd9e82)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/closed_output.rs (target/debug/build/skyzfsd/b1f6801db28eec07/out/closed_output-b1f6801db28eec07)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+   Doc-tests skynbd_agent
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_api
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_engine
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_format
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_nbd
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_refs
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_store
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_stream
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_tree
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_types
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_blk
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+   Doc-tests skyzfs_local
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_mapped
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_uberblock
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_ublk
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_ublk_sys
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_upload
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfsd
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

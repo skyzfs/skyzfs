@@ -1,0 +1,33 @@
+   Compiling skynbd-types v0.0.1 (<worktree>base/crates/skynbd-types)
+   Compiling skynbd-store v0.0.1 (<worktree>base/crates/skynbd-store)
+   Compiling skyzfs-mapped v0.0.1 (<worktree>base/crates/skyzfs-mapped)
+   Compiling skyzfs-uberblock v0.0.1 (<worktree>base/crates/skyzfs-uberblock)
+   Compiling skynbd-format v0.0.1 (<worktree>base/crates/skynbd-format)
+   Compiling skyzfs-blk v0.0.1 (<worktree>base/crates/skyzfs-blk)
+   Compiling skynbd-refs v0.0.1 (<worktree>base/crates/skynbd-refs)
+   Compiling skynbd-tree v0.0.1 (<worktree>base/crates/skynbd-tree)
+   Compiling skyzfs-local v0.0.1 (<worktree>base/crates/skyzfs-local)
+   Compiling skynbd-engine v0.0.1 (<worktree>base/crates/skynbd-engine)
+   Compiling skyzfs-upload v0.0.1 (<worktree>base/crates/skyzfs-upload)
+    Finished `test` profile [optimized + debuginfo] target(s) in 24.72s
+     Running tests/review_f1_base.rs (<target>/debug/build/skyzfs-upload/293d6b1e635aa69e/out/review_f1_base-293d6b1e635aa69e)
+
+running 1 test
+test review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta ... S1 z's group None: [Mismatch { why: HeadMoved, abandoned: [2] }]; head holds the volume at cut 2: false; head still the other writer's: true
+S1 z's group Some(7): [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }]; head holds the volume at cut 2: false; head still the other writer's: false
+S1 z's group Some(99): [Mismatch { why: HeadMoved, abandoned: [2] }]; head holds the volume at cut 2: false; head still the other writer's: true
+
+thread 'review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta' (15644) panicked at crates/skyzfs-upload/tests/review_f1_base.rs:205:5:
+a delta went up onto another history, z's group [Some(7)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    review_f1_s1_a_head_swapped_between_observes_two_reads_takes_no_delta
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p skyzfs-upload --test review_f1_base`
+exit 101

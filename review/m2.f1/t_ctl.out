@@ -1,0 +1,8 @@
+     Running unittests src/lib.rs (target/debug/build/skyzfs-ublk-sys/dd5cb0e4a4c484fb/out/skyzfs_ublk_sys-dd5cb0e4a4c484fb)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/bin/skyzfs-ublk-control.rs (target/debug/build/skyzfs-ublk-sys/3fb2c64f8dad1630/out/skyzfs_ublk_control-3fb2c64f8dad1630)
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/kernel.rs (target/debug/build/skyzfs-ublk-sys/de3e572c149c6be8/out/kernel-de3e572c149c6be8)
+test result: ok. 1 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_ublk_sys
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
