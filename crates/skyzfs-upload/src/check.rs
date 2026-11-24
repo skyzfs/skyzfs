@@ -35,10 +35,19 @@ pub enum Mismatch {
     /// Head's commit is not the row's: not the commit the row names, or
     /// one with a group where there is no row. Something other than this
     /// uploader moved head (an operator's rollback, another writer), and
-    /// the uploader does not move it on its own (Q5). A row of version 1
-    /// names no commit, so under a cut of part of the volume head is never
-    /// known to be its commit, and that is this mismatch too ([`judge`]).
+    /// the uploader does not move it on its own (Q5). Under a row of
+    /// version 1, head moved where its group is not the row's.
     HeadMoved,
+    /// A cut of part of the volume, and a row of version 1 (written by a
+    /// daemon from before F1) that names its base, with head's group the
+    /// row's: the delta would have gone up before F1, but the row names no
+    /// commit, so head is not known to be the commit the base went up as
+    /// (N3 of the review of #134; the lead's decision, 2026-11-24). This
+    /// is the first delta after an upgrade. It is refused as any mismatch
+    /// is, and the next cut goes up whole and writes version 2. Where
+    /// head's group is not the row's, head moved, and the mismatch is
+    /// [`Mismatch::HeadMoved`], as before F1.
+    RowV1,
     /// The row cannot be read (`row::RowError`): it is not overwritten.
     Unreadable,
 }
@@ -50,6 +59,7 @@ impl Mismatch {
             Mismatch::NoRow => "no row",
             Mismatch::NotTheBase => "the row names another cut",
             Mismatch::HeadMoved => "head's commit is not the row's",
+            Mismatch::RowV1 => "the row names no commit",
             Mismatch::Unreadable => "the row cannot be read",
         }
     }
@@ -89,7 +99,8 @@ pub enum Verdict {
 /// uploaded onto it where head's group is the row's, as every row was
 /// judged before F1, and its commit writes a row of version 2; a cut of
 /// part of the volume is never put onto it, for its delta would rest on
-/// a history the row does not name ([`Mismatch::HeadMoved`]), and the
+/// a history the row does not name ([`Mismatch::RowV1`] where head's
+/// group is the row's, [`Mismatch::HeadMoved`] where it is not), and the
 /// held cuts are abandoned so that the next goes up whole.
 pub fn judge(cut: &Uploadable, row: &Row, head: CommitHash, head_group: Option<u64>) -> Verdict {
     let named = match row {
@@ -119,6 +130,11 @@ pub fn judge(cut: &Uploadable, row: &Row, head: CommitHash, head_group: Option<u
     match named {
         None => Verdict::Mismatch(Mismatch::NoRow),
         Some(named) if Some(named.cut) != cut.base => Verdict::Mismatch(Mismatch::NotTheBase),
+        // A row of version 1 whose group is head's: only the commit it
+        // does not name stands between the cut and a delta (N3).
+        Some(named) if named.commit.is_none() && head_is_the_rows => {
+            Verdict::Mismatch(Mismatch::RowV1)
+        }
         Some(named) if named.commit != Some(head) => Verdict::Mismatch(Mismatch::HeadMoved),
         Some(_) => Verdict::Upload(Rule::Delta),
     }
@@ -280,9 +296,13 @@ mod tests {
             // n2 of the review of #122: head at another commit of the
             // row's group.
             (named(STATE, 4, 40), other(40), Mismatch::HeadMoved),
-            // A row of version 1 names no commit: no delta onto it.
-            (named_v1(STATE, 4, 40), head(40), Mismatch::HeadMoved),
-            (named_v1(STATE, 4, 40), other(40), Mismatch::HeadMoved),
+            // A row of version 1 names no commit: no delta onto it. Where
+            // head's group is the row's, that is all that stands in the
+            // way (N3 of the review of #134); where it is not, head moved.
+            (named_v1(STATE, 4, 40), head(40), Mismatch::RowV1),
+            (named_v1(STATE, 4, 40), other(40), Mismatch::RowV1),
+            (named_v1(STATE, 4, 40), head(41), Mismatch::HeadMoved),
+            (named_v1(STATE, 4, 40), NO_GROUP, Mismatch::HeadMoved),
             (named_v1(OLD, 4, 40), head(40), Mismatch::NotTheBase),
         ];
         for (row, at, why) in cases {

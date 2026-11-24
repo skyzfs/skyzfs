@@ -397,7 +397,8 @@ async fn a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_w
 /// An upgrade from a daemon that wrote the row's version 1, which names
 /// no commit: the row names cut 1, and head is cut 1's commit. The row
 /// does not stop the uploads, and vouches for no delta: the next cut's
-/// check finds head not named by the row, every held cut is abandoned,
+/// check finds a row that names no commit (`RowV1`, not `HeadMoved`:
+/// head did not move, N3 of the review of #134), every held cut is abandoned,
 /// and the cut after it goes up whole onto head, whose group is the
 /// row's, and writes the row's version 2. The cut after that is a delta
 /// again (the lead's decision on F1).
@@ -427,7 +428,7 @@ async fn after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2
     assert_eq!(
         told(&steps),
         [Step::Mismatch {
-            why: Mismatch::HeadMoved,
+            why: Mismatch::RowV1,
             abandoned: vec![2]
         }],
         "no delta onto a row of version 1"

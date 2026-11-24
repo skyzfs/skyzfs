@@ -1119,6 +1119,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         (Mismatch::NoRow, CheckedShown::NoRow),
         (Mismatch::NotTheBase, CheckedShown::NotTheBase),
         (Mismatch::Unreadable, CheckedShown::Unreadable),
+        (Mismatch::RowV1, CheckedShown::RowV1),
     ] {
         let figures = Figures {
             checked: Checked::Mismatched(mismatch),

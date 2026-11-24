@@ -153,7 +153,7 @@
 //! | 456 | 8 | `lease_epoch`: the epoch held, or, when lost, the epoch of the holder that has it (0 where not known) |
 //! | 464 | 8 | `lease_expires_unix_ms`: while held, when the lease expires by the refs object's clock, in milliseconds since the Unix epoch |
 //! | 472 | 96 | the uploader's figures since this daemon started serving: cuts uploaded, among them those of the whole volume, their blocks, cuts found committed already, cuts committed that had gone before their release, among them those the intent map names now, cuts committed that the store kept, mismatches, the cuts they abandoned, cuts lost before their commit, commits given up, steps that failed on object storage |
-//! | 568 | 8 | `upload_checked`: what the last check found: 0 no check yet; 1 matched; a mismatch: 2 no row, 3 the row names another cut, 4 head's commit is not the row's, 5 the row cannot be read. Any other value is read as "not said" |
+//! | 568 | 8 | `upload_checked`: what the last check found: 0 no check yet; 1 matched; a mismatch: 2 no row, 3 the row names another cut, 4 head's commit is not the row's, 5 the row cannot be read; 6 (from F1, with no new version: a reader of the nineteenth version from before it reads "not said") the row is of version 1, written by a daemon from before F1, and names the cut's base with head's group, but no commit: the first cut of part of the volume after an upgrade. Any other value is read as "not said" |
 //! | 576 | 8 | `upload_rule`: how the last cut uploaded went up: 0 none yet; 1 a delta onto the cut the row named; 2 the whole volume. Any other value is read as "not said" |
 //! | 584 | 128 | `upload_why`: UTF-8, padded with zeros: why there is no lease, or the error, commit given up or whole cut lost the uploader waits after |
 //! | 712 | 128 | `lease_holder`: the holder the lease row names: this daemon's while held or unsure (as last held), another's when lost. A holder's name means one daemon (`--holder`, or the host's name and its machine id): a copy of a volume's files, a cloned VM image among them, must not be served under the same name |
@@ -510,6 +510,9 @@ coded! {
         HeadMoved = 4, "head_moved";
         /// The row cannot be read.
         Unreadable = 5, "unreadable";
+        /// A cut of part of the volume, and a row of version 1 that names
+        /// its base with head's group: the row names no commit (F1).
+        RowV1 = 6, "row_v1";
     }
 }
 

@@ -1065,7 +1065,7 @@ async fn the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish() {
         matches!(
             told(&steps)[..],
             [Step::Mismatch {
-                why: skyzfs_upload::Mismatch::HeadMoved,
+                why: skyzfs_upload::Mismatch::RowV1,
                 ..
             }]
         ),

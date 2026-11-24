@@ -14,7 +14,8 @@
 //! 2. a cut that holds part of the volume is uploaded onto the cut the
 //!    intent map names as committed, when the row names that cut and
 //!    head is the commit the row names (F1: a row of version 1, which
-//!    names no commit, vouches for no such upload);
+//!    names no commit, vouches for no such upload, and the status says
+//!    `row_v1` where only that stands in the way);
 //! 3. a cut that holds the whole volume needs no base: it is uploaded
 //!    when head is the commit the row names, whatever cut the row names
 //!    (under a row of version 1, when head's group is the row's), or,
