@@ -1,0 +1,16 @@
+test inplace::tests::cuts::review_q7_s1_a_release_on_a_failed_store_names_the_base_for_the_acknowledging_start ... 
+thread 'inplace::tests::cuts::review_q7_s1_a_release_on_a_failed_store_names_the_base_for_the_acknowledging_start' (20750) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:5416:9:
+assertion `left == right` failed: header sync true
+  left: None
+ right: Some(Base { state: [230, 202, 74, 203, 225, 230, 139, 183, 81, 106, 77, 229, 116, 7, 184, 137], number: 1, group: 7 })
+test inplace::tests::cuts::review_q7_s1b_a_release_on_a_failed_store_polled_before_the_drop ... REVIEW s1b: syncing after the poll false
+REVIEW s1b: committed Some(Base { state: [6, 144, 222, 85, 125, 67, 242, 214, 233, 140, 74, 221, 36, 31, 213, 192], number: 1, group: 7 }), at start Some(TakenUp { named: 0, regions: 4 })
+test inplace::tests::cuts::review_q7_s1c_an_acknowledging_start_takes_up_a_map_synced_before_the_failure ... REVIEW s1c: committed Some(Base { state: [45, 21, 58, 230, 149, 127, 230, 84, 55, 75, 25, 111, 149, 165, 199, 242], number: 1, group: 7 }), at start Some(TakenUp { named: 0, regions: 4 }), acknowledged
+test inplace::tests::cuts::review_q7_s2_a_failing_header_sync_on_a_failed_store_ends_the_drop ... ok
+test inplace::tests::cuts::review_q7_s3_the_sync_the_drop_did_not_wait_for_still_covers_the_header ... REVIEW s3: early true, committed None, at start Some(Begun("the intent map has no committed cut"))
+thread 'inplace::tests::cuts::review_q7_s3_the_sync_the_drop_did_not_wait_for_still_covers_the_header' (20883) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:5477:5:
+assertion `left == right` failed
+  left: None
+ right: Some(Base { state: [210, 82, 50, 117, 187, 130, 228, 230, 203, 25, 103, 81, 148, 186, 170, 71], number: 1, group: 7 })
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 312 filtered out; finished in 0.28s
+exit 101

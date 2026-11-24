@@ -1,0 +1,15 @@
+     Running unittests src/lib.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/f8350714b5da9283/out/skyzfs_upload-f8350714b5da9283)
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/crash.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/942fc5677cb040c2/out/crash-942fc5677cb040c2)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s
+     Running tests/driver.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/127afe8403d3171e/out/driver-127afe8403d3171e)
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/holes.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/526a49e5c14554a1/out/holes-526a49e5c14554a1)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/publish.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/130614d78c3c4297/out/publish-130614d78c3c4297)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+     Running tests/queued.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/04e4197d29f10c8a/out/queued-04e4197d29f10c8a)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+     Running tests/uploader.rs (<scratch>/q7/target2/debug/build/skyzfs-upload/ce37854167598f00/out/uploader-ce37854167598f00)
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+exit 0

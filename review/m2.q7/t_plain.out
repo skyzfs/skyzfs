@@ -1,0 +1,43 @@
+     Running unittests src/lib.rs (<scratch>/q7/target/debug/build/skynbd-refs/b1e06184a93f0918/out/skynbd_refs-b1e06184a93f0918)
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+     Running tests/cadence.rs (<scratch>/q7/target/debug/build/skynbd-refs/5c79c95624c1e52b/out/cadence-5c79c95624c1e52b)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/object_refs.rs (<scratch>/q7/target/debug/build/skynbd-refs/9004316e5575854a/out/object_refs-9004316e5575854a)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/object_refs_s3.rs (<scratch>/q7/target/debug/build/skynbd-refs/c68f2ec72655a921/out/object_refs_s3-c68f2ec72655a921)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (<scratch>/q7/target/debug/build/skyzfs-ublk/6cb862f8c90e09ca/out/skyzfs_ublk-6cb862f8c90e09ca)
+test result: ok. 160 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+     Running tests/failure_note.rs (<scratch>/q7/target/debug/build/skyzfs-ublk/e98ee144784cd843/out/failure_note-e98ee144784cd843)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+     Running tests/pump_store.rs (<scratch>/q7/target/debug/build/skyzfs-ublk/6065aa04c2d57c49/out/pump_store-6065aa04c2d57c49)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (<scratch>/q7/target/debug/build/skyzfs-upload/eb18b78f7e657f73/out/skyzfs_upload-eb18b78f7e657f73)
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/crash.rs (<scratch>/q7/target/debug/build/skyzfs-upload/9e0cd26cb6b61a7d/out/crash-9e0cd26cb6b61a7d)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+     Running tests/driver.rs (<scratch>/q7/target/debug/build/skyzfs-upload/406f3bcfa9c7155b/out/driver-406f3bcfa9c7155b)
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/holes.rs (<scratch>/q7/target/debug/build/skyzfs-upload/f460be2444719529/out/holes-f460be2444719529)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/publish.rs (<scratch>/q7/target/debug/build/skyzfs-upload/43ce156cb303b624/out/publish-43ce156cb303b624)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+     Running tests/queued.rs (<scratch>/q7/target/debug/build/skyzfs-upload/2a0f0f18917b10d6/out/queued-2a0f0f18917b10d6)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/uploader.rs (<scratch>/q7/target/debug/build/skyzfs-upload/af321999fbb62c13/out/uploader-af321999fbb62c13)
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+     Running unittests src/lib.rs (<scratch>/q7/target/debug/build/skyzfsd/4f2fdfa6cd31462f/out/skyzfsd-4f2fdfa6cd31462f)
+test result: ok. 141 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.19s
+     Running unittests src/main.rs (<scratch>/q7/target/debug/build/skyzfsd/cca27765b671808e/out/skyzfsd-cca27765b671808e)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/closed_output.rs (<scratch>/q7/target/debug/build/skyzfsd/afd680518ea69da7/out/closed_output-afd680518ea69da7)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skynbd_refs
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_ublk
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfs_upload
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests skyzfsd
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0

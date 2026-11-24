@@ -1,0 +1,6 @@
+REVIEW limit 300 ms: tries min 12 max 12 all [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12]; longest 300.324451ms
+REVIEW limit 1000 ms: tries min 26 max 26 all [26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26]; longest 1.003713718s
+REVIEW room made 1.5 s in: Ok("connected") after 36 tries at 1.519569511s, 17.899296ms after the room was made
+test control::tests::socket::review_q7_tries_on_a_full_backlog ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 27.53s
+exit 0

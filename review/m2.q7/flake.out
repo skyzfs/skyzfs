@@ -1,0 +1,211 @@
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.42s
+race run 1 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.73s
+race run 2 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.27s
+race run 3 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.59s
+race run 4 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.70s
+race run 5 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.81s
+race run 6 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.69s
+race run 7 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 1.28s
+race run 8 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.47s
+race run 9 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.64s
+race run 10 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.45s
+race run 11 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.59s
+race run 12 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.46s
+race run 13 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.38s
+race run 14 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.23s
+race run 15 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.24s
+race run 16 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.42s
+race run 17 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.39s
+race run 18 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.48s
+race run 19 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.24s
+race run 20 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.24s
+race run 21 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.23s
+race run 22 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.44s
+race run 23 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.08s
+race run 24 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.13s
+race run 25 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.22s
+race run 26 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.23s
+race run 27 exit 0
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.26s
+race run 28 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.17s
+race run 29 exit 0
+test redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it ... ok
+test tests::memory_store_renews_in_one_critical_section ... ok
+test redb_store::tests::redb_store_renews_in_one_write_transaction ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.46s
+race run 30 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.97s
+loaded race run 1 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.18s
+loaded local run 1 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.82s
+loaded race run 2 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.18s
+loaded local run 2 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 4.25s
+loaded race run 3 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.19s
+loaded local run 3 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.86s
+loaded race run 4 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.16s
+loaded local run 4 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 4.68s
+loaded race run 5 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.23s
+loaded local run 5 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.70s
+loaded race run 6 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.13s
+loaded local run 6 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 4.43s
+loaded race run 7 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.17s
+loaded local run 7 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.97s
+loaded race run 8 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.15s
+loaded local run 8 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 4.24s
+loaded race run 9 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.15s
+loaded local run 9 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.87s
+loaded race run 10 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.13s
+loaded local run 10 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.10s
+loaded race run 11 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.15s
+loaded local run 11 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.05s
+loaded race run 12 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.12s
+loaded local run 12 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.07s
+loaded race run 13 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.12s
+loaded local run 13 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.17s
+loaded race run 14 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.13s
+loaded local run 14 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.10s
+loaded race run 15 exit 0
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.12s
+loaded local run 15 exit 0
+done

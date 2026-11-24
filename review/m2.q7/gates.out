@@ -1,0 +1,12 @@
+== rustc: rustc 1.100.0 (0ef1bc386 2026-11-09)
+== fmt
+exit 0
+== clippy workspace
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 44s
+exit 0
+== clippy skyzfsd test-hooks
+    Finished `dev` profile [optimized + debuginfo] target(s) in 27.18s
+exit 0
+== clippy ublk-sys control-test-program
+    Finished `dev` profile [optimized + debuginfo] target(s) in 6.58s
+exit 0

@@ -1,0 +1,9 @@
+REVIEW s1b: syncing after the poll false
+REVIEW s1b: committed None, at start Some(Begun("the intent map has no committed cut"))
+thread 'inplace::tests::cuts::review_q7_s1b_a_release_on_a_failed_store_polled_before_the_drop' (19480) panicked at crates/skyzfs-local/src/inplace/tests/cuts.rs:5404:5:
+assertion `left == right` failed
+  left: None
+ right: Some(Base { state: [168, 20, 100, 30, 127, 247, 170, 246, 179, 198, 210, 76, 224, 161, 128, 206], number: 1, group: 7 })
+test inplace::tests::cuts::review_q7_s1b_a_release_on_a_failed_store_polled_before_the_drop ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 313 filtered out; finished in 0.09s
+exit 101

@@ -1,0 +1,23 @@
+Q1 (author) the header sync is off unless asked for, as before Q7: KILLED (d): cli::tests::serve_has_the_agreed_defaults_and_options, cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts, serve::tests::the_intent_region_reaches_the_store (160s)
+Q2 (author) --no-intent-header-sync is taken without --hold-cuts: KILLED (d): cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts (46s)
+Q3 (author) the option that turned the sync on is still taken (and ignored): KILLED (d): cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts (55s)
+Q4 (author) the daemon does not tell the store to sync the header: KILLED (d): serve::tests::the_intent_region_reaches_the_store (38s)
+N6 (author) a failed store's drop waits for a header's sync under way: KILLED (l): inplace::tests::cuts::a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for, inplace::tests::cuts::the_drop_of_a_failed_store_does_not_wait_for_a_headers_sync_under_way (30s)
+FA (author) a release on a failed store begins no header's sync: KILLED (l): inplace::tests::cuts::a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for (29s)
+CA (author) a refused or missing socket is tried again until the limit: KILLED (d): control::tests::socket::no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once (45s)
+CB (author) no pause between tries: KILLED (d): control::tests::socket::a_full_backlog_is_tried_again_after_pauses_that_grow (45s)
+CD (author) the pause does not grow: KILLED (d): control::tests::socket::a_full_backlog_is_tried_again_after_pauses_that_grow (50s)
+U9 (author) the memory store reads under a read lock, then writes under another: KILLED (r): tests::memory_store_renews_in_one_critical_section; race tests alone, 10 runs: tests::memory_store_renews_in_one_critical_section failed 10/10 (152s)
+U8 (author) redb reads the row outside its write transaction: KILLED (r): redb_store::tests::redb_store_renews_in_one_write_transaction, redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it; race tests alone, 10 runs: redb_store::tests::a_take_committed_while_the_renewal_waits_is_seen_by_it failed 10/10, redb_store::tests::redb_store_renews_in_one_write_transaction failed 10/10 (17s)
+U17 (author) the acting store renews at its own epoch, not the one asked: KILLED (r): acting::tests::a_renewal_passes_through_at_the_epoch_asked (16s)
+Q6 a volume that uploads never syncs the header: KILLED (d): serve::tests::the_intent_region_reaches_the_store (54s)
+Q8 --no-intent-header-sync is ignored where --hold-cuts is given: KILLED (d): cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts, serve::tests::the_intent_region_reaches_the_store (47s)
+Q9 the help's paragraph names the old option: SURVIVED (46s)
+CE the pause is not capped at 50 ms (it keeps doubling): SURVIVED (48s)
+CF the pause starts at the cap, 50 ms: SURVIVED (45s)
+CI the last pause is not cut to what is left of the limit: SURVIVED (45s)
+U9c the memory store judges under one write lock and writes under a second: KILLED (r): tests::memory_store_renews_in_one_critical_section; race tests alone, 10 runs: tests::memory_store_renews_in_one_critical_section failed 10/10 (37s)
+U8c redb judges in one write transaction and writes in a second: KILLED (r): redb_store::tests::redb_store_renews_in_one_write_transaction; race tests alone, 10 runs: redb_store::tests::redb_store_renews_in_one_write_transaction failed 1/10 (16s)
+worktree after: clean
+done
+exit 0

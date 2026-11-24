@@ -1,0 +1,10 @@
+test lease_conformance_over_live_s3 ... 
+thread 'lease_conformance_over_live_s3' (11518) panicked at crates/skynbd-refs/src/lib.rs:1085:9:
+assertion `left == right` failed
+  left: Renewed(Lease { holder: "node-a", epoch: 1, expires_at_ms: 1024001 })
+ right: NotHeld(None)
+test lease_fence_over_live_s3 ... ok
+test object_refs_over_live_s3 ... 
+thread 'object_refs_over_live_s3' (11681) panicked at crates/skynbd-refs/src/lib.rs:761:22:
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+exit 101
