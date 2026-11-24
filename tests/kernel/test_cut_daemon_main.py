@@ -151,7 +151,8 @@ def watcher_files(d, written, blocks, log):
     w('watch.log', log)
     w('uploaded.tsv', ''.join(f"{x['number']}\t{x['group']}\t{x.get('state', STATE)}\t{x.get('head', 'cd' * 32)}\t"
                               f"{x['blocks']}\t"
-                              f"{x.get('asked', 1)}\t{x.get('asked', 1) + 1}\n" for x in written))
+                              f"{x.get('asked', 1)}\t{x.get('asked', 1) + 1}"
+                              + (f"\t{x['commit']}" if 'commit' in x else '') + '\n' for x in written))
     w('uploaded-blocks.tsv', ''.join(f'{k}\t{x["number"]}\t{b}\t{h}\n' for k, x in enumerate(written)
                                      for b, h in sorted(blocks[x.get('key', x['number'])].items())))
     w('drain.txt', 'seconds 3\nupload_state idle\ncuts_held 0\n')
@@ -648,6 +649,11 @@ class Main(unittest.TestCase):
         for c in cdc.CONTENT_CONTROLS:
             self.assertEqual(lines[f'ctl_{c}'][0], 'CAUGHT', lines[f'ctl_{c}'])
         self.assertNotIn('held_content', lines)
+        # Rows of version 2 that name head's commit (F1), and of version 1.
+        for commit in ('cd' * 32, 'none'):
+            with self.subTest(commit=commit):
+                rc, lines = recording(upload=lambda w, b, st: ([dict(x, commit=commit) for x in w], b, st))
+                self.assertEqual((rc, lines['upload_content'][0]), (0, 'PASS'), lines['upload_content'])
 
     def test_node_b_saw_some_cuts(self):
         """The watcher fetches head twice a second and misses cuts that
@@ -684,12 +690,19 @@ class Main(unittest.TestCase):
             w[-1] = dict(w[-1], state='ef' * 16)
             return w, b, st
 
+        def not_heads_commit(w, b, st):
+            w = [dict(x, commit='cd' * 32) for x in w]
+            w[1] = dict(w[1], commit='ef' * 32)
+            return w, b, st
+
         def status(old, new):
             return lambda w, b, st: (w, b, st.replace(old, new))
         for why, upload, key in (('a block of a cut', wrong_block, 'upload_content'),
                                  ("a row's group", wrong_group, 'upload_content'),
                                  ('the last cut not uploaded', not_the_last, 'upload_content'),
                                  ('two cut states', two_states, 'upload_content'),
+                                 ("a row that names another commit than head's", not_heads_commit,
+                                  'upload_content'),
                                  ('a mismatch', status('upload_mismatches 0', 'upload_mismatches 1'), 'upload_status'),
                                  ('a second whole cut', status('uploaded_whole 1', 'uploaded_whole 2'),
                                   'upload_status'),
@@ -917,6 +930,28 @@ class Courses(unittest.TestCase):
             cdc.daemons_fetches(got, '7\t1\t0\t' + a + '\n', others)
         with self.assertRaises(cdc.RigError):
             cdc.daemons_fetches(got, '1\t2\t0\t' + a + '\n', others)
+
+    def test_a_rows_commit_against_head(self):
+        """A row of version 2 (F1) of the daemon's names the commit at head
+        when node B fetched it; another writer's head or row is left out,
+        and a row of version 1 names none."""
+        got = [{'number': 1, 'group': 10, 'state': STATE, 'head': 'aa' * 32, 'commit': 'aa' * 32},
+               {'number': 2, 'group': 11, 'state': STATE, 'head': 'bb' * 32, 'commit': 'aa' * 32},
+               {'number': 2, 'group': 11, 'state': STATE, 'head': OTHER_HEAD, 'commit': 'bb' * 32},
+               {'number': 3, 'group': 12, 'state': 'ff' * 16, 'head': 'cc' * 32, 'commit': 'bb' * 32},
+               {'number': 4, 'group': 13, 'state': STATE, 'head': 'dd' * 32, 'commit': None}]
+        others = ({OTHER_HEAD}, {('ff' * 16, 3, 12)})
+        self.assertEqual(cdc.row_commits_off_head(got, others),
+                         [f"cut 2's row names commit {'aa' * 32}, head was {'bb' * 32}"])
+        self.assertEqual(len(cdc.row_commits_off_head(got, (set(), set()))), 3)
+        text = (f"1\t10\t{STATE}\t{'aa' * 32}\t5\t7\t8\n"
+                f"2\t11\t{STATE}\t{'bb' * 32}\t5\t9\t10\t{'aa' * 32}\n"
+                f"3\t12\t{STATE}\t{'cc' * 32}\t5\t11\t12\tnone\n")
+        self.assertEqual([g['commit'] for g in cdc.read_uploaded(text)], [None, 'aa' * 32, None])
+        for bad in (f"1\t10\t{STATE}\t{'aa' * 32}\t5\t7\t8\tab\n",
+                    f"1\t10\t{STATE}\t{'aa' * 32}\t5\t7\t8\t{'aa' * 32}\tx\n"):
+            with self.assertRaises(cdc.RigError):
+                cdc.read_uploaded(bad)
 
     def files(self, files):
         files = dict({'rows.tsv': f"5\t{'cd' * 32} 7\t{STATE} 5 40\trunner 1 99\n"}, **files)

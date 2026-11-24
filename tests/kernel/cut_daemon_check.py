@@ -1644,16 +1644,36 @@ def held_lines(put, rdir, instances, records, dcuts, status, dev, name='', begun
 
 def read_uploaded(text):
     """uploaded.tsv (cut_watch.py) -> [{'number', 'group', 'state', 'head',
-    'blocks', 'asked'}], asked the monotonic time node B's read began."""
+    'blocks', 'asked', 'commit'}], asked the monotonic time node B's read
+    began, commit the one the row names (row version 2, F1) or None (a
+    row of version 1, or a watcher from before F1 that wrote 7 fields)."""
     out = []
     for k, ln in enumerate(text.splitlines()):
         f = ln.split('\t')
-        if len(f) != 7 or not all(x.isdigit() for x in (f[0], f[1], f[4], f[5], f[6])) \
-                or not re.fullmatch(r'[0-9a-f]{32}', f[2]) or not re.fullmatch(r'[0-9a-f]{64}', f[3]):
-            raise RigError(f'uploaded.tsv line {k + 1}: not `number group state head blocks ns ns`: {ln!r}')
+        if len(f) not in (7, 8) or not all(x.isdigit() for x in (f[0], f[1], f[4], f[5], f[6])) \
+                or not re.fullmatch(r'[0-9a-f]{32}', f[2]) or not re.fullmatch(r'[0-9a-f]{64}', f[3]) \
+                or (len(f) == 8 and not re.fullmatch(r'none|[0-9a-f]{64}', f[7])):
+            raise RigError(f'uploaded.tsv line {k + 1}: not `number group state head blocks ns ns [commit]`: '
+                           f'{ln!r}')
         out.append({'number': int(f[0]), 'group': int(f[1]), 'state': f[2], 'head': f[3], 'blocks': int(f[4]),
-                    'asked': int(f[5])})
+                    'asked': int(f[5]), 'commit': f[7] if len(f) == 8 and f[7] != 'none' else None})
     return out
+
+
+def row_commits_off_head(got, others):
+    """The daemon's fetches whose row names a commit (row version 2, F1)
+    that is not head's -> what to say of each. The uploader writes the
+    row in the transaction of its head swap, naming the commit that swap
+    installed, and the watcher fetched head with head and the row as they
+    were around its read: a row of the daemon's at head names head's
+    commit. What another writer put (its head, or its row) is left out,
+    as daemons_fetches leaves it out: node B's move-head moves head and
+    not the row."""
+    heads, rows = others
+    return [f"cut {g['number']}'s row names commit {g['commit']}, head was {g['head']}"
+            for g in got
+            if g.get('commit') and g['commit'] != g['head']
+            and not (g['head'] in heads or (g['state'], g['number'], g['group']) in rows)]
 
 
 # The status's counters of the uploads (status version 15) that a
@@ -2007,6 +2027,9 @@ def upload_lines(put, rdir, records, dcuts, status, name='life'):
                              f"{n_epochs}; {detail}")
     if twice:
         ok, detail = False, f"cuts {sorted(twice)} were at head under two commits; {detail}"
+    off = row_commits_off_head(got, others)
+    if off:
+        ok, detail = False, f"{'; '.join(off)}; {detail}"
     detail = detail.replace(' cuts written and released;', ' cuts fetched at head;')
     ok_content = bool(ok)
     if ok is None:
