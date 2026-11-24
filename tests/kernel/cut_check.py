@@ -348,6 +348,27 @@ def pick_withheld(records, cut, bps, differs=None, same=None):
     return None
 
 
+def withheld_pick(ck, cut, bps):
+    """The write the withheld control (and node B's lacks) leaves out of
+    the cut, as both rigs pick it: `pick_withheld` over the checker's
+    records, with `differs` reading the cut's image from the checker's
+    log and base image, so that a write whose withholding changes no
+    copy is passed over. -> (the record or None, the records passed
+    over, last first). The one place both rigs' wiring lives, so that a
+    test reaches it without a kernel (the review of #132, R10 to R12)."""
+    same = []
+    v = pick_withheld(ck.records, cut, bps, withholding_changes(ck.records, ck.read, ck.base_read, cut, bps), same)
+    return v, same
+
+
+def passed_over(same):
+    """The words for the writes `withheld_pick` passed over, or ''."""
+    if not same:
+        return ''
+    return (f" (passed over, as withholding them changes no copy: record{'s' if len(same) > 1 else ''} "
+            f"{', '.join(map(str, same[:8]))}{' ...' if len(same) > 8 else ''})")
+
+
 def pick_later(records, cut, bps):
     """The first write or discard after the cut's instant that overlaps a copy of a block the cut reaches."""
     for r in records[cut['prefix']:]:
@@ -750,10 +771,8 @@ def main():
         failed, detail, _, _ = ck.judge(mid, op[mid['n']], kernel=False)
         got['early'] = (control_verdict(failed), f"cut {mid['n']} (group {mid['txg']}) at record {early['prefix']} "
                         f"and not {mid['prefix']}: {failed or 'passed'}: {detail}")
-        same = []
-        v = pick_withheld(ck.records, mid, bps, withholding_changes(ck.records, ck.read, ck.base_read, mid, bps), same)
-        passed = (f" (passed over, as withholding them changes no copy: record{'s' if len(same) > 1 else ''} "
-                  f"{', '.join(map(str, same[:8]))}{' ...' if len(same) > 8 else ''})") if same else ''
+        v, same = withheld_pick(ck, mid, bps)
+        passed = passed_over(same)
         if v is None:
             got['withheld'] = ('not built', 'no write before the uberblock write changes a copy of a block the cut '
                                f'reaches{passed}')
