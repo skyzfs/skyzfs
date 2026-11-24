@@ -2484,12 +2484,15 @@ mod tests {
         // (M2.4c).
         let hold = hold_cuts_of(&parsed("serve --dir /v/a"), true, path.clone(), boot);
         assert_eq!(hold.map(|hold| hold.intent_region), Some(None));
-        // `--intent-header-sync` reaches the store, and is off unless
-        // given (M2.4d).
-        let synced = parsed("serve --dir /v/a --hold-cuts --intent-header-sync");
-        let hold = hold_cuts_of(&synced, false, path.clone(), boot).expect("cuts are held");
+        // The header sync reaches the store: on unless
+        // `--no-intent-header-sync` is given (M2.4d, on by default since
+        // Q7), on for a volume that uploads too.
+        let hold = hold_cuts_of(&default, false, path.clone(), boot).expect("cuts are held");
         assert!(hold.intent_header_sync);
-        let hold = hold_cuts_of(&default, false, path, boot).expect("cuts are held");
+        let uploads = hold_cuts_of(&parsed("serve --dir /v/a"), true, path.clone(), boot);
+        assert_eq!(uploads.map(|hold| hold.intent_header_sync), Some(true));
+        let unsynced = parsed("serve --dir /v/a --hold-cuts --no-intent-header-sync");
+        let hold = hold_cuts_of(&unsynced, false, path, boot).expect("cuts are held");
         assert!(!hold.intent_header_sync);
     }
 

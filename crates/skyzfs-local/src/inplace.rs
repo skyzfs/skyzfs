@@ -914,9 +914,16 @@ impl<D: Dir> Drop for InPlace<D> {
             // while it ran, its end begins the next (`intent_synced`), so
             // that a release just before the drop has its header synced
             // as any other. A header is due only while a sync is under
-            // way, so this covers it. On a failed volume nothing is synced
-            // any more, and the drop waits for a sync under way no more
-            // than it did before M2.4d (F3 and F4 of #120's review).
+            // way, so this covers it. On a failed volume no write is
+            // synced any more, and the drop waits for a sync under way no
+            // more than it did before M2.4d (F3 and F4 of #120's review).
+            // A release or a naming that comes to a volume that has
+            // already failed still begins a header's sync
+            // (`sync_header`): the next start acknowledges the failure
+            // and takes the map up, so its base still decides whether
+            // the next cut is a delta. The drop does not wait for that
+            // sync either: it ends on the map's file's helper, after the
+            // marker and the lock (F-A of #124's review).
             let failed = self.failed;
             let for_map = self.intent.as_ref().is_some_and(|intent| {
                 !intent.waiting.is_empty() || (intent.syncing.is_some() && !failed)

@@ -5,7 +5,7 @@
 //!                [--endpoint URL --bucket BUCKET --volume NAME]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--io-threads N] [--hold-cuts]
-//!                [--intent-region-mib N] [--intent-header-sync]
+//!                [--intent-region-mib N] [--no-intent-header-sync]
 //!                [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
@@ -113,7 +113,7 @@ pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
                  [--endpoint URL --bucket BUCKET --volume NAME]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--intent-header-sync]
+                 [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--no-intent-header-sync]
                  [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                  [--kernel-has-async-delete]
                  (one queue is all this version serves)
@@ -224,7 +224,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       given a place later.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--intent-header-sync]
+                [--io-threads N] [--hold-cuts] [--intent-region-mib N] [--no-intent-header-sync]
                 [--holder NAME] [--lease-ttl-s N] [--serve-without-upload]
                 [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
@@ -281,15 +281,14 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A start with another size than the map's counts the whole volume
       once. A start that cannot write and sync the map is refused
       (exit 1); a write that cannot fails the volume. When a cut is
-      committed the map's header names it, written without a sync: a
-      power cut that loses it costs one whole upload. With
-      --intent-header-sync (only with --hold-cuts) a sync of the map
-      begins once the header is written, beside the device's requests.
-      The release does not wait for it, but one sync of the map runs at
-      a time: a write into a region the release has just cleared waits
+      committed the map's header names it, and a sync of the map begins
+      once the header is written, beside the device's requests. The
+      release does not wait for it, but one sync of the map runs at a
+      time: a write into a region the release has just cleared waits
       for it to end, then for a sync of its own. One that fails fails
-      the volume. The
-      status says which (intent_header_sync).
+      the volume. With --no-intent-header-sync (only with --hold-cuts)
+      the header is written without a sync: a power cut that loses it
+      costs one whole upload. The status says which (intent_header_sync).
       A volume created with --endpoint (it has the file remote) is
       uploaded: its cuts are held as with --hold-cuts, and a thread
       uploads each to the volume in object storage and lets it go. The
@@ -535,8 +534,10 @@ pub struct Serve {
     /// `--intent-region-mib`: the size of a region of the intent map,
     /// in MiB, where it is given (only with `--hold-cuts`; M2.3).
     pub intent_region_mib: Option<u64>,
-    /// `--intent-header-sync`: the intent map's header is synced at
-    /// each release (only with `--hold-cuts`; M2.4d, for Q7 of M2.4b).
+    /// Whether the intent map's header is synced at each release (M2.4d,
+    /// for Q7 of M2.4b): on unless `--no-intent-header-sync` is given,
+    /// which is taken only with `--hold-cuts` (the lead's decision after
+    /// the bench showed the sync costs nothing that shows).
     pub intent_header_sync: bool,
     /// `--holder`: whose the lease in object storage is, where given
     /// (the host's name and the machine's id otherwise; M2.4c).
@@ -751,7 +752,7 @@ const SERVE: &[Opt] = &[
     opt("--io-threads", true, false),
     opt("--hold-cuts", false, false),
     opt("--intent-region-mib", true, false),
-    opt("--intent-header-sync", false, false),
+    opt("--no-intent-header-sync", false, false),
     opt("--holder", true, false),
     opt("--lease-ttl-s", true, false),
     opt("--serve-without-upload", false, false),
@@ -1071,13 +1072,20 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     return Err(UsageError::Value(name(), "out of range"));
                 }
             }
-            let intent_header_sync = given.flag("--intent-header-sync");
-            if intent_header_sync && !hold_cuts {
+            // The header sync is on unless turned off, and turning it off
+            // is taken only with `--hold-cuts`, as `--intent-region-mib`
+            // is. A volume that uploads holds its cuts without
+            // `--hold-cuts`; it is turned off there only with
+            // `--hold-cuts` given as well (the conservative reading of
+            // "it still needs --hold-cuts").
+            let no_header_sync = given.flag("--no-intent-header-sync");
+            if no_header_sync && !hold_cuts {
                 return Err(UsageError::Value(
-                    "--intent-header-sync".into(),
+                    "--no-intent-header-sync".into(),
                     "only with --hold-cuts",
                 ));
             }
+            let intent_header_sync = !no_header_sync;
             let holder = given.get("--holder").map(str::to_owned);
             if let Some(holder) = &holder {
                 check_holder(holder).map_err(UsageError::Refused)?;

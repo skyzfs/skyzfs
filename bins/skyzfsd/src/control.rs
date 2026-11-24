@@ -702,6 +702,12 @@ pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> 
 /// at most until the limit; then the stream blocks, and `ask` bounds its
 /// reads and writes with timeouts.
 fn connect(path: &Path, limit: Duration) -> io::Result<UnixStream> {
+    connect_counted(path, limit, &mut 0)
+}
+
+/// [`connect`], with its tries counted in `tries`: the tests hold the
+/// pauses between them to their growth.
+fn connect_counted(path: &Path, limit: Duration, tries: &mut u32) -> io::Result<UnixStream> {
     use rustix::io::Errno;
     use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
     let socket = rustix::net::socket_with(
@@ -714,6 +720,7 @@ fn connect(path: &Path, limit: Duration) -> io::Result<UnixStream> {
     let until = Instant::now() + limit;
     let mut pause = Duration::from_millis(1);
     loop {
+        *tries += 1;
         match rustix::net::connect(&socket, &address) {
             Ok(()) => break,
             Err(Errno::AGAIN | Errno::INTR) => {

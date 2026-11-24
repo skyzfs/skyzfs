@@ -137,3 +137,42 @@ async fn lease_fence_over_live_s3() {
         .unwrap_err();
     assert!(matches!(err, RefError::LeaseLost { .. }), "{err}");
 }
+
+/// The lease's conformance, the take and the renewal, over a live
+/// endpoint's conditional writes (G1 of the review of #131): a renewal
+/// is one conditional write, and over S3 that rests on `put_if`'s
+/// If-Match and on its reading of 412 and 409 as a refusal, which the
+/// memory store does not have. The cases use fixed volume ids, so each
+/// run has a bucket of its own.
+#[tokio::test]
+async fn lease_conformance_over_live_s3() {
+    let Ok(endpoint) = std::env::var("SKYNBD_S3_TEST_ENDPOINT") else {
+        eprintln!("skipped: SKYNBD_S3_TEST_ENDPOINT not set");
+        return;
+    };
+    let access = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or("minioadmin".into());
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or("minioadmin".into());
+    let bucket = format!(
+        "skynbd-lease-{}",
+        ulid::Ulid::new().to_string().to_lowercase()
+    );
+    let store = S3Store::new(&endpoint, &bucket, &access, &secret, "us-east-1", true).await;
+    store.ensure_bucket().await.unwrap();
+    let store: Arc<dyn ObjectStore> = Arc::new(store);
+    if let Err(e) = ObjectRefStore::probe(&store).await {
+        eprintln!("skipped: {e}");
+        return;
+    }
+
+    use skynbd_refs::Clock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let now = Arc::new(AtomicU64::new(1_000_000));
+    let clock: Clock = {
+        let now = Arc::clone(&now);
+        Arc::new(move || now.load(Ordering::SeqCst))
+    };
+    let advance = move |ms: u64| _ = now.fetch_add(ms, Ordering::SeqCst);
+    let s = ObjectRefStore::new(Arc::clone(&store)).with_clock(clock);
+    conformance::exercise_lease(&s, &advance).await;
+    conformance::exercise_lease_renew(&s, &advance).await;
+}
