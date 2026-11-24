@@ -1,0 +1,32 @@
+1800000 rows; disagreements: 0
+marked rows: 120, by start epoch and end lease:
+  start epoch 0, end held 0: 4
+  start epoch 0, end held 1: 4
+  start epoch 0, end held 2: 4
+  start epoch 0, end unsure 0: 4
+  start epoch 0, end unsure 1: 4
+  start epoch 0, end unsure 2: 4
+  start epoch 1, end held 0: 4
+  start epoch 1, end held 1: 4
+  start epoch 1, end held 2: 4
+  start epoch 1, end unsure 0: 4
+  start epoch 1, end unsure 1: 4
+  start epoch 1, end unsure 2: 4
+  start epoch 2, end held 0: 4
+  start epoch 2, end held 1: 4
+  start epoch 2, end held 2: 4
+  start epoch 2, end unsure 0: 4
+  start epoch 2, end unsure 1: 4
+  start epoch 2, end unsure 2: 4
+  start epoch missing, end held 0: 4
+  start epoch missing, end held 1: 4
+  start epoch missing, end held 2: 4
+  start epoch missing, end unsure 0: 4
+  start epoch missing, end unsure 1: 4
+  start epoch missing, end unsure 2: 4
+  start epoch x, end held 0: 4
+  start epoch x, end held 1: 4
+  start epoch x, end held 2: 4
+  start epoch x, end unsure 0: 4
+  start epoch x, end unsure 1: 4
+  start epoch x, end unsure 2: 4
