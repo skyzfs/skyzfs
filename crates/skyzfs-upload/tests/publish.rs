@@ -1041,6 +1041,106 @@ async fn a_cut_found_committed_under_a_row_of_version_1_takes_no_publish() {
     assert_eq!(up.figures().not_offered, 1);
 }
 
+/// The upgrade's whole cut through a lost reply (G2 of the review of
+/// #134, its S2): under a row of version 1, cut 2's delta is refused and
+/// cut 3 goes up whole, carrying `pool@t`. Its head swap lands, writing
+/// the row's version 2, and the reply is lost. The retry finds the row
+/// naming cut 3 and head its commit, so cut 3 is uploaded and `snap/t`
+/// is published on cut 3's commit, nothing held back.
+#[tokio::test]
+async fn the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish() {
+    let mut fx = Fixture::new(75).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x07);
+    fx.group(&mut store, 7);
+    let mut up = driver(&fx, store);
+    up.run().await.expect("cut 1");
+    let named = fx.uploaded().await.row.expect("the row");
+    fx.put_row(row_v1(&named.cut)).await;
+
+    fx.write(up.local(), 101, 0x08);
+    fx.group(up.local(), 8);
+    let steps = up.run().await.expect("cut 2");
+    assert!(
+        matches!(
+            told(&steps)[..],
+            [Step::Mismatch {
+                why: skyzfs_upload::Mismatch::HeadMoved,
+                ..
+            }]
+        ),
+        "no delta onto a row of version 1: {steps:?}"
+    );
+
+    assert_eq!(ask_now(&mut up, "t", 9), Answer::Accepted);
+    fx.write(up.local(), 102, 0x09);
+    fx.group(up.local(), 9);
+    to_the_commit(&mut up).await;
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, FaultWhen::After)
+        .await;
+    assert!(up.step().await.is_err(), "the reply to the swap is lost");
+    fx.store.disarm().await;
+    let cut3 = fx.assert_uploaded(9, "cut 3, whole").await;
+    assert_eq!(
+        cut3.row.map(|row| row.commit),
+        Some(Some(cut3.head)),
+        "the row's version 2, naming cut 3's commit"
+    );
+
+    let steps = up.run().await.expect("the run after");
+    assert!(
+        told(&steps).contains(&Step::Uploaded {
+            number: 3,
+            rule: Rule::Whole,
+            blocks: BLOCKS
+        }),
+        "{steps:?}"
+    );
+    let snapshot = published(&fx, "t", "the upgrade's whole cut")
+        .await
+        .expect("snap/t");
+    assert_eq!(snapshot.commit, cut3.head, "snap/t is cut 3's commit");
+    assert_eq!(up.publishes().progress("t"), Progress::Done(cut3.head));
+    assert_eq!(up.figures().not_offered, 0);
+}
+
+/// A cut found committed where head was moved away and then back onto
+/// its commit (G2 of the review of #134, its S5): cut 1's head swap
+/// lands and its reply is lost; another writer commits onto head, and
+/// head is then swapped back to cut 1's commit. The row names cut 1's
+/// commit and head is it again, so `snap/t` is published on it.
+#[tokio::test]
+async fn a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish() {
+    let mut fx = Fixture::new(76).await;
+    let (mut up, _, cut1) = swap_unheard(&mut fx).await;
+    fx.move_head().await;
+    let refs = ObjectRefStore::new(fx.store.inner().clone());
+    let moved = refs.get(fx.vol, "head").await.expect("head");
+    assert_ne!(moved.map(|value| value.commit), Some(cut1), "head moved");
+    let back = refs
+        .compare_and_swap(fx.vol, "head", moved, Some(cut1))
+        .await
+        .expect("head back");
+    assert!(
+        matches!(back, skynbd_refs::CasOutcome::Committed(_)),
+        "{back:?}"
+    );
+    assert_eq!(head(&fx).await, cut1, "head is cut 1's commit again");
+
+    let steps = up.run().await.expect("the run after");
+    assert!(
+        matches!(told(&steps)[..], [Step::Uploaded { number: 1, .. }, ..]),
+        "{steps:?}"
+    );
+    let snapshot = published(&fx, "t", "head moved back")
+        .await
+        .expect("snap/t");
+    assert_eq!(snapshot.commit, cut1, "snap/t is cut 1's commit");
+    assert_eq!(up.publishes().progress("t"), Progress::Done(cut1));
+    assert_eq!(up.figures().not_offered, 0);
+}
+
 /// F2 of #122's review: a request of another cut state than the store's
 /// is refused at once, before any cut has been checked, and does not keep
 /// the name from a request of the store's state.

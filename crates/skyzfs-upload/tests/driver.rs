@@ -1062,3 +1062,211 @@ async fn a_failed_put_goes_on_from_the_next_slice() {
     fx.assert_uploaded(7, "after a failed PUT").await;
     assert_eq!(up.figures().errors, 2);
 }
+
+/// Refs that let another writer swap head once, just after the
+/// uploader's next read of head returns: the writer commits onto head a
+/// block 0 full of 0xCD, of group `group` (`None`: a commit with no
+/// group, an operator's write), through refs of its own, and leaves the
+/// row. Every other call goes to `refs` as it is.
+#[derive(Clone)]
+struct Swapping {
+    refs: Refs,
+    store: Store,
+    vol: skynbd_types::VolumeId,
+    pending: std::sync::Arc<std::sync::Mutex<Option<Option<u64>>>>,
+}
+
+impl Swapping {
+    fn new(fx: &Fixture) -> Self {
+        Self {
+            refs: std::sync::Arc::new(skynbd_refs::ObjectRefStore::new(fx.store.clone())),
+            store: fx.store.clone(),
+            vol: fx.vol,
+            pending: Default::default(),
+        }
+    }
+
+    /// The next read of head is followed by another writer's commit of
+    /// group `group`.
+    fn after_the_next_read(&self, group: Option<u64>) {
+        *self.pending.lock().expect("pending") = Some(group);
+    }
+
+    /// Whether the swap is still to come.
+    fn pending(&self) -> bool {
+        self.pending.lock().expect("pending").is_some()
+    }
+
+    async fn other_writer(&self, group: Option<u64>) {
+        let inner = self.store.inner().clone();
+        let refs = skynbd_refs::ObjectRefStore::new(inner.clone());
+        let mut engine = skynbd_engine::Engine::open(inner, refs, self.vol, cfg())
+            .await
+            .expect("the other writer's engine");
+        engine.write(0, &[0xCD; BLOCK as usize]).expect("a write");
+        engine.set_group(group);
+        engine
+            .commit(skynbd_format::CommitKind::Flush)
+            .await
+            .expect("the other writer's commit");
+    }
+}
+
+#[async_trait::async_trait]
+impl skynbd_refs::RefStore for Swapping {
+    async fn get(
+        &self,
+        vol: skynbd_types::VolumeId,
+        name: &str,
+    ) -> skynbd_refs::Result<Option<skynbd_refs::RefValue>> {
+        let got = self.refs.get(vol, name).await;
+        let group = if name == "head" {
+            self.pending.lock().expect("pending").take()
+        } else {
+            None
+        };
+        if let Some(group) = group {
+            self.other_writer(group).await;
+        }
+        got
+    }
+    async fn compare_and_swap(
+        &self,
+        vol: skynbd_types::VolumeId,
+        name: &str,
+        expected: Option<skynbd_refs::RefValue>,
+        new_commit: Option<skynbd_types::CommitHash>,
+    ) -> skynbd_refs::Result<skynbd_refs::CasOutcome> {
+        self.refs
+            .compare_and_swap(vol, name, expected, new_commit)
+            .await
+    }
+    async fn list(
+        &self,
+        vol: skynbd_types::VolumeId,
+    ) -> skynbd_refs::Result<Vec<(String, skynbd_refs::RefValue)>> {
+        self.refs.list(vol).await
+    }
+    fn watch(&self) -> tokio::sync::broadcast::Receiver<skynbd_refs::RefEvent> {
+        self.refs.watch()
+    }
+    async fn transact(
+        &self,
+        vol: skynbd_types::VolumeId,
+        ops: Vec<skynbd_refs::RefOp>,
+    ) -> skynbd_refs::Result<skynbd_refs::TxnOutcome> {
+        self.refs.transact(vol, ops).await
+    }
+    async fn transact_as(
+        &self,
+        vol: skynbd_types::VolumeId,
+        ops: Vec<skynbd_refs::RefOp>,
+        holder: &str,
+        epoch: u64,
+    ) -> skynbd_refs::Result<skynbd_refs::TxnOutcome> {
+        self.refs.transact_as(vol, ops, holder, epoch).await
+    }
+    async fn pins(
+        &self,
+        vol: skynbd_types::VolumeId,
+        name: &str,
+    ) -> skynbd_refs::Result<Vec<String>> {
+        self.refs.pins(vol, name).await
+    }
+    async fn meta_get(
+        &self,
+        vol: skynbd_types::VolumeId,
+        key: &str,
+    ) -> skynbd_refs::Result<Option<Vec<u8>>> {
+        self.refs.meta_get(vol, key).await
+    }
+    async fn meta_list(
+        &self,
+        vol: skynbd_types::VolumeId,
+        prefix: &str,
+    ) -> skynbd_refs::Result<Vec<(String, Vec<u8>)>> {
+        self.refs.meta_list(vol, prefix).await
+    }
+    async fn lease_acquire(
+        &self,
+        vol: skynbd_types::VolumeId,
+        holder: &str,
+        ttl_ms: u64,
+    ) -> skynbd_refs::Result<skynbd_refs::LeaseOutcome> {
+        self.refs.lease_acquire(vol, holder, ttl_ms).await
+    }
+    async fn lease_renew(
+        &self,
+        vol: skynbd_types::VolumeId,
+        holder: &str,
+        epoch: u64,
+        ttl_ms: u64,
+    ) -> skynbd_refs::Result<skynbd_refs::RenewOutcome> {
+        self.refs.lease_renew(vol, holder, epoch, ttl_ms).await
+    }
+    async fn lease_release(
+        &self,
+        vol: skynbd_types::VolumeId,
+        holder: &str,
+    ) -> skynbd_refs::Result<()> {
+        self.refs.lease_release(vol, holder).await
+    }
+    async fn lease_get(
+        &self,
+        vol: skynbd_types::VolumeId,
+    ) -> skynbd_refs::Result<Option<skynbd_refs::Lease>> {
+        self.refs.lease_get(vol).await
+    }
+}
+
+/// B1 of the review of #134: the check reads head, then the engine,
+/// opened again after a restart, reads head a second time, and another
+/// writer swaps head from cut 1's commit to a commit of its own between
+/// the two reads. The engine sits on the other writer's commit, and its
+/// head swap would expect it: the check must judge that commit, not the
+/// one it read first, or cut 2 goes up as a delta onto another history
+/// and moves head off the other writer's commit. Whatever the other
+/// commit's group (none, cut 1's, another), cut 2's check finds head
+/// moved, and head and the row stay where the other writer left them.
+#[tokio::test]
+async fn head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it() {
+    for (seed, group) in [(90, None), (91, Some(7)), (92, Some(99))] {
+        let case = format!("the other writer's group {group:?}");
+        let mut fx = Fixture::new(seed).await;
+        let mut store = fx.start();
+        fx.write(&mut store, 10, 0x10);
+        fx.group(&mut store, 7);
+        let mut up = fx.driver(store, 64);
+        up.run().await.expect("cut 1");
+        let cut1 = fx.assert_uploaded(7, &case).await;
+        fx.died(up);
+
+        let mut store = fx.start();
+        fx.write(&mut store, 11, 0x11);
+        fx.group(&mut store, 8);
+        let refs = Swapping::new(&fx);
+        refs.after_the_next_read(group);
+        let remote =
+            skyzfs_upload::EngineRemote::new(fx.store.clone(), refs.clone(), fx.vol, cfg());
+        let mut up = Driver::with_slices(store, remote, 64);
+        let steps = up.run().await.expect("cut 2");
+        assert!(!refs.pending(), "{case}: the other writer swapped head");
+        assert_eq!(
+            told(&steps),
+            [Step::Mismatch {
+                why: Mismatch::HeadMoved,
+                abandoned: vec![2]
+            }],
+            "{case}: cut 2 is not uploaded onto another writer's commit"
+        );
+        let moved = fx.uploaded().await;
+        assert_ne!(moved.head, cut1.head, "{case}: head moved");
+        assert_eq!(moved.group, group, "{case}: head is the other writer's");
+        assert_eq!(moved.row, cut1.row, "{case}: the row as cut 1 left it");
+        assert_eq!(
+            moved.content[..BLOCK as usize],
+            [0xCD; BLOCK as usize],
+            "{case}"
+        );
+    }
+}

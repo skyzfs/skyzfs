@@ -86,12 +86,20 @@ pub struct Observed {
     pub head_group: Option<u64>,
     /// Whether the engine is open at head as read now. An engine with no
     /// writes is opened again where head has moved, so only one with
-    /// writes (a commit that failed) can be left behind it.
+    /// writes (a commit that failed) can be left behind it. An engine
+    /// opened again reads head a second time, and is not `current`
+    /// where another writer moved head between the two reads.
     pub current: bool,
-    /// Head's commit as read now. Where the row names it, this is the cut's
-    /// commit: this uploader moves the row only with head, in one
-    /// transaction, and a writer that moves head alone leaves the row
-    /// naming the commit it moved head from (F1).
+    /// Head's commit as the engine's next commit will find it: where the
+    /// engine is open (it was at head, or was opened again), the commit
+    /// it sits on, which its head swap expects; where it is left behind
+    /// head, head as read now. The check judges this commit, so that the
+    /// head it judged is the one a commit goes onto, even where another
+    /// writer swapped head while the engine was opened again (B1 of the
+    /// review of #134). Where the row names it, this is the cut's commit:
+    /// this uploader moves the row only with head, in one transaction,
+    /// and a writer that moves head alone leaves the row naming the
+    /// commit it moved head from (F1).
     pub head: CommitHash,
 }
 
@@ -217,11 +225,14 @@ where
             }
         }
         let engine = self.engine()?;
+        // Head as the engine sits on it, not as read above: an engine
+        // opened again read head a second time, and its swap expects
+        // that read (B1 of the review of #134).
         Ok(Observed {
             row,
             head_group: engine.head_group(),
             current: engine.head_commit_hash() == head.commit,
-            head: head.commit,
+            head: engine.head_commit_hash(),
         })
     }
 
