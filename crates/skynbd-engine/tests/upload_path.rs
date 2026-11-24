@@ -1049,3 +1049,92 @@ async fn a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place() {
     }
     assert!(fsck(&store.inner, &refs, v).await.unwrap().ok());
 }
+
+/// A commit's ops made from its own hash (F1 of the review of #122): the
+/// hash they are given is the commit's, and they land with its swap.
+#[tokio::test]
+async fn ops_made_from_the_commits_hash_name_the_commit_that_lands() {
+    let store = MemoryStore::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(30);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    eng.write(0, &block(1)).unwrap();
+    eng.set_group(Some(7));
+    let given = Arc::new(Mutex::new(Vec::new()));
+    let made = {
+        let given = Arc::clone(&given);
+        eng.commit_naming(CommitKind::Flush, move |hash| {
+            given.lock().unwrap().push(hash);
+            vec![RefOp::MetaPut {
+                key: CUT_ROW.into(),
+                value: hash.to_vec(),
+            }]
+        })
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        *given.lock().unwrap(),
+        [made],
+        "called once, with the commit's hash"
+    );
+    assert_eq!(refs.get(v, "head").await.unwrap().unwrap().commit, made);
+    assert_eq!(
+        refs.meta_get(v, CUT_ROW).await.unwrap(),
+        Some(made.to_vec()),
+        "the row names the commit that landed"
+    );
+    assert_eq!(commit_of(&store, v, &made).await.group, Some(7));
+}
+
+/// Ops made from the hash that swap the engine's own ref are refused
+/// before the swap: head and the row stay as they were, and the writes
+/// stay for the commit made again.
+#[tokio::test]
+async fn ops_made_from_the_hash_that_swap_the_engines_own_ref_are_refused() {
+    let store = MemoryStore::new();
+    let refs = MemoryRefStore::new();
+    let v = vol(31);
+    let mut eng = Engine::create_volume(store.clone(), refs.clone(), v, 256 * KIB, cfg())
+        .await
+        .unwrap();
+    let head = refs.get(v, "head").await.unwrap().unwrap();
+    eng.write(0, &block(1)).unwrap();
+    let err = eng
+        .commit_naming(CommitKind::Flush, move |hash| {
+            vec![
+                RefOp::MetaPut {
+                    key: CUT_ROW.into(),
+                    value: hash.to_vec(),
+                },
+                RefOp::CasRef {
+                    name: "head".into(),
+                    expected: Some(head),
+                    new_commit: Some(hash),
+                },
+            ]
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::InvalidIo(_)), "{err}");
+    assert_eq!(refs.get(v, "head").await.unwrap(), Some(head));
+    assert_eq!(refs.meta_get(v, CUT_ROW).await.unwrap(), None);
+
+    let made = eng
+        .commit_naming(CommitKind::Flush, |hash| {
+            vec![RefOp::MetaPut {
+                key: CUT_ROW.into(),
+                value: hash.to_vec(),
+            }]
+        })
+        .await
+        .unwrap();
+    assert_eq!(refs.get(v, "head").await.unwrap().unwrap().commit, made);
+    assert_eq!(
+        eng.read(0, BLOCK).await.unwrap(),
+        block(1),
+        "the writes were kept"
+    );
+}

@@ -1606,7 +1606,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// No-ops (returning the current head) when nothing changed and no
     /// group is set ([`Engine::set_group`]).
     pub async fn commit(&mut self, kind: CommitKind) -> Result<CommitHash> {
-        self.commit_inner(kind, None).await
+        self.commit_inner(kind, None::<fn(CommitHash) -> Vec<RefOp>>)
+            .await
     }
 
     /// [`Engine::commit`], with `ops` applied in the same refs transaction
@@ -1627,25 +1628,46 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
     /// reads as `Conflict`. A caller that must know reads the ref or its
     /// row again (the review of #110).
     pub async fn commit_with(&mut self, kind: CommitKind, ops: Vec<RefOp>) -> Result<CommitHash> {
-        if let Some(own) = ops.iter().find_map(|op| match op {
-            RefOp::CasRef { name, .. } if *name == self.target_ref => Some(name),
-            _ => None,
-        }) {
-            return Err(EngineError::InvalidIo(format!(
-                "the ops of a commit may not swap {own:?}, the ref it commits to"
-            )));
-        }
+        self.own_ref_untouched(&ops)?;
+        self.commit_inner(kind, Some(move |_| ops)).await
+    }
+
+    /// [`Engine::commit_with`], with the ops made by `ops` from the hash
+    /// of the commit they land with, which is known only once the commit
+    /// is built: SkyZFS's cut row names the commit that holds the cut (F1
+    /// of the review of #122). `ops` is called once, after the commit's
+    /// objects are PUT and before the swap. Ops that touch the engine's
+    /// ref are refused then ([`EngineError::InvalidIo`]): nothing is
+    /// swapped, and the objects PUT are referenced by no ref.
+    pub async fn commit_naming<F>(&mut self, kind: CommitKind, ops: F) -> Result<CommitHash>
+    where
+        F: FnOnce(CommitHash) -> Vec<RefOp> + Send,
+    {
         self.commit_inner(kind, Some(ops)).await
     }
 
+    /// [`EngineError::InvalidIo`] where one of `ops` swaps the ref this
+    /// engine commits to.
+    fn own_ref_untouched(&self, ops: &[RefOp]) -> Result<()> {
+        match ops.iter().find_map(|op| match op {
+            RefOp::CasRef { name, .. } if *name == self.target_ref => Some(name),
+            _ => None,
+        }) {
+            Some(own) => Err(EngineError::InvalidIo(format!(
+                "the ops of a commit may not swap {own:?}, the ref it commits to"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// [`Engine::commit`] (`ops: None`: the swap alone, by compare and
-    /// swap, as always) or [`Engine::commit_with`] (`Some`: the swap and
-    /// the ops in one transaction).
-    async fn commit_inner(
-        &mut self,
-        kind: CommitKind,
-        ops: Option<Vec<RefOp>>,
-    ) -> Result<CommitHash> {
+    /// swap, as always), or [`Engine::commit_with`] and
+    /// [`Engine::commit_naming`] (`Some`: the swap and the ops, made from
+    /// the commit's hash, in one transaction).
+    async fn commit_inner<F>(&mut self, kind: CommitKind, ops: Option<F>) -> Result<CommitHash>
+    where
+        F: FnOnce(CommitHash) -> Vec<RefOp> + Send,
+    {
         if self.overlay.is_empty() && self.next_group.is_none() && ops.is_none() {
             return Ok(self.head.commit);
         }
@@ -1778,6 +1800,8 @@ impl<S: ObjectStore, R: RefStore> Engine<S, R> {
                 CasOutcome::Committed(None) => unreachable!("swapped in a value"),
             },
             Some(ops) => {
+                let ops = ops(commit_hash);
+                self.own_ref_untouched(&ops)?;
                 let mut txn = Vec::with_capacity(ops.len() + 1);
                 txn.push(RefOp::CasRef {
                     name: self.target_ref.clone(),
