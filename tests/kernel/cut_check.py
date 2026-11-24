@@ -43,7 +43,10 @@ middle of the count (or the rule's whole list):
   early          the volume one flush early: at the last flush before
                  the uberblock write that marked the cut
   withheld       the last write before that uberblock write that holds
-                 a copy of a block the cut reaches is not applied
+                 a copy of a block the cut reaches, and whose absence
+                 changes the bytes of such a copy, is not applied (a
+                 write that puts back the bytes already there, as a
+                 later sync pass can, is passed over and named)
   later          the first write or discard after the instant that
                  overlaps a copy of a block the cut reaches is applied
   txg-alone      the cuts by a rule that keys a repeat on the group alone
@@ -283,12 +286,65 @@ def overlaps(rec, bps):
     return False
 
 
-def pick_withheld(records, cut, bps):
-    """The last data write before the cut's uberblock write that holds a copy of a block the cut reaches."""
+def copy_ranges(rec, bps):
+    """-> the byte ranges [lo, hi) where a record meets copies of these blocks."""
+    a, b = rec['offset'], rec['offset'] + rec['bytes']
+    out = []
+    for bp in bps:
+        for _, off, asize in bp['dvas']:
+            lo = off + replay_check.DVA_OFFSET
+            if a < lo + asize and b > lo:
+                out.append((max(a, lo), min(b, lo + asize)))
+    return out
+
+
+def bytes_at(records, read, base, upto, lo, hi, skip=None):
+    """-> the device's bytes [lo, hi) once records[:upto] but `skip` are
+    applied over the base image, as the rig builds an image (a discard
+    zeroes its range: logwrites.advance's default)."""
+    buf = bytearray(base(lo, hi - lo))
+    for j in range(upto):
+        r = records[j]
+        a, b = r['offset'], r['offset'] + r['bytes']
+        if j == skip or not r['bytes'] or b <= lo or a >= hi:
+            continue
+        s, e = max(a, lo), min(b, hi)
+        if 'discard' in r['flags']:
+            buf[s - lo:e - lo] = bytes(e - s)
+        elif 'pos' in r:
+            buf[s - lo:e - lo] = read(r)[s - a:e - a]
+    return bytes(buf)
+
+
+def withholding_changes(records, read, base, cut, bps):
+    """-> differs(i): whether the cut's image without record i holds other
+    bytes, in the copies of the blocks the cut reaches, than with it.
+
+    A write that puts back the bytes already there changes nothing when
+    withheld (run 44462542583, 24.04-arm, rewind: record 696 rewrote the
+    4096 bytes record 686 had written at the same place in the same
+    group, and the control built without it passed every copy)."""
+    def differs(i):
+        for lo, hi in copy_ranges(records[i], bps):
+            if (bytes_at(records, read, base, cut['prefix'], lo, hi)
+                    != bytes_at(records, read, base, cut['prefix'], lo, hi, skip=i)):
+                return True
+        return False
+    return differs
+
+
+def pick_withheld(records, cut, bps, differs=None, same=None):
+    """The last data write before the cut's uberblock write that holds a
+    copy of a block the cut reaches and, given `differs`, whose
+    withholding changes the bytes of such a copy. The writes passed over
+    because withholding them changes nothing are appended to `same`."""
     for i in range(cut['ub_record'] - 1, -1, -1):
         r = records[i]
         if cut_ref.is_write(r) and overlaps(r, bps):
-            return i
+            if differs is None or differs(i):
+                return i
+            if same is not None:
+                same.append(i)
     return None
 
 
@@ -396,6 +452,12 @@ class Check:
         self.records = self.idx['records']
         _, self.read = cut_ref.load_from(self.idx, log)
         self.at = None
+
+    def base_read(self, off, n):
+        """The base image's bytes [off, off + n), zeros past its end."""
+        with open(self.base, 'rb') as f:
+            data = os.pread(f.fileno(), n, off)
+        return data + bytes(n - len(data))
 
     def reset(self):
         if os.path.exists(self.image):
@@ -688,9 +750,13 @@ def main():
         failed, detail, _, _ = ck.judge(mid, op[mid['n']], kernel=False)
         got['early'] = (control_verdict(failed), f"cut {mid['n']} (group {mid['txg']}) at record {early['prefix']} "
                         f"and not {mid['prefix']}: {failed or 'passed'}: {detail}")
-        v = pick_withheld(ck.records, mid, bps)
+        same = []
+        v = pick_withheld(ck.records, mid, bps, withholding_changes(ck.records, ck.read, ck.base_read, mid, bps), same)
+        passed = (f" (passed over, as withholding them changes no copy: record{'s' if len(same) > 1 else ''} "
+                  f"{', '.join(map(str, same[:8]))}{' ...' if len(same) > 8 else ''})") if same else ''
         if v is None:
-            got['withheld'] = ('not built', 'no write before the uberblock write holds a block the cut reaches')
+            got['withheld'] = ('not built', 'no write before the uberblock write changes a copy of a block the cut '
+                               f'reaches{passed}')
         else:
             sched = [i for i in range(mid['prefix']) if i != v]
             ck.at = None
@@ -700,7 +766,7 @@ def main():
             failed, detail, _, _ = ck.judge(mid, op[mid['n']], kernel=False)
             r = ck.records[v]
             got['withheld'] = (control_verdict(failed), f"cut {mid['n']} without record {v} ({r['bytes']} bytes at "
-                               f"{r['offset']}): {failed or 'passed'}: {detail}")
+                               f"{r['offset']}){passed}: {failed or 'passed'}: {detail}")
         # A later write over a block a cut reaches comes only once ZFS
         # reuses its space: the middle cut first, then earlier ones.
         later, tried = None, []
