@@ -1,0 +1,31 @@
+idle:  23:22:51 up  1:19,  0 user,  load average: 2.73, 3.69, 3.57
+room head_idle (room_head, 30 runs): REVIEW room summary: 30 runs, min 15.7 median 16.1 max 17.8 ms; at or over 200 ms: 0; over 100 ms: 0
+room CE_idle (room_CE, 10 runs): REVIEW room summary: 10 runs, min 547.6 median 547.9 max 548.4 ms; at or over 200 ms: 10; over 100 ms: 10
+room CE5_idle (room_CE5, 10 runs): REVIEW room summary: 10 runs, min 11.7 median 12.0 max 12.9 ms; at or over 200 ms: 0; over 100 ms: 0
+room CE8_idle (room_CE8, 10 runs): REVIEW room summary: 10 runs, min 211.8 median 211.9 max 212.5 ms; at or over 200 ms: 10; over 100 ms: 10
+room CF_idle (room_CF, 10 runs): REVIEW room summary: 10 runs, min 2.3 median 2.7 max 4.2 ms; at or over 200 ms: 0; over 100 ms: 0
+s1b_idle: 200 of 200 passed (l_head --exact inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut)
+fs_idle: 100 of 100 passed (l_head --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+fsJ_idle: 0 of 50 passed (l_J --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+sock_idle: 10 of 10 passed (d_head control::tests::socket::)
+-- 8 busy loops on;  23:26:08 up  1:22,  0 user,  load average: 0.11, 1.92, 2.89
+room head_b8 (room_head, 30 runs): REVIEW room summary: 30 runs, min 5.5 median 10.3 max 19.9 ms; at or over 200 ms: 0; over 100 ms: 0
+room CE_b8 (room_CE, 10 runs): REVIEW room summary: 10 runs, min 540.1 median 542.1 max 548.5 ms; at or over 200 ms: 10; over 100 ms: 10
+sock_b8: 20 of 20 passed (d_head control::tests::socket::)
+new_b8: 20 of 20 passed (d_head --exact control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room)
+dlib_b8: 3 of 3 passed (d_head )
+s1b_b8: 200 of 200 passed (l_head --exact inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut)
+cuts_b8: 2 of 2 passed (l_head inplace::tests::cuts::)
+fs_b8: 100 of 100 passed (l_head --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+fsJ_b8: 0 of 50 passed (l_J --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+-- busy loops off;  23:32:12 up  1:29,  0 user,  load average: 9.70, 7.21, 4.95
+-- 16 busy loops on;  23:32:13 up  1:29,  0 user,  load average: 9.70, 7.21, 4.95
+room head_b16 (room_head, 30 runs): REVIEW room summary: 30 runs, min 2.2 median 11.9 max 27.8 ms; at or over 200 ms: 0; over 100 ms: 0
+room CE_b16 (room_CE, 10 runs): REVIEW room summary: 10 runs, min 535.9 median 540.0 max 572.1 ms; at or over 200 ms: 10; over 100 ms: 10
+sock_b16: 20 of 20 passed (d_head control::tests::socket::)
+dlib_b16: 3 of 3 passed (d_head )
+s1b_b16: 100 of 100 passed (l_head --exact inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut)
+fs_b16: 50 of 50 passed (l_head --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+fsJ_b16: 0 of 50 passed (l_J --exact fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing)
+-- busy loops off;  23:36:30 up  1:33,  0 user,  load average: 15.55, 12.37, 7.68
+done

@@ -1,0 +1,11 @@
+REVIEW room run 0: late 2.7 ms, try 31, room made at 1500.2 ms
+REVIEW room run 1: late 2.4 ms, try 31, room made at 1500.2 ms
+REVIEW room run 2: late 2.6 ms, try 31, room made at 1500.1 ms
+REVIEW room run 3: late 2.9 ms, try 31, room made at 1500.2 ms
+REVIEW room run 4: late 2.4 ms, try 31, room made at 1500.2 ms
+REVIEW room run 5: late 2.4 ms, try 31, room made at 1500.2 ms
+REVIEW room run 6: late 2.7 ms, try 31, room made at 1500.2 ms
+REVIEW room run 7: late 2.3 ms, try 31, room made at 1500.3 ms
+REVIEW room run 8: late 2.7 ms, try 31, room made at 1500.3 ms
+REVIEW room run 9: late 4.2 ms, try 31, room made at 1500.2 ms
+REVIEW room summary: 10 runs, min 2.3 median 2.7 max 4.2 ms; at or over 200 ms: 0; over 100 ms: 0

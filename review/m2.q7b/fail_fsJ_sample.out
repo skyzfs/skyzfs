@@ -1,0 +1,31 @@
+
+running 1 test
+test fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing ... FAILED
+
+failures:
+
+---- fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing stdout ----
+
+thread 'fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing' (30864) panicked at crates/skyzfs-local/src/fs.rs:1248:9:
+the file's drop returned before its helper's sync ended
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: skyzfs_local::fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing
+             at ./src/fs.rs:1248:9
+   3: skyzfs_local::fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing::{closure#0}
+             at ./src/fs.rs:1230:67
+   4: <skyzfs_local::fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 313 filtered out; finished in 0.09s
+

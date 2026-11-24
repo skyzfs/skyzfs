@@ -1,0 +1,21 @@
+FA (author) a release on a failed store begins no header sync: KILLED (l): inplace::tests::cuts::a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for, inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut
+    inplace::tests::cuts::a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for: crates/skyzfs-local/src/inplace/tests/cuts.rs:5364:5 assertion `left == right` failed | left: 0 | right: 1
+    inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut: crates/skyzfs-local/src/inplace/tests/cuts.rs:5395:5 assertion `left == right` failed | left: 0 | right: 1 (24s)
+J (author) the drop of a file does not join its helper: KILLED (fs): fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing
+    fs::tests::the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing: crates/skyzfs-local/src/fs.rs:1248:9 the file's drop returned before its helper's sync ended | stack backtrace: | 0: __rustc::rust_begin_unwind (16s)
+CE (author) the pause keeps doubling past 50 ms: KILLED (d): control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room
+    control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room: bins/skyzfsd/src/control/tests.rs:478:9 connected 547.934163ms after the backlog had room, at try 12 | stack backtrace: | 0: __rustc::rust_begin_unwind (31s)
+Q9 (author) the help's paragraph names --intent-header-sync: KILLED (d): cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts
+    cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts: bins/skyzfsd/src/cli/tests.rs:459:9 the help names the option that is gone | stack backtrace: | 0: __rustc::rust_begin_unwind (27s)
+CF (author) the pause starts at 50 ms: SURVIVED (27s)
+FAc a release on a failed store does not name the cut in the map (the bits are cleared, the header written and its sync begun as before): KILLED (L): inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut
+    inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut: crates/skyzfs-local/src/inplace/tests/cuts.rs:5408:5 assertion `left == right` failed | left: None | right: Some(Base { state: [110, 22, 23, 29, 83, 227, 200, 13, 17, 36, 55, 39, 18, 56, 3, 23], number: 1, group: 7 }) (85s)
+FAp a poll of a failed store does not collect the end of the map's sync: KILLED (L): inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut
+    inplace::tests::cuts::a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut: crates/skyzfs-local/src/inplace/tests/cuts.rs:5408:5 assertion `left == right` failed | left: None | right: Some(Base { state: [40, 183, 58, 96, 235, 92, 118, 169, 168, 89, 249, 122, 43, 143, 132, 190], number: 1, group: 7 }) (83s)
+J2 the helper's drop lets go of its results before the join (the sync is made, the wake is not called): SURVIVED (18s)
+CE5 the pause is capped at 500 ms: SURVIVED (32s)
+CE8 the pause is capped at 400 ms: KILLED (d): control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room
+    control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room: bins/skyzfsd/src/control/tests.rs:478:9 connected 211.827481ms after the backlog had room, at try 13 | stack backtrace: | 0: __rustc::rust_begin_unwind (26s)
+Q9u the usage's doc line names --intent-header-sync: SURVIVED (26s)
+worktree after: clean
+done

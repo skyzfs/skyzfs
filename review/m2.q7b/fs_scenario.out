@@ -1,0 +1,7 @@
+idle:  23:44:59 up  1:41,  0 user,  load average: 1.80, 4.78, 5.87
+head_idle: 100 of 100 passed (l_fsscn)
+J_idle: 0 of 20 passed (l_fsscn_J)
+8 busy loops:  23:45:17 up  1:42,  0 user,  load average: 1.49, 4.52, 5.76
+head_b8: 100 of 100 passed (l_fsscn)
+J_b8: 0 of 20 passed (l_fsscn_J)
+after:  23:45:42 up  1:42,  0 user,  load average: 3.95, 4.85, 5.84
