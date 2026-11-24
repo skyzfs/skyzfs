@@ -30,6 +30,9 @@ doc is the spec; the test suite is the spec made executable.
   knowledge outside `skynbd-store`, no IO in `skynbd-types`/`-tree`.
 - Formats are versioned (design §5.2): changing serialized bytes requires
   a version bump and a cross-version decode test.
+  One exception: a new status code that an older reader treats as "not
+  said" (any unknown code reads so; 08cfe8d is the precedent) may be
+  added with no bump.
 
 ## Running tests
 
