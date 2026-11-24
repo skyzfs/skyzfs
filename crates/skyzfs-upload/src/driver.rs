@@ -57,20 +57,19 @@
 //! ([`Publishing::committed`]) before it is let go, with its commit: the
 //! hash the commit returned, or, for a cut found committed (at its check,
 //! or by reading the row and head again after a commit that failed),
-//! head as read, **where head's group is the cut's**. The row moves with
-//! head only when this uploader moves them: another writer can move head
-//! and leave the row (an operator's write, `Engine::rollback` to a
-//! snapshot), and head is then not the cut's commit. Such a cut is let
-//! go as committed, as before, and no publish goes on it
-//! ([`Figures::not_offered`]); the next cut's check finds the mismatch
-//! (F1 of #122's review). The group is what the uploader's check already
-//! trusts to tell head is the row's (`check::judge`): a commit of another
-//! writer has no group unless it was made by `Engine::set_group` or is a
-//! rollback to a snapshot's commit, and a snapshot of this cut is its own
-//! commit. What the group cannot tell apart: a rollback to a snapshot of
-//! a cut of another cut state with the same group (groups begin again
-//! after `zpool import -T`). A row that named its commit would; the row's
-//! version 1 does not (M2.5-1's report).
+//! head as read, **where the row names head as the cut's commit**. The
+//! row moves with head only when this uploader moves them: another writer
+//! can move head and leave the row (an operator's write, `Engine::rollback`
+//! to a snapshot), and head is then not the cut's commit. Such a cut is
+//! let go as committed, as before, and no publish goes on it
+//! ([`Figures::not_offered`]); the next cut's check finds the mismatch.
+//! The row names the commit it landed with (version 2), so a commit of
+//! another writer is told apart whatever its group: one made by
+//! `Engine::set_group`, or a rollback to a snapshot of another cut with
+//! the same group (groups begin again after `zpool import -T`). This is
+//! F1 of #122's review, and its scenarios n1 and n2 are the tests. A row
+//! of version 1, written before, names no commit: a cut found committed
+//! under it hands on no commit, and no publish goes on it.
 
 use skynbd_types::CommitHash;
 use skyzfs_blk::{Buf, BLOCK_SIZE, BLOCK_USIZE};
@@ -79,7 +78,7 @@ use crate::check::{judge, Mismatch, Rule, Verdict};
 use crate::local::{Local, Released, Uploadable};
 use crate::publish::{Known, Publishing, Refusal, Snapshot, Stage as PublishStage};
 use crate::remote::{Observed, Remote, RemoteError};
-use crate::row::{self, Row};
+use crate::row::{Named, Row};
 
 /// The blocks a slice reads, one turn of the queue's thread each: 256 KiB.
 /// Provisional, for M2.4c and M2.T4 to measure: the larger, the fewer
@@ -257,9 +256,10 @@ pub struct Figures {
     /// The cuts the check found committed already, let go with nothing
     /// uploaded.
     pub found_committed: u64,
-    /// The cuts found committed while head's group was not theirs: head
-    /// moved after their commit, so it is not their commit, and no
-    /// publish goes on them (F1 of #122's review).
+    /// The cuts found committed while head was not the commit their row
+    /// names (or their row, of version 1, named none): head moved after
+    /// their commit, or may have, and no publish goes on them (F1 of
+    /// #122's review).
     pub not_offered: u64,
     /// The cuts committed (by this driver or found so) that had gone from
     /// the store before they could be let go.
@@ -551,12 +551,15 @@ impl<L: Local, R: Remote> Driver<L, R> {
             Err(e) => return (Stage::Check, Err(e)),
         };
         let row = Row::of(seen.row.as_deref());
-        match judge(&cut, &row, seen.head_group) {
+        match judge(&cut, &row, seen.head, seen.head_group) {
             Verdict::Committed => {
                 self.figures.checked = Checked::Matched;
                 // The row names the cut, so its commit landed; head is
-                // that commit where nothing moved head since.
-                self.committed(&cut, head_of(&cut, &seen));
+                // that commit where the row names head.
+                let commit = row
+                    .naming(&cut.row())
+                    .and_then(|named| head_of(&named, &seen));
+                self.committed(&cut, commit);
                 let step = self.found_committed(&cut).await;
                 (Self::after(&step), Ok(step))
             }
@@ -719,9 +722,9 @@ impl<L: Local, R: Remote> Driver<L, R> {
                 Ok(seen) => seen,
                 Err(e) => return (Stage::Commit { upload, failed }, Err(e)),
             };
-            if Row::of(seen.row.as_deref()) == Row::Named(upload.cut.row()) {
+            if let Some(named) = Row::of(seen.row.as_deref()).naming(&upload.cut.row()) {
                 self.remote.reset();
-                let step = self.uploaded(&upload, head_of(&upload.cut, &seen)).await;
+                let step = self.uploaded(&upload, head_of(&named, &seen)).await;
                 return (Self::after(&step), Ok(step));
             }
             if conflict || seen.row != upload.expected || !seen.current {
@@ -739,10 +742,9 @@ impl<L: Local, R: Remote> Driver<L, R> {
                 Ok(self.lost(&upload, "the store no longer held it at its commit".into())),
             );
         }
-        let row = row::encode(&upload.cut.row());
         match self
             .remote
-            .commit(upload.cut.group, upload.expected.clone(), row)
+            .commit(upload.cut.row(), upload.expected.clone())
             .await
         {
             Ok(commit) => {
@@ -800,12 +802,12 @@ impl<L: Local, R: Remote> Driver<L, R> {
     }
 }
 
-/// Head as `seen`, where it is `cut`'s commit: the row named the cut, so
-/// the cut's commit landed, and head's group as read is the cut's, so
-/// nothing moved head since that the group can tell ([module docs](self);
-/// F1 of #122's review).
-fn head_of(cut: &Uploadable, seen: &Observed) -> Option<CommitHash> {
-    (seen.head_group == Some(cut.group)).then_some(seen.head)
+/// Head as `seen`, where it is the commit of the cut `named` names: the
+/// row names the cut, so the cut's commit landed, and names head as that
+/// commit, so nothing moved head since ([module docs](self); F1). A row of
+/// version 1 names no commit, and hands none on.
+fn head_of(named: &Named, seen: &Observed) -> Option<CommitHash> {
+    (named.commit == Some(seen.head)).then_some(seen.head)
 }
 
 /// Write a slice into the engine: its blocks, a block of `buf` each in

@@ -1119,6 +1119,7 @@ fn the_status_shows_the_uploader_as_it_is() {
         (Mismatch::NoRow, CheckedShown::NoRow),
         (Mismatch::NotTheBase, CheckedShown::NotTheBase),
         (Mismatch::Unreadable, CheckedShown::Unreadable),
+        (Mismatch::RowV1, CheckedShown::RowV1),
     ] {
         let figures = Figures {
             checked: Checked::Mismatched(mismatch),
@@ -1463,7 +1464,12 @@ fn the_daemons_remote_commits_under_the_epoch_it_is_made_for() {
         block_on(async {
             up.observe().await?;
             up.write(0, &[7; 4096])?;
-            up.commit(7, None, b"row 7".to_vec()).await
+            let cut = skyzfs_local::inplace::CommittedCut {
+                state: [1; 16],
+                number: 1,
+                group: 7,
+            };
+            up.commit(cut, None).await
         })
     };
     let (before, _) = world.head(vol);

@@ -975,6 +975,7 @@ pub fn shown_of(shown: &Shown, holder: &str) -> UploadShown {
         Checked::Mismatched(Mismatch::NoRow) => CheckedShown::NoRow,
         Checked::Mismatched(Mismatch::NotTheBase) => CheckedShown::NotTheBase,
         Checked::Mismatched(Mismatch::HeadMoved) => CheckedShown::HeadMoved,
+        Checked::Mismatched(Mismatch::RowV1) => CheckedShown::RowV1,
         Checked::Mismatched(Mismatch::Unreadable) => CheckedShown::Unreadable,
     };
     out.rule = match f.last_rule {

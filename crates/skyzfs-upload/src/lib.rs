@@ -13,9 +13,12 @@
 //!    is uploaded;
 //! 2. a cut that holds part of the volume is uploaded onto the cut the
 //!    intent map names as committed, when the row names that cut and
-//!    head's commit is the row's (its group is the row's);
+//!    head is the commit the row names (F1: a row of version 1, which
+//!    names no commit, vouches for no such upload, and the status says
+//!    `row_v1` where only that stands in the way);
 //! 3. a cut that holds the whole volume needs no base: it is uploaded
-//!    when head's commit is the row's, whatever cut the row names, or,
+//!    when head is the commit the row names, whatever cut the row names
+//!    (under a row of version 1, when head's group is the row's), or,
 //!    with no row, when head's commit has no group;
 //! 4. anything else is a mismatch: every held cut is abandoned, and the
 //!    next cut holds the whole volume.
@@ -54,5 +57,5 @@ pub use local::{CutsNow, Local, Released, Store, Uploadable};
 pub use publish::{Answer, Known, Progress, PublishFigures, Publishing, Refusal, Request};
 pub use queued::{Desk, Queued};
 pub use remote::{EngineRemote, Observed, Remote, RemoteError};
-pub use row::{Row, RowError, ROW_KEY};
+pub use row::{Named, Row, RowError, ROW_KEY, ROW_VERSION};
 pub use uploader::{Control, PublishesShown, Shown, State, Uploader};

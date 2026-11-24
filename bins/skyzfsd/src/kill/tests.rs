@@ -151,19 +151,28 @@ fn placed(store: &Log) -> (crate::remote::Remote, Arc<ObjectRefStore<Log>>, u64)
     (remote, refs, lease.epoch)
 }
 
+/// The cut of group `group` these tests commit.
+fn cut(group: u64) -> CommittedCut {
+    CommittedCut {
+        state: [1; 16],
+        number: group,
+        group,
+    }
+}
+
 /// One cut's commit through `remote`: a block written, then the swap of
-/// head and the row from `expected` to `row`.
+/// head and the row from `expected` to the row of the cut of group
+/// `group`.
 fn commit<R: skyzfs_upload::Remote>(
     remote: &mut R,
     group: u64,
     expected: Option<&[u8]>,
-    row: &[u8],
 ) -> std::result::Result<CommitHash, RemoteError> {
     block_on(async {
         remote.observe().await?;
         remote.write(0, &[group as u8; 4096])?;
         remote
-            .commit(group, expected.map(<[u8]>::to_vec), row.to_vec())
+            .commit(cut(group), expected.map(<[u8]>::to_vec))
             .await
     })
 }
@@ -185,7 +194,10 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
     );
     let mut up = make(epoch);
     taken(&said);
-    commit(&mut up, 7, None, b"row 7").expect("the first commit");
+    commit(&mut up, 7, None).expect("the first commit");
+    let row_7 = block_on(refs.meta_get(remote.id, skyzfs_upload::ROW_KEY))
+        .expect("read")
+        .expect("the row of the first commit");
     let first = taken(&said);
     assert!(
         first
@@ -194,11 +206,11 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
         "no kill at the first: {first:?}"
     );
     assert!(
-        commit(&mut up, 8, Some(b"another row"), b"row 8").is_err(),
+        commit(&mut up, 8, Some(b"another row")).is_err(),
         "a commit refused"
     );
     up.reset();
-    commit(&mut up, 8, Some(b"row 7"), b"row 8").expect("the second commit");
+    let second_commit = commit(&mut up, 8, Some(&row_7)).expect("the second commit");
     let second = taken(&said);
     let n = second.len();
     assert!(n >= 2, "{second:?}");
@@ -212,8 +224,8 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
     );
     let row = block_on(refs.meta_get(remote.id, skyzfs_upload::ROW_KEY)).expect("read");
     assert_eq!(
-        row.as_deref(),
-        Some(&b"row 8"[..]),
+        row,
+        Some(skyzfs_upload::row::encode(&cut(8), &second_commit)),
         "the swap is in the refs"
     );
 
@@ -229,7 +241,7 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
     );
     let mut up = make(epoch);
     taken(&said);
-    commit(&mut up, 7, None, b"row 7").expect("the commit");
+    commit(&mut up, 7, None).expect("the commit");
     let said = taken(&said);
     let kill = said
         .iter()
@@ -336,7 +348,7 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
         noted(&said),
     );
     let mut up = make(epoch);
-    let made = commit(&mut up, 7, None, b"row 7").expect("the commit");
+    let made = commit(&mut up, 7, None).expect("the commit");
     taken(&said);
     publish(&mut up, made, "first", 1).expect("the first publish");
     let first = taken(&said);
@@ -378,7 +390,7 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
         noted(&said),
     );
     let mut up = make(epoch);
-    let made = commit(&mut up, 7, None, b"row 7").expect("the commit");
+    let made = commit(&mut up, 7, None).expect("the commit");
     publish(&mut up, made, "first", 1).expect("the first publish");
     taken(&said);
     assert_eq!(

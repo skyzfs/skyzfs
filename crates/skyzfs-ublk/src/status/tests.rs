@@ -1110,6 +1110,42 @@ fn a_text_is_cut_at_a_character_and_kept_on_one_line() {
 
 /// The uploader's thread posts its state apart from the queue's: a post
 /// of the store keeps it, and a change of it alone is written.
+/// Each check's finding keeps its code in the file and its word in
+/// `status`, `row_v1` (code 6, F1's N3) among them, with no new version:
+/// a reader that does not know a code reads it as not said.
+#[test]
+fn each_finding_of_the_check_keeps_its_code_and_its_word() {
+    for (checked, code, word) in [
+        (CheckedShown::Unchecked, 0u64, "unchecked"),
+        (CheckedShown::Matched, 1, "matched"),
+        (CheckedShown::NoRow, 2, "no_row"),
+        (CheckedShown::NotTheBase, 3, "not_the_base"),
+        (CheckedShown::HeadMoved, 4, "head_moved"),
+        (CheckedShown::Unreadable, 5, "unreadable"),
+        (CheckedShown::RowV1, 6, "row_v1"),
+    ] {
+        let mut status = sample();
+        status.shown.upload = Some(UploadShown {
+            checked,
+            ..sample_upload()
+        });
+        let bytes = encode(&status);
+        assert_eq!(&bytes[568..576], &code.to_le_bytes(), "{word}");
+        let read = decode(&bytes).expect("a status");
+        let upload = read.shown.upload.as_ref().expect("upload");
+        assert_eq!(upload.checked, checked, "{word}");
+        assert_eq!(upload.checked.said(), word);
+        let lines = report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        );
+        assert_eq!(value(&lines, "upload_checked"), Some(word));
+    }
+}
+
 #[test]
 fn the_uploaders_post_is_kept_by_the_stores_and_written_on_its_own() {
     let board = Board::new();
