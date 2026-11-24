@@ -452,6 +452,15 @@ fn the_header_sync_is_on_unless_turned_off_with_held_cuts() {
     assert!(USAGE.contains("[--no-intent-header-sync]"), "{USAGE}");
     assert!(HELP.contains("--no-intent-header-sync"), "{HELP}");
     assert!(!USAGE.contains("[--intent-header-sync]"), "{USAGE}");
+    // The old option is named nowhere but inside the new one (Q9 of
+    // the review of #133: the help's paragraph was held by nothing).
+    for (what, text) in [("usage", USAGE), ("help", HELP)] {
+        let rest = text.replace("--no-intent-header-sync", "");
+        assert!(
+            !rest.contains("--intent-header-sync"),
+            "the {what} names the option that is gone"
+        );
+    }
 }
 
 /// The default and the bound of `--io-threads` are the store's own

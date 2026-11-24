@@ -443,11 +443,44 @@ mod socket {
         let took = began.elapsed();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
         assert!(took >= Duration::from_millis(300), "{took:?}");
-        // 1, 2, 4, 8, 16 and 32 ms, then 50 ms: 13 tries at most in
-        // 300 ms, fewer where a pause runs long.
-        assert!((2..=13).contains(&tries), "{tries} tries in {took:?}");
+        // 1, 2, 4, 8, 16 and 32 ms, then 50 ms, the last cut to what is
+        // left: 12 tries at most in 300 ms (try 12 comes at the limit),
+        // fewer where a pause runs long, since a sleep never ends early.
+        assert!((2..=12).contains(&tries), "{tries} tries in {took:?}");
         drop(held);
         drop(listener);
+    }
+
+    /// The pause between tries stops growing at 50 ms, so a connect is
+    /// made soon after the backlog has room, however long it has waited
+    /// (N3 of the review of #133): room is made 1.5 s into a wait of 5 s,
+    /// and the connection follows within 200 ms. Mutant: a pause that
+    /// keeps doubling (CE), which tries at 1023 ms and then at 2047 ms,
+    /// half a second after the room. A first pause of 50 ms (CF) is not
+    /// caught here or above; it costs a connect 50 ms at most.
+    #[test]
+    fn a_connect_is_made_soon_after_the_backlog_has_room() {
+        let dir = dir();
+        let path = dir.path().join("room.sock");
+        let listener = small_backlog(&path);
+        let held = fill_backlog(&path);
+        let room = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            let taken = listener.accept().expect("a connection waiting");
+            (std::time::Instant::now(), taken, listener)
+        });
+        let mut tries = 0;
+        let stream = connect_counted(&path, Duration::from_secs(5), &mut tries)
+            .expect("connected once the backlog had room");
+        let connected = std::time::Instant::now();
+        let (made, _taken, _listener) = room.join().expect("the thread that made room");
+        let late = connected.saturating_duration_since(made);
+        assert!(
+            late < Duration::from_millis(200),
+            "connected {late:?} after the backlog had room, at try {tries}"
+        );
+        drop(stream);
+        drop(held);
     }
 
     /// No daemon at the socket (a socket left by one that has gone, or a

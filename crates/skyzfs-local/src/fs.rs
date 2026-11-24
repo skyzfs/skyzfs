@@ -1219,4 +1219,35 @@ mod tests {
         };
         assert!(HelperEnded::is(&ended), "{ended}");
     }
+
+    /// The drop of a file waits for the sync its helper is doing, wake
+    /// included. The store's drop relies on it when it does not wait for
+    /// a sync of the intent map under way on a failed volume (F-A of
+    /// #124's review; the gap noted in N1 of #133's review). The wake
+    /// here takes 200 ms, as a slow `fdatasync` would: once the drop has
+    /// returned, it has run.
+    #[test]
+    fn the_drop_of_a_file_waits_for_the_sync_its_helper_is_doing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let mut file = dir.create("a").unwrap();
+        file.write_at(0, &[7; 512]).unwrap();
+        let ended = Arc::new(AtomicBool::new(false));
+        let (begun, started) = mpsc::channel();
+        let flag = ended.clone();
+        file.sync_begin(Box::new(move || {
+            let _ = begun.send(());
+            thread::sleep(std::time::Duration::from_millis(200));
+            flag.store(true, Ordering::SeqCst);
+        }))
+        .unwrap();
+        started.recv().unwrap();
+        drop(file);
+        assert!(
+            ended.load(Ordering::SeqCst),
+            "the file's drop returned before its helper's sync ended"
+        );
+    }
 }

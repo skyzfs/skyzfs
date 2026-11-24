@@ -152,7 +152,9 @@ impl Fixture {
                 boot: BOOT,
                 bound: Some(BOUND),
                 intent_region: Some(INTENT_REGION),
-                intent_header_sync: false,
+                // As the daemon starts a volume that uploads (Q7; N2 of
+                // #133's review).
+                intent_header_sync: true,
             }),
             ..OpenOptions::default()
         };

@@ -281,8 +281,9 @@ pub trait RefStore: Send + Sync {
         -> Result<LeaseOutcome>;
 
     /// Renew the lease only if its row is `(holder, epoch)`, live,
-    /// expired or released, in one conditional write ([`lease::renew`]). Never takes the
-    /// lease: a row of another holder or another epoch, or no row, is
+    /// expired or released, in one conditional write
+    /// ([`lease::renew`]). Never takes the lease: a row of another
+    /// holder or another epoch, or no row, is
     /// [`RenewOutcome::NotHeld`] and nothing is written. A holder that
     /// keeps a lease it already holds renews it here and not with
     /// [`RefStore::lease_acquire`], whose steal could take back, at a

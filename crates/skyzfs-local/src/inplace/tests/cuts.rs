@@ -5368,3 +5368,47 @@ fn a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for() {
     assert!(late, "the drop did not end once the sync was let go");
     assert!(early, "the drop of a failed store waited for the sync");
 }
+
+/// What the sync of F-A is for (N1 of #133's review, its scenario s1b):
+/// cut 1 is released on a store that has failed already, the sync that
+/// release begins ends, and the machine loses power. The start after the
+/// restart acknowledges the failure, takes the map up and names cut 1 as
+/// committed, so the next cut is a delta onto it. Without that sync (FA
+/// of #133's plants) the header naming cut 1 is lost with the power, and
+/// the next cut is whole.
+///
+/// The poll before the drop is what collects the sync's end. The
+/// simulated disk makes a sync durable only when it is seen to end: its
+/// file's drop ends a sync still pending in its bookkeeping alone, where
+/// the store's helper joins after the `fdatasync` has been made (the
+/// review's N1).
+#[test]
+fn a_release_on_a_failed_store_is_named_by_the_acknowledging_start_after_a_power_cut() {
+    let disk = created(205, 0);
+    let region = region();
+    let mut store = one_cut(&disk, &region, IoMode::default(), true);
+    let id = store.cut_state_id().expect("a cut state");
+    store.fail_now();
+    let syncs = disk.syncs_of(intent::INTENT_NAME);
+    assert!(store.release_cut(1));
+    settle_map(&mut store);
+    assert_eq!(disk.syncs_of(intent::INTENT_NAME) - syncs, 1);
+    drop(store);
+    disk.power_cut(crate::sim::LoseAll);
+    let acknowledging = Coming {
+        acknowledging: true,
+        ..AFTER_A_REBOOT
+    };
+    let store = start_as(&disk, 0, &region, IoMode::default(), acknowledging);
+    let one = CommittedCut {
+        state: id,
+        number: 1,
+        group: 7,
+    };
+    assert_eq!(store.committed_cut(), Some(one));
+    assert!(
+        matches!(store.intent_at_start(), Some(IntentAtStart::TakenUp { .. })),
+        "{:?}",
+        store.intent_at_start()
+    );
+}
