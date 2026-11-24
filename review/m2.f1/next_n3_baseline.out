@@ -1,0 +1,27 @@
+# The baselines for the plants at 7989f5e, unplanted: cargo test -p skyzfs-upload (175 passed), then the libraries' tests
+# the status plants run (-p skyzfs-ublk --lib: 161 passed; with skyzfs-upload's lib, 214). Paths cut to 'target/'.
+## cargo test -p skyzfs-upload
+     Running unittests src/lib.rs (target/debug/build/skyzfs-upload/12acf19105366e5c/out/skyzfs_upload-12acf19105366e5c)
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/crash.rs (target/debug/build/skyzfs-upload/9d09899cf91383cd/out/crash-9d09899cf91383cd)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+     Running tests/driver.rs (target/debug/build/skyzfs-upload/7adc367819bf5cb1/out/driver-7adc367819bf5cb1)
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/holes.rs (target/debug/build/skyzfs-upload/0a257d3ca4bbd8f5/out/holes-0a257d3ca4bbd8f5)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/publish.rs (target/debug/build/skyzfs-upload/b9e2000a0f765655/out/publish-b9e2000a0f765655)
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+     Running tests/queued.rs (target/debug/build/skyzfs-upload/79f687b4349ef0ef/out/queued-79f687b4349ef0ef)
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/uploader.rs (target/debug/build/skyzfs-upload/e3dc31516a87f8f2/out/uploader-e3dc31516a87f8f2)
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+   Doc-tests skyzfs_upload
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+## the libraries
+     Running unittests src/lib.rs (target/debug/build/skyzfs-ublk/9a88667e0b26f880/out/skyzfs_ublk-9a88667e0b26f880)
+test result: ok. 161 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.93s
+     Running unittests src/lib.rs (target/debug/build/skyzfs-upload/1c0a241a4593cd34/out/skyzfs_upload-1c0a241a4593cd34)
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+## exits
+lib exit 0
+upload exit 0

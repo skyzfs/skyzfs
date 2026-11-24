@@ -1,0 +1,94 @@
+[
+ {
+  "id": "RV1",
+  "what": "author's: the upgrade's first delta is HeadMoved again",
+  "args": "-p skyzfs-upload",
+  "verdict": "KILLED",
+  "failed": [
+   "after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2",
+   "check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch",
+   "the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish"
+  ],
+  "secs": 31
+ },
+ {
+  "id": "RVG",
+  "what": "author's: RowV1 for every version 1 row naming the base, whatever head's group",
+  "args": "-p skyzfs-upload",
+  "verdict": "KILLED",
+  "failed": [
+   "check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch"
+  ],
+  "secs": 42
+ },
+ {
+  "id": "QN",
+  "what": "the RowV1 guard before NotTheBase: a version 1 row naming another cut reads row_v1",
+  "args": "-p skyzfs-upload",
+  "verdict": "KILLED",
+  "failed": [
+   "check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch"
+  ],
+  "secs": 36
+ },
+ {
+  "id": "QX",
+  "what": "RowV1 also for a version 2 row where head is another commit of the row's group (hides n2's move)",
+  "args": "-p skyzfs-upload",
+  "verdict": "KILLED",
+  "failed": [
+   "check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch",
+   "head_at_another_commit_of_the_cuts_group_takes_no_publish_and_no_delta",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it"
+  ],
+  "secs": 31
+ },
+ {
+  "id": "QW",
+  "what": "a whole cut under a version 1 row with head at another group is RowV1, not HeadMoved",
+  "args": "-p skyzfs-upload",
+  "verdict": "KILLED",
+  "failed": [
+   "check::tests::a_whole_cut_onto_a_head_that_is_not_the_rows_is_a_mismatch"
+  ],
+  "secs": 27
+ },
+ {
+  "id": "QA",
+  "what": "the driver does not abandon the held cuts at RowV1",
+  "args": "-p skyzfs-upload",
+  "verdict": "rc 101, no failing test named",
+  "failed": [],
+  "secs": 1116
+ },
+ {
+  "id": "RVD",
+  "what": "author's: the daemon shows RowV1 as head_moved",
+  "args": "-p skyzfsd --lib",
+  "verdict": "KILLED",
+  "failed": [
+   "upload::tests::the_status_shows_the_uploader_as_it_is"
+  ],
+  "secs": 205
+ },
+ {
+  "id": "RVC",
+  "what": "author's: row_v1 is written as code 7",
+  "args": "-p skyzfs-ublk --lib",
+  "verdict": "KILLED",
+  "failed": [
+   "status::tests::each_finding_of_the_check_keeps_its_code_and_its_word"
+  ],
+  "secs": 21
+ },
+ {
+  "id": "QU",
+  "what": "row_v1 is written as code 5, the code of unreadable (a reader cannot tell them apart)",
+  "args": "-p skyzfs-ublk --lib",
+  "verdict": "KILLED",
+  "failed": [
+   "status::tests::each_finding_of_the_check_keeps_its_code_and_its_word"
+  ],
+  "secs": 13
+ }
+]

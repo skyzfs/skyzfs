@@ -1,0 +1,20 @@
+# Plant QA (the driver keeps the held cuts at RowV1), cargo test --no-fail-fast -p skyzfs-upload at 7989f5e.
+# The driver's and the publish tests' binaries did not end: the first was killed by the kernel when it ran out of memory (SIGKILL;
+# its anonymous memory had grown to about 14 GB), the second was stopped by hand (SIGTERM) after about six minutes. Unplanted, each
+# binary ends in under a second (next_n3_baseline.out). The tail of cargo's output, with the target directory's path cut to 'target/':
+     Running unittests src/lib.rs (target/debug/build/skyzfs-upload/12acf19105366e5c/out/skyzfs_upload-12acf19105366e5c)
+     Running tests/crash.rs (target/debug/build/skyzfs-upload/9d09899cf91383cd/out/crash-9d09899cf91383cd)
+     Running tests/driver.rs (target/debug/build/skyzfs-upload/7adc367819bf5cb1/out/driver-7adc367819bf5cb1)
+error: test failed, to rerun pass `-p skyzfs-upload --test driver`
+Caused by:
+  process didn't exit successfully: `target/debug/build/skyzfs-upload/7adc367819bf5cb1/out/driver-7adc367819bf5cb1` (signal: 9, SIGKILL: kill)
+     Running tests/holes.rs (target/debug/build/skyzfs-upload/0a257d3ca4bbd8f5/out/holes-0a257d3ca4bbd8f5)
+     Running tests/publish.rs (target/debug/build/skyzfs-upload/b9e2000a0f765655/out/publish-b9e2000a0f765655)
+error: test failed, to rerun pass `-p skyzfs-upload --test publish`
+Caused by:
+  process didn't exit successfully: `target/debug/build/skyzfs-upload/b9e2000a0f765655/out/publish-b9e2000a0f765655` (signal: 15, SIGTERM: termination signal)
+     Running tests/queued.rs (target/debug/build/skyzfs-upload/79f687b4349ef0ef/out/queued-79f687b4349ef0ef)
+     Running tests/uploader.rs (target/debug/build/skyzfs-upload/e3dc31516a87f8f2/out/uploader-e3dc31516a87f8f2)
+error: 2 targets failed:
+    `-p skyzfs-upload --test driver`
+    `-p skyzfs-upload --test publish`

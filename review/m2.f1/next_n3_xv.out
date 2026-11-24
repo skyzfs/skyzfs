@@ -1,0 +1,7 @@
+# next_n3_xv.sh TREE 7989f5e 75bed3f DIR, in a clean worktree: the status file is written at 7989f5e and read at 75bed3f.
+== at 7989f5e: write
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.00s
+== at 75bed3f: read
+REVIEW: decoded; upload_checked Some("unsaid"); upload Some("committing cut 42")
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.00s
+exit 0
