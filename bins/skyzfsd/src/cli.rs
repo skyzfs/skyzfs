@@ -265,12 +265,14 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       1/256 of the volume (at least 256 MiB). The cuts' state is kept
       in the run directory's volume directory (cuts.state, on tmpfs),
       allocated and locked in memory at the start: 146 MiB for each
-      TiB of the volume, and at least 1 MiB. A start that cannot allocate or lock it is refused (exit
-      1) before a device is touched, and says what limit refused it.
-      A later start in the same boot takes the state up if the copies
-      file syncs and no failure is acknowledged; otherwise it begins a
-      new one. Nothing lets a held cut go yet but the test hooks: it is
-      off unless given.
+      TiB of the volume, and at least 1 MiB. A start that cannot
+      allocate or lock it is refused (exit 1) before a device is
+      touched, and says what limit refused it. A later start in the
+      same boot takes the state up if the copies file syncs and no
+      failure is acknowledged; otherwise it begins a new one. A held
+      cut is let go once it is uploaded (below), or by the test hooks
+      in a build that has them. Off unless given; a volume that is
+      uploaded holds its cuts without it.
       With --hold-cuts the volume also keeps intent.map beside the
       image: a bit for each region, set and synced before the first
       write into a region that was clean since the newest cut
