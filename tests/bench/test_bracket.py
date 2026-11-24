@@ -311,6 +311,23 @@ class SeedRows(unittest.TestCase):
         b = bk.bracketed(rows[1], rows)
         self.assertEqual((b['verdict'], b['seed_row'] is not None), ('at least 0.90', True))
 
+    def test_a_row_with_no_upload_after_the_seed_at_its_start_is_a_seed_row(self):
+        # Review's D6 on #132: the seed committed just before the window
+        # (uploaded 1, 1 whole), so the window's first upload carries
+        # every block written while the seed ran.
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950,
+                skyzfsd=uploading({'uploaded': '1', 'uploaded_whole': '1'})), row(3, 'zfs-slog', 1000)]
+        self.assertEqual(bk.bracketed(rows[1], rows)['seed_row'],
+                         "no upload after the seed had committed at its window's start (uploaded 1, 1 of them "
+                         "whole), so its first upload carries what was written while the seed ran")
+        rows[1]['skyzfsd'] = uploading({'uploaded': '2', 'uploaded_whole': '2'})   # a seed of two whole cuts
+        self.assertIsNotNone(bk.bracketed(rows[1], rows)['seed_row'])
+        # one upload after the seed: the steady state
+        for sb in ({'uploaded': '2', 'uploaded_whole': '1'}, {'uploaded': '21', 'uploaded_whole': '1'},
+                   {'uploaded': '1'}, {'uploaded': '1', 'uploaded_whole': 'x'}, {'uploaded': 'x', 'uploaded_whole': '1'}):
+            rows[1]['skyzfsd'] = uploading(sb)
+            self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'], sb)
+
     def test_steady_rows_are_not(self):
         rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=uploading()), row(3, 'zfs-slog', 1000)]
         self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'])

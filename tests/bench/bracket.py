@@ -37,8 +37,11 @@ verdict says "seed inside window, lease at release" and the lease's
 epoch. Any other row keeps the rule above.
 
 A seed row is a row that says it uploads and had committed no upload
-at its window's start (`uploaded` 0 there): whatever it uploaded in
-the window began with the seed. Its verdict stands on its own line
+at its window's start (`uploaded` 0 there), or no upload after its
+seed (`uploaded` at most `uploaded_whole` there): whatever it uploaded
+in the window began with the seed, or with the first upload after it,
+which carries every block written while the seed ran (review's D6 on
+#132). Its verdict stands on its own line
 and is not one of the median of design §9, which is the steady
 state's ratio (the lead's decision on #132); `bracketed` says so in
 `seed_row`.
@@ -167,12 +170,21 @@ def seed_row(row):
 
     A row that says it uploads whose status shows `uploaded` 0 at its
     window's start: no upload had committed, so what it uploaded in the
-    window began with the seed (the lead's decision on #132)."""
+    window began with the seed (the lead's decision on #132). Or one
+    whose status shows no more uploads than whole ones there: the seed
+    had committed (as whole uploads) and nothing after it, so the
+    window's first upload carries every block written while the seed
+    ran (review's D6 on #132, the lead's decision)."""
     k = row.get('skyzfsd') or {}
     if not k.get('upload'):
         return None
-    if (k.get('before') or {}).get('uploaded') == '0':
+    sb = k.get('before') or {}
+    u, w = str(sb.get('uploaded', '')), str(sb.get('uploaded_whole', ''))
+    if u == '0':
         return 'no upload had committed at its window\'s start'
+    if u.isdigit() and w.isdigit() and int(u) <= int(w):
+        return (f"no upload after the seed had committed at its window's start (uploaded {u}, {w} of them whole), "
+                'so its first upload carries what was written while the seed ran')
     return None
 
 
