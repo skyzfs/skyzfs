@@ -105,7 +105,7 @@ class Plan(unittest.TestCase):
                      '.github/workflows/skyzfs-cut-daemon.yml'):
             jobs = cut_plan.plan('pull_request', '', '', '', '', ['README.md', path])
             self.assertEqual(len(jobs), 3, path)
-            self.assertEqual(stages(jobs)[2], ('ubuntu-26.04', '0', '1', 'life umoved urow ukill ulease ulost uv1',
+            self.assertEqual(stages(jobs)[2], ('ubuntu-26.04', '0', '1', 'life umoved urow ukill ulease ulost uv1 uv1moved',
                                                'ubuntu-26.04-upload'), path)
 
     def test_every_crate_under_the_uploader(self):

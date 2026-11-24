@@ -1062,36 +1062,74 @@ class Courses(unittest.TestCase):
         other = dict(rows, **{'end-row.txt': row_file(('ef' * 16, 9, 44))})
         self.assertEqual(len(self.judge('urow', other, good)[1]), 1)
 
-        h, e = 'cd' * 32, 'ee' * 32
+        h, m, e = 'cd' * 32, 'dd' * 32, 'ee' * 32
+        nb = '5b' * 32      # node B's head in the row's group (v1in)
         v1 = {'v1-row.txt': row_file(cut, head=h, commit=h),
+              'v1in-row.txt': row_file((STATE, 6, 41), head=m, commit=m),
               'end-row.txt': row_file((STATE, 8, 43), head=e, commit=e),
-              'others.tsv': f'v1\t{STATE}\t5\t40\n', 'v1-after.txt': 'upload_checked row_v1\n'}
-        good = dict(st, upload_mismatches='1', upload_abandoned_at_mismatch='2', uploaded_whole='2')
+              'others.tsv': f'v1\t{STATE}\t5\t40\nhead\t{nb}\nv1\t{STATE}\t6\t41\n',
+              'v1-after.txt': 'upload_checked row_v1\n', 'v1in-after.txt': 'upload_checked row_v1\n'}
+        good = dict(st, upload_mismatches='2', upload_abandoned_at_mismatch='2', uploaded_whole='3')
         wrong, bad, notes = self.judge('uv1', v1, good)
         self.assertEqual((wrong, bad), ([], []))
-        self.assertIn("v1: upload_checked 'row_v1'", notes[0])
-        # Once the mismatch is counted: row_v1, or matched where the whole
-        # cut after it was checked already; head_moved or nothing is not
-        # this course's mismatch.
-        self.assertEqual(self.judge('uv1', dict(v1, **{'v1-after.txt': 'upload_checked matched\n'}), good)[:2],
-                         ([], []))
-        for kind in ('upload_checked head_moved\n', 'upload_checked not_the_base\n', ''):
-            self.assertEqual(len(self.judge('uv1', dict(v1, **{'v1-after.txt': kind}), good)[1]), 1, kind)
-        self.assertEqual(self.judge('uv1', v1, dict(good, uploaded_whole='1'))[0], ['uploaded_whole'])
-        self.assertEqual(self.judge('uv1', v1, dict(good, upload_mismatches='0'))[0], ['upload_mismatches'])
-        self.assertEqual(self.judge('uv1', v1, dict(good, upload_checked='head_moved'))[0], ['upload_checked'])
-        # The daemon wrote a row of version 1 before the act, or one whose
-        # commit is not head's.
-        for first in (row_file(cut, head=h), row_file(cut, head=h, commit='none'),
-                      row_file(cut, head=h, commit=e)):
-            self.assertEqual(len(self.judge('uv1', dict(v1, **{'v1-row.txt': first}), good)[1]), 1, first)
-        # At the end: the row still the version 1 one, the same cut in
+        self.assertEqual(notes, ["v1: upload_checked 'row_v1' once the mismatch was counted",
+                                 "v1in: upload_checked 'row_v1' once the mismatch was counted"])
+        self.assertEqual(self.judge('uv1', v1, dict(good, uploaded_whole='2'))[0], ['uploaded_whole'])
+        self.assertEqual(self.judge('uv1', v1, dict(good, upload_mismatches='1'))[0], ['upload_mismatches'])
+        self.assertEqual(self.judge('uv1', v1, dict(good, upload_checked='row_v1'))[0], ['upload_checked'])
+        # Once each mismatch is counted: row_v1, or matched where the whole
+        # cut after it was checked already; head_moved (the word before
+        # #134's N3, and the one for a move to another group) or nothing is
+        # not this course's mismatch.
+        for fn in ('v1-after.txt', 'v1in-after.txt'):
+            self.assertEqual(self.judge('uv1', dict(v1, **{fn: 'upload_checked matched\n'}), good)[:2], ([], []))
+            for kind in ('upload_checked head_moved\n', 'upload_checked not_the_base\n', ''):
+                self.assertEqual(len(self.judge('uv1', dict(v1, **{fn: kind}), good)[1]), 1, (fn, kind))
+        # The daemon's row before an act is of version 1, names a commit
+        # that is not head's, or (v1in) names another state.
+        for fn, at in (('v1-row.txt', h), ('v1in-row.txt', m)):
+            c = cut if fn == 'v1-row.txt' else (STATE, 6, 41)
+            for first in (row_file(c, head=at), row_file(c, head=at, commit='none'), row_file(c, head=at, commit=e)):
+                self.assertEqual(len(self.judge('uv1', dict(v1, **{fn: first}), good)[1]), 1, (fn, first))
+        other_state = {'v1in-row.txt': row_file(('ef' * 16, 6, 41), head=m, commit=m),
+                       'others.tsv': f'v1\t{STATE}\t5\t40\nhead\t{nb}\nv1\t{"ef" * 16}\t6\t41\n'}
+        bad = self.judge('uv1', dict(v1, **other_state), good)[1]
+        self.assertEqual(len(bad), 1, bad)
+        self.assertIn('the course began in', bad[0])
+        # At the end: the row still a version 1 one, the same cut in
         # version 2 (no later cut went up), another state's cut, a row of
         # version 1, or a commit that is not head's.
-        for end in (row_file(cut, head=h), row_file(cut, head=h, commit=h), row_file(('ef' * 16, 8, 43), head=e, commit=e),
-                    row_file((STATE, 8, 43), head=e), row_file((STATE, 8, 43), head=e, commit=h)):
+        for end in (row_file(cut, head=h), row_file((STATE, 6, 41), head=m, commit=m),
+                    row_file(('ef' * 16, 8, 43), head=e, commit=e), row_file((STATE, 8, 43), head=e),
+                    row_file((STATE, 8, 43), head=e, commit=h)):
             self.assertTrue(self.judge('uv1', dict(v1, **{'end-row.txt': end}), good)[1], end)
-        self.assertEqual(len(self.judge('uv1', dict(v1, **{'others.tsv': ''}), good)[1]), 1)
+        # others.tsv without a step's row of version 1.
+        for others in (f'head\t{nb}\nv1\t{STATE}\t6\t41\n', f'v1\t{STATE}\t5\t40\nhead\t{nb}\n'):
+            self.assertEqual(len(self.judge('uv1', dict(v1, **{'others.tsv': others}), good)[1]), 1, others)
+
+        moved = {'v1moved-row.txt': row_file(cut, head=h, commit=h), 'v1moved-status.txt': 'uploaded 5\n',
+                 'v1moved-after.txt': 'upload_checked head_moved\n',
+                 'end-row.txt': row_file(cut, head=OTHER_HEAD, commit='none'),
+                 'others.tsv': f'head\t{OTHER_HEAD}\nv1\t{STATE}\t5\t40\n'}
+        good = dict(st, upload_mismatches='2', upload_abandoned_at_mismatch='3', upload_checked='head_moved')
+        self.assertEqual(self.judge('uv1moved', moved, good)[:2], ([], []))
+        self.assertEqual(self.judge('uv1moved', moved, dict(good, uploaded='6'))[0], ['uploaded'])
+        self.assertEqual(self.judge('uv1moved', moved, dict(good, upload_checked='row_v1'))[0], ['upload_checked'])
+        self.assertEqual(self.judge('uv1moved', moved, dict(good, upload_mismatches='0',
+                                                            upload_abandoned_at_mismatch='0'))[0],
+                         ['upload_mismatches', 'upload_abandoned_at_mismatch'])
+        # A move to another group is not row_v1, nor anything else.
+        for kind in ('upload_checked row_v1\n', 'upload_checked matched\n', ''):
+            self.assertEqual(len(self.judge('uv1moved', dict(moved, **{'v1moved-after.txt': kind}), good)[1]), 1,
+                             kind)
+        # At the end: head back at the daemon's, the row moved on, the row
+        # of version 2 again, or no row of version 1 recorded.
+        for fn, body in (('end-row.txt', row_file(cut, head=h, commit='none')),
+                         ('end-row.txt', row_file((STATE, 6, 41), head=OTHER_HEAD, commit='none')),
+                         ('end-row.txt', row_file(cut, head=OTHER_HEAD, commit=OTHER_HEAD)),
+                         ('others.tsv', f'head\t{OTHER_HEAD}\n'),
+                         ('v1moved-row.txt', row_file(cut, head=h))):
+            self.assertEqual(len(self.judge('uv1moved', dict(moved, **{fn: body}), good)[1]), 1, (fn, body))
 
         hook = ('skyzfsd: test hook --kill-at-upload: killed after the swap of commit 3 (group 30) landed, '
                 'before its cut was let go\n')
@@ -1256,11 +1294,11 @@ class Courses(unittest.TestCase):
         self.assertNotIn('upload_raw', lines)
 
     def test_a_course_that_stops_the_uploads(self):
-        """umoved from end to end: the cuts before the other writer's head
-        are judged, its head is skipped, and the last fetched is the last
-        before it. A daemon that moved head back and uploaded once more
-        fails the content and the course."""
-        def stopped(more):
+        """umoved, and uv1moved, from end to end: the cuts before the other
+        writer's head are judged, its head is skipped, and the last fetched
+        is the last before it (STOPPED_AT). A daemon that moved head back
+        and uploaded once more fails the content and the course."""
+        def stopped(more, course='umoved'):
             def up(written, blocks, st):
                 m = len(written) // 2
                 kept = written[:m + 1]
@@ -1288,6 +1326,20 @@ class Courses(unittest.TestCase):
                          'end-row.txt': row_file(cut, head=OTHER_HEAD) if not more else
                          row_file((STATE, fetched[-1]['number'], fetched[-1]['group']), head='dd' * 32),
                          'others.tsv': f'head\t{OTHER_HEAD}\n'}
+                if course == 'uv1moved':
+                    # The other writer left the row in version 1 with its
+                    # head; the daemon's row before it named head's commit.
+                    # Its fetch of that cut was of the row of version 2,
+                    # which names a commit; the other writer's row of
+                    # version 1 over the same cut, none.
+                    fetched[m] = dict(last, commit=last.get('head', 'cd' * 32))
+                    files = {'v1moved-row.txt': row_file(cut, commit='cd' * 32),
+                             'v1moved-status.txt': files['moved-status.txt'],
+                             'v1moved-after.txt': 'upload_checked head_moved\n',
+                             'end-row.txt': row_file(cut, head=OTHER_HEAD, commit='none') if not more else
+                             row_file((STATE, fetched[-1]['number'], fetched[-1]['group']), head='dd' * 32,
+                                      commit='dd' * 32),
+                             'others.tsv': f'head\t{OTHER_HEAD}\nv1\t{STATE}\t{cut[1]}\t{cut[2]}\n'}
                 return fetched, blocks, st, files
             return up
         rc, lines = recording(upload=stopped(False), as_name='umoved')
@@ -1296,6 +1348,15 @@ class Courses(unittest.TestCase):
             self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
         self.assertIn("and 1 of another writer's", lines['upload_content'][1])
         rc, lines = recording(upload=stopped(True), as_name='umoved')
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['upload_content'][0], 'FAIL', lines['upload_content'])
+        self.assertIn('the last cut written is', lines['upload_content'][1])
+        self.assertEqual(lines['upload_course'][0], 'FAIL', lines['upload_course'])
+        rc, lines = recording(upload=stopped(False, 'uv1moved'), as_name='uv1moved')
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        for key in ('upload_content', 'upload_status', 'upload_course'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        rc, lines = recording(upload=stopped(True, 'uv1moved'), as_name='uv1moved')
         self.assertEqual(rc, 1)
         self.assertEqual(lines['upload_content'][0], 'FAIL', lines['upload_content'])
         self.assertIn('the last cut written is', lines['upload_content'][1])

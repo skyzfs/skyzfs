@@ -211,7 +211,7 @@ from cut_check import RigError  # noqa: E402
 
 RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full',
         'bound', 'boundsparse', 'edges', 'takeover', 'failed',   # these only where the daemon holds cuts (cut-record.sh)
-        'umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1',   # these where it uploads them
+        'umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1', 'uv1moved',   # these where it uploads them
         'unostore', 'ukillput', 'ufailed')                # and these by name only
 LISTS = ('drop', 'last', 'extra', 'group', 'opens', 'late')
 RULES = ('early', 'txg-alone', 'count-repeats', 'previous', 'mark-dropped', 'mark-kept')
@@ -236,8 +236,8 @@ CONTROLS = LISTS + RULES
 # second instance is added after a clean end, ufailed's acknowledges a
 # failure).
 TWO_STARTS = ('ukill', 'ulease', 'ukillput', 'ufailed')     # the upload courses that serve twice
-UNKNOWN = {r: ('same', 'caught') for r in ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1', 'unostore',
-                                          'ukillput', 'ufailed')}
+UNKNOWN = {r: ('same', 'caught') for r in ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1', 'uv1moved',
+                                          'unostore', 'ukillput', 'ufailed')}
 EXPECTED = dict({c: {r: 'caught' for r in RECS} for c in LISTS + ('early',)}, **{
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindf='caught',
                       rewindsync=('same', 'caught'), multihost=('same', 'caught'), takeover=('same', 'caught'),
@@ -1684,8 +1684,12 @@ UPLOAD_ZERO = ('upload_mismatches', 'upload_abandoned_at_mismatch', 'upload_cuts
                'upload_committed_kept', 'upload_found_committed')
 # The courses (cut-record.sh): where another writer stops the uploads,
 # the file whose row names the last cut the daemon uploaded before it.
-UPLOAD_COURSES = ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1', 'unostore', 'ukillput', 'ufailed')
-STOPPED_AT = {'umoved': 'moved-row.txt', 'ulost': 'lost-row.txt'}
+UPLOAD_COURSES = ('umoved', 'urow', 'ukill', 'ulease', 'ulost', 'uv1', 'uv1moved', 'unostore', 'ukillput',
+                  'ufailed')
+STOPPED_AT = {'umoved': 'moved-row.txt', 'ulost': 'lost-row.txt', 'uv1moved': 'v1moved-row.txt'}
+# uv1's steps: the file of the daemon's row before each act, and of its
+# status once the mismatch was counted.
+UV1_STEPS = (('v1', 'v1-row.txt', 'v1-after.txt'), ('v1in', 'v1in-row.txt', 'v1in-after.txt'))
 OTHER = 'other-node'
 
 
@@ -1841,34 +1845,72 @@ def course_wants(name, rdir, status):
             notes.append(f"{fn.split('-')[0]}: upload_checked {stat(fn).get('upload_checked')!r} once the "
                          "mismatch was counted")
     elif name == 'uv1':
-        # Another writer wrote the daemon's row again in version 1, the
-        # same cut and no commit, with head left alone (F1). The next
-        # delta is not put onto it, for a row of version 1 does not say
-        # that head is its commit: #134 says so as the mismatch row_v1.
-        # The cuts held are abandoned, and the next cut goes up whole and
-        # writes a row of version 2 that names its own commit. The status
-        # once the mismatch is counted says row_v1, or matched where that
-        # whole cut has already been checked; any other kind is not this
+        # v1: another writer wrote the daemon's row again in version 1,
+        # the same cut and no commit, with head left alone (F1). v1in:
+        # it moved head to a commit of its own in the row's group and
+        # left the row in version 1, in one transaction. Each time the
+        # next delta is not put onto it, for a row of version 1 does not
+        # say that head is its commit: #134 says so as the mismatch
+        # row_v1, also after a move within the row's group, which such a
+        # row cannot show (the review of #134). The cuts held are
+        # abandoned, and the next cut goes up whole and writes a row of
+        # version 2 that names its own commit. The status once the
+        # mismatch is counted says row_v1, or matched where that whole
+        # cut has already been checked; any other kind is not this
         # course's mismatch.
-        first, end = row('v1-row.txt'), row('end-row.txt')
         v1 = read_others(read_file(rdir, 'others.tsv'))[2]
-        want.update(upload_mismatches='1', upload_abandoned_at_mismatch=at_least(0), uploaded_whole='2',
-                    upload_checked='matched')
-        if first['cut'] is None or first['commit'] != first['head']:
-            bad.append(f"the daemon's row before the other writer names cut {first['cut']} and commit "
-                       f"{first['commit']}, head {first['head']}: not a row of version 2 naming head's commit")
-        if first['cut'] not in v1:
-            bad.append(f"others.tsv has no row of version 1 over the daemon's cut {first['cut']}: {sorted(v1)}")
-        if end['cut'] is None or end['cut'][0] != (first['cut'] or ('',))[0] or end['cut'] in v1:
+        want.update(upload_mismatches=str(len(UV1_STEPS)), upload_abandoned_at_mismatch=at_least(0),
+                    uploaded_whole=str(1 + len(UV1_STEPS)), upload_checked='matched')
+        state = None
+        for step, row_fn, after_fn in UV1_STEPS:
+            first = row(row_fn)
+            state = state or (first['cut'] or ('',))[0]
+            if first['cut'] is None or first['commit'] != first['head']:
+                bad.append(f"{step}: the daemon's row before the other writer names cut {first['cut']} and "
+                           f"commit {first['commit']}, head {first['head']}: not a row of version 2 naming "
+                           "head's commit")
+            elif first['cut'][0] != state:
+                bad.append(f"{step}: the daemon's row names state {first['cut'][0]}, the course began in {state}")
+            if first['cut'] not in v1:
+                bad.append(f"{step}: others.tsv has no row of version 1 over the daemon's cut {first['cut']}: "
+                           f"{sorted(v1)}")
+            kind = stat(after_fn).get('upload_checked')
+            if kind not in ('row_v1', 'matched'):
+                bad.append(f"{step}: upload_checked {kind!r} once the mismatch was counted, not row_v1 (or "
+                           "matched, the whole cut after it)")
+            notes.append(f"{step}: upload_checked {kind!r} once the mismatch was counted")
+        end = row('end-row.txt')
+        if end['cut'] is None or end['cut'][0] != state or end['cut'] in v1:
             bad.append(f"the row at the end is {end['cut']}, not a later cut of the daemon's state")
         if end['commit'] is None or end['commit'] != end['head']:
             bad.append(f"the row at the end names commit {end['commit']}, head is {end['head']}: the whole cut "
                        "after the row of version 1 did not write a row of version 2 naming its commit")
-        kind = stat('v1-after.txt').get('upload_checked')
-        if kind not in ('row_v1', 'matched'):
-            bad.append(f"upload_checked {kind!r} once the mismatch was counted, not row_v1 (or matched, the whole "
-                       "cut after it)")
-        notes.append(f"v1: upload_checked {kind!r} once the mismatch was counted")
+    elif name == 'uv1moved':
+        # Another writer moved head to a commit of another group and left
+        # the daemon's row in version 1, in one transaction. A row of
+        # version 1 shows that move: head_moved, not row_v1 (the review
+        # of #134). As in umoved, nothing goes up after it, and head and
+        # the row stay as the other writer left them.
+        before, end = row('v1moved-row.txt'), row('end-row.txt')
+        heads, _, v1 = read_others(read_file(rdir, 'others.tsv'))
+        n = stat('v1moved-status.txt').get('uploaded', '?')
+        want.update(upload_mismatches=at_least(1), upload_abandoned_at_mismatch=at_least(1),
+                    upload_checked='head_moved', uploaded=n)
+        if before['cut'] is None or before['commit'] != before['head']:
+            bad.append(f"the daemon's row before the other writer names cut {before['cut']} and commit "
+                       f"{before['commit']}, head {before['head']}: not a row of version 2 naming head's commit")
+        if before['cut'] not in v1:
+            bad.append(f"others.tsv has no row of version 1 over the daemon's cut {before['cut']}: {sorted(v1)}")
+        kind = stat('v1moved-after.txt').get('upload_checked')
+        if kind != 'head_moved':
+            bad.append(f"upload_checked {kind!r} once the mismatch was counted, not head_moved: a row of version 1 "
+                       "shows a move to another group")
+        if end['head'] not in heads:
+            bad.append(f"head is {end['head']} at the end, not the other writer's {sorted(heads)}: the uploader "
+                       "moved it")
+        if (end['cut'], end['commit']) != (before['cut'], None):
+            bad.append(f"the row at the end is {end['cut']} naming commit {end['commit']}, not the other writer's "
+                       f"row of version 1 over {before['cut']}")
     elif name in ('ukill', 'ukillput'):
         rc = dict(ln.split('\t', 1) for ln in read_file(rdir, 'kill.tsv').splitlines()).get('killed_rc')
         if rc != '137':
