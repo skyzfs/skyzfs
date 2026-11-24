@@ -1,0 +1,42 @@
+# The cut rig upload job at 75bed3f: run 45498067633, job 138813804996; the upload lines of each course.
+life: cuts: PASS: 26 cuts, each at the same barrier with the same group and the same answer to itself
+life: status: PASS: cuts 26, cut_group 67, cut_opens itself
+life: upload_reads: PASS: node B read the content of every cut it found at head
+life: upload_content: PASS: node B fetched cuts 26 at head: 1 of 26 cuts fetched at head; 12333 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+life: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 13, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+life: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 26 = committed and let go 13 + replaced 13 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+umoved: cuts: PASS: 15 cuts, each at the same barrier with the same group and the same answer to itself
+umoved: status: PASS: cuts 15, cut_group 41, cut_opens itself
+umoved: upload_reads: PASS: node B read the content of every cut it found at head
+umoved: upload_content: PASS: node B fetched cuts 8 at head and 1 of another writer's: 1 of 8 cuts fetched at head; 3740 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+umoved: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 1, upload_mismatches 3, upload_abandoned_at_mismatch 4, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 4; uploaded 4, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+umoved: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 15 = committed and let go 4 + replaced 7 + abandoned 4 + held +0; at the start upload_state 'idle', after the drain 'idle'
+umoved: upload_course: PASS: umoved
+urow: cuts: PASS: 22 cuts, each at the same barrier with the same group and the same answer to itself
+urow: status: PASS: cuts 22, cut_group 65, cut_opens itself
+urow: upload_reads: PASS: node B read the content of every cut it found at head
+urow: upload_content: PASS: node B fetched cuts 8, 14, 22 at head and 2 of another writer's: 3 of 22 cuts fetched at head; 19914 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+urow: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 3, lease_epoch 1, upload_mismatches 2, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked matched; uploaded 13, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+urow: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 22 = committed and let go 13 + replaced 7 + abandoned 2 + held +0; at the start upload_state 'idle', after the drain 'idle'
+urow: upload_course: PASS: row1: upload_checked 'not_the_base' once the mismatch was counted; row2: upload_checked 'not_the_base' once the mismatch was counted
+ukill: cuts: PASS: 151 cuts, each at the same barrier with the same group and the same answer to itself
+ukill: status: PASS: cuts 151, cut_group 452, cut_opens itself
+ukill: upload_reads: PASS: node B read the content of every cut it found at head
+ukill: upload_content: PASS: node B fetched cuts 147, 151 at head: 2 of 151 cuts fetched at head; 86710 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ukill: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 0, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 1, uploaded 60; uploaded 60, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+ukill: upload_balance: PASS: serve 2, from balance-start.txt: cuts 4 = committed and let go 4 + replaced 0 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+ukill: upload_course: PASS: ukill
+ulease: cuts: PASS: 18 cuts, each at the same barrier with the same group and the same answer to itself
+ulease: status: PASS: cuts 18, cut_group 51, cut_opens itself
+ulease: upload_reads: PASS: node B read the content of every cut it found at head
+ulease: upload_content: PASS: node B fetched cuts 10, 18 at head: 2 of 18 cuts fetched at head; 11028 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ulease: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 6, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+ulease: upload_balance: PASS: serve 2, from balance-start.txt: cuts 8 = committed and let go 4 + replaced 4 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+ulease: upload_course: PASS: the refused start wrote 5 paths (vol, volume.start, run, v-801-860382); lease_epoch '2' after the other holder let go
+ulost: cuts: PASS: 18 cuts, each at the same barrier with the same group and the same answer to itself
+ulost: status: PASS: cuts 18, cut_group 51, cut_opens itself
+ulost: upload_reads: PASS: node B read the content of every cut it found at head
+ulost: upload_content: PASS: node B fetched cuts 10 at head: 1 of 10 cuts fetched at head; 3841 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ulost: upload_status: PASS: upload_state lease_lost, cuts_held 2, lease lost, lease_holder other-node, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 4; uploaded 4, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+ulost: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 18 = committed and let go 4 + replaced 12 + abandoned 0 + held +2; at the start upload_state 'idle', after the drain 'lease_lost'
+ulost: upload_course: PASS: ulost

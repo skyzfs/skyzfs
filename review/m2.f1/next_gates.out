@@ -1,0 +1,40 @@
+# The gates at 75bed3f, in the main tree, with CARGO_INCREMENTAL=0 and no debug info (to save disk). The steps and their exits:
+== at 75bed3f, rustc 1.100.0 (0ef1bc386 2026-11-09)
+== fmt
+fmt exit 0
+== clippy plain
+clippy plain exit 0
+== clippy hooks
+clippy hooks exit 0
+== clippy ctl
+clippy ctl exit 0
+== test plain
+test plain exit 0
+== test hooks
+test hooks exit 0
+== test ctl
+test ctl exit 0
+test hooks (workspace) exit 0
+
+# Commands:
+echo "== at $(git rev-parse --short HEAD), $(rustc --version)"
+fmt: cargo fmt --all -- --check
+clippy plain: cargo clippy --workspace --all-targets -- -D warnings
+clippy hooks: cargo clippy -p skyzfsd -p skyzfs-local --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings
+clippy ctl: cargo clippy -p skyzfs-ublk-sys --all-targets --features control-test-program -- -D warnings
+test plain: cargo test --workspace
+test hooks: cargo test -p skyzfsd -p skyzfs-local --features skyzfsd/test-hooks,skyzfs-local/test-hooks
+test ctl: cargo test -p skyzfs-ublk-sys --features control-test-program
+test hooks (workspace): cargo test --workspace --features skyzfsd/test-hooks,skyzfs-local/test-hooks
+
+# Clippy: warning or error lines in each output
+clippy_plain: 0
+clippy_hooks: 0
+clippy_ctl: 0
+fmt: 0 bytes of output
+
+# Counts by test binary (next_gate_counts.py)
+test_plain.out: 114 binaries, passed/failed/ignored [1695, 0, 16]
+test_hooks.out: 7 binaries, [510, 0, 1]; the same binaries in the plain run [471, 0, 1]; difference [39, 0, 0]; the plain total with it [1734, 0, 16]
+test_ctl.out: 4 binaries, [37, 0, 11]; the same binaries in the plain run [13, 0, 9]; difference [24, 0, 2]; the plain total with it [1719, 0, 18]; not in the plain run: ['skyzfs-ublk-sys:unittests src/bin/skyzfs-ublk-control.rs']
+test_hooks_ws.out: 114 binaries, [1737, 0, 16]; the same binaries in the plain run [1695, 0, 16]; difference [42, 0, 0]; the plain total with it [1737, 0, 16]

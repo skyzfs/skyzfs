@@ -1,0 +1,543 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.187
+   Compiling cfg-if v1.0.4
+   Compiling semver v1.0.28
+   Compiling getrandom v0.3.4
+   Compiling rustc_version v0.4.1
+   Compiling thiserror v2.0.19
+   Compiling zerocopy v0.8.55
+   Compiling syn v3.0.2
+   Compiling serde_core v1.0.229
+   Compiling rand_core v0.9.5
+   Compiling serde v1.0.229
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling shlex v2.0.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling scopeguard v1.2.0
+   Compiling rustix v1.1.4
+   Compiling thiserror-impl v2.0.19
+   Compiling serde_derive v1.0.229
+   Compiling rand_chacha v0.9.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.3.0
+   Compiling rand v0.9.5
+   Compiling lock_api v0.4.14
+   Compiling heapless v0.7.17
+   Compiling pin-project-lite v0.2.17
+   Compiling byteorder v1.5.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.13.1
+   Compiling getrandom v0.4.3
+   Compiling hash32 v0.2.1
+   Compiling spin v0.9.9
+   Compiling blake3 v1.8.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling ulid v1.2.1
+   Compiling cobs v0.3.0
+   Compiling tokio-macros v2.7.1
+   Compiling arrayref v0.3.9
+   Compiling cpufeatures v0.3.0
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayvec v0.7.8
+   Compiling redb v2.6.3
+   Compiling tokio v1.53.1
+   Compiling postcard v1.1.3
+   Compiling skynbd-types v0.0.1 (<worktree>/crates/skynbd-types)
+   Compiling tracing-attributes v0.1.31
+   Compiling async-trait v0.1.92
+   Compiling tracing-core v0.1.36
+   Compiling bytes v1.12.1
+   Compiling tracing v0.1.44
+   Compiling skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+   Compiling skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.33
+   Compiling futures-task v0.3.33
+   Compiling futures-util v0.3.33
+   Compiling skynbd-tree v0.0.1 (<worktree>/crates/skynbd-tree)
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling fastrand v2.5.0
+   Compiling wait-timeout v0.2.1
+   Compiling tempfile v3.27.0
+   Compiling fnv v1.0.7
+   Compiling bit-vec v0.8.0
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling bit-set v0.8.0
+   Compiling rand_xorshift v0.4.0
+   Compiling regex-syntax v0.8.11
+   Compiling unarray v0.1.4
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling generic-array v0.14.7
+   Compiling crc32c v0.6.8
+   Compiling cpufeatures v0.2.17
+   Compiling skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+   Compiling proptest v1.11.0
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+   Compiling skyzfs-blk v0.0.1 (<worktree>/crates/skyzfs-blk)
+   Compiling skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+   Compiling skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+   Compiling skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Finished `test` profile [optimized] target(s) in 1m 55s
+     Running unittests src/lib.rs (<target>/debug/build/skynbd-engine/d19e169cae1cdb83/out/skynbd_engine-d19e169cae1cdb83)
+
+running 11 tests
+test index::tests::a_replaced_slot_does_not_inherit_the_old_cell ... ok
+test index::tests::extents_straddling_a_shard_boundary_are_split ... ok
+test index::tests::from_roots_extends_short_arrays_and_refuses_long_ones ... ok
+test index::tests::merge_agrees_with_extent_map ... ok
+test index::tests::oversized_fields_are_refused_not_truncated ... ok
+test index::tests::merge_matches_the_oracle_on_the_awkward_shapes ... ok
+test index::tests::merge_coalesces_across_the_seam ... ok
+test index::tests::query_covers_holes_shards_and_partial_extents ... ok
+test index::tests::replacing_a_shard_shares_the_others ... ok
+test index::tests::query_agrees_with_extent_map ... ok
+test keys::tests::keys_are_stable_and_prefixed ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cadence_recovery.rs (<target>/debug/build/skynbd-engine/4120c3d4ab7cd131/out/cadence_recovery-4120c3d4ab7cd131)
+
+running 2 tests
+test recovery_is_a_noop_without_a_gap ... ok
+test successor_recovers_the_cadence_gap_and_ignores_zombies ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clone.rs (<target>/debug/build/skynbd-engine/13a28db582bd5170/out/clone-13a28db582bd5170)
+
+running 7 tests
+test chained_clones_resolve_through_the_full_chain ... ok
+test gc_and_fsck_on_both_sides_preserve_shared_objects ... ok
+test clone_reads_base_content_then_diverges ... ok
+test clone_size_may_only_grow_and_grown_tail_reads_zero ... ok
+test unpinned_source_gc_breaks_the_clone_and_fsck_says_so ... ok
+test clone_snapshots_serve_via_open_at_commit ... ok
+test pinned_source_snapshot_refuses_delete ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coalesce.rs (<target>/debug/build/skynbd-engine/904fa19e093284e0/out/coalesce-904fa19e093284e0)
+
+running 3 tests
+test lba_adjacent_but_discontiguous_writes_do_not_merge ... ok
+test zero_runs_merge_and_holes_separate ... ok
+test sequential_writes_fold_into_one_extent_and_read_back ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/commit_path.rs (<target>/debug/build/skynbd-engine/40a851791adaa8bc/out/commit_path-40a851791adaa8bc)
+
+running 9 tests
+test cas_conflict_fails_commit_without_adopting ... ok
+test crash_point_matrix ... ok
+test empty_commit_is_noop ... ok
+test flush_then_reopen_recovers_exact_content ... ok
+test read_your_writes_before_commit ... ok
+test io_validation ... ok
+test unflushed_writes_lost_flushed_state_intact ... ok
+test model::engine_matches_model ... ok
+test redb_refs_end_to_end ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/emap.rs (<target>/debug/build/skynbd-engine/992b354200622141/out/emap-992b354200622141)
+
+running 5 tests
+test gc_sweeps_the_emap_with_its_commit ... ok
+test snapshots_write_their_emap ... ok
+test a_corrupt_emap_degrades_to_the_walk ... ok
+test fsck_reports_an_emap_that_disagrees ... ok
+test reads_are_served_from_the_emap_alone ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/epoch_fence.rs (<target>/debug/build/skynbd-engine/f854f550dc9891a4/out/epoch_fence-f854f550dc9891a4)
+
+running 3 tests
+test rebuild_ignores_epochs_the_lease_never_granted ... ok
+test rebuild_of_pre_epoch_history_is_unchanged ... ok
+test rebuild_prefers_the_highest_epoch_over_the_highest_flush_seq ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/extent_index.rs (<target>/debug/build/skynbd-engine/e876a04178330f54/out/extent_index-e876a04178330f54)
+
+running 2 tests
+test engine_open_and_commit_cost ... ignored, measurement, not an assertion; run with --ignored --nocapture
+test extent_index_cost ... ignored, measurement, not an assertion; run with --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/extent_shape.rs (<target>/debug/build/skynbd-engine/36df545d65b60c40/out/extent_shape-36df545d65b60c40)
+
+running 1 test
+test extent_shape_by_workload ... ignored, measurement, not an assertion; run with --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gc_fsck.rs (<target>/debug/build/skynbd-engine/2cd7e9bd43e37fc2/out/gc_fsck-2cd7e9bd43e37fc2)
+
+running 5 tests
+test gc_dirty_refused ... ok
+test fsck_detects_missing_objects ... ok
+test gc_sweeps_orphans_preserves_live ... ok
+test gc_after_snapshot_delete_reclaims ... ok
+test rebuild_refs_restores_missing_and_prefers_existing ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/lazy_open.rs (<target>/debug/build/skynbd-engine/b71e7abee68a44da/out/lazy_open-b71e7abee68a44da)
+
+running 2 tests
+test open_is_constant_and_reads_materialize_per_shard ... ok
+test an_unread_export_materializes_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/lease_fence.rs (<target>/debug/build/skynbd-engine/965d59a1db5d3913/out/lease_fence-965d59a1db5d3913)
+
+running 1 test
+test stale_server_commit_is_conflict_after_steal ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/open_walk.rs (<target>/debug/build/skynbd-engine/d578890a8310bc58/out/open_walk-d578890a8310bc58)
+
+running 1 test
+test open_walk_latency ... ignored, measurement, not an assertion; run with --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prepared.rs (<target>/debug/build/skynbd-engine/5bebd8d6cb541d1f/out/prepared-5bebd8d6cb541d1f)
+
+running 6 tests
+test an_ensure_promise_is_durable_before_it_answers_positive ... ok
+test mixed_apply_is_ordered_replay_safe_and_all_or_nothing ... ok
+test mixed_apply_stages_a_clear_before_a_later_attach ... ok
+test s11_prepared_lifecycle_and_idempotency ... ok
+test s12_pins_and_gc_safety ... ok
+test s13_crash_resume_from_watermark ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/read_fanout.rs (<target>/debug/build/skynbd-engine/a7bb35580a044fdd/out/read_fanout-a7bb35580a044fdd)
+
+running 10 tests
+test engine_config_walk_concurrency_bounds_shard_materialization ... ok
+test concurrent_reads_share_the_engine_wide_get_cap ... ok
+test fsck_and_recovery_walk_at_the_width_they_are_given ... ok
+test engines_sharing_a_pool_share_one_get_cap ... ok
+test overlay_and_holes_interleave_with_cold_fetches ... ok
+test pieces_not_contiguous_in_their_object_do_not_merge ... ok
+test pieces_contiguous_in_their_object_coalesce_into_one_get ... ok
+test pieces_of_different_objects_do_not_merge ... ok
+test cold_read_across_segments_fans_out_within_the_bound ... ok
+test ensure_honours_walk_concurrency ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+
+     Running tests/rpo.rs (<target>/debug/build/skynbd-engine/4e6d7bcf4f5b71c3/out/rpo-4e6d7bcf4f5b71c3)
+
+running 2 tests
+test rpo_advances_replaces_and_noops ... ok
+test rpo_is_current_tracks_whether_an_advance_would_noop ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shard_geometry.rs (<target>/debug/build/skynbd-engine/5a30af3e6810ca34/out/shard_geometry-5a30af3e6810ca34)
+
+running 2 tests
+test a_clone_inherits_its_base_geometry ... ok
+test geometry_is_adopted_from_the_volume_not_the_config ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shard_single_flight.rs (<target>/debug/build/skynbd-engine/7128bb1c90d3d32a/out/shard_single_flight-7128bb1c90d3d32a)
+
+running 3 tests
+test cancelling_the_walking_reader_hands_the_walk_to_a_waiter ... ok
+test a_failed_walk_fails_its_waiters_once_and_a_later_read_retries ... ok
+test concurrent_first_touches_of_a_shard_walk_it_once ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/snapshots.rs (<target>/debug/build/skynbd-engine/f998b8b847127dee/out/snapshots-f998b8b847127dee)
+
+running 6 tests
+test clean_snapshot_create_writes_only_the_manifest ... ok
+test dirty_snapshot_forces_commit ... ok
+test list_delete_and_duplicate_names ... ok
+test rollback_restores_snapshot_content ... ok
+test snapshot_view_cannot_commit ... ok
+test snapshot_is_immutable_under_head_writes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/upload_path.rs (<target>/debug/build/skynbd-engine/cc6eaee2607d42ac/out/upload_path-cc6eaee2607d42ac)
+
+running 21 tests
+test a_commit_whose_op_does_not_hold_lands_nothing_and_can_be_made_again ... ok
+test a_commit_with_ops_after_the_head_moved_lands_nothing ... ok
+test a_discard_or_a_rollback_gives_up_the_group ... ok
+test a_group_goes_into_the_next_commit_only ... ok
+test a_commit_with_ops_lands_them_with_the_head_swap ... ok
+test a_group_or_ops_without_writes_still_make_a_commit ... ok
+test a_failed_commit_made_again_on_the_same_engine_lists_each_segment_once ... ok
+test a_put_sealed_dropped_at_a_put_leaves_each_segment_in_one_place ... ok
+test a_segment_whose_put_failed_stays_in_memory_and_is_put_by_the_next_call ... ok
+test a_volume_is_not_created_with_a_shard_of_zero_or_of_part_of_a_sector ... ok
+test a_death_at_any_operation_of_an_upload_leaves_the_old_head_or_the_new_whole ... ok
+test ops_made_from_the_commits_hash_name_the_commit_that_lands ... ok
+test discarded_writes_take_their_put_segments_out_of_the_next_commit ... ok
+test ops_made_from_the_hash_that_swap_the_engines_own_ref_are_refused ... ok
+test sealed_segments_are_put_before_the_commit_and_leave_memory ... ok
+test the_commit_after_one_with_segments_put_early_lists_only_its_own ... ok
+test ops_that_swap_the_engines_own_ref_are_refused ... ok
+test the_swap_and_its_row_land_together_or_not_at_all ... ok
+test the_group_of_any_commit_is_read_from_its_object ... ok
+test at_one_gib_a_shard_of_scattered_blocks_does_not_commit ... ok
+test a_shard_of_128_mib_holds_every_block_as_an_extent_of_its_own ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src/lib.rs (<target>/debug/build/skyzfs-upload/12acf19105366e5c/out/skyzfs_upload-12acf19105366e5c)
+
+running 53 tests
+test backoff::tests::the_wait_doubles_from_a_second_to_five_minutes ... ok
+test check::tests::a_cut_of_part_of_the_volume_is_uploaded_onto_the_base_the_row_names ... ok
+test backoff::tests::a_whole_cuts_wait_doubles_from_a_minute_to_fifteen ... ok
+test check::tests::a_cut_of_part_of_the_volume_against_another_row_is_a_mismatch ... ok
+test backoff::tests::a_success_starts_the_waits_again ... ok
+test check::tests::a_row_differing_from_the_cut_in_anything_is_not_its_commit ... ok
+test check::tests::a_row_that_cannot_be_read_is_always_a_mismatch ... ok
+test check::tests::a_row_naming_the_cut_being_uploaded_says_it_is_committed ... ok
+test check::tests::a_whole_cut_is_uploaded_onto_the_rows_commit_whatever_the_row_names ... ok
+test check::tests::a_whole_cut_onto_a_head_that_is_not_the_rows_is_a_mismatch ... ok
+test lease::tests::a_fenced_commit_loses_a_held_lease_at_once ... ok
+test lease::tests::a_fenced_commit_loses_the_lease_and_a_release_lets_a_held_one_go ... ok
+test lease::tests::a_lease_another_took_and_let_run_out_before_the_renewal_stays_with_it ... ok
+test lease::tests::a_renewal_whose_write_fails_after_its_read_is_unsure ... ok
+test lease::tests::a_lease_another_holder_took_during_an_outage_is_lost_and_never_taken_back ... ok
+test lease::tests::a_lease_another_holder_took_before_the_renewal_is_lost_to_it ... ok
+test lease::tests::a_row_of_another_name_at_this_holders_epoch_is_lost ... ok
+test lease::tests::an_outage_longer_than_the_lease_does_not_lose_it_where_nobody_else_took_it ... ok
+test lease::tests::a_store_out_of_reach_at_the_first_take_leaves_no_lease_and_a_later_take_holds ... ok
+test lease::tests::another_holders_lease_at_the_first_take_is_lost_and_left_alone ... ok
+test lease::tests::an_expired_lease_of_another_holder_is_taken_at_the_first_take ... ok
+test lease::tests::an_unsure_lease_is_let_go_at_a_release ... ok
+test lease::tests::the_first_take_creates_the_row_and_a_renewal_keeps_its_epoch ... ok
+test publish::tests::a_cut_carries_a_publish_only_after_c_at_or_after_g_and_opening_as_itself ... ok
+test publish::tests::a_failed_transaction_is_looked_up_before_it_is_made_again ... ok
+test publish::tests::a_publish_goes_on_the_first_cut_that_carries_it ... ok
+test lease::tests::this_holders_name_at_another_epoch_is_lost ... ok
+test publish::tests::a_publish_whose_time_is_up_is_dropped_unless_its_transaction_may_have_landed ... ok
+test publish::tests::a_snapshot_row_of_another_version_or_length_is_unreadable ... ok
+test publish::tests::a_request_is_refused_for_its_expiry ... ok
+test publish::tests::a_ref_found_is_done_only_where_its_row_records_the_request ... ok
+test publish::tests::a_request_is_refused_for_its_name_attachment_state_or_manifest ... ok
+test publish::tests::a_snapshot_row_reads_back_and_is_laid_out_as_documented ... ok
+test publish::tests::a_withdrawn_publish_asked_again_with_the_same_request_goes_on ... ok
+test publish::tests::a_withdrawn_publish_ends_at_once_or_once_its_failed_transaction_is_looked_up ... ok
+test publish::tests::a_stopped_uploader_ends_what_pends_and_refuses_what_comes ... ok
+test publish::tests::a_state_or_attachment_set_anew_ends_what_pends_of_another ... ok
+test publish::tests::asking_twice_is_asking_once ... ok
+test publish::tests::the_outcomes_in_view_are_the_newest ... ok
+test publish::tests::the_keys_are_named_as_documented ... ok
+test publish::tests::the_cuts_in_view_are_the_newest ... ok
+test publish::tests::the_publishes_pending_are_bounded ... ok
+test publish::tests::each_publish_waits_alone_after_its_own_failures ... ok
+test row::tests::a_row_naming_the_cut_is_found_by_the_cut ... ok
+test row::tests::a_row_of_another_version_or_length_is_unreadable ... ok
+test row::tests::a_row_of_version_1_names_its_cut_and_no_commit ... ok
+test row::tests::a_row_reads_back_as_the_cut_and_the_commit_it_names ... ok
+test row::tests::a_row_of_version_2_is_laid_out_as_documented ... ok
+test uploader::tests::a_slow_step_of_a_publish_gives_the_cut_as_long ... ok
+test uploader::tests::a_slow_step_of_the_cut_gives_the_publishes_as_long ... ok
+test uploader::tests::a_wait_keeps_the_count_and_an_idle_cuts_step_starts_it_again ... ok
+test uploader::tests::steps_of_the_same_time_take_turns ... ok
+test uploader::tests::each_side_has_half_the_time_give_or_take_a_step ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/crash.rs (<target>/debug/build/skyzfs-upload/9d09899cf91383cd/out/crash-9d09899cf91383cd)
+
+running 5 tests
+test a_death_around_the_naming_of_a_cut_the_bound_took_costs_one_whole_upload_at_most ... ok
+test a_death_at_any_store_into_the_cut_state_of_a_sparse_volume ... ok
+test a_death_at_any_store_into_the_cut_state_leaves_a_whole_cut_and_no_mismatch ... ok
+test a_death_at_any_operation_on_object_storage_of_a_sparse_volume ... ok
+test a_death_at_any_operation_on_object_storage_leaves_a_whole_cut_and_the_upload_goes_on ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/driver.rs (<target>/debug/build/skyzfs-upload/7adc367819bf5cb1/out/driver-7adc367819bf5cb1)
+
+running 24 tests
+test a_cut_held_when_the_volume_fails_at_a_write_of_the_image_is_still_uploaded ... ok
+test a_cut_read_from_no_copy_is_committed_without_a_sync ... ok
+test a_cut_kept_at_a_failed_write_of_the_map_stops_the_driver ... ok
+test a_cut_abandoned_at_the_bound_while_it_is_read_is_lost ... ok
+test a_cut_abandoned_after_its_last_slice_is_not_committed ... ok
+test a_cut_read_while_its_blocks_are_overwritten_goes_up_as_at_its_instant ... ok
+test a_cut_whose_flush_is_under_way_is_not_uploaded ... ok
+test a_failed_commit_is_made_again_or_found_landed_by_the_row ... ok
+test a_cut_the_bound_takes_after_the_check_found_it_committed_is_named ... ok
+test a_cut_the_bound_takes_after_its_commit_is_named_and_its_heir_goes_up_as_a_delta ... ok
+test a_failed_sync_of_the_copies_loses_the_cut_and_its_heir_goes_up ... ok
+test a_failed_put_goes_on_from_the_next_slice ... ok
+test a_lost_cut_leaves_the_next_check_to_find_head_as_it_is ... ok
+test a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up ... ok
+test a_row_moved_before_the_commit_gives_the_commit_up ... ok
+test a_head_moved_by_another_writer_stops_the_upload ... ok
+test a_row_of_another_version_is_never_overwritten ... ok
+test no_cut_held_is_nothing_to_upload ... ok
+test a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_whole ... ok
+test after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2 ... ok
+test the_first_cut_goes_up_whole_and_the_next_as_a_delta_onto_it ... ok
+test zero_blocks_go_up_as_zeros ... ok
+test no_row_under_a_cut_of_part_of_the_volume_is_a_mismatch ... ok
+test head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/holes.rs (<target>/debug/build/skyzfs-upload/0a257d3ca4bbd8f5/out/holes-0a257d3ca4bbd8f5)
+
+running 5 tests
+test a_whole_cut_writes_its_holes_over_what_object_storage_held ... ok
+test a_state_begun_after_a_reboot_records_the_holes_anew ... ok
+test a_whole_cut_writes_every_run_of_its_holes_over_what_object_storage_held ... ok
+test the_first_cut_of_a_sparse_volume_reads_what_was_written_and_its_holes_go_up_as_zeros ... ok
+test a_write_into_a_hole_under_the_first_cut_makes_no_copy_and_the_upload_is_the_instant ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/publish.rs (<target>/debug/build/skyzfs-upload/b9e2000a0f765655/out/publish-b9e2000a0f765655)
+
+running 21 tests
+test a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish ... ok
+test a_cut_found_committed_after_head_moved_carries_no_publish ... ok
+test a_cut_found_committed_at_the_check_after_head_moved_carries_no_publish ... ok
+test a_driver_not_told_its_cut_state_learns_it_at_its_first_check ... ok
+test a_cut_before_c_or_not_opening_as_itself_is_not_published ... ok
+test a_cut_found_committed_under_a_row_of_version_1_takes_no_publish ... ok
+test a_name_deleted_and_asked_again_is_looked_up ... ok
+test a_name_taken_between_the_lookup_and_the_transaction_is_refused ... ok
+test a_name_taken_is_refused_and_the_cuts_go_on ... ok
+test a_publish_waiting_takes_no_step ... ok
+test a_publish_past_its_deadline_is_not_made_on_the_cut_that_carries_it ... ok
+test a_publish_goes_on_the_first_committed_cut_after_c ... ok
+test a_request_of_another_cut_state_is_refused_before_any_cut ... ok
+test a_ref_made_anew_beside_a_row_left_behind_is_not_ours ... ok
+test an_abandoned_cut_hands_its_publish_to_the_next ... ok
+test asked_again_after_a_restart_answers_done ... ok
+test an_attachments_publish_is_not_carried_out_on_the_next ... ok
+test the_publish_is_made_after_the_cuts_commit ... ok
+test the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish ... ok
+test head_at_another_commit_of_the_cuts_group_takes_no_publish_and_no_delta ... ok
+test a_failure_at_any_operation_leaves_no_ref_or_a_whole_one ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/queued.rs (<target>/debug/build/skyzfs-upload/79f687b4349ef0ef/out/queued-79f687b4349ef0ef)
+
+running 9 tests
+test a_closed_desk_answers_as_a_store_that_holds_nothing ... ok
+test a_cut_goes_up_through_the_desk_answered_on_the_stores_thread ... ok
+test a_failed_sync_of_the_copies_through_the_desk_loses_the_cut ... ok
+test a_sync_whose_desk_closes_as_it_begins_ends_as_at_a_close ... ok
+test the_count_is_given_while_a_put_of_the_uploader_stalls ... ok
+test the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread ... ok
+test a_sync_of_the_copies_under_way_at_the_close_ends_as_failed ... ok
+test a_queue_that_turns_only_when_woken_answers_every_call ... ok
+test a_sync_of_the_copies_through_the_desk_leaves_the_queue_turning ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running tests/uploader.rs (<target>/debug/build/skyzfs-upload/e3dc31516a87f8f2/out/uploader-e3dc31516a87f8f2)
+
+running 58 tests
+test a_conflict_right_after_a_refused_commit_is_waited_after ... ok
+test a_commit_the_fence_refuses_loses_the_lease_and_lands_nothing ... ok
+test a_commit_refused_again_and_again_waits_longer_each_time_and_not_at_every_cycle ... ok
+test a_cut_committed_and_gone_ends_the_wait_of_the_refusals ... ok
+test a_cut_found_committed_ends_the_wait_of_the_refusals ... ok
+test a_cut_committed_and_gone_before_its_release_ends_the_wait ... ok
+test a_cut_found_committed_ends_the_wait ... ok
+test a_cut_kept_at_its_release_stops_the_uploader_which_rests ... ok
+test a_cut_committed_and_gone_ends_the_whole_waits ... ok
+test a_failed_steps_wait_goes_to_the_publish_that_took_it ... ok
+test a_delta_cut_lost_does_not_wait ... ok
+test a_give_up_between_two_whole_cuts_lost_does_not_end_the_waits ... ok
+test a_cut_found_committed_ends_the_whole_waits ... ok
+test a_mismatch_between_two_whole_cuts_lost_does_not_end_the_waits ... ok
+test a_publish_accepted_between_turns_is_taken_at_once ... ok
+test a_publish_after_another_took_the_lease_is_fenced_and_ends ... ok
+test a_publish_asked_before_the_lease_is_made_once_it_is_held ... ok
+test a_publish_is_made_during_a_whole_wait ... ok
+test a_publish_between_two_whole_cuts_lost_does_not_end_the_waits ... ok
+test a_publish_that_cannot_be_made_does_not_stop_the_cuts ... ok
+test a_publish_refused_again_and_again_is_waited_after ... ok
+test a_publish_past_its_deadline_or_withdrawn_is_dropped_and_no_cut_carries_it ... ok
+test a_publish_that_ends_leaves_no_wait_to_the_next ... ok
+test a_publish_whose_cut_the_store_kept_ends_refused ... ok
+test a_publishs_wait_wakes_the_uploader_while_the_cut_waits_longer ... ok
+test a_publish_whose_time_is_up_reads_expired_between_turns ... ok
+test a_publish_that_cannot_be_made_holds_up_no_other ... ok
+test a_renewal_that_finds_the_row_gone_loses_the_lease_and_takes_nothing ... ok
+test a_request_is_judged_against_the_cut_state_given_at_the_start ... ok
+test a_publish_that_fails_past_its_deadline_ends_expired_and_is_not_sent_again ... ok
+test a_put_that_fails_now_and_then_waits_a_second_each_time_and_the_cut_goes_up ... ok
+test a_slow_first_take_that_fails_is_tried_again_a_second_after_it_failed ... ok
+test a_request_whose_asker_gave_up_is_not_taken ... ok
+test a_step_that_ends_during_a_renewal_waits_for_it_and_counts_its_wait_from_its_own_end ... ok
+test a_store_out_of_reach_for_longer_than_the_lease_does_not_stop_the_uploads ... ok
+test a_slow_renewal_during_a_backoff_is_followed_by_what_is_left_of_the_wait ... ok
+test a_whole_cut_lost_at_its_sync_waits ... ok
+test a_whole_cut_gone_at_its_commit_waits ... ok
+test a_step_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal ... ok
+test an_idle_step_that_ends_during_a_renewal_counts_its_wait_from_its_own_end ... ok
+test an_idle_uploader_asks_again_after_a_quarter_second ... ok
+test an_idle_check_longer_than_two_thirds_of_the_lease_does_not_delay_its_renewal ... ok
+test another_holders_lease_stops_the_uploads_for_good ... ok
+test an_error_between_two_whole_cuts_lost_does_not_end_the_waits ... ok
+test no_lease_no_upload_and_the_cut_goes_up_once_the_lease_is_held ... ok
+test cut_steps_that_fail_slowly_slow_the_publishes_by_one_step_at_most ... ok
+test publishes_that_fail_slowly_hold_the_cut_back_for_one_step_at_most ... ok
+test one_publish_that_fails_slowly_slows_a_long_cut_to_half_its_pace_at_most ... ok
+test run_publishes_each_turn_sleeps_between_them_and_gives_back_the_lease ... ok
+test publishes_that_fail_slowly_slow_a_long_cut_by_one_step_at_most ... ok
+test run_stops_during_a_turn ... ok
+test run_with_answers_the_channels_requests_between_turns ... ok
+test the_channels_requests_do_not_hold_back_the_leases_renewal ... ok
+test the_lease_is_kept_every_third_of_its_time ... ok
+test the_uploads_go_on_while_the_lease_is_unsure ... ok
+test slow_steps_of_the_cut_slow_the_publishes_by_one_step_at_most ... ok
+test the_leases_row_never_lapses_in_the_whole_waits ... ok
+test a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_committed ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+   Doc-tests skynbd_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfs_upload
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit 0

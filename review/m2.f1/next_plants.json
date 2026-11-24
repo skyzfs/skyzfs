@@ -1,0 +1,110 @@
+[
+ {
+  "id": "unplanted B1 test",
+  "runs": 10,
+  "passed": 10
+ },
+ {
+  "id": "unplanted S2 test",
+  "runs": 5,
+  "passed": 5
+ },
+ {
+  "id": "unplanted S5 test",
+  "runs": 5,
+  "passed": 5
+ },
+ {
+  "id": "B1",
+  "what": "the old line: observe returns head as first read",
+  "verdict": "KILLED",
+  "failed": [
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it"
+  ],
+  "secs": 39,
+  "repeat": {
+   "test": "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it",
+   "runs": 5,
+   "failed": 5
+  }
+ },
+ {
+  "id": "B1H",
+  "what": "head is the engine's, head's group is from the first read (a row of version 1 or none under the race)",
+  "verdict": "SURVIVED",
+  "failed": [],
+  "secs": 41
+ },
+ {
+  "id": "B1R",
+  "what": "control, a fix of another shape: the old line, and the check observes again where not current",
+  "verdict": "SURVIVED",
+  "failed": [],
+  "secs": 42,
+  "repeat": {
+   "test": "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it",
+   "runs": 3,
+   "failed": 0
+  }
+ },
+ {
+  "id": "CT",
+  "what": "current always true in the last Observed",
+  "verdict": "SURVIVED",
+  "failed": [],
+  "secs": 41
+ },
+ {
+  "id": "CD",
+  "what": "current true in the branch of an engine left behind head with writes",
+  "verdict": "KILLED",
+  "failed": [
+   "a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up"
+  ],
+  "secs": 38
+ },
+ {
+  "id": "PSa",
+  "what": "the commit's retry hands on no commit for a cut the row names",
+  "verdict": "KILLED",
+  "failed": [
+   "a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish",
+   "a_failure_at_any_operation_leaves_no_ref_or_a_whole_one",
+   "the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish"
+  ],
+  "secs": 21
+ },
+ {
+  "id": "PSb",
+  "what": "an engine left behind head reports its own commit as head (the retry compares the row with it)",
+  "verdict": "KILLED",
+  "failed": [
+   "a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish",
+   "a_failure_at_any_operation_leaves_no_ref_or_a_whole_one",
+   "the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish"
+  ],
+  "secs": 22
+ },
+ {
+  "id": "PSc",
+  "what": "the commit's retry hands on head only where the engine is current",
+  "verdict": "KILLED",
+  "failed": [
+   "a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish",
+   "a_failure_at_any_operation_leaves_no_ref_or_a_whole_one",
+   "the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish"
+  ],
+  "secs": 22
+ },
+ {
+  "id": "V1W",
+  "what": "under a row of version 1 no whole cut goes up (the upgrade stops)",
+  "verdict": "KILLED",
+  "failed": [
+   "after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2",
+   "check::tests::a_whole_cut_is_uploaded_onto_the_rows_commit_whatever_the_row_names",
+   "the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish"
+  ],
+  "secs": 41
+ }
+]

@@ -1,0 +1,13 @@
+# Plants at 75bed3f (next_plants.py): first the three new tests again and again, unplanted; then each plant alone, its suite (cargo test --no-fail-fast -p skyzfs-upload), and for B1 and B1R the B1 test again and again.
+unplanted B1 test: 10 of 10 passed
+unplanted S2 test: 5 of 5 passed
+unplanted S5 test: 5 of 5 passed
+B1 KILLED 1 ['head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it'] 39 repeat {'test': 'head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it', 'runs': 5, 'failed': 5}
+B1H SURVIVED 0 [] 41
+B1R SURVIVED 0 [] 42 repeat {'test': 'head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it', 'runs': 3, 'failed': 0}
+CT SURVIVED 0 [] 41
+CD KILLED 1 ['a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up'] 38
+PSa KILLED 3 ['a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish', 'a_failure_at_any_operation_leaves_no_ref_or_a_whole_one', 'the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish'] 21
+PSb KILLED 3 ['a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish', 'a_failure_at_any_operation_leaves_no_ref_or_a_whole_one', 'the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish'] 22
+PSc KILLED 3 ['a_cut_found_committed_on_head_moved_and_moved_back_carries_its_publish', 'a_failure_at_any_operation_leaves_no_ref_or_a_whole_one', 'the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish'] 22
+V1W KILLED 3 ['after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2', 'check::tests::a_whole_cut_is_uploaded_onto_the_rows_commit_whatever_the_row_names', 'the_upgrades_whole_cut_after_a_lost_reply_carries_its_publish'] 41

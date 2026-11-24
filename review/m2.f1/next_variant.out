@@ -1,0 +1,17 @@
+# The review's variant (next_variant.rs) appended to tests/driver.rs in a worktree at 75bed3f, three runs at the head, with B1H planted, and with B1 planted (next_variant.sh).
+at the head run 1: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+at the head run 2: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+at the head run 3: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+B1H sites now: 1
+B1H planted run 1: exit 101: thread 'review_variant_race_at_the_first_cut_with_no_row' (13951) panicked at crates/skyzfs-upload/tests/driver.rs:1301:17: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s 
+B1H planted run 2: exit 101: thread 'review_variant_race_at_the_first_cut_with_no_row' (13974) panicked at crates/skyzfs-upload/tests/driver.rs:1301:17: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s 
+B1H planted run 3: exit 101: thread 'review_variant_race_at_the_first_cut_with_no_row' (13997) panicked at crates/skyzfs-upload/tests/driver.rs:1301:17: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s 
+B1 sites now: 1
+B1 planted run 1: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+B1 planted run 2: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+B1 planted run 3: exit 0: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s 
+exit 0
+# One more run with B1H planted, for the failure's message:
+assertion `left == right` failed: the other writer's group Some(5): cut 1 is not uploaded onto a commit with a group
+  left: [Began { number: 1, rule: Whole }, Uploaded { number: 1, rule: Whole, blocks: 256 }]
+ right: [Mismatch { why: HeadMoved, abandoned: [1] }]
