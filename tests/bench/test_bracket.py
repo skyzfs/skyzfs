@@ -263,6 +263,18 @@ class AnUploadRow(unittest.TestCase):
             k = uploading()
             k['before'], k['after'] = before, after
             self.assertEqual(bk.one_server(k), 'no serving daemon at an end', (before, after))
+        # Review of #132, D8: a live device whose status file could not be
+        # read prints `state serving` and no pid: status not read. A
+        # server gone says another state.
+        live = {'read_at_ns': '2000', 'state': 'serving', 'device': '/dev/ublkb4', 'queues': '1', 'depth': '64'}
+        waiting = dict(live, state='waiting_for_a_server')
+        for before, after, said in (({'pid': '4242'}, live, 'status not read'), (live, live, 'status not read'),
+                                    (live, {}, 'status not read'),
+                                    ({'pid': '4242'}, waiting, 'no serving daemon at an end'),
+                                    (live, waiting, 'no serving daemon at an end')):
+            k = uploading()
+            k['before'], k['after'] = before, after
+            self.assertEqual(bk.one_server(k), said, (before, after))
 
     def test_an_epoch_that_is_not_a_number(self):
         """Review's D1 on #128: an epoch unread at both ends is no one epoch."""
@@ -412,7 +424,7 @@ class ASeedInTheWindow(unittest.TestCase):
                 del k['released_here']
             b = self.judge(k)
             self.assert_no_verdict(b, 'it did not hold the lease for the whole window',
-                                   'its window did not let MinIO go')
+                                   'its window is not marked as the one that let MinIO go')
             self.assertIsNone(bk.seed_in_window(dict(skyzfsd=k)))
 
     def test_a_row_not_let_go_at_its_window_keeps_the_plain_rule(self):
