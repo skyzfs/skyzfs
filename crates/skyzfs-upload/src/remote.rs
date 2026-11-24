@@ -78,11 +78,13 @@ impl From<StoreError> for RemoteError {
 pub struct Observed {
     /// The row's bytes; `None` where there is no row.
     pub row: Option<Vec<u8>>,
-    /// The group of head's commit as read now, `None` for a commit with
-    /// none. Where the engine is left behind head (not `current`), it is
-    /// read from head's commit object, not taken from the engine. The
-    /// check reads it only under a row of version 1, which names no
-    /// commit, or no row.
+    /// The group of the commit in `head`, `None` for a commit with none:
+    /// the engine's own where it is open (at head, or opened again), so
+    /// that the group judged is that of the commit judged (L1 of the
+    /// review of #134). Where the engine is left behind head (the branch
+    /// with writes), it is read from that commit's object, not taken from
+    /// the engine. The check reads it only under a row of version 1,
+    /// which names no commit, or no row.
     pub head_group: Option<u64>,
     /// Whether the engine is open at head as read now. An engine with no
     /// writes is opened again where head has moved, so only one with

@@ -1271,3 +1271,64 @@ async fn head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_f
         );
     }
 }
+
+/// L1 of the review of #134: B1's race at cut 1, where there is no row.
+/// The check reads head's group only where no row names a commit, and
+/// must read it from the commit the engine sits on, as it reads the
+/// commit. Another writer swaps head between the check's read and the
+/// engine's. A commit of its with a group stops the whole cut: head is
+/// moved (`HeadMoved`), and head and the absent row stay as that writer
+/// left them. A commit of its with no group takes the cut, which goes up
+/// whole onto it, as the engine's head swap expects.
+#[tokio::test]
+async fn head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found() {
+    for (seed, group) in [(93, Some(5)), (94, None)] {
+        let case = format!("the other writer's group {group:?}");
+        let mut fx = Fixture::new(seed).await;
+        let mut store = fx.start();
+        fx.write(&mut store, 10, 0x10);
+        fx.group(&mut store, 7);
+        let refs = Swapping::new(&fx);
+        refs.after_the_next_read(group);
+        let remote =
+            skyzfs_upload::EngineRemote::new(fx.store.clone(), refs.clone(), fx.vol, cfg());
+        let mut up = Driver::with_slices(store, remote, 64);
+        let steps = up.run().await.expect("cut 1");
+        assert!(!refs.pending(), "{case}: the other writer swapped head");
+        if group.is_some() {
+            assert_eq!(
+                told(&steps),
+                [Step::Mismatch {
+                    why: Mismatch::HeadMoved,
+                    abandoned: vec![1]
+                }],
+                "{case}: cut 1 is not uploaded onto a commit with a group"
+            );
+            let moved = fx.uploaded().await;
+            assert_eq!(moved.group, group, "{case}: head is the other writer's");
+            assert_eq!(moved.row, None, "{case}: still no row");
+            assert_eq!(
+                moved.content[..BLOCK as usize],
+                [0xCD; BLOCK as usize],
+                "{case}"
+            );
+        } else {
+            assert_eq!(
+                told(&steps),
+                [
+                    Step::Began {
+                        number: 1,
+                        rule: Rule::Whole
+                    },
+                    Step::Uploaded {
+                        number: 1,
+                        rule: Rule::Whole,
+                        blocks: BLOCKS
+                    }
+                ],
+                "{case}"
+            );
+            fx.assert_uploaded(7, &case).await;
+        }
+    }
+}
