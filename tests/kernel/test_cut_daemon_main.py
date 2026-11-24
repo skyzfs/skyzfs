@@ -889,9 +889,11 @@ class Main(unittest.TestCase):
 OTHER_HEAD = 'ee' * 32
 
 
-def row_file(cut, head='cd' * 32, lease=('runner', 1)):
-    """node B's `row` output naming cut (state, number, group) or none."""
+def row_file(cut, head='cd' * 32, lease=('runner', 1), commit=None):
+    """node B's `row` output naming cut (state, number, group) or none;
+    with commit (hex or 'none') also the row's commit line (F1)."""
     return (f'head\t{head}\t7\n' + (f'row\t{cut[0]}\t{cut[1]}\t{cut[2]}\n' if cut else 'row\tnone\n')
+            + (f'row_commit\t{commit}\n' if commit else '')
             + (f'lease\t{lease[0]}\t{lease[1]}\t99\n' if lease else 'lease\tnone\n'))
 
 
@@ -930,6 +932,42 @@ class Courses(unittest.TestCase):
             cdc.daemons_fetches(got, '7\t1\t0\t' + a + '\n', others)
         with self.assertRaises(cdc.RigError):
             cdc.daemons_fetches(got, '1\t2\t0\t' + a + '\n', others)
+
+    def test_a_row_of_version_1_over_the_daemons_cut(self):
+        """uv1: the fetch of the daemon's cut under the row of version 1
+        another writer wrote over it (same cut, same head, no commit) is
+        skipped, and the daemon's own fetch of that cut is kept; a fetch
+        of that cut with a commit is the daemon's."""
+        h = 'aa' * 32
+        got = [{'number': 1, 'group': 10, 'state': STATE, 'head': h, 'commit': h},
+               {'number': 1, 'group': 10, 'state': STATE, 'head': h, 'commit': None},
+               {'number': 2, 'group': 11, 'state': STATE, 'head': 'bb' * 32, 'commit': 'bb' * 32}]
+        a, b = '1' * 16, '2' * 16
+        text = f'0\t1\t0\t{a}\n2\t2\t1\t{b}\n'
+        others = cdc.read_others(f'v1\t{STATE}\t1\t10\n')
+        self.assertEqual(others, (set(), set(), {(STATE, 1, 10)}))
+        written, blocks, skipped, twice, _ = cdc.daemons_fetches(got, text, others)
+        self.assertEqual(([w['number'] for w in written], skipped, twice), ([1, 2], 1, set()))
+        self.assertEqual(blocks, {1: {0: a}, 2: {1: b}})
+        # Without the v1 line the second fetch is cut 1 at head twice.
+        self.assertEqual(cdc.daemons_fetches(got, text, (set(), set()))[3], {1})
+        # The daemon's own fetch, with a commit, is not skipped by the line.
+        self.assertEqual(cdc.daemons_fetches(got[:1] + got[2:], text.replace('2\t2', '1\t2'), others)[2], 0)
+        self.assertEqual(cdc.row_commits_off_head(got, others), [])
+        for bad in (f'v1\t{STATE}\t1\n', f'v2\t{STATE}\t1\t10\n', f'v1\t{STATE}\tx\t10\n'):
+            with self.assertRaises(cdc.RigError):
+                cdc.read_others(bad)
+
+    def test_the_rows_commit_node_b_prints(self):
+        """read_row reads node B's row_commit line, hex or none, and a
+        node B from before F1 that prints none of it."""
+        cut = (STATE, 5, 40)
+        self.assertIsNone(cdc.read_row(row_file(cut), 'x')['commit'])
+        self.assertIsNone(cdc.read_row(row_file(cut, commit='none'), 'x')['commit'])
+        self.assertEqual(cdc.read_row(row_file(cut, commit='ab' * 32), 'x')['commit'], 'ab' * 32)
+        for bad in ('ab', 'ab' * 32 + '\tx'):
+            with self.assertRaises(cdc.RigError):
+                cdc.read_row(row_file(cut, commit=bad), 'x')
 
     def test_a_rows_commit_against_head(self):
         """A row of version 2 (F1) of the daemon's names the commit at head
@@ -1023,6 +1061,37 @@ class Courses(unittest.TestCase):
         self.assertEqual(self.judge('urow', rows, dict(good, upload_checked='not_the_base'))[0], ['upload_checked'])
         other = dict(rows, **{'end-row.txt': row_file(('ef' * 16, 9, 44))})
         self.assertEqual(len(self.judge('urow', other, good)[1]), 1)
+
+        h, e = 'cd' * 32, 'ee' * 32
+        v1 = {'v1-row.txt': row_file(cut, head=h, commit=h),
+              'end-row.txt': row_file((STATE, 8, 43), head=e, commit=e),
+              'others.tsv': f'v1\t{STATE}\t5\t40\n', 'v1-after.txt': 'upload_checked row_v1\n'}
+        good = dict(st, upload_mismatches='1', upload_abandoned_at_mismatch='2', uploaded_whole='2')
+        wrong, bad, notes = self.judge('uv1', v1, good)
+        self.assertEqual((wrong, bad), ([], []))
+        self.assertIn("v1: upload_checked 'row_v1'", notes[0])
+        # Once the mismatch is counted: row_v1, or matched where the whole
+        # cut after it was checked already; head_moved or nothing is not
+        # this course's mismatch.
+        self.assertEqual(self.judge('uv1', dict(v1, **{'v1-after.txt': 'upload_checked matched\n'}), good)[:2],
+                         ([], []))
+        for kind in ('upload_checked head_moved\n', 'upload_checked not_the_base\n', ''):
+            self.assertEqual(len(self.judge('uv1', dict(v1, **{'v1-after.txt': kind}), good)[1]), 1, kind)
+        self.assertEqual(self.judge('uv1', v1, dict(good, uploaded_whole='1'))[0], ['uploaded_whole'])
+        self.assertEqual(self.judge('uv1', v1, dict(good, upload_mismatches='0'))[0], ['upload_mismatches'])
+        self.assertEqual(self.judge('uv1', v1, dict(good, upload_checked='head_moved'))[0], ['upload_checked'])
+        # The daemon wrote a row of version 1 before the act, or one whose
+        # commit is not head's.
+        for first in (row_file(cut, head=h), row_file(cut, head=h, commit='none'),
+                      row_file(cut, head=h, commit=e)):
+            self.assertEqual(len(self.judge('uv1', dict(v1, **{'v1-row.txt': first}), good)[1]), 1, first)
+        # At the end: the row still the version 1 one, the same cut in
+        # version 2 (no later cut went up), another state's cut, a row of
+        # version 1, or a commit that is not head's.
+        for end in (row_file(cut, head=h), row_file(cut, head=h, commit=h), row_file(('ef' * 16, 8, 43), head=e, commit=e),
+                    row_file((STATE, 8, 43), head=e), row_file((STATE, 8, 43), head=e, commit=h)):
+            self.assertTrue(self.judge('uv1', dict(v1, **{'end-row.txt': end}), good)[1], end)
+        self.assertEqual(len(self.judge('uv1', dict(v1, **{'others.tsv': ''}), good)[1]), 1)
 
         hook = ('skyzfsd: test hook --kill-at-upload: killed after the swap of commit 3 (group 30) landed, '
                 'before its cut was let go\n')

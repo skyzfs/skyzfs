@@ -22,15 +22,15 @@ suffix).
   manifests, the rig's upload files or this workflow (UPLOAD_PATHS; the
   lead's decisions on the reviews of #119, G7 and F4), one job more on
   ubuntu-26.04
-  with courses (a) to (d) (PR_UPLOAD_RECORDINGS). Courses (e) to (g)
-  run by dispatch only.
+  with courses (a) to (d) and uv1 (PR_UPLOAD_RECORDINGS). Courses (e)
+  to (g) run by dispatch only.
 """
 import json
 import sys
 
 PR_IMAGES = ['ubuntu-26.04', 'ubuntu-26.04-arm']
 PR_UPLOAD_IMAGE = 'ubuntu-26.04'
-PR_UPLOAD_RECORDINGS = 'life umoved urow ukill ulease ulost'
+PR_UPLOAD_RECORDINGS = 'life umoved urow ukill ulease ulost uv1'
 UPLOAD_PATHS = (
     'crates/skyzfs-upload/',
     'bins/skyzfsd/',

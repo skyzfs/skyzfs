@@ -95,9 +95,10 @@
 # `cuts_held 0`; DIR/drain.txt says how it ended), then the watcher
 # fetches head once more and ends. Its files (DIR/uploaded*.tsv,
 # rows.tsv, watch.log) are for the check's upload lines.
-# The recordings umoved, urow, ukill, ulease and ulost are made only
-# then: the uploader beside another writer, a kill between a commit and
-# its cut's release, and the lease (the upload courses, below rec_failed).
+# The recordings umoved, urow, ukill, ulease, ulost and uv1 are made
+# only then: the uploader beside another writer, a kill between a commit
+# and its cut's release, the lease, and a row of version 1 (the upload
+# courses, below rec_failed).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -162,9 +163,9 @@ S3_DOWN=${CUT_S3_DOWN:-}
 S3_UP=${CUT_S3_UP:-}
 [ "$SERVER" != daemon ] || [ "$HOLD" != 1 ] || ALL="$ALL $HELD_ONLY"
 # Only where the daemon uploads (CUT_UPLOAD=1): the uploader beside
-# another writer, a kill between a commit and its release, and the lease
-# (M2.4c; the courses below).
-UPLOAD_ONLY="umoved urow ukill ulease ulost"
+# another writer, a kill between a commit and its release, the lease
+# (M2.4c; the courses below), and a row of version 1 (F1).
+UPLOAD_ONLY="umoved urow ukill ulease ulost uv1"
 # By name only, until they have run stable: object storage down at the
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
@@ -1112,6 +1113,23 @@ rec_urow() {
     export_pool
     nbrow end-row.txt
 }
+# uv1: another writer writes the daemon's row again in version 1 (F1):
+# the same cut, no commit, head left alone. A row of version 1 does not
+# say that head is its commit, so the next delta is a mismatch
+# (row_v1, #134) and the next cut goes up whole, writing a row of version 2
+# that names its commit. Node B's set-row with the form v1:S:N:G
+# writes it (#134); a node B without that form fails the act, which is
+# the rig's error.
+rec_uv1() {
+    create_pool
+    load 2
+    other_act v1 act_v1
+    nudge_until v1-after.txt upload_mismatches 1 120 || true
+    nudge_until v1-whole.txt uploaded_whole 2 120 || true
+    load 1
+    export_pool
+    nbrow end-row.txt
+}
 # STEP ACT: the other writer's act on the row it read. before_other STEP
 # reads the row once the daemon is at rest; ACT STATE NUMBER GROUP acts
 # on that row with node B's --expect-row and returns 6 where the row had
@@ -1160,6 +1178,13 @@ act_move() {
 # daemon's state with a number five past the one it committed.
 act_row1() { other_row "$(printf '%032x' $((0x5eed)))" "$2" "$3" "$1:$2:$3"; }
 act_row2() { other_row "$1" $(($2 + 5)) "$3" "$1:$2:$3"; }
+# uv1's act: the row node B read, written again in version 1.
+act_v1() {
+    guarded set-row.txt "$1:$2:$3" set-row --row "v1:$1:$2:$3" || return 6
+    grep -qx $'row_commit\tnone' "$RDIR/set-row.txt" \
+        || rig_error "node B's set-row of v1:$1:$2:$3 did not say row_commit none: $(tr '\t\n' '  ' < "$RDIR/set-row.txt")"
+    printf 'v1\t%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RDIR/others.tsv"
+}
 other_row() { # state number group expected-row
     guarded set-row.txt "$4" set-row --row "$1:$2:$3" || return 6
     printf 'row\t%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RDIR/others.tsv"

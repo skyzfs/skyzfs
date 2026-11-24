@@ -45,7 +45,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound boundsparse edges takeover failed; with upload: umoved urow ukill ulease ulost, and by name only unostore ukillput ufailed); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound boundsparse edges takeover failed; with upload: umoved urow ukill ulease ulost uv1, and by name only unostore ukillput ufailed); empty: all"
         default: ""
       hold:
         description: "serve with --hold-cuts and check the held cuts' content (the second stage); ignored with upload"
