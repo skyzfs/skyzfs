@@ -12,7 +12,7 @@
 //! skyzfs-nodeb lease --endpoint URL --bucket B --volume NAME --holder H --ttl-s N
 //! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
 //! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--expect-row ROW]
-//! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row STATE:NUMBER:GROUP|none|hex:BYTES [--expect-row ROW]
+//! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row ROW [--expect-row ROW]
 //! ```
 //!
 //! The keys are `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The
@@ -31,7 +31,10 @@
 //!   `head HEX GEN` or `head none`, then the cut's row that the daemon's
 //!   uploader writes with each head swap (the meta row `skyzfs/cut`,
 //!   `skyzfs-upload`'s row.rs): `row STATE NUMBER GROUP` for a row of
-//!   version 1, `row none`, or `row unreadable HEX`. The two are read
+//!   version 1 or 2, `row none`, or `row unreadable HEX`, then
+//!   `row_commit HEX`, the commit a row of version 2 names (F1: the
+//!   commit whose head swap wrote it), or `row_commit none` for any
+//!   other row. Head and the row are read
 //!   one after the other, not together: a reader that wants them to
 //!   agree reads them again around what it does. Then the volume's
 //!   lease: `lease HOLDER EPOCH EXPIRES_UNIX_MS` or `lease none`.
@@ -51,17 +54,29 @@
 //!   0x5a bytes at OFFSET (a multiple of 4096), sets the commit's group
 //!   to G or none, and commits: head moves, the row does not;
 //!   `head HEX`;
-//! - `set-row`: puts the cut's row (version 1, from a state of 32 hex
-//!   digits, a number and a group), deletes it (`none`), or puts BYTES
-//!   as they are (`hex:...`, a row the uploader cannot read); head
-//!   does not move.
+//! - `set-row`: puts the cut's row, deletes it, or puts bytes, and
+//!   prints `row set ROW` and `row_commit HEX` (`row_commit none` for a
+//!   row with no commit); head does not move. ROW is one of
+//!   - `STATE:NUMBER:GROUP` (a state of 32 hex digits, a number and a
+//!     group): version 2, naming the commit head holds when node B reads
+//!     it, as the uploader names the commit of its head swap;
+//!   - `STATE:NUMBER:GROUP:COMMIT`: version 2 naming COMMIT (64 hex
+//!     digits);
+//!   - `v1:STATE:NUMBER:GROUP`: version 1, which names no commit (a row
+//!     from before F1);
+//!   - `none`: no row; `hex:BYTES`: BYTES as they are (a row the
+//!     uploader cannot read).
 //!
-//! With `--expect-row ROW` (as `--row` writes it, `none` for no row),
-//! `move-head` and `set-row` act only while the row is ROW, in the same
-//! transaction as their write: a daemon that committed a cut since the
-//! caller read the row moved the row with its head, and the command
-//! changes nothing, prints `row moved`, and ends with 6. The caller reads
-//! again and acts on what it finds (the review of #119, G2).
+//! With `--expect-row ROW` (`none` for no row), `move-head` and
+//! `set-row` act only while the row is ROW: `STATE:NUMBER:GROUP` holds
+//! for a row of either version with that cut (the rig reads a row's cut
+//! from `row` and passes it on), the other forms for exactly the row
+//! `--row` would write. Node B reads the row, and where it holds, its
+//! write holds the row at the bytes it read, in the same transaction: a
+//! daemon that committed a cut since the caller read the row moved the
+//! row with its head, and the command changes nothing, prints `row
+//! moved`, and ends with 6. The caller reads again and acts on what it
+//! finds (the review of #119, G2).
 //!
 //! Exit 0: done. Exit 6: `--expect-row` did not hold. Exit 3: `get` found no such ref. Exit 4: `get` found
 //! the ref and the bucket does not hold its content: an object it needs
@@ -307,30 +322,190 @@ async fn list(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The cut's row among the refs object's meta rows, and the length of
-/// its version 1 (`skyzfs-upload`'s `ROW_KEY` and `ROW_LEN`: version u16,
-/// the cut state's name 16 bytes, the cut's number and group u64, all
-/// little endian).
+/// The cut's row among the refs object's meta rows (`skyzfs-upload`'s
+/// `ROW_KEY`, row.rs): version u16, the cut state's name 16 bytes, the
+/// cut's number and group u64, all little endian (version 1, 34 bytes),
+/// and in version 2 (66 bytes, F1) the hash of the commit whose head swap
+/// wrote the row after them.
 const ROW_KEY: &str = "skyzfs/cut";
-const ROW_LEN: usize = 34;
+const ROW_LEN_V1: usize = 34;
+const ROW_LEN_V2: usize = 66;
 
-fn row_line(bytes: Option<&[u8]>) -> String {
-    let Some(b) = bytes else {
-        return "row\tnone".to_string();
+/// A row node B can read: its cut, and its commit where it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowCut {
+    state: [u8; 16],
+    number: u64,
+    group: u64,
+    commit: Option<[u8; 32]>,
+}
+
+/// A row's bytes -> its cut, for version 1 and 2; None for anything else.
+fn decode_row(b: &[u8]) -> Option<RowCut> {
+    let v2 = match (b.len(), b.get(..2)) {
+        (ROW_LEN_V1, Some([1, 0])) => false,
+        (ROW_LEN_V2, Some([2, 0])) => true,
+        _ => return None,
     };
-    if b.len() != ROW_LEN || b[..2] != 1u16.to_le_bytes() {
-        return format!("row\tunreadable\t{}", hex(b));
-    }
+    let mut state = [0u8; 16];
     let mut n = [0u8; 8];
     let mut g = [0u8; 8];
+    state.copy_from_slice(&b[2..18]);
     n.copy_from_slice(&b[18..26]);
     g.copy_from_slice(&b[26..34]);
-    format!(
-        "row\t{}\t{}\t{}",
-        hex(&b[2..18]),
-        u64::from_le_bytes(n),
-        u64::from_le_bytes(g)
-    )
+    let commit = v2.then(|| {
+        let mut c = [0u8; 32];
+        c.copy_from_slice(&b[34..66]);
+        c
+    });
+    Some(RowCut {
+        state,
+        number: u64::from_le_bytes(n),
+        group: u64::from_le_bytes(g),
+        commit,
+    })
+}
+
+fn encode_row(c: &RowCut) -> Vec<u8> {
+    let version: u16 = if c.commit.is_some() { 2 } else { 1 };
+    let mut b = version.to_le_bytes().to_vec();
+    b.extend_from_slice(&c.state);
+    b.extend_from_slice(&c.number.to_le_bytes());
+    b.extend_from_slice(&c.group.to_le_bytes());
+    if let Some(h) = c.commit {
+        b.extend_from_slice(&h);
+    }
+    b
+}
+
+/// `row`'s lines for the row: `row STATE NUMBER GROUP` for either
+/// version (`row none`, `row unreadable HEX`), then `row_commit HEX` for
+/// a row of version 2 and `row_commit none` for any other.
+fn row_line(bytes: Option<&[u8]>) -> String {
+    let Some(b) = bytes else {
+        return "row\tnone\nrow_commit\tnone".to_string();
+    };
+    match decode_row(b) {
+        Some(c) => format!(
+            "row\t{}\t{}\t{}\nrow_commit\t{}",
+            hex(&c.state),
+            c.number,
+            c.group,
+            c.commit.map_or("none".to_string(), |h| hex(&h))
+        ),
+        None => format!("row\tunreadable\t{}\nrow_commit\tnone", hex(b)),
+    }
+}
+
+/// A row as `--row` and `--expect-row` name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowSpec {
+    /// `none`: no row.
+    Absent,
+    /// `hex:BYTES`: these bytes, whatever they hold.
+    Bytes(Vec<u8>),
+    /// `STATE:NUMBER:GROUP`: as `--row`, version 2 with the commit head
+    /// holds when node B reads it; as `--expect-row`, a row of either
+    /// version with this cut.
+    Cut([u8; 16], u64, u64),
+    /// `STATE:NUMBER:GROUP:COMMIT`: version 2 with this commit.
+    WithCommit(RowCut),
+    /// `v1:STATE:NUMBER:GROUP`: version 1, which names no commit.
+    V1(RowCut),
+}
+
+fn row_spec(v: &str) -> Result<RowSpec, String> {
+    if v == "none" {
+        return Ok(RowSpec::Absent);
+    }
+    if let Some(h) = v.strip_prefix("hex:") {
+        return unhex(h).map(RowSpec::Bytes);
+    }
+    let (v1, rest) = match v.strip_prefix("v1:") {
+        Some(r) => (true, r),
+        None => (false, v),
+    };
+    let f: Vec<&str> = rest.split(':').collect();
+    let (state, n, g, commit) = match f[..] {
+        [s, n, g] => (s, n, g, None),
+        [s, n, g, c] if !v1 => (s, n, g, Some(c)),
+        _ => {
+            return Err(format!(
+                "--row {v}: expected [v1:]STATE:NUMBER:GROUP, STATE:NUMBER:GROUP:COMMIT, none or hex:BYTES"
+            ))
+        }
+    };
+    let state: [u8; 16] = unhex(state)?
+        .try_into()
+        .map_err(|_| format!("--row {v}: the state is 16 bytes"))?;
+    let (number, group) = (number("--row's number", n)?, number("--row's group", g)?);
+    let commit = commit
+        .map(|c| {
+            unhex(c)?
+                .try_into()
+                .map_err(|_| format!("--row {v}: the commit is 32 bytes"))
+        })
+        .transpose()?;
+    let cut = RowCut {
+        state,
+        number,
+        group,
+        commit,
+    };
+    Ok(match (v1, commit) {
+        (true, _) => RowSpec::V1(cut),
+        (false, Some(_)) => RowSpec::WithCommit(cut),
+        (false, None) => RowSpec::Cut(state, number, group),
+    })
+}
+
+/// `--row`'s spec -> the bytes to put (None: delete the row), head
+/// being the commit head holds, for `STATE:NUMBER:GROUP`.
+fn row_value(spec: &RowSpec, head: Option<[u8; 32]>) -> Result<Option<Vec<u8>>, String> {
+    Ok(match spec {
+        RowSpec::Absent => None,
+        RowSpec::Bytes(b) => Some(b.clone()),
+        RowSpec::WithCommit(c) | RowSpec::V1(c) => Some(encode_row(c)),
+        RowSpec::Cut(state, number, group) => Some(encode_row(&RowCut {
+            state: *state,
+            number: *number,
+            group: *group,
+            commit: Some(
+                head.ok_or("--row STATE:NUMBER:GROUP names head's commit, and there is no head")?,
+            ),
+        })),
+    })
+}
+
+/// Does the row now (its bytes, None for no row) hold as `--expect-row`
+/// names it?
+fn row_holds(spec: &RowSpec, now: Option<&[u8]>) -> bool {
+    match (spec, now) {
+        (RowSpec::Absent, now) => now.is_none(),
+        (_, None) => false,
+        (RowSpec::Bytes(b), Some(n)) => b.as_slice() == n,
+        (RowSpec::WithCommit(c) | RowSpec::V1(c), Some(n)) => encode_row(c) == n,
+        (RowSpec::Cut(s, num, g), Some(n)) => {
+            decode_row(n).is_some_and(|c| (c.state, c.number, c.group) == (*s, *num, *g))
+        }
+    }
+}
+
+/// `--expect-row` against the row as node B reads it now -> the row's
+/// bytes (None for no row) where it holds, for the guard of the write
+/// (the same transaction as the write holds the row at these bytes, so a
+/// row that moves after this read still stops the write); None where it
+/// does not hold now.
+async fn expected_row<S: ObjectStore + Clone + 'static>(
+    refs: &ObjectRefStore<S>,
+    vol: VolumeId,
+    spec: &RowSpec,
+) -> Result<Option<Option<Vec<u8>>>, String> {
+    let now = refs
+        .meta_get(vol, ROW_KEY)
+        .await
+        .map_err(|e| format!("meta {ROW_KEY}: {e}"))?;
+    Ok(row_holds(spec, now.as_deref()).then_some(now))
 }
 
 async fn row(a: &Args) -> Result<(), String> {
@@ -362,31 +537,6 @@ async fn row(a: &Args) -> Result<(), String> {
 
 fn number(name: &str, v: &str) -> Result<u64, String> {
     v.parse().map_err(|_| format!("{name} {v}: not a number"))
-}
-
-/// `--row`'s value -> the bytes to put, or None to delete the row.
-fn row_bytes(v: &str) -> Result<Option<Vec<u8>>, String> {
-    if v == "none" {
-        return Ok(None);
-    }
-    if let Some(h) = v.strip_prefix("hex:") {
-        return unhex(h).map(Some);
-    }
-    let f: Vec<&str> = v.split(':').collect();
-    let [state, n, g] = f[..] else {
-        return Err(format!(
-            "--row {v}: expected STATE:NUMBER:GROUP, none or hex:BYTES"
-        ));
-    };
-    let state = unhex(state)?;
-    if state.len() != 16 {
-        return Err(format!("--row {v}: the state is 16 bytes"));
-    }
-    let mut b = 1u16.to_le_bytes().to_vec();
-    b.extend_from_slice(&state);
-    b.extend_from_slice(&number("--row's number", n)?.to_le_bytes());
-    b.extend_from_slice(&number("--row's group", g)?.to_le_bytes());
-    Ok(Some(b))
 }
 
 fn unhex(h: &str) -> Result<Vec<u8>, String> {
@@ -445,9 +595,17 @@ async fn move_head(a: &Args) -> Result<u8, String> {
         "none" => None,
         g => Some(number("--group", g)?),
     };
-    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
+    let expect = a.expect_row.as_deref().map(row_spec).transpose()?;
     let (store, refs) = open(a).await?;
-    let moved = move_head_on(store, refs, volume_id(&a.volume), at, group, expect).await?;
+    let vol = volume_id(&a.volume);
+    let expect = match expect {
+        None => None,
+        Some(spec) => match expected_row(&refs, vol, &spec).await? {
+            Some(now) => Some(now),
+            None => return Ok(report(None::<()>, |()| {})),
+        },
+    };
+    let moved = move_head_on(store, refs, vol, at, group, expect).await?;
     Ok(report(moved, |head| println!("head\t{}", hex(&head))))
 }
 
@@ -511,12 +669,34 @@ async fn move_head_on<S: ObjectStore + Clone + 'static>(
 }
 
 async fn set_row(a: &Args) -> Result<u8, String> {
-    let bytes = row_bytes(&a.row)?;
-    let expect = a.expect_row.as_deref().map(row_bytes).transpose()?;
+    let spec = row_spec(&a.row)?;
+    let expect = a.expect_row.as_deref().map(row_spec).transpose()?;
     let (_, refs) = open(a).await?;
-    let set = set_row_on(&refs, volume_id(&a.volume), bytes, expect).await?;
+    let vol = volume_id(&a.volume);
+    let head = match spec {
+        RowSpec::Cut(..) => refs
+            .get(vol, "head")
+            .await
+            .map_err(|e| format!("refs: {e}"))?
+            .map(|v| v.commit),
+        _ => None,
+    };
+    let bytes = row_value(&spec, head)?;
+    let expect = match expect {
+        None => None,
+        Some(spec) => match expected_row(&refs, vol, &spec).await? {
+            Some(now) => Some(now),
+            None => return Ok(report(None::<()>, |()| {})),
+        },
+    };
+    let commit = bytes
+        .as_deref()
+        .and_then(decode_row)
+        .and_then(|c| c.commit)
+        .map_or("none".to_string(), |h| hex(&h));
+    let set = set_row_on(&refs, vol, bytes, expect).await?;
     Ok(report(set.then_some(()), |()| {
-        println!("row\tset\t{}", a.row)
+        println!("row\tset\t{}\nrow_commit\t{commit}", a.row)
     }))
 }
 
@@ -710,37 +890,141 @@ mod tests {
         assert!(runs(&vec![0u8; 3 * BLOCK]).is_empty());
     }
 
-    #[test]
-    fn the_cut_row_is_read_as_the_uploader_writes_it() {
-        assert_eq!(row_line(None), "row\tnone");
-        let mut b = 1u16.to_le_bytes().to_vec();
+    fn cut_bytes(version: u16, commit: Option<[u8; 32]>) -> Vec<u8> {
+        let mut b = version.to_le_bytes().to_vec();
         b.extend_from_slice(&[0xab; 16]);
         b.extend_from_slice(&7u64.to_le_bytes());
         b.extend_from_slice(&4242u64.to_le_bytes());
+        if let Some(c) = commit {
+            b.extend_from_slice(&c);
+        }
+        b
+    }
+
+    #[test]
+    fn the_cut_row_is_read_as_the_uploader_writes_it() {
+        let cut = format!("row\t{}\t7\t4242", "ab".repeat(16));
+        assert_eq!(row_line(None), "row\tnone\nrow_commit\tnone");
+        // Version 1 names its cut and no commit.
+        let v1 = cut_bytes(1, None);
+        assert_eq!(v1.len(), ROW_LEN_V1);
+        assert_eq!(row_line(Some(&v1)), format!("{cut}\nrow_commit\tnone"));
+        // Version 2 (F1) adds the commit whose head swap wrote it.
+        let v2 = cut_bytes(2, Some([0xcd; 32]));
+        assert_eq!(v2.len(), ROW_LEN_V2);
         assert_eq!(
-            row_line(Some(&b)),
-            format!("row\t{}\t7\t4242", "ab".repeat(16))
+            row_line(Some(&v2)),
+            format!("{cut}\nrow_commit\t{}", "cd".repeat(32))
         );
-        let mut v2 = b.clone();
-        v2[0] = 2;
-        assert!(row_line(Some(&v2)).starts_with("row\tunreadable\t02"));
-        assert!(row_line(Some(&b[..33])).starts_with("row\tunreadable\t"));
+        // A version that does not fit its length, or neither: unreadable.
+        for b in [
+            cut_bytes(2, None),
+            cut_bytes(1, Some([0xcd; 32])),
+            cut_bytes(3, Some([0xcd; 32])),
+            v1[..33].to_vec(),
+            v2[..65].to_vec(),
+        ] {
+            assert_eq!(
+                row_line(Some(&b)),
+                format!("row\tunreadable\t{}\nrow_commit\tnone", hex(&b))
+            );
+        }
     }
 
     #[test]
     fn a_row_is_put_as_the_uploader_reads_it() {
-        let b = row_bytes(&format!("{}:7:4242", "ab".repeat(16)))
-            .unwrap()
-            .unwrap();
+        let s = "ab".repeat(16);
+        let head = [0xcd; 32];
+        let put = |v: &str| row_value(&row_spec(v).unwrap(), Some(head)).unwrap();
+        // STATE:NUMBER:GROUP: version 2 with head's commit.
+        assert_eq!(put(&format!("{s}:7:4242")), Some(cut_bytes(2, Some(head))));
+        // With a commit of its own, and version 1.
         assert_eq!(
-            row_line(Some(&b)),
-            format!("row\t{}\t7\t4242", "ab".repeat(16))
+            put(&format!("{s}:7:4242:{}", "ef".repeat(32))),
+            Some(cut_bytes(2, Some([0xef; 32])))
         );
-        assert_eq!(row_bytes("none"), Ok(None));
-        assert_eq!(row_bytes("hex:0200ff"), Ok(Some(vec![2, 0, 0xff])));
-        assert!(row_bytes("ab:7:1").is_err());
-        assert!(row_bytes(&format!("{}:x:1", "ab".repeat(16))).is_err());
-        assert!(row_bytes("hex:0g").is_err());
+        assert_eq!(put(&format!("v1:{s}:7:4242")), Some(cut_bytes(1, None)));
+        assert_eq!(put("none"), None);
+        assert_eq!(put("hex:0200ff"), Some(vec![2, 0, 0xff]));
+        // Head's commit, where there is no head: refused.
+        assert!(row_value(&row_spec(&format!("{s}:7:4242")).unwrap(), None).is_err());
+        for bad in [
+            "ab:7:1".to_string(),
+            format!("{s}:x:1"),
+            "hex:0g".to_string(),
+            format!("{s}:7:1:abcd"),
+            format!("v1:{s}:7:1:{}", "ef".repeat(32)),
+            format!("{s}:7"),
+        ] {
+            assert!(row_spec(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_expected_row_holds_for_its_cut_in_either_version() {
+        let s = "ab".repeat(16);
+        let spec = |v: &str| row_spec(v).unwrap();
+        let (v1, v2) = (cut_bytes(1, None), cut_bytes(2, Some([0xcd; 32])));
+        // STATE:NUMBER:GROUP: either version with this cut.
+        let cut = spec(&format!("{s}:7:4242"));
+        assert!(row_holds(&cut, Some(&v1)) && row_holds(&cut, Some(&v2)));
+        assert!(!row_holds(&spec(&format!("{s}:8:4242")), Some(&v2)));
+        assert!(!row_holds(&spec(&format!("{s}:7:4243")), Some(&v1)));
+        assert!(!row_holds(
+            &spec(&format!("{}:7:4242", "ac".repeat(16))),
+            Some(&v2)
+        ));
+        assert!(!row_holds(&cut, None));
+        assert!(!row_holds(&cut, Some(&v1[..33])));
+        // With a commit: version 2 with that commit only.
+        let with = spec(&format!("{s}:7:4242:{}", "cd".repeat(32)));
+        assert!(row_holds(&with, Some(&v2)));
+        assert!(!row_holds(&with, Some(&v1)));
+        assert!(!row_holds(
+            &spec(&format!("{s}:7:4242:{}", "ce".repeat(32))),
+            Some(&v2)
+        ));
+        // v1: version 1 only; none and hex: exactly.
+        assert!(row_holds(&spec(&format!("v1:{s}:7:4242")), Some(&v1)));
+        assert!(!row_holds(&spec(&format!("v1:{s}:7:4242")), Some(&v2)));
+        assert!(row_holds(&spec("none"), None) && !row_holds(&spec("none"), Some(&v1)));
+        assert!(row_holds(&spec(&format!("hex:{}", hex(&v2))), Some(&v2)));
+        assert!(!row_holds(&spec(&format!("hex:{}", hex(&v1))), Some(&v2)));
+    }
+
+    /// `--expect-row STATE:NUMBER:GROUP` holds the row at the bytes it
+    /// has when node B reads it, whatever its version: a row that moves
+    /// after that read still stops the write.
+    #[tokio::test]
+    async fn the_guard_holds_the_row_as_read_in_either_version() {
+        let (_, refs, vol, _) = put_small("expect-v2").await;
+        let s = "ab".repeat(16);
+        let head = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        let put = |v: &str| row_value(&row_spec(v).unwrap(), Some(head)).unwrap();
+        let v2 = put(&format!("{s}:7:4242"));
+        assert_eq!(
+            v2.as_deref().and_then(decode_row).and_then(|c| c.commit),
+            Some(head)
+        );
+        assert_eq!(set_row_on(&refs, vol, v2.clone(), None).await, Ok(true));
+        let cut = row_spec(&format!("{s}:7:4242")).unwrap();
+        let now = expected_row(&refs, vol, &cut).await.expect("read");
+        assert_eq!(now, Some(v2.clone()));
+        // The row moves after the read: nothing changes under that guard.
+        let other = put(&format!("{s}:8:4242"));
+        assert_eq!(set_row_on(&refs, vol, other.clone(), None).await, Ok(true));
+        assert_eq!(set_row_on(&refs, vol, None, now).await, Ok(false));
+        assert_eq!(refs.meta_get(vol, ROW_KEY).await.expect("meta_get"), other);
+        // A cut the row does not name, or a version 1 row of it: as read.
+        assert_eq!(expected_row(&refs, vol, &cut).await, Ok(None));
+        let v1 = put(&format!("v1:{s}:7:4242"));
+        assert_eq!(set_row_on(&refs, vol, v1.clone(), None).await, Ok(true));
+        assert_eq!(expected_row(&refs, vol, &cut).await, Ok(Some(v1)));
     }
 
     /// The other writer acts only on the row it read (the review of #119,
@@ -748,7 +1032,13 @@ mod tests {
     #[tokio::test]
     async fn the_other_writer_acts_on_the_row_it_read() {
         let (store, refs, vol, _) = put_small("expect-row").await;
-        let row = |n: u64, g: u64| row_bytes(&format!("{}:{n}:{g}", "ab".repeat(16))).unwrap();
+        let row = |n: u64, g: u64| {
+            row_value(
+                &row_spec(&format!("v1:{}:{n}:{g}", "ab".repeat(16))).unwrap(),
+                None,
+            )
+            .unwrap()
+        };
         let read = || async { refs.meta_get(vol, ROW_KEY).await.expect("meta_get") };
         // No row yet: expecting none sets it; expecting a row does not.
         assert_eq!(
