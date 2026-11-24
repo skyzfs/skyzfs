@@ -110,14 +110,17 @@ def one_server(k):
     pid, 'no serving daemon at an end' if such an end was read (it has
     fields beside the clock line `read_at_ns`: a daemon that died in
     the window), else 'status not read' (a reading that failed leaves no
-    more than its clock line; review of #132, D2); 'NO: the pid changed'
-    only when both pids were read and differ, else 'yes' (review of
-    #128, L1).
+    more than its clock line; review of #132, D2). An end that says
+    `state serving` with no pid is 'status not read' too: the device is
+    live, and the status command prints its state and no more when the
+    daemon's status file cannot be read (review of #132, D8). 'NO: the
+    pid changed' only when both pids were read and differ, else 'yes'
+    (review of #128, L1).
     """
     sb, sa = k.get('before') or {}, k.get('after') or {}
     nopid = [s for s in (sb, sa) if not s.get('pid')]
     if nopid:
-        read = [s for s in nopid if set(s) - {'read_at_ns', 'pid'}]
+        read = [s for s in nopid if set(s) - {'read_at_ns', 'pid'} and s.get('state') != 'serving']
         return 'no serving daemon at an end' if read else 'status not read'
     return 'yes' if sb['pid'] == sa['pid'] else 'NO: the pid changed'
 
@@ -150,7 +153,10 @@ def not_uploading(row):
             or not str(lease[0][1]).isdigit()):
         seed = ''
         if (k.get('upload') or {}).get('from_load') == 'window' and k.get('released_here') is not True:
-            seed = "; its window did not let MinIO go, so its seed was not measured from its release"
+            # A row recorded before the mark has none, though its window
+            # may have let MinIO go (review of #132, D7).
+            seed = ("; its window is not marked as the one that let MinIO go, so its seed was not measured from its "
+                    "release")
         elif (k.get('upload') or {}).get('from_load') == 'window':
             seed = (f"; its seed, let go at the window's start, was not shown to commit inside it under the lease held "
                     f"at its end (uploaded {sb.get('uploaded', 'not read')} at its start, "
@@ -213,10 +219,11 @@ def seed_in_window(row):
     sb, sa = k.get('before') or {}, k.get('after') or {}
     if not (sb.get('pid') and sa.get('pid') and k.get('pid_same') is True):
         return None
-    start, end = (sb.get('lease', 'not read'), sb.get('lease_epoch')), (sa.get('lease', 'not read'), sa.get('lease_epoch'))
+    end = (sa.get('lease', 'not read'), sa.get('lease_epoch'))
     if end[0] not in LEASE_HELD or not str(end[1]).isdigit():
         return None
-    if start[0] != 'none':
+    # The start's epoch is not read: with no lease there, it has none.
+    if sb.get('lease', 'not read') != 'none':
         return None
     if sb.get('uploaded') != '0' or not str(sa.get('uploaded_whole', '')).isdigit() or int(sa['uploaded_whole']) < 1:
         return None

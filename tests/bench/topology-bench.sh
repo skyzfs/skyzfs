@@ -746,7 +746,8 @@ if drows:
                   f"{sa.get('upload_cut', 'n/a')} / {sa.get('cuts', 'n/a')} | {sa.get('upload_state', 'n/a')} | "
                   f"{sa.get('lease', 'n/a')} | {r['skyzfsd'].get('info', {}).get('first_upload', 'not waited for')} |")
     # The intent map in the window (M2.3; the header's own syncs since
-    # status version 16, M2.4d's --intent-header-sync): the map's syncs
+    # status version 16, M2.4d; on wherever cuts are held since Q7, #133,
+    # unless --no-intent-header-sync): the map's syncs
     # on the write path and the header's, each over the window with its
     # mean, the longest since the daemon started, and the writes that
     # waited for a sync. A row whose daemon keeps no map is left out: a
@@ -756,7 +757,8 @@ if drows:
            and r['skyzfsd']['after'].get('intent_state', 'off') != 'off']
     if ims:
         print('\nThe intent map in the window (M2.3, M2.4d), from the daemon\'s status at its two ends: the map\'s '
-              'syncs on the write path over the window and ms each; the header\'s own syncs (status version 16, '
+              'syncs on the write path over the window and ms each; the header\'s own syncs (status version 16; on '
+              'wherever cuts are held unless `--no-intent-header-sync`, off before #133 unless '
               '`--intent-header-sync`; n/a for an older daemon) over the window and ms each; the longest of each since '
               'the daemon started; the writes that waited for a sync of the map over the window; the regions named '
               'in the map at the window\'s end, of all. A map with every region named needs no sync: until an upload '

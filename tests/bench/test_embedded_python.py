@@ -211,7 +211,7 @@ class Embedded(unittest.TestCase):
 
     def test_the_intent_maps_table(self):
         """The intent map's syncs over the window (M2.3) and the header's
-        own (status version 16, --intent-header-sync): a row from a
+        own (status version 16; on by default since #133): a row from a
         daemon with the header's keys (its end values other than its
         start's), one with no header sync in the window (n/a, not a
         division by 0), one from an older daemon (n/a), one whose daemon
