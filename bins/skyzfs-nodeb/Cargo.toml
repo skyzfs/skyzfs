@@ -18,3 +18,10 @@ skynbd-refs = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 ulid = { workspace = true }
 blake3 = { workspace = true }
+
+[dev-dependencies]
+# The cut row's codec is written twice: here, for the rigs, and in the
+# uploader. A test reads each one's rows with the other (the review of
+# #134, G3), so that the two cannot drift.
+skyzfs-local = { workspace = true }
+skyzfs-upload = { workspace = true }
