@@ -1,0 +1,7 @@
+     Running unittests src/lib.rs (<scratch>/q7/target/debug/build/skyzfs-local/8283a10c693ef846/out/skyzfs_local-8283a10c693ef846)
+test result: ok. 311 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 63.96s
+     Running tests/inplace_real.rs (<scratch>/q7/target/debug/build/skyzfs-local/192744f5afd76bdb/out/inplace_real-192744f5afd76bdb)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+   Doc-tests skyzfs_local
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0
