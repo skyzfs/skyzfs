@@ -227,4 +227,48 @@ mod tests {
             Err(crate::RefError::LeaseLost { .. })
         ));
     }
+
+    /// The lease operations pass through as asked, not as the acting
+    /// principal (G3 of the review of #131): a renewal names the holder
+    /// and epoch it is given, whatever the principal the store acts as.
+    #[tokio::test]
+    async fn a_renewal_passes_through_at_the_epoch_asked() {
+        let inner = MemoryRefStore::new();
+        let v = VolumeId(ulid::Ulid::from_parts(0xAC, 2));
+        inner.lease_acquire(v, "node-b", 60_000).await.unwrap();
+        inner.lease_release(v, "node-b").await.unwrap();
+        let second = match inner.lease_acquire(v, "node-a", 60_000).await.unwrap() {
+            LeaseOutcome::Acquired(l) => l,
+            other => panic!("expected the second take, got {other:?}"),
+        };
+        assert_eq!(second.epoch, 2);
+
+        // Acting as the first epoch, and as another holder: neither
+        // changes what the renewal asks.
+        for acting in [
+            ActingRefStore::new(inner.clone(), "node-a", 1),
+            ActingRefStore::new(inner.clone(), "node-x", 7),
+        ] {
+            match acting.lease_renew(v, "node-a", 2, 90_000).await.unwrap() {
+                RenewOutcome::Renewed(l) => {
+                    assert_eq!((l.holder.as_str(), l.epoch), ("node-a", 2))
+                }
+                other => panic!(
+                    "acting as {}@{}: {other:?}",
+                    acting.holder(),
+                    acting.epoch()
+                ),
+            }
+            match acting.lease_renew(v, "node-a", 1, 90_000).await.unwrap() {
+                RenewOutcome::NotHeld(Some(l)) => {
+                    assert_eq!((l.holder.as_str(), l.epoch), ("node-a", 2))
+                }
+                other => panic!(
+                    "acting as {}@{}: {other:?}",
+                    acting.holder(),
+                    acting.epoch()
+                ),
+            }
+        }
+    }
 }

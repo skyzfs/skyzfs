@@ -160,7 +160,16 @@ r=$(bench_upload "zfs-skyzfsd no-such-topology" TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UP
 has "the seed from the load, with uploads and no wait: past the checks" "$r" "unknown topology: no-such-topology"
 r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=yes)
 is "TB_SKZ_UPLOAD_FROM_LOAD=yes: 64" "${r%%|*}" 64
-has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD is 1 or unset, not: yes"
+has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD is 1, window or unset, not: yes"
+# =window: MinIO frozen until the first window begins (the seed's cost).
+r=$(bench_upload "zfs-skyzfsd no-such-topology" TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=window)
+has "the seed from the first window, with uploads and no wait: past the checks" "$r" "unknown topology: no-such-topology"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD= TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=window)
+is "the seed from the first window without uploads: 64" "${r%%|*}" 64
+has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD=window needs TB_SKZ_UPLOAD=1"
+r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD_FROM_LOAD=window)
+is "the seed from the first window with the wait's default (900): 64" "${r%%|*}" 64
+has "  and says why: the wait could not end" "$r" "TB_SKZ_UPLOAD_FROM_LOAD=window needs TB_SKZ_UPLOAD_WAIT_S=0, not 900"
 r=$(bench_upload zfs-skyzfsd TB_SKZ_UPLOAD= TB_SKZ_UPLOAD_WAIT_S=0 TB_SKZ_UPLOAD_FROM_LOAD=1)
 is "the seed from the load without uploads: 64" "${r%%|*}" 64
 has "  and says why" "$r" "TB_SKZ_UPLOAD_FROM_LOAD=1 needs TB_SKZ_UPLOAD=1"

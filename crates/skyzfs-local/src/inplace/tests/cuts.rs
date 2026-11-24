@@ -4750,15 +4750,16 @@ fn settle_map(store: &mut InPlace<SimDisk>) {
 }
 
 /// The header that names the cut a release lets go is synced only when
-/// the store is told to (`serve --intent-header-sync`, M2.4d, for the
-/// lead's Q7 of M2.4b): one sync of the map, begun on its helper and
-/// counted apart from the write path's, and a power cut after it keeps
-/// the base, so the start after a restart of the machine takes the map
-/// up naming cut 1. Off, as built in M2.3, the release syncs nothing,
-/// and the power cut that loses everything no sync covered leaves the
-/// map as the start wrote it, naming no cut: it is begun anew, and the
-/// next cut is the whole volume. The defects, planted by hand: the sync
-/// not begun, and the sync counted as the write path's.
+/// the store is told to (M2.4d, for the lead's Q7 of M2.4b; the daemon
+/// tells it to unless `serve --no-intent-header-sync` is given): one
+/// sync of the map, begun on its helper and counted apart from the write
+/// path's, and a power cut after it keeps the base, so the start after a
+/// restart of the machine takes the map up naming cut 1. Off, as built
+/// in M2.3, the release syncs nothing, and the power cut that loses
+/// everything no sync covered leaves the map as the start wrote it,
+/// naming no cut: it is begun anew, and the next cut is the whole
+/// volume. The defects, planted by hand: the sync not begun, and the
+/// sync counted as the write path's.
 #[test]
 fn a_release_syncs_the_header_only_when_told_to() {
     for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
@@ -5280,8 +5281,8 @@ fn with_the_header_synced_random_programs_keep_the_newest_released_cut_as_the_ba
 /// With the option off (and on), a write waits for the map's sync,
 /// which the disk holds, and the volume fails for another reason: the
 /// store's drop ends without waiting for that sync, as before M2.4d. A
-/// failed volume syncs nothing more, so nothing is gained by holding the
-/// drop, and the lock, for it (F3 of #120's review).
+/// failed volume syncs no write any more, so nothing is gained by
+/// holding the drop, and the lock, for it (F3 of #120's review).
 #[test]
 fn the_drop_of_a_failed_store_does_not_wait_for_the_maps_sync_under_way() {
     for header_sync in [false, true] {
@@ -5320,4 +5321,50 @@ fn the_drop_of_a_failed_store_does_not_wait_for_the_maps_sync_under_way() {
             "{case}: the drop of a failed store waited for the map's sync under way"
         );
     }
+}
+
+/// A header's sync is under way, with no write waiting, when the volume
+/// fails: the drop ends without it (F-B of #124's review, its scenario
+/// n1). The test above has a write's sync under way in both its cases.
+#[test]
+fn the_drop_of_a_failed_store_does_not_wait_for_a_headers_sync_under_way() {
+    let disk = created(201, 0);
+    let mut store = one_cut(&disk, &region(), IoMode::default(), true);
+    let syncs = disk.syncs_of(intent::INTENT_NAME);
+    disk.hold_syncs_of(intent::INTENT_NAME);
+    assert!(store.release_cut(1));
+    settle_map(&mut store);
+    assert_eq!(disk.syncs_of(intent::INTENT_NAME) - syncs, 1);
+    assert_eq!(intent_of(&store).header_syncs.count, 0, "under way still");
+    store.fail_now();
+    let (dropped, early) = dropped_within(store, Duration::from_millis(500));
+    disk.release_syncs();
+    let late = early || dropped.recv_timeout(DRAIN).is_ok();
+    assert!(late, "the drop did not end once the sync was let go");
+    assert!(
+        early,
+        "the drop of a failed store waited for the header's sync under way"
+    );
+}
+
+/// A release that comes to a store that has failed already, with the
+/// header's sync on: the cut is let go and a sync of the map begins, and
+/// the drop does not wait for it (F-A of #124's review, its scenario
+/// n3). The next start acknowledges the failure and takes the map up, so
+/// the header that sync covers still decides the next cut's base.
+#[test]
+fn a_release_on_a_failed_store_begins_a_sync_the_drop_does_not_wait_for() {
+    let disk = created(203, 0);
+    let mut store = one_cut(&disk, &region(), IoMode::default(), true);
+    store.fail_now();
+    let syncs = disk.syncs_of(intent::INTENT_NAME);
+    disk.hold_syncs_of(intent::INTENT_NAME);
+    assert!(store.release_cut(1));
+    assert_eq!(phases(&store), []);
+    assert_eq!(disk.syncs_of(intent::INTENT_NAME) - syncs, 1);
+    let (dropped, early) = dropped_within(store, Duration::from_millis(500));
+    disk.release_syncs();
+    let late = early || dropped.recv_timeout(DRAIN).is_ok();
+    assert!(late, "the drop did not end once the sync was let go");
+    assert!(early, "the drop of a failed store waited for the sync");
 }

@@ -433,6 +433,91 @@ mod tests {
         conformance::exercise_lease_renew(&store, &advance).await;
     }
 
+    /// The redb store renews in one write transaction: a take cannot
+    /// land between the renewal's read and its write (G3 of the review
+    /// of #131).
+    #[test]
+    fn redb_store_renews_in_one_write_transaction() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let now = Arc::new(AtomicU64::new(1_000_000));
+        let clock: Clock = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let store = RedbRefStore::open(dir.path().join("refs.redb"))
+            .unwrap()
+            .with_clock(clock);
+        let advance = move |ms: u64| _ = now.fetch_add(ms, Ordering::SeqCst);
+        conformance::race_lease_renew_against_take(Arc::new(store), &advance, 300);
+    }
+
+    /// The same with the order of events fixed rather than raced. The
+    /// test holds the database's one write transaction, starts the
+    /// renewal of an expired lease, which waits for it, and then writes
+    /// another holder's take in that transaction and commits it. The
+    /// renewal reads the row in its own write transaction, so it sees
+    /// the take and writes nothing. A renewal that read the row before
+    /// it waited (a read transaction, or [`RefStore::lease_get`]) would
+    /// renew the row it read over the take.
+    #[test]
+    fn a_take_committed_while_the_renewal_waits_is_seen_by_it() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        const TTL: u64 = 10_000;
+        let dir = tempfile::tempdir().unwrap();
+        let now = Arc::new(AtomicU64::new(1_000_000));
+        let clock: Clock = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let store = Arc::new(
+            RedbRefStore::open(dir.path().join("refs.redb"))
+                .unwrap()
+                .with_clock(clock),
+        );
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+        };
+        let v = VolumeId(ulid::Ulid::from_parts(0xD4, 1));
+        let first = runtime()
+            .block_on(store.lease_acquire(v, "node-a", TTL))
+            .unwrap();
+        assert!(matches!(first, LeaseOutcome::Acquired(ref l) if l.epoch == 1));
+        now.fetch_add(TTL + 1, Ordering::SeqCst);
+
+        let held = store.db.begin_write().unwrap();
+        let renewal = {
+            let store = Arc::clone(&store);
+            std::thread::spawn(move || runtime().block_on(store.lease_renew(v, "node-a", 1, TTL)))
+        };
+        // Long enough for a renewal that reads first to have read.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let theirs = Lease {
+            holder: "node-b".into(),
+            epoch: 2,
+            expires_at_ms: now.load(Ordering::SeqCst) + TTL,
+        };
+        {
+            let mut table = held.open_table(OWNER).unwrap();
+            table
+                .insert(
+                    v.0 .0,
+                    (theirs.holder.as_str(), theirs.epoch, theirs.expires_at_ms),
+                )
+                .unwrap();
+        }
+        held.commit().unwrap();
+
+        let renewed = renewal.join().unwrap().unwrap();
+        assert_eq!(renewed, RenewOutcome::NotHeld(Some(theirs.clone())));
+        let row = runtime().block_on(store.lease_get(v)).unwrap();
+        assert_eq!(row, Some(theirs));
+    }
+
     #[tokio::test]
     async fn redb_store_passes_fenced_transact_conformance() {
         use std::sync::atomic::{AtomicU64, Ordering};

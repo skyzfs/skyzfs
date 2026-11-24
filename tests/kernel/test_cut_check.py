@@ -226,6 +226,52 @@ class Picks(unittest.TestCase):
         self.assertEqual(cut_check.pick_withheld(records, cut(1, 5, 3, 4), self.BPS), 1)
         self.assertIsNone(cut_check.pick_withheld(records[2:], cut(1, 5, 1), self.BPS))
 
+    def test_withheld_passes_over_a_write_that_changes_nothing(self):
+        """Run 44462542583 (24.04-arm, rewind): a sync pass rewrote 4096
+        bytes in place with the bytes already there, and the control
+        built without that write passed. Such a write is passed over."""
+        o = self.OFF
+        data = {0: b'A' * 4096, 1: b'B' * 4096, 2: b'B' * 4096, 4: b'C' * 4096}
+        records = [rec(0, (), o + 0x1000, 4096), rec(1, (), o + 0x9000, 4096), rec(2, (), o + 0x9000, 4096),
+                   rec(3, ('flush',)), rec(4, (), 0, 4096), rec(5, ('flush',))]
+        read = lambda r: data[r['i']]
+        base = lambda off, n: bytes(n)
+        c = cut(1, 5, 4, 6)
+        differs = cut_check.withholding_changes(records, read, base, c, self.BPS)
+        # Without a reader the last write over a copy, as before.
+        self.assertEqual(cut_check.pick_withheld(records, c, self.BPS), 2)
+        same = []
+        # 2 puts back 1's bytes, and 1 is covered by 2: neither changes a copy.
+        self.assertEqual(cut_check.pick_withheld(records, c, self.BPS, differs, same), 0)
+        self.assertEqual(same, [2, 1])
+        # A write of what the base already held changes nothing either.
+        data[0] = bytes(4096)
+        same = []
+        self.assertIsNone(cut_check.pick_withheld(records, c, self.BPS, differs, same))
+        self.assertEqual(same, [2, 1, 0])
+        # Different bytes are picked as before.
+        data[2] = b'D' * 4096
+        self.assertEqual(cut_check.pick_withheld(records, c, self.BPS, differs), 2)
+
+    def test_only_the_copies_bytes_count(self):
+        """A write that differs only outside the copies it meets changes no copy."""
+        o = self.OFF
+        data = {0: b'X' * 0x1000 + b'Y' * 0x1000, 1: b'Q' * 0x1000 + b'Y' * 0x1000}
+        records = [rec(0, (), o + 0x0, 0x2000), rec(1, (), o + 0x0, 0x2000), rec(2, ('flush',)), rec(3, (), 0, 512)]
+        c = cut(1, 5, 3, 4)
+        differs = cut_check.withholding_changes(records, lambda r: data[r['i']], lambda off, n: bytes(n), c, self.BPS)
+        self.assertFalse(differs(1))
+        data[1] = b'Q' * 0x1000 + b'Z' * 0x1000
+        self.assertTrue(differs(1))
+
+    def test_bytes_at_applies_writes_and_discards_in_order(self):
+        records = [rec(0, (), 0x100, 0x100), rec(1, ('discard',), 0x180, 0x40), rec(2, (), 0x1c0, 0x10)]
+        data = {0: b'a' * 0x100, 2: b'c' * 0x10}
+        got = cut_check.bytes_at(records, lambda r: data[r['i']], lambda off, n: b'b' * n, 3, 0xf0, 0x210)
+        self.assertEqual(got, b'b' * 0x10 + b'a' * 0x80 + bytes(0x40) + b'c' * 0x10 + b'a' * 0x30 + b'b' * 0x10)
+        self.assertEqual(cut_check.bytes_at(records, lambda r: data[r['i']], lambda off, n: b'b' * n, 3, 0x1c0, 0x1d0,
+                                            skip=2), b"a" * 0x10)
+
     def test_later_is_the_first_write_or_discard_after_the_instant(self):
         records = [rec(0, (), self.OFF + 0x1000, 4096), rec(1, ('flush',)), rec(2, (), self.OFF + 0x5000, 4096),
                    rec(3, ('discard',), self.OFF + 0x9000, 4096), rec(4, (), self.OFF + 0x1000, 4096)]
