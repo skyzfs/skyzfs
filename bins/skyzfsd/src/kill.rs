@@ -30,6 +30,7 @@ use bytes::Bytes;
 use skynbd_refs::{ActingRefStore, RefStore};
 use skynbd_store::{ObjectStore, Precondition, Result};
 use skynbd_types::{CommitHash, VolumeId};
+use skyzfs_local::inplace::CommittedCut;
 use skyzfs_upload::publish::{Found, Snapshot};
 use skyzfs_upload::{EngineRemote, Observed, Remote, RemoteError};
 
@@ -231,16 +232,15 @@ impl<R: Remote> Remote for KillRemote<R> {
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> std::result::Result<CommitHash, RemoteError> {
-        let commit = self.inner.commit(group, expected, row).await?;
+        let commit = self.inner.commit(cut, expected).await?;
         self.swaps += 1;
         if self.at == Some(self.swaps) {
             (self.die)(&format!(
-                "after the swap of commit {} (group {group}) landed, before its cut was let go",
-                self.swaps
+                "after the swap of commit {} (group {}) landed, before its cut was let go",
+                self.swaps, cut.group
             ));
         }
         Ok(commit)

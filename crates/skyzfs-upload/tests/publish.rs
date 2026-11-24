@@ -875,6 +875,172 @@ async fn a_cut_found_committed_at_the_check_after_head_moved_carries_no_publish(
     assert_eq!(up.figures().not_offered, 1);
 }
 
+/// How head came to a commit of the cut's group that is not the cut's
+/// (n1 and n2 of the review of #122).
+#[derive(Debug, Clone, Copy)]
+enum Moved {
+    /// Another history's commit of the cut's group: a pool imported with
+    /// `zpool import -T` begins its groups again from an older one.
+    Repeated,
+    /// An operator rolled the volume back to `snap/s`, published on a cut
+    /// of the cut's group by the cut state before (after a reboot, a cut
+    /// state begins anew, and so can its groups).
+    RolledBack,
+}
+
+/// What came between the cut's head swap and the uploader's next read of
+/// the row and head.
+#[derive(Debug, Clone, Copy)]
+enum Then {
+    /// The swap's reply was lost; the same uploader steps on.
+    LostReply,
+    /// The swap's reply was lost and the daemon died; the next uploader is
+    /// asked again.
+    Restart,
+}
+
+/// `snap/s` published on cut 1 (group 7) of a cut state whose block 100
+/// is full of 0x70; then the host rebooted, and the next start begins a
+/// cut state of its own. `snap/s`'s commit.
+async fn published_before_a_reboot(fx: &mut Fixture) -> CommitHash {
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x70);
+    fx.group(&mut store, 7);
+    let mut up = driver(fx, store);
+    let asked = request(&mut up, "s", 0, 7);
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    up.run().await.expect("cut 1 and its publish");
+    let snapshot = published(fx, "s", "snap/s").await.expect("snap/s");
+    assert_eq!(snapshot.row.cut.group, 7);
+    fx.rebooted(up);
+    snapshot.commit
+}
+
+/// n1 and n2 of the review of #122, the remainder of its F1: head moved,
+/// after cut 1's head swap landed and before the uploader read the row
+/// and head again, to a commit **of cut 1's group** that is not cut 1's,
+/// by another history whose groups repeat or by a rollback onto a
+/// snapshot of a cut of the same group. Head's group then says nothing;
+/// the row names cut 1's commit, and head is not it.
+///
+/// n1: cut 1 is found committed and let go, and `pool@t`, asked for cut
+/// 1, is not published on head (it would be another volume's snapshot
+/// read as cut 1's). n2: the next cut is not uploaded as a delta onto
+/// head (it would write cut 2's blocks onto another history): its check
+/// finds head moved, and head stays where the other writer left it.
+#[tokio::test]
+async fn head_at_another_commit_of_the_cuts_group_takes_no_publish_and_no_delta() {
+    let cases = [
+        (70, Moved::Repeated, Then::LostReply),
+        (71, Moved::Repeated, Then::Restart),
+        (72, Moved::RolledBack, Then::LostReply),
+        (73, Moved::RolledBack, Then::Restart),
+    ];
+    for (seed, moved, then) in cases {
+        let case = format!("{moved:?}, {then:?}");
+        let mut fx = Fixture::new(seed).await;
+        let earlier = match moved {
+            Moved::RolledBack => Some(published_before_a_reboot(&mut fx).await),
+            Moved::Repeated => None,
+        };
+        let (up, asked, cut1) = swap_unheard(&mut fx).await;
+        match moved {
+            Moved::Repeated => fx.move_head_with_group(7).await,
+            Moved::RolledBack => fx.rollback("s").await,
+        }
+        let moved_to = fx.uploaded().await;
+        assert_ne!(moved_to.head, cut1, "{case}: head moved");
+        assert_eq!(moved_to.group, Some(7), "{case}: of cut 1's group");
+        if let Some(earlier) = earlier {
+            assert_eq!(moved_to.head, earlier, "{case}: snap/s's commit");
+        }
+        assert!(
+            moved_to.content != fx.at[&7],
+            "{case}: head is not the volume at cut 1"
+        );
+
+        // n1.
+        let mut up = match then {
+            Then::LostReply => {
+                let mut up = up;
+                let steps = up.run().await.expect("the run after");
+                assert!(
+                    matches!(told(&steps)[..], [Step::Uploaded { number: 1, .. }]),
+                    "{case}: {steps:?}"
+                );
+                up
+            }
+            Then::Restart => {
+                fx.died(up);
+                let mut up = driver(&fx, fx.start());
+                assert_eq!(up.publishing().ask(asked), Answer::Accepted, "{case}");
+                let steps = up.run().await.expect("the run after");
+                assert_eq!(
+                    steps,
+                    [
+                        Step::PublishLooked { name: "t".into() },
+                        Step::FoundCommitted { number: 1 }
+                    ],
+                    "{case}"
+                );
+                up
+            }
+        };
+        assert!(
+            published(&fx, "t", &case).await.is_none(),
+            "{case}: snap/t on a commit not cut 1's"
+        );
+        assert_eq!(up.publishes().progress("t"), Progress::Pending, "{case}");
+        assert_eq!(up.figures().not_offered, 1, "{case}");
+
+        // n2.
+        fx.write(up.local(), 101, 0x08);
+        fx.group(up.local(), 8);
+        let steps = up.run().await.expect("cut 2");
+        assert_eq!(
+            told(&steps),
+            [Step::Mismatch {
+                why: skyzfs_upload::Mismatch::HeadMoved,
+                abandoned: vec![2]
+            }],
+            "{case}: cut 2 is not a delta onto another history"
+        );
+        let now = fx.uploaded().await;
+        assert_eq!(now.head, moved_to.head, "{case}: the uploader moved head");
+        assert_eq!(now.row, moved_to.row, "{case}: the row");
+        assert!(published(&fx, "t", &case).await.is_none(), "{case}");
+    }
+}
+
+/// A row of version 1, written by a daemon from before the row named its
+/// commit, names cut 1, which that daemon committed before it died. The
+/// next daemon finds cut 1 committed at its check and lets it go; the row
+/// names no commit, so head is not known to be cut 1's, and `pool@t` is
+/// not published on it (the lead's decision on F1).
+#[tokio::test]
+async fn a_cut_found_committed_under_a_row_of_version_1_takes_no_publish() {
+    let mut fx = Fixture::new(74).await;
+    let (up, asked, cut1) = swap_unheard(&mut fx).await;
+    let named = fx.uploaded().await.row.expect("the row");
+    assert_eq!(named.commit, Some(cut1), "the row names cut 1's commit");
+    fx.died(up);
+    fx.put_row(row_v1(&named.cut)).await;
+    let mut up = driver(&fx, fx.start());
+    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let steps = up.run().await.expect("the run after");
+    assert_eq!(
+        steps,
+        [
+            Step::PublishLooked { name: "t".into() },
+            Step::FoundCommitted { number: 1 }
+        ]
+    );
+    assert_eq!(head(&fx).await, cut1, "head is cut 1's");
+    assert!(published(&fx, "t", "a row of version 1").await.is_none());
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+    assert_eq!(up.figures().not_offered, 1);
+}
+
 /// F2 of #122's review: a request of another cut state than the store's
 /// is refused at once, before any cut has been checked, and does not keep
 /// the name from a request of the store's state.

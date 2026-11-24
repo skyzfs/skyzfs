@@ -13,9 +13,10 @@ use skynbd_format::{Codec, CommitKind, SnapKind, SnapshotManifest};
 use skynbd_refs::{RefError, RefOp, RefStore, TxnOutcome};
 use skynbd_store::{ObjectStore, StoreError};
 use skynbd_types::{CommitHash, VolumeId};
+use skyzfs_local::inplace::CommittedCut;
 
 use crate::publish::{manifest_key, snap_ref, snap_row_key, Found, Snapshot};
-use crate::row::ROW_KEY;
+use crate::row::{self, ROW_KEY};
 
 /// Why a call to object storage failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -79,19 +80,18 @@ pub struct Observed {
     pub row: Option<Vec<u8>>,
     /// The group of head's commit as read now, `None` for a commit with
     /// none. Where the engine is left behind head (not `current`), it is
-    /// read from head's commit object, not taken from the engine (F1 of
-    /// #122's review: after a commit that failed, whether head is still
-    /// the cut's).
+    /// read from head's commit object, not taken from the engine. The
+    /// check reads it only under a row of version 1, which names no
+    /// commit, or no row.
     pub head_group: Option<u64>,
     /// Whether the engine is open at head as read now. An engine with no
     /// writes is opened again where head has moved, so only one with
     /// writes (a commit that failed) can be left behind it.
     pub current: bool,
-    /// Head's commit as read now. Where the row names a cut and head's
-    /// group is the cut's, this is the cut's commit: this uploader moves
-    /// the row only with head, in one transaction, and another writer that
-    /// moves head alone leaves a commit of another group (the driver's
-    /// module docs say what the group cannot tell apart).
+    /// Head's commit as read now. Where the row names it, this is the cut's
+    /// commit: this uploader moves the row only with head, in one
+    /// transaction, and a writer that moves head alone leaves the row
+    /// naming the commit it moved head from (F1).
     pub head: CommitHash,
 }
 
@@ -113,17 +113,16 @@ pub trait Remote {
     /// memory until its commit.
     async fn put_sealed(&mut self) -> Result<(), RemoteError>;
 
-    /// Commit what was written, with `group` in the commit, swapping head
-    /// and the cut's row to `row` in one transaction; the commit's hash.
-    /// The row's swap expects `expected`: the row as the check read it,
-    /// `None` for no row. After an error the engine keeps its writes for
-    /// the commit made again, and the error does not say whether it
-    /// landed.
+    /// Commit what was written, with `cut`'s group in the commit, swapping
+    /// head and the cut's row in one transaction to a row that names `cut`
+    /// and the commit's hash ([`row::encode`]); the commit's hash. The
+    /// row's swap expects `expected`: the row as the check read it, `None`
+    /// for no row. After an error the engine keeps its writes for the
+    /// commit made again, and the error does not say whether it landed.
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError>;
 
     /// `snap/<name>` and its row, `None` where there is no such ref.
@@ -240,18 +239,21 @@ where
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError> {
         let engine = self.engine()?;
-        engine.set_group(Some(group));
-        let ops = vec![RefOp::MetaCas {
-            key: ROW_KEY.into(),
-            expected,
-            value: row,
-        }];
-        Ok(engine.commit_with(CommitKind::Flush, ops).await?)
+        engine.set_group(Some(cut.group));
+        // The row names the commit it lands with: the engine knows the
+        // commit's hash before the swap, and builds the ops from it (F1).
+        let ops = move |commit: CommitHash| {
+            vec![RefOp::MetaCas {
+                key: ROW_KEY.into(),
+                expected,
+                value: row::encode(&cut, &commit),
+            }]
+        };
+        Ok(engine.commit_naming(CommitKind::Flush, ops).await?)
     }
 
     async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {

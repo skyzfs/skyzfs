@@ -312,11 +312,10 @@ impl<R: Remote> Remote for Flaky<R> {
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError> {
-        self.inner.commit(group, expected, row).await
+        self.inner.commit(cut, expected).await
     }
 
     async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
@@ -436,9 +435,8 @@ impl<R: Remote> Remote for Refusing<R> {
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         self.sent
@@ -448,7 +446,7 @@ impl<R: Remote> Remote for Refusing<R> {
         if self.refuse.load(Ordering::SeqCst) {
             return Err(RemoteError::Conflict);
         }
-        self.inner.commit(group, expected, row).await
+        self.inner.commit(cut, expected).await
     }
 
     async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
@@ -1511,18 +1509,17 @@ impl<R: Remote> Remote for Refusals<R> {
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError> {
         match self.mode.load(Ordering::SeqCst) {
             REFUSE => Err(RemoteError::Conflict),
             LAND_UNSEEN => {
-                self.inner.commit(group, expected, row).await?;
+                self.inner.commit(cut, expected).await?;
                 self.stale = self.last.clone();
                 Err(RemoteError::Conflict)
             }
-            _ => self.inner.commit(group, expected, row).await,
+            _ => self.inner.commit(cut, expected).await,
         }
     }
 
@@ -1852,11 +1849,10 @@ impl<R: Remote> Remote for Publishes<R> {
 
     async fn commit(
         &mut self,
-        group: u64,
+        cut: CommittedCut,
         expected: Option<Vec<u8>>,
-        row: Vec<u8>,
     ) -> Result<CommitHash, RemoteError> {
-        self.inner.commit(group, expected, row).await
+        self.inner.commit(cut, expected).await
     }
 
     async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
@@ -3202,12 +3198,7 @@ async fn a_whole_cut_lost_waits_a_minute_doubling_to_fifteen_until_a_cut_is_comm
     // the next cut's check finds the mismatch, and the cut after it
     // holds the whole volume, which head allows. Lost, it waits a minute
     // again, and not the fifteen of the last wait.
-    fx.put_row(row::encode(&CommittedCut {
-        state: *b"another state...",
-        number: 1,
-        group: 14,
-    }))
-    .await;
+    fx.put_row_on_head(*b"another state...", 1, 14).await;
     {
         let store = up.driver().expect("the driver").local();
         fx.write(store, 30, 0x30);
@@ -3391,12 +3382,7 @@ async fn a_publish_is_made_during_a_whole_wait() {
     fx.assert_uploaded(7, "cut 1, whole").await;
     // Another writer names another state's cut of head's group: the next
     // cut's check finds the mismatch, and the cut after it is whole.
-    fx.put_row(row::encode(&CommittedCut {
-        state: *b"another state...",
-        number: 1,
-        group: 7,
-    }))
-    .await;
+    fx.put_row_on_head(*b"another state...", 1, 7).await;
     {
         let store = up.driver().expect("the driver").local();
         fx.write(store, 30, 0x30);
@@ -3590,12 +3576,7 @@ async fn a_cut_committed_unheard_ends_the_whole_waits(seed: u64, gone: bool) {
         // The heir was let go, and the next cut would be a delta onto
         // it: another writer's row makes its check a mismatch, and the
         // cut after it is whole.
-        fx.put_row(row::encode(&CommittedCut {
-            state: *b"another state...",
-            number: 1,
-            group: 9,
-        }))
-        .await;
+        fx.put_row_on_head(*b"another state...", 1, 9).await;
         {
             let store = up.driver().expect("the driver").local();
             fx.write(store, 30, 0x30);
@@ -3699,16 +3680,10 @@ async fn a_mismatch_between_two_whole_cuts_lost_does_not_end_the_waits() {
     let mut up: Turned = Uploader::with_slices(store, keeper(&fx, &clock), make, 8);
     until_idle(&mut up, 1000).await;
     fx.assert_uploaded(7, "cut 1, whole").await;
-    let other = |group| {
-        row::encode(&CommittedCut {
-            state: *b"another state...",
-            number: 1,
-            group,
-        })
-    };
+    const OTHER: [u8; 16] = *b"another state...";
     // Another writer's row: the next (delta) cut is a mismatch, and the
     // cut after it is whole.
-    fx.put_row(other(7)).await;
+    fx.put_row_on_head(OTHER, 1, 7).await;
     {
         let store = up.driver().expect("the driver").local();
         fx.write(store, 30, 0x30);
@@ -3722,9 +3697,14 @@ async fn a_mismatch_between_two_whole_cuts_lost_does_not_end_the_waits() {
     }
     until_reading(&mut up, 100).await;
     over_the_bound(&mut fx, &mut up, 0x40, 22);
-    // During the wait the row names a group that is not head's: the
+    // During the wait the row names a commit that is not head's: the
     // heir, whole, is a mismatch at its check.
-    fx.put_row(other(8)).await;
+    let elsewhere = CommittedCut {
+        state: OTHER,
+        number: 1,
+        group: 8,
+    };
+    fx.put_row(row::encode(&elsewhere, &[0xab; 32])).await;
     let before = up.driver().expect("the driver").figures().clone();
     assert_eq!(a_whole_cut_lost(&mut up).await.0, MINUTE);
     // Every held cut abandoned, the uploader idles until the next.
@@ -3732,7 +3712,7 @@ async fn a_mismatch_between_two_whole_cuts_lost_does_not_end_the_waits() {
     let after = up.driver().expect("the driver").figures().clone();
     assert_eq!(after.mismatches, before.mismatches + 1, "the heir's check");
     // The row as head's again: the next whole cut goes on, and is lost.
-    fx.put_row(other(7)).await;
+    fx.put_row_on_head(OTHER, 1, 7).await;
     {
         let store = up.driver().expect("the driver").local();
         fx.write(store, 32, 0x32);
@@ -3796,12 +3776,7 @@ async fn a_publish_between_two_whole_cuts_lost_does_not_end_the_waits() {
     *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     until_idle(&mut up, 1000).await;
     fx.assert_uploaded(7, "cut 1, whole").await;
-    fx.put_row(row::encode(&CommittedCut {
-        state: *b"another state...",
-        number: 1,
-        group: 7,
-    }))
-    .await;
+    fx.put_row_on_head(*b"another state...", 1, 7).await;
     {
         let store = up.driver().expect("the driver").local();
         fx.write(store, 30, 0x30);

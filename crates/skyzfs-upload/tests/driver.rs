@@ -83,7 +83,7 @@ async fn the_first_cut_goes_up_whole_and_the_next_as_a_delta_onto_it() {
     );
     let uploaded = fx.assert_uploaded(7, "the first cut").await;
     assert_eq!(
-        uploaded.row,
+        uploaded.row.map(|row| row.cut),
         Some(CommittedCut {
             state,
             number: 1,
@@ -302,11 +302,14 @@ async fn a_row_moved_before_the_commit_gives_the_commit_up() {
     fx.group(&mut store, 7);
     let mut up = fx.driver(store, 64);
     step_until(&mut up, Doing::Committing).await;
-    let theirs = row::encode(&CommittedCut {
-        state: *b"another writer's",
-        number: 9,
-        group: 0,
-    });
+    let theirs = row::encode(
+        &CommittedCut {
+            state: *b"another writer's",
+            number: 9,
+            group: 0,
+        },
+        &THEIR_COMMIT,
+    );
     fx.put_row(theirs.clone()).await;
     assert!(up.step().await.is_err(), "the commit fails on the row");
     assert_eq!(up.step().await, Ok(Step::GaveUp { number: 1 }));
@@ -319,7 +322,7 @@ async fn a_row_moved_before_the_commit_gives_the_commit_up() {
                 ..
             }
         ),
-        "a whole cut, and head's commit has no group where the row says 0: {mismatch:?}"
+        "a whole cut, and the row does not name head's commit: {mismatch:?}"
     );
     let inner = fx.store.inner().clone();
     let refs = skynbd_refs::ObjectRefStore::new(inner);
@@ -345,13 +348,8 @@ async fn a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_w
     fx.group(up.local(), 8);
     fx.write(up.local(), 31, 0x31);
     fx.group(up.local(), 9);
-    // Another cut, of head's group.
-    fx.put_row(row::encode(&CommittedCut {
-        state: *b"another state...",
-        number: 1,
-        group: 7,
-    }))
-    .await;
+    // Another cut, of head's group, on head's commit.
+    fx.put_row_on_head(*b"another state...", 1, 7).await;
     let mismatch = up.step().await.expect("the check");
     assert_eq!(
         mismatch,
@@ -394,6 +392,83 @@ async fn a_row_naming_another_cut_abandons_every_held_cut_and_the_next_goes_up_w
         rule: Rule::Delta
     }));
     fx.assert_uploaded(11, "a delta after the whole cut").await;
+}
+
+/// An upgrade from a daemon that wrote the row's version 1, which names
+/// no commit: the row names cut 1, and head is cut 1's commit. The row
+/// does not stop the uploads, and vouches for no delta: the next cut's
+/// check finds head not named by the row, every held cut is abandoned,
+/// and the cut after it goes up whole onto head, whose group is the
+/// row's, and writes the row's version 2. The cut after that is a delta
+/// again (the lead's decision on F1).
+#[tokio::test]
+async fn after_a_row_of_version_1_the_first_commit_is_whole_and_writes_version_2() {
+    let mut fx = Fixture::new(27).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 7);
+    let mut up = fx.driver(store, 64);
+    up.run().await.expect("cut 1");
+    let cut1 = fx.assert_uploaded(7, "cut 1").await;
+    let named = cut1.row.expect("the row");
+    fx.put_row(row_v1(&named.cut)).await;
+    assert_eq!(
+        fx.uploaded().await.row,
+        Some(skyzfs_upload::Named {
+            cut: named.cut,
+            commit: None
+        }),
+        "a row of version 1 reads as naming no commit"
+    );
+
+    fx.write(up.local(), 11, 0x11);
+    fx.group(up.local(), 8);
+    let steps = up.run().await.expect("cut 2");
+    assert_eq!(
+        told(&steps),
+        [Step::Mismatch {
+            why: Mismatch::HeadMoved,
+            abandoned: vec![2]
+        }],
+        "no delta onto a row of version 1"
+    );
+    assert_eq!(fx.uploaded().await.head, cut1.head, "head did not move");
+
+    fx.write(up.local(), 12, 0x12);
+    fx.group(up.local(), 9);
+    let steps = up.run().await.expect("cut 3");
+    assert_eq!(
+        told(&steps),
+        [
+            Step::Began {
+                number: 3,
+                rule: Rule::Whole
+            },
+            Step::Uploaded {
+                number: 3,
+                rule: Rule::Whole,
+                blocks: BLOCKS
+            }
+        ]
+    );
+    let cut3 = fx.assert_uploaded(9, "cut 3, whole").await;
+    assert_eq!(
+        fx.uploaded().await.row.map(|row| row.commit),
+        Some(Some(cut3.head)),
+        "the row's version 2 again"
+    );
+
+    fx.write(up.local(), 13, 0x13);
+    fx.group(up.local(), 10);
+    let steps = up.run().await.expect("cut 4");
+    assert!(
+        told(&steps).contains(&Step::Began {
+            number: 4,
+            rule: Rule::Delta
+        }),
+        "{steps:?}"
+    );
+    fx.assert_uploaded(10, "cut 4, a delta").await;
 }
 
 /// Q5: head moved by another writer is never moved by the uploader. The
@@ -439,11 +514,14 @@ async fn a_head_moved_by_another_writer_stops_the_upload() {
 /// delta onto it.
 #[tokio::test]
 async fn a_failed_commit_on_a_head_or_row_another_writer_moved_is_given_up() {
-    let theirs = row::encode(&CommittedCut {
-        state: *b"another writer's",
-        number: 9,
-        group: 7,
-    });
+    let theirs = row::encode(
+        &CommittedCut {
+            state: *b"another writer's",
+            number: 9,
+            group: 7,
+        },
+        &THEIR_COMMIT,
+    );
     for (seed, head_moved) in [(23, true), (26, false)] {
         let case = if head_moved {
             "head moved"
@@ -507,7 +585,7 @@ async fn a_row_of_another_version_is_never_overwritten() {
     let mut fx = Fixture::new(11).await;
     let mut store = fx.start();
     fx.group(&mut store, 7);
-    let newer = vec![2, 0, 1, 2, 3];
+    let newer = vec![3, 0, 1, 2, 3];
     fx.put_row(newer.clone()).await;
     let mut up = fx.driver(store, 64);
     for txg in [8, 9] {
@@ -779,6 +857,9 @@ async fn a_cut_the_bound_takes_after_the_check_found_it_committed_is_named() {
 /// directory (`skyzfs_local`'s `intent::INTENT_NAME`, which is the
 /// crate's own).
 const INTENT_NAME: &str = "intent.map";
+
+/// The commit another writer's row names in these tests: not head's.
+const THEIR_COMMIT: [u8; 32] = [0xab; 32];
 
 /// A release whose write of the intent map fails after a commit that
 /// landed (F2 of the review of M2.4b-1): the volume fails, the map may

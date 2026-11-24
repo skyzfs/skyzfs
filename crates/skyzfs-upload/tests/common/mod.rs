@@ -29,7 +29,7 @@ use skynbd_refs::{ObjectRefStore, RefOp, RefStore};
 use skynbd_store::{
     FaultOp, FaultStore, FaultWhen, MemoryStore, ObjectStore, Precondition, StoreError,
 };
-use skynbd_types::VolumeId;
+use skynbd_types::{CommitHash, VolumeId};
 use skyzfs_blk::{Base, BlockTarget, Buf, Op, Request, RequestId};
 use skyzfs_local::inplace::{
     create, lock, records_for, words_for, CommittedCut, CutRegion, CutSlice, HoldCuts, InPlace,
@@ -38,7 +38,9 @@ use skyzfs_local::inplace::{
 use skyzfs_local::io::Dir;
 use skyzfs_local::sim::SimDisk;
 use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC};
-use skyzfs_upload::{row, Doing, Driver, EngineRemote, Local, Released, Uploadable, ROW_KEY};
+use skyzfs_upload::{
+    row, Doing, Driver, EngineRemote, Local, Named, Released, Uploadable, ROW_KEY,
+};
 
 pub const KIB: u64 = 1 << 10;
 pub const BLOCK: u64 = 4 * KIB;
@@ -248,7 +250,7 @@ impl Fixture {
             .meta_get(self.vol, ROW_KEY)
             .await
             .expect("the row")
-            .map(|bytes| row::decode(&bytes).expect("a row of version 1"));
+            .map(|bytes| row::decode(&bytes).expect("a row this uploader reads"));
         let engine = Engine::open(inner.clone(), refs, self.vol, cfg())
             .await
             .expect("the engine at head");
@@ -260,20 +262,26 @@ impl Fixture {
         Uploaded {
             content,
             group: engine.head_group(),
+            head: engine.head_commit_hash(),
             row,
             fsck,
         }
     }
 
-    /// Head's commit is the cut of group `txg`, named so by the row, and
-    /// the volume passes fsck.
+    /// Head's commit is the cut of group `txg`, named so by the row, which
+    /// names head's commit as the cut's, and the volume passes fsck.
     pub async fn assert_uploaded(&self, txg: u64, case: &str) -> Uploaded {
         let uploaded = self.uploaded().await;
         assert_eq!(uploaded.group, Some(txg), "{case}: head's group");
         assert_eq!(
-            uploaded.row.map(|row| row.group),
+            uploaded.row.map(|row| row.cut.group),
             Some(txg),
             "{case}: the row's group"
+        );
+        assert_eq!(
+            uploaded.row.and_then(|row| row.commit),
+            Some(uploaded.head),
+            "{case}: the row names head's commit"
         );
         assert!(
             uploaded.content == self.at[&txg],
@@ -295,6 +303,22 @@ impl Fixture {
         bytes
     }
 
+    /// Another writer swaps the row to one that names a cut of its own,
+    /// `state`'s cut `number` of group `group`, and head's commit as that
+    /// cut's: it leaves head as it is, and head is the row's. The bytes
+    /// put.
+    pub async fn put_row_on_head(&self, state: [u8; 16], number: u64, group: u64) -> Vec<u8> {
+        let head = self.uploaded().await.head;
+        let cut = CommittedCut {
+            state,
+            number,
+            group,
+        };
+        let value = row::encode(&cut, &head);
+        self.put_row(value.clone()).await;
+        value
+    }
+
     /// Another writer swaps the row to `value`, leaving head as it is.
     pub async fn put_row(&self, value: Vec<u8>) {
         let refs = ObjectRefStore::new(self.store.inner().clone());
@@ -307,6 +331,36 @@ impl Fixture {
         )
         .await
         .expect("the row put");
+    }
+
+    /// Another history's commit onto head, of group `group`, that writes
+    /// block 0 full of 0xCD and leaves the row: what a pool imported with
+    /// `zpool import -T` and written elsewhere leaves, its groups begun
+    /// again from an older one (n1 and n2 of the review of #122).
+    pub async fn move_head_with_group(&self, group: u64) {
+        let inner = self.store.inner().clone();
+        let refs = ObjectRefStore::new(inner.clone());
+        let mut engine = Engine::open(inner, refs, self.vol, cfg())
+            .await
+            .expect("the engine");
+        engine.write(0, &[0xCD; BLOCK as usize]).expect("a write");
+        engine.set_group(Some(group));
+        engine
+            .commit(skynbd_format::CommitKind::Flush)
+            .await
+            .expect("another history's commit");
+    }
+
+    /// An operator rolls the volume back to `snap/<name>`
+    /// (`Engine::rollback`): head becomes the snapshot's own commit, with
+    /// that commit's group, and the row stays.
+    pub async fn rollback(&self, name: &str) {
+        let inner = self.store.inner().clone();
+        let refs = ObjectRefStore::new(inner.clone());
+        let mut engine = Engine::open(inner, refs, self.vol, cfg())
+            .await
+            .expect("the engine");
+        engine.rollback(name).await.expect("the rollback");
     }
 
     /// Another writer commits a block onto head, with no group and no
@@ -343,6 +397,18 @@ impl Fixture {
             .await
             .expect("another writer's commit");
     }
+}
+
+/// The row of version 1 that names `cut`, as a daemon from before the
+/// row named its commit wrote it: 34 bytes, the version, the state, the
+/// number and the group, little-endian.
+pub fn row_v1(cut: &CommittedCut) -> Vec<u8> {
+    let mut row = Vec::with_capacity(skyzfs_upload::row::ROW_V1_LEN);
+    row.extend_from_slice(&1u16.to_le_bytes());
+    row.extend_from_slice(&cut.state);
+    row.extend_from_slice(&cut.number.to_le_bytes());
+    row.extend_from_slice(&cut.group.to_le_bytes());
+    row
 }
 
 /// The byte [`Fixture::move_head_everywhere`] fills block `block` with:
@@ -477,7 +543,10 @@ pub struct Uploaded {
     pub content: Vec<u8>,
     /// The group of head's commit.
     pub group: Option<u64>,
-    pub row: Option<CommittedCut>,
+    /// Head's commit.
+    pub head: CommitHash,
+    /// The row as read.
+    pub row: Option<Named>,
     pub fsck: bool,
 }
 
