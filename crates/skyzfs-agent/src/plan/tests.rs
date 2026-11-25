@@ -1495,6 +1495,7 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
             answer,
             Reply::Refused(
                 Code::Rewound
+                    | Code::Stopped
                     | Code::State
                     | Code::Attachment
                     | Code::Taken
@@ -1684,10 +1685,50 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
                 .unheld(),
             Action::Abandon(Why::TooOld),
         ),
+        // N6 of #144's fourth look: the uploader stopped for good.
+        (
+            "stopped, ours",
+            old().refused(Code::Stopped).looked(ours()),
+            published(),
+        ),
+        (
+            "stopped, absent",
+            old().refused(Code::Stopped).looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "stopped, absent, released",
+            old()
+                .refused(Code::Stopped)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            Action::Abandon(Why::TooOld),
+        ),
     ] {
-        let got = plan(&publish(asked()), &seen);
+        let publish = publish(asked());
+        let got = plan(&publish, &seen);
         if got != want {
             wrong.push(format!("{what}: {got:?}, not {want:?}"));
+        }
+        // TG8 of #144's fourth look: reported only where the publish is
+        // given up on a refusal that ends it; never beside one done.
+        let told = report(&publish, &seen, &got);
+        let want_told = match &seen.daemon {
+            DaemonSeen::Here {
+                answer: Reply::Refused(code, _),
+                ..
+            } if matches!(got, Action::Release | Action::Abandon(_))
+                && !matches!(
+                    code,
+                    Code::Asked | Code::Busy | Code::Ended | Code::NoAnswer | Code::NoUpload
+                ) =>
+            {
+                Some(Report::Refused(*code))
+            }
+            _ => None,
+        };
+        if told != want_told {
+            wrong.push(format!("{what}: reported {told:?}, not {want_told:?}"));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -1720,10 +1761,18 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
         stalls: STALLS_ABANDONED,
         ..publish(asked())
     };
-    for code in [Code::Stopped, Code::Ended, Code::NoAnswer, Code::NoUpload] {
+    for code in [Code::Ended, Code::NoAnswer, Code::NoUpload] {
         let seen = seen().refused(code).looked(SnapSeen::Absent);
         assert_eq!(plan(&stalled_asked, &seen), Action::Wait, "{code:?}");
     }
+    // `stopped` ends the request (N6 of #144's fourth look): the hold is
+    // released at once, and the code reported.
+    let stopped = seen().refused(Code::Stopped).looked(SnapSeen::Absent);
+    assert_eq!(plan(&stalled_asked, &stopped), Action::Release);
+    assert_eq!(
+        report(&stalled_asked, &stopped, &Action::Release),
+        Some(Report::Refused(Code::Stopped))
+    );
     let expired_ = seen().answer(Reply::Expired).looked(SnapSeen::Absent);
     assert_eq!(plan(&stalled_asked, &expired_), Action::Withdraw);
     // An end the uploader gave is given up on at once, with the code.
