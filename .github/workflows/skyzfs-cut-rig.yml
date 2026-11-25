@@ -93,7 +93,7 @@ jobs:
           RECORDINGS: ${{ inputs.recordings || '' }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
-          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z][a-z0-9]*$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
           sudo bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
       - name: Summary
         if: always()

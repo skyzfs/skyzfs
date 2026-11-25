@@ -58,11 +58,12 @@ NODEB = textwrap.dedent('''\
 ''')
 
 
-def row_text(number, group, head=HEAD, state=STATE, gen=None):
+def row_text(number, group, head=HEAD, state=STATE, gen=None, commit=None):
     """node B's `row`: head's commit and its generation (the number unless
-    GEN), the row, the lease."""
+    GEN), the row, the row's commit where COMMIT (row version 2, F1;
+    'none' for version 1), the lease."""
     return (f'head\t{head}\t{number if gen is None else gen}\nrow\t{state}\t{number}\t{group}\n'
-            'lease\trunner\t1\t99\n')
+            + ('' if commit is None else f'row_commit\t{commit}\n') + 'lease\trunner\t1\t99\n')
 
 
 class Pure(unittest.TestCase):
@@ -82,6 +83,12 @@ class Pure(unittest.TestCase):
     def test_rows(self):
         got = cw.parse_row(row_text(4, 17))
         self.assertEqual(cw.row_cut(got['row']), (STATE, 4, 17))
+        # The row's commit (version 2, F1); none for version 1, and for a
+        # node B from before F1 that prints no such line.
+        self.assertEqual(got['commit'], 'none')
+        self.assertEqual(cw.parse_row(row_text(4, 17, commit='none'))['commit'], 'none')
+        got = cw.parse_row(row_text(4, 17, commit=HEAD))
+        self.assertEqual((cw.row_cut(got['row']), got['commit']), ((STATE, 4, 17), HEAD))
         self.assertIsNone(cw.row_cut('none'))
         self.assertIsNone(cw.row_cut('unreadable 0200'))
         with self.assertRaises(cw.RigError):
@@ -141,6 +148,21 @@ class Steps(Fake):
                          [('0', '1', '0'), ('0', '1', '1'), ('1', '2', '0'), ('1', '2', '1')])
         self.assertEqual(blocks[2][3], cw.ZERO)
         self.assertEqual(len(self.read('rows.tsv').splitlines()), 6)
+
+    def test_the_rows_commit_is_written_with_its_cut(self):
+        """uploaded.tsv's last field is the commit the row names (F1), or
+        none; a row whose commit alone moved under the read drops the
+        fetch, as one whose cut moved does."""
+        self.put('row.txt', row_text(1, 10, commit='none'))
+        self.put('head.img', b'\1' * 4096)
+        self.assertTrue(self.w.step())
+        self.put('row.txt', row_text(2, 11, head='ef' * 32, commit='ef' * 32))
+        self.assertTrue(self.w.step())
+        self.assertEqual([ln.split('\t')[7] for ln in self.read('uploaded.tsv').splitlines()], ['none', 'ef' * 32])
+        self.put('row.txt', row_text(3, 12, head='aa' * 32, commit='aa' * 32))
+        self.put('move', row_text(3, 12, head='aa' * 32, commit='bb' * 32))
+        self.assertFalse(self.w.step())
+        self.assertEqual(len(self.read('uploaded.tsv').splitlines()), 2)
 
     def test_head_moved_under_the_read(self):
         self.put('row.txt', row_text(1, 10))

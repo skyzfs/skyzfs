@@ -10,8 +10,9 @@ does. Until the file STOP exists it loops, twice a second:
 
 - `row`: head's commit, the cut's row (`skyzfs/cut`: the cut state's
   name, the cut's number and group, which the uploader writes in the
-  same transaction as the head swap) and the lease. Each line goes to
-  OUT/rows.tsv with its time;
+  same transaction as the head swap; from row version 2, F1, also the
+  commit that head swap installed) and the lease. Each line but the
+  row's commit goes to OUT/rows.tsv with its time;
 - where head and the row have changed since the last cut fetched and
   the row names a cut, `get --ref head` into a scratch image, then `row`
   again: where head and the row are what they were before the read, the
@@ -25,8 +26,10 @@ At STOP it fetches once more, so that the cut head holds at the end is
 in the files, and ends. Out:
 
 - OUT/uploaded.tsv: one line per cut fetched, `number group state head
-  blocks ns_begin ns_end` (the blocks that are not zeros; the times
-  bracket the fetch, on the monotonic clock of the request log);
+  blocks ns_begin ns_end commit` (the blocks that are not zeros; the
+  times bracket the fetch, on the monotonic clock of the request log;
+  commit the one the row names, or `none` for a row of version 1 or a
+  node B that prints none);
 - OUT/uploaded-blocks.tsv: `fetch number block hash` for each block that
   changed since the cut fetched before, fetch being the line of
   uploaded.tsv (from 0; a cut another writer put at head can carry a
@@ -89,16 +92,18 @@ def changed(before, after):
 
 
 def parse_row(text):
-    """`row`'s output -> {'head', 'row', 'lease'}: each the line's fields
-    after its first, joined by spaces."""
+    """`row`'s output -> {'head', 'row', 'lease', 'commit'}: each the
+    line's fields after its first, joined by spaces; commit the row's
+    (`row_commit`), 'none' where node B printed none."""
     got = {}
     for ln in text.splitlines():
         f = ln.split('\t')
-        if f and f[0] in ('head', 'row', 'lease'):
+        if f and f[0] in ('head', 'row', 'lease', 'row_commit'):
             got[f[0]] = ' '.join(f[1:])
+    commit = got.pop('row_commit', 'none')
     if set(got) != {'head', 'row', 'lease'}:
         raise RigError(f'node B row printed {text!r}')
-    return got
+    return dict(got, commit=commit)
 
 
 def row_cut(row):
@@ -164,7 +169,7 @@ class Watcher:
         if row_cut(before['row']) is None or before['head'] == 'none':
             self.settled = True
             return False
-        key = (before['head'], before['row'])
+        key = (before['head'], before['row'], before['commit'])
         if key == self.last:
             self.settled = True
             return False
@@ -173,9 +178,9 @@ class Watcher:
             return False
         t1 = time.monotonic_ns()
         after = self.row()
-        if after is None or (after['head'], after['row']) != key:
+        if after is None or (after['head'], after['row'], after['commit']) != key:
             self.log(f'head moved under the read: {key} then '
-                     f"{(after['head'], after['row']) if after else 'nothing'}")
+                     f"{(after['head'], after['row'], after['commit']) if after else 'nothing'}")
             return False
         blocks = hash_image(self.image)
         state, number, group = row_cut(before['row'])
@@ -183,7 +188,8 @@ class Watcher:
         with open(os.path.join(self.out, 'uploaded-blocks.tsv'), 'a') as f:
             f.write(''.join(f'{self.fetched}\t{number}\t{b}\t{h}\n' for b, h in sorted(diff.items())))
         with open(os.path.join(self.out, 'uploaded.tsv'), 'a') as f:
-            f.write(f"{number}\t{group}\t{state}\t{before['head'].split()[0]}\t{len(blocks)}\t{t0}\t{t1}\n")
+            f.write(f"{number}\t{group}\t{state}\t{before['head'].split()[0]}\t{len(blocks)}\t{t0}\t{t1}\t"
+                    f"{before['commit']}\n")
         self.log(f'fetched cut {number} (group {group}, state {state}): {len(blocks)} blocks, {len(diff)} changed')
         self.last, self.blocks = key, blocks
         self.fetched += 1
