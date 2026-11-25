@@ -62,11 +62,12 @@
 //! clock is all there is to start from: a step forward while the agent
 //! was down may release a hold early (the request may still land, and
 //! where a person destroyed the snapshot after the release, on a cut
-//! without it: R2 of #149's review), and a step back keeps it longer. The age of a publish read from the record is anchored on the
-//! wall clock once, at the first round that reads it, and runs on the
-//! clock that does not step from there (S2 of #144's next look);
-//! `held_until` is read on the wall clock until the request is accepted
-//! again in this process.
+//! without it: R2 of #149's review), and a step back keeps it longer.
+//! The age of a publish read from the record is anchored on the wall
+//! clock once, at the first round that reads it, and runs on the clock
+//! that does not step from there (S2 of #144's next look);
+//! `held_until` is read on the wall clock until the request is asked or
+//! accepted again in this process.
 //!
 //! # Crash points
 //!

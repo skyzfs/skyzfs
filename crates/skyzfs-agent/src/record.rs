@@ -290,7 +290,11 @@ pub enum Why {
     /// The daemon's uploader stopped for good (`refused stopped`) before
     /// it published it (the lead's ruling on #146).
     Stopped,
-    /// A person gave it up ([`Person::GiveUp`]).
+    /// A person gave it up ([`Person::GiveUp`]). Where the daemon could
+    /// not be asked whether the request had landed (away, or silent)
+    /// until the hold's time was over, the request may still land after
+    /// the give-up: object storage then has `snap/<t>` though the outcome
+    /// says given up (an observation of the next look at #149).
     Person,
 }
 
