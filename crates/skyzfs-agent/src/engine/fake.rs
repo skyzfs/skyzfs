@@ -1270,10 +1270,13 @@ impl Zfs for FakeZfs {
 
     fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError> {
         self.0.borrow_mut().calls.push("held");
+        let suffix = format!("@{t}");
         self.pool(pool, |p| {
-            p.snaps
-                .get(&format!("{POOL}@{t}"))
-                .is_some_and(|s| s.holds.contains(tag))
+            p.snaps.contains_key(&format!("{POOL}@{t}"))
+                && p.snaps
+                    .iter()
+                    .filter(|(name, _)| name.ends_with(&suffix))
+                    .all(|(_, s)| s.holds.contains(tag))
         })
     }
 

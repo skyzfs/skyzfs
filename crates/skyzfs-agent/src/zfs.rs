@@ -271,8 +271,9 @@ pub trait Zfs {
     /// `zfs release -r TAG pool@t`; no such hold, or no such snapshot,
     /// is released.
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError>;
-    /// Whether `pool@t` has the hold `tag`; `false` where it does not
-    /// exist.
+    /// Whether every member's `@t` has the hold `tag` (`pool@t` and each
+    /// of [`Zfs::members`]); `false` where `pool@t` does not exist, and
+    /// where some members have it and others not.
     fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError>;
     /// The names `t` of every snapshot in the pool, of any dataset, that
     /// has the hold `tag`.

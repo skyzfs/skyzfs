@@ -483,8 +483,11 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
             "{}",
             rec.image
         );
-        let mut zfs = rec.adapter(&["none-holds"]);
+        // `held` reads the holds under the snapshot (`holds -r`): none,
+        // so no member is read.
+        let mut zfs = rec.adapter(&["none-holds-r"]);
         assert_eq!(zfs.held(NONE, "t", TAG), Ok(false), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), rec.words(&["none-holds-r"]), "{}", rec.image);
         let mut zfs = rec.adapter(&["none-release"]);
         assert_eq!(zfs.release(NONE, "t", TAG), Ok(()), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&["none-release"]), "{}", rec.image);
@@ -527,17 +530,22 @@ fn holds_read_as_recorded() {
             assert_eq!(zfs.hold(pool, "t", TAG), Ok(()), "{} {pool}", rec.image);
             assert_eq!(ran(&mut zfs), rec.words(&names));
 
-            let holds = name("holds");
-            let mut zfs = rec.adapter(&[holds.as_str()]);
+            // `held` reads the tagged snapshots under the root, then the
+            // members: every member's `@t` carries the tag.
+            let read = [name("holds-r"), name("members")];
+            let read: Vec<&str> = read.iter().map(String::as_str).collect();
+            let mut zfs = rec.adapter(&read);
             assert_eq!(zfs.held(pool, "t", TAG), Ok(true), "{} {pool}", rec.image);
-            let mut zfs = rec.adapter(&[holds.as_str()]);
+            assert_eq!(ran(&mut zfs), rec.words(&read));
+            // Another tag is not on the root: false, with no member read.
+            let mut zfs = rec.adapter(&read);
             assert_eq!(
                 zfs.held(pool, "t", "another"),
                 Ok(false),
                 "{} {pool}",
                 rec.image
             );
-            assert_eq!(ran(&mut zfs), rec.words(&[holds.as_str()]));
+            assert_eq!(ran(&mut zfs), rec.words(&read[..1]));
 
             let release = name("release-1");
             let mut zfs = rec.adapter(&[release.as_str()]);
