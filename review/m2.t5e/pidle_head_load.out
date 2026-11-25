@@ -1,0 +1,15 @@
+58fc660 under load: 4 copies of 150 runs each beside 4 busy loops; 0.88 0.40 0.53 at the start (4 CPUs)
+load at the end: 4.38 1.32 0.84
+copy 1: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 202 ms:
+  150  grow: error after 30 s, 30 sleeps
+  150  idle: idle after 12 s, 12 sleeps
+copy 2: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 228 ms:
+  150  grow: error after 30 s, 30 sleeps
+  150  idle: idle after 12 s, 12 sleeps
+copy 3: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 237 ms:
+  150  grow: error after 30 s, 30 sleeps
+  150  idle: idle after 12 s, 12 sleeps
+copy 4: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 213 ms:
+  150  grow: error after 30 s, 30 sleeps
+  150  idle: idle after 12 s, 12 sleeps
+58fc660 without unset SECONDS, under load: 4 copies of 150 runs each beside 4 busy loops; 4.38 1.32 0.84 at the start (4 CPUs)

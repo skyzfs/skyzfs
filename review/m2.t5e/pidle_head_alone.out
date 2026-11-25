@@ -1,0 +1,10 @@
+ 15:03:26 up 43 min,  0 user,  load average: 0.31, 0.23, 0.49
+58fc660 alone: bash 5.2.21(1)-release, 400 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 76 ms:
+  400  grow: error after 30 s, 30 sleeps
+  400  idle: idle after 12 s, 12 sleeps
+58fc660 without unset SECONDS, alone: bash 5.2.21(1)-release, 400 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 66 ms:
+  14  grow: error after 30 s, 29 sleeps
+  386  grow: error after 30 s, 30 sleeps
+  5  idle: idle after 12 s, 11 sleeps
+  394  idle: idle after 12 s, 12 sleeps
+  1  idle: idle after 13 s, 12 sleeps
