@@ -209,7 +209,7 @@ there, and the user decides when it merges.
   through a daemon started as after a reboot. A pull request that
   touches `tests/kernel/`, `tests/lib/` or the workflow runs both kinds
   of job; one that touches `crates/skyzfs-local/`, `crates/skyzfs-ublk/`,
-  `crates/skyzfs-ublk-sys/` or `bins/skyzfsd/` runs the daemon jobs.
+  `crates/skyzfs-ublk-sys/`, `crates/skyzfs-control/` or `bins/skyzfsd/` runs the daemon jobs.
   On a pull request they check the marks and every flush boundary,
   about twenty-five minutes a job. By dispatch, `server` chooses
   `reference` (the default), `daemon` or `both`, and `daemon_budget`
@@ -232,8 +232,8 @@ there, and the user decides when it merges.
   that touches `tests/kernel/`, `tests/lib/`, `bins/skyzfsd/`,
   `bins/skyzfs-blkcheck/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-ublk-sys/`, `crates/skyzfs-local/`, `crates/skyzfs-blk/`,
-  `Cargo.lock`, `Cargo.toml` or `rust-toolchain.toml`, and by dispatch.
-  It drives a server through the kernel and ZFS on Ubuntu 24.04 and
+  `crates/skyzfs-control/`, `Cargo.lock`, `Cargo.toml` or `rust-toolchain.toml`,
+  and by dispatch. It drives a server through the kernel and ZFS on Ubuntu 24.04 and
   26.04: parameters, overlapping writes, `kill -9` under load, a start
   that is refused, a device that waits 300 s for a server, the
   conformance suite through the block device, a failed volume, a held
@@ -395,6 +395,7 @@ there, and the user decides when it merges.
   stage (`ctl_digest`, `ctl_early`, `ctl_lacks`, `ctl_later`,
   `ctl_hole`). Both 26.04 images on a pull request that touches its
   files.
+- **The publish rig.** `skyzfs-publish-rig.yml` (M2.T7, `tests/kernel/publish_agent.py` is the stand-in agent) drives the daemon's channel (control protocol version 2, M2.6a) through six courses on Ubuntu 26.04: `pplain` (asks, refusals, a cut below G is never what `snap/t` names), `prewind` (a `-T` rewind with a publish waiting), `pkill`, `pkillman`, `pkillpub` (the daemon killed at each step of a publish), `pchannel` (refusals at the socket); node B imports what was published. It runs on a pull request that touches `tests/kernel/`, the daemon's crates or the workflow. Three controls must be caught; the table `EXPECTED` pins each course's words. A request asked with a count from before a take-over or a rewind is refused `rewound` and asked anew.
 - **A pool whose device was deleted goes on reading ONLINE while it
   only writes**, and posts tens of thousands of events a second. A tool
   that reads `zpool events` from it does not come to an end: cut such a
