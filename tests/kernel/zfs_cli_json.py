@@ -7,9 +7,11 @@
 OUT is zfs-cli-record.sh's output directory. Every record (a directory
 with an `rc` file) but the scale pools' (`scale-*`, whose outputs run to
 megabytes) becomes `records[NAME]`: `cmd` (as the recorder quoted it for
-bash), `rc` (an integer), `stdout` and `stderr`. An output that is not
-UTF-8 is kept as text with U+FFFD in place of what is not, and in full as
-hex in `stdout_hex` or `stderr_hex`. SOURCE is the fixture's `source`
+bash), `rc` (an integer), `stdout` and `stderr`, and `note` where the
+record has one (what an `--expect` or a catch found, "not caught" among
+them). An output that is not UTF-8 is kept as text with U+FFFD in
+place of what is not, and in full as hex in `stdout_hex` or
+`stderr_hex`. SOURCE is the fixture's `source`
 line: the recorder's commit, the run and the artifact. Exit 2 when OUT
 holds no record.
 """
@@ -45,6 +47,11 @@ def records(out):
                 rec[stream], raw = "", None
             if raw is not None:
                 rec[stream + "_hex"] = raw
+        try:
+            with open(os.path.join(d, "note"), "rb") as f:
+                rec["note"] = text(f.read())[0]
+        except FileNotFoundError:
+            pass
         got[name] = rec
     return got
 

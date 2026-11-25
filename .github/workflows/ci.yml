@@ -101,11 +101,17 @@ jobs:
       # line does not.
       - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
       # The workspace's documentation, as M2.D1 left it: no rustdoc warning
-      # (broken or private intra-doc links, bad code blocks).
+      # (broken or private intra-doc links, bad code blocks). Plain and
+      # with each of the two features, as clippy above: code behind a
+      # feature that is off is not documented, so its links are not
+      # checked.
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+        run: |
+          cargo doc --workspace --no-deps
+          cargo doc --workspace --no-deps --features skyzfsd/test-hooks
+          cargo doc -p skyzfs-ublk-sys --no-deps --features control-test-program
 
   chart-lint:
     needs: changes

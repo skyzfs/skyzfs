@@ -34,6 +34,19 @@ class Records(unittest.TestCase):
                 "rig-get": {"cmd": "zpool get -H skzq\n", "rc": 0, "stdout": "guid\t1\n", "stderr": ""},
             })
 
+    def test_a_note_is_carried(self):
+        # A catch that failed says so in its note: the fixture keeps it,
+        # as the first fixture (bd37422) did, text and newline.
+        with tempfile.TemporaryDirectory() as out:
+            record(out, "mirror-resilver-status", b"zpool status skzqm\n", b"0\n", b"ONLINE\n")
+            note = "not caught: no output of 100 matched /resilver in progress/; this is the last\n"
+            with open(os.path.join(out, "mirror-resilver-status", "note"), "w") as f:
+                f.write(note)
+            record(out, "rig-get", b"zpool get -H skzq\n", b"0\n")
+            got = zfs_cli_json.records(out)
+            self.assertEqual(got["mirror-resilver-status"]["note"], note)
+            self.assertNotIn("note", got["rig-get"])
+
     def test_scale_and_the_rest_left_out(self):
         with tempfile.TemporaryDirectory() as out:
             record(out, "scale-1000-members", b"zfs program\n", b"0\n", b"{}")
