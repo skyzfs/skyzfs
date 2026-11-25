@@ -15,7 +15,7 @@
 //!
 //! - every field fits in `u32` — an offset inside a 1 GiB shard, a length
 //!   bounded by the same, an index into the object table, and an offset
-//!   inside an 8 MiB segment. [`ShardBuilder::push`] checks rather than
+//!   inside an 8 MiB segment. `ShardBuilder::push` checks rather than
 //!   assumes this, so an unsupported configuration fails loudly instead of
 //!   truncating a target offset and returning the wrong bytes.
 //! - the object table is per *volume*. A segment's ~128 extents scatter
@@ -24,7 +24,7 @@
 //!   prototype, more than the columns themselves.
 //!
 //! The write path is untouched: the overlay stays a mutable `ExtentMap`,
-//! and [`merge`] folds it into a shard at commit time. The split is
+//! and `merge` folds it into a shard at commit time. The split is
 //! writable-head versus read-only-export, not raw versus thin.
 
 use std::collections::HashMap;

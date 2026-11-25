@@ -7,9 +7,10 @@ license-file.workspace = true
 repository.workspace = true
 
 # The client's connect, made without blocking so that a daemon whose
-# backlog is full is tried again within a limit.
+# backlog is full is tried again within a limit; the peer's user, read
+# from the connection, and the client's own (`process`).
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1", features = ["net"] }
+rustix = { version = "1", features = ["net", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

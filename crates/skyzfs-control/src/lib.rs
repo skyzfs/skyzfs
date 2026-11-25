@@ -196,9 +196,11 @@ pub const REQUEST_LIMIT: Duration = IO_LIMIT;
 /// between two of its steps, and a step can wait on object storage.
 pub const ANSWER_LIMIT: Duration = Duration::from_secs(30);
 
-/// How long the command line's client waits for each read and write: the
-/// daemon may wait [`ANSWER_LIMIT`] for its uploader, and [`IO_LIMIT`]
-/// more for the connection.
+/// How long a client waits for the whole of an ask (one deadline,
+/// [`ask`]; S4 of the review of #131): the daemon may wait
+/// [`ANSWER_LIMIT`] for its uploader, and [`IO_LIMIT`] more for the
+/// connection. A daemon that answers one connection at a time and is
+/// busy with another past this is no answer, as a daemon away is.
 pub const ASK_LIMIT: Duration = Duration::from_secs(ANSWER_LIMIT.as_secs() + IO_LIMIT.as_secs());
 
 /// A request ([crate docs](crate)).

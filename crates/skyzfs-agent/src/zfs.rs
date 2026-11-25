@@ -13,8 +13,9 @@
 //!   device is the volume's (its device number, `st_rdev`, is the one
 //!   of the daemon's `/dev/ublkbN`);
 //! - there is no special or dedup vdev;
-//! - no resilver, rebuild or removal is under way, and no vdev was
-//!   removed (no indirect vdev: conservative);
+//! - no resilver or rebuild is under way, and `zpool status` shows no
+//!   `remove:` line: no vdev is being removed or was ever removed (the
+//!   lead's L4 on #147; `zpool status` never shows an indirect vdev);
 //! - the pool and the leaf are the ones the agent enrolled, where it
 //!   has enrolled one (the lead's Q4);
 //! - `multihost=off`, there is no checkpoint, the pool is not read-only,
@@ -51,6 +52,9 @@ pub struct Layout {
     /// A resilver, rebuild or removal under way, in words; `None` where
     /// there is none.
     pub busy: Option<String>,
+    /// The `remove:` line of a vdev removal, under way or done; `None`
+    /// where there is none.
+    pub removed: Option<String>,
 }
 
 /// A vdev.
@@ -119,8 +123,10 @@ pub enum Refusal {
     },
     /// A special or dedup vdev.
     Class,
-    /// A resilver, rebuild or removal under way, or a vdev removed.
+    /// A resilver, rebuild or removal under way.
     Busy(String),
+    /// A vdev removed, or being removed (its `remove:` line).
+    Removed(String),
     /// Another pool or leaf than the one enrolled.
     Enrolled,
     /// `multihost=on`.
@@ -143,6 +149,7 @@ impl fmt::Display for Refusal {
             },
             Refusal::Class => write!(f, "the pool has a special or dedup vdev"),
             Refusal::Busy(what) => write!(f, "{what}"),
+            Refusal::Removed(what) => write!(f, "a vdev was removed: {what}"),
             Refusal::Enrolled => write!(f, "not the pool and leaf the agent enrolled"),
             Refusal::Multihost => write!(f, "multihost is on"),
             Refusal::Checkpoint => write!(f, "the pool has a checkpoint"),
@@ -182,6 +189,9 @@ pub fn premise(
     if let Some(what) = &layout.busy {
         return Err(Refusal::Busy(what.clone()));
     }
+    if let Some(what) = &layout.removed {
+        return Err(Refusal::Removed(what.clone()));
+    }
     if let Some(enrolled) = enrolled {
         if enrolled.pool != pool
             || enrolled.pool_guid != props.guid
@@ -212,6 +222,23 @@ pub struct Program {
     pub createtxg: u64,
     /// Each member: the pool's root, then its descendants.
     pub members: Vec<manifest::Member>,
+}
+
+/// Where the agent's hold is on a publish's snapshot ([`Zfs::held`]).
+///
+/// The planner holds again unless it is [`Held::All`], and releases
+/// wherever it is not [`Held::No`]: a hold on some members only (a
+/// person released the others, or a member's `@t` came after the hold)
+/// is released when the publish ends, as a whole one is (TL-F1 of
+/// #147's review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// No member's `@t` has the tag, or `pool@t` does not exist.
+    No,
+    /// Some members' `@t` have it and others not.
+    Part,
+    /// Every member's `@t` has it.
+    All,
 }
 
 /// Why ZFS did not do what was asked.
@@ -261,9 +288,9 @@ pub trait Zfs {
     /// `zfs release -r TAG pool@t`; no such hold, or no such snapshot,
     /// is released.
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError>;
-    /// Whether `pool@t` has the hold `tag`; `false` where it does not
-    /// exist.
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError>;
+    /// Where the hold `tag` is on the members' `@t` (`pool@t` and each of
+    /// [`Zfs::members`]): [`Held::No`] where `pool@t` does not exist.
+    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError>;
     /// The names `t` of every snapshot in the pool, of any dataset, that
     /// has the hold `tag`.
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;
@@ -288,6 +315,8 @@ pub trait Zfs {
 
 /// The user property of the agent's sync task ([`Zfs::assist`]).
 pub const ASSIST_PROPERTY: &str = "skyzfs:assist";
+
+pub mod cli;
 
 #[cfg(test)]
 mod tests;

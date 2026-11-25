@@ -18,6 +18,7 @@ fn layout() -> Layout {
         dedup: 0,
         other: 0,
         busy: None,
+        removed: None,
     }
 }
 
@@ -128,6 +129,16 @@ fn a_pool_is_one_leaf_disk_on_the_volume_and_nothing_else_it_must_not_be() {
             "a resilver",
             with(&|l| l.busy = Some("resilver in progress".into())),
             |r| matches!(r, Refusal::Busy(_)),
+        ),
+        (
+            "a vdev removed",
+            with(&|l| {
+                l.removed = Some(
+                    "remove: Removal of vdev 1 copied 1.20G in 0h0m, completed on Wed Nov 25 2026"
+                        .into(),
+                )
+            }),
+            |r| matches!(r, Refusal::Removed(_)),
         ),
     ];
     for (what, layout, refusal) in layouts {

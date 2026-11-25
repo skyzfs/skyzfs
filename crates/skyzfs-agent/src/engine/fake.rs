@@ -37,7 +37,7 @@ use skyzfs_control::{Code, CutsReply, Publish as PublishRequest, Reply, Request,
 use super::{Clock, Daemon};
 use crate::manifest::{self, Kind, Manifest};
 use crate::record::{self, Keep, Loaded, Record, SaveError};
-use crate::zfs::{Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, HOLD_TAG};
+use crate::zfs::{Held, Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, HOLD_TAG};
 
 /// The pool's name.
 pub const POOL: &str = "tank";
@@ -174,15 +174,19 @@ pub enum User {
     Attach,
     /// `zpool add`: a second data vdev.
     Add,
+    /// `zfs release skyzfs-publish pool/db@t`: the agent's hold left on
+    /// some members only (TL-F1 of #147's review).
+    ReleaseChild,
 }
 
 /// The people's actions the matrix tries at each point.
-pub const USERS: [User; 5] = [
+pub const USERS: [User; 6] = [
     User::Destroy,
     User::Retake,
     User::DestroyChild,
     User::Attach,
     User::Add,
+    User::ReleaseChild,
 ];
 
 /// A snapshot of one dataset.
@@ -458,6 +462,7 @@ impl World {
                 dedup: 0,
                 other: 0,
                 busy: None,
+                removed: None,
             },
             next_txg: None,
         });
@@ -900,6 +905,20 @@ impl World {
                     self.sync("destroy child");
                 }
             }
+            User::ReleaseChild => {
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                let child = format!("{POOL}/db@{t}");
+                let released = pool
+                    .snaps
+                    .get_mut(&child)
+                    .is_some_and(|s| s.holds.remove(HOLD_TAG));
+                if released {
+                    self.log.push(format!("partly released {t}"));
+                    self.sync("release child");
+                }
+            }
             User::Attach | User::Add => {
                 let Some(pool) = &mut self.pool else {
                     return;
@@ -987,7 +1006,7 @@ impl World {
                 );
             }
             let local = if kind == Kind::Volume {
-                BTreeMap::from([("volsize".to_string(), "1073741824".to_string())])
+                BTreeMap::from([("volsize".to_string(), b"1073741824".to_vec())])
             } else {
                 BTreeMap::new()
             };
@@ -1218,17 +1237,32 @@ impl Zfs for FakeZfs {
             return Err(ZfsError::NoSnapshot);
         }
         let suffix = format!("@{t}");
+        // As ZFS and the adapter do: `hold -r` holds all or none, and
+        // refuses where a member has the tag; the adapter then answers
+        // held where every member has it, and an error where some lack it.
+        let (tagged, lacking): (Vec<_>, Vec<_>) = p
+            .snaps
+            .iter()
+            .filter(|(name, _)| name.ends_with(&suffix))
+            .partition(|(_, snap)| snap.holds.contains(tag));
+        if !tagged.is_empty() {
+            return if lacking.is_empty() {
+                Ok(())
+            } else {
+                Err(ZfsError::Other(format!(
+                    "the tag is on some members and not on {}",
+                    lacking.len()
+                )))
+            };
+        }
         let txg = p.next_txg.unwrap_or(p.txg + 1);
-        let mut changed = false;
         for (name, snap) in p.snaps.iter_mut() {
-            if name.ends_with(&suffix) && snap.holds.insert(tag.to_string()) {
+            if name.ends_with(&suffix) {
+                snap.holds.insert(tag.to_string());
                 snap.held_in = Some(txg);
-                changed = true;
             }
         }
-        if changed {
-            world.sync("hold");
-        }
+        world.sync("hold");
         Ok(())
     }
 
@@ -1251,12 +1285,21 @@ impl Zfs for FakeZfs {
         Ok(())
     }
 
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError> {
+    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError> {
         self.0.borrow_mut().calls.push("held");
+        let suffix = format!("@{t}");
         self.pool(pool, |p| {
-            p.snaps
-                .get(&format!("{POOL}@{t}"))
-                .is_some_and(|s| s.holds.contains(tag))
+            if !p.snaps.contains_key(&format!("{POOL}@{t}")) {
+                return Held::No;
+            }
+            let members = || p.snaps.iter().filter(|(name, _)| name.ends_with(&suffix));
+            if members().all(|(_, s)| s.holds.contains(tag)) {
+                Held::All
+            } else if members().any(|(_, s)| s.holds.contains(tag)) {
+                Held::Part
+            } else {
+                Held::No
+            }
         })
     }
 
