@@ -47,3 +47,47 @@ R36	KILLED	ask look sends publish-progress (A4)	test_publish_agent.py
 R40	SURVIVED	pplain: t3's look before t5's	
 R41	KILLED	prewindf: f1 expires in 5 s	test_cut_record.sh
 R42	SURVIVED	prewindf: f1's end read within 3 s	
+R43x	KILLED	import_rewind_f: -FX alone, no -F	test_cut_record.sh
+R44	KILLED	prewind's top read from the count	test_cut_record.sh
+R45x	KILLED	rewindf without the damage	test_cut_record.sh
+R46	NOT APPLIED	prewindf not a course by name	0 matches
+R47	KILLED	prewind: the top written as 0	test_cut_record.sh
+R48	KILLED	prewind: r1's look before r1 is asked	test_cut_record.sh
+R49	KILLED	prewind: r1 asked anew before the store comes back (#140's S12)	test_cut_record.sh
+M1	KILLED	import_rewind_f without -FX	test_cut_record.sh
+M2	KILLED	prewindf: the import without the damage (= L13x)	test_cut_record.sh
+M3	KILLED	the import premise by substring	test_publish_check_main.py
+P1	NOT APPLIED	the anchor read as the refusal again	0 matches
+P2	KILLED	the expiry filter dropped	test_publish_check_main.py
+P3	KILLED	the expiry taken as 3600 s	test_publish_check.py, test_publish_check_main.py
+P4	KILLED	the end's order unchecked	test_publish_check.py, test_publish_check_main.py
+P5	KILLED	any end accepted	test_publish_check.py, test_publish_check_main.py
+P6	KILLED	the withdraw line read as withdrawn	test_publish_check.py
+P7	KILLED	`<` for `<=` (= R1x)	test_publish_check.py, test_publish_check_main.py
+P8	KILLED	C not checked (= R3x)	test_publish_check.py, test_publish_check_main.py
+P9	KILLED	an `asked` line taken as an end	test_publish_check.py
+N1	KILLED	rewind_cuts: with no STOP, nothing returned	test_publish_check.py, test_publish_check_main.py
+N2	SURVIVED	a no-op (the harness itself)	
+N3	KILLED	rewind_cuts: only the first ground kept	test_publish_check.py
+N4	KILLED	ask_deadline: any name's publish	test_publish_check.py, test_publish_check_main.py
+N5	KILLED	ask_deadline: from the agent's answer, not its send	test_publish_check.py
+N6	KILLED	ask_deadline: the expiry read as milliseconds	test_publish_check.py
+N7	KILLED	ask_deadline: the last publish of the name, not the first	test_publish_check.py
+N8	SURVIVED	the expiry filter strict	
+N9	KILLED	judge_ended: an end at the ground's ns passes	test_publish_check.py
+N10	KILLED	judge_ended: the last end, not the first	test_publish_check.py
+N11	SURVIVED	the pin anchored on the last ground within the expiry	
+N12	KILLED	the pin not anchored on the ground	test_publish_check_main.py
+N13	SURVIVED	the pin said to rest on the rig	
+N14	KILLED	prewindf's ground up to f1's end again (B2 undone)	test_publish_check_main.py
+N15	KILLED	the import premise refuses -FX	test_publish_check_main.py
+N16	KILLED	withdrawn_past: a name prefix matches	test_publish_check.py
+N17	KILLED	asked_line: a name prefix matches	test_publish_check.py
+N18	KILLED	import_rewind_f: always says -F	test_cut_record.sh
+N19	SURVIVED	import_rewind_f: -FX tried after -F imported	
+N20	SURVIVED	import_rewind_f: no session begun (the marks)	
+N21	SURVIVED	import_rewind_f: no ready mark	
+N22	KILLED	prewindf: import_pool -F again (B1 undone)	test_cut_record.sh
+N23	SURVIVED	import_rewind_f: both refused is no error	
+N24	NOT APPLIED	the workflow's default list without prewindf	0 matches
+restored: all pass

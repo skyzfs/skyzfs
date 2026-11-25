@@ -172,9 +172,10 @@ and from 4.4 to 6.0 over the planted run.
 The planted runs answered "29 sleeps", "11 sleeps", "13 s" and "31 s":
 B2's off-by-one, back.
 
-Beyond these, `test_cut_record.sh` ran whole about 200 times in this
-look's plant runs (most of them under load from the cargo build and the
-other plant runs). It never failed except where a plant meant it to.
+Beyond these, `test_cut_record.sh` ran whole 110 times in #141's plant
+runs at 58fc660 alone, most of them under load from the other plant
+runs. It never failed except where a plant meant it to (see "#141's
+plants at 58fc660" below).
 
 ### Can `timeout 20` itself flake?
 
@@ -217,7 +218,8 @@ See `third_plants.out` and `third_plants_p68.out`.
 ### The plants the flake used to kill
 
 - **#141's N2 (a no-op) and N21.** Their suites include
-  `test_cut_record.sh`. At 9bac3dd the flake killed both. At 58fc660:
+  `test_cut_record.sh`. At 9bac3dd the flake killed both. At 58fc660
+  both SURVIVE, as they should:
   - in the whole of `plants_next.py` (`p141_at_58fc.out`);
   - in six runs of N2 and N21 alone (`p141_n2_n21_58fc.out`), each with
     the suites before and after;
@@ -427,7 +429,29 @@ None of them reaches F9 or F19.
 
 ## #141's plants at 58fc660
 
-PLACEHOLDER_P141
+`review/m2.t7b/plants_next.py` puts all four of its suites, among them
+`test_cut_record.sh`, under each of its 91 plants. Before B2's fix, that
+made it the plant set the flake hit.
+
+| Run | KILLED | SURVIVED | NOT APPLIED | N2 and N21 |
+|---|---|---|---|---|
+| cb91ad1, the first look (`p141_at_145.out`) | 71 | 13 | 7 | SURVIVED |
+| 9bac3dd, the next look (`p141_at_9bac.out`) | 73 | 11 | 7 | KILLED by `test_cut_record.sh`: the flake |
+| 9bac3dd, the two alone, twice (`p141_n2_n21_again.out`) | | | | SURVIVED both times |
+| **58fc660, all 91 (`p141_at_58fc.out`)** | **71** | **13** | **7** | **SURVIVED** |
+| **58fc660, the two alone, six times (`p141_n2_n21_58fc.out`)** | | | | **SURVIVED 6 of 6** |
+
+- At 58fc660 the whole run is the same as at cb91ad1 byte for byte,
+  the killers' column included.
+- N2 is a no-op, so it must survive. With the flake, it did not.
+- The six runs of N2 and N21 alone ran under a load average between 1.6
+  and 7.0.
+- In each of the six, the suites passed before and after the plants
+  too.
+
+So `test_cut_record.sh` ran 110 times in #141's plants at 58fc660:
+86 in the full run and 24 in the six repeats. It failed only under the
+16 plants that aim at it, the same 16 as at cb91ad1.
 
 ## Local gates at 58fc660
 
