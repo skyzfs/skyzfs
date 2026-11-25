@@ -481,13 +481,15 @@ fn on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request() {
     assert!(!world.assists.is_empty(), "no sync task ran");
 }
 
-/// Mutant: the sync task's value set again (the fake writes no group for
-/// a property set to the value it holds, where ZFS 2.4.1 writes one as
-/// for a new value: the conservative model). Two
-/// publishes in a row on an idle pool, the daemon rebooted as each is
-/// first accepted, each need a sync task (a request asked anew is carried
-/// by no other group), and the agent's clock steps back between them:
-/// each value is new.
+/// Mutant: the sync task's value set again, fixed or not above the last
+/// one (TG5 of #144's next look). Two publishes in a row on an idle pool,
+/// the daemon rebooted as each is first accepted, each need a sync task
+/// (a request asked anew is carried by no other group), and the agent's
+/// clock steps back between them: each value is new, and no set repeats
+/// the last. The fake writes no group for a value set again (ZFS 2.4.1
+/// writes two, as for a new value), and logs it: the check reads the log,
+/// since a repeat that writes nothing leaves no value in
+/// [`World::assists`].
 #[test]
 fn each_sync_task_sets_a_value_of_its_own() {
     let world = World::new(Mode::Idle);
@@ -526,6 +528,113 @@ fn each_sync_task_sets_a_value_of_its_own() {
         world.assists.len() >= 2 && values.len() == world.assists.len(),
         "{:?}",
         world.assists
+    );
+    let again = world.log.iter().filter(|l| l.contains(" again)")).count();
+    assert_eq!(again, 0, "{again} sets of a value the property held");
+}
+
+/// A take-over counts as a stall (F2 of #144's review, accepted by the
+/// lead; TG4 of the next look): a daemon taken over as each request is
+/// accepted loses every one before a cut carries it, and the publish is
+/// reported at its third stall and given up at its eighth.
+///
+/// Mutant: a take-over's count read as a new daemon's (the stalls reset,
+/// and the publish is asked for ever).
+#[test]
+fn a_publish_whose_daemon_is_taken_over_at_each_request_is_given_up() {
+    let world = World::new(Mode::Idle);
+    let keep = MemKeep::default();
+    let hook = {
+        let world = world.clone();
+        move |point: Point| {
+            if point == ASKED {
+                world.borrow_mut().restart(Restart::TakeOver, None);
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    let t = match agent.outcomes() {
+        [(t, Outcome::Abandoned(Why::NoProgress))] => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        agent.reports(),
+        [(t, Report::NoProgress(plan::STALLS_REPORTED))]
+    );
+    let world = world.borrow();
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+    assert!(world.refs.is_empty());
+}
+
+/// A report is made once in a process for each publish and kind (TG2 of
+/// #144's next look). A publish stalls until it is reported; then a sync
+/// task carries it, it is published, and a rewind takes `pool@t` before
+/// the agent reads `done`, so that it is recorded done with a report of
+/// its snapshot gone; the save of that record fails once, in the same
+/// process, and `Done` is planned again.
+///
+/// Mutant: no de-duplication (the snapshot reported twice), or one by
+/// name alone (the snapshot's report dropped after the stalls').
+#[test]
+fn a_report_is_made_once_in_a_process_for_each_kind() {
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let (rebooted, rewound, failed) = (
+        Rc::new(Cell::new(false)),
+        Rc::new(Cell::new(false)),
+        Rc::new(Cell::new(false)),
+    );
+    let hook = {
+        let (world, files) = (world.clone(), keep.0.clone());
+        let (rebooted, rewound, failed) = (rebooted.clone(), rewound.clone(), failed.clone());
+        move |point: Point| {
+            if point == ASKED && !rebooted.replace(true) {
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            if point == ASKED {
+                let stalls = files
+                    .borrow()
+                    .record
+                    .as_deref()
+                    .and_then(|bytes| Record::decode(bytes).ok())
+                    .and_then(|r| r.under_way.first().map(|p| p.stalls));
+                if stalls >= Some(plan::STALLS_REPORTED) {
+                    world.borrow_mut().plain_sync = false;
+                }
+            }
+            if !world.borrow().refs.is_empty() && !rewound.replace(true) {
+                world
+                    .borrow_mut()
+                    .restart(Restart::RewindF(Back::BelowCreated), None);
+            }
+            point == DONE && !failed.replace(true)
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    let t = agent.begin().expect("begun");
+    let mut stops = 0;
+    while let Err(e) = agent.settle(LIMIT) {
+        assert!(matches!(e, Error::Stopped), "{e}");
+        stops += 1;
+        assert!(stops < 3, "stopped {stops} times");
+    }
+    assert_eq!(stops, 1, "the save of done did not fail");
+    assert!(rewound.get(), "not published");
+    assert!(
+        matches!(agent.outcomes(), [(n, Outcome::Published(_))] if *n == t),
+        "{:?}",
+        agent.outcomes()
+    );
+    assert_eq!(
+        agent.reports(),
+        [
+            (t.clone(), Report::NoProgress(plan::STALLS_REPORTED)),
+            (t, Report::SnapshotGone)
+        ]
     );
 }
 
@@ -946,9 +1055,12 @@ fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
 
 /// Mutant: the age read on the wall clock for a publish begun in this
 /// process, or on the clock that does not step after a restart (which
-/// starts it again). The wall clock steps three hours forward just
-/// after the intent: the publish goes on and is published; an agent
-/// started after the step reads the wall clock and gives it up.
+/// starts it again), or on the wall clock at each round after a restart
+/// rather than anchored once (S2 of #144's next look). The wall clock
+/// steps three hours forward just after the intent: the publish goes on
+/// and is published; an agent started after the step reads the wall
+/// clock and gives it up; one started before the step, and running
+/// across it, publishes.
 #[test]
 fn a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process() {
     let step = |world: &Rc<RefCell<World>>| {
@@ -980,6 +1092,31 @@ fn a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process() {
     let mut next = agent(&world, &keep);
     next.settle(LIMIT).expect("settled");
     given_up_too_old(&world, &next, &t, Duration::ZERO);
+
+    // S2 of #144's next look: an agent started before the step anchors
+    // the age on the wall clock once, and the step after does not move
+    // it.
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    agent(&world, &keep).begin().expect("begun");
+    let stepped = Rc::new(Cell::new(false));
+    let hook = {
+        let (world, stepped) = (world.clone(), stepped.clone());
+        move |_: Point| {
+            if !stepped.replace(true) {
+                world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
+            }
+            false
+        }
+    };
+    let mut next = agent(&world, &keep).with_points(Box::new(hook));
+    next.settle(LIMIT).expect("settled");
+    assert!(stepped.get());
+    assert!(
+        matches!(next.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        next.outcomes()
+    );
 }
 
 /// A refused premise takes nothing and publishes nothing.
@@ -1389,7 +1526,8 @@ fn a_manifest_changed_under_the_agent_stops_its_publish() {
 
 /// A name a person took first, in one member, is passed over: the
 /// program takes nothing, and the publish takes the next name. Mutant:
-/// the publish stopped or abandoned on a name that exists.
+/// the publish stopped or abandoned on a name that exists, or what the
+/// process knows of it (its age's anchor) left under the old name.
 #[test]
 fn a_name_a_person_took_first_is_passed_over() {
     let world = World::new(Mode::Busy);
@@ -1408,7 +1546,26 @@ fn a_name_a_person_took_first_is_passed_over() {
         };
         pool.snaps.insert(theirs.clone(), snap);
     }
+    // Once the publish has its next name, the wall clock steps past the
+    // age bound: begun in this process, it is aged on the clock that does
+    // not step under its next name too (N2 of #144's next look).
+    let refused = Rc::new(Cell::new(false));
+    let hook = {
+        let (world, refused) = (world.clone(), refused.clone());
+        move |point: Point| {
+            match point.effect {
+                Effect::Program if point.after => refused.set(true),
+                Effect::Intent if point.after && refused.get() => {
+                    world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
+                }
+                _ => {}
+            }
+            false
+        }
+    };
+    let mut agent = agent.with_points(Box::new(hook));
     agent.settle(LIMIT).expect("settled");
+    assert_eq!(world.borrow().agent_skew_ms, 3 * 3_600_000);
     let next = format!("{name}-1");
     assert!(
         matches!(agent.outcomes(), [(n, Outcome::Published(_))] if *n == next),

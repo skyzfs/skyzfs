@@ -4,8 +4,10 @@
 //!
 //! **The pool** has three datasets, snapshots with their GUIDs,
 //! `createtxg` and holds, its synced group, its layout and `load_guid`.
-//! Each change is a sync task that writes one group, as in ZFS; a busy
-//! pool also writes a group every five seconds. The snapshots as each
+//! Each change is a sync task that writes one group, as in ZFS, but for
+//! the agent's assist, which writes two (its set's, and the sync's with
+//! the set's history record, as #145's probe saw); a busy pool also
+//! writes a group every five seconds. The snapshots as each
 //! group left them are kept, so that a rewind import (`-F`, `-T`) takes
 //! the pool back to a group exactly.
 //!
@@ -1258,8 +1260,9 @@ impl Zfs for FakeZfs {
         // it writes a second, with the set's history record (the kernel
         // probe of #145, ZFS 2.4.1). A plain sync of an idle pool writes
         // no group. A property set to the value it holds writes nothing
-        // here, where ZFS 2.4.1 writes a group as for a new value: the
-        // conservative model, which a test of the agent's values needs.
+        // here, where ZFS 2.4.1 writes two groups, as for a new value:
+        // the conservative model. It is logged ("again"), which the test
+        // of the agent's values reads.
         if world.plain_sync {
             world
                 .log

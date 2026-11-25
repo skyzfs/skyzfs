@@ -1259,8 +1259,14 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
 /// up), its own reason over the snapshot's, the hold released before
 /// `held_until` while the daemon is away, or a publish asked or held
 /// given up while the daemon is away (a request may have landed, or
-/// been accepted and not recorded, and only `look` tells); or the age
-/// measured from the wrong end, or a clock stepped back read as old.
+/// been accepted and not recorded, and only `look` tells); an answer
+/// that says the daemon cannot tell what became of the request
+/// (`stopped`, `ended`, `no-answer`, `no-upload`) read as one that does,
+/// and the hold released before `held_until` (N1 of #144's next look);
+/// `refused asked` not withdrawn; `done` that `look` does not confirm
+/// given up rather than stopped for a person (L6); or the age measured
+/// from the wrong end, or a clock stepped back read as old (by a little
+/// or by the whole bound, TG3).
 #[test]
 fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
     let ms = |d: Duration| u64::try_from(d.as_millis()).expect("ms");
@@ -1269,6 +1275,8 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
     assert!(too_old(BEGUN, BEGUN + ms(AGE_MAX), AGE_MAX));
     assert!(too_old(BEGUN, BEGUN + ms(AGE_MAX) + 1, AGE_MAX));
     assert!(!too_old(BEGUN, BEGUN - 1, AGE_MAX));
+    assert!(!too_old(BEGUN, BEGUN - ms(AGE_MAX), AGE_MAX));
+    assert!(!too_old(BEGUN, 0, AGE_MAX));
     assert!(!too_old(BEGUN, BEGUN + 4, Duration::from_millis(5)));
     assert!(too_old(BEGUN, BEGUN + 5, Duration::from_millis(5)));
     assert!(!too_old(0, u64::MAX - 1, Duration::MAX));
@@ -1407,6 +1415,100 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         ("done", done(), old(), Action::Release),
         ("done, released", done(), old().unheld(), Action::Forget),
     ]);
+    // N1 of #144's next look: answers that say the daemon cannot tell
+    // what became of the request are the daemon away; `refused asked`
+    // withdraws; `done` that `look` does not confirm stops (L6); an
+    // answer not about a publish waits.
+    let mut rows = Vec::new();
+    for code in [Code::Stopped, Code::Ended, Code::NoAnswer, Code::NoUpload] {
+        rows.extend([
+            (
+                "asked, cannot tell",
+                asked(),
+                old().refused(code),
+                Action::Wait,
+            ),
+            (
+                "asked, cannot tell, absent",
+                asked(),
+                old().refused(code).looked(SnapSeen::Absent),
+                Action::Wait,
+            ),
+            (
+                "asked, cannot tell, a ms before held_until",
+                asked(),
+                old().refused(code).at(UNTIL - 1),
+                Action::Wait,
+            ),
+            (
+                "asked, cannot tell, at held_until",
+                asked(),
+                old().refused(code).at(UNTIL),
+                Action::Release,
+            ),
+            (
+                "asked, cannot tell, released",
+                asked(),
+                old().refused(code).unheld().at(UNTIL),
+                Action::Wait,
+            ),
+            (
+                "held, cannot tell",
+                held(),
+                old().refused(code),
+                Action::Wait,
+            ),
+            (
+                "held, cannot tell, long after",
+                held(),
+                old().refused(code).at(UNTIL + 3600 * SECOND),
+                Action::Wait,
+            ),
+        ]);
+    }
+    rows.extend([
+        (
+            "asked, refused asked",
+            asked(),
+            old().refused(Code::Asked),
+            Action::Withdraw,
+        ),
+        (
+            "asked, done, not looked",
+            asked(),
+            old().answer(Reply::Done(COMMIT)),
+            Action::Look,
+        ),
+        (
+            "asked, done, ours",
+            asked(),
+            old()
+                .answer(Reply::Done(COMMIT))
+                .looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        (
+            "asked, done, absent",
+            asked(),
+            old().answer(Reply::Done(COMMIT)).looked(SnapSeen::Absent),
+            Action::Stop(Stop::DoneNotSeen),
+        ),
+        (
+            "asked, done, another commit",
+            asked(),
+            old()
+                .answer(Reply::Done(COMMIT))
+                .looked(SnapSeen::Ours([9; 32])),
+            Action::Stop(Stop::DoneNotSeen),
+        ),
+        (
+            "asked, an answer not about a publish",
+            asked(),
+            old().answer(Reply::Accepted).looked(SnapSeen::Absent),
+            Action::Wait,
+        ),
+    ]);
+    check(rows);
     // Eight stalls are given up as such, too old or not.
     let stalled = Publish {
         stalls: STALLS_ABANDONED,
@@ -1416,6 +1518,16 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         plan(&stalled, &expired().unheld()),
         Action::Abandon(Why::NoProgress)
     );
+    // And a publish given up for its stalls keeps its hold, as one too
+    // old does, while the daemon cannot tell.
+    let stalled_asked = Publish {
+        stalls: STALLS_ABANDONED,
+        ..publish(asked())
+    };
+    for code in [Code::Stopped, Code::Ended, Code::NoAnswer, Code::NoUpload] {
+        let seen = seen().refused(code).looked(SnapSeen::Absent);
+        assert_eq!(plan(&stalled_asked, &seen), Action::Wait, "{code:?}");
+    }
 }
 
 fn row(group: u64) -> SnapReply {

@@ -61,19 +61,31 @@
 //!   reason first) or it has stalled [`STALLS_ABANDONED`] times
 //!   ([`Why::NoProgress`]). At Intent nothing was taken: given up at
 //!   once, the daemon here or not. At Taken nothing was asked: the hold
-//!   released, then given up. Held or asked with the daemon here: as at
-//!   the last stall, a request that pends withdrawn, `snap/t` looked up
-//!   (a publish made is done, not given up), the hold released. With the
-//!   daemon away, a publish asked keeps its hold until `held_until`, as
-//!   below, and one held and not asked keeps it; both are given up once
-//!   the daemon answers and `look` has not found them published. A
-//!   request may have landed while the daemon was away, or been accepted
-//!   and not recorded (step 8 of the engine records it after the
-//!   answer), and only `look` tells; while the daemon is away no publish
-//!   can be begun ([`crate::record::UNDER_WAY_MAX`] does not fill). This
-//!   is this module's reading of "whatever the daemon says", the
-//!   conservative one: the bound overrides every answer of the daemon,
-//!   but not its silence.
+//!   released, then given up. Held or asked, as at the last stall: a
+//!   request that pends, or another of the name (`refused asked`),
+//!   withdrawn; `snap/t` looked up (a publish made is done, not given
+//!   up; `done` that `look` does not confirm stops for a person, as when
+//!   the publish is not too old); the hold released, then given up. With
+//!   the daemon away, that is with no answer or with an answer that says
+//!   it cannot tell what became of the request (`stopped`, `ended`,
+//!   `no-answer`, `no-upload`, below), a publish asked keeps its hold
+//!   until `held_until` and one held and not asked keeps it; both are
+//!   given up once the daemon answers otherwise and `look` has not found
+//!   them published (N1 of #144's next look). skyzfsd answers
+//!   `no-answer` when its uploader has not answered within its limit,
+//!   which a long step of the uploader gives while the request pends; a
+//!   request may also have landed while the daemon was away, or been
+//!   accepted and not recorded (step 8 of the engine records it after
+//!   the answer), and only `look` tells. Where `cuts` is not answered no
+//!   publish can be begun meanwhile; where only the uploader is silent
+//!   publishes can be, up to [`crate::record::UNDER_WAY_MAX`], and the
+//!   next is refused. This is this module's reading of "whatever the
+//!   daemon says", the conservative one: the bound overrides every
+//!   answer that says what became of the request, but not the daemon's
+//!   silence about it. Whether `stopped`, `ended` and `no-upload`, which
+//!   name an uploader that can carry no request, might give up at once
+//!   is the lead's decision L5 on #144; until it is taken they keep the
+//!   hold.
 //! - **What the daemon answers.** `done`, `expired`, `withdrawn`,
 //!   `refused attachment`, `refused state` and `refused taken` are read
 //!   with `look` first: `snap/t` that is this publish's is
@@ -540,6 +552,12 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         _ => None,
     };
     let done = |commit: [u8; 32]| Action::Done { commit, report };
+    // `done` must name the commit `look` sees; otherwise a person looks.
+    let said_done = |commit: &[u8; 32]| match seen.snap {
+        None => Action::Look,
+        Some(SnapSeen::Ours(at)) if at == *commit => done(at),
+        Some(_) => Action::Stop(Stop::DoneNotSeen),
+    };
     let look = |then: &dyn Fn() -> Action| match seen.snap {
         None => Action::Look,
         Some(SnapSeen::Ours(commit)) => done(commit),
@@ -576,8 +594,21 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         None
     };
     if let Some(why) = ended {
+        // The bound overrides every answer that says what became of the
+        // request, but not one that says the daemon cannot tell (N1 of
+        // #144's next look): a request that pends, or may, keeps the
+        // hold as when the publish is not ended.
         return match answer {
-            Reply::Pending => Action::Withdraw,
+            Reply::Pending | Reply::Refused(Code::Asked, _) => Action::Withdraw,
+            Reply::Refused(Code::Stopped | Code::Ended | Code::NoAnswer | Code::NoUpload, _) => {
+                away()
+            }
+            Reply::Done(commit) => said_done(commit),
+            Reply::Cuts(_)
+            | Reply::Accepted
+            | Reply::Absent
+            | Reply::Snap(_)
+            | Reply::Unreadable(_) => Action::Wait,
             _ => look(&|| give_up(pool, broken.unwrap_or(why))),
         };
     }
@@ -603,11 +634,7 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
                 Action::Wait
             }
         }
-        Reply::Done(commit) => match seen.snap {
-            None => Action::Look,
-            Some(SnapSeen::Ours(at)) if at == *commit => done(at),
-            Some(_) => Action::Stop(Stop::DoneNotSeen),
-        },
+        Reply::Done(commit) => said_done(commit),
         Reply::Expired | Reply::Withdrawn => look(&|| anew(false)),
         Reply::Unknown => match asked {
             None if pool.held && broken.is_none() && !moved => Action::Ask,

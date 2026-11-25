@@ -45,11 +45,16 @@
 //! since ([`Clock::mono_ms`]): a step of the wall clock neither releases
 //! its hold before `held_until` nor holds back its syncs (S4 and S11 of
 //! #142's review). A publish's age ([`plan::AGE_MAX`]) is measured the
-//! same way from `begun_ms`, for a publish begun in this process. After
-//! a restart the wall clock is all there is: a
-//! step forward while the agent was down may release a hold early (the
-//! request may still land; its cut holds the snapshot all the same), and
-//! a step back keeps it longer.
+//! same way from `begun_ms`, for a publish begun in this process, and
+//! goes with it when it takes the next name. After a restart the wall
+//! clock is all there is to start from: a step forward while the agent
+//! was down may release a hold early (the request may still land; its
+//! cut holds the snapshot all the same), and a step back keeps it
+//! longer. The age of a publish read from the record is anchored on the
+//! wall clock once, at the first round that reads it, and runs on the
+//! clock that does not step from there (S2 of #144's next look);
+//! `held_until` is read on the wall clock until the request is accepted
+//! again in this process.
 //!
 //! # Crash points
 //!
@@ -275,9 +280,12 @@ struct Memory {
     assists: u32,
     /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
     accepted: Option<(u64, u64)>,
-    /// `begun_ms` as recorded, and [`Clock::mono_ms`] then, for a publish
-    /// begun in this process.
-    begun: Option<(u64, u64)>,
+    /// The anchor of the publish's age: `begun_ms` as recorded, the time
+    /// against which it is measured at the anchor, and [`Clock::mono_ms`]
+    /// then. For a publish begun in this process the time is `begun_ms`
+    /// itself; for one read from the record, the wall clock at the first
+    /// round that read its age.
+    begun: Option<(u64, u64, u64)>,
 }
 
 /// Whether a round changed anything.
@@ -426,7 +434,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             begun_ms,
         };
         self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
-        self.memory.entry(name.clone()).or_default().begun = Some((begun_ms, mono));
+        self.memory.entry(name.clone()).or_default().begun = Some((begun_ms, begun_ms, mono));
         Ok(name)
     }
 
@@ -567,17 +575,23 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }))
     }
 
-    /// The time against which `publish`'s age is measured: `begun_ms`
-    /// plus what the clock that does not step has run since, for a
-    /// publish begun in this process, else the wall clock ([module
-    /// docs](self), "Time").
+    /// The time against which `publish`'s age is measured: the anchor's
+    /// time plus what the clock that does not step has run since. The
+    /// anchor is `begun_ms` for a publish begun in this process, else the
+    /// wall clock at the first round of this process that reads the age
+    /// (S2 of #144's next look; [module docs](self), "Time").
     fn age_now(&mut self, publish: &Publish) -> u64 {
-        match self.memory.get(&publish.name).and_then(|m| m.begun) {
-            Some((at, mono)) if at == publish.begun_ms => {
-                at.saturating_add(self.clock.mono_ms().saturating_sub(mono))
+        let mono = self.clock.mono_ms();
+        let memory = self.memory.entry(publish.name.clone()).or_default();
+        let (at, then) = match memory.begun {
+            Some((begun, at, then)) if begun == publish.begun_ms => (at, then),
+            _ => {
+                let at = self.clock.now_ms();
+                memory.begun = Some((publish.begun_ms, at, mono));
+                (at, mono)
             }
-            _ => self.clock.now_ms(),
-        }
+        };
+        at.saturating_add(mono.saturating_sub(then))
     }
 
     /// The time the planner reads for `publish` ([module docs](self),
@@ -761,7 +775,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 // A member's `@t` of this name exists: nothing was taken,
                 // and the publish takes the next name.
                 let next = self.fresh_name()?;
-                self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next))?;
+                self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
+                // What this process knows of the publish goes with it: its
+                // age is still read from its anchor (N2 of #144's next
+                // look).
+                if let Some(memory) = self.memory.remove(name) {
+                    self.memory.insert(next, memory);
+                }
                 return Ok(Moved::Yes);
             }
             Err(_) => return Ok(Moved::No),

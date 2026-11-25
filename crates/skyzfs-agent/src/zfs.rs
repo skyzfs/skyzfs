@@ -268,20 +268,21 @@ pub trait Zfs {
     /// has the hold `tag`.
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;
     /// The agent's sync task: `zfs set skyzfs:assist=<value> pool`, then
-    /// `zpool sync pool`. The property is a change of the pool's own, so
-    /// the group it is in writes, and the sync writes that group now. A
+    /// `zpool sync pool`. The property is a change of the pool's own: the
+    /// set is a sync task and waits for its own group to be written. A
     /// plain `zpool sync` writes nothing on an idle pool: ZFS commits a
     /// group with no changes and writes no uberblock for it (M2.T1; N1 of
     /// #142's review). `value` differs at each call, so that no call
     /// sets the property to what it already is. The kernel probe of #145
     /// (ZFS 2.4.1, one run on each of Ubuntu 24.04 and 26.04) saw each
-    /// call write two groups, the set's and the one in which the sync
-    /// writes the set's history record (about 310 KiB each), and a bare
-    /// `zpool sync` write none; through the daemon, the second call's set
-    /// carried a waiting publish about 11 s after it was accepted. A set
-    /// to the value the property already holds writes a group too, so a
-    /// new value at each call is not needed there; it is kept, as it
-    /// costs nothing.
+    /// call write two groups, the set's own, written before the set
+    /// returns, and the next, which the sync writes with the set's
+    /// history record (about 310 KiB each); a bare `zpool sync` write
+    /// none; and, through the daemon, the second call's set carry a
+    /// waiting publish about 11 s after it was accepted. A set to the
+    /// value the property already holds wrote two groups as well, as for
+    /// a new value, so a new value at each call is not needed on 2.4.1;
+    /// it is kept, as it costs nothing.
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError>;
 }
 
