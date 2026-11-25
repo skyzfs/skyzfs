@@ -289,5 +289,7 @@ pub trait Zfs {
 /// The user property of the agent's sync task ([`Zfs::assist`]).
 pub const ASSIST_PROPERTY: &str = "skyzfs:assist";
 
+pub mod cli;
+
 #[cfg(test)]
 mod tests;

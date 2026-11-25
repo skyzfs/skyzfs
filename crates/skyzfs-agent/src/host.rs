@@ -1,0 +1,209 @@
+//! What the agent's adapters ask of the machine ([`Host`]): run a
+//! program with a time limit, read a file, and stat a path. The adapter
+//! to `zfs` and `zpool` ([`crate::zfs::cli`]) runs on it, so that its
+//! tests run on recorded output with no pool; [`System`] is the
+//! program's.
+//!
+//! # A program that does not end
+//!
+//! A command on a suspended pool may never return, and cannot be killed
+//! while it waits in the kernel (CLAUDE.md, "A command on a suspended
+//! pool"). So [`System::run`] never waits for a child without a limit:
+//! past it, the child is sent `SIGKILL` and left to a thread that reaps
+//! it whenever it ends, and its output is left to the threads that read
+//! it; the call returns `TimedOut` at once. Such a child holds a process
+//! slot and two threads until it ends. `timeout(1)` would not do: it
+//! waits for its child.
+
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// The most of a program's standard output, or of its standard error,
+/// that is read: more is an error.
+pub const OUTPUT_MAX: usize = 64 << 20;
+
+/// What a program gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    /// Its exit code; `None` where a signal ended it.
+    pub code: Option<i32>,
+    /// Its standard output.
+    pub stdout: Vec<u8>,
+    /// Its standard error.
+    pub stderr: Vec<u8>,
+}
+
+/// What a path names, as [`Host::stat`] reads it (links followed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Node {
+    /// A block device, with its device number (`st_rdev`).
+    Block(u64),
+    /// A regular file.
+    File,
+    /// Anything else.
+    Other,
+}
+
+/// What the adapters ask of the machine ([module docs](self)).
+pub trait Host {
+    /// Run `program` with `args`, `stdin` on its standard input, in the
+    /// locale `C`, and wait at most `limit` for it to end and close its
+    /// output. Past the limit: `TimedOut`, the child killed and not
+    /// waited for.
+    fn run(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> io::Result<Output>;
+    /// The bytes of the file at `path`.
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+    /// What `path` names.
+    fn stat(&mut self, path: &Path) -> io::Result<Node>;
+}
+
+/// The machine the program runs on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct System;
+
+/// The longest pause between two looks at a child that has not ended.
+const POLL_MAX: Duration = Duration::from_millis(20);
+
+impl Host for System {
+    fn run(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> io::Result<Output> {
+        let until = Instant::now() + limit;
+        let mut child = Command::new(program)
+            .args(args)
+            .env("LC_ALL", "C")
+            .stdin(if stdin.is_empty() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // Each pipe on a thread of its own, so that a child that fills
+        // one while the other is read does not stall, and so that a child
+        // that never ends holds only its threads.
+        if let Some(mut input) = child.stdin.take() {
+            let bytes = stdin.to_vec();
+            thread::spawn(move || {
+                // A child that exits before reading all of it closes the
+                // pipe; its exit code says what it made of it.
+                let _ = input.write_all(&bytes);
+            });
+        }
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let mut pause = Duration::from_millis(1);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                abandon(child);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "`{program}` did not end within {} s: killed, and not waited for",
+                        limit.as_secs_f64()
+                    ),
+                ));
+            }
+            thread::sleep(pause.min(left));
+            pause = (pause * 2).min(POLL_MAX);
+        };
+        // A child that has ended may have left its pipes to a child of
+        // its own: their ends are waited for within the limit too.
+        let take = |pipe: mpsc::Receiver<io::Result<Vec<u8>>>, which: &str| {
+            let left = until.saturating_duration_since(Instant::now());
+            match pipe.recv_timeout(left.max(Duration::from_millis(1))) {
+                Ok(read) => read,
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("`{program}` ended and its {which} stayed open past the limit"),
+                )),
+            }
+        };
+        let stdout = take(stdout, "standard output")?;
+        let stderr = take(stderr, "standard error")?;
+        Ok(Output {
+            code: status.code(),
+            stdout,
+            stderr,
+        })
+    }
+
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
+    fn stat(&mut self, path: &Path) -> io::Result<Node> {
+        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+        let meta = std::fs::metadata(path)?;
+        let kind = meta.file_type();
+        Ok(if kind.is_block_device() {
+            Node::Block(meta.rdev())
+        } else if kind.is_file() {
+            Node::File
+        } else {
+            Node::Other
+        })
+    }
+}
+
+/// Read `pipe` to its end on a thread, at most [`OUTPUT_MAX`] bytes.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<io::Result<Vec<u8>>> {
+    let (send, receive) = mpsc::channel();
+    match pipe {
+        None => {
+            let _ = send.send(Ok(Vec::new()));
+        }
+        Some(pipe) => {
+            thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let max = u64::try_from(OUTPUT_MAX).unwrap_or(u64::MAX);
+                let read = pipe.take(max + 1).read_to_end(&mut bytes).and_then(|_| {
+                    if bytes.len() > OUTPUT_MAX {
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("more than {OUTPUT_MAX} bytes of output"),
+                        ))
+                    } else {
+                        Ok(bytes)
+                    }
+                });
+                let _ = send.send(read);
+            });
+        }
+    }
+    receive
+}
+
+/// Kill `child` and leave it to a thread that reaps it when it ends,
+/// which a child in the kernel's wait may never do ([module
+/// docs](self)).
+fn abandon(mut child: Child) {
+    let _ = child.kill();
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+#[cfg(test)]
+pub(crate) mod fake;
+#[cfg(test)]
+mod tests;

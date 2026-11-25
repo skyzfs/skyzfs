@@ -1,6 +1,6 @@
 //! The client: [`ask`] a daemon through its socket.
 
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -8,12 +8,18 @@ use std::time::{Duration, Instant};
 use crate::{read_line, Reply, Request, HELLO};
 
 /// Ask the daemon behind the socket at `path`: `request`, with
-/// `manifest` after it for `publish`, waiting at most `limit` for the
-/// connection and for each read and write. The answer, or why none came.
+/// `manifest` after it for `publish`. The answer, or why none came.
+///
+/// `limit` is one deadline for the whole request: the connection, the
+/// write and the answer together (S4 of the review of #131). Each read
+/// and write waits only for what is left of it, so a daemon that is slow
+/// in each part, or that answers a byte at a time, cannot stretch the
+/// ask past `limit` (and a little: a read under way when it runs out
+/// ends with its timeout). Past it, the error is `TimedOut`.
 pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> io::Result<Reply> {
-    let mut stream = connect(path, limit)?;
-    stream.set_read_timeout(Some(limit))?;
-    stream.set_write_timeout(Some(limit))?;
+    let until = Instant::now() + limit;
+    let stream = connect(path, limit)?;
+    let mut stream = Deadline { stream, until };
     let mut sent = format!("{HELLO}\n{}\n", request.line()).into_bytes();
     sent.extend_from_slice(manifest);
     // A daemon that refuses a request before reading all of it closes
@@ -39,6 +45,62 @@ pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> 
             format!("the answer `{line}`: {why}"),
         )
     })
+}
+
+/// A stream whose reads and writes all end by `until`: each waits only
+/// for what is left ([`ask`]).
+struct Deadline {
+    stream: UnixStream,
+    until: Instant,
+}
+
+impl Deadline {
+    /// What is left of the deadline, as the timeout of the next call.
+    fn left(&self) -> io::Result<Duration> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            Err(timed_out())
+        } else {
+            Ok(left)
+        }
+    }
+}
+
+/// The error of an ask past its deadline.
+fn timed_out() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the daemon did not answer within the ask's limit",
+    )
+}
+
+/// A socket's timeout ends a call with `WouldBlock` (`EAGAIN`), which
+/// is the ask's deadline here.
+fn deadline_error(e: io::Error) -> io::Error {
+    match e.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
+        _ => e,
+    }
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf).map_err(deadline_error)
+    }
+}
+
+impl Write for Deadline {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.stream.set_write_timeout(Some(left))?;
+        self.stream.write(buf).map_err(deadline_error)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 /// A connection to the socket at `path`, made within `limit`. A blocking

@@ -550,6 +550,42 @@ mod socket {
         }
     }
 
+    /// A daemon that answers a byte at a time, each within the limit:
+    /// the ask still ends at its limit, which is one deadline for the
+    /// whole request and not one for each read (S4 of the review of
+    /// #131). Mutant: a timeout of each read, which waits 17 pauses here
+    /// and reads the greeting.
+    #[test]
+    fn an_ask_ends_at_its_limit_however_the_daemon_spreads_its_answer() {
+        use std::io::{BufRead, Write};
+        let dir = dir();
+        let path = dir.path().join("slow.sock");
+        let listener = UnixListener::bind(&path).expect("bound");
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepted");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+            let mut greeting = String::new();
+            reader.read_line(&mut greeting).expect("read");
+            let mut stream = stream;
+            for byte in format!("{HELLO}\n").bytes() {
+                std::thread::sleep(Duration::from_millis(100));
+                if stream.write_all(&[byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let limit = Duration::from_millis(300);
+        let began = std::time::Instant::now();
+        let e = ask(&path, &Request::Cuts, &[], limit).expect_err("no answer within the limit");
+        let took = began.elapsed();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(
+            took >= limit && took < limit + Duration::from_millis(250),
+            "{took:?}"
+        );
+        drop(daemon.join());
+    }
+
     /// A listener at `path` with a backlog of one, answered by nobody
     /// until it is given to a channel.
     fn small_backlog(path: &std::path::Path) -> UnixListener {
