@@ -396,10 +396,12 @@ fn golden() -> Record {
         abandoned: whys
             .iter()
             .zip(0u64..)
-            .map(|(&why, at_ms)| Abandoned {
-                name: format!("w{at_ms}"),
+            .map(|(&why, i)| Abandoned {
+                name: format!("w{i}"),
                 why,
-                at_ms,
+                // Not the variant's index: `why` and `at_ms` must differ
+                // for a swap of the two to change the bytes.
+                at_ms: 1000 + i,
             })
             .collect(),
     }
@@ -410,7 +412,7 @@ fn golden() -> Record {
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
 const GOLDEN: [&str; 16] = [
-    "535a414701000000ca0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "535a414701000000d10100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
     "5e5e5e5e5e5e03ad210000000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e",
     "5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141414141",
@@ -423,9 +425,9 @@ const GOLDEN: [&str; 16] = [
     "030164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
     "5e5e5e03ad21042b0103702f6404ac0244444444444444444444444444444444",
     "44444444444444444444444444444444c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
-    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001040702773000000277310101027732",
-    "020202773303030277340404027735050502773606063870419ed92f0a81e843",
-    "83e32bfc88cdc2875ca0fd02da03e81b4416f36beab9",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001040702773000e80702773101e90702",
+    "773202ea0702773303eb0702773404ec0702773505ed0702773606ee07006a9a",
+    "94aaf9698cbbeb676d3c883fd857dfe3e050bee6b0b1ca9a47673686dc",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before

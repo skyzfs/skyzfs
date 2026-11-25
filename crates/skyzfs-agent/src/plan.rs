@@ -304,7 +304,7 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
 /// [`ASSIST_AFTER`] here (and per [`ASSIST_PAUSE`] without such a cut),
 /// since the engine records each in [`Seen::assisted_ms`] before it plans
 /// again, and the request ends, at the latest at its expiry, after which
-/// nothing pends.
+/// the publish is looked up and asked anew (and a sync may be due again).
 fn assist_due(carried: bool, asked_ms: u64, assisted_ms: Option<u64>, now_ms: u64) -> bool {
     let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     let after = |at: u64, d: Duration| now_ms >= at.saturating_add(ms(d));

@@ -542,6 +542,14 @@ fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
             Action::Assist,
         ),
         (
+            // A sync of an earlier request of this publish, before this
+            // one was accepted: the start at twice ASSIST_AFTER holds.
+            "a cut carries it, assisted before it was accepted",
+            asked(),
+            carried(ASKED + 15 * SECOND).assisted(ASKED - 9 * SECOND),
+            Action::Wait,
+        ),
+        (
             "a cut carries it, assisted a pause ago",
             asked(),
             carried(twice + 30 * SECOND).assisted(twice + 29 * SECOND),
