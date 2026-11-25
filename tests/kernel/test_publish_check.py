@@ -604,23 +604,65 @@ class Assist(unittest.TestCase):
         with self.assertRaises(pc.RigError):
             self.a1(55, {'accepted': (0, 30, 10.0), 'end': (9, 56, 'done')}, [(30, 51, 56)])
 
+    def test_a1_s_premise_at_its_boundaries(self):
+        """#145's next look, T2 (plants N13, N16, N19)."""
+        acc = (0, 50, 10.0)
+        # The pool's top is the newest of the end mark and the assists'
+        # reads: an end mark below G after an assist that reached it.
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 54, 'pending')}, [(50, 52, 54), (54, 55, 56)])
+        self.assertTrue(ok, why)
+        self.assertIn('assist 2 took it across G', why)
+        # A top at G itself is G reached: a `pending` there is no error.
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 55, 'pending')}, [(50, 52, 54), (54, 55, 55)])
+        self.assertTrue(ok, why)
+        # An assist that starts at G did not take the pool across it.
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 57, 'done')}, [(50, 52, 54), (55, 56, 57)])
+        self.assertFalse(ok, why)
+        self.assertIn('no assist took the pool across G', why)
+
     def test_the_decided_pace(self):
+        """Floors are the premise's verdict; a gap over 3 times its decided
+        value is only observed (the lead's answer to #145's next look, S1),
+        and the burst's pause runs from the end of the one before (S2)."""
         s = 10**9
 
-        def rows(*t0):
-            return [{'name': 'a2', 't0': int(t * s)} for t in t0]
-        self.assertEqual(pc.pace_faults(rows(10.0, 11.1, 12.2, 22.3, 32.4), 0, 10.0), [])
-        self.assertEqual(pc.pace_faults(rows(), 0, 10.0), [])
-        # Before A; spaced in the burst; every round past it; and for a
-        # shorter A, the same rules.
-        for t0, said in (((9.9, 11.0), 'first assist 9.9 s'), ((10.0, 15.1), 'assist 2 5.1 s'),
-                         ((10.0, 11.0, 12.0, 13.0), 'assist 4 1.0 s'), ((10.0, 11.0, 12.0, 21.4), 'assist 4 9.4 s')):
+        def rows(*t0, took=0.02):
+            return [{'name': 'a2', 't0': int(t * s), 't1': int((t + took) * s)} for t in t0]
+        ok = rows(10.0, 11.1, 12.2, 22.3, 32.4)
+        self.assertEqual(pc.pace_faults(ok, 0, 10.0), ([], []))
+        self.assertEqual(pc.pace_faults(ok, 0, 10.0, (int(47.0 * s), 60, 'pending')), ([], []))
+        self.assertEqual(pc.pace_faults(rows(), 0, 10.0), ([], []))
+        # The floors: before A; a pause under 1 s in the burst; a round
+        # past it under 0.95 A; and for a shorter A, the same rules.
+        for t0, said in (((9.9, 11.0), 'first assist 9.9 s'),
+                         ((10.0, 10.9), 'assist 2 0.88 s after the end of the one before, in the burst'),
+                         ((10.0, 11.1, 12.2, 13.3), 'assist 4 1.1 s'), ((10.0, 11.1, 12.2, 21.6), 'assist 4 9.4 s')):
             with self.subTest(t0=t0):
-                bad = pc.pace_faults(rows(*t0), 0, 10.0)
-                self.assertEqual(len(bad), 1, bad)
+                bad, slow = pc.pace_faults(rows(*t0), 0, 10.0)
+                self.assertEqual((len(bad), slow), (1, []), bad)
                 self.assertIn(said, bad[0])
-        self.assertEqual(pc.pace_faults(rows(4.0, 5.0, 6.0, 10.0, 14.0), 0, 4.0), [])
-        self.assertTrue(pc.pace_faults(rows(4.0, 5.0, 6.0, 7.0), 0, 4.0))
+        self.assertEqual(pc.pace_faults(rows(4.0, 5.0, 6.0, 10.0, 14.0, took=0.5), 0, 4.0), ([], []))
+        self.assertTrue(pc.pace_faults(rows(4.0, 5.0, 6.0, 7.0), 0, 4.0)[0])
+        # The burst's pause from the end of the one before: a sync of
+        # 4.5 s and a pause of 1 s keep it.
+        self.assertEqual(pc.pace_faults(rows(10.0, 15.5, 21.0, took=4.5), 0, 10.0), ([], []))
+        # Slow, observed and no fault: each gap over 3 times its value,
+        # and a publish pending long after its last assist, or after its
+        # acceptance with none.
+        for t0, end, said in (((30.1, 31.2), None, 'first assist 30.1 s after its acceptance'),
+                              ((10.0, 13.1), None, 'assist 2 3.1 s after the end of the one before, in the burst'),
+                              ((10.0, 11.1, 12.2, 42.3), None, 'assist 4 30.1 s after the one before'),
+                              ((10.0, 11.1, 12.2), (int(42.4 * s), 60, 'pending'), 'ended pending 30.2 s after its last'),
+                              ((), (int(30.1 * s), 60, 'pending'), 'ended pending 30.1 s after its acceptance, with no')):
+            with self.subTest(t0=t0, end=end):
+                bad, slow = pc.pace_faults(rows(*t0), 0, 10.0, end)
+                self.assertEqual((bad, len(slow)), ([], 1), slow)
+                self.assertIn(said, slow[0])
+        # Edges: 3 times exactly is not over; an end other than pending is
+        # not read.
+        self.assertEqual(pc.pace_faults(rows(30.0, 33.02, 36.04, 66.04), 0, 10.0,
+                                        (int(96.06 * s), 60, 'pending')), ([], []))
+        self.assertEqual(pc.pace_faults(rows(10.0), 0, 10.0, (int(99 * s), 60, 'done')), ([], []))
 
     def test_the_kstat_s_groups_that_wrote_and_those_that_did_not(self):
         txgs = KSTAT_HEAD + '41 1 C 0 0 4096 0 0\n42 1 C 0 0 0 0 0\n43 1 C 0 0 512 0 0\n44 1 S 0 0 0 0 0\n'

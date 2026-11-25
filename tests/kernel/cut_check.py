@@ -56,6 +56,8 @@ multihost=on a multihost write of an older state applied after a newer
 cut) is held to its own rule: the pool opens at its group or a later
 one, never an earlier one, and it is left out of the session check and
 counted (obs_stale_cuts), a measurement the lead asked for.
+An export after an import that the kernel calls busy is tried again
+(export_after_import); obs_export_refusals counts such refusals.
 
 A control is `caught` when a check fails on it, `missed` when every
 check passes, `same` (the two rules) when its cuts equal the design's,
@@ -475,6 +477,7 @@ class Check:
         self.multihost = False
         # zfs_dbgmsg_enable as it was before a -T import turned it on.
         self.dbgmsg_was = None
+        self.export_refusals = 0     # busy exports after an import, all told (#145's S3)
         self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
@@ -593,6 +596,7 @@ class Check:
                 self.last_import = (out.strip(), st.strip())
             if rc == 0:
                 erc, eout, refused = export_after_import(POOL)
+                self.export_refusals += len(refused)
                 if erc:
                     raise RigError(f'zpool export after the import: {eout.strip()[-300:]}'
                                    + (f' (busy at {len(refused)} tries: {"; ".join(refused)[-600:]})' if refused else ''))
@@ -786,6 +790,8 @@ def main():
             '; '.join(d for _, _, d in sb) if not none else '; '.join(none))
         if none:
             rc = 1
+        put('obs_export_refusals', 'INFO', f'{ck.export_refusals} busy exports after an import, each tried again '
+            '(the job\'s log has what ran at each)')
         # The controls.
         got = {}
         if mid in failures or not bps_at.get('mid'):

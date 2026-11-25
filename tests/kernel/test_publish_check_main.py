@@ -240,8 +240,8 @@ COURSES = {
         'files': {'assist.tsv': 'a1\t1011\t1012\t5000\t50\t51\t52\na1\t1013\t1014\t5001\t52\t53\t54\n'
                                 'a1\t1015\t1016\t5002\t54\t55\t56\na2\t1025\t1026\t5003\t56\t57\t57\n'
                                 'a2\t1027\t1028\t5004\t57\t58\t58\na2\t1029\t1052\t5005\t58\t58\t60\n',
-                  'accepted.tsv': 'a1\taccepted\t1000\t50\t5e-09\na1\tend\t1017\t56\tdone\n'
-                                  'a2\taccepted\t1020\t56\t5e-09\na2\tend\t1060\t60\tpending\n',
+                  'accepted.tsv': 'a1\taccepted\t1005\t50\t5e-09\na1\tend\t1017\t56\tdone\n'
+                                  'a2\taccepted\t1020\t56\t5e-09\na2\tend\t1058\t60\tpending\n',
                   'a2-status-before.txt': 'uploaded 8\nupload_blocks 900\n',
                   'a2-status-after.txt': 'uploaded 11\nupload_blocks 960\n',
                   # Groups 51 to 58 and 60 wrote; 59 wrote nothing.
@@ -811,7 +811,7 @@ class Assist(unittest.TestCase):
 
     def test_premises_that_fail_end_2(self):
         for why, change in (
-                ('G was written before any assist', marks(self.MARKS.replace('accepted\t1000\t50', 'accepted\t1000\t55'))),
+                ('G was written before any assist', marks(self.MARKS.replace('accepted\t1005\t50', 'accepted\t1005\t55'))),
                 ('no assist took the pool across G', assists(self.RIGHT.replace('\t54\t55\t56', '\t53\t53\t54'))),
                 ('over 0 assists: no assist took', assists(''.join(ln + '\n' for ln in self.RIGHT.splitlines()
                                                     if not ln.startswith('a1')))),
@@ -820,20 +820,43 @@ class Assist(unittest.TestCase):
                     marks(self.MARKS.replace('a1\tend\t1017\t56\tdone', 'a1\tend\t1017\t54\tpending')),
                     ends(a1='pending after 300 s'))),
                 ('a1 was accepted and has no end mark', marks(self.MARKS.replace('a1\tend\t1017\t56\tdone\n', ''))),
-                ('and was not refused', marks(self.MARKS.replace('a1\taccepted\t1000\t50\t5e-09\n', ''))),
+                ('and was not refused', marks(self.MARKS.replace('a1\taccepted\t1005\t50\t5e-09\n', ''))),
                 ('a1 was never accepted', lambda d: os.remove(os.path.join(d, 'accepted.tsv'))),
                 ("accepted.tsv line 5: not", marks(self.MARKS + 'a2\tend\t1061\t60\tpending\n')),
                 ("accepted.tsv line 5: not ", marks(self.MARKS + 'a3\taccepted\t1061\n')),
-                ('a2 was assisted 1 times', assists(''.join(ln + '\n' for ln in self.RIGHT.splitlines()[:4]))),
+                ('a2 was assisted 1 times', both(assists(''.join(ln + '\n' for ln in self.RIGHT.splitlines()[:4])),
+                                                 marks(self.MARKS.replace('a2\tend\t1058', 'a2\tend\t1030')))),
                 ('assist.tsv line 7', assists(self.RIGHT + 'a2\t1060\t1061\n')),
                 ('lacks 1 of the groups 57 to 61', assists(self.RIGHT.replace('5005\t58\t58\t60', '5005\t58\t58\t61'))),
                 ("a2's first assist", marks(self.MARKS.replace('a2\taccepted\t1020', 'a2\taccepted\t1022'))),
-                ("a1's assist 2", assists(self.RIGHT.replace('a1\t1013\t1014', 'a1\t1014\t1014'))),
+                # #145's next look, S2: the burst's pause from the end of
+                # the assist before, at least the agent's (scaled: 0.5 ns).
+                ("a1's assist 2 0.00 s after the end of the one before, in the burst", assists(self.RIGHT.replace(
+                    'a1\t1013\t1014', 'a1\t1012\t1014'))),
                 ("a2's assist 4", assists(self.RIGHT + 'a2\t1031\t1032\t5006\t60\t60\t60\n'))):
             with self.subTest(why=why):
                 rc, lines = run_course('passist', change)
                 self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), why)
                 self.assertIn(why, lines['rig_error'][1])
+
+    def test_a_slow_gap_is_observed_and_judges_nothing(self):
+        """The lead's answer to #145's next look, S1: a ceiling is no
+        premise; a gap over 3 times its decided value is only said."""
+        rc, lines = run_course('passist')
+        self.assertEqual(lines['obs_assist_gap_over_3x'][0], 'INFO')
+        self.assertIn('no gap', lines['obs_assist_gap_over_3x'][1])
+        for change, said in ((marks(self.MARKS.replace('a2\tend\t1058', 'a2\tend\t1068')),
+                              'a2 ended pending 0.0 s after its last assist'),
+                             (marks(self.MARKS.replace('a2\taccepted\t1020', 'a2\taccepted\t1004')),
+                              "a2's first assist 0.0 s after its acceptance"),
+                             (assists(self.RIGHT.replace('a2\t1029\t1052', 'a2\t1045\t1052')),
+                              "a2's assist 3 0.0 s after the end of the one before, in the burst")):
+            with self.subTest(said=said):
+                rc2, lines = run_course('passist', change)
+                self.assertEqual((rc2, lines['obs_assist_gap_over_3x'][0]), (rc, 'INFO'))
+                self.assertIn(said, lines['obs_assist_gap_over_3x'][1])
+                self.assertNotIn(';', lines['obs_assist_gap_over_3x'][1])
+                self.assertEqual(lines['premise_a2_assists_at_the_decided_pace'][0], 'ok')
 
     def test_an_end_the_daemon_made_early_is_its_verdict(self):
         """#145's F1: where the daemon ended a publish before the assists
@@ -851,7 +874,7 @@ class Assist(unittest.TestCase):
                     marks(self.MARKS.replace('a1\tend\t1017\t56\tdone', 'a1\tend\t1013\t52\tdone'))),
                  {'a1': (7, 50)}, 'pin_a1_row'),
                 # D8: a1 refused at its publish, before it was accepted.
-                ('a1 refused', both(assists(no_a1), marks(self.MARKS.replace('a1\taccepted\t1000\t50\t5e-09\n', '')
+                ('a1 refused', both(assists(no_a1), marks(self.MARKS.replace('a1\taccepted\t1005\t50\t5e-09\n', '')
                                                          .replace('a1\tend\t1017\t56\tdone\n', '')),
                                     ends(a1='refused stale the attachment is not the volume\'s')),
                  {}, 'pin_answer_a1')):
@@ -865,7 +888,7 @@ class Assist(unittest.TestCase):
             with self.subTest(end=end):
                 rc, lines = run_course('passist', both(
                     assists(''.join(ln + '\n' for ln in self.RIGHT.splitlines()[:4])),
-                    marks(self.MARKS.replace('a2\tend\t1060\t60\tpending', f'a2\tend\t1026\t57\t{end.split()[0]}')),
+                    marks(self.MARKS.replace('a2\tend\t1058\t60\tpending', f'a2\tend\t1026\t57\t{end.split()[0]}')),
                     ends(a2=end)))
                 self.assertEqual(rc, 1, (end, lines.get('rig_error')))
                 self.assertEqual(verdicts(lines, 'pin_answer_a2', 'obs_assist_pace', 'premise_a2_assisted'),
@@ -876,7 +899,7 @@ class Assist(unittest.TestCase):
         expired before their first assists are the daemon's (1)."""
         rc, lines = run_course('passist', both(
             lambda d: os.remove(os.path.join(d, 'assist.tsv')),
-            marks('a1\taccepted\t1000\t50\t5e-09\na1\tend\t1003\t50\tdone\n'
+            marks('a1\taccepted\t1005\t50\t5e-09\na1\tend\t1003\t50\tdone\n'
                   'a2\taccepted\t1020\t56\t5e-09\na2\tend\t1022\t56\texpired\n'),
             ends(a2='expired')), rows={'a1': (7, 50)})
         self.assertEqual(rc, 1, lines.get('rig_error'))

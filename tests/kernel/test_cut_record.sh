@@ -538,28 +538,33 @@ is "pidle counts only the groups that wrote (ZFS 2.4 commits empty ones), and an
     "$(grep -cE "\\\$3 == \"C\" .*\\\$6 \+ 0 > 0|rig_error \"no group that wrote in" <<< "$pidle_fn")" 2
 
 # pidle's wait (#145's review, G3: plants S2 and S3), on a stand-in kstat
-# and a stand-in sleep that moves bash's SECONDS on at once. -> "idle
-# after N s, K sleeps" or "error after N s, K sleeps".
+# and a stand-in sleep that moves the clock on at once. The clock is
+# bash's SECONDS unset, so a plain variable that only the stand-in moves:
+# set, SECONDS also counts the wall clock's seconds, and a second that
+# turns during the run adds one (the next look's B2: 3 to 8 runs in 100
+# answered off by one). A pidle that never sleeps would then loop for
+# ever, so the run is a bash of its own under a limit. -> "idle after N s,
+# K sleeps", "error after N s, K sleeps", or "no end in 20 s".
+pidle_body='
+    unset SECONDS
+    mkdir -p "$T/kstat/p"
+    printf "txg birth state ndirty nread nwritten reads writes\n40 1 C 0 0 4096 0 0\n41 1 C 0 0 0 0 0\n" \
+        > "$T/kstat/p/txgs"
+    g=42 slept=0
+    sleep() {
+        SECONDS=$((SECONDS + $1)) slept=$((slept + 1))
+        if [ "$GROW" ]; then echo "$g 1 C 0 0 512 0 0" >> "$T/kstat/p/txgs"; g=$((g + 1)); fi
+    }
+    log() { :; }
+    rig_error() { echo "error after $SECONDS s, $slept sleeps"; exit 0; }
+    POOL=p NAME=t
+    eval "${PIDLE_FN//\/proc\/spl\/kstat\/zfs/$T/kstat}"
+    SECONDS=0
+    pidle "$1"
+    echo "idle after $SECONDS s, $slept sleeps"'
 pidle_run() { # LIMIT [grow]: with grow, a group that wrote at every sleep
-    # The stand-ins are called by the function eval'd from the script.
-    # shellcheck disable=SC2329,SC2034
-    (
-        mkdir -p "$T/kstat/p"
-        printf 'txg birth state ndirty nread nwritten reads writes\n40 1 C 0 0 4096 0 0\n41 1 C 0 0 0 0 0\n' \
-            > "$T/kstat/p/txgs"
-        g=42 slept=0
-        sleep() {
-            SECONDS=$((SECONDS + $1)) slept=$((slept + 1))
-            if [ "${GROW:-}" ]; then echo "$g 1 C 0 0 512 0 0" >> "$T/kstat/p/txgs"; g=$((g + 1)); fi
-        }
-        log() { :; }
-        rig_error() { echo "error after $SECONDS s, $slept sleeps"; exit 0; }
-        POOL=p NAME=t GROW=${2:-}
-        eval "${pidle_fn//\/proc\/spl\/kstat\/zfs/$T/kstat}"
-        SECONDS=0
-        pidle "$1"
-        echo "idle after $SECONDS s, $slept sleeps"
-    )
+    rm -rf "${T:?}/kstat"
+    T=$T PIDLE_FN=$pidle_fn GROW=${2:-} timeout 20 bash -c "$pidle_body" pidle_run "$1" || echo "no end in 20 s"
 }
 is "pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before" "$(pidle_run 120)" "idle after 12 s, 12 sleeps"
 is "pidle: a pool that writes a group every second is the rig's error at its limit" "$(pidle_run 30 grow)" \

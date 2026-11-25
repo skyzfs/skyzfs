@@ -122,10 +122,14 @@ never on how long the daemon answered `pending` (#145's review, F1):
   judge, and `pending` means the assists never took the pool to G, the
   rig's error. a1 refused before it was accepted makes no case: its pin
   judges it.
-- premise_a1_ and premise_a2_assists_at_the_decided_pace: the first assist at
-  least A (the agent's wait, accepted.tsv) after its acceptance, the
-  next ASSIST_BURST - 1 under A/2 apart, and the rest at least 0.95 A
-  apart (G2).
+- premise_a1_ and premise_a2_assists_at_the_decided_pace: floors only.
+  The first assist at least A (the agent's wait, accepted.tsv) after
+  its acceptance, the next ASSIST_BURST - 1 each at least the agent's
+  1 s pause after the end of the one before, the rest at least 0.95 A
+  apart (G2; the next look's S2). A ceiling is no premise: a slow
+  runner would make it flaky. obs_assist_gap_over_3x (INFO) lists each
+  gap over 3 times its decided value, the end of a publish that ended
+  `pending` included (the lead's answer to the next look's S1).
 - premise_a2_assisted: at least two assists of a2, read only when a2
   ended `pending after`; another end is the daemon's, pin_answer_a2
   judges it, and obs_assist_pace is NA.
@@ -176,11 +180,16 @@ of #139):
   (the rig's mark session-2-ready, on the log's clock) and before the
   line of c1's withdrawal, whatever it answered, and no cut after C
   before that line is a ground of rule (R): the import was no rewind.
-- passist: at a1's first assist the pool's newest group that wrote was
-  below the G asked, and its assists took it to G or past (the kstat's
-  groups, in assist.tsv): without them nothing could have carried a1.
-  a2 was assisted at least twice, and a2-txgs.txt reaches back to the
-  first of its assists.
+- passist (the agent's marks in accepted.tsv, its assists in
+  assist.tsv, and the kstat; never the daemon's answers): when a1 was
+  accepted the pool had not written G; if it wrote G by a1's end, an
+  assist of a1 took it across G and every group from G on that wrote
+  was an assist's; if it had not, a1 did not end `pending`; a1 refused
+  before its acceptance makes no case. Each publish's assists kept the
+  decided pace, floors only (premise_a1_ and premise_a2_assists_at_the_
+  decided_pace); obs_assist_gap_over_3x shows the ceilings. a2, if it
+  ended `pending after`, was assisted at least twice; a2-txgs.txt
+  reaches back over the course's groups.
 - pkill: the instance that answered tw's withdrawal, whatever it
   answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
@@ -760,22 +769,56 @@ def a1_premise(g, marks, rows, txgs):
     return True, said + f': assist {crossed[0]} took it across G, and every group from G on that wrote was an assist\'s'
 
 
-def pace_faults(rows, accepted_ns, after):
-    """A publish's assists against the decided pace (#145's G2): the
-    first at least AFTER s after the acceptance, the next ASSIST_BURST - 1
-    under AFTER / 2 s apart, the rest at least 0.95 AFTER s apart."""
-    bad = []
-    if rows and rows[0]['t0'] - accepted_ns < after * 1e9:
-        bad.append(f"{rows[0]['name']}'s first assist {(rows[0]['t0'] - accepted_ns) / 1e9:.1f} s after its "
-                   f'acceptance, before {after} s')
-    for k in range(1, len(rows)):
-        gap = (rows[k]['t0'] - rows[k - 1]['t0']) / 1e9
-        if k < publish_agent.ASSIST_BURST and gap >= after / 2:
-            bad.append(f"{rows[k]['name']}'s assist {k + 1} {gap:.1f} s after the one before, in the burst")
-        if k >= publish_agent.ASSIST_BURST and gap < after * 0.95:
-            bad.append(f"{rows[k]['name']}'s assist {k + 1} {gap:.1f} s after the one before, past the burst")
-    return bad
+def pace_faults(rows, accepted_ns, after, end=None):
+    """A publish's assists against the decided pace -> (faults, slow).
+    AFTER is the agent's wait A in s, END its end mark (ns, group, verb).
 
+    The faults are floors, the premise's verdict (#145's G2, and the
+    lead's answer to the next look's S1): the first assist at least A
+    after the acceptance; each of the next ASSIST_BURST - 1 at least the
+    agent's pause after the end of the one before (its loop's sleep(1)
+    after the sync, as #144's engine pauses after `assisted_ms`: 1 s at
+    the decided A of ASSIST_AFTER s, scaled with A so a test's clock
+    scales too); the rest at least 0.95 A after the one before, start to
+    start (the agent measures its wait from a kstat read, not from the
+    set).
+
+    The slow ones are each gap more than 3 times its decided value
+    (the first over 3 A after the acceptance; a pause in the burst over
+    3 pauses; a gap past it over 3 A; a publish that ended `pending`
+    over 3 A after its last assist's end, or its acceptance with none).
+    They are only an observation, obs_assist_gap_over_3x: a slow runner
+    must not make a verdict flaky."""
+    bad, slow = [], []
+    a = after * 1e9
+    pause = a / publish_agent.ASSIST_AFTER
+    name = rows[0]['name'] if rows else 'the publish'
+    if rows:
+        first = rows[0]['t0'] - accepted_ns
+        if first < a:
+            bad.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance, before {after} s")
+        if first > 3 * a:
+            slow.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance")
+    for k in range(1, len(rows)):
+        if k < publish_agent.ASSIST_BURST:
+            gap = rows[k]['t0'] - rows[k - 1]['t1']
+            if gap < pause:
+                bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.2f} s after the end of the one before, "
+                           f'in the burst, before the pause of {pause / 1e9:g} s')
+            if gap > 3 * pause:
+                slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the end of the one before, in the burst")
+            continue
+        gap = rows[k]['t0'] - rows[k - 1]['t0']
+        if gap < 0.95 * a:
+            bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before, past the burst")
+        if gap > 3 * a:
+            slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before")
+    if end is not None and end[2] == 'pending':
+        last = rows[-1]['t1'] if rows else accepted_ns
+        if end[0] - last > 3 * a:
+            since = 'its last assist' if rows else 'its acceptance, with no assist'
+            slow.append(f'{name} ended pending {(end[0] - last) / 1e9:.1f} s after {since}')
+    return bad, slow
 
 def written_groups(text, lo, hi):
     """The txgs kstat -> the groups committed after LO up to HI that wrote
@@ -1089,13 +1132,17 @@ def main():
                 if a1 is None:
                     raise RigError('a1 was accepted and has no request in published.tsv')
                 premise('premise_a1_needed_the_assist', *a1_premise(a1['group'], marks['a1'], mine, txgs))
+            slow = []
             for t in ('a1', 'a2'):
                 if 'accepted' in marks.get(t, {}):
-                    late = pace_faults([r for r in rows if r['name'] == t], marks[t]['accepted'][0],
-                                       marks[t]['accepted'][2])
-                    premise(f'premise_{t}_assists_at_the_decided_pace', not late,
-                            '; '.join(late) or f"{t}'s assists from {marks[t]['accepted'][2]} s after its "
-                            f'acceptance, {publish_agent.ASSIST_BURST} at first, then spaced')
+                    early, late = pace_faults([r for r in rows if r['name'] == t], marks[t]['accepted'][0],
+                                              marks[t]['accepted'][2], marks[t].get('end'))
+                    premise(f'premise_{t}_assists_at_the_decided_pace', not early,
+                            '; '.join(early) or f"{t}'s assists from {marks[t]['accepted'][2]} s after its "
+                            f'acceptance, {publish_agent.ASSIST_BURST} at first, then spaced, none early')
+                    slow += late
+            put('obs_assist_gap_over_3x', 'INFO', 'rig', '; '.join(slow) or
+                'no gap of the assists over 3 times its decided value (first, burst, spaced, end)')
             holds('pin_assist_writes_a_group',
                   [f"assist {k + 1} ({r['name']}, V {r['value']}): newest group that wrote "
                    f"{r['before']} before the set, "
