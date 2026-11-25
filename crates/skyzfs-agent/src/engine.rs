@@ -280,6 +280,8 @@ struct Memory {
     assists: u32,
     /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
     accepted: Option<(u64, u64)>,
+    /// [`Seen::withdrawn`].
+    withdrawn: bool,
     /// The anchor of the publish's age: `begun_ms` as recorded, the time
     /// against which it is measured at the anchor, and [`Clock::mono_ms`]
     /// then. For a publish begun in this process the time is `begun_ms`
@@ -545,6 +547,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let snap = memory.snap;
         let assisted_ms = memory.assisted_ms;
         let assists = memory.assists;
+        let withdrawn = memory.withdrawn;
         let daemon = match self.daemon.ask(&Request::Cuts, &[]) {
             Ok(Reply::Cuts(cuts)) => {
                 let answer = match (&publish.phase, kept) {
@@ -572,6 +575,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             assisted_ms,
             assists,
             too_old,
+            withdrawn,
         }))
     }
 
@@ -659,7 +663,11 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 self.point(Effect::Withdraw, true)?;
                 match answer {
                     Ok(answer) => {
-                        self.memory.entry(name).or_default().answer = Some(answer);
+                        let memory = self.memory.entry(name).or_default();
+                        if matches!(answer, Reply::Withdrawn | Reply::Unknown | Reply::Expired) {
+                            memory.withdrawn = true;
+                        }
+                        memory.answer = Some(answer);
                         Ok(Moved::Yes)
                     }
                     Err(_) => Ok(Moved::No),
@@ -871,6 +879,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 let memory = self.memory.entry(name).or_default();
                 memory.accepted = Some((now, mono));
                 memory.assists = 0;
+                memory.withdrawn = false;
                 Ok(Moved::Yes)
             }
             Ok(answer) => {

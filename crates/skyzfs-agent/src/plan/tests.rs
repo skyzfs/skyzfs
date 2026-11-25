@@ -131,6 +131,7 @@ fn seen() -> Seen {
         assisted_ms: None,
         assists: 0,
         too_old: false,
+        withdrawn: false,
     }
 }
 
@@ -190,6 +191,9 @@ trait With: Sized {
     }
     fn too_old(self) -> Seen {
         self.with(|s| s.too_old = true)
+    }
+    fn withdrawn(self) -> Seen {
+        self.with(|s| s.withdrawn = true)
     }
 }
 
@@ -1158,16 +1162,24 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
             seen().refused(Code::Rewound),
             Action::Stalled,
         ),
+        // The request is withdrawn first, and the publish given up only
+        // once the daemon has answered the withdraw (the lead's L5).
         (
-            "eight recorded",
+            "eight recorded, expired",
             with(8, held()),
             seen().answer(Reply::Expired),
+            Action::Withdraw,
+        ),
+        (
+            "eight recorded, withdrawn",
+            with(8, held()),
+            seen().answer(Reply::Expired).withdrawn(),
             Action::Look,
         ),
         (
-            "eight recorded, absent",
+            "eight recorded, withdrawn, absent",
             with(8, held()),
-            expired(),
+            expired().withdrawn(),
             Action::Release,
         ),
         // The release wrote a group, counted as a cut: given up all the
@@ -1175,7 +1187,7 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
         (
             "eight recorded, absent, released, a cut counted",
             with(8, held()),
-            expired().unheld().cuts(carrying()),
+            expired().withdrawn().unheld().cuts(carrying()),
             Action::Abandon(Why::NoProgress),
         ),
         (
@@ -1184,6 +1196,7 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
             seen()
                 .answer(Reply::Unknown)
                 .looked(SnapSeen::Absent)
+                .withdrawn()
                 .unheld(),
             Action::Abandon(Why::NoProgress),
         ),
@@ -1198,19 +1211,20 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
             with(8, held()),
             seen()
                 .answer(Reply::Withdrawn)
-                .looked(SnapSeen::Ours(COMMIT)),
+                .looked(SnapSeen::Ours(COMMIT))
+                .withdrawn(),
             published(),
         ),
         (
             "eight recorded, absent, gone",
             with(8, held()),
-            expired().gone(),
+            expired().gone().withdrawn(),
             Action::Abandon(Why::Destroyed),
         ),
         (
             "past the eighth (a record of an older bound)",
             with(30, asked()),
-            expired().unheld(),
+            expired().unheld().withdrawn(),
             Action::Abandon(Why::NoProgress),
         ),
         (
@@ -1251,24 +1265,26 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// L2 of #144's review: a publish older than its bound is given up,
-/// whatever the daemon says, as at its last stall.
+/// L2 of #144's review: a publish older than its bound is given up, as
+/// at its last stall, but never while a request of it may still pend
+/// (the lead's L5 and L6, after N1 of the next look).
 ///
 /// Mutant: the bound not applied at some phase, or applied with the
 /// hold kept, a request left pending, no look (a publish made given
 /// up), its own reason over the snapshot's, the hold released before
 /// `held_until` while the daemon is away, or a publish asked or held
 /// given up while the daemon is away (a request may have landed, or
-/// been accepted and not recorded, and only `look` tells); an answer
-/// that says the daemon cannot tell what became of the request
-/// (`stopped`, `ended`, `no-answer`, `no-upload`) read as one that does,
-/// and the hold released before `held_until` (N1 of #144's next look);
-/// `refused asked` not withdrawn; `done` that `look` does not confirm
-/// given up rather than stopped for a person (L6); or the age measured
-/// from the wrong end, or a clock stepped back read as old (by a little
-/// or by the whole bound, TG3).
+/// been accepted and not recorded, and only `look` tells); for any one
+/// answer of the protocol: a request that may pend not withdrawn, a
+/// publish given up before the daemon has answered a withdraw, an
+/// answer that says nothing of the request read as one that does (the
+/// hold released before `held_until`), `done` that `look` does not
+/// confirm given up rather than stopped for a person, or `refused
+/// taken` not looked up; or the age measured from the wrong end, or a
+/// clock stepped back read as old (by a little or by the whole bound,
+/// TG3).
 #[test]
-fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
+fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
     let ms = |d: Duration| u64::try_from(d.as_millis()).expect("ms");
     assert_eq!(AGE_MAX, Duration::from_secs(7200));
     assert!(!too_old(BEGUN, BEGUN + ms(AGE_MAX) - 1, AGE_MAX));
@@ -1283,7 +1299,13 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
 
     let old = || seen().too_old();
     let none = || old().with(|s| s.pool.snapshot = None).unheld();
-    let expired = || old().answer(Reply::Expired).looked(SnapSeen::Absent);
+    // An answer to the withdraw the planner asked for first (L5).
+    let expired = || {
+        old()
+            .answer(Reply::Expired)
+            .looked(SnapSeen::Absent)
+            .withdrawn()
+    };
     let gave_up = || Action::Abandon(Why::TooOld);
     check(vec![
         ("intent", intent(), none(), gave_up()),
@@ -1320,6 +1342,12 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
             "held, unknown",
             held(),
             old().answer(Reply::Unknown),
+            Action::Withdraw,
+        ),
+        (
+            "held, unknown, withdrawn",
+            held(),
+            old().answer(Reply::Unknown).withdrawn(),
             Action::Look,
         ),
         ("held, absent", held(), expired(), Action::Release),
@@ -1332,7 +1360,10 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         (
             "held, ours",
             held(),
-            old().answer(Reply::Unknown).looked(SnapSeen::Ours(COMMIT)),
+            old()
+                .answer(Reply::Unknown)
+                .looked(SnapSeen::Ours(COMMIT))
+                .withdrawn(),
             published(),
         ),
         ("held, away", held(), old().away(), Action::Wait),
@@ -1353,7 +1384,7 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
             "asked, refused busy",
             asked(),
             old().refused(Code::Busy),
-            Action::Look,
+            Action::Wait,
         ),
         (
             "asked, expired, absent",
@@ -1378,7 +1409,8 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
             asked(),
             old()
                 .answer(Reply::Withdrawn)
-                .looked(SnapSeen::Ours(COMMIT)),
+                .looked(SnapSeen::Ours(COMMIT))
+                .withdrawn(),
             published(),
         ),
         (
@@ -1415,100 +1447,176 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         ("done", done(), old(), Action::Release),
         ("done, released", done(), old().unheld(), Action::Forget),
     ]);
-    // N1 of #144's next look: answers that say the daemon cannot tell
-    // what became of the request are the daemon away; `refused asked`
-    // withdraws; `done` that `look` does not confirm stops (L6); an
-    // answer not about a publish waits.
-    let mut rows = Vec::new();
-    for code in [Code::Stopped, Code::Ended, Code::NoAnswer, Code::NoUpload] {
-        rows.extend([
-            (
-                "asked, cannot tell",
-                asked(),
-                old().refused(code),
-                Action::Wait,
+    // Every answer of the protocol, too old (the lead's L5 on #144,
+    // after N1 of its next look): the hold is never let go while a
+    // request may pend. Each answer in four states: asked and not yet
+    // looked up, a ms before `held_until`; the same at `held_until`;
+    // asked, the daemon having answered a withdraw and `look` having
+    // found no `snap/t`; and held, not asked, an hour after `held_until`.
+    let mut answers = vec![
+        Reply::Pending,
+        Reply::Done(COMMIT),
+        Reply::Expired,
+        Reply::Withdrawn,
+        Reply::Unknown,
+        Reply::Cuts(cuts()),
+        Reply::Accepted,
+        Reply::Absent,
+        Reply::Snap(row(G)),
+        Reply::Unreadable(UnreadableReply {
+            commit: COMMIT,
+            why: skyzfs_control::Unread::NoRow,
+        }),
+    ];
+    let codes = [
+        Code::Name,
+        Code::Attachment,
+        Code::State,
+        Code::Manifest,
+        Code::Expiry,
+        Code::Asked,
+        Code::Busy,
+        Code::Taken,
+        Code::Stopped,
+        Code::Rewound,
+        Code::Version,
+        Code::Malformed,
+        Code::Peer,
+        Code::NoUpload,
+        Code::Ended,
+        Code::NoAnswer,
+        Code::Store,
+    ];
+    answers.extend(codes.map(|code| Reply::Refused(code, String::new())));
+    let mut wrong = Vec::new();
+    for answer in answers {
+        let kind = match answer {
+            Reply::Done(_) | Reply::Refused(Code::Taken, _) => "look",
+            Reply::Pending | Reply::Absent | Reply::Refused(Code::Asked, _) => "withdraw",
+            Reply::Withdrawn | Reply::Unknown | Reply::Expired => "withdraw first",
+            _ => "keep",
+        };
+        let (fresh, at_until, after_withdraw, held_long) = match kind {
+            "look" => (
+                Action::Look,
+                Action::Look,
+                match answer {
+                    Reply::Done(_) => Action::Stop(Stop::DoneNotSeen),
+                    _ => Action::Wait,
+                },
+                Action::Look,
             ),
-            (
-                "asked, cannot tell, absent",
-                asked(),
-                old().refused(code).looked(SnapSeen::Absent),
-                Action::Wait,
+            "withdraw" => (
+                Action::Withdraw,
+                Action::Withdraw,
+                Action::Withdraw,
+                Action::Withdraw,
             ),
-            (
-                "asked, cannot tell, a ms before held_until",
-                asked(),
-                old().refused(code).at(UNTIL - 1),
-                Action::Wait,
-            ),
-            (
-                "asked, cannot tell, at held_until",
-                asked(),
-                old().refused(code).at(UNTIL),
+            "withdraw first" => (
+                Action::Withdraw,
+                Action::Withdraw,
                 Action::Release,
+                Action::Withdraw,
             ),
+            _ => (Action::Wait, Action::Release, Action::Wait, Action::Wait),
+        };
+        let at = |s: Seen, ms: u64| s.with(|s| s.now_ms = ms);
+        let cases = [
             (
-                "asked, cannot tell, released",
+                "asked",
                 asked(),
-                old().refused(code).unheld().at(UNTIL),
-                Action::Wait,
+                at(old().answer(answer.clone()), UNTIL - 1),
+                fresh,
             ),
             (
-                "held, cannot tell",
-                held(),
-                old().refused(code),
-                Action::Wait,
+                "asked, at held_until",
+                asked(),
+                at(old().answer(answer.clone()), UNTIL),
+                at_until,
             ),
             (
-                "held, cannot tell, long after",
-                held(),
-                old().refused(code).at(UNTIL + 3600 * SECOND),
-                Action::Wait,
+                "asked, withdrawn, absent",
+                asked(),
+                at(
+                    old()
+                        .answer(answer.clone())
+                        .withdrawn()
+                        .looked(SnapSeen::Absent),
+                    UNTIL - 1,
+                ),
+                after_withdraw,
             ),
-        ]);
+            (
+                "held, an hour after",
+                held(),
+                at(old().answer(answer.clone()), UNTIL + 3600 * SECOND),
+                held_long,
+            ),
+        ];
+        for (what, phase, seen, want) in cases {
+            let got = plan(&publish(phase), &seen);
+            if got != want {
+                wrong.push(format!("{answer:?}, {what}: {got:?}, not {want:?}"));
+            }
+        }
     }
-    rows.extend([
+    // `done` and `refused taken` looked up: this publish's is done;
+    // another's `snap/t` gives the name up after `refused taken`, and
+    // stops the publish for a person after `done` (L6).
+    let ours = || SnapSeen::Ours(COMMIT);
+    for (what, seen, want) in [
         (
-            "asked, refused asked",
-            asked(),
-            old().refused(Code::Asked),
-            Action::Withdraw,
-        ),
-        (
-            "asked, done, not looked",
-            asked(),
-            old().answer(Reply::Done(COMMIT)),
-            Action::Look,
-        ),
-        (
-            "asked, done, ours",
-            asked(),
-            old()
-                .answer(Reply::Done(COMMIT))
-                .looked(SnapSeen::Ours(COMMIT)),
+            "done, ours",
+            old().answer(Reply::Done(COMMIT)).looked(ours()),
             published(),
         ),
         (
-            "asked, done, absent",
-            asked(),
-            old().answer(Reply::Done(COMMIT)).looked(SnapSeen::Absent),
-            Action::Stop(Stop::DoneNotSeen),
-        ),
-        (
-            "asked, done, another commit",
-            asked(),
+            "done, another commit",
             old()
                 .answer(Reply::Done(COMMIT))
                 .looked(SnapSeen::Ours([9; 32])),
             Action::Stop(Stop::DoneNotSeen),
         ),
         (
-            "asked, an answer not about a publish",
-            asked(),
-            old().answer(Reply::Accepted).looked(SnapSeen::Absent),
-            Action::Wait,
+            "done, not ours",
+            old().answer(Reply::Done(COMMIT)).looked(SnapSeen::NotOurs),
+            Action::Stop(Stop::DoneNotSeen),
         ),
-    ]);
-    check(rows);
+        (
+            "taken, ours",
+            old().refused(Code::Taken).looked(ours()),
+            published(),
+        ),
+        (
+            "taken, not ours",
+            old().refused(Code::Taken).looked(SnapSeen::NotOurs),
+            Action::Release,
+        ),
+        (
+            "taken, not ours, released",
+            old()
+                .refused(Code::Taken)
+                .looked(SnapSeen::NotOurs)
+                .unheld(),
+            Action::Abandon(Why::NameTaken),
+        ),
+        (
+            "withdrawn, ours",
+            old().answer(Reply::Withdrawn).withdrawn().looked(ours()),
+            published(),
+        ),
+        (
+            "withdrawn, not looked",
+            old().answer(Reply::Unknown).withdrawn(),
+            Action::Look,
+        ),
+    ] {
+        let got = plan(&publish(asked()), &seen);
+        if got != want {
+            wrong.push(format!("{what}: {got:?}, not {want:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     // Eight stalls are given up as such, too old or not.
     let stalled = Publish {
         stalls: STALLS_ABANDONED,
@@ -1518,8 +1626,9 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         plan(&stalled, &expired().unheld()),
         Action::Abandon(Why::NoProgress)
     );
-    // And a publish given up for its stalls keeps its hold, as one too
-    // old does, while the daemon cannot tell.
+    // And a publish given up for its stalls keeps its hold as one too
+    // old does: an answer that cannot tell waits, and one that says the
+    // request ended is withdrawn first.
     let stalled_asked = Publish {
         stalls: STALLS_ABANDONED,
         ..publish(asked())
@@ -1528,6 +1637,8 @@ fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
         let seen = seen().refused(code).looked(SnapSeen::Absent);
         assert_eq!(plan(&stalled_asked, &seen), Action::Wait, "{code:?}");
     }
+    let seen = seen().answer(Reply::Expired).looked(SnapSeen::Absent);
+    assert_eq!(plan(&stalled_asked, &seen), Action::Withdraw);
 }
 
 fn row(group: u64) -> SnapReply {

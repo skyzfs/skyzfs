@@ -963,12 +963,13 @@ fn given_up_too_old(world: &Rc<RefCell<World>>, agent: &FakeAgent, t: &str, leas
     assert!(took >= least, "{took:?}, less than {least:?}");
 }
 
-/// L2 of #144's review: a publish older than its bound is given up,
-/// whatever the daemon says, and its hold released.
+/// L2 of #144's review: a publish older than its bound is given up, and
+/// its hold released, once its request is withdrawn and not published.
 ///
 /// Mutant: the bound not applied, or applied from the wrong time; the
-/// hold kept; or a publish given up while the daemon is away (it may
-/// have landed meanwhile).
+/// hold kept; a publish given up while the daemon is away (it may have
+/// landed meanwhile); or the answer to a withdraw never remembered (the
+/// publish withdrawn for ever).
 #[test]
 fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
     // The stalling run of `a_publish_no_cut_carries_is_reported_then_given_up`
