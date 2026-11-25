@@ -1,0 +1,32 @@
+baseline 0 [] 19 passed
+NB1 KILLED ['tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_row_codec_is_the_uploaders'] 17 passed
+NB2 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_row_codec_is_the_uploaders', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 15 passed
+NB3 KILLED ['tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::move_head_takes_the_row_forms_known_before_the_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders'] 15 passed
+NB4b KILLED ['tests::a_row_is_put_as_the_uploader_reads_it', 'tests::move_head_takes_the_row_forms_known_before_the_commit', 'tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_row_codec_is_the_uploaders', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 13 passed
+NB5 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+NB6 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders'] 15 passed
+NB7 KILLED ['tests::a_row_is_put_as_the_uploader_reads_it', 'tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders'] 14 passed
+NB8 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders', 'tests::move_head_takes_the_row_forms_known_before_the_commit'] 14 passed
+NB9 KILLED ['tests::the_row_codec_is_the_uploaders', 'tests::the_cut_row_is_read_as_the_uploader_writes_it'] 17 passed
+RW1 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW2 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW3 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW4 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW5 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW6 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+RW7 KILLED ['tests::the_row_codec_is_the_uploaders'] 18 passed
+MH1 KILLED ['tests::move_head_writes_head_and_the_row_in_one_transaction', 'tests::move_head_writes_the_row_in_the_same_commit'] 17 passed
+MH5 KILLED ['tests::move_head_writes_the_row_in_the_same_commit'] 18 passed
+MH6 KILLED ['tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_other_writer_acts_on_the_row_it_read'] 16 passed
+MH2b KILLED ['tests::move_head_writes_head_and_the_row_in_one_transaction'] 18 passed
+MH2c KILLED ['tests::move_head_writes_head_and_the_row_in_one_transaction', 'tests::move_head_writes_the_row_in_the_same_commit'] 17 passed
+MH3 KILLED ['tests::move_head_writes_head_and_the_row_in_one_transaction', 'tests::move_head_takes_the_row_forms_known_before_the_commit'] 17 passed
+MH3h KILLED ['tests::move_head_takes_the_row_forms_known_before_the_commit'] 18 passed
+MH3c KILLED ['tests::move_head_takes_the_row_forms_known_before_the_commit'] 18 passed
+MH4 KILLED ['tests::move_head_takes_the_row_forms_known_before_the_commit', 'tests::move_head_writes_the_row_in_the_same_commit'] 17 passed
+MH4n KILLED ['tests::move_head_writes_the_row_in_the_same_commit', 'tests::move_head_takes_the_row_forms_known_before_the_commit'] 17 passed
+MH7 SURVIVED [] 19 passed
+MH7b KILLED ['tests::a_lost_swap_of_head_is_the_row_moved_only_under_a_guard'] 18 passed
+MH7c KILLED ['tests::a_lost_swap_of_head_is_the_row_moved_only_under_a_guard'] 18 passed
+MH8 KILLED ['tests::move_head_takes_the_row_forms_known_before_the_commit'] 18 passed
+done

@@ -1,0 +1,633 @@
+[
+ {
+  "id": "PY1",
+  "what": "uv1: a step that reads head_moved passes",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY2",
+  "what": "uv1: matched no longer accepted at a step",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY3",
+  "what": "uv1: upload_mismatches at least 1, not exactly 2",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY4",
+  "what": "uv1: uploaded_whole at least 1, not exactly 3",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY5",
+  "what": "uv1: no check that others.tsv has the step's row of version 1",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY6",
+  "what": "uv1: no check that the end row names head's commit",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY7",
+  "what": "uv1: no check that the course stays in one state",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY8",
+  "what": "uv1: no check of the row before each act (version 2 naming head)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY9",
+  "what": "uv1moved: row_v1 accepted once the mismatch was counted",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY10",
+  "what": "uv1moved: no check that head is the other writer's at the end",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY11",
+  "what": "uv1moved: no check of the row at the end",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY12",
+  "what": "uv1moved: the end status wants row_v1",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads",
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY13",
+  "what": "row_commits_off_head finds nothing",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_rows_commit_against_head.test_a_rows_commit_against_head",
+     "test_what_an_upload_gets_wrong.test_what_an_upload_gets_wrong"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY14",
+  "what": "row_commits_off_head does not leave out another writer's head or row",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_rows_commit_against_head.test_a_rows_commit_against_head"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY15",
+  "what": "daemons_fetches skips a cut in v1 whatever the fetch's commit",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads",
+     "test_a_row_of_version_1_over_the_daemons_cut.test_a_row_of_version_1_over_the_daemons_cut",
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY16",
+  "what": "daemons_fetches does not skip the row of version 1",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_row_of_version_1_over_the_daemons_cut.test_a_row_of_version_1_over_the_daemons_cut",
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY17",
+  "what": "read_uploaded drops the commit",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads",
+     "test_a_rows_commit_against_head.test_a_rows_commit_against_head",
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1",
+     "test_what_an_upload_gets_wrong.test_what_an_upload_gets_wrong"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY18",
+  "what": "read_row drops node B's row_commit",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads",
+     "test_each_courses_files.test_each_courses_files",
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1",
+     "test_the_rows_commit_node_b_prints.test_the_rows_commit_node_b_prints"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY19",
+  "what": "STOPPED_AT without uv1moved",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY20",
+  "what": "uv1's second step reads the first step's status",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY21",
+  "what": "EXPECTED: mark-kept caught on uv1 (a single instance)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY22",
+  "what": "EXPECTED: uv1 and uv1moved out of UNKNOWN (the three rules pinned same)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "SURVIVED",
+  "failed": {},
+  "clean_after": true
+ },
+ {
+  "id": "PY23",
+  "what": "EXPECTED: mark-dropped caught on uv1moved",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY24",
+  "what": "RECS without uv1 (no row of EXPECTED)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_the_course_of_rows_of_version_1.test_the_course_of_rows_of_version_1"
+    ]
+   ],
+   "tests/kernel/test_cut_daemon_check.py": [
+    1,
+    [
+     "test_the_table.test_the_table"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY25",
+  "what": "the watcher's key leaves out the row's commit",
+  "file": "tests/kernel/cut_watch.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_watch.py": [
+    1,
+    [
+     "test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY26",
+  "what": "the watcher writes none for every commit",
+  "file": "tests/kernel/cut_watch.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_watch.py": [
+    1,
+    [
+     "test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY27",
+  "what": "parse_row drops node B's row_commit",
+  "file": "tests/kernel/cut_watch.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_watch.py": [
+    1,
+    [
+     "test_rows.test_rows",
+     "test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY28",
+  "what": "the plan runs uv1moved no more on a pull request",
+  "file": "tests/kernel/cut_plan.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_a_pull_request_that_touches_the_uploader.test_a_pull_request_that_touches_the_uploader"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY29",
+  "what": "uv1: no check that node B moved head in v1in (G-d)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY30",
+  "what": "uv1: v1in passes with two node B heads",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY31",
+  "what": "uv1: v1in passes with the daemon's own head as node B's",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY32",
+  "what": "uv1: no note that a step's own word was not seen (N1)",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY33",
+  "what": "uv1: the note for every kind, row_v1 included",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "PY34",
+  "what": "uv1: the move check on v1 as well as v1in",
+  "file": "tests/kernel/cut_daemon_check.py",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_daemon_main.py": [
+    1,
+    [
+     "test_each_courses_files.test_each_courses_files"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF1",
+  "what": "skyzfs-cut-daemon.yml: the pattern before 6d15da8 (letters only)",
+  "file": ".github/workflows/skyzfs-cut-daemon.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names",
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF2",
+  "what": "skyzfs-cut-rig.yml: the pattern before 6d15da8",
+  "file": ".github/workflows/skyzfs-cut-rig.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names",
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF3",
+  "what": "skyzfs-nodeb-rig.yml: the pattern before 6d15da8",
+  "file": ".github/workflows/skyzfs-nodeb-rig.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names",
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF4",
+  "what": "skyzfs-cut-daemon.yml: a name may start with a digit",
+  "file": ".github/workflows/skyzfs-cut-daemon.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF5",
+  "what": "skyzfs-cut-daemon.yml: no end anchor (life;x taken)",
+  "file": ".github/workflows/skyzfs-cut-daemon.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names",
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names",
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF6",
+  "what": "skyzfs-cut-daemon.yml: capitals taken",
+  "file": ".github/workflows/skyzfs-cut-daemon.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ },
+ {
+  "id": "WF7",
+  "what": "skyzfs-cut-daemon.yml: the check of names dropped",
+  "file": ".github/workflows/skyzfs-cut-daemon.yml",
+  "result": "KILLED",
+  "failed": {
+   "tests/kernel/test_cut_plan.py": [
+    1,
+    [
+     "test_every_recording_passes_the_workflows_check_of_names.test_every_recording_passes_the_workflows_check_of_names"
+    ]
+   ]
+  },
+  "clean_after": true
+ }
+]

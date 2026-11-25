@@ -1,0 +1,361 @@
+[
+ {
+  "id": "NB1",
+  "what": "node B reads a row of version 1 at any length from 34",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it",
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB2",
+  "what": "node B reads the number at the group's offset and the group at the number's",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it",
+   "tests::the_row_codec_is_the_uploaders",
+   "tests::the_guard_holds_the_row_as_read_in_either_version"
+  ],
+  "note": "15 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB3",
+  "what": "node B reads the commit from bytes 2..34",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it",
+   "tests::move_head_takes_the_row_forms_known_before_the_commit",
+   "tests::the_guard_holds_the_row_as_read_in_either_version",
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "15 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB4b",
+  "what": "node B writes the version big-endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_row_is_put_as_the_uploader_reads_it",
+   "tests::move_head_takes_the_row_forms_known_before_the_commit",
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::move_head_writes_the_row_in_the_same_commit",
+   "tests::the_row_codec_is_the_uploaders",
+   "tests::the_guard_holds_the_row_as_read_in_either_version"
+  ],
+  "note": "13 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB5",
+  "what": "node B reads version 2 by its low byte alone",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB6",
+  "what": "node B swaps the number and the group of a row of version 1 only",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it",
+   "tests::the_guard_holds_the_row_as_read_in_either_version",
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "15 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB7",
+  "what": "node B labels every row version 2",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_row_is_put_as_the_uploader_reads_it",
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::move_head_writes_the_row_in_the_same_commit",
+   "tests::the_guard_holds_the_row_as_read_in_either_version",
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "14 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB8",
+  "what": "node B's version 2 is 67 bytes",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it",
+   "tests::the_guard_holds_the_row_as_read_in_either_version",
+   "tests::the_row_codec_is_the_uploaders",
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "14 passed",
+  "clean_after": true
+ },
+ {
+  "id": "NB9",
+  "what": "node B also reads version 3 as version 2",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders",
+   "tests::the_cut_row_is_read_as_the_uploader_writes_it"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW1",
+  "what": "the uploader reads a row longer than its version says",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW2",
+  "what": "the uploader writes the group before the number",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW3",
+  "what": "the uploader's row version is 3",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW4",
+  "what": "the uploader reads the commit from bytes 33..65",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW5",
+  "what": "the uploader reads the version big-endian",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW6",
+  "what": "the uploader gives a row of version 1 a commit of zeros",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "RW7",
+  "what": "the uploader reads any version from 2 as version 2",
+  "file": "crates/skyzfs-upload/src/row.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_row_codec_is_the_uploaders"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH1",
+  "what": "move-head under a guard keeps the row it read and drops --row",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_head_and_the_row_in_one_transaction",
+   "tests::move_head_writes_the_row_in_the_same_commit"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH5",
+  "what": "move-head with --row and no guard writes no row",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_the_row_in_the_same_commit"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH6",
+  "what": "move-head with --row writes it whatever the row is now (guard dropped)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_the_row_in_the_same_commit",
+   "tests::the_guard_holds_the_row_as_read_in_either_version",
+   "tests::the_other_writer_acts_on_the_row_it_read"
+  ],
+  "note": "16 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH2b",
+  "what": "move-head commits head under the guard alone, then puts the row in a second transaction (not atomic)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_head_and_the_row_in_one_transaction"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH2c",
+  "what": "move-head swaps the row (guarded) in a first transaction, then commits head alone (not atomic)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_head_and_the_row_in_one_transaction",
+   "tests::move_head_writes_the_row_in_the_same_commit"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH3",
+  "what": "move-head refuses --row v1:",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_head_and_the_row_in_one_transaction",
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH3h",
+  "what": "move-head refuses --row hex:",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH3c",
+  "what": "move-head refuses --row STATE:NUMBER:GROUP:COMMIT",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH4",
+  "what": "move-head takes --row STATE:NUMBER:GROUP",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_takes_the_row_forms_known_before_the_commit",
+   "tests::move_head_writes_the_row_in_the_same_commit"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH4n",
+  "what": "move-head takes --row none (deletes the row)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_writes_the_row_in_the_same_commit",
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "17 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7",
+  "what": "call site: an unguarded --row counts as guarded again (the behaviour before N2)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "19 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7b",
+  "what": "commit_outcome: a lost swap of head is None whatever the guard",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_is_the_row_moved_only_under_a_guard"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7c",
+  "what": "commit_outcome: a lost swap of head is an error even under a guard",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_is_the_row_moved_only_under_a_guard"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH8",
+  "what": "the refusal no longer says why none is refused (N3)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::move_head_takes_the_row_forms_known_before_the_commit"
+  ],
+  "note": "18 passed",
+  "clean_after": true
+ }
+]

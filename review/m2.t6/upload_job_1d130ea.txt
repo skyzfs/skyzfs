@@ -1,0 +1,337 @@
+# skyzfs-cut-daemon run 45519738951, job 138888996001 (record through skyzfsd and check, ubuntu-26.04-upload), head 1d130ea
+# built: HEAD is now at 33941a7 Merge 1d130ea58b26f6b61c903af164f0397bd03c34e7 into b9def128405c13288f8aa2bca87b2fea61b1d8e9
+# steps 'Record through skyzfsd and check' 00:52:09 -> 00:53:35 UTC, success; artifact cut-daemon-ubuntu-26.04-upload
+# recordings.tsv:
+life	recorded	2 sessions
+life	checked	exit 0
+umoved	recorded	1 sessions
+umoved	checked	exit 0
+urow	recorded	1 sessions
+urow	checked	exit 0
+ukill	recorded	1 sessions
+ukill	checked	exit 0
+ulease	recorded	2 sessions
+ulease	checked	exit 0
+ulost	recorded	2 sessions
+ulost	checked	exit 0
+uv1	recorded	1 sessions
+uv1	checked	exit 0
+uv1moved	recorded	1 sessions
+uv1moved	checked	exit 0
+
+# life/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	1297 records from the request log (143 with their bytes), 26 uberblock writes that mark, of 104; 6 marks
+cuts	PASS	26 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 26 cut lines are numbered 1 to 26
+obs_opens_as_itself	INFO	26 of 26 cuts open as themselves, by the reference
+status	PASS	cuts 26, cut_group 67, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 26 at head: 1 of 26 cuts fetched at head; 12329 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 26: 65 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 26: 12156 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 12, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 26 = committed and let go 12 + replaced 14 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+sessions	PASS	2 sessions as committed; 21 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 37..39)
+ctl_drop	CAUGHT	cut 14: the daemon's is group 37 (itself) at record 765, the reference's group 35 (itself) at record 715 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 25 cuts, the reference 26 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 27 cuts, the reference 26 (expected: caught)
+ctl_group	CAUGHT	cut 14: the daemon's is group 36 (itself) at record 715, the reference's group 35 (itself) at record 715 (expected: caught)
+ctl_opens	CAUGHT	cut 14: the daemon's is group 35 (rewind) at record 715, the reference's group 35 (itself) at record 715 (expected: caught)
+ctl_late	CAUGHT	cut 14: the daemon's is group 35 (itself) at record 719, the reference's group 35 (itself) at record 715 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 69, the reference's group 4 (rewind) at record 63 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 26 cuts here (expected: same)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 26 cuts here (expected: same)
+ctl_previous	SAME	the rule previous gives the design's 26 cuts here (expected: same)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 26 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 26 cuts here (expected: same)
+time	INFO	0 s
+
+# umoved/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	754 records from the request log (88 with their bytes), 16 uberblock writes that mark, of 64; 3 marks
+cuts	PASS	16 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 16 cut lines are numbered 1 to 16
+obs_opens_as_itself	INFO	16 of 16 cuts open as themselves, by the reference
+status	PASS	cuts 16, cut_group 41, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 9 at head and 1 of another writer's: 1 of 9 cuts fetched at head; 3793 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 9: 34 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 9: 3600 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 1, upload_mismatches 4, upload_abandoned_at_mismatch 5, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 4; uploaded 4, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 16 = committed and let go 4 + replaced 7 + abandoned 5 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	umoved
+sessions	PASS	1 sessions as committed; 13 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_drop	CAUGHT	cut 9: the daemon's is group 20 (itself) at record 459, the reference's group 14 (itself) at record 422 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 15 cuts, the reference 16 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 17 cuts, the reference 16 (expected: caught)
+ctl_group	CAUGHT	cut 9: the daemon's is group 15 (itself) at record 422, the reference's group 14 (itself) at record 422 (expected: caught)
+ctl_opens	CAUGHT	cut 9: the daemon's is group 14 (rewind) at record 422, the reference's group 14 (itself) at record 422 (expected: caught)
+ctl_late	CAUGHT	cut 9: the daemon's is group 14 (itself) at record 453, the reference's group 14 (itself) at record 422 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 61, the reference's group 4 (rewind) at record 55 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 16 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 16 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 16 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 16 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 16 cuts here (expected: same)
+time	INFO	0 s
+
+# urow/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	1044 records from the request log (112 with their bytes), 22 uberblock writes that mark, of 88; 3 marks
+cuts	PASS	22 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 22 cut lines are numbered 1 to 22
+obs_opens_as_itself	INFO	22 of 22 cuts open as themselves, by the reference
+status	PASS	cuts 22, cut_group 65, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 8, 12, 14, 22 at head and 2 of another writer's: 4 of 22 cuts fetched at head; 24842 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 14: 34 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 14: 1654 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 3, lease_epoch 1, upload_mismatches 2, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked matched; uploaded 12, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 22 = committed and let go 12 + replaced 8 + abandoned 2 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	row1: upload_checked 'not_the_base' once the mismatch was counted; row2: upload_checked 'not_the_base' once the mismatch was counted
+sessions	PASS	1 sessions as committed; 19 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6)
+ctl_drop	CAUGHT	cut 12: the daemon's is group 32 (itself) at record 672, the reference's group 29 (itself) at record 589 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 21 cuts, the reference 22 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 23 cuts, the reference 22 (expected: caught)
+ctl_group	CAUGHT	cut 12: the daemon's is group 30 (itself) at record 589, the reference's group 29 (itself) at record 589 (expected: caught)
+ctl_opens	CAUGHT	cut 12: the daemon's is group 29 (rewind) at record 589, the reference's group 29 (itself) at record 589 (expected: caught)
+ctl_late	CAUGHT	cut 12: the daemon's is group 29 (itself) at record 666, the reference's group 29 (itself) at record 589 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 67, the reference's group 4 (rewind) at record 61 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 22 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 22 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 22 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 22 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 22 cuts here (expected: same)
+time	INFO	0 s
+
+# ukill/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	5698 records from the request log (568 with their bytes), 136 uberblock writes that mark, of 544; 3 marks
+cuts	PASS	136 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 136 cut lines are numbered 1 to 136
+obs_opens_as_itself	INFO	136 of 136 cuts open as themselves, by the reference
+status	PASS	cuts 136, cut_group 407, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 136 at head: 1 of 136 cuts fetched at head; 38306 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 136: 83 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 136: 38197 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 0, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 1, uploaded 59; uploaded 59, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 2, from balance-start.txt: cuts 4 = committed and let go 4 + replaced 0 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	ukill
+sessions	PASS	1 sessions as committed; 133 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 4 cuts complete before the command returned (groups 4..7)
+ctl_drop	CAUGHT	cut 69: the daemon's is group 204 (itself) at record 2949, the reference's group 201 (itself) at record 2909 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 135 cuts, the reference 136 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 137 cuts, the reference 136 (expected: caught)
+ctl_group	CAUGHT	cut 69: the daemon's is group 202 (itself) at record 2909, the reference's group 201 (itself) at record 2909 (expected: caught)
+ctl_opens	CAUGHT	cut 69: the daemon's is group 201 (rewind) at record 2909, the reference's group 201 (itself) at record 2909 (expected: caught)
+ctl_late	CAUGHT	cut 69: the daemon's is group 201 (itself) at record 2943, the reference's group 201 (itself) at record 2909 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 62, the reference's group 4 (rewind) at record 56 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 136 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 136 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 136 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 136 cuts here (expected: same or caught)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 136 cuts here (expected: same or caught)
+time	INFO	0 s
+
+# ulease/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	906 records from the request log (111 with their bytes), 18 uberblock writes that mark, of 72; 6 marks
+cuts	PASS	18 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 18 cut lines are numbered 1 to 18
+obs_opens_as_itself	INFO	18 of 18 cuts open as themselves, by the reference
+status	PASS	cuts 18, cut_group 51, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 10, 18 at head: 2 of 18 cuts fetched at head; 11075 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 18: 62 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 18: 3497 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 6, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 2, from balance-start.txt: cuts 8 = committed and let go 4 + replaced 4 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	the refused start wrote 5 paths (vol, volume.start, run, v-801-86022c); lease_epoch '2' after the other holder let go
+sessions	PASS	2 sessions as committed; 13 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 29..31)
+ctl_drop	CAUGHT	cut 10: the daemon's is group 29 (itself) at record 519, the reference's group 27 (itself) at record 471 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 17 cuts, the reference 18 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 19 cuts, the reference 18 (expected: caught)
+ctl_group	CAUGHT	cut 10: the daemon's is group 28 (itself) at record 471, the reference's group 27 (itself) at record 471 (expected: caught)
+ctl_opens	CAUGHT	cut 10: the daemon's is group 27 (rewind) at record 471, the reference's group 27 (itself) at record 471 (expected: caught)
+ctl_late	CAUGHT	cut 10: the daemon's is group 27 (itself) at record 475, the reference's group 27 (itself) at record 471 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 63, the reference's group 4 (rewind) at record 57 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 18 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 18 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 18 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 18 cuts here (expected: same or caught)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 18 cuts here (expected: same or caught)
+time	INFO	0 s
+
+# ulost/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	883 records from the request log (111 with their bytes), 18 uberblock writes that mark, of 72; 6 marks
+cuts	PASS	18 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 18 cut lines are numbered 1 to 18
+obs_opens_as_itself	INFO	18 of 18 cuts open as themselves, by the reference
+status	PASS	cuts 18, cut_group 51, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 10 at head: 1 of 10 cuts fetched at head; 3816 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 10: 56 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 10: 3627 blocks differ (expected: caught)
+upload_status	PASS	upload_state lease_lost, cuts_held 2, lease lost, lease_holder other-node, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 4; uploaded 4, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 18 = committed and let go 4 + replaced 12 + abandoned 0 + held +2; at the start upload_state 'idle', after the drain 'lease_lost'
+upload_course	PASS	ulost
+sessions	PASS	2 sessions as committed; 13 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6); session 2: 2 cuts complete before the command returned (groups 29..31)
+ctl_drop	CAUGHT	cut 10: the daemon's is group 29 (itself) at record 515, the reference's group 27 (itself) at record 463 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 17 cuts, the reference 18 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 19 cuts, the reference 18 (expected: caught)
+ctl_group	CAUGHT	cut 10: the daemon's is group 28 (itself) at record 463, the reference's group 27 (itself) at record 463 (expected: caught)
+ctl_opens	CAUGHT	cut 10: the daemon's is group 27 (rewind) at record 463, the reference's group 27 (itself) at record 463 (expected: caught)
+ctl_late	CAUGHT	cut 10: the daemon's is group 27 (itself) at record 467, the reference's group 27 (itself) at record 463 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 66, the reference's group 4 (rewind) at record 60 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 18 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 18 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 18 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 18 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 18 cuts here (expected: same)
+time	INFO	0 s
+
+# uv1/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	1053 records from the request log (112 with their bytes), 22 uberblock writes that mark, of 88; 3 marks
+cuts	PASS	22 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 22 cut lines are numbered 1 to 22
+obs_opens_as_itself	INFO	22 of 22 cuts open as themselves, by the reference
+status	PASS	cuts 22, cut_group 65, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 8, 12, 14, 22 at head and 2 of another writer's: 4 of 22 cuts fetched at head; 24803 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 14: 37 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 14: 1659 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 3, lease_epoch 1, upload_mismatches 2, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked matched; uploaded 12, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 22 = committed and let go 12 + replaced 8 + abandoned 2 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	v1: upload_checked 'row_v1' once the mismatch was counted; v1in: upload_checked 'row_v1' once the mismatch was counted
+sessions	PASS	1 sessions as committed; 19 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_drop	CAUGHT	cut 12: the daemon's is group 32 (itself) at record 671, the reference's group 29 (itself) at record 581 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 21 cuts, the reference 22 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 23 cuts, the reference 22 (expected: caught)
+ctl_group	CAUGHT	cut 12: the daemon's is group 30 (itself) at record 581, the reference's group 29 (itself) at record 581 (expected: caught)
+ctl_opens	CAUGHT	cut 12: the daemon's is group 29 (rewind) at record 581, the reference's group 29 (itself) at record 581 (expected: caught)
+ctl_late	CAUGHT	cut 12: the daemon's is group 29 (itself) at record 665, the reference's group 29 (itself) at record 581 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 68, the reference's group 4 (rewind) at record 62 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 22 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 22 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 22 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 22 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 22 cuts here (expected: same)
+time	INFO	0 s
+
+# uv1moved/results.tsv
+obs_torn_at_kill	INFO	0 lines of the request log cut short by a kill -9 and lost with it
+obs_unstored_at_kill	INFO	0 flushes killed after their barrier and before their answer; a cut such a flush carried was not stored
+records	INFO	771 records from the request log (84 with their bytes), 15 uberblock writes that mark, of 60; 3 marks
+cuts	PASS	15 cuts, each at the same barrier with the same group and the same answer to itself
+cut_numbers	PASS	the 15 cut lines are numbered 1 to 15
+obs_opens_as_itself	INFO	15 of 15 cuts open as themselves, by the reference
+status	PASS	cuts 15, cut_group 41, cut_opens itself
+upload_reads	PASS	node B read the content of every cut it found at head
+upload_content	PASS	node B fetched cuts 8 at head and 1 of another writer's: 1 of 8 cuts fetched at head; 3737 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ctl_content_early	CAUGHT	cut 8: 37 blocks differ (expected: caught)
+ctl_content_stale	CAUGHT	cut 8: 3540 blocks differ (expected: caught)
+upload_status	PASS	upload_state idle, cuts_held 0, lease held, lease_holder runnervm0hi8g:24249cb7c55242b9884982f925d71331, uploaded_whole 1, lease_epoch 1, upload_mismatches 3, upload_abandoned_at_mismatch 4, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 4; uploaded 4, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'runnervm0hi8g:24249cb7c55242b9884982f925d71331'; the drain took 1 s
+upload_balance	PASS	serve 1, from status-start-1.txt: cuts 15 = committed and let go 4 + replaced 7 + abandoned 4 + held +0; at the start upload_state 'idle', after the drain 'idle'
+upload_course	PASS	uv1moved
+sessions	PASS	1 sessions as committed; 12 cuts within the kstats' windows, the others in strictly increasing groups
+import_syncs_before_return	PASS	session 1: 3 cuts complete before the command returned (groups 4..6)
+ctl_drop	CAUGHT	cut 8: the daemon's is group 20 (itself) at record 463, the reference's group 14 (itself) at record 416 (expected: caught)
+ctl_last	CAUGHT	the daemon counted 14 cuts, the reference 15 (expected: caught)
+ctl_extra	CAUGHT	the daemon counted 16 cuts, the reference 15 (expected: caught)
+ctl_group	CAUGHT	cut 8: the daemon's is group 15 (itself) at record 416, the reference's group 14 (itself) at record 416 (expected: caught)
+ctl_opens	CAUGHT	cut 8: the daemon's is group 14 (rewind) at record 416, the reference's group 14 (itself) at record 416 (expected: caught)
+ctl_late	CAUGHT	cut 8: the daemon's is group 14 (itself) at record 457, the reference's group 14 (itself) at record 416 (expected: caught)
+ctl_early	CAUGHT	the reference by the rule early: cut 1: the daemon's is group 4 (itself) at record 60, the reference's group 4 (rewind) at record 54 (expected: caught)
+ctl_txg-alone	SAME	the rule txg-alone gives the design's 15 cuts here (expected: same or caught)
+ctl_count-repeats	SAME	the rule count-repeats gives the design's 15 cuts here (expected: same or caught)
+ctl_previous	SAME	the rule previous gives the design's 15 cuts here (expected: same or caught)
+ctl_mark-dropped	SAME	the rule mark-dropped gives the design's 15 cuts here (expected: same)
+ctl_mark-kept	SAME	the rule mark-kept gives the design's 15 cuts here (expected: same)
+time	INFO	0 s
+
+# uv1: others.tsv, guard-controls.txt
+v1	ee4a645151cff279919f1129795c9c08	8	14
+head	6b95191ae644383d33ff93d573b1bac65ca321ae48d561ce4d8dba6d93eb3fa0
+v1	ee4a645151cff279919f1129795c9c08	14	33
+v1	ee4a645151cff279919f1129795c9c08:8:0
+v1in	ee4a645151cff279919f1129795c9c08:14:0
+# uv1/v1-row.txt
+head	8f5d5ea811861a4fc774e659866642196e75f10dfddf5a84deebd44271b43fad	4
+row	ee4a645151cff279919f1129795c9c08	8	14
+row_commit	8f5d5ea811861a4fc774e659866642196e75f10dfddf5a84deebd44271b43fad
+lease	runnervm0hi8g:24249cb7c55242b9884982f925d71331	1	1795568021281
+# uv1/set-row.txt
+row	set	v1:ee4a645151cff279919f1129795c9c08:8:14
+row_commit	none
+# uv1/v1in-row.txt
+head	5bc714df29276daee7a59f292c0cfc08b3cdff3b7824ddff3baa5f1a1b3c3450	8
+row	ee4a645151cff279919f1129795c9c08	14	33
+row_commit	5bc714df29276daee7a59f292c0cfc08b3cdff3b7824ddff3baa5f1a1b3c3450
+lease	runnervm0hi8g:24249cb7c55242b9884982f925d71331	1	1795568021281
+# uv1/move-row.txt
+head	6b95191ae644383d33ff93d573b1bac65ca321ae48d561ce4d8dba6d93eb3fa0
+row	set	v1:ee4a645151cff279919f1129795c9c08:14:33
+row_commit	none
+# uv1/end-row.txt
+head	50a168c1c79e99f73ee465aefe574344c9a9abad1add3be954af90fbe181ab62	11
+row	ee4a645151cff279919f1129795c9c08	18	48
+row_commit	50a168c1c79e99f73ee465aefe574344c9a9abad1add3be954af90fbe181ab62
+lease	runnervm0hi8g:24249cb7c55242b9884982f925d71331	1	1795568031282
+# uv1/v1-status.txt: cuts 8;cut_group 14;uploaded 4;uploaded_whole 1;upload_mismatches 0;upload_abandoned_at_mismatch 0;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1/v1-after.txt: cuts 9;cut_group 20;uploaded 4;uploaded_whole 1;upload_mismatches 1;upload_abandoned_at_mismatch 1;upload_errors 0;upload_checked row_v1;upload_rule delta;
+# uv1/v1-whole.txt: cuts 12;cut_group 29;uploaded 6;uploaded_whole 2;upload_mismatches 1;upload_abandoned_at_mismatch 1;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1/v1in-status.txt: cuts 14;cut_group 33;uploaded 8;uploaded_whole 2;upload_mismatches 1;upload_abandoned_at_mismatch 1;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1/v1in-after.txt: cuts 15;cut_group 39;uploaded 8;uploaded_whole 2;upload_mismatches 2;upload_abandoned_at_mismatch 2;upload_errors 0;upload_checked row_v1;upload_rule delta;
+# uv1/v1in-whole.txt: cuts 18;cut_group 48;uploaded 10;uploaded_whole 3;upload_mismatches 2;upload_abandoned_at_mismatch 2;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1/status.txt: cuts 22;cut_group 65;uploaded 12;uploaded_whole 3;upload_mismatches 2;upload_abandoned_at_mismatch 2;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1/uploaded.tsv (number, group, state, head, blocks, time, commit; heads and commits cut to 12)
+8	14	ee4a645151cff279919f1129795c9c08	8f5d5ea81186	3546	410835134489	8f5d5ea81186
+8	14	ee4a645151cff279919f1129795c9c08	8f5d5ea81186	3546	412428404037	none
+12	29	ee4a645151cff279919f1129795c9c08	c001a244b5a6	4755	416080720102	c001a244b5a6
+14	33	ee4a645151cff279919f1129795c9c08	5bc714df2927	6410	417197516628	5bc714df2927
+14	33	ee4a645151cff279919f1129795c9c08	6b95191ae644	6411	418312453502	none
+22	65	ee4a645151cff279919f1129795c9c08	af2c85c62658	9372	422942246541	af2c85c62658
+# uv1: no acts-again.txt (no act was repeated)
+
+# uv1moved: others.tsv, guard-controls.txt
+head	e71a11b0169c2a2e053a2bd57bbcc012019c8faf24bfe7512b483f6b88443170
+v1	6350d6b4742148ab7a3e6967d4064096	8	14
+v1moved	6350d6b4742148ab7a3e6967d4064096:8:0
+# uv1moved/move-row.txt
+head	e71a11b0169c2a2e053a2bd57bbcc012019c8faf24bfe7512b483f6b88443170
+row	set	v1:6350d6b4742148ab7a3e6967d4064096:8:14
+row_commit	none
+# uv1moved/v1moved-row.txt
+head	a8f5068ba0f7b98fe59910220887b8401d169e992554125e539f8f36aef37910	4
+row	6350d6b4742148ab7a3e6967d4064096	8	14
+row_commit	a8f5068ba0f7b98fe59910220887b8401d169e992554125e539f8f36aef37910
+lease	runnervm0hi8g:24249cb7c55242b9884982f925d71331	1	1795568038025
+# uv1moved/end-row.txt
+head	e71a11b0169c2a2e053a2bd57bbcc012019c8faf24bfe7512b483f6b88443170	5
+row	6350d6b4742148ab7a3e6967d4064096	8	14
+row_commit	none
+lease	runnervm0hi8g:24249cb7c55242b9884982f925d71331	1	1795568038025
+# uv1moved/v1moved-status.txt: cuts 8;cut_group 14;uploaded 4;uploaded_whole 1;upload_mismatches 0;upload_abandoned_at_mismatch 0;upload_errors 0;upload_checked matched;upload_rule delta;
+# uv1moved/v1moved-after.txt: cuts 9;cut_group 20;uploaded 4;uploaded_whole 1;upload_mismatches 1;upload_abandoned_at_mismatch 1;upload_errors 0;upload_checked head_moved;upload_rule delta;
+# uv1moved/status.txt: cuts 15;cut_group 41;uploaded 4;uploaded_whole 1;upload_mismatches 3;upload_abandoned_at_mismatch 4;upload_errors 0;upload_checked head_moved;upload_rule delta;
+# uv1moved/uploaded.tsv (number, group, state, head, blocks, time, commit; heads and commits cut to 12)
+8	14	6350d6b4742148ab7a3e6967d4064096	a8f5068ba0f7	3540	427592459305	a8f5068ba0f7
+8	14	6350d6b4742148ab7a3e6967d4064096	e71a11b0169c	3541	429195891146	none
+# uv1moved: no acts-again.txt (no act was repeated)
