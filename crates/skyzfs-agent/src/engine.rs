@@ -32,10 +32,13 @@
 //!
 //! Only within one process, and only as the planner's inputs: the answer
 //! to its last request about a publish (a refusal or a withdrawal, kept
-//! for the round after a `look` so that the planner sees both), what
-//! `look` saw, when it last helped the publish with a sync, and when the
-//! daemon accepted it on the clock that does not step. A restart forgets
-//! them, which costs at most a `look` or a sync.
+//! for the round after a `look` so that the planner sees both, and
+//! with what `look` saw for the round after a release, which gives the
+//! publish up on them: N8 of #146's review), what `look` saw, when it
+//! last helped the publish with a sync, and when the daemon accepted it
+//! on the clock that does not step. A restart forgets them, which costs
+//! at most a `look`, a sync, or one more hold and ask of a publish
+//! refused `stopped`.
 //!
 //! # Time
 //!
@@ -779,7 +782,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Do `action` for `publish`.
     fn act(&mut self, publish: &Publish, action: Action) -> Result<Moved, Error> {
         let name = publish.name.clone();
-        if action != Action::Look {
+        // The answer and the sight are kept across a look, which acts
+        // on them, and across a release, after which the next round
+        // gives the publish up on them: asked nothing between, the
+        // daemon cannot have changed its answer, and one refused
+        // `stopped` to its own `publish` is not kept by the daemon, whose
+        // `progress` would then answer `unknown` and have the publish
+        // held and asked again (N8 of #146's review).
+        if !matches!(action, Action::Look | Action::Release) {
             let memory = self.memory.entry(name.clone()).or_default();
             memory.answer = None;
             memory.snap = None;

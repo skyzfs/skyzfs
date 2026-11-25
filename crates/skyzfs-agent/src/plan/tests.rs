@@ -587,6 +587,53 @@ fn refused_stopped_gives_a_publish_up_whatever_its_age() {
             stopped().looked(SnapSeen::Absent).unheld(),
             Action::Abandon(Why::Stopped),
         ),
+        // TG13 of #146's review: an unreadable `snap/t` is not looked up
+        // for ever, and `pool@t` gone is looked up before a give-up.
+        (
+            "asked, unreadable",
+            asked(),
+            stopped().looked(SnapSeen::Unreadable),
+            Action::Release,
+        ),
+        (
+            "asked, unreadable, released",
+            asked(),
+            stopped().looked(SnapSeen::Unreadable).unheld(),
+            Action::Abandon(Why::NameTaken),
+        ),
+        (
+            "asked, pool@t gone, not looked",
+            asked(),
+            stopped().gone(),
+            Action::Look,
+        ),
+        // TG11: made, with `pool@t` gone: done, and no refusal reported.
+        (
+            "asked, ours, pool@t gone",
+            asked(),
+            stopped().looked(SnapSeen::Ours(COMMIT)).gone(),
+            published_gone(),
+        ),
+        // Too old, the same end (TG9 and TG11): `stopped` says nothing of a
+        // rewind, and a publish made is done.
+        (
+            "too old, not looked",
+            asked(),
+            stopped().too_old(),
+            Action::Look,
+        ),
+        (
+            "too old, absent, released, pool@t gone",
+            asked(),
+            stopped().too_old().looked(SnapSeen::Absent).gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        (
+            "too old, ours, pool@t gone",
+            asked(),
+            stopped().too_old().looked(SnapSeen::Ours(COMMIT)).gone(),
+            published_gone(),
+        ),
     ];
     for (what, phase, seen, want) in rows {
         let publish = publish(phase);

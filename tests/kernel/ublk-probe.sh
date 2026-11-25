@@ -179,6 +179,8 @@ else
 fi
 lim 30 zfs version > "$OUT/zfs-version.log" 2>&1
 ZFS_OK=""; [ -r /proc/spl/kstat/zfs/arcstats ] && ZFS_OK=1
+# The pools' txgs kstat keeps this many groups (the assist's lines).
+[ -z "$ZFS_OK" ] || echo 2000 > /sys/module/zfs/parameters/zfs_txg_history 2>/dev/null || :
 
 step "device-mapper targets for a write-log rig"
 for m in dm_log_writes dm_flakey dm_dust dm_delay dm_snapshot; do
@@ -288,6 +290,50 @@ flush_trace_stop() { # file: keeps this device's flush requests there, prints ho
     wc -l < "$1"
 }
 stat_flushes() { awk '{ print $16 }' "/sys/block/$(basename "$BDEV")/stat" 2>/dev/null; }
+# The pool's txgs kstat (zfs_txg_history set above 0 before the pool is
+# made). ZFS 2.4 commits groups that write nothing and writes no
+# uberblock for them (the implementation notes, M2.T1): a group that
+# wrote is one committed (C) with nwritten, the sixth column, above 0.
+TXGS=/proc/spl/kstat/zfs/$POOL/txgs
+written_group() { awk '$1 ~ /^[0-9]+$/ && $3 == "C" && $6 + 0 > 0 && $1 + 0 > t { t = $1 + 0 } END { print t + 0 }' "$TXGS" 2>/dev/null; }
+committed_group() { awk '$1 ~ /^[0-9]+$/ && $3 == "C" && $1 + 0 > t { t = $1 + 0 } END { print t + 0 }' "$TXGS" 2>/dev/null; }
+settled_group() { # the newest group that wrote, once two reads 0.2 s apart agree
+    local a b k
+    a=$(written_group)
+    for k in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.2; b=$(written_group)
+        [ "$b" = "$a" ] && break
+        a=$b
+    done
+    echo "$a"
+}
+groups_in() { # LO HI -> "<groups that wrote> <that wrote nothing> <bytes written> <listed>": committed after LO up to HI
+    awk -v lo="$1" -v hi="$2" '$1 ~ /^[0-9]+$/ && $3 == "C" && $1 + 0 > lo && $1 + 0 <= hi {
+        n++; if ($6 + 0 > 0) { w++; b += $6 } else e++ }
+        END { printf "%d %d %d %d\n", w, e, b, n }' "$TXGS" 2>/dev/null
+}
+idle_pool() { # SECONDS: until no group that wrote has been committed for 12 s; 1 when it never was
+    local t0=$SECONDS since=$SECONDS last="" now
+    while [ $((SECONDS - t0)) -lt "$1" ]; do
+        now=$(written_group)
+        [ "$now" = "$last" ] || { last=$now; since=$SECONDS; }
+        [ $((SECONDS - since)) -lt 12 ] || return 0
+        sleep 1
+    done
+    return 1
+}
+# One assist as the agent's `Zfs::assist` makes it (M2.6b2, #144): `zfs
+# set skyzfs:assist=V` on the pool's root, then `zpool sync`, nothing
+# written to the pool. -> "<group before> <after the set> <after the sync> <rc of set> <rc of sync>"
+assist_once() {
+    local w0 wm w1 rs ry
+    w0=$(settled_group)
+    lim 60 zfs set "skyzfs:assist=$1" "$POOL" > /dev/null 2>> "$OUT/assist.err"; rs=$?
+    wm=$(settled_group)
+    lim 60 zpool sync "$POOL" > /dev/null 2>> "$OUT/assist.err"; ry=$?
+    w1=$(settled_group)
+    echo "$w0 $wm $w1 $rs $ry"
+}
 sync_with_flush_count() { # tag -> "<traced> <diskstats delta> <rc of zpool sync>"
     local tag=$1 f0 n rc traced=1
     flush_trace_start || traced=""
@@ -367,6 +413,48 @@ PY
         try zpool_trim 300 zpool trim -w "$POOL"
         rec backing_file_after_trim "$(du -m "$IMG" | cut -f1) MiB allocated of $((VDEV_GB * 1024))"
         rec pool_after "$(pool_errors)"
+
+        # The agent's assist on an idle pool (M2.6b2, #144; M2.T5's stage
+        # 0). #144's fakes assume that a `zfs set` of a new value writes a
+        # group, that one of the value the property holds writes none, and
+        # that a bare `zpool sync` writes none; only a kernel shows which.
+        step "the assist: zfs set, then zpool sync, on an idle pool"
+        if [ ! -r "$TXGS" ]; then
+            rec assist_idle "the pool's txgs kstat is not readable (zfs_txg_history $(cat /sys/module/zfs/parameters/zfs_txg_history 2>/dev/null))"
+        elif ! idle_pool 180; then
+            rec assist_idle "the pool committed a group that wrote within every 12 s for 180 s (now $(written_group))"
+        else
+            rec assist_idle "no group written for 12 s, at group $(written_group) (committed $(committed_group))"
+            w0=$(settled_group); c0=$(committed_group)
+            lim 60 zpool sync "$POOL" > /dev/null 2>&1; rc=$?
+            w1=$(settled_group)
+            rec obs_zpool_sync_idle "a bare zpool sync (rc $rc): the newest group that wrote went from $w0 to $w1 ($(groups_in "$w0" "$w1" | awk '{ print $1 }') written); committed from $c0 to $(committed_group)"
+            v=$(date +%s%3N)
+            read -r w0 wm w1 rs ry <<< "$(assist_once "$v")"
+            if [ "$rs" = 0 ] && [ "$ry" = 0 ] && [ "$w1" -gt "$w0" ]; then
+                pin zfs_set_writes_a_group_on_an_idle_pool PASS "zfs set skyzfs:assist=$v, then zpool sync: newest group that wrote $w0, $wm after the set, $w1 after the sync"
+            else
+                pin zfs_set_writes_a_group_on_an_idle_pool FAIL "zfs set skyzfs:assist=$v (rc $rs), then zpool sync (rc $ry): newest group that wrote $w0, $wm after the set, $w1 after the sync ($(tail -n 1 "$OUT/assist.err" 2>/dev/null))"
+            fi
+            read -r w0 wm w1 rs ry <<< "$(assist_once "$v")"
+            rec obs_zfs_set_same_value "zfs set skyzfs:assist=$v again, the value it holds (rc $rs), then zpool sync (rc $ry): newest group that wrote $w0, $wm after the set, $w1 after the sync"
+            # What one assist costs: an assist a second for 30 s (the
+            # agent makes three a second apart, then one every 10 s).
+            first=$(settled_group); c0=$(committed_group); t0=$(date +%s%N); n=0; sets=0; syncs=0; bad=0
+            for k in $(seq 1 30); do
+                v=$((v + 1))
+                read -r w0 wm w1 rs ry <<< "$(assist_once "$v")"
+                n=$((n + 1))
+                [ "$wm" -gt "$w0" ] && sets=$((sets + 1))
+                [ "$w1" -gt "$wm" ] && syncs=$((syncs + 1))
+                [ "$rs" = 0 ] && [ "$ry" = 0 ] || bad=$((bad + 1))
+                sleep 1
+            done
+            secs=$(( ($(date +%s%N) - t0) / 1000000 ))
+            last=$(settled_group)
+            read -r gw ge gb gl <<< "$(groups_in "$first" "$last")"
+            rec obs_assist_pace "$n assists (one a second, the cost of each; $bad failed) in $secs ms: groups $first to $last, $gw that wrote ($gb bytes, $((gw > 0 ? gb / gw : 0)) a group) and $ge that wrote nothing, of $gl listed; the set wrote a group in $sets, the sync after it in $syncs; committed from $c0 to $(committed_group)"
+        fi
 
         # What ZFS does when every flush to the data vdev fails. The
         # fault is applied inside ZFS when the flush completes: the
@@ -544,7 +632,7 @@ why="the pool was not created"
 [ -n "$SERVED" ] || why="no file was served as $BDEV"
 [ -n "$SRV" ] || why="the ublk server did not build"
 [ -e /dev/ublk-control ] || why="ublk_drv did not load"
-for k in no_partition_table label_at_byte_0 flush_delivered recovery_reissue; do
+for k in no_partition_table label_at_byte_0 flush_delivered zfs_set_writes_a_group_on_an_idle_pool recovery_reissue; do
     grep -q "^pin_$k	" "$R" || pin "$k" FAIL "not checked: $why"
 done
 
