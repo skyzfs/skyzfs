@@ -792,14 +792,65 @@ impl Uploads {
         let (runtime, keeper) = self.start.into_parts();
         let (objects, refs, holder, vol) = (self.objects, self.refs, self.holder, self.vol);
         #[cfg(all(target_os = "linux", feature = "test-hooks"))]
-        let make = crate::kill::maker(objects, refs, holder, vol, kill, crate::kill::sigkill());
+        {
+            let die = crate::kill::sigkill();
+            let carry = crate::kill::Carry::new(kill, Arc::clone(&die), crate::kill::said());
+            let make = crate::kill::maker(objects, refs, holder, vol, kill, die, carry.clone());
+            match carry {
+                Some(carry) => {
+                    Uploading::start(runtime, keeper, make, desk, publishes, publish, carry)
+                }
+                None => Uploading::start(runtime, keeper, make, desk, publishes, publish, Plain),
+            }
+        }
         #[cfg(not(all(target_os = "linux", feature = "test-hooks")))]
-        let make = {
+        {
             let _ = kill;
-            maker(objects, refs, holder, vol)
-        };
-        Uploading::start(runtime, keeper, make, desk, publishes, publish)
+            let make = maker(objects, refs, holder, vol);
+            Uploading::start(runtime, keeper, make, desk, publishes, publish, Plain)
+        }
     }
+}
+
+/// What the uploader's thread puts around the uploader: nothing in a
+/// default build ([`Plain`]). A build with the test hooks puts the hook of
+/// `--kill-at-upload carry-put:N` and `carry-swap:N` there
+/// (`crate::kill::Carry`), which must see the store's cuts offered and
+/// read, and the channel's publishes and the uploader's answers to them.
+pub trait Around: Send + 'static {
+    /// The uploader's store.
+    type Local: skyzfs_upload::Local;
+    /// The uploader's store, over `queued`, the queue's side of the desk.
+    fn local(&self, queued: Queued) -> Self::Local;
+    /// The channel's requests as the uploader reads them, from `inbox`.
+    /// Called on the uploader's runtime.
+    fn inbox(
+        &self,
+        inbox: tokio::sync::mpsc::Receiver<Control>,
+    ) -> tokio::sync::mpsc::Receiver<Control>;
+    /// After each post of the uploader, which follows each request it
+    /// answered, on its thread, with the publishes that ended in it.
+    fn posted(&self, ended: &[(String, Progress)]);
+}
+
+/// Nothing around the uploader.
+pub struct Plain;
+
+impl Around for Plain {
+    type Local = Queued;
+
+    fn local(&self, queued: Queued) -> Queued {
+        queued
+    }
+
+    fn inbox(
+        &self,
+        inbox: tokio::sync::mpsc::Receiver<Control>,
+    ) -> tokio::sync::mpsc::Receiver<Control> {
+        inbox
+    }
+
+    fn posted(&self, _ended: &[(String, Progress)]) {}
 }
 
 /// What is told of each publish that ends, after its line on standard
@@ -1062,29 +1113,32 @@ impl Uploading {
     /// the epoch held, on `runtime`, answering the channel's requests from
     /// `publishes`. `publish` is given what the status shows after each
     /// turn, and each publish that ends is said on standard error and
-    /// told to `publishes`' [`Told`].
-    pub fn start<F, M, R>(
+    /// told to `publishes`' [`Told`]. `around` is put around the uploader
+    /// ([`Around`]).
+    pub fn start<F, M, R, A>(
         runtime: Runtime,
         keeper: Keeper<F>,
         make: M,
         desk: Arc<Desk>,
         publishes: Publishes,
         mut publish: impl FnMut(UploadShown) + Send + 'static,
+        around: A,
     ) -> io::Result<Self>
     where
         F: RefStore + Send + 'static,
         M: FnMut(u64) -> R + Send + 'static,
         R: skyzfs_upload::Remote + Send + 'static,
+        A: Around,
     {
         let (stop, mut stopped) = tokio::sync::watch::channel(None::<bool>);
         let (said, ended) = mpsc::channel();
-        let local = Queued::new(Arc::clone(&desk));
+        let queued = Queued::new(Arc::clone(&desk));
         let holder = keeper.holder().to_owned();
         let posted = Arc::clone(&desk);
         let thread = std::thread::Builder::new()
             .name("skyzfsd-upload".into())
             .spawn(move || {
-                let mut uploader = Uploader::new(local, keeper, make);
+                let mut uploader = Uploader::new(around.local(queued), keeper, make);
                 if let Some(attachment) = publishes.attachment {
                     uploader.publishing().set_attachment(attachment);
                 }
@@ -1101,8 +1155,10 @@ impl Uploading {
                     // what happened (a cut counted lost, or committed and
                     // gone, where the daemon was only stopping): the
                     // status keeps the last figures from before the close.
+                    let inbox = around.inbox(publishes.inbox);
                     let mut keeper = uploader
-                        .run_with(asked, publishes.inbox, |s| {
+                        .run_with(asked, inbox, |s| {
+                            around.posted(&s.publishes.ended);
                             for (name, progress) in &s.publishes.ended {
                                 crate::to_stderr(&format!(
                                     "{}\n",
