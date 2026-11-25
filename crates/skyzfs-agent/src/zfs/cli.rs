@@ -72,9 +72,12 @@
 //! 10000 file systems failed on `ENOSPC` after 4563 were taken; it
 //! withdraws F9 of #147's first review for this case): a partial take
 //! is never published, so nothing relies on it. Where it could not say
-//! (an instruction or memory limit), the engine's next round finds
-//! `pool@t` and gives the publish up as `ManifestLost`, the snapshots
-//! kept for a person.
+//! (an instruction or memory limit, or the command's time limit: a
+//! take past [`Limits::change`] is killed on this side while its sync task
+//! may go on in the pool, so no output is read and no destroy is run;
+//! TL-F2 of #147's review), the engine's next round finds `pool@t` and
+//! gives the publish up as `ManifestLost`, the snapshots kept for a
+//! person.
 //!
 //! The program's values are all strings (`tostring`), and its tables
 //! are keyed by name: `zfs program -j` writes a Lua number as a signed
@@ -151,7 +154,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
+use super::{Held, Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
 use crate::host::{Host, Node, Output};
 use crate::manifest::{self, Kind};
 use crate::record::Member;
@@ -592,24 +595,34 @@ impl<H: Host> Zfs for ZfsCli<H> {
         }
     }
 
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError> {
+    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError> {
         // Every member's `@t`, not only the root's: a hold on some members
         // only (made by hand, or by a `hold -r` that a member's snapshot
         // came after) is not held, so that the planner holds again and
-        // the hold's check refuses it (NL-F1 of #147's review).
+        // the hold's check refuses it (NL-F1 of #147's review); and it is
+        // a part, which is released when the publish ends (TL-F1).
         let snapshot = format!("{pool}@{t}");
         let Some(tagged) = self.tagged_snapshots(&snapshot, tag)? else {
-            return Ok(false);
+            return Ok(Held::No);
         };
-        if !tagged.contains(&snapshot) {
-            return Ok(false);
+        if tagged.is_empty() {
+            return Ok(Held::No);
         }
+        if !tagged.contains(&snapshot) {
+            return Ok(Held::Part);
+        }
+        // `pool@t` gone since: the tags read are released all the same.
         let Some(members) = self.members(pool, t)? else {
-            return Ok(false);
+            return Ok(Held::Part);
         };
-        Ok(members
+        if members
             .iter()
-            .all(|m| tagged.contains(&format!("{}@{t}", m.name))))
+            .all(|m| tagged.contains(&format!("{}@{t}", m.name)))
+        {
+            Ok(Held::All)
+        } else {
+            Ok(Held::Part)
+        }
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {

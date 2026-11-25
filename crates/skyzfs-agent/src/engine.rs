@@ -80,7 +80,7 @@ use crate::record::{
     Corrupt, Count, Enrolled, Keep, Loaded, Phase, Publish, Record, SaveError, Taken, Why,
     UNDER_WAY_MAX,
 };
-use crate::zfs::{self, Zfs, ZfsError, HOLD_TAG};
+use crate::zfs::{self, Held, Zfs, ZfsError, HOLD_TAG};
 
 /// How often the engine looks again at a publish that waits (the plan,
 /// §4, step 11).
@@ -550,7 +550,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(e) => return Err(e),
         };
         let snapshot = self.zfs.members(pool, name)?;
-        let held = self.zfs.held(pool, name, HOLD_TAG)?;
+        let hold = self.zfs.held(pool, name, HOLD_TAG)?;
         let now_ms = self.now_for(publish);
         let too_old = plan::too_old(publish.begun_ms, self.age_now(publish), self.age_max);
         let memory = self.memory.entry(name.clone()).or_default();
@@ -578,7 +578,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 load_guid: props.load_guid,
                 premise,
                 snapshot,
-                held,
+                hold,
             },
             daemon,
             snap,
@@ -934,7 +934,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         };
         let before = self.zfs.props(&self.pool)?.load_guid;
         let members = self.zfs.members(&self.pool, &name)?;
-        let held = self.zfs.held(&self.pool, &name, HOLD_TAG)?;
+        let held = self.zfs.held(&self.pool, &name, HOLD_TAG)? == Held::All;
         let whole = members.is_some_and(|members| plan::same_snapshot(&members, &taken));
         if !whole || !held {
             // Seen again at the next round, which plans from it.

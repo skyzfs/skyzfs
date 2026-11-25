@@ -181,6 +181,7 @@ use std::time::Duration;
 use skyzfs_control::{Code, CutsReply, Reply, ASK_LIMIT};
 
 use crate::record::{Count, Member, Phase, Publish, Taken, Why};
+use crate::zfs::Held;
 
 /// How long after `accepted` a publish with no qualifying cut is helped
 /// by `zpool sync`: two of ZFS's default transaction group timeouts (the
@@ -248,8 +249,9 @@ pub struct PoolSeen {
     /// Each member's `@t`, by name, or `None` where `pool@t` does not
     /// exist.
     pub snapshot: Option<Vec<Member>>,
-    /// Whether the agent's hold is on `pool@t`.
-    pub held: bool,
+    /// Where the agent's hold is on the members' `@t`: it is held only
+    /// where [`Held::All`], and released wherever not [`Held::No`].
+    pub hold: Held,
 }
 
 /// What the agent sees of the daemon.
@@ -427,7 +429,7 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
             if seen.too_old {
                 return give_up(pool, Why::TooOld);
             }
-            if !pool.held {
+            if pool.hold != Held::All {
                 return Action::Hold;
             }
             if pool.load_guid == publish.count.load_guid {
@@ -444,7 +446,7 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
             asked_ms,
             held_until_ms,
         } => onward(publish, taken, Some((*asked_ms, *held_until_ms)), seen),
-        Phase::Done { .. } if pool.held => Action::Release,
+        Phase::Done { .. } if pool.hold != Held::No => Action::Release,
         Phase::Done { .. } => Action::Forget,
     }
 }
@@ -519,9 +521,10 @@ pub fn too_old(begun_ms: u64, now_ms: u64, age_max: Duration) -> bool {
     now_ms.saturating_sub(begun_ms) >= age_max
 }
 
-/// Give the publish up for `why`, the hold released first.
+/// Give the publish up for `why`, the hold released first: on every
+/// member that has it, where only some have (TL-F1 of #147's review).
 fn give_up(pool: &PoolSeen, why: Why) -> Action {
-    if pool.held {
+    if pool.hold != Held::No {
         Action::Release
     } else {
         Action::Abandon(why)
@@ -648,7 +651,7 @@ pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report>
 fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Seen) -> Action {
     let pool = &seen.pool;
     let away = || match asked {
-        Some((_, until)) if seen.now_ms >= until && pool.held => Action::Release,
+        Some((_, until)) if seen.now_ms >= until && pool.hold != Held::No => Action::Release,
         _ => Action::Wait,
     };
     let (cuts, answer) = match &seen.daemon {
@@ -691,7 +694,7 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         if stalled && publish.stalls.saturating_add(1) >= STALLS_ABANDONED {
             return Action::Stalled;
         }
-        if !pool.held {
+        if pool.hold != Held::All {
             return Action::Hold;
         }
         Action::AskAnew
@@ -727,7 +730,7 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
     }
     match answer {
         Reply::Pending => {
-            if !pool.held || broken.is_some() || moved {
+            if pool.hold != Held::All || broken.is_some() || moved {
                 return Action::Withdraw;
             }
             let Some((asked_ms, _)) = asked else {
@@ -750,7 +753,7 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         Reply::Done(commit) => said_done(commit),
         Reply::Expired | Reply::Withdrawn => look(&|| anew(false)),
         Reply::Unknown => match asked {
-            None if pool.held && broken.is_none() && !moved => Action::Ask,
+            None if pool.hold == Held::All && broken.is_none() && !moved => Action::Ask,
             _ if broken.is_some() => look(&|| anew(false)),
             _ => anew(false),
         },

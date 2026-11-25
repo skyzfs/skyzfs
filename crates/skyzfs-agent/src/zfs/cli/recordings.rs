@@ -486,7 +486,7 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         // `held` reads the holds under the snapshot (`holds -r`): none,
         // so no member is read.
         let mut zfs = rec.adapter(&["none-holds-r"]);
-        assert_eq!(zfs.held(NONE, "t", TAG), Ok(false), "{}", rec.image);
+        assert_eq!(zfs.held(NONE, "t", TAG), Ok(Held::No), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&["none-holds-r"]), "{}", rec.image);
         let mut zfs = rec.adapter(&["none-release"]);
         assert_eq!(zfs.release(NONE, "t", TAG), Ok(()), "{}", rec.image);
@@ -535,13 +535,18 @@ fn holds_read_as_recorded() {
             let read = [name("holds-r"), name("members")];
             let read: Vec<&str> = read.iter().map(String::as_str).collect();
             let mut zfs = rec.adapter(&read);
-            assert_eq!(zfs.held(pool, "t", TAG), Ok(true), "{} {pool}", rec.image);
+            assert_eq!(
+                zfs.held(pool, "t", TAG),
+                Ok(Held::All),
+                "{} {pool}",
+                rec.image
+            );
             assert_eq!(ran(&mut zfs), rec.words(&read));
             // Another tag is not on the root: false, with no member read.
             let mut zfs = rec.adapter(&read);
             assert_eq!(
                 zfs.held(pool, "t", "another"),
-                Ok(false),
+                Ok(Held::No),
                 "{} {pool}",
                 rec.image
             );

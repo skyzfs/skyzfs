@@ -224,6 +224,23 @@ pub struct Program {
     pub members: Vec<manifest::Member>,
 }
 
+/// Where the agent's hold is on a publish's snapshot ([`Zfs::held`]).
+///
+/// The planner holds again unless it is [`Held::All`], and releases
+/// wherever it is not [`Held::No`]: a hold on some members only (a
+/// person released the others, or a member's `@t` came after the hold)
+/// is released when the publish ends, as a whole one is (TL-F1 of
+/// #147's review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// No member's `@t` has the tag, or `pool@t` does not exist.
+    No,
+    /// Some members' `@t` have it and others not.
+    Part,
+    /// Every member's `@t` has it.
+    All,
+}
+
 /// Why ZFS did not do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZfsError {
@@ -271,10 +288,9 @@ pub trait Zfs {
     /// `zfs release -r TAG pool@t`; no such hold, or no such snapshot,
     /// is released.
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError>;
-    /// Whether every member's `@t` has the hold `tag` (`pool@t` and each
-    /// of [`Zfs::members`]); `false` where `pool@t` does not exist, and
-    /// where some members have it and others not.
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError>;
+    /// Where the hold `tag` is on the members' `@t` (`pool@t` and each of
+    /// [`Zfs::members`]): [`Held::No`] where `pool@t` does not exist.
+    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError>;
     /// The names `t` of every snapshot in the pool, of any dataset, that
     /// has the hold `tag`.
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;
