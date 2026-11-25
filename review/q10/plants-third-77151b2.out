@@ -1,0 +1,8 @@
+base: shell test passes (112 ok)
+base: python test passes
+V2	KILLED	adapter_env: LC_ALL=C.UTF-8 exported after the pinned line	(shell: FAIL: rules: every record: got ' locale:none-assist-set locale:none-assist-sync locale:none-destroy )
+V3	KILLED	rec: the command run with LC_ALL=C.UTF-8	(shell: FAIL: rules: every record: got ' locale:none-assist-set locale:none-assist-sync locale:none-destroy )
+V4	KILLED	record_pool: tagged-held without -n	(shell: FAIL: rules: every record: got ' -n:rig-tagged-held limits:rig-tagged-held', want 'none')
+V5	KILLED	record_none: members without -n	(shell: FAIL: rules: every record: got ' -n:none-members limits:none-members', want 'none')
+V6	KILLED	record_pool: hold-2 without -r	(shell: FAIL: rules: every record: got ' -r:rig-hold-2', want 'none')
+V7	KILLED	record_pool: release-2 without -r	(shell: FAIL: rules: every record: got ' -r:rig-release-2', want 'none')
