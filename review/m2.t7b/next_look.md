@@ -208,7 +208,34 @@ No.
 
 ### (5) Plants at b76ab97
 
-PLANTS_SUMMARY
+`plants_next.py` ran **91 plants: 78 were killed and 13 survived**.
+The four suites passed before the first plant and after the last. Plant
+ids N1 to N24 are this look's plants; they are not the findings N3 and
+N4 below.
+
+- **L1 to L13**, the pull request's plants, rebuilt from its
+  description: all killed. L2, L5, L6 and L13 were re-aimed at the
+  code that b76ab97 rewrote.
+- **M1 to M3 and P1 to P9**, testing's plants, rebuilt from its answer:
+  all killed.
+- **R1 to R49**, this review's plants at e0c51f8, re-aimed (`x`) where
+  the code moved:
+  - Two of e0c51f8's survivors are now killed: R41 (f1's expiry) and
+    R45x (rewindf without the damage).
+  - R5's code is gone.
+  - R7x, R26, R32, R40 and R42 survive, as testing said they would.
+- **N1 to N24**, this look's plants, on the new code:
+  - Killed: `rewind_cuts` with no STOP; only the first ground kept;
+    `ask_deadline` on any name, from the answer instead of the send, in
+    ms, or from the last publish; `judge_ended` with `<`, or on the last
+    end; the pin not anchored on the ground; prewindf's ground up to
+    f1's end again (B2 undone); the import premise refusing `-FX`; a
+    name prefix matching in `withdrawn_past` or in `asked_line`;
+    `import_rewind_f` always saying `-F`; prewindf with `import_pool -F`
+    again (B1 undone); the workflow's default list without prewindf.
+  - Survived: N2, a no-op that shows the harness kills nothing for
+    free, and N8, N11, N13, N19, N20, N21 and N23 (below, under
+    "Plant survivors").
 
 ## Findings, most severe first
 
@@ -283,7 +310,30 @@ are right. **Certainty: certain; wording only.**
   `EXPIRY_DEFAULT` with nothing to tie them, and `--expiry-s` as the
   last word reads as that default rather than as the rig's error.
   Neither is reachable from the agent, and prewindf passes 900.
-- **Plant survivors**: PLANTS_SURVIVORS
+- **Plant survivors.** None of these is a defect in the code as it
+  stands.
+  - *N11, the pin anchored on the last ground within the expiry, not the
+    first.* A right daemon ends f1 at the first ground, so with two
+    grounds this plant would fail a right daemon. No test has two
+    grounds. One test with a second ground after f1's end would kill
+    it.
+  - *N8, the expiry filter strict (`<` for `<=`):* it differs only for
+    a ground in the very nanosecond of the deadline, so it is close to
+    an equivalent mutant.
+  - *N13, the pin's label `server` for `rig`:* only the text changes,
+    since `holds` sets exit 1 whatever the label (`:584-590`).
+  - *N19, N20, N21 and N23, in `import_rewind_f`:* no `break` after
+    `-F` imports; no `session_begin`; no ready mark; and both imports
+    refused without the rig's error. `test_cut_record.sh` pins the loop's
+    words and the `imported with` line (`:495-497`), not these lines,
+    which moved unchanged from e0c51f8's `rec_rewindf`.
+    - On the kernel, N23 would still end prewindf as the rig's error,
+      since `premise_f1_import_f` wants the whole line.
+    - N19 cannot be reached on this pool shape, since `-F` is refused.
+    - N20 and N21 would take away the session marks that rewindf's
+      `sessions` and `import_syncs_before_return` read. A four-line
+      grep in `test_cut_record.sh` would pin them, but this gap is older
+      than the pull request.
 
 ## What the pull request settles
 

@@ -12,3 +12,82 @@ L10	KILLED	f1 asked after the export	test_cut_record.sh
 L11	KILLED	f1's end read with no syncs	test_cut_record.sh
 L12	KILLED	r1's look dropped	test_cut_record.sh
 L13x	KILLED	prewindf: the import without the damage	test_cut_record.sh
+R1x	KILLED	rewind_cuts: a cut at the top's group is no ground (-FX's first cut is)	test_publish_check.py, test_publish_check_main.py
+R2x	KILLED	rewind_cuts: the cut at C counts	test_publish_check.py, test_publish_check_main.py
+R3x	KILLED	rewind_cuts: cuts at or before C count	test_publish_check.py, test_publish_check_main.py
+R4x	KILLED	asked_line: any op	test_publish_check.py
+R6x	KILLED	asked_line: any name	test_publish_check.py
+R7x	SURVIVED	rewind_cuts: the top carried across instances	
+R8x	KILLED	rewind_cuts: the cut before, not the running maximum	test_publish_check.py, test_publish_check_main.py
+R9	KILLED	rewind_committed as before D1's fix	test_publish_check.py, test_publish_check_main.py
+R10	KILLED	rewind_committed without its named check	test_publish_check.py, test_publish_check_main.py
+R11	KILLED	pin_r1_above_top: at the top passes	test_publish_check_main.py
+R12	KILLED	r1 not asked anew passes	test_publish_check_main.py
+R13x	KILLED	prewind's ground from the anew C	test_publish_check_main.py
+R14x	KILLED	prewind's ground premise always holds	test_publish_check_main.py
+R15	KILLED	judge_look: no row is no failure	test_publish_check.py
+R16	KILLED	judge_look: a field missing from the look passes	test_publish_check.py
+R17	KILLED	judge_look without the manifest hash	test_publish_check.py, test_publish_check_main.py
+R18	KILLED	t5-look: a snap allowed	test_publish_check.py, test_publish_check_main.py
+R19	KILLED	t3-look: a refusal allowed	test_publish_check.py
+R20	KILLED	f1: a refusal at the ask allowed	test_publish_check.py
+R21	KILLED	LOOKS without pplain's t1	test_publish_check.py, test_publish_check_main.py
+R22x	KILLED	the import premise without the import	test_publish_check_main.py
+R23x	KILLED	the import premise with nothing zeroed	test_publish_check_main.py
+R24	KILLED	prewindf's premises skipped	test_publish_check_main.py
+R25	KILLED	prewindf not a course of the check	test_publish_check_main.py
+R26	SURVIVED	rewind-top.txt not checked as digits	
+R30	KILLED	answer_of: no greeting needed (D2 undone)	test_publish_agent.py
+R31	KILLED	raw: a timeout is the rig's error again (D3 undone)	test_publish_agent.py
+R32	SURVIVED	raw: a whole answer and no close is no answer	
+R33	KILLED	raw: a timeout answers ''	test_publish_agent.py
+R34	KILLED	parse: unreadable's commit unchecked (A3)	test_publish_agent.py
+R35	KILLED	parse: manifest-len unchecked (A5)	test_publish_agent.py
+R36	KILLED	ask look sends publish-progress (A4)	test_publish_agent.py
+R40	SURVIVED	pplain: t3's look before t5's	
+R41	KILLED	prewindf: f1 expires in 5 s	test_cut_record.sh
+R42	SURVIVED	prewindf: f1's end read within 3 s	
+R43x	KILLED	import_rewind_f: -FX alone, no -F	test_cut_record.sh
+R44	KILLED	prewind's top read from the count	test_cut_record.sh
+R45x	KILLED	rewindf without the damage	test_cut_record.sh
+R46	KILLED	prewindf not a course by name	test_cut_record.sh
+R47	KILLED	prewind: the top written as 0	test_cut_record.sh
+R48	KILLED	prewind: r1's look before r1 is asked	test_cut_record.sh
+R49	KILLED	prewind: r1 asked anew before the store comes back (#140's S12)	test_cut_record.sh
+M1	KILLED	import_rewind_f without -FX	test_cut_record.sh
+M2	KILLED	prewindf: the import without the damage (= L13x)	test_cut_record.sh
+M3	KILLED	the import premise by substring	test_publish_check_main.py
+P1	KILLED	the anchor read as the refusal again	test_publish_check_main.py
+P2	KILLED	the expiry filter dropped	test_publish_check_main.py
+P3	KILLED	the expiry taken as 3600 s	test_publish_check.py, test_publish_check_main.py
+P4	KILLED	the end's order unchecked	test_publish_check.py, test_publish_check_main.py
+P5	KILLED	any end accepted	test_publish_check.py, test_publish_check_main.py
+P6	KILLED	the withdraw line read as withdrawn	test_publish_check.py
+P7	KILLED	`<` for `<=` (= R1x)	test_publish_check.py, test_publish_check_main.py
+P8	KILLED	C not checked (= R3x)	test_publish_check.py, test_publish_check_main.py
+P9	KILLED	an `asked` line taken as an end	test_publish_check.py
+N1	KILLED	rewind_cuts: with no STOP, nothing returned	test_publish_check.py, test_publish_check_main.py
+N2	SURVIVED	a no-op (the harness itself)	
+N3	KILLED	rewind_cuts: only the first ground kept	test_publish_check.py
+N4	KILLED	ask_deadline: any name's publish	test_publish_check.py, test_publish_check_main.py
+N5	KILLED	ask_deadline: from the agent's answer, not its send	test_publish_check.py
+N6	KILLED	ask_deadline: the expiry read as milliseconds	test_publish_check.py
+N7	KILLED	ask_deadline: the last publish of the name, not the first	test_publish_check.py
+N8	SURVIVED	the expiry filter strict	
+N9	KILLED	judge_ended: an end at the ground's ns passes	test_publish_check.py
+N10	KILLED	judge_ended: the last end, not the first	test_publish_check.py
+N11	SURVIVED	the pin anchored on the last ground within the expiry	
+N12	KILLED	the pin not anchored on the ground	test_publish_check_main.py
+N13	SURVIVED	the pin said to rest on the rig	
+N14	KILLED	prewindf's ground up to f1's end again (B2 undone)	test_publish_check_main.py
+N15	KILLED	the import premise refuses -FX	test_publish_check_main.py
+N16	KILLED	withdrawn_past: a name prefix matches	test_publish_check.py
+N17	KILLED	asked_line: a name prefix matches	test_publish_check.py
+N18	KILLED	import_rewind_f: always says -F	test_cut_record.sh
+N19	SURVIVED	import_rewind_f: -FX tried after -F imported	
+N20	SURVIVED	import_rewind_f: no session begun (the marks)	
+N21	SURVIVED	import_rewind_f: no ready mark	
+N22	KILLED	prewindf: import_pool -F again (B1 undone)	test_cut_record.sh
+N23	SURVIVED	import_rewind_f: both refused is no error	
+N24	KILLED	the workflow's default list without prewindf	test_cut_record.sh
+restored: all pass

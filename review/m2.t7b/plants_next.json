@@ -1,0 +1,815 @@
+[
+ {
+  "id": "L1",
+  "file": "publish_check.py",
+  "what": "judge_look without the commit",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L2x",
+  "file": "publish_check.py",
+  "what": "prewindf's end read from a refusal when asked as well",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "L3",
+  "file": "publish_check.py",
+  "what": "the look pins skipped",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L4",
+  "file": "publish_check.py",
+  "what": "f1 not in ABSENT",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L5x",
+  "file": "publish_check.py",
+  "what": "prewindf's premise without its ground",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L6x",
+  "file": "publish_check.py",
+  "what": "the import premise without the damage",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L7",
+  "file": "publish_check.py",
+  "what": "absent allowed with the store down",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L8",
+  "file": "publish_check.py",
+  "what": "pending allowed for f1's end",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "L9",
+  "file": "cut-record.sh",
+  "what": "t1's look dropped",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "L10",
+  "file": "cut-record.sh",
+  "what": "f1 asked after the export",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "L11",
+  "file": "cut-record.sh",
+  "what": "f1's end read with no syncs",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "L12",
+  "file": "cut-record.sh",
+  "what": "r1's look dropped",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "L13x",
+  "file": "cut-record.sh",
+  "what": "prewindf: the import without the damage",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R1x",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: a cut at the top's group is no ground (-FX's first cut is)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R2x",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: the cut at C counts",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R3x",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: cuts at or before C count",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R4x",
+  "file": "publish_check.py",
+  "what": "asked_line: any op",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R6x",
+  "file": "publish_check.py",
+  "what": "asked_line: any name",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R7x",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: the top carried across instances",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "R8x",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: the cut before, not the running maximum",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R9",
+  "file": "publish_check.py",
+  "what": "rewind_committed as before D1's fix",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R10",
+  "file": "publish_check.py",
+  "what": "rewind_committed without its named check",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R11",
+  "file": "publish_check.py",
+  "what": "pin_r1_above_top: at the top passes",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R12",
+  "file": "publish_check.py",
+  "what": "r1 not asked anew passes",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R13x",
+  "file": "publish_check.py",
+  "what": "prewind's ground from the anew C",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R14x",
+  "file": "publish_check.py",
+  "what": "prewind's ground premise always holds",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R15",
+  "file": "publish_check.py",
+  "what": "judge_look: no row is no failure",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R16",
+  "file": "publish_check.py",
+  "what": "judge_look: a field missing from the look passes",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R17",
+  "file": "publish_check.py",
+  "what": "judge_look without the manifest hash",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R18",
+  "file": "publish_check.py",
+  "what": "t5-look: a snap allowed",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R19",
+  "file": "publish_check.py",
+  "what": "t3-look: a refusal allowed",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R20",
+  "file": "publish_check.py",
+  "what": "f1: a refusal at the ask allowed",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "R21",
+  "file": "publish_check.py",
+  "what": "LOOKS without pplain's t1",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R22x",
+  "file": "publish_check.py",
+  "what": "the import premise without the import",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R23x",
+  "file": "publish_check.py",
+  "what": "the import premise with nothing zeroed",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R24",
+  "file": "publish_check.py",
+  "what": "prewindf's premises skipped",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R25",
+  "file": "publish_check.py",
+  "what": "prewindf not a course of the check",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "R26",
+  "file": "publish_check.py",
+  "what": "rewind-top.txt not checked as digits",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "R30",
+  "file": "publish_agent.py",
+  "what": "answer_of: no greeting needed (D2 undone)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R31",
+  "file": "publish_agent.py",
+  "what": "raw: a timeout is the rig's error again (D3 undone)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R32",
+  "file": "publish_agent.py",
+  "what": "raw: a whole answer and no close is no answer",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "R33",
+  "file": "publish_agent.py",
+  "what": "raw: a timeout answers ''",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R34",
+  "file": "publish_agent.py",
+  "what": "parse: unreadable's commit unchecked (A3)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R35",
+  "file": "publish_agent.py",
+  "what": "parse: manifest-len unchecked (A5)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R36",
+  "file": "publish_agent.py",
+  "what": "ask look sends publish-progress (A4)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ]
+ },
+ {
+  "id": "R40",
+  "file": "cut-record.sh",
+  "what": "pplain: t3's look before t5's",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "R41",
+  "file": "cut-record.sh",
+  "what": "prewindf: f1 expires in 5 s",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R42",
+  "file": "cut-record.sh",
+  "what": "prewindf: f1's end read within 3 s",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "R43x",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: -FX alone, no -F",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R44",
+  "file": "cut-record.sh",
+  "what": "prewind's top read from the count",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R45x",
+  "file": "cut-record.sh",
+  "what": "rewindf without the damage",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R46",
+  "file": "cut-record.sh",
+  "what": "prewindf not a course by name",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R47",
+  "file": "cut-record.sh",
+  "what": "prewind: the top written as 0",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R48",
+  "file": "cut-record.sh",
+  "what": "prewind: r1's look before r1 is asked",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R49",
+  "file": "cut-record.sh",
+  "what": "prewind: r1 asked anew before the store comes back (#140's S12)",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "M1",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f without -FX",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "M2",
+  "file": "cut-record.sh",
+  "what": "prewindf: the import without the damage (= L13x)",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "M3",
+  "file": "publish_check.py",
+  "what": "the import premise by substring",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P1",
+  "file": "publish_check.py",
+  "what": "the anchor read as the refusal again",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P2",
+  "file": "publish_check.py",
+  "what": "the expiry filter dropped",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P3",
+  "file": "publish_check.py",
+  "what": "the expiry taken as 3600 s",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P4",
+  "file": "publish_check.py",
+  "what": "the end's order unchecked",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P5",
+  "file": "publish_check.py",
+  "what": "any end accepted",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P6",
+  "file": "publish_check.py",
+  "what": "the withdraw line read as withdrawn",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "P7",
+  "file": "publish_check.py",
+  "what": "`<` for `<=` (= R1x)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P8",
+  "file": "publish_check.py",
+  "what": "C not checked (= R3x)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "P9",
+  "file": "publish_check.py",
+  "what": "an `asked` line taken as an end",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N1",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: with no STOP, nothing returned",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "N2",
+  "file": "publish_check.py",
+  "what": "a no-op (the harness itself)",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N3",
+  "file": "publish_check.py",
+  "what": "rewind_cuts: only the first ground kept",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N4",
+  "file": "publish_check.py",
+  "what": "ask_deadline: any name's publish",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "N5",
+  "file": "publish_check.py",
+  "what": "ask_deadline: from the agent's answer, not its send",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N6",
+  "file": "publish_check.py",
+  "what": "ask_deadline: the expiry read as milliseconds",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N7",
+  "file": "publish_check.py",
+  "what": "ask_deadline: the last publish of the name, not the first",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N8",
+  "file": "publish_check.py",
+  "what": "the expiry filter strict",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N9",
+  "file": "publish_check.py",
+  "what": "judge_ended: an end at the ground's ns passes",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N10",
+  "file": "publish_check.py",
+  "what": "judge_ended: the last end, not the first",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N11",
+  "file": "publish_check.py",
+  "what": "the pin anchored on the last ground within the expiry",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N12",
+  "file": "publish_check.py",
+  "what": "the pin not anchored on the ground",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "N13",
+  "file": "publish_check.py",
+  "what": "the pin said to rest on the rig",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N14",
+  "file": "publish_check.py",
+  "what": "prewindf's ground up to f1's end again (B2 undone)",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "N15",
+  "file": "publish_check.py",
+  "what": "the import premise refuses -FX",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ]
+ },
+ {
+  "id": "N16",
+  "file": "publish_check.py",
+  "what": "withdrawn_past: a name prefix matches",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N17",
+  "file": "publish_check.py",
+  "what": "asked_line: a name prefix matches",
+  "verdict": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ]
+ },
+ {
+  "id": "N18",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: always says -F",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "N19",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: -FX tried after -F imported",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N20",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: no session begun (the marks)",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N21",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: no ready mark",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N22",
+  "file": "cut-record.sh",
+  "what": "prewindf: import_pool -F again (B1 undone)",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "N23",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: both refused is no error",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N24",
+  "file": "../../.github/workflows/skyzfs-publish-rig.yml",
+  "what": "the workflow's default list without prewindf",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ }
+]
