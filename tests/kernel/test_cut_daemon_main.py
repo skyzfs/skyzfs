@@ -1082,7 +1082,13 @@ class Courses(unittest.TestCase):
         # #134's N3, and the one for a move to another group) or nothing is
         # not this course's mismatch.
         for fn in ('v1-after.txt', 'v1in-after.txt'):
-            self.assertEqual(self.judge('uv1', dict(v1, **{fn: 'upload_checked matched\n'}), good)[:2], ([], []))
+            wrong, bad, notes = self.judge('uv1', dict(v1, **{fn: 'upload_checked matched\n'}), good)
+            self.assertEqual((wrong, bad), ([], []))
+            # The line says that this step's own word was not seen (the
+            # review of #137, N1).
+            seen = [n for n in notes if "own word (row_v1) was not seen" in n]
+            self.assertEqual(len(seen), 1, notes)
+            self.assertTrue(seen[0].startswith(fn.split('-')[0] + ':'), seen)
             for kind in ('upload_checked head_moved\n', 'upload_checked not_the_base\n', ''):
                 self.assertEqual(len(self.judge('uv1', dict(v1, **{fn: kind}), good)[1]), 1, (fn, kind))
         # The daemon's row before an act is of version 1, names a commit
@@ -1103,6 +1109,14 @@ class Courses(unittest.TestCase):
                     row_file(('ef' * 16, 8, 43), head=e, commit=e), row_file((STATE, 8, 43), head=e),
                     row_file((STATE, 8, 43), head=e, commit=h)):
             self.assertTrue(self.judge('uv1', dict(v1, **{'end-row.txt': end}), good)[1], end)
+        # v1in without node B's head, with two, or with the daemon's own:
+        # node B did not move head, and v1in was a second v1 (G-d).
+        for others in (f'v1\t{STATE}\t5\t40\nv1\t{STATE}\t6\t41\n',
+                       f'v1\t{STATE}\t5\t40\nhead\t{nb}\nhead\t{e}\nv1\t{STATE}\t6\t41\n',
+                       f'v1\t{STATE}\t5\t40\nhead\t{m}\nv1\t{STATE}\t6\t41\n'):
+            bad = self.judge('uv1', dict(v1, **{'others.tsv': others}), good)[1]
+            self.assertEqual(len(bad), 1, (others, bad))
+            self.assertIn('node B did not move head', bad[0])
         # others.tsv without a step's row of version 1.
         for others in (f'head\t{nb}\nv1\t{STATE}\t6\t41\n', f'v1\t{STATE}\t5\t40\nhead\t{nb}\n'):
             self.assertEqual(len(self.judge('uv1', dict(v1, **{'others.tsv': others}), good)[1]), 1, others)
@@ -1361,6 +1375,54 @@ class Courses(unittest.TestCase):
         self.assertEqual(lines['upload_content'][0], 'FAIL', lines['upload_content'])
         self.assertIn('the last cut written is', lines['upload_content'][1])
         self.assertEqual(lines['upload_course'][0], 'FAIL', lines['upload_course'])
+
+    def test_the_course_of_rows_of_version_1(self):
+        """uv1 from end to end (the review of #137, G-e): the daemon's
+        cuts each under its own head, whose row names it; the other
+        writer's row of version 1 over cut a, fetched under the same head
+        with no commit and skipped; the whole cut after it; node B's head
+        in the row's group over cut c, with its block 0, skipped; and the
+        whole cut after that, onto node B's commit, which must write block
+        0 back. A daemon that put a delta there fails the content."""
+        def v1_course(whole):
+            def up(written, blocks, st):
+                self.assertGreaterEqual(len(written), 4)
+                heads = [f'{k + 1:02x}' * 32 for k in range(len(written))]
+                daemon = [dict(w, head=h, commit=h) for w, h in zip(written, heads)]
+                a, c = 0, 1
+                cut = {k: (STATE, written[k]['number'], written[k]['group']) for k in (a, c)}
+                blocks['v1row'] = {}
+                blocks['nb'] = {0: '5a' * 8}
+                nb = '5b' * 32
+                d = c + 1
+                if whole:
+                    blocks[written[d]['number']] = dict(blocks[written[d]['number']])
+                    blocks[written[d]['number']].setdefault(0, next(
+                        (blocks[w['number']][0] for w in reversed(written[:d]) if 0 in blocks[w['number']]),
+                        cdc.ZERO))
+                fetched = (daemon[:a + 1] + [dict(daemon[a], key='v1row', commit='none')]
+                           + daemon[a + 1:c + 1] + [dict(written[c], head=nb, key='nb')] + daemon[d:])
+                fetched[a + 1].pop('commit')
+                st = (st.replace('upload_mismatches 0', 'upload_mismatches 2')
+                        .replace('uploaded_whole 1', 'uploaded_whole 3'))
+                last = written[-1]
+                files = {'v1-row.txt': row_file(cut[a], head=heads[a], commit=heads[a]),
+                         'v1in-row.txt': row_file(cut[c], head=heads[c], commit=heads[c]),
+                         'v1-after.txt': 'upload_checked row_v1\n', 'v1in-after.txt': 'upload_checked row_v1\n',
+                         'end-row.txt': row_file((STATE, last['number'], last['group']), head=heads[-1],
+                                                 commit=heads[-1]),
+                         'others.tsv': (f'v1\t{STATE}\t{cut[a][1]}\t{cut[a][2]}\nhead\t{nb}\n'
+                                        f'v1\t{STATE}\t{cut[c][1]}\t{cut[c][2]}\n')}
+                return fetched, blocks, st, files
+            return up
+        rc, lines = recording(upload=v1_course(True), as_name='uv1')
+        self.assertEqual(rc, 0, {k: v for k, v in lines.items() if v[0] in ('FAIL', 'ERROR')})
+        for key in ('upload_content', 'upload_status', 'upload_course'):
+            self.assertEqual(lines[key][0], 'PASS', (key, lines[key]))
+        self.assertIn("and 2 of another writer's", lines['upload_content'][1])
+        rc, lines = recording(upload=v1_course(False), as_name='uv1')
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['upload_content'][0], 'FAIL', lines['upload_content'])
 
     def test_a_cut_under_two_commits(self):
         """The daemon's cut at head again under another commit that no

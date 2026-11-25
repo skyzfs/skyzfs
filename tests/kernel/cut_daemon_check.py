@@ -1858,7 +1858,7 @@ def course_wants(name, rdir, status):
         # mismatch is counted says row_v1, or matched where that whole
         # cut has already been checked; any other kind is not this
         # course's mismatch.
-        v1 = read_others(read_file(rdir, 'others.tsv'))[2]
+        nb_heads, _, v1 = read_others(read_file(rdir, 'others.tsv'))
         want.update(upload_mismatches=str(len(UV1_STEPS)), upload_abandoned_at_mismatch=at_least(0),
                     uploaded_whole=str(1 + len(UV1_STEPS)), upload_checked='matched')
         state = None
@@ -1878,7 +1878,14 @@ def course_wants(name, rdir, status):
             if kind not in ('row_v1', 'matched'):
                 bad.append(f"{step}: upload_checked {kind!r} once the mismatch was counted, not row_v1 (or "
                            "matched, the whole cut after it)")
-            notes.append(f"{step}: upload_checked {kind!r} once the mismatch was counted")
+            notes.append(f"{step}: upload_checked {kind!r} once the mismatch was counted"
+                         + (": the whole cut after it was checked first, so this step's own word (row_v1) was "
+                            "not seen" if kind == 'matched' else ''))
+            if step == 'v1in' and (len(nb_heads) != 1 or first['head'] in nb_heads):
+                # The move is what v1in adds to v1: without it the step is
+                # a second v1 (the review of #137, G-d).
+                bad.append(f"v1in: others.tsv names node B's heads {sorted(nb_heads)}, not one head other than "
+                           f"the daemon's {first['head']}: node B did not move head")
         end = row('end-row.txt')
         if end['cut'] is None or end['cut'][0] != state or end['cut'] in v1:
             bad.append(f"the row at the end is {end['cut']}, not a later cut of the daemon's state")
