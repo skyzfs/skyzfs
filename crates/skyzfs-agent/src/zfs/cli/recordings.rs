@@ -452,13 +452,9 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         assert_eq!(zfs.props(NONE), Err(ZfsError::NoPool), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&get), "{}", rec.image);
 
-        let mut zfs = rec.adapter(&["none-snapshot-1"]);
-        assert_eq!(
-            zfs.snapshot(NONE, "t"),
-            Err(ZfsError::NoPool),
-            "{}",
-            rec.image
-        );
+        // `zfs snapshot -r` of a pool that does not exist waits for the
+        // recorder's next run (testing's #152); the channel program it
+        // replaces was recorded.
         let mut zfs = rec.adapter(&["none-members"]);
         assert_eq!(
             zfs.members(NONE, "t"),
@@ -486,7 +482,12 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         // `held` reads the holds under the snapshot (`holds -r`): none,
         // so no member is read.
         let mut zfs = rec.adapter(&["none-holds-r"]);
-        assert_eq!(zfs.held(NONE, "t", TAG), Ok(Held::No), "{}", rec.image);
+        assert_eq!(
+            zfs.held(NONE, "t", TAG, None),
+            Ok(Held::No),
+            "{}",
+            rec.image
+        );
         assert_eq!(ran(&mut zfs), rec.words(&["none-holds-r"]), "{}", rec.image);
         let mut zfs = rec.adapter(&["none-release"]);
         assert_eq!(zfs.release(NONE, "t", TAG), Ok(()), "{}", rec.image);
@@ -530,27 +531,29 @@ fn holds_read_as_recorded() {
             assert_eq!(zfs.hold(pool, "t", TAG), Ok(()), "{} {pool}", rec.image);
             assert_eq!(ran(&mut zfs), rec.words(&names));
 
-            // `held` reads the tagged snapshots under the root, then the
-            // members: every member's `@t` carries the tag.
-            let read = [name("holds-r"), name("members")];
+            // The members read in the round, then `held` reads the tagged
+            // snapshots under the root: every member's `@t` carries the
+            // tag. Another tag is on no member: `Held::No`.
+            let read = [name("members"), name("holds-r")];
             let read: Vec<&str> = read.iter().map(String::as_str).collect();
             let mut zfs = rec.adapter(&read);
+            let members = zfs.members(pool, "t").expect("the members");
+            assert!(members.is_some(), "{} {pool}", rec.image);
             assert_eq!(
-                zfs.held(pool, "t", TAG),
+                zfs.held(pool, "t", TAG, members.as_deref()),
                 Ok(Held::All),
                 "{} {pool}",
                 rec.image
             );
-            assert_eq!(ran(&mut zfs), rec.words(&read));
-            // Another tag is not on the root: false, with no member read.
-            let mut zfs = rec.adapter(&read);
             assert_eq!(
-                zfs.held(pool, "t", "another"),
+                zfs.held(pool, "t", "another", members.as_deref()),
                 Ok(Held::No),
                 "{} {pool}",
                 rec.image
             );
-            assert_eq!(ran(&mut zfs), rec.words(&read[..1]));
+            let mut both = rec.words(&read);
+            both.push(rec.words(&read[1..])[0].clone());
+            assert_eq!(ran(&mut zfs), both);
 
             let release = name("release-1");
             let mut zfs = rec.adapter(&[release.as_str()]);
@@ -660,26 +663,19 @@ fn members_and_tagged_read_as_recorded() {
     }
 }
 
-/// The snapshot program was recorded at `366b217`, when it still called
-/// `pcall`, which the sandbox does not have: the program fails before it
-/// takes anything, and the adapter says so with ZFS's message. The
-/// program as it is now waits for the next recording.
+/// The take is `zfs snapshot -r POOL@T` (M2.6c-2b): as recorded, it
+/// exits 0 with nothing on either output, and the adapter's words are
+/// the record's. The recording of its failures waits for the recorder's
+/// next run (testing's #152).
 #[test]
-fn the_recorded_failure_of_the_snapshot_program_is_an_error() {
+fn the_take_as_recorded() {
     for rec in recordings() {
         for pool in [RIG, MIRROR] {
             let prefix = if pool == RIG { "rig" } else { "mirror" };
-            let name = format!("{prefix}-snapshot-1");
+            let name = format!("{prefix}-snapshot-cli");
             let mut zfs = rec.adapter(&[name.as_str()]);
-            match zfs.snapshot(pool, "t") {
-                Err(ZfsError::Other(why)) => {
-                    assert!(why.contains("Channel program execution failed"), "{why}");
-                    assert!(why.contains("'pcall'"), "{why}");
-                }
-                other => panic!("{} {pool}: {other:?}", rec.image),
-            }
+            assert_eq!(zfs.snapshot(pool, "t"), Ok(()), "{} {pool}", rec.image);
             assert_eq!(ran(&mut zfs), rec.words(&[name.as_str()]));
-            assert_eq!(zfs.host().ran[0].stdin, SNAPSHOT_PROGRAM.as_bytes());
         }
     }
 }

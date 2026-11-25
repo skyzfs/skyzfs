@@ -404,28 +404,80 @@ fn nocacheflush_is_read_from_the_module() {
     assert!(cli(Fake::default()).nocacheflush().is_err());
 }
 
-const SNAPSHOT_WORDS: &str =
-    "zfs program -j -t 100000000 -m 104857600 tank - tank skz-1 skyzfs:assist";
+const TAKE: &str = "zfs snapshot -r tank@skz-1";
 
-const TAKEN: &str = r#"{"return":{"createtxg":"812","members":{"tank/vol":{"guid":"-2","local":{"volsize":"1073741824"},"snapshot_guid":"33","type":"volume"},"tank":{"guid":"11","local":{"compression":"lz4","skyzfs:assist":"7"},"snapshot_guid":"12","type":"filesystem"},"tank/db":{"guid":"21","local":[],"snapshot_guid":"22","type":"filesystem"}}}}"#;
-
-/// The snapshot program is run on its standard input with the pool, the
-/// name and the agent's property, within the limit of a change; what it
-/// returns makes the manifest's members, root first and then by name,
-/// a GUID above 2^63 read from its signed form, and the agent's own
-/// property left out. Mutants: the order, the sign, the property kept,
-/// the program not given.
+/// The take is `zfs snapshot -r POOL@T`, within the limit of a change;
+/// exit 0 is taken. `dataset already exists` is [`ZfsError::Exists`];
+/// no pool is [`ZfsError::NoPool`]; any other failure is an error that
+/// names the command. Mutants: `EEXIST` read as another error, a
+/// failure read as taken.
 #[test]
-fn the_snapshot_program_makes_the_manifests_members() {
+fn the_take_is_zfs_snapshot_r() {
     let mut fake = Fake::default();
-    fake.ok(SNAPSHOT_WORDS, TAKEN);
+    fake.ok(TAKE, "");
     let mut zfs = cli(fake);
-    let program = zfs.snapshot("tank", "skz-1").expect("taken");
+    assert_eq!(zfs.snapshot("tank", "skz-1"), Ok(()));
+    assert_eq!(zfs.host().words(), [TAKE]);
+    assert_eq!(zfs.host().ran[0].limit, Limits::default().change);
+    assert!(zfs.host().ran[0].stdin.is_empty());
+    for (stderr, want) in [
+        (
+            "cannot create snapshot 'tank/db@skz-1': dataset already exists\nno snapshots were created\n",
+            Err(ZfsError::Exists),
+        ),
+        ("cannot open 'tank': no such pool\n", Err(ZfsError::NoPool)),
+    ] {
+        let mut fake = Fake::default();
+        fake.fails(TAKE, 1, stderr);
+        assert_eq!(cli(fake).snapshot("tank", "skz-1"), want, "{stderr}");
+    }
+    let mut fake = Fake::default();
+    fake.fails(
+        TAKE,
+        1,
+        "cannot create snapshot 'tank@skz-1': out of space\nno snapshots were created\n",
+    );
+    assert!(matches!(
+        cli(fake).snapshot("tank", "skz-1"),
+        Err(ZfsError::Other(why)) if why.contains(TAKE) && why.contains("out of space")
+    ));
+}
+
+const DATASETS_WORDS: &str =
+    "zfs program -n -j -t 100000000 -m 104857600 tank - tank skz-1 full skyzfs:assist";
+
+const DATASETS: &str = r#"{"return":{"datasets":{"tank/vol":{"guid":"-2","createtxg":"40","local":{"volsize":"1073741824"},"snapshot_guid":"33","snapshot_createtxg":"812","type":"volume"},"tank":{"guid":"11","createtxg":"1","local":{"compression":"lz4","skyzfs:assist":"7"},"snapshot_guid":"12","snapshot_createtxg":"812","type":"filesystem"},"tank/db":{"guid":"21","createtxg":"30","local":[],"snapshot_guid":"22","snapshot_createtxg":"812","type":"filesystem"},"tank/new":{"guid":"41","createtxg":"813","local":[],"type":"filesystem"}}}}"#;
+
+/// The pool's datasets are read by the members program in full, read
+/// only, with the pool, the name and the agent's property; a GUID
+/// above 2^63 is read from its signed form, the agent's own property is
+/// left out, and a dataset with no `@t` has none. One whole take of
+/// them makes the manifest's members, root first and then by name.
+/// Mutants: the sign, the property kept, the program run to change the
+/// pool, the order.
+#[test]
+fn the_datasets_read_make_the_manifests_members() {
+    let mut fake = Fake::default();
+    fake.ok(DATASETS_WORDS, DATASETS);
+    let mut zfs = cli(fake);
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    let ran = &zfs.host().ran;
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0].stdin, MEMBERS_PROGRAM.as_bytes());
+    assert_eq!(ran[0].limit, Limits::default().read);
+    let new = datasets
+        .iter()
+        .find(|d| d.name == "tank/new")
+        .expect("tank/new");
+    assert_eq!((new.createtxg, new.at), (813, None));
     let local = |pairs: &[(&str, &str)]| {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.as_bytes().to_vec()))
             .collect::<BTreeMap<_, _>>()
+    };
+    let crate::zfs::Taken::Whole(program) = crate::zfs::taken(&datasets, "tank") else {
+        panic!("not whole: {datasets:?}");
     };
     assert_eq!(program.createtxg, 812);
     assert_eq!(
@@ -454,10 +506,6 @@ fn the_snapshot_program_makes_the_manifests_members() {
             },
         ]
     );
-    let ran = &zfs.host().ran;
-    assert_eq!(ran.len(), 1);
-    assert_eq!(ran[0].stdin, SNAPSHOT_PROGRAM.as_bytes());
-    assert_eq!(ran[0].limit, Limits::default().change);
     // The members make a manifest that keeps its rules.
     let manifest = manifest::Manifest {
         pool: "tank".into(),
@@ -469,198 +517,166 @@ fn the_snapshot_program_makes_the_manifests_members() {
     assert!(manifest.encode().is_ok());
 }
 
-/// A member's `@t` that exists, found before any is taken, is
-/// [`ZfsError::Exists`]; any other failure of the program is an error
-/// that says whether anything was taken. Mutants: `EEXIST` after a
-/// partial take read as nothing taken, a property's failure lost.
+/// A dataset as [`crate::zfs::taken`] reads it.
+fn dataset(name: &str, createtxg: u64, at: Option<u64>) -> Dataset {
+    Dataset {
+        name: name.into(),
+        kind: Kind::Filesystem,
+        guid: createtxg + 100,
+        createtxg,
+        local: BTreeMap::new(),
+        at: at.map(|createtxg| Snap {
+            guid: createtxg + 1000,
+            createtxg,
+        }),
+    }
+}
+
+/// One whole take of the pool (the lead's rule, M2.6c-2b): every `@t` of
+/// `pool@t`'s group, and every dataset created in that group or before
+/// with one; a dataset created after it is not a member. No `pool@t` is
+/// absent, whatever its members have. Mutants: the group not compared,
+/// a dataset older than the take, or of its group, without its `@t`
+/// taken as whole, the root not looked for.
 #[test]
-fn the_snapshot_programs_failures_say_what_was_taken() {
-    let run = |returned: &str| {
+fn a_take_is_whole_where_every_dataset_older_has_its_t_of_one_group() {
+    use crate::zfs::Taken;
+    let whole = [
+        dataset("tank", 1, Some(50)),
+        dataset("tank/db", 10, Some(50)),
+        dataset("tank/new", 51, None),
+        dataset("tank/newer", 60, None),
+    ];
+    assert!(
+        matches!(crate::zfs::taken(&whole, "tank"), Taken::Whole(p) if p.createtxg == 50 && p.members.len() == 2)
+    );
+    let rows: [(&str, Vec<Dataset>, &str); 6] = [
+        (
+            "a member's @t of another group",
+            vec![
+                dataset("tank", 1, Some(50)),
+                dataset("tank/db", 10, Some(49)),
+            ],
+            "not whole",
+        ),
+        (
+            "a dataset older than the take without its @t",
+            vec![dataset("tank", 1, Some(50)), dataset("tank/db", 49, None)],
+            "not whole",
+        ),
+        (
+            "a dataset of the take's group without its @t",
+            vec![dataset("tank", 1, Some(50)), dataset("tank/db", 50, None)],
+            "not whole",
+        ),
+        (
+            "no pool@t, a member's @t there",
+            vec![dataset("tank", 1, None), dataset("tank/db", 10, Some(50))],
+            "absent",
+        ),
+        ("no pool@t", vec![dataset("tank", 1, None)], "absent"),
+        (
+            "the root not read",
+            vec![dataset("tank/db", 10, Some(50))],
+            "not whole",
+        ),
+    ];
+    for (what, datasets, want) in rows {
+        let got = match crate::zfs::taken(&datasets, "tank") {
+            Taken::Absent => "absent",
+            Taken::NotWhole(_) => "not whole",
+            Taken::Whole(_) => "whole",
+        };
+        assert_eq!(got, want, "{what}");
+    }
+}
+
+/// Output of the members program that cannot be read is an error, and
+/// nothing is run after it: the read changes nothing (cut off, as `zfs
+/// program -j` cuts it at a byte it cannot print and still exits 0; not
+/// UTF-8; a number that is not one; a snapshot read in part; no
+/// datasets). Mutant: a cut-off output taken as a result.
+#[test]
+fn datasets_that_cannot_be_read_are_an_error() {
+    let cut = &DATASETS.as_bytes()[..DATASETS.len() / 2];
+    let shapes: [&[u8]; 7] = [
+        cut,
+        b"",
+        b"{\"return\":{\"datasets\":{\"tank\":\xff}}}",
+        br#"{"return":{"datasets":{"tank":{"guid":"x","createtxg":"1","local":[],"type":"filesystem"}}}}"#,
+        br#"{"return":{"datasets":{"tank":{"guid":"1","createtxg":"1","local":[],"snapshot_guid":"2","type":"filesystem"}}}}"#,
+        br#"{"return":{"datasets":{"tank":{"guid":"1","createtxg":"1","local":[],"type":"snapshot"}}}}"#,
+        br#"{"return":{"absent":"1"}}"#,
+    ];
+    for stdout in shapes {
+        let shown = String::from_utf8_lossy(stdout);
         let mut fake = Fake::default();
-        fake.ok(SNAPSHOT_WORDS, &format!(r#"{{"return":{returned}}}"#));
-        cli(fake).snapshot("tank", "skz-1")
-    };
-    assert_eq!(
-        run(r#"{"failed":"tank/db@skz-1","errno":"17"}"#),
-        Err(ZfsError::Exists)
-    );
-    let Err(ZfsError::Other(why)) = run(r#"{"failed":"tank/db@skz-1","errno":"28"}"#) else {
-        panic!("not an error");
-    };
-    assert!(why.contains("errno 28, before any was taken"), "{why}");
-    let Err(ZfsError::Other(why)) = run(r#"{"failed":"tank/db@skz-1","errno":"17","taken":"1"}"#)
-    else {
-        panic!("not an error");
-    };
-    assert!(why.contains("after 1 were taken"), "{why}");
-    // A failure with no errno is an error too.
-    assert!(matches!(
-        run(r#"{"failed":"tank/db"}"#),
-        Err(ZfsError::Other(why)) if why.contains("tank/db")
-    ));
+        fake.give(
+            DATASETS_WORDS,
+            Ok(Output {
+                code: Some(0),
+                stdout: stdout.to_vec(),
+                stderr: Vec::new(),
+            }),
+        );
+        let mut zfs = cli(fake);
+        assert!(
+            matches!(zfs.datasets("tank", "skz-1"), Err(ZfsError::Other(_))),
+            "{shown}"
+        );
+        assert_eq!(zfs.host().words(), [DATASETS_WORDS], "{shown}");
+    }
     let mut fake = Fake::default();
-    fake.fails(
-        SNAPSHOT_WORDS,
-        1,
-        "Channel program execution failed:\n[string \"channel program\"]:9: oops\n",
-    );
-    assert!(matches!(
-        cli(fake).snapshot("tank", "skz-1"),
-        Err(ZfsError::Other(why)) if why.contains("oops")
-    ));
-    let mut fake = Fake::default();
-    fake.fails(SNAPSHOT_WORDS, 1, "cannot open 'tank': no such pool\n");
-    assert_eq!(cli(fake).snapshot("tank", "skz-1"), Err(ZfsError::NoPool));
+    fake.fails(DATASETS_WORDS, 1, "cannot open 'tank': no such pool\n");
+    assert_eq!(cli(fake).datasets("tank", "skz-1"), Err(ZfsError::NoPool));
 }
 
 const DESTROY: &str = "zfs destroy -r tank@skz-1";
 
-/// The snapshot program's output given as bytes, exit 0, and what
-/// `zfs destroy -r tank@skz-1` then gives.
-fn taken_unread(
-    stdout: &[u8],
-    destroy: Result<&str, &str>,
-) -> (Result<Program, ZfsError>, Vec<String>) {
-    let mut fake = Fake::default();
-    fake.give(
-        SNAPSHOT_WORDS,
-        Ok(Output {
-            code: Some(0),
-            stdout: stdout.to_vec(),
-            stderr: Vec::new(),
-        }),
-    );
-    match destroy {
-        Ok(out) => fake.ok(DESTROY, out),
-        Err(e) => fake.fails(DESTROY, 1, e),
-    };
-    let mut zfs = cli(fake);
-    let done = zfs.snapshot("tank", "skz-1");
-    let words = zfs.host().words().into_iter().map(String::from).collect();
-    (done, words)
-}
-
-/// Output of the snapshot program that cannot be read after it exited
-/// 0 (cut off, as `zfs program -j` cuts it at a byte it cannot print
-/// and still exits 0; not UTF-8; a result of the wrong shape that does
-/// not say it failed) is an error, and `pool@t` is destroyed with what
-/// it took before anything relies on it; the error says what became of
-/// it. Mutants: a cut-off output taken as a result, the destroy left
-/// out, run on a failure the program reported, or its failure lost.
+/// A take that is not whole, or not as read before it, is destroyed by
+/// `zfs destroy -r`; one already gone is destroyed. Any other failure is
+/// an error that names the command. Mutants: a take already gone read
+/// as an error, a failure read as destroyed.
 #[test]
-fn output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took() {
-    let cut = &TAKEN.as_bytes()[..TAKEN.len() / 2];
-    let shapes: [&[u8]; 6] = [
-        cut,
-        b"",
-        b"{\"return\":{\"createtxg\":\"812\",\"members\":{\"tank\":\xff}}}",
-        br#"{"return":{"createtxg":"x","members":{}}}"#,
-        br#"{"return":{"createtxg":"1","members":{"tank/db":{"guid":"1","local":{},"snapshot_guid":"2","type":"filesystem"}}}}"#,
-        br#"{"return":{"createtxg":"1"}}"#,
-    ];
-    for stdout in shapes {
-        let shown = String::from_utf8_lossy(stdout);
-        let (done, words) = taken_unread(stdout, Ok(""));
-        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{shown}");
-        let Err(ZfsError::Other(why)) = done else {
-            panic!("{shown}: {done:?}");
-        };
-        assert!(why.contains("tank@skz-1 destroyed"), "{shown}: {why}");
-        // The program is named once (NL-S4).
-        assert_eq!(why.matches("zfs program").count(), 1, "{shown}: {why}");
-    }
-    for (gone, became) in [
+fn the_destroy_is_zfs_destroy_r() {
+    for (code, stderr) in [
+        (0, ""),
         (
+            1,
             "could not find any snapshots to destroy; check snapshot names.\n",
-            "tank@skz-1 was not taken",
         ),
-        (
-            "cannot open 'tank': dataset does not exist\n",
-            "tank@skz-1 was not found",
-        ),
+        (1, "cannot open 'tank': dataset does not exist\n"),
     ] {
-        let (done, _) = taken_unread(cut, Err(gone));
-        assert!(
-            matches!(&done, Err(ZfsError::Other(why))
-                if why.contains("cannot be read") && why.contains(became)),
-            "{gone}: {done:?}"
-        );
+        let mut fake = Fake::default();
+        if code == 0 {
+            fake.ok(DESTROY, "");
+        } else {
+            fake.fails(DESTROY, code, stderr);
+        }
+        let mut zfs = cli(fake);
+        assert_eq!(zfs.destroy("tank", "skz-1"), Ok(()), "{stderr}");
+        assert_eq!(zfs.host().words(), [DESTROY]);
+        assert_eq!(zfs.host().ran[0].limit, Limits::default().change);
     }
-    let (done, _) = taken_unread(
-        cut,
-        Err("cannot destroy snapshot tank@skz-1: pool I/O is currently suspended\n"),
+    let mut fake = Fake::default();
+    fake.fails(
+        DESTROY,
+        1,
+        "cannot destroy snapshot tank@skz-1: pool I/O is currently suspended\n",
     );
-    assert!(
-        matches!(&done, Err(ZfsError::Other(why)) if why.contains("could not be destroyed")),
-        "{done:?}"
-    );
-    // A failure the program reported before it took any is not
-    // destroyed (one after it took some is:
-    // `a_take_that_failed_part_way_is_destroyed`).
-    let (done, words) = taken_unread(
-        br#"{"return":{"failed":"tank/db@skz-1","errno":"28"}}"#,
-        Ok(""),
-    );
-    assert_eq!(words, [SNAPSHOT_WORDS]);
-    assert!(matches!(done, Err(ZfsError::Other(_))));
-}
-
-/// A take the program says failed after it took some members' `@t`, on
-/// any errno but `EEXIST`, is destroyed, and the error says what was
-/// taken and what became of it (the lead's decision on testing's scale
-/// run: 10000 file systems, `ENOSPC` after 4563). Nothing taken, or
-/// `EEXIST`, destroys nothing. Mutants: the destroy left out; run with
-/// nothing taken; run after `EEXIST`; its failure lost.
-#[test]
-fn a_take_that_failed_part_way_is_destroyed() {
-    // ENOSPC, EDQUOT (Linux), EIO; the first as the scale run recorded it.
-    for (errno, stdout) in [
-        (
-            "28",
-            r#"{"return":{"errno":"28","taken":"4563","failed":"skzqs/d5199@t"}}"#,
-        ),
-        (
-            "122",
-            r#"{"return":{"failed":"tank/db@skz-1","errno":"122","taken":"2"}}"#,
-        ),
-        (
-            "5",
-            r#"{"return":{"failed":"tank/db@skz-1","errno":"5","taken":"1"}}"#,
-        ),
-    ] {
-        let (done, words) = taken_unread(stdout.as_bytes(), Ok(""));
-        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{errno}");
-        let Err(ZfsError::Other(why)) = done else {
-            panic!("{errno}: {done:?}");
-        };
-        assert!(why.contains(&format!("errno {errno}, after ")), "{why}");
-        assert!(why.ends_with("; tank@skz-1 destroyed"), "{why}");
-        assert_eq!(why.matches("zfs program").count(), 1, "{why}");
-    }
-    // The destroy itself fails: the error says so, and what was taken.
-    let (done, words) = taken_unread(
-        br#"{"return":{"failed":"tank/db@skz-1","errno":"28","taken":"3"}}"#,
-        Err("cannot destroy snapshot tank@skz-1: pool I/O is currently suspended\n"),
-    );
-    assert_eq!(words, [SNAPSHOT_WORDS, DESTROY]);
-    assert!(
-        matches!(&done, Err(ZfsError::Other(why))
-            if why.contains("after 3 were taken") && why.contains("tank@skz-1 could not be destroyed")),
-        "{done:?}"
-    );
-    // Nothing taken, or a name that exists: nothing destroyed.
-    for stdout in [
-        r#"{"return":{"failed":"tank/db@skz-1","errno":"28","taken":"0"}}"#,
-        r#"{"return":{"failed":"tank/db@skz-1","errno":"28"}}"#,
-        r#"{"return":{"failed":"tank/db@skz-1","errno":"17","taken":"1"}}"#,
-    ] {
-        let (done, words) = taken_unread(stdout.as_bytes(), Ok(""));
-        assert_eq!(words, [SNAPSHOT_WORDS], "{stdout}");
-        assert!(
-            matches!(done, Err(ZfsError::Other(_))),
-            "{stdout}: {done:?}"
-        );
-    }
+    assert!(matches!(
+        cli(fake).destroy("tank", "skz-1"),
+        Err(ZfsError::Other(why)) if why.contains(DESTROY) && why.contains("suspended")
+    ));
+    // Killed at its limit, the destroy may still finish in the kernel
+    // (TL-F3 of #147's review).
+    let mut fake = Fake::default();
+    fake.give(DESTROY, Err(std::io::ErrorKind::TimedOut));
+    assert!(matches!(
+        cli(fake).destroy("tank", "skz-1"),
+        Err(ZfsError::Other(why))
+            if why.starts_with("tank@skz-1 may not have been destroyed: ") && why.contains(DESTROY)
+    ));
 }
 
 /// `zfs destroy` reads `%` ranges and `,` lists after the `@`: a name
@@ -670,7 +686,7 @@ fn a_take_that_failed_part_way_is_destroyed() {
 fn what_is_not_a_snapshots_name_is_not_destroyed() {
     for t in ["a%z", "a,b", ""] {
         let mut zfs = cli(Fake::default());
-        let ZfsError::Other(why) = zfs.destroy_taken("tank", t, "cut off") else {
+        let Err(ZfsError::Other(why)) = zfs.destroy("tank", t) else {
             panic!("{t}");
         };
         assert!(why.contains("was not destroyed"), "{t}: {why}");
@@ -682,25 +698,25 @@ fn what_is_not_a_snapshots_name_is_not_destroyed() {
 /// and in hex under `encoding` otherwise; a byte above 0x7f and bytes
 /// that are not UTF-8 reach the manifest as they were. A string that is
 /// not printable ASCII, a hex value of the wrong case, length or form,
-/// and an unknown encoding are refused, and `pool@t` destroyed.
-/// Mutants: hex not decoded, a non-ASCII string let through, an extra
-/// key let through.
+/// and an unknown encoding are refused. Mutants: hex not decoded, a
+/// non-ASCII string let through, an extra key let through.
 #[test]
 fn a_value_that_is_not_printable_ascii_comes_in_hex() {
     let with = |local: &str| {
         format!(
-            r#"{{"return":{{"createtxg":"812","members":{{"tank":{{"guid":"11","local":{local},"snapshot_guid":"12","type":"filesystem"}}}}}}}}"#
+            r#"{{"return":{{"datasets":{{"tank":{{"guid":"11","createtxg":"1","local":{local},"snapshot_guid":"12","snapshot_createtxg":"812","type":"filesystem"}}}}}}}}"#
         )
     };
-    let mut fake = Fake::default();
-    fake.ok(
-        SNAPSHOT_WORDS,
-        &with(
-            r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~","a:del":{"encoding":"hex","value":"7f"},"a:us":{"encoding":"hex","value":"1f"},"a:space":" "}"#,
-        ),
-    );
-    let program = cli(fake).snapshot("tank", "skz-1").expect("taken");
-    let local = &program.members[0].local;
+    let read = |local: &str| {
+        let mut fake = Fake::default();
+        fake.ok(DATASETS_WORDS, &with(local));
+        cli(fake).datasets("tank", "skz-1")
+    };
+    let datasets = read(
+        r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~","a:del":{"encoding":"hex","value":"7f"},"a:us":{"encoding":"hex","value":"1f"},"a:space":" "}"#,
+    )
+    .expect("read");
+    let local = &datasets[0].local;
     assert_eq!(local["a:latin1"], [0xe9]);
     assert_eq!(local["a:bad"], [0xff, 0x00, 0xfe]);
     assert_eq!(local["a:tab"], b"\ta");
@@ -711,7 +727,7 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
     assert_eq!(local["a:us"], [0x1f]);
     assert_eq!(local["a:space"], b" ");
     for bad in [
-        r#"{"a":"caf\u00e9"}"#,
+        r#"{"a":"café"}"#,
         r#"{"a":"a\tb"}"#,
         r#"{"a":{"encoding":"hex","value":"E9"}}"#,
         r#"{"a":{"encoding":"hex","value":"e"}}"#,
@@ -726,9 +742,7 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
         r#"{"a":{"encoding":"hex","value":"e9","x":"1"}}"#,
         r#"{"a":["e9"]}"#,
     ] {
-        let (done, words) = taken_unread(with(bad).as_bytes(), Ok(""));
-        assert!(matches!(done, Err(ZfsError::Other(_))), "{bad}: {done:?}");
-        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{bad}");
+        assert!(matches!(read(bad), Err(ZfsError::Other(_))), "{bad}");
     }
 }
 
@@ -737,7 +751,7 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
 /// `manifest::plain` takes 0x20 to 0x7e. Mutant: `plain` widened to 0x7f.
 #[test]
 fn the_program_and_the_manifest_agree_on_what_is_printable() {
-    assert!(SNAPSHOT_PROGRAM.contains(r#"string.find(v, "[^\32-\126]")"#));
+    assert!(MEMBERS_PROGRAM.contains(r#"string.find(v, "[^\32-\126]")"#));
     for b in 0..=u8::MAX {
         assert_eq!(manifest::plain(&[b]), (32..=126).contains(&b), "{b:#04x}");
     }
@@ -949,17 +963,25 @@ fn held_is_the_tag_on_every_members_snapshot() {
             fake.ok(MEMBERS_WORDS, members);
         }
         let mut zfs = cli(fake);
-        let held = zfs.held("tank", "skz-1", HOLD_TAG);
-        let words: Vec<String> = zfs.host().words().iter().map(|w| w.to_string()).collect();
+        // The members as the engine reads them in the same round, which
+        // `held` does not read again (TL-S2 of #147's review).
+        let read = match members {
+            Some(_) => zfs.members("tank", "skz-1").expect("the members"),
+            None => None,
+        };
+        let before = zfs.host().words().len();
+        let held = zfs.held("tank", "skz-1", HOLD_TAG, read.as_deref());
+        let words: Vec<String> = zfs.host().words()[before..]
+            .iter()
+            .map(|w| w.to_string())
+            .collect();
         (held, words)
     };
     let every = format!("{ROOT}{DB}");
     assert_eq!(
         held(Ok(&every), Some(BOTH)),
-        (
-            Ok(Held::All),
-            vec![HOLDS_R.to_string(), MEMBERS_WORDS.to_string()]
-        )
+        (Ok(Held::All), vec![HOLDS_R.to_string()]),
+        "the members given are not read again"
     );
     assert_eq!(
         held(Ok(ROOT), Some(BOTH)).0,
@@ -969,7 +991,7 @@ fn held_is_the_tag_on_every_members_snapshot() {
     assert_eq!(
         held(Ok(DB), None),
         (Ok(Held::Part), vec![HOLDS_R.to_string()]),
-        "the root lacks it: a part, with no member read"
+        "the root lacks it: a part"
     );
     assert_eq!(
         held(Ok("tank@skz-1\tother\tWed Nov 25 10:00 2026\n"), None).0,
@@ -987,7 +1009,7 @@ fn held_is_the_tag_on_every_members_snapshot() {
     assert_eq!(
         held(Ok(&every), Some(r#"{"return":{"absent":"1"}}"#)).0,
         Ok(Held::Part),
-        "gone between the two reads: the tags read are a part"
+        "`pool@t` gone when the members were read: the tags read are a part"
     );
 }
 
@@ -1053,30 +1075,19 @@ fn a_command_past_its_limit_is_an_error() {
     assert!(e.to_string().contains("zpool sync tank"), "{e}");
 }
 
-/// The snapshot program checks every member and reads every property
-/// before it takes the first snapshot, so that a failure takes nothing;
-/// it leaves the agent's property out; and all it returns is strings.
-/// Read in its text: the program itself runs on the rigs (Q10).
+/// The agent's programs only read: the take is `zfs snapshot -r`
+/// (M2.6c-2b). And they call nothing the channel programs' sandbox
+/// leaves out. Read in their text: the programs themselves run on the
+/// rigs (Q10).
 #[test]
-fn the_snapshot_program_takes_nothing_before_it_has_read_everything() {
-    let at = |needle: &str| {
-        SNAPSHOT_PROGRAM
-            .find(needle)
-            .unwrap_or_else(|| panic!("`{needle}` is not in the program"))
-    };
-    let take = at("zfs.sync.snapshot");
-    assert!(at("zfs.check.snapshot") < take);
-    assert!(at("zfs.list.system_properties") < take);
-    assert!(at("user_properties(ds)") < take);
-    assert!(at("property ~= assist") < take);
-    assert_eq!(SNAPSHOT_PROGRAM.matches("zfs.sync.").count(), 1);
+fn the_programs_only_read_and_call_what_the_sandbox_has() {
     assert!(!MEMBERS_PROGRAM.contains("zfs.sync."));
     assert!(!TAGGED_PROGRAM.contains("zfs.sync."));
     // Nothing the channel programs' sandbox leaves out: on ZFS 2.2 and
     // 2.4 a call of `pcall` failed the program (the recordings of Q10),
     // and the sandbox has no file, operating system or loading functions
     // either (zfs-program(8)).
-    for program in [SNAPSHOT_PROGRAM, MEMBERS_PROGRAM, TAGGED_PROGRAM] {
+    for program in [MEMBERS_PROGRAM, TAGGED_PROGRAM] {
         for absent in [
             "pcall",
             "xpcall",

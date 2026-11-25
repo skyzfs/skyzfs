@@ -211,9 +211,14 @@ pub struct Abandoned {
 /// Why a publish was given up (the plan, §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Why {
-    /// `pool@<name>` exists and its manifest does not: the agent stopped
-    /// between the program and the manifest's file (the lead's Q5). The
-    /// snapshot is kept, unpublished.
+    /// A take of `pool@<name>` that the agent could not adopt (not one
+    /// whole take of the pool, or its members not as read before it, or
+    /// no reading from before it in this process) and could not destroy
+    /// (a hold, a clone). The snapshot is kept, unpublished. Before
+    /// M2.6c-2b: `pool@<name>` existed and its manifest did not (the
+    /// lead's Q5), which a record may still say; since then such a take
+    /// is adopted or destroyed and taken again, and this is reached only
+    /// through a destroy that failed.
     ManifestLost,
     /// The manifest is over the protocol's limit.
     ManifestTooLarge,

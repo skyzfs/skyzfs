@@ -11,8 +11,12 @@
 //!    pool and its leaf enrolled at the first publish (the lead's Q4).
 //! 2. `cuts`, with `load_guid` read before it (rule (L)).
 //! 3. Recorded [`Phase::Intent`].
-//! 4. The channel program, with the count read anew and recorded first.
-//! 5. The manifest's file, then recorded [`Phase::Taken`].
+//! 4. The take (`zfs snapshot -r`), with the count read anew and recorded
+//!    first, and the pool's datasets read before it.
+//! 5. The take adopted: its members read, whole and as before it; the
+//!    manifest's file, then recorded [`Phase::Taken`]. A take that is
+//!    not is destroyed, and the publish takes the next name
+//!    ([`Agent::adopt`]).
 //! 6. The hold, recorded as believed placed before it is placed.
 //! 7. The members, the hold and `load_guid` seen as recorded: recorded
 //!    [`Phase::Held`].
@@ -144,8 +148,11 @@ pub enum Effect {
     Enrol,
     /// The record saved with a publish at [`Phase::Intent`].
     Intent,
-    /// The channel program.
-    Program,
+    /// `zfs snapshot -r` (the take).
+    Take,
+    /// `zfs destroy -r` of a take that is not whole or not as read
+    /// before it.
+    Destroy,
     /// The manifest's file written.
     Manifest,
     /// The record saved at [`Phase::Taken`].
@@ -291,6 +298,40 @@ struct Memory {
     /// itself; for one read from the record, the wall clock at the first
     /// round that read its age.
     begun: Option<(u64, u64, u64)>,
+    /// The pool's datasets as read in this process before a take of the
+    /// publish's name was asked, with no `pool@t` then: what an adoption
+    /// compares the take's members with ([`Agent::adopt`]).
+    before: Option<Vec<zfs::Dataset>>,
+}
+
+/// How the engine came to adopt a take ([`Agent::adopt`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// `zfs snapshot -r` exited 0.
+    Took,
+    /// `zfs snapshot -r` said a dataset of that name exists.
+    Exists,
+    /// The planner saw `pool@t` with the publish at [`Phase::Intent`].
+    Seen,
+}
+
+/// Whether the take's `members` are the datasets of `before`, the pool
+/// as read before the take was asked, each with the same name, type and
+/// local properties (by GUID; [`Agent::adopt`], "The members as read
+/// before"). No reading is not the same.
+fn as_before(members: &[manifest::Member], before: Option<&Vec<zfs::Dataset>>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    members.len() == before.len()
+        && members.iter().all(|member| {
+            before.iter().any(|dataset| {
+                dataset.guid == member.guid
+                    && dataset.name == member.name
+                    && dataset.kind == member.kind
+                    && dataset.local == member.local
+            })
+        })
 }
 
 /// Whether a round changed anything.
@@ -550,7 +591,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(e) => return Err(e),
         };
         let snapshot = self.zfs.members(pool, name)?;
-        let hold = self.zfs.held(pool, name, HOLD_TAG)?;
+        let hold = self.zfs.held(pool, name, HOLD_TAG, snapshot.as_deref())?;
         let now_ms = self.now_for(publish);
         let too_old = plan::too_old(publish.begun_ms, self.age_now(publish), self.age_max);
         let memory = self.memory.entry(name.clone()).or_default();
@@ -641,6 +682,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
         match action {
             Action::Take => self.take(&name),
+            Action::Adopt => self.adopt(&name, Origin::Seen),
             Action::Hold => {
                 self.commit(Effect::Holding, |r| set(r, &name, |p| p.held = true))?;
                 self.point(Effect::Hold, false)?;
@@ -784,34 +826,79 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
     }
 
-    /// Take the snapshot: the count read anew and recorded, the program,
-    /// the manifest's file, and the record at [`Phase::Taken`].
+    /// Take the snapshot: the count read anew and recorded, the pool's
+    /// datasets read, `zfs snapshot -r`, and the take adopted
+    /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
         let props = self.zfs.props(&self.pool)?;
         let Ok(count) = self.count(props.load_guid) else {
             return Ok(Moved::No);
         };
         self.commit(Effect::Intent, |r| set(r, name, |p| p.count = count))?;
-        self.point(Effect::Program, false)?;
-        let program = self.zfs.snapshot(&self.pool, name);
-        self.point(Effect::Program, true)?;
-        let program = match program {
-            Ok(program) => program,
-            Err(ZfsError::Exists) => {
-                // A member's `@t` of this name exists: nothing was taken,
-                // and the publish takes the next name.
-                let next = self.fresh_name()?;
-                self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
-                // What this process knows of the publish goes with it: its
-                // age is still read from its anchor (N2 of #144's next
-                // look).
-                if let Some(memory) = self.memory.remove(name) {
-                    self.memory.insert(next, memory);
-                }
-                return Ok(Moved::Yes);
-            }
-            Err(_) => return Ok(Moved::No),
+        let Ok(before) = self.zfs.datasets(&self.pool, name) else {
+            return Ok(Moved::No);
         };
+        if zfs::taken(&before, &self.pool) != zfs::Taken::Absent {
+            // A take of this name landed since the planner looked (one
+            // killed at its limit ends in its own time): the next round
+            // adopts it, against the reading kept from before it.
+            return Ok(Moved::Yes);
+        }
+        self.memory.entry(name.to_string()).or_default().before = Some(before);
+        self.point(Effect::Take, false)?;
+        let took = self.zfs.snapshot(&self.pool, name);
+        self.point(Effect::Take, true)?;
+        match took {
+            Ok(()) => self.adopt(name, Origin::Took),
+            Err(ZfsError::Exists) => self.adopt(name, Origin::Exists),
+            Err(_) => Ok(Moved::No),
+        }
+    }
+
+    /// Adopt the take of `name`: read the pool's datasets, and record the
+    /// publish [`Phase::Taken`] where its `@t`s are one whole take of the
+    /// pool ([`zfs::taken`]) and its members are as read before the take
+    /// in this process; otherwise destroy them and take under another
+    /// name ([`Agent::retake`]). The lead's rule for an `EEXIST` at the
+    /// take (M2.6c-2b): the name is the one the record holds, so a
+    /// `pool@t` of it is the agent's own take, landed late.
+    ///
+    /// # The members as read before
+    ///
+    /// ZFS keeps on a snapshot only the properties set on the snapshot
+    /// itself, and reads any other through its dataset as it is now: the
+    /// properties the manifest records are read after the take, and are
+    /// the take's only where they did not change around it. So the
+    /// members are compared, by GUID, with the reading taken before the
+    /// take was asked (name, type and local properties), and must be the
+    /// same datasets. A dataset that is not in that reading (created
+    /// between it and the take), a difference, or no reading in this
+    /// process (a take landed before a restart) destroys the take, and
+    /// the publish takes the next name. The conservative reading; it
+    /// does not see a property changed and changed back between the two
+    /// readings with the take between them.
+    fn adopt(&mut self, name: &str, origin: Origin) -> Result<Moved, Error> {
+        let Ok(datasets) = self.zfs.datasets(&self.pool, name) else {
+            return Ok(Moved::No);
+        };
+        let program = match zfs::taken(&datasets, &self.pool) {
+            zfs::Taken::Absent => {
+                return match origin {
+                    // `EEXIST` with no `pool@t`: a member's `@t` of this
+                    // name is someone else's, and nothing was taken. The
+                    // publish takes the next name.
+                    Origin::Exists => self.rename(name),
+                    Origin::Took | Origin::Seen => Ok(Moved::No),
+                };
+            }
+            zfs::Taken::NotWhole(_) => return self.retake(name),
+            zfs::Taken::Whole(program) => program,
+        };
+        let before = self.memory.get(name).and_then(|m| m.before.as_ref());
+        if !as_before(&program.members, before) {
+            return self.retake(name);
+        }
+        let props = self.zfs.props(&self.pool)?;
         let manifest = Manifest {
             pool: self.pool.clone(),
             pool_guid: props.guid,
@@ -842,6 +929,48 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.commit(Effect::Taken, |r| {
             set(r, name, |p| p.phase = Phase::Taken(taken))
         })?;
+        if let Some(memory) = self.memory.get_mut(name) {
+            memory.before = None;
+        }
+        Ok(Moved::Yes)
+    }
+
+    /// Destroy the take of `name` (`zfs destroy -r`), and take the next
+    /// name.
+    ///
+    /// A take that cannot be destroyed (a person's hold on one of its
+    /// `@t`s, a clone of one) gives the publish up as
+    /// [`Why::ManifestLost`], the snapshot kept and unpublished: the
+    /// lead's ruling (M2.6c-2b). Any error of the destroy does: the agent
+    /// does not tell a lasting refusal from one that would pass on a
+    /// retry. A destroy killed at its limit may still go through in its
+    /// own time; the outcome then says kept of a snapshot that is gone.
+    fn retake(&mut self, name: &str) -> Result<Moved, Error> {
+        self.point(Effect::Destroy, false)?;
+        let destroyed = self.zfs.destroy(&self.pool, name);
+        self.point(Effect::Destroy, true)?;
+        if destroyed.is_err() {
+            self.abandon(name, Why::ManifestLost)?;
+            return Ok(Moved::Yes);
+        }
+        self.rename(name)
+    }
+
+    /// The publish of `name` takes the next free name, recorded at
+    /// [`Phase::Intent`].
+    fn rename(&mut self, name: &str) -> Result<Moved, Error> {
+        let next = self.fresh_name()?;
+        self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
+        // What this process knows of the publish goes with it: its age is
+        // still read from its anchor (N2 of #144's next look). Not the
+        // reading before a take, which was of the old name.
+        if let Some(mut memory) = self.memory.remove(name) {
+            memory.before = None;
+            self.memory.insert(next, memory);
+        }
+        // A manifest's file written for the old name before a stop (the
+        // take destroyed in the next process): no publish names it now.
+        self.unlink(name)?;
         Ok(Moved::Yes)
     }
 
@@ -934,7 +1063,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         };
         let before = self.zfs.props(&self.pool)?.load_guid;
         let members = self.zfs.members(&self.pool, &name)?;
-        let held = self.zfs.held(&self.pool, &name, HOLD_TAG)? == Held::All;
+        let held = self
+            .zfs
+            .held(&self.pool, &name, HOLD_TAG, members.as_deref())?
+            == Held::All;
         let whole = members.is_some_and(|members| plan::same_snapshot(&members, &taken));
         if !whole || !held {
             // Seen again at the next round, which plans from it.

@@ -2,8 +2,11 @@
 //! the daemon that serves its volume, object storage, the clock, and the
 //! agent's directory, behind the engine's traits.
 //!
-//! **The pool** has three datasets, snapshots with their GUIDs,
-//! `createtxg` and holds, its synced group, its layout and `load_guid`.
+//! **The pool** has three datasets with their `createtxg` and locally set
+//! properties, snapshots with their GUIDs, `createtxg` and holds, its
+//! synced group, its layout and `load_guid`. A take is `zfs snapshot -r`:
+//! every dataset's `@t` in one group, or none; one can be made to land
+//! after its command was killed at its limit ([`World::late_take`]).
 //! Each change is a sync task that writes one group, as in ZFS, but for
 //! the agent's assist, which writes two (its set's, and the sync's with
 //! the set's history record, as #145's probe saw); a busy pool also
@@ -37,7 +40,10 @@ use skyzfs_control::{Code, CutsReply, Publish as PublishRequest, Reply, Request,
 use super::{Clock, Daemon};
 use crate::manifest::{self, Kind, Manifest};
 use crate::record::{self, Keep, Loaded, Record, SaveError};
-use crate::zfs::{Held, Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, HOLD_TAG};
+use crate::zfs::{
+    Dataset, Held, Layout, Program, Props, Snap as SnapRead, Vdev, VdevKind, Zfs, ZfsError,
+    HOLD_TAG,
+};
 
 /// The pool's name.
 pub const POOL: &str = "tank";
@@ -177,17 +183,39 @@ pub enum User {
     /// `zfs release skyzfs-publish pool/db@t`: the agent's hold left on
     /// some members only (TL-F1 of #147's review).
     ReleaseChild,
+    /// `zfs set user:note=N pool/db`, a new N each time: a property of a
+    /// member changed after the take, or before it.
+    SetProperty,
 }
 
 /// The people's actions the matrix tries at each point.
-pub const USERS: [User; 6] = [
+pub const USERS: [User; 7] = [
     User::Destroy,
     User::Retake,
     User::DestroyChild,
     User::Attach,
     User::Add,
     User::ReleaseChild,
+    User::SetProperty,
 ];
+
+/// The property [`User::SetProperty`] sets.
+pub const NOTE: &str = "user:note";
+
+/// A dataset of the fake pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ds {
+    /// Its name.
+    pub name: String,
+    /// A file system or a volume.
+    pub kind: Kind,
+    /// Its GUID.
+    pub guid: u64,
+    /// The group it was created in.
+    pub createtxg: u64,
+    /// Its properties set locally, as they are now.
+    pub local: BTreeMap<String, Vec<u8>>,
+}
 
 /// A snapshot of one dataset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,8 +242,8 @@ pub struct Pool {
     /// The highest group of a history a rewind abandoned: until the pool
     /// passes it, its groups do not open as themselves (`-T`).
     pub abandoned_top: u64,
-    /// The datasets, the root first, with their GUIDs.
-    pub datasets: Vec<(String, Kind, u64)>,
+    /// The datasets, the root first.
+    pub datasets: Vec<Ds>,
     /// The snapshots, by `dataset@t`.
     pub snaps: BTreeMap<String, Snap>,
     /// The snapshots as each group left them.
@@ -308,6 +336,15 @@ impl FakeDaemonState {
         !self.pending.is_empty() || !self.ended.is_empty()
     }
 
+    /// The names of the publishes that pend at this daemon (FL-T2 of
+    /// #147's review: the matrix sees a release while one pends).
+    pub fn pending(&self) -> Vec<String> {
+        self.pending
+            .iter()
+            .map(|p| p.request.name.clone())
+            .collect()
+    }
+
     fn new(attachment: [u8; 16], state: [u8; 16], count: u64, cuts: Vec<Cut>) -> Self {
         FakeDaemonState {
             attachment,
@@ -373,8 +410,25 @@ pub struct World {
     /// The highest group written to the volume, of any history: what
     /// its rings show.
     pub highest_written: u64,
-    /// Each program run, by name: the manifest it read.
+    /// Each take of the agent's, by name: the manifest of the pool as it
+    /// was in the take's group, which the agent must publish.
     pub programs: BTreeMap<String, Manifest>,
+    /// A person's take under a name of the agent's ([`User::Retake`]),
+    /// as its manifest would be. Where it lands between the agent's take
+    /// and its adoption, the agent cannot tell it from its own, and
+    /// adopts it (the lead's rule for M2.6c-2b): a whole take of the
+    /// pool under that name.
+    pub retakes: BTreeMap<String, Manifest>,
+    /// The agent's next take is killed at its limit, and its sync task
+    /// lands after this many more of the agent's calls to ZFS (0: before
+    /// the command's error is returned).
+    pub late_take: Option<usize>,
+    /// A take whose command was killed, waiting to land: its name and the
+    /// calls left. Any later take lands it first, as ZFS runs sync tasks
+    /// in order.
+    pub pending_take: Option<(String, usize)>,
+    /// How many times a person changed [`NOTE`].
+    pub notes: u64,
     /// What happened, for a failure's message.
     pub log: Vec<String>,
     /// How far the agent's wall clock is from the world's (a step of it;
@@ -424,6 +478,10 @@ impl World {
             rule: DAEMON_RULE,
             highest_written: 0,
             programs: BTreeMap::new(),
+            retakes: BTreeMap::new(),
+            late_take: None,
+            pending_take: None,
+            notes: 0,
             log: Vec::new(),
             agent_skew_ms: 0,
             assists: Vec::new(),
@@ -437,10 +495,30 @@ impl World {
             next_busy: EPOCH_MS + TXG_MS,
             seed: 0x5eed,
         };
+        let ds = |name: String, kind: Kind, guid: u64, local: &[(&str, &[u8])]| Ds {
+            name,
+            kind,
+            guid,
+            createtxg: 1,
+            local: local
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_vec()))
+                .collect(),
+        };
         let datasets = vec![
-            (POOL.to_string(), Kind::Filesystem, world.guid()),
-            (format!("{POOL}/db"), Kind::Filesystem, world.guid()),
-            (format!("{POOL}/vol"), Kind::Volume, world.guid()),
+            ds(POOL.to_string(), Kind::Filesystem, world.guid(), &[]),
+            ds(
+                format!("{POOL}/db"),
+                Kind::Filesystem,
+                world.guid(),
+                &[("recordsize", b"8192")],
+            ),
+            ds(
+                format!("{POOL}/vol"),
+                Kind::Volume,
+                world.guid(),
+                &[("volsize", b"1073741824")],
+            ),
         ];
         let leaf = Vdev {
             kind: VdevKind::Disk,
@@ -892,7 +970,16 @@ impl World {
             }
             User::Retake => {
                 if self.destroy(t).is_ok() {
-                    let _ = self.take(t);
+                    if let Ok(program) = self.take(t) {
+                        let manifest = Manifest {
+                            pool: POOL.into(),
+                            pool_guid: self.pool.as_ref().map_or(0, |p| p.guid),
+                            snapshot: t.into(),
+                            createtxg: program.createtxg,
+                            members: program.members,
+                        };
+                        self.retakes.insert(t.to_string(), manifest);
+                    }
                 }
             }
             User::DestroyChild => {
@@ -917,6 +1004,17 @@ impl World {
                 if released {
                     self.log.push(format!("partly released {t}"));
                     self.sync("release child");
+                }
+            }
+            User::SetProperty => {
+                self.notes += 1;
+                let note = self.notes.to_string().into_bytes();
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                if let Some(db) = pool.datasets.iter_mut().find(|d| d.name.ends_with("/db")) {
+                    db.local.insert(NOTE.to_string(), note);
+                    self.sync("set");
                 }
             }
             User::Attach | User::Add => {
@@ -970,33 +1068,26 @@ impl World {
         Ok(())
     }
 
-    /// `@t` of every dataset in one group: what the program reads.
+    /// `zfs snapshot -r pool@t`: `@t` of every dataset in one group, or
+    /// none where one exists. The pool as it was in that group.
     fn take(&mut self, t: &str) -> Result<Program, ZfsError> {
-        if self.pool.is_none() {
+        let Some(pool) = &self.pool else {
             return Err(ZfsError::NoPool);
-        }
-        let createtxg = self
-            .pool
-            .as_ref()
-            .map_or(0, |p| p.next_txg.unwrap_or(p.txg + 1));
-        let datasets = self
-            .pool
-            .as_ref()
-            .map(|p| p.datasets.clone())
-            .unwrap_or_default();
-        if datasets.iter().any(|(ds, _, _)| {
-            self.pool
-                .as_ref()
-                .is_some_and(|p| p.snaps.contains_key(&format!("{ds}@{t}")))
-        }) {
+        };
+        let createtxg = pool.next_txg.unwrap_or(pool.txg + 1);
+        let datasets = pool.datasets.clone();
+        if datasets
+            .iter()
+            .any(|d| pool.snaps.contains_key(&format!("{}@{t}", d.name)))
+        {
             return Err(ZfsError::Exists);
         }
         let mut members = Vec::new();
-        for (ds, kind, guid) in datasets {
+        for d in datasets {
             let snapshot_guid = self.guid();
             if let Some(pool) = &mut self.pool {
                 pool.snaps.insert(
-                    format!("{ds}@{t}"),
+                    format!("{}@{t}", d.name),
                     Snap {
                         guid: snapshot_guid,
                         createtxg,
@@ -1005,21 +1096,50 @@ impl World {
                     },
                 );
             }
-            let local = if kind == Kind::Volume {
-                BTreeMap::from([("volsize".to_string(), b"1073741824".to_vec())])
-            } else {
-                BTreeMap::new()
-            };
             members.push(manifest::Member {
-                name: ds,
-                kind,
-                guid,
+                name: d.name,
+                kind: d.kind,
+                guid: d.guid,
                 snapshot_guid,
-                local,
+                local: d.local,
             });
         }
         self.sync("snapshot");
         Ok(Program { createtxg, members })
+    }
+
+    /// The agent's take of `t`, landed: the pool as it was then is what
+    /// the agent must publish.
+    fn agent_take(&mut self, t: &str) -> Result<(), ZfsError> {
+        let program = self.take(t)?;
+        let manifest = Manifest {
+            pool: POOL.into(),
+            pool_guid: self.pool.as_ref().map_or(0, |p| p.guid),
+            snapshot: t.into(),
+            createtxg: program.createtxg,
+            members: program.members,
+        };
+        self.programs.insert(t.to_string(), manifest);
+        Ok(())
+    }
+
+    /// One of the agent's calls to ZFS: a take killed at its limit lands
+    /// when its calls are counted down.
+    fn zfs_call(&mut self) {
+        match &mut self.pending_take {
+            Some((_, 0)) => self.land(),
+            Some((_, left)) => *left -= 1,
+            None => {}
+        }
+    }
+
+    /// The take waiting to land, landed.
+    fn land(&mut self) {
+        if let Some((t, _)) = self.pending_take.take() {
+            let landed = self.agent_take(&t);
+            self.log
+                .push(format!("late take of {t} landed: {landed:?}"));
+        }
     }
 
     /// The channel's answer to `request`.
@@ -1191,22 +1311,68 @@ impl Zfs for FakeZfs {
         Ok(false)
     }
 
-    fn snapshot(&mut self, pool: &str, t: &str) -> Result<Program, ZfsError> {
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
-        let program = world.take(t)?;
-        let manifest = Manifest {
-            pool: POOL.into(),
-            pool_guid: world.pool.as_ref().map_or(0, |p| p.guid),
-            snapshot: t.into(),
-            createtxg: program.createtxg,
-            members: program.members.clone(),
+        world.calls.push("snapshot");
+        // A sync task waiting lands before this one.
+        world.land();
+        match world.late_take.take() {
+            Some(0) => {
+                let landed = world.agent_take(t);
+                world
+                    .log
+                    .push(format!("late take of {t} landed: {landed:?}"));
+            }
+            Some(left) => world.pending_take = Some((t.to_string(), left - 1)),
+            None => return world.agent_take(t),
+        }
+        Err(ZfsError::Other(format!(
+            "zfs snapshot -r {POOL}@{t}: killed at its limit"
+        )))
+    }
+
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
+        self.0.borrow_mut().zfs_call();
+        self.0.borrow_mut().calls.push("datasets");
+        self.pool(pool, |p| {
+            p.datasets
+                .iter()
+                .map(|d| Dataset {
+                    name: d.name.clone(),
+                    kind: d.kind,
+                    guid: d.guid,
+                    createtxg: d.createtxg,
+                    local: d.local.clone(),
+                    at: p.snaps.get(&format!("{}@{t}", d.name)).map(|s| SnapRead {
+                        guid: s.guid,
+                        createtxg: s.createtxg,
+                    }),
+                })
+                .collect()
+        })
+    }
+
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.pool(pool, |_| ())?;
+        let mut world = self.0.borrow_mut();
+        world.zfs_call();
+        world.calls.push("destroy");
+        // The log says "destroyed" only of a destroy that went through,
+        // which the matrices' oracle reads.
+        let done = match world.destroy(t) {
+            Err(ZfsError::NoSnapshot) => Ok(()),
+            done => done,
         };
-        world.programs.insert(t.to_string(), manifest);
-        Ok(program)
+        world.log.push(match &done {
+            Ok(()) => format!("agent destroy -r {t}"),
+            Err(e) => format!("agent destroy -r {t} refused: {e}"),
+        });
+        done
     }
 
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<record::Member>>, ZfsError> {
+        self.0.borrow_mut().zfs_call();
         self.0.borrow_mut().calls.push("members");
         let members = self.pool(pool, |p| {
             p.snaps.get(&format!("{POOL}@{t}"))?;
@@ -1285,20 +1451,36 @@ impl Zfs for FakeZfs {
         Ok(())
     }
 
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError> {
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[record::Member]>,
+    ) -> Result<Held, ZfsError> {
         self.0.borrow_mut().calls.push("held");
         let suffix = format!("@{t}");
+        // As the adapter reads it (`zfs holds -r` from the pool's file
+        // system), with the members the caller read: where `pool@t` is
+        // gone, a descendant's `@t` that keeps the tag is a part (FL-F1
+        // of #147's review).
         self.pool(pool, |p| {
-            if !p.snaps.contains_key(&format!("{POOL}@{t}")) {
+            let tagged = |name: &str| p.snaps.get(name).is_some_and(|s| s.holds.contains(tag));
+            let any = p
+                .snaps
+                .iter()
+                .any(|(name, s)| name.ends_with(&suffix) && s.holds.contains(tag));
+            if !any {
                 return Held::No;
             }
-            let members = || p.snaps.iter().filter(|(name, _)| name.ends_with(&suffix));
-            if members().all(|(_, s)| s.holds.contains(tag)) {
-                Held::All
-            } else if members().any(|(_, s)| s.holds.contains(tag)) {
-                Held::Part
-            } else {
-                Held::No
+            if !tagged(&format!("{POOL}@{t}")) {
+                return Held::Part;
+            }
+            match members {
+                Some(members) if members.iter().all(|m| tagged(&format!("{}@{t}", m.name))) => {
+                    Held::All
+                }
+                _ => Held::Part,
             }
         })
     }

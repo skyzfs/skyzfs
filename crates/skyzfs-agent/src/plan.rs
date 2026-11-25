@@ -11,9 +11,16 @@
 //!   and the daemon here, take it ([`Action::Take`], with the count read
 //!   anew), unless the pool's premise is refused, which gives the name up
 //!   with nothing taken ([`Why::Premise`]; S1 of #142's review); with the
-//!   daemon away, wait. With a `pool@t`, the
-//!   agent stopped between the program and the manifest's file: give it
-//!   up, kept and unpublished ([`Why::ManifestLost`], the lead's Q5).
+//!   daemon away, wait. With a `pool@t`, the agent's own take landed and
+//!   was not recorded (its command killed at its limit, or the agent
+//!   stopped after it): [`Action::Adopt`] (the lead's rule for M2.6c-2b),
+//!   unless the publish is too old. The names are the agent's own, chosen
+//!   and recorded at Intent before the take, and one agent holds the
+//!   pool's lock. The engine adopts it only where it is one whole take
+//!   and its members are as read before the take in this process;
+//!   otherwise, as after a restart, it destroys the take and takes the
+//!   next name, and gives the publish up ([`Why::ManifestLost`]) where
+//!   the destroy fails.
 //! - **The snapshot broken** (from Taken on): `pool@t` gone
 //!   ([`Why::Destroyed`]), a member's `@t` not the manifest's
 //!   ([`Why::Replaced`]), or the pool's premise refused
@@ -311,8 +318,15 @@ pub struct Seen {
 /// The one thing to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Run the channel program for `pool@t`, with the count read anew.
+    /// Take `pool@t` (`zfs snapshot -r`), with the count read anew, and
+    /// adopt it.
     Take,
+    /// Read `pool@t`, which the agent's take left unrecorded, and record
+    /// it taken where it is one whole take of the pool with its members
+    /// as read before the take in this process; otherwise (and always
+    /// after a restart, with no such reading) destroy it and take under
+    /// another name, or give the publish up where the destroy fails.
+    Adopt,
     /// Place the hold on `pool@t`.
     Hold,
     /// Record the publish held: the hold, the members and `load_guid` are
@@ -420,7 +434,8 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
             (None, DaemonSeen::Away) => Action::Wait,
             (None, DaemonSeen::Here { .. }) if !pool.premise => Action::Abandon(Why::Premise),
             (None, DaemonSeen::Here { .. }) => Action::Take,
-            (Some(_), _) => give_up(pool, Why::ManifestLost),
+            (Some(_), _) if seen.too_old => give_up(pool, Why::TooOld),
+            (Some(_), _) => Action::Adopt,
         },
         Phase::Taken(taken) => {
             if let Some(why) = broken(pool, taken) {

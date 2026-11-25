@@ -85,6 +85,9 @@ struct Ran {
     /// The publishes whose snapshot was not whole as the agent recorded
     /// them done.
     gone_at_done: BTreeSet<String>,
+    /// The publishes that pended at the daemon as the agent released its
+    /// hold ([`note_released`]).
+    released_pending: Vec<String>,
 }
 
 /// The point just before the record says a publish is done.
@@ -92,6 +95,21 @@ const DONE: Point = Point {
     effect: Effect::Done,
     after: false,
 };
+
+/// The point just before the agent releases its hold.
+const RELEASE: Point = Point {
+    effect: Effect::Release,
+    after: false,
+};
+
+/// At [`RELEASE`], notes each publish that pends at the daemon: the hold
+/// is released only once no request of the publish can still be carried
+/// (FL-T2 of #147's review; a run has one publish).
+fn note_released(world: &Rc<RefCell<World>>, pending: &Rc<RefCell<Vec<String>>>, point: Point) {
+    if point == RELEASE {
+        pending.borrow_mut().extend(world.borrow().daemon.pending());
+    }
+}
 
 /// At [`DONE`], adds the publish to `gone` where the agent's last read
 /// of its snapshot found it gone or replaced (a run here has one
@@ -106,14 +124,19 @@ fn note_gone(world: &Rc<RefCell<World>>, gone: &Rc<RefCell<BTreeSet<String>>>, p
     let (Some(t), Some(read)) = (world.programs.keys().last(), &world.members_read) else {
         return;
     };
+    // The agent's take, or a person's under its name that it adopted.
     let whole = read.as_ref().is_some_and(|members| {
-        world.programs.get(t).is_some_and(|manifest| {
-            let mut read: Vec<u64> = members.iter().map(|m| m.snapshot_guid).collect();
-            let mut taken: Vec<u64> = manifest.members.iter().map(|m| m.snapshot_guid).collect();
-            read.sort_unstable();
-            taken.sort_unstable();
-            read == taken
-        })
+        let mut read: Vec<u64> = members.iter().map(|m| m.snapshot_guid).collect();
+        read.sort_unstable();
+        [world.programs.get(t), world.retakes.get(t)]
+            .into_iter()
+            .flatten()
+            .any(|manifest| {
+                let mut taken: Vec<u64> =
+                    manifest.members.iter().map(|m| m.snapshot_guid).collect();
+                taken.sort_unstable();
+                read == taken
+            })
     });
     if !whole {
         gone.borrow_mut().insert(t.clone());
@@ -134,6 +157,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     let count = Rc::new(Cell::new(0usize));
     let stopped_at = Rc::new(Cell::new(None));
     let gone = Rc::new(RefCell::new(BTreeSet::new()));
+    let released = Rc::new(RefCell::new(Vec::new()));
     match fault {
         Fault::Daemon(point, restart) => world.borrow_mut().die = Some((point, restart)),
         Fault::Cuts(k, restart) | Fault::CutsThenStop(k, restart) => {
@@ -143,11 +167,12 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     }
     let hook = {
         let (count, stopped_at, world) = (count.clone(), stopped_at.clone(), world.clone());
-        let gone = gone.clone();
+        let (gone, released) = (gone.clone(), released.clone());
         move |point: Point| {
             let k = count.get();
             count.set(k + 1);
             note_gone(&world, &gone, point);
+            note_released(&world, &released, point);
             match fault {
                 Fault::Agent(at, _) if at == k => {
                     stopped_at.set(Some(point));
@@ -196,9 +221,10 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
             world.borrow_mut().restart(restart, None);
             world.borrow_mut().advance(DOWN);
             let note = {
-                let (world, gone) = (world.clone(), gone.clone());
+                let (world, gone, released) = (world.clone(), gone.clone(), released.clone());
                 move |point: Point| {
                     note_gone(&world, &gone, point);
+                    note_released(&world, &released, point);
                     false
                 }
             };
@@ -221,25 +247,8 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
         cuts_read,
         stopped_at: stopped_at.get(),
         gone_at_done: gone.take(),
+        released_pending: released.take(),
     }
-}
-
-/// Whether the agent stopped where `pool@t` may exist and its manifest is
-/// not recorded: between the program and the record at `Taken`.
-fn in_manifest_window(point: Option<Point>) -> bool {
-    matches!(
-        point,
-        Some(Point {
-            effect: Effect::Program,
-            after: true
-        }) | Some(Point {
-            effect: Effect::Manifest,
-            ..
-        }) | Some(Point {
-            effect: Effect::Taken,
-            after: false
-        })
-    )
 }
 
 /// The checks after quiescence (the plan, §7):
@@ -253,10 +262,18 @@ fn in_manifest_window(point: Option<Point>) -> bool {
 /// 4. nothing stopped, and recovery came to an end;
 /// 5. a publish reported done with its snapshot gone is published, and
 ///    its snapshot did not survive whole; no publish is reported for
-///    making no progress (the world always cuts again).
+///    making no progress (the world always cuts again);
+/// 6. no hold was released while a request of its publish pended at the
+///    daemon (FL-T2 of #147's review).
 fn check(ran: &Ran) -> Result<(), String> {
     let world = ran.world.borrow();
     ran.settled.clone()?;
+    if !ran.released_pending.is_empty() {
+        return Err(format!(
+            "a hold released while a request pended: {:?}",
+            ran.released_pending
+        ));
+    }
     if let Some((name, outcome)) = ran
         .outcomes
         .iter()
@@ -282,7 +299,9 @@ fn check(ran: &Ran) -> Result<(), String> {
                 ));
             }
         }
-        if world.programs.get(t) != Some(&manifest) {
+        // The agent's take, or a person's whole take under its name that
+        // landed before the agent adopted it (`World::retakes`).
+        if world.programs.get(t) != Some(&manifest) && world.retakes.get(t) != Some(&manifest) {
             return Err(format!("snap/{t}'s manifest is not the program's"));
         }
     }
@@ -299,6 +318,11 @@ fn check(ran: &Ran) -> Result<(), String> {
         if world.refs.contains_key(t) {
             continue;
         }
+        // A take the agent destroyed itself, not whole or not as read
+        // before it: the publish went on under another name (M2.6c-2b).
+        if world.log.contains(&format!("agent destroy -r {t}")) {
+            continue;
+        }
         let why = record
             .as_ref()
             .and_then(|r| r.abandoned.iter().find(|a| a.name == *t))
@@ -310,7 +334,6 @@ fn check(ran: &Ran) -> Result<(), String> {
                 .is_some_and(|s| s.guid == m.snapshot_guid)
         });
         let confirmed = match why {
-            Why::ManifestLost => in_manifest_window(ran.stopped_at),
             Why::Destroyed | Why::Rewound | Why::Replaced => !survived,
             Why::Premise => !premise,
             // A person released the hold on some members: `hold -r`
@@ -321,6 +344,15 @@ fn check(ran: &Ran) -> Result<(), String> {
             // no progress here is a defect of the engine.
             // Nor does its uploader stop for good in the matrices (it does
             // in `a_stopped_uploader_gives_each_publish_up_at_once`).
+            // A take the agent could not adopt is destroyed, and given
+            // up kept only where the destroy failed (M2.6c-2b).
+            Why::ManifestLost => {
+                survived
+                    && world
+                        .log
+                        .iter()
+                        .any(|l| l.starts_with(&format!("agent destroy -r {t} refused")))
+            }
             Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress | Why::Stopped => false,
         };
         if !confirmed {
@@ -351,7 +383,15 @@ fn check(ran: &Ran) -> Result<(), String> {
             // too old, and its last answer is reported where the daemon
             // had refused it (in ErrLow, the person's release is the cut
             // with the stale group, and the daemon refuses `rewound`).
-            Report::Refused(_) if world.log.contains(&format!("partly released {t}")) => {}
+            // Only that refusal, and only for a publish given up so
+            // (FL-S1 of #147's review).
+            Report::Refused(skyzfs_control::Code::Rewound)
+                if world.log.contains(&format!("partly released {t}"))
+                    && record.as_ref().is_some_and(|r| {
+                        r.abandoned
+                            .iter()
+                            .any(|a| a.name == *t && a.why == Why::TooOld)
+                    }) => {}
             Report::NoProgress(_) | Report::Refused(_) => {
                 return Err(format!("{t} reported: {report:?}"))
             }
@@ -1456,6 +1496,8 @@ enum Meddle {
     Released,
     /// `pool@t` replaced by a snapshot of the same name (another GUID).
     Replaced,
+    /// The tag cleared on `tank/db@t` only (FL-T1 of #147's review).
+    ReleasedChild,
 }
 
 /// D5 (the lead's order for a request asked anew; T2 of #144's review):
@@ -1465,10 +1507,16 @@ enum Meddle {
 /// or asked: the next round sees the change.
 ///
 /// Mutant: the count read before the members and the hold are checked,
-/// or either check left out.
+/// either check left out, or the hold taken as whole where one member
+/// still has the tag.
 #[test]
 fn asking_anew_checks_the_snapshot_and_its_hold_before_the_count() {
-    for meddle in [Meddle::None, Meddle::Released, Meddle::Replaced] {
+    for meddle in [
+        Meddle::None,
+        Meddle::Released,
+        Meddle::Replaced,
+        Meddle::ReleasedChild,
+    ] {
         let world = World::new(Mode::Busy);
         let keep = MemKeep::default();
         let armed = Rc::new(Cell::new(true));
@@ -1494,6 +1542,9 @@ fn asking_anew_checks_the_snapshot_and_its_hold_before_the_count() {
                 match meddle {
                     Meddle::Released if name.ends_with(&suffix) => snap.holds.clear(),
                     Meddle::Replaced if *name == format!("{POOL}{suffix}") => snap.guid ^= 1,
+                    Meddle::ReleasedChild if *name == format!("{POOL}/db{suffix}") => {
+                        snap.holds.clear();
+                    }
                     _ => {}
                 }
             }
@@ -1510,7 +1561,7 @@ fn asking_anew_checks_the_snapshot_and_its_hold_before_the_count() {
                     "{calls:?}"
                 );
             }
-            Meddle::Released | Meddle::Replaced => {
+            Meddle::Released | Meddle::Replaced | Meddle::ReleasedChild => {
                 assert_eq!(moved, Moved::No, "{meddle:?}");
                 assert_eq!(calls, ["props", "members", "held"], "{meddle:?}");
             }
@@ -1701,6 +1752,7 @@ fn a_hold_outlasts_the_deadline_of_the_last_acceptance() {
         cuts_read: 0,
         stopped_at: None,
         gone_at_done: BTreeSet::new(),
+        released_pending: Vec::new(),
     };
     assert_eq!(asked.get(), 2, "asked anew of the next daemon");
     if let Err(why) = check(&ran) {
@@ -1785,7 +1837,7 @@ fn a_name_a_person_took_first_is_passed_over() {
         let (world, refused) = (world.clone(), refused.clone());
         move |point: Point| {
             match point.effect {
-                Effect::Program if point.after => refused.set(true),
+                Effect::Take if point.after => refused.set(true),
                 Effect::Intent if point.after && refused.get() => {
                     world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
                 }
@@ -1808,6 +1860,320 @@ fn a_name_a_person_took_first_is_passed_over() {
     let pool = world.pool.as_ref().expect("the pool");
     assert_eq!(pool.snaps.get(&theirs).map(|s| s.guid), Some(0xdead));
     assert!(!pool.snaps.contains_key(&format!("{POOL}@{name}")));
+    assert!(
+        !world.log.iter().any(|l| l.starts_with("agent destroy")),
+        "a name someone else holds is not destroyed: {:?}",
+        world.log
+    );
+}
+
+/// What one publish left, run by [`one`].
+struct One {
+    world: Rc<RefCell<World>>,
+    name: String,
+    outcomes: Vec<(String, Outcome)>,
+}
+
+impl One {
+    /// The publish ended published under `t`, with no hold left and
+    /// nothing under way, and its manifest is the take's truth.
+    fn published_as(&self, t: &str) {
+        assert!(
+            matches!(self.outcomes.as_slice(), [.., (n, Outcome::Published(_))] if n == t),
+            "{:?}\n{}",
+            self.outcomes,
+            self.world.borrow().log.join("\n")
+        );
+        let world = self.world.borrow();
+        let published = world.refs.get(t).expect("snap/t");
+        let manifest = Manifest::decode(&published.manifest).expect("its manifest");
+        assert_eq!(world.programs.get(t), Some(&manifest), "the take's truth");
+        assert!(holds(&world).is_empty());
+    }
+
+    /// The publish ended published under a name other than its first,
+    /// as [`One::published_as`]; that name.
+    fn published_anew(&self) -> String {
+        let Some((t, _)) = self.outcomes.last() else {
+            panic!("no outcome");
+        };
+        assert_ne!(*t, self.name, "published under its first name");
+        self.published_as(t);
+        t.clone()
+    }
+
+    /// Whether the agent destroyed its own take of `t`.
+    fn destroyed(&self, t: &str) -> bool {
+        self.world
+            .borrow()
+            .log
+            .contains(&format!("agent destroy -r {t}"))
+    }
+}
+
+/// One publish in a busy world set up by `set`, with `hook` at the
+/// agent's points (true stops it), then a new agent, as after a crash,
+/// where the first stopped.
+fn one(set: impl FnOnce(&mut World), hook: impl FnMut(Point) -> bool + 'static) -> One {
+    one_with(set, |_| Box::new(hook))
+}
+
+/// [`one`], the hook made with the world.
+fn one_with(set: impl FnOnce(&mut World), hook: impl FnOnce(&Rc<RefCell<World>>) -> Points) -> One {
+    let world = World::new(Mode::Busy);
+    set(&mut world.borrow_mut());
+    let keep = MemKeep::default();
+    let mut first = agent(&world, &keep).with_points(hook(&world));
+    let begun = first.begin();
+    let name = match &begun {
+        Ok(name) => name.clone(),
+        Err(_) => first
+            .record()
+            .under_way
+            .first()
+            .map(|p| p.name.clone())
+            .expect("a publish under way"),
+    };
+    let settled = begun.and_then(|_| first.settle(LIMIT));
+    let mut outcomes = first.outcomes().to_vec();
+    drop(first);
+    match settled {
+        Ok(()) => {}
+        Err(Error::Stopped) => {
+            world.borrow_mut().advance(DOWN);
+            let mut again = agent(&world, &keep);
+            again.settle(LIMIT).expect("settled after the restart");
+            outcomes.extend(again.outcomes().iter().cloned());
+        }
+        Err(e) => panic!("{e:?}"),
+    }
+    One {
+        world,
+        name,
+        outcomes,
+    }
+}
+
+/// The point at `effect`, before or after it.
+fn at(effect: Effect, after: bool) -> Point {
+    Point { effect, after }
+}
+
+/// A take killed at its limit lands in its own time (the `zfs snapshot
+/// -r` ioctl is not cancelled by killing its client): the next round
+/// finds `pool@t` and adopts it, under its name, with nothing destroyed
+/// (the lead's rule for an `EEXIST` at the take, M2.6c-2b). Landed before
+/// the command's error, the next round plans [`Action::Adopt`]; landed
+/// only as the next take is asked, that take says `EEXIST` and the
+/// agent adopts the first. Mutant: the next name taken at a late take,
+/// or the late take destroyed.
+#[test]
+fn a_take_killed_at_its_limit_is_adopted_when_it_lands() {
+    for (late, how) in [(0, "before the error"), (usize::MAX, "at the next take")] {
+        let one = one(|w| w.late_take = Some(late), |_| false);
+        one.published_as(&one.name);
+        assert!(!one.destroyed(&one.name), "{how}");
+        let world = one.world.borrow();
+        assert!(
+            world
+                .log
+                .contains(&format!("late take of {} landed: Ok(())", one.name)),
+            "{how}: {:?}",
+            world.log
+        );
+        let snapshots = world.calls.iter().filter(|c| **c == "snapshot").count();
+        assert_eq!(snapshots, if late == 0 { 1 } else { 2 }, "{how}");
+    }
+}
+
+/// The agent stopped between the record at Intent and the take takes it
+/// under the same name in the next process. Stopped after the take and
+/// before the record says so, the next process has no reading of the pool
+/// from before the take, so it cannot tell the properties read after it
+/// for the take's: it destroys the take, and the publish takes the next
+/// name. Mutant: the take adopted with no reading from before it, or
+/// given up.
+#[test]
+fn a_crash_around_the_take_takes_again_or_destroys_and_retakes() {
+    let stopped = |point: Point| {
+        let mut done = false;
+        move |p: Point| {
+            let stop = p == point && !done;
+            done |= stop;
+            stop
+        }
+    };
+    let one_ = one(|_| {}, stopped(at(Effect::Intent, true)));
+    one_.published_as(&one_.name);
+    assert!(!one_.destroyed(&one_.name));
+
+    let one_ = one(|_| {}, stopped(at(Effect::Take, false)));
+    one_.published_as(&one_.name);
+    assert!(!one_.destroyed(&one_.name));
+
+    let one_ = one(|_| {}, stopped(at(Effect::Take, true)));
+    assert!(one_.destroyed(&one_.name));
+    one_.published_anew();
+    let world = one_.world.borrow();
+    let pool = world.pool.as_ref().expect("the pool");
+    assert!(!pool
+        .snaps
+        .keys()
+        .any(|k| k.ends_with(&format!("@{}", one_.name))));
+}
+
+/// A property of a member set while the take is under way: the
+/// properties read after the take are not the take's, so the take is
+/// destroyed and the publish takes the next name, whose manifest has the
+/// property as it was at that take. Set before the take is asked, or
+/// after it and before it is read. Mutant: the members not compared with
+/// the reading before the take.
+#[test]
+fn a_property_set_around_the_take_has_it_taken_again() {
+    for after in [false, true] {
+        let mut set = false;
+        let one = one_with(
+            |_| {},
+            move |world| {
+                let world = world.clone();
+                Box::new(move |p: Point| {
+                    if p == at(Effect::Take, after) && !set {
+                        set = true;
+                        world.borrow_mut().user(User::SetProperty, "");
+                    }
+                    false
+                })
+            },
+        );
+        assert!(one.destroyed(&one.name), "after {after}");
+        let next = one.published_anew();
+        let world = one.world.borrow();
+        let db = &world.programs[&next].members[1];
+        assert_eq!(
+            db.local.get(fake::NOTE).map(Vec::as_slice),
+            Some(&b"1"[..]),
+            "{}",
+            db.name
+        );
+    }
+}
+
+/// A take the agent must destroy that cannot be destroyed (a person's
+/// hold on `pool@t`) gives the publish up as [`Why::ManifestLost`], the
+/// snapshot kept and unpublished (the lead's ruling, M2.6c-2b): it is
+/// not taken again under another name while its `@t`s are left in the
+/// pool, nor tried again. Mutants: the next name taken after a destroy
+/// that failed; the destroy tried again.
+#[test]
+fn a_take_that_cannot_be_destroyed_is_given_up_and_kept() {
+    let mut set = false;
+    let one = one_with(
+        |_| {},
+        move |world| {
+            let world = world.clone();
+            Box::new(move |p: Point| {
+                let mut world = world.borrow_mut();
+                if p == at(Effect::Take, true) && !set {
+                    set = true;
+                    // The properties change around the take, so the
+                    // agent destroys it; a person holds `pool@t`.
+                    world.user(User::SetProperty, "");
+                    let t = world.programs.keys().last().cloned().unwrap_or_default();
+                    if let Some(snap) = world
+                        .pool
+                        .as_mut()
+                        .and_then(|p| p.snaps.get_mut(&format!("{POOL}@{t}")))
+                    {
+                        snap.holds.insert("theirs".into());
+                    }
+                }
+                false
+            })
+        },
+    );
+    let world = one.world.borrow();
+    let destroy = format!("agent destroy -r {}", one.name);
+    let refused = world
+        .log
+        .iter()
+        .filter(|l| l.starts_with(&format!("{destroy} refused")))
+        .count();
+    assert_eq!(refused, 1, "refused once, not tried again: {:?}", world.log);
+    assert!(!world.log.contains(&destroy), "{:?}", world.log);
+    assert_eq!(
+        one.outcomes,
+        [(one.name.clone(), Outcome::Abandoned(Why::ManifestLost))],
+        "{:?}",
+        world.log
+    );
+    assert!(world.refs.is_empty(), "nothing published");
+    let pool = world.pool.as_ref().expect("the pool");
+    assert!(
+        pool.snaps.contains_key(&format!("{POOL}@{}", one.name)),
+        "the snapshot kept"
+    );
+}
+
+/// A crash at each side of the destroy of a take not as read before it:
+/// stopped before the destroy, the next process has no reading from
+/// before the take, destroys it and takes the next name; stopped after
+/// it, the record still holds the name at Intent with no `pool@t`, and
+/// the next process takes it again under that name. Mutants: the take
+/// adopted with no reading from before it; the destroy taken for
+/// nothing to do.
+#[test]
+fn a_crash_around_the_destroy_takes_again() {
+    for after in [false, true] {
+        let (mut set, mut stopped) = (false, false);
+        let one = one_with(
+            |_| {},
+            move |world| {
+                let world = world.clone();
+                Box::new(move |p: Point| {
+                    if p == at(Effect::Take, true) && !set {
+                        set = true;
+                        world.borrow_mut().user(User::SetProperty, "");
+                    }
+                    let stop = p == at(Effect::Destroy, after) && !stopped;
+                    stopped |= stop;
+                    stop
+                })
+            },
+        );
+        assert!(one.destroyed(&one.name), "{after}");
+        if after {
+            one.published_as(&one.name);
+        } else {
+            one.published_anew();
+        }
+    }
+}
+
+/// A late take whose members a person changed before it was adopted (a
+/// member's `@t` destroyed) is not one whole take of the pool: the agent
+/// destroys what is left of it and takes the next name. Mutant: a take
+/// with a member missing adopted.
+#[test]
+fn a_late_take_not_whole_is_destroyed_and_taken_again() {
+    let mut done = false;
+    let one = one_with(
+        |w| w.late_take = Some(0),
+        move |world| {
+            let world = world.clone();
+            Box::new(move |p: Point| {
+                if p == at(Effect::Take, true) && !done {
+                    done = true;
+                    let t = world.borrow().programs.keys().last().cloned();
+                    world
+                        .borrow_mut()
+                        .user(User::DestroyChild, &t.unwrap_or_default());
+                }
+                false
+            })
+        },
+    );
+    assert!(one.destroyed(&one.name));
+    one.published_anew();
 }
 
 /// At most [`UNDER_WAY_MAX`] publishes are under way; the next is
@@ -1963,6 +2329,7 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
             cuts_read: 0,
             stopped_at: None,
             gone_at_done: BTreeSet::new(),
+            released_pending: Vec::new(),
         };
         if let Err(why) = check(&ran) {
             panic!("{}", failed(&format!("{mode:?}"), &ran, &why));
@@ -2022,6 +2389,7 @@ fn a_hold_a_person_partly_released_is_given_up_and_released() {
             cuts_read: 0,
             stopped_at: None,
             gone_at_done: BTreeSet::new(),
+            released_pending: Vec::new(),
         };
         if let Err(why) = check(&ran) {
             panic!("{}", failed(&format!("{mode:?}"), &ran, &why));
