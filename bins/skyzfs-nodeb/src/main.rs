@@ -597,25 +597,43 @@ fn manifest_line(bytes: &[u8], row: &SnapRowRead) -> String {
 
 async fn snap_row(a: &Args) -> Result<(), String> {
     let (store, refs) = open(a).await?;
-    let vol = volume_id(&a.volume);
-    let name = format!("snap/{}", a.snapshot);
+    for line in snap_row_lines(&store, &refs, volume_id(&a.volume), &a.snapshot, &a.out).await? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// snap-row's lines for snapshot `snapshot` of `vol`, on any store: the
+/// ref `snap/T`, the row `skyzfs/snap/T`, and, where `out` names a file
+/// and the row reads, the manifest object the row names (written to
+/// `out`). The keys are built here and not with the uploader's code; a
+/// test reads the uploader's own keys with it (the review of #139, N2).
+async fn snap_row_lines<S: ObjectStore>(
+    store: &S,
+    refs: &ObjectRefStore<S>,
+    vol: VolumeId,
+    snapshot: &str,
+    out: &str,
+) -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    let name = format!("snap/{snapshot}");
     match refs
         .get(vol, &name)
         .await
         .map_err(|e| format!("refs: {e}"))?
     {
-        Some(v) => println!("ref\t{}\t{}", hex(&v.commit), v.generation),
-        None => println!("ref\tnone"),
+        Some(v) => lines.push(format!("ref\t{}\t{}", hex(&v.commit), v.generation)),
+        None => lines.push("ref\tnone".to_string()),
     }
-    let key = format!("{SNAP_ROW_PREFIX}{}", a.snapshot);
+    let key = format!("{SNAP_ROW_PREFIX}{snapshot}");
     let b = refs
         .meta_get(vol, &key)
         .await
         .map_err(|e| format!("meta {key}: {e}"))?;
     let (line, read) = snap_row_line(b.as_deref());
-    println!("{line}");
-    let (Some(r), false) = (read, a.out.is_empty()) else {
-        return Ok(());
+    lines.push(line);
+    let (Some(r), false) = (read, out.is_empty()) else {
+        return Ok(lines);
     };
     let mkey = format!(
         "{}skyzfs/manifest/{}",
@@ -624,13 +642,13 @@ async fn snap_row(a: &Args) -> Result<(), String> {
     );
     match store.get(&mkey, None).await {
         Ok(bytes) => {
-            std::fs::write(&a.out, &bytes).map_err(|e| format!("{}: {e}", a.out))?;
-            println!("{}", manifest_line(&bytes, &r));
+            std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+            lines.push(manifest_line(&bytes, &r));
         }
-        Err(skynbd_store::StoreError::NotFound(_)) => println!("manifest\tnone"),
+        Err(skynbd_store::StoreError::NotFound(_)) => lines.push("manifest\tnone".to_string()),
         Err(e) => return Err(format!("{mkey}: {e}")),
     }
-    Ok(())
+    Ok(lines)
 }
 
 async fn row(a: &Args) -> Result<(), String> {
@@ -1207,6 +1225,88 @@ mod tests {
         assert!(snap_row_line(Some(&long))
             .0
             .starts_with("snaprow\tunreadable\t"));
+    }
+
+    /// The review of #139, N2: snap-row finds the ref, the row and the
+    /// manifest at the keys the uploader writes them under (its own key
+    /// functions, not a copy of their format strings), and refuses a
+    /// row whose version's high byte is not 0.
+    #[tokio::test]
+    async fn snap_row_reads_what_the_uploader_writes_where_it_writes_it() {
+        use skyzfs_upload::publish::{manifest_key, snap_ref, snap_row_key};
+        let (store, refs, vol, _) = put_small("snaprowkeys").await;
+        let m = b"0123  a/file\n".to_vec();
+        let mut row = a_snap_row();
+        row.manifest_len = m.len() as u32;
+        row.manifest_hash = *blake3::hash(&m).as_bytes();
+        let head = refs
+            .get(vol, &snap_ref("t"))
+            .await
+            .expect("refs")
+            .expect("put_image made snap/t");
+        row.commit = head.commit;
+        let put_row = |value: Vec<u8>| {
+            let refs = Arc::clone(&refs);
+            async move {
+                let ops = vec![RefOp::MetaPut {
+                    key: snap_row_key("t"),
+                    value,
+                }];
+                assert!(matches!(
+                    refs.transact(vol, ops).await.expect("transact"),
+                    TxnOutcome::Committed
+                ));
+            }
+        };
+        put_row(row.encode()).await;
+        store
+            .put(&manifest_key(vol, row.snap), bytes::Bytes::from(m.clone()))
+            .await
+            .expect("put the manifest");
+        let out =
+            std::env::temp_dir().join(format!("skyzfs-nodeb-snaprowkeys-{}.m", std::process::id()));
+        let out = out.to_str().expect("path").to_string();
+        let lines = snap_row_lines(&store, &refs, vol, "t", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            format!("ref\t{}\t{}", hex(&head.commit), head.generation)
+        );
+        assert_eq!(lines[1], snap_row_line(Some(&row.encode())).0);
+        assert!(lines[1].starts_with(&format!(
+            "snaprow\t{}\t7\t4242\t{}\t",
+            "ab".repeat(16),
+            hex(&head.commit)
+        )));
+        assert_eq!(
+            lines[2],
+            manifest_line(&m, &snap_row_line(Some(&row.encode())).1.expect("reads"))
+        );
+        assert!(lines[2].ends_with("\tmatches"));
+        assert_eq!(std::fs::read(&out).expect("the manifest written out"), m);
+        // Another name is not there at all.
+        let other = snap_row_lines(&store, &refs, vol, "u", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(
+            other,
+            vec!["ref\tnone".to_string(), "snaprow\tnone".to_string()]
+        );
+        // A row of version 257 (0x0101: low byte 1) is unreadable.
+        let mut v257 = row.encode();
+        v257[..2].copy_from_slice(&257u16.to_le_bytes());
+        put_row(v257).await;
+        let lines = snap_row_lines(&store, &refs, vol, "t", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].starts_with("snaprow\tunreadable\t0101"),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]
