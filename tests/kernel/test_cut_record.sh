@@ -360,6 +360,38 @@ is "row_past: no row at all is said as none" \
     "$(rowpast_trace "-" 7 50 0)" "log course: node B's row names cut none of group none, not one after 7 of group 50 or later, 0 s on
 1 looks=1"
 
+# end_row reads node B's row at a course's end once the uploader is at
+# rest, until two reads agree (run 45690023761, uv1: a read across a
+# commit named the head of one and the row of the other).
+er_fn=$(sed -n '/^end_row() {$/,/^}$/p' "$SCRIPT")
+is "end_row is in the script" "$([ -n "$er_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs are end_row's, run through eval
+endrow_trace() { ( # the reads, each "HEAD:COMMIT:EXPIRY"
+    RDIR=$(mktemp -d); looks=0
+    read -r -a reads <<< "$1"
+    drain() { echo "drain $1"; }
+    nbrow() { local r=${reads[$looks]}; looks=$((looks + 1)); IFS=: read -r h c e <<< "$r"
+        printf 'head\t%s\t3\nrow\tS\t8\t14\nrow_commit\t%s\nlease\tme\t1\t%s\n' "$h" "$c" "$e" > "$RDIR/$1"; }
+    sleep() { :; }
+    rig_error() { echo "rig_error $*"; exit 2; }
+    eval "$er_fn"
+    end_row; rc=$?
+    echo "$rc looks=$looks head=$(awk -F '\t' '$1 == "head" { print $2 }' "$RDIR/end-row.txt") reads=$(grep -c '^read ' "$RDIR/end-rows.txt")"
+    rm -rf "${RDIR:?}"
+) 2>&1; }
+is "end_row: a torn first read, then two that agree: drained first, the last kept" \
+    "$(endrow_trace "a:b:1 b:b:2 b:b:3")" "drain end-drain.txt
+0 looks=3 head=b reads=3"
+is "end_row: the lease's expiry is not compared" "$(endrow_trace "b:b:1 b:b:2")" "drain end-drain.txt
+0 looks=2 head=b reads=2"
+is "end_row: ten reads that never agree are the rig's error" \
+    "$(endrow_trace "a:a:1 b:b:1 a:a:1 b:b:1 a:a:1 b:b:1 a:a:1 b:b:1 a:a:1 b:b:1")" "drain end-drain.txt
+rig_error node B's row at the end did not read the same twice in a row in ten reads (end-rows.txt)"
+for c in umoved urow uv1 uv1moved ulost; do
+    is "$c: ends with end_row after the export" "$(sed -n "/^rec_$c() {\$/,/^}\$/p" "$SCRIPT" | grep -E '^    (export_pool|end_row|nbrow end-row)' | tail -n 2 | tr -d ' ' | tr '\n' ' ')" "export_pool end_row "
+done
+is "no course reads the end row but through end_row" "$(grep -c 'nbrow end-row.txt' "$SCRIPT")" 1
+
 # asked waits for the agent's publish of T to have its answer.
 ak_fn=$(sed -n '/^asked() {$/,/^}$/p' "$SCRIPT")
 is "asked is in the script" "$([ -n "$ak_fn" ] && echo yes)" yes
