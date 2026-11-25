@@ -16,6 +16,10 @@
 //! (F2), a name asked again is looked up anew (F5), a ref made anew beside
 //! a row left behind is not ours (F6), and a transaction refused because
 //! the name was taken after its lookup is not taken for ours (T1).
+//!
+//! Since M2.6a (rule (R) of its plan) a request taken by an uploader
+//! that died is refused `rewound` by the next, and the tests that restart
+//! the daemon ask again as the agent does, with the count read anew.
 
 mod common;
 
@@ -74,6 +78,31 @@ fn ask_now(up: &mut Up, name: &str, group: u64) -> Answer {
     let after = up.local().cuts().count;
     let asked = request(up, name, after, group);
     up.publishing().ask(asked)
+}
+
+/// A new uploader of the fixture's store, after the daemon died: the
+/// daemon gives it the store's rewind mark at its start, before its
+/// channel answers (M2.6a), so a request the uploader before it took is
+/// refused `rewound`.
+fn restarted(fx: &Fixture) -> Up {
+    let mut up = driver(fx, fx.start());
+    let rewound = up.local().cuts().rewound;
+    up.publishing().set_rewound(rewound);
+    up
+}
+
+/// A request the uploader that died took, asked of `up` after the restart:
+/// refused `rewound`, as its count is below the mark the store started
+/// with (rule (R) of M2.6a); and asked again as the agent asks it, with
+/// the count read anew (M2.6).
+fn asked_anew(up: &mut Up, asked: Request, case: &str) {
+    let group = asked.group;
+    assert_eq!(
+        up.publishing().ask(asked),
+        Answer::Refused(Refusal::Rewound),
+        "{case}: the request taken before the restart"
+    );
+    assert_eq!(ask_now(up, "t", group), Answer::Accepted, "{case}");
 }
 
 /// The steps that are not slices read.
@@ -180,8 +209,14 @@ async fn head(fx: &Fixture) -> CommitHash {
 /// history's uberblocks are still on the labels, of higher groups than
 /// the snapshot's. Cut 1 (group 51) is counted before *C*; cut 2
 /// (group 40, written while 51 is still on the labels) is counted after
-/// *C* but does not open as itself; neither is published. Cut 3
-/// (group 52) is: it is the first that carries the request.
+/// *C* but does not open as itself; neither is published. Since M2.6a,
+/// cut 2's group, not above cut 1's, also marks a rewind (rule (R)):
+/// `t` ends refused `rewound` at cut 2's check, and asked again with the
+/// count read anew, as the agent does (M2.6), it goes on cut 3
+/// (group 52), the first that carries it. The cut that does not open as
+/// itself with no rewind counted, where its opening alone keeps the
+/// publish off it, is
+/// [`a_cut_not_opening_as_itself_in_a_new_cut_state_is_not_published`].
 #[tokio::test]
 async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     let mut fx = Fixture::new(40).await;
@@ -214,7 +249,15 @@ async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     );
     fx.assert_uploaded(40, "cut 2").await;
     assert!(published(&fx, "t", "cut 2").await.is_none(), "cut 2");
-    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+    let cuts = up.local().cuts();
+    assert_eq!((cuts.count, cuts.rewound), (2, 2), "cut 2 marks a rewind");
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Rewound)
+    );
+    assert_eq!(ask_now(&mut up, "t", 40), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup again");
+    assert_eq!(steps, [Step::PublishLooked { name: "t".into() }]);
 
     fx.write(up.local(), 102, 0x52);
     fx.group(up.local(), 52);
@@ -246,7 +289,7 @@ async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     assert_eq!(snapshot.row.cut.group, 52);
     assert_eq!(up.publishes().progress("t"), Progress::Done(commit));
     let figures = up.publishes().figures();
-    assert_eq!((figures.accepted, figures.published), (1, 1));
+    assert_eq!((figures.accepted, figures.published), (2, 1));
     assert_eq!(
         figures
             .last
@@ -256,6 +299,54 @@ async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     );
     // The volume and its refs pass fsck: the snapshot's closure is whole.
     fx.assert_uploaded(52, "after the publish").await;
+}
+
+/// A cut that does not open as itself is not published where no rewind
+/// is counted (M2.5's rule, kept beside rule (R) of M2.6a). After a
+/// reboot the cut state begins anew, with no cut before its first, while
+/// group 51 of the history before it is still on the labels, as after
+/// `zpool import -T` to an older group. `t` is asked at the new state's
+/// count 0 for group 40; cut 1 of the new state (group 40) is counted
+/// after *C* and marks no rewind, as no cut of its state is before it,
+/// but it does not open as itself, so it is not published. Cut 2
+/// (group 52) carries `t`.
+#[tokio::test]
+async fn a_cut_not_opening_as_itself_in_a_new_cut_state_is_not_published() {
+    let mut fx = Fixture::new(41).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x51);
+    fx.group(&mut store, 51);
+    let mut up = driver(&fx, store);
+    up.run().await.expect("cut 1 of the state before");
+    fx.rebooted(up);
+
+    let mut up = driver(&fx, fx.start());
+    let cuts = up.local().cuts();
+    assert_eq!((cuts.count, cuts.rewound), (0, 0), "a new cut state");
+    assert_eq!(ask_now(&mut up, "t", 40), Answer::Accepted);
+    fx.write(up.local(), 101, 0x40);
+    fx.group(up.local(), 40);
+    let held = up.local().held_cuts();
+    assert_eq!(
+        held.iter()
+            .map(|cut| (cut.number, cut.itself))
+            .collect::<Vec<_>>(),
+        [(1, false)],
+        "group 40 does not open as itself while 51 is on the labels"
+    );
+    let cuts = up.local().cuts();
+    assert_eq!((cuts.count, cuts.rewound), (1, 0), "no rewind counted");
+    up.run().await.expect("cut 1");
+    fx.assert_uploaded(40, "cut 1").await;
+    assert!(published(&fx, "t", "cut 1").await.is_none(), "cut 1");
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+
+    fx.write(up.local(), 102, 0x52);
+    fx.group(up.local(), 52);
+    up.run().await.expect("cut 2");
+    let snapshot = published(&fx, "t", "cut 2").await.expect("published");
+    assert_eq!((snapshot.row.cut.number, snapshot.row.cut.group), (2, 52));
+    assert_eq!(snapshot.commit, head(&fx).await);
 }
 
 /// A publish asked after its first qualifying cut was committed goes on
@@ -437,8 +528,9 @@ async fn a_name_taken_is_refused_and_the_cuts_go_on() {
     let ours = published(&fx, "t", "t").await.expect("t");
     assert_eq!(ours.row.cut.number, 2);
 
-    fx.died(up);
-    let mut up = driver(&fx, fx.start());
+    // Asked again after it ended, of the same uploader: looked up anew.
+    // (A new uploader refuses a request with a count from before it
+    // `rewound` before any lookup, rule (R) of M2.6a.)
     let mut other = request(&mut up, "t", 0, 0);
     other.manifest = b"another manifest".to_vec();
     assert_eq!(up.publishing().ask(other), Answer::Accepted);
@@ -465,11 +557,16 @@ async fn a_name_taken_is_refused_and_the_cuts_go_on() {
     assert_eq!(still.commit, ours.commit);
 }
 
-/// The agent asks again: of the uploader that published `snap/t`, and
-/// after it ended, of the next. Each looks the name up and answers done,
-/// publishing nothing.
+/// The agent asks again of the uploader that published `snap/t`, after
+/// the publish ended: it looks the name up and answers done, publishing
+/// nothing. A new uploader refuses the request (its count is below the
+/// mark the store starts with, rule (R) of M2.6a); asked anew, with the
+/// count read then, it finds `snap/t` recorded with cut 1, counted before
+/// that count, refuses it `taken` and moves nothing. The agent's look
+/// reads the row as its own (M2.6). Before M2.6a the new uploader looked
+/// the request up and answered done.
 #[tokio::test]
-async fn asked_again_after_a_restart_answers_done() {
+async fn asked_again_answers_done_and_a_new_uploader_moves_nothing() {
     let mut fx = Fixture::new(45).await;
     let mut store = fx.start();
     fx.group(&mut store, 7);
@@ -493,23 +590,24 @@ async fn asked_again_after_a_restart_answers_done() {
     assert_eq!(up.publishes().figures().published, 1);
 
     fx.died(up);
-    let mut up = driver(&fx, fx.start());
-    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let mut up = restarted(&fx);
+    asked_anew(&mut up, asked, "the next uploader");
     let steps = up.run().await.expect("the lookup");
     assert_eq!(
         steps,
-        [Step::Published {
+        [Step::PublishRefused {
             name: "t".into(),
-            number: 1,
-            commit: first.commit,
-            found: true
+            why: Refusal::Taken
         }]
     );
-    assert_eq!(up.publishes().progress("t"), Progress::Done(first.commit));
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Taken)
+    );
     let figures = up.publishes().figures();
-    assert_eq!((figures.found, figures.published), (1, 0));
+    assert_eq!((figures.found, figures.published), (0, 0));
     let again = published(&fx, "t", "again").await.expect("published");
-    assert_eq!(again.row, first.row);
+    assert_eq!((again.commit, again.row), (first.commit, first.row));
 }
 
 /// How the uploader comes back after a death in [`publish_killed_at`].
@@ -581,26 +679,45 @@ async fn publish_killed_at(when: FaultWhen, k: u64, back: Back) -> Seen {
         Back::Retry => up,
         Back::Restart => {
             fx.died(up);
-            let mut up = driver(&fx, fx.start());
-            assert_eq!(up.publishing().ask(asked), Answer::Accepted, "{case}");
+            let mut up = restarted(&fx);
+            asked_anew(&mut up, asked, &case);
             up
         }
     };
-    // A cut still held is found committed, or committed, by the run
-    // after: the uploader knows it.
-    let held = !up.local().held_cuts().is_empty();
     up.run()
         .await
         .unwrap_or_else(|e| panic!("{case}: the run after: {e}"));
-    if up.publishes().progress("t") == Progress::Pending {
-        // A new uploader whose cut 1 was let go before the death knows no
-        // cut: the publish asked of the uploader that died is lost with
-        // it, and the one asked again waits for the next qualifying cut
-        // (the lead's Q2 of M2.5).
-        assert!(
-            matches!(back, Back::Restart) && left.is_none() && !held,
-            "{case}: pending"
+    if let (Back::Restart, Some(left)) = (back, &left) {
+        // Landed before the death: its row records cut 1, counted before
+        // the count asked anew, so the new uploader takes the name for
+        // another publish's and moves nothing; the agent's look reads the
+        // row as its own (M2.6).
+        assert_eq!(
+            up.publishes().progress("t"),
+            Progress::Refused(Refusal::Taken),
+            "{case}"
         );
+        let after = published(&fx, "t", &format!("{case}, after"))
+            .await
+            .unwrap_or_else(|| panic!("{case}: gone"));
+        assert_eq!(after.commit, left.commit, "{case}: the ref moved");
+        assert_eq!(after.row, left.row, "{case}: the row changed");
+        return Seen {
+            died: true,
+            landed: true,
+            on: left.row.cut.number,
+        };
+    }
+    let pending = up.publishes().progress("t") == Progress::Pending;
+    match back {
+        // The same uploader goes on: a cut still held is found committed,
+        // or committed, by the run after, and carries the publish.
+        Back::Retry => assert!(!pending, "{case}: pending"),
+        // Asked anew, the publish waits for a cut counted after the count
+        // read then, whatever the run after did of cut 1.
+        Back::Restart => assert!(pending, "{case}: not pending"),
+    }
+    if pending {
         fx.write(up.local(), 100, 0x08);
         fx.group(up.local(), 8);
         up.run().await.expect("cut 2");
@@ -651,15 +768,19 @@ async fn operations_of_the_publish() -> Vec<String> {
 /// that uploads cut 1 and publishes it, before the operation and after
 /// it (the operation lands, its reply is lost). As each failure left it,
 /// `snap/t` is absent or names cut 1's whole commit, with its row and
-/// both manifests; the same uploader, stepping on, publishes it, and so
-/// does a new one asked again, without moving a ref that landed.
+/// both manifests; the same uploader, stepping on, publishes it on cut
+/// 1, and a new one asked again does not move a ref that landed.
 ///
-/// A death between the commit and the publish's transaction (the lead's
-/// ask on M2.5-1): cut 1 has been let go, no ref is left, and the
-/// publish pending dies with the uploader. Asked again, it goes on the
-/// next qualifying cut, cut 2. A death before cut 1 was let go leaves it
-/// held, and the next uploader, which finds it committed or commits it,
-/// publishes it on cut 1.
+/// After a death (since M2.6a, rule (R)): the next uploader refuses the
+/// request the one that died took, as its count is below the mark the
+/// store starts with, and the agent asks again with the count read anew.
+/// A publish that landed before the death is then refused `taken`, its
+/// row recording cut 1, counted before that count (the agent's look
+/// reads the row as its own, M2.6); any other goes on cut 2, wherever
+/// the death came. Before M2.6a, a death before cut 1 was let go left it
+/// held, and the next uploader published the request asked again on
+/// cut 1; only a death between the commit and the publish's transaction
+/// sent it to cut 2.
 #[tokio::test]
 async fn a_failure_at_any_operation_leaves_no_ref_or_a_whole_one() {
     let operations = operations_of_the_publish().await;
@@ -669,7 +790,7 @@ async fn a_failure_at_any_operation_leaves_no_ref_or_a_whole_one() {
         .filter(|(_, op)| *op == "put_if refs")
         .map(|(i, _)| i)
         .collect();
-    let [swap, publish] = swaps[..] else {
+    let [_, publish] = swaps[..] else {
         panic!("the head swap and the publish's own transaction: {operations:?}");
     };
     for back in [Back::Retry, Back::Restart] {
@@ -701,16 +822,17 @@ async fn a_failure_at_any_operation_leaves_no_ref_or_a_whole_one() {
                 FaultWhen::After => 1,
             };
             assert_eq!(left, expected, "{case}");
-            // The publish goes to the next cut exactly where the daemon
-            // died between cut 1's commit and the publish's transaction:
-            // after the head swap landed, and before the publish's own
-            // transaction did.
-            let between: Vec<usize> = match (back, when) {
+            // The same uploader publishes on cut 1 wherever it failed. A
+            // new one publishes the request asked anew on the next cut,
+            // except where the publish's own transaction landed before
+            // the death.
+            assert_eq!(publish, operations.len() - 1, "{operations:?}");
+            let next: Vec<usize> = match (back, when) {
                 (Back::Retry, _) => Vec::new(),
-                (Back::Restart, FaultWhen::Before) => (swap + 1..=publish).collect(),
-                (Back::Restart, FaultWhen::After) => (swap + 1..publish).collect(),
+                (Back::Restart, FaultWhen::Before) => (0..=publish).collect(),
+                (Back::Restart, FaultWhen::After) => (0..publish).collect(),
             };
-            assert_eq!(on_the_next, between, "{case}: {operations:?}");
+            assert_eq!(on_the_next, next, "{case}: {operations:?}");
         }
     }
 }
@@ -853,15 +975,18 @@ async fn a_cut_found_committed_after_head_moved_carries_no_publish() {
 /// F1 of #122's review, a new uploader: as above, but the daemon dies
 /// with the reply lost, head is moved while it is down, and the next
 /// uploader, asked again, finds cut 1 committed at its check. Head is
-/// not its commit: no publish goes on it.
+/// not its commit: cut 1 is not offered to a publish
+/// ([`Figures::not_offered`](skyzfs_upload::Figures::not_offered)), and
+/// none goes on it. Since M2.6a the request asked again is asked with the
+/// count read anew (rule (R)), which cut 1 could not carry in any case.
 #[tokio::test]
 async fn a_cut_found_committed_at_the_check_after_head_moved_carries_no_publish() {
     let mut fx = Fixture::new(61).await;
     let (up, asked, _) = swap_unheard(&mut fx).await;
     fx.died(up);
     fx.move_head().await;
-    let mut up = driver(&fx, fx.start());
-    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let mut up = restarted(&fx);
+    asked_anew(&mut up, asked, "head moved");
     let steps = up.run().await.expect("the run after");
     assert_eq!(
         steps,
@@ -895,7 +1020,7 @@ enum Then {
     /// The swap's reply was lost; the same uploader steps on.
     LostReply,
     /// The swap's reply was lost and the daemon died; the next uploader is
-    /// asked again.
+    /// asked again, with the count read anew (rule (R) of M2.6a).
     Restart,
 }
 
@@ -972,8 +1097,8 @@ async fn head_at_another_commit_of_the_cuts_group_takes_no_publish_and_no_delta(
             }
             Then::Restart => {
                 fx.died(up);
-                let mut up = driver(&fx, fx.start());
-                assert_eq!(up.publishing().ask(asked), Answer::Accepted, "{case}");
+                let mut up = restarted(&fx);
+                asked_anew(&mut up, asked, &case);
                 let steps = up.run().await.expect("the run after");
                 assert_eq!(
                     steps,
@@ -1015,8 +1140,10 @@ async fn head_at_another_commit_of_the_cuts_group_takes_no_publish_and_no_delta(
 /// A row of version 1, written by a daemon from before the row named its
 /// commit, names cut 1, which that daemon committed before it died. The
 /// next daemon finds cut 1 committed at its check and lets it go; the row
-/// names no commit, so head is not known to be cut 1's, and `pool@t` is
-/// not published on it (the lead's decision on F1).
+/// names no commit, so head is not known to be cut 1's, cut 1 is not
+/// offered to a publish, and `pool@t` is not published on it (the lead's
+/// decision on F1). Since M2.6a `pool@t` is asked again with the count
+/// read anew (rule (R)).
 #[tokio::test]
 async fn a_cut_found_committed_under_a_row_of_version_1_takes_no_publish() {
     let mut fx = Fixture::new(74).await;
@@ -1025,8 +1152,8 @@ async fn a_cut_found_committed_under_a_row_of_version_1_takes_no_publish() {
     assert_eq!(named.commit, Some(cut1), "the row names cut 1's commit");
     fx.died(up);
     fx.put_row(row_v1(&named.cut)).await;
-    let mut up = driver(&fx, fx.start());
-    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
+    let mut up = restarted(&fx);
+    asked_anew(&mut up, asked, "a row of version 1");
     let steps = up.run().await.expect("the run after");
     assert_eq!(
         steps,
@@ -1226,9 +1353,11 @@ async fn a_name_deleted_and_asked_again_is_looked_up() {
 
 /// F6 of #122's review (and Codex's P2 on it): `snap/t` published on cut
 /// 1, then deleted as SkyNBD deletes a snapshot (the ref alone: the row
-/// `skyzfs/snap/t` stays), and made anew by another on cut 2's commit. A
-/// new uploader asked for the first publish again does not take that ref
-/// for its own: the row names cut 1's commit, the ref cut 2's.
+/// `skyzfs/snap/t` stays), and made anew by another on cut 2's commit.
+/// The uploader asked for the first publish again does not take that ref
+/// for its own: the row names cut 1's commit, the ref cut 2's. Since
+/// M2.6a a new uploader refuses that request `rewound` before any lookup
+/// (rule (R)); asked anew, it does not take the ref either.
 #[tokio::test]
 async fn a_ref_made_anew_beside_a_row_left_behind_is_not_ours() {
     let mut fx = Fixture::new(66).await;
@@ -1264,21 +1393,28 @@ async fn a_ref_made_anew_beside_a_row_left_behind_is_not_ours() {
     .await
     .expect("another's snapshot of the name");
 
-    fx.died(up);
-    let mut up = driver(&fx, fx.start());
-    assert_eq!(up.publishing().ask(asked), Answer::Accepted);
-    let steps = up.run().await.expect("the lookup");
-    assert_eq!(
-        steps,
-        [Step::PublishRefused {
-            name: "t".into(),
-            why: Refusal::Taken
-        }]
-    );
-    assert_eq!(
-        up.publishes().progress("t"),
-        Progress::Refused(Refusal::Taken)
-    );
+    for new in [false, true] {
+        if new {
+            fx.died(up);
+            up = restarted(&fx);
+            asked_anew(&mut up, asked.clone(), "a new uploader");
+        } else {
+            assert_eq!(up.publishing().ask(asked.clone()), Answer::Accepted);
+        }
+        let steps = up.run().await.expect("the lookup");
+        assert_eq!(
+            steps,
+            [Step::PublishRefused {
+                name: "t".into(),
+                why: Refusal::Taken
+            }],
+            "a new uploader: {new}"
+        );
+        assert_eq!(
+            up.publishes().progress("t"),
+            Progress::Refused(Refusal::Taken)
+        );
+    }
     let theirs = refs.get(fx.vol, &snap_ref("t")).await.expect("the ref");
     assert_eq!(theirs.map(|value| value.commit), Some(cut2));
 }
