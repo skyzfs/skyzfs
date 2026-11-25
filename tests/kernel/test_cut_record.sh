@@ -480,8 +480,13 @@ is "pkillat: asking again records nothing (the take-over's request is refused)" 
 is "prewindf: f1 pends, export, the root block zeroed, import -F (or -FX), then f1's end" \
     "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_rewind_f|import_pool|pwait f1-end)')" \
     "pflow export_pool zero_newest_root import_rewind_f pwait export_pool "
-is "prewindf: f1 is asked with G far above, so that it waits" \
-    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pflow f1 f1 --group-plus 1000000 ')" 1
+is "prewindf: f1 is asked with G far above, so that it waits, and lives 900 s (its premise's expiry)" \
+    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pflow f1 f1 --group-plus 1000000 --expiry-s 900 ')" 1
+# The workflow runs every publish course by default (#141's review).
+WF=${SCRIPT%/*}/../../.github/workflows/skyzfs-publish-rig.yml
+is "the publish rig's default courses are the script's publish courses" \
+    "$(sed -n 's/.*\${COURSES:-\([a-z ]*\)}.*/\1/p' "$WF")" \
+    "$(sed -n 's/^PUBLISH_NAMED="\(.*\)"$/\1/p' "$SCRIPT")"
 is "prewindf: f1's end is read with the pool synced between looks" \
     "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pwait f1-end f1 [0-9]* sync$')" 1
 is "rewindf zeroes the root block and imports as prewindf does" \

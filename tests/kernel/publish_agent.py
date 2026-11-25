@@ -48,7 +48,9 @@ exits 0 when it was answered at all, 1 when a request was refused (the
 refusal printed), 2 on the rig's own error. `ask` prints the answer
 line and exits 0, or 1 for a refusal; 2 when no answer came. `raw`
 prints the answer line and exits 0 whatever it says (the check judges
-it), and 2 when the socket could not be reached or the read timed out.
+it), `no answer within N s` among them when the daemon did not answer
+within the limit once connected; 2 when the socket could not be
+reached.
 """
 import hashlib
 import os

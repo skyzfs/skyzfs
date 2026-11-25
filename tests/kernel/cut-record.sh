@@ -1674,19 +1674,20 @@ rec_prewind() {
     export_pool
 }
 
-# prewindf: a rewind by `zpool import -F` while a publish waits for its
-# cut (the lead's addition to M2.6a's rig; design §5.2). f1 is asked
-# with G far above its snapshot's, so that it pends. The pool is
-# exported, every copy of the newest group's root block is zeroed
-# (zero_newest_root, as rewindf), and the import goes back past it
-# (import_rewind_f: -F, which the labels' config of the damaged group
-# refuses on the daemon, then -FX, as rewindf). The groups the import
-# and the nudges then sync are not above the highest the daemon saw
-# before the export: rule (R) marks each such cut, and the mark ends f1,
-# waiting with a count below it. Its progress must
-# read `refused rewound`, and f1 is never published (the check's
-# premise: the request log's `f1 refused rewound` as an end, after cuts
-# counted after f1's C whose group is not above the highest before).
+# prewindf: a rewind import while a publish waits for its cut (the
+# lead's addition to M2.6a's rig; design §5.2). f1 is asked with G far
+# above its snapshot's, so that it pends. The pool is exported, every
+# copy of the newest group's root block is zeroed (zero_newest_root, as
+# rewindf), and the pool is imported again (import_rewind_f: -F, which
+# the labels' config of the damaged group refuses here, then -FX, as
+# rewindf). The first group the import writes is the damaged group's
+# number again, with another root block: not above the highest the
+# daemon saw before the export. Rule (R) marks that cut, and the mark
+# ends f1, waiting with a count below it: its progress must read
+# `refused rewound`. That is all the course pins (#141's review, D-c):
+# with G far above, no daemon that honours G could publish f1 in either
+# history. The check's premise is the ground in the cut lines alone,
+# counted before f1's expiry (900 s); the end is a pin.
 rec_prewindf() {
     create_pool
     load 3

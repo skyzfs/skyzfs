@@ -73,23 +73,35 @@ for a name never published it must be `absent` (pplain's t5 and t3).
 With object storage down it must be `refused store` or `refused
 no-answer`, never `absent` (prewind's r1-look).
 
-A publish waiting for its cut when `zpool import -F` goes back past the
-newest group (prewindf) is ended by rule (R): its progress reads
-`refused rewound`, and f1 is never published.
+A publish waiting for its cut across a rewind import (prewindf: the
+newest group's root block zeroed, then `zpool import -F`, which on this
+pool takes -FX) is ended by rule (R): its progress reads `refused
+rewound`, and the request log's first end of f1 says so after the
+rewind cut (pin_f1_ended_after_the_rewind_cut). That is all prewindf
+pins: the mark ends a waiting publish. f1 is asked with G far above
+its snapshot's, so no daemon that honours G could publish it in either
+history, and pin_f1_absent cannot fail for one (#141's review, D-c).
 
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
-not make the case it is there for: the rig's error, not a verdict.
+not make the case it is there for: the rig's error, not a verdict. A
+premise rests on what the rig and the kernel did (the request log's
+cut lines, the place of a request in it, the agent's own records, the
+pool), never on the daemon's answer to the request the course judges:
+a daemon that does not refuse, end or withdraw as the course asks fails
+a pin (exit 1), not a premise (#141's review, B2).
 
 The premises that make two courses test what they are for (the review
 of #139):
 - prewind: a cut counted after the first ask's C, of group G or later,
   that opens only as a rewind, was committed after that ask (node B's
   row read after the store came back, DIR/rewind-row.txt, and that
-  cut's `cut` line), and r1 was not made by an earlier one. And the
-  refusal had its ground in the request log: a cut counted after the
-  first C whose group is not above the groups of the instance's cuts
-  before it, ahead of the line `r1 refused rewound`. r1 asked anew
+  cut's `cut` line), and r1 was not made by an earlier one that opens
+  as itself. And the ask came after a ground of rule (R) in the request
+  log: a cut counted after the first C whose group is not above the
+  groups of the instance's cuts before it, ahead of the line of r1's
+  first ask, whatever it was answered (pin_answer_r1 judges the
+  answer). r1 asked anew
   must then be made by a cut above the top (DIR/rewind-top.txt;
   pin_r1_above_top) that opens as itself (pin_r1_cut).
   What the course pins is rule (R) at the ask (pin_answer_r1) and the
@@ -100,11 +112,14 @@ of #139):
   on the cut rig, which judges each cut's opening against the kernel
   (#140's review, N1).
 - prewindf: the import was made with -F or -FX after the newest
-  group's root block was zeroed (DIR/rewind-f.txt), and the request log ends f1
-  `refused rewound` (a `publish ended` line) after a cut counted after
-  f1's C whose group is not above the groups of the instance's cuts
-  before it.
-- pkill: the instance that answered tw's withdrawal then counted cuts
+  group's root block was zeroed (DIR/rewind-f.txt), and a cut counted
+  after f1's C whose group is not above the groups of the instance's
+  cuts before it was counted while f1 could still wait: before f1's
+  expiry, counted from the agent's send in agent.tsv on the request
+  log's clock (so a course whose f1 expired first is the rig's error,
+  and not a daemon that did not end it).
+- pkill: the instance that answered tw's withdrawal, whatever it
+  answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
   (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
   have made it. Its status then (DIR/tw-status.txt) must count the
@@ -441,36 +456,83 @@ def rewind_committed(cuts, cut, req, named):
 
 def withdrawn_past(instances, name, group):
     """pkill's premise (B3): the instance that answered NAME's withdrawal,
-    and the cuts it counted after that line, of group GROUP or later,
-    that open as itself -> (pid or None, [(number, group)])."""
+    whatever it answered (#141's review, B2: whether it was `withdrawn`
+    is pin_answer_tw-withdraw's and the status pin's), and the cuts it
+    counted after that line, of group GROUP or later, that open as
+    itself -> (pid or None, [(number, group)])."""
     for inst in instances:
         for ln in inst['lines']:
-            if ln['event'] == 'publish' and ln['op'] == 'withdraw' and ln['result'] == f'{name} withdrawn':
+            if ln['event'] == 'publish' and ln['op'] == 'withdraw' and ln['result'].split(' ', 1)[0] == name:
                 return inst['pid'], [(int(c['sectors']), int(c['result'])) for c in inst['lines']
                                      if c['event'] == 'cut' and c['line'] > ln['line'] and c['sector'] == 'itself'
                                      and c['result'].isdigit() and int(c['result']) >= group]
     return None, []
 
 
-def rewound_grounds(instances, name, after, op='asked'):
-    """The premise of prewind and prewindf (rule R): the cuts counted
-    after AFTER, ahead of the request log's `NAME refused rewound` line
-    of OP (`asked`: the refusal of the request; `ended`: a publish ended
-    while it waited), whose group is not above the highest group of
-    that instance's cut lines before them -> (whether that line was
-    found, [(number, group, the highest before)])."""
+def rewind_cuts(instances, after, stop=None):
+    """The ground of rule (R) in the request log's cut lines alone: the
+    cuts counted after AFTER whose group is not above the highest group
+    of that instance's cut lines before them, up to the first line for
+    which STOP holds (all of them where STOP is None) -> (whether a
+    STOP line was found, [(number, group, the highest before, its ns)]).
+    No premise reads the daemon's answer to the request it judges
+    (#141's review, B2): a daemon that does not refuse or end a request
+    fails a pin (exit 1), and the rig's error stays the rig's."""
     for inst in instances:
         top, seen = None, []
         for ln in inst['lines']:
+            if stop is not None and stop(ln):
+                return True, seen
             if ln['event'] == 'cut' and ln['result'].isdigit() and ln['sectors'].isdigit():
                 number, group = int(ln['sectors']), int(ln['result'])
                 if top is not None and number > after and group <= top:
-                    seen.append((number, group, top))
+                    seen.append((number, group, top, ln['ns']))
                 top = group if top is None else max(top, group)
-            elif ln['event'] == 'publish' and ln['op'] == op and \
-                    ln['result'].startswith(f'{name} refused rewound'):
-                return True, seen
+        if stop is None and seen:
+            return False, seen
     return False, []
+
+
+def asked_line(name):
+    """-> a STOP for rewind_cuts: the request log's line of NAME's ask,
+    whatever the daemon answered."""
+    return lambda ln: ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
+
+
+def ask_deadline(agent_text, name):
+    """agent.tsv -> the monotonic ns by which NAME's first publish has
+    expired at the latest counted from the agent's send: its start plus
+    its `--expiry-s` (600 where none was given; the daemon counts from
+    its acceptance, which is later, so a cut before this is within the
+    expiry). None where the agent asked no publish of NAME."""
+    for ln in agent_text.splitlines():
+        f = ln.split('\t')
+        if len(f) < 3 or not f[0].isdigit():
+            continue
+        words = f[2].split()
+        if words[:3] != ['publish', '--name', name]:
+            continue
+        expiry = words[words.index('--expiry-s') + 1] if '--expiry-s' in words[:-1] else '600'
+        if not expiry.isdigit():
+            raise RigError(f'agent.tsv: an expiry that is not a number: {ln[:200]!r}')
+        return int(f[0]) + int(expiry) * 1_000_000_000
+    return None
+
+
+def judge_ended(instances, name, ns):
+    """-> [what is wrong]: NAME's first end in the request log (a
+    `publish ended` line) must be `refused rewound`, after NS (the
+    ground's cut; prewindf's pin of rule (R) ending a waiting publish)."""
+    ended = [ln for inst in instances for ln in inst['lines']
+             if ln['event'] == 'publish' and ln['op'] == 'ended' and ln['result'].split(' ', 1)[0] == name]
+    if not ended:
+        return [f'the request log never ends {name}']
+    first, bad = ended[0], []
+    if first['result'] != f'{name} refused rewound':
+        bad.append(f"{name}'s first end is {first['result']!r} (line {first['line']})")
+    if first['ns'] <= ns:
+        bad.append(f"{name}'s first end (line {first['line']}) came before the rewind cut")
+    return bad
 
 
 def exact_counts(status, want):
@@ -657,11 +719,11 @@ def main():
                 raise RigError('no request of r1 in published.tsv')
             if published['r1'] == r1:
                 raise RigError('r1 was not asked anew: its last request in published.tsv is its first')
-            found, grounds = rewound_grounds(instances, 'r1', r1['after'])
-            premise('premise_r1_rewound_with_a_rewind_cut', found and bool(grounds),
-                    'no `r1 refused rewound` line in the request log' if not found else
-                    f"cuts counted after C = {r1['after']} before the refusal, not above the groups before them: "
-                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t in grounds) or 'none'))
+            found, grounds = rewind_cuts(instances, r1['after'], asked_line('r1'))
+            premise('premise_r1_asked_after_a_rewind_cut', found and bool(grounds),
+                    'no line of r1\'s ask in the request log' if not found else
+                    f"cuts counted after C = {r1['after']} before r1 was asked, not above the groups before them: "
+                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds) or 'none'))
             held = status_of(text_of('rewind-status.txt')).get('cuts_held', '')
             premise('premise_held_at_rewind', held.isdigit() and int(held) > 0,
                     f'cuts held with object storage down, at the rewind: {held or "none"}')
@@ -690,11 +752,18 @@ def main():
             premise('premise_f1_import_f', zeroed.isdigit() and int(zeroed) > 0 and
                     any(ln in ('imported with -F', 'imported with -FX') for ln in damage.splitlines()),
                     flat(damage)[:300] or 'rewind-f.txt is empty')
-            found, grounds = rewound_grounds(instances, 'f1', f1['after'], 'ended')
-            premise('premise_f1_ended_by_a_rewind_cut', found and bool(grounds),
-                    'no `f1 refused rewound` end in the request log' if not found else
-                    f"cuts counted after C = {f1['after']} before f1 was ended, not above the groups before them: "
-                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t in grounds) or 'none'))
+            deadline = ask_deadline(text_of('agent.tsv'), 'f1')
+            if deadline is None:
+                raise RigError('no publish of f1 in agent.tsv')
+            _, grounds = rewind_cuts(instances, f1['after'])
+            within = [g for g in grounds if g[3] <= deadline]
+            premise('premise_f1_waited_across_a_rewind_cut', bool(within),
+                    f"cuts counted after C = {f1['after']} within f1's expiry, not above the groups before them: "
+                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in within) or 'none')
+                    + (f'; {len(grounds) - len(within)} more after the expiry' if len(grounds) > len(within) else ''))
+            holds('pin_f1_ended_after_the_rewind_cut', judge_ended(instances, 'f1', within[0][3]), 'server',
+                  f'f1 ended `refused rewound` after cut {within[0][0]} of group {within[0][1]}, which the mark '
+                  f'of rule (R) covers (the top before it {within[0][2]})')
         if name in BETWEEN:
             t, there = BETWEEN[name]
             kill = text_of('kill.tsv').strip()
