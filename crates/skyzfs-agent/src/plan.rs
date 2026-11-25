@@ -85,8 +85,7 @@
 //!     ([`Why::Rewound`] where a rewind lost `pool@t`), the code
 //!     reported ([`Report::Refused`]). Not too old, these answers end
 //!     the publish in a round too (below), or stop it for a person;
-//!     `stopped` waits as a daemon away until the publish is too old or
-//!     skyzfsd restarts and answers `unknown`.
+//!     `stopped` gives it up as here ([`Why::Stopped`]).
 //!   - `pending` or `refused asked`: the request withdrawn first. So is
 //!     `absent`, which skyzfsd does not give to `progress` or `withdraw`
 //!     (it answers `look`): a withdraw is safe whatever pends (S4 of the
@@ -141,8 +140,8 @@
 //!   engine makes the report before it records the publish done, so at
 //!   least once: a stop between the two plans the same again (F1 of
 //!   #144's review).
-//! - **A daemon away** (no answer, or `ended`, `no-answer`, `no-upload`,
-//!   and `stopped` for a publish not too old): wait; a publish asked keeps its hold until
+//! - **A daemon away** (no answer, or `ended`, `no-answer`, `no-upload`):
+//!   wait; a publish asked keeps its hold until
 //!   `held_until`, then releases it. When the daemon answers again, the
 //!   answers above apply, and a hold released is placed again before the
 //!   publish is asked anew.
@@ -590,7 +589,9 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
 /// pending when it stops (the lease lost, a transaction fenced, a cut
 /// kept committed), takes no step after, and refuses every request after
 /// it until skyzfsd restarts (N6 of #144's fourth look; the lead's
-/// decision for M2.6c).
+/// decision for M2.6c). A publish is given up on it whatever its age
+/// (the lead's ruling on #146): waiting would only hold `pool@t` for up
+/// to [`AGE_MAX`], and the next publish covers a restart.
 ///
 /// Not `asked` (one pends), `busy`, or the daemon's silence (`ended`,
 /// `no-answer`, `no-upload`). skyzfsd gives `busy` only to a `publish`
@@ -616,8 +617,9 @@ fn ends(code: Code) -> bool {
 
 /// What a person is told where `action`, planned from `seen`, gives up a
 /// publish too old, or stalled [`STALLS_ABANDONED`] times, on a refusal
-/// that ends its request ([`Report::Refused`], the lead's L7 on #144):
-/// the release, and the give-up after it. The engine makes it before it
+/// that ends its request ([`Report::Refused`], the lead's L7 on #144),
+/// or any publish on `refused stopped` (the lead's ruling on #146): the
+/// release, and the give-up after it. The engine makes it before it
 /// acts, once a process (as every report: at least once).
 pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report> {
     let under_way = matches!(publish.phase, Phase::Held(_) | Phase::Asked { .. });
@@ -627,7 +629,9 @@ pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report>
         DaemonSeen::Here {
             answer: Reply::Refused(code, _),
             ..
-        } if under_way && ended && gives_up && ends(*code) => Some(Report::Refused(*code)),
+        } if under_way && (ended || *code == Code::Stopped) && gives_up && ends(*code) => {
+            Some(Report::Refused(*code))
+        }
         _ => None,
     }
 }
@@ -749,11 +753,12 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
             Code::Rewound => anew(true),
             Code::Busy => Action::Wait,
             Code::Asked => Action::Withdraw,
-            // `stopped` ends the request (`ends`), but a publish not too
-            // old is not given up on it: the conservative reading, since
-            // the design does not say. It waits as for a daemon away,
-            // until skyzfsd restarts (`unknown`) or the publish is too old.
-            Code::Stopped | Code::Ended | Code::NoAnswer | Code::NoUpload => away(),
+            // The uploader has stopped for good and takes no step in this
+            // run of skyzfsd: looked up, then given up and reported, the
+            // hold released (the lead's ruling on #146). The next
+            // publish covers a restart.
+            Code::Stopped => look(&|| give_up(pool, broken.unwrap_or(Why::Stopped))),
+            Code::Ended | Code::NoAnswer | Code::NoUpload => away(),
             Code::Name
             | Code::Manifest
             | Code::Expiry

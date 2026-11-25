@@ -463,7 +463,7 @@ fn held_it_is_asked_with_the_count_read_before_the_snapshot() {
 }
 
 /// Mutant: a hold let go before `held_until`, kept past it, or let go
-/// while the daemon answers; a daemon that stopped not read as away.
+/// while the daemon answers; an uploader silent not read as away.
 #[test]
 fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
     let mut rows = vec![
@@ -500,7 +500,7 @@ fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
             Action::Wait,
         ),
     ];
-    for code in [Code::Stopped, Code::Ended, Code::NoAnswer, Code::NoUpload] {
+    for code in [Code::Ended, Code::NoAnswer, Code::NoUpload] {
         rows.push((
             "refused as away",
             asked(),
@@ -521,6 +521,95 @@ fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
         ));
     }
     check(rows);
+}
+
+/// Mutant: `refused stopped` read as a daemon away while the publish is
+/// not too old, given up without a look, given up as too old, given up
+/// with its hold kept, or given up without the code reported; or another
+/// refusal that ends the request given up so (the lead's ruling on
+/// #146).
+#[test]
+fn refused_stopped_gives_a_publish_up_whatever_its_age() {
+    let stopped = || seen().refused(Code::Stopped);
+    let rows = vec![
+        ("asked, not looked", asked(), stopped(), Action::Look),
+        (
+            "asked, ours",
+            asked(),
+            stopped().looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        (
+            "asked, absent",
+            asked(),
+            stopped().looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "asked, absent, released",
+            asked(),
+            stopped().looked(SnapSeen::Absent).unheld(),
+            Action::Abandon(Why::Stopped),
+        ),
+        (
+            "asked, another's",
+            asked(),
+            stopped().looked(SnapSeen::NotOurs).unheld(),
+            Action::Abandon(Why::NameTaken),
+        ),
+        (
+            "asked, absent, released, pool@t gone",
+            asked(),
+            stopped().looked(SnapSeen::Absent).unheld().gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        (
+            "asked, a second after it was accepted, absent, released",
+            asked(),
+            stopped()
+                .at(ASKED + SECOND)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            Action::Abandon(Why::Stopped),
+        ),
+        ("held, not looked", held(), stopped(), Action::Look),
+        (
+            "held, absent",
+            held(),
+            stopped().looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "held, absent, released",
+            held(),
+            stopped().looked(SnapSeen::Absent).unheld(),
+            Action::Abandon(Why::Stopped),
+        ),
+    ];
+    for (what, phase, seen, want) in rows {
+        let publish = publish(phase);
+        let got = plan(&publish, &seen);
+        assert_eq!(got, want, "{what}");
+        let reported = matches!(got, Action::Release | Action::Abandon(_));
+        assert_eq!(
+            report(&publish, &seen, &got),
+            reported.then_some(Report::Refused(Code::Stopped)),
+            "{what}"
+        );
+    }
+    // Another end, not too old, is not given up so: `state` is looked up
+    // and asked anew, `name` stops the publish for a person; neither is
+    // reported.
+    for (code, want) in [
+        (Code::State, Action::AskAnew),
+        (Code::Name, Action::Stop(Stop::Refused(Code::Name))),
+    ] {
+        let publish = publish(asked());
+        let seen = seen().refused(code).looked(SnapSeen::Absent);
+        let got = plan(&publish, &seen);
+        assert_eq!(got, want, "{code:?}");
+        assert_eq!(report(&publish, &seen, &got), None, "{code:?}");
+    }
 }
 
 /// Mutant: `zpool sync` run where a cut already carries the request

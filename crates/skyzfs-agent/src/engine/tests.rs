@@ -315,7 +315,12 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::Premise => !premise,
             // The world always cuts again in time: a publish that makes
             // no progress here is a defect of the engine.
-            Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress | Why::TooOld => false,
+            // Nor does its uploader stop for good.
+            Why::ManifestTooLarge
+            | Why::NameTaken
+            | Why::NoProgress
+            | Why::TooOld
+            | Why::Stopped => false,
         };
         if !confirmed {
             return Err(format!(
