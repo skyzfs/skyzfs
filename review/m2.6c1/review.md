@@ -82,7 +82,7 @@ the base's; the pull request does not change it.
   - **Shown** (`rec146b.rs` with `scratch146.py`'s stopped uploader;
     output in `scratch146-4ff4549-eng.out`):
     - `review6_a_publish_begun_after_the_uploader_stopped`: the fake's
-      check (`engine/fake.rs:852-862`: 2000 questions with no time
+      check (`engine/fake.rs:853-863`: 2000 questions with no time
       passing) fires at 0 s, after 125 holds, 124 releases, 124 asks,
       124 looks and 250 record saves. Nothing given up.
     - `review6_a_publish_asked_anew_after_the_stop`: it fires at 600 s,
@@ -138,7 +138,35 @@ the base's; the pull request does not change it.
   `review6_*` in `rec146b.rs` are the cases (asked, held, begun after
   the stop, asked anew after it, two publishes). A test of N8's fix
   needs at least the case begun after the stop.
-- PLACEHOLDER_GAPS
+- **TG10 (from `cd3a67c`; it matters more now). The report
+  de-duplicated by code alone survives (X12b).** One stop ends every
+  request that pends, and at `4ff4549` every publish under way is given
+  up on it in the same process, young ones too: the normal case after
+  a stop. Under X12b only the first is reported. My
+  `review6_two_publishes_ended_by_one_stop_are_each_given_up` kills it
+  (`plants146b_scratch.out`); it fits in TG12's test.
+- **TG13. Two plants of the young arm's `stopped` survive (Y2, Y3).**
+  The new test has no row with `snap/t` unreadable, and none with
+  `pool@t` broken and not yet looked up.
+  - Y2: an unreadable `snap/t` looked up again and again, never given
+    up (with a sight, each look moves: no tick).
+  - Y3: `pool@t` broken, given up without the look. A publish whose
+    `snap/t` was made would be given up as `Destroyed` and not recorded
+    done with `SnapshotGone`.
+  - Two rows: unreadable, and `pool@t` gone and not looked (`Look`).
+- **TG9 and TG11 (from `cd3a67c`), still open.** N6e (too old,
+  `stopped` with `pool@t` gone, given up as `Rewound`) survives: the new
+  test's row with `pool@t` gone is not too old (Y4, its twin there, is
+  killed). X16b (a `Refused` report beside a `Done` with
+  `SnapshotGone`) survives: no row has an end with `pool@t` gone and
+  `snap/t` ours, so TG8's "nothing reported where the publish was made"
+  is pinned with the pool whole only.
+- **Not a gap: X9b survives.** It makes the report after `act`, whatever
+  `act` returns. In the engine tests a stop is an early return of
+  `Err(Stopped)`, so code after `act` that does not use `?` still runs.
+  A killed process would not run it. Every stop matrix shares that
+  model, and the test pins the order against code that returns at the
+  stop (W9, X9c, X9e).
 
 #### Suggestions
 
@@ -290,7 +318,61 @@ and Y10 (the version 3) are both killed by the golden test (item 3).
 
 ### (3) The new test and the plants (at 4ff4549)
 
-PLACEHOLDER_PLANTS
+**The new test** (`refused_stopped_gives_a_publish_up_whatever_its_age`,
+`plan/tests.rs:526-613`) checks the planner and `report` on ten rows of
+`stopped` not too old: asked or held; not looked; ours; absent, held or
+released; another's; `pool@t` gone; a second after the acceptance. And
+it checks that `state` and `name`, not too old, are not given up so.
+Each row checks the report. It is a planner test only (TG12).
+
+**The plants** (`plants146b.py`, `plants146b.out`): each applied alone
+in a clean worktree of `4ff4549`, then `cargo test -p skyzfs-agent
+--lib` without my scratch tests, then the file restored. All 119
+applied; 106 killed.
+
+| Plant | Result at `4ff4549` |
+|---|---|
+| P5 `stopped`, not too old, waits as away | killed: the new test |
+| P6 given up as `TooOld`, not `Stopped` | killed: the new test |
+| P7 given up without the look | killed: the new test |
+| P8 not reported when not too old | killed: the new test |
+| P9 the snapshot's own reason ignored | killed: the new test |
+| P10 every end reported at any age | killed: seven engine tests (the matrices) |
+| Y1 another's or unreadable `snap/t` given up as `Stopped` | killed: the new test |
+| Y2 an unreadable `snap/t` looked up for ever | **survived** (TG13) |
+| Y3 `pool@t` broken: given up without the look | **survived** (TG13) |
+| Y4 `pool@t` gone given up as `Rewound` | killed: the new test |
+| Y5 reported at the give-up only, not at the release | killed: the new test |
+| Y6 looked up, then asked anew (as `rewound`) | killed: the new test |
+| Y7 `stopped` reported whatever the action (at the look, at `Done`) | killed: the new test and the too-old table |
+| Y8 held and not asked: waits as away | killed: the new test |
+| Y9 the record: `Stopped` inserted before `TooOld` | killed: `version_2s_bytes_are_these` |
+| Y10 the record at version 3 (a control) | killed: three record tests |
+| Z1 the answer and sight kept across a release (N8's candidate fix, not a plant) | survived: no test tells it from the head |
+
+The author's P5 to P10 are killed as the description says (P10 by
+seven tests where the description counts the table and five matrices;
+the verdict is the same).
+
+**The earlier plants, rerun at `4ff4549`.** Every plant of `cd3a67c`
+but N6b and N6c (they planted the young arm's old line, which is gone;
+P5 and Y6 take their place) has the same verdict as at `cd3a67c`
+(`plants146.out`). That includes W3-Stopped (P1), W9 (P2), W12 (P3),
+W16 (P4), N6d, N6f to N6h, X9c to X9e and X12c, killed. The survivors
+are those of `cd3a67c`:
+
+- T3f, T3g (the `Disk` syncs), E2, E3, G1: known survivors of earlier
+  looks, untouched here.
+- R3: dead code (`stopped` is now taken by the arm of ends before the
+  plant's line).
+- N6e, X12b, X16b: TG9, TG10, TG11. X12b is killed by my two-publish
+  scratch test.
+- X9b: the model's limit (see the test gaps).
+
+**Do the tests cover the change?** The planner's part, yes: every plant
+of the young arm's line or of `report`'s condition is killed but Y2 and
+Y3, which are rows the test does not have. The engine's part, no: N8
+passes every test, and so does its candidate fix (Z1). That is TG12.
 
 ### (4) N6 in the ended arm, TG6 to TG8, S7 (judged at cd3a67c)
 
@@ -416,4 +498,31 @@ Optional: TG9 to TG11 and TG13, S8, S9, S11.
 
 ### Files (beside this note, in `review/m2.6c1/`)
 
-PLACEHOLDER_FILES
+At `4ff4549`:
+
+- `rec146b.rs`: the scratch engine tests `review6_*` (N8, item 1).
+- `scratch146.py`: puts the stopped uploader into the fake and appends
+  `plan146.rs` and an engine file (`rec146.rs` or `rec146b.rs`) in a
+  scratch worktree, and runs them.
+- `scratch146-4ff4549-eng.out`: `review6_*` at the head.
+- `probe146.out`: the same with N8's candidate fix, and the head's
+  suite with it.
+- `plan146.rs`: the grid (unchanged since `cd3a67c`);
+  `grid146-4ff4549.out`: its run at the head.
+- `table146b.py`, `table146b.out`: the grid at `4ff4549` against
+  `cd3a67c` (item 1).
+- `recver146.rs`, `recver146.py`, `recver146.out`: version 2 read at
+  both heads (item 2).
+- `plants146b.py`, `plants146b.out`: the plants (item 3);
+  `plants146b_scratch.out`: X12b against the two-publish scratch test.
+- `gates146.sh`, `gates146-4ff4549.log`: the gates.
+
+At `cd3a67c`:
+
+- `rec146.rs`, `scratch146.out`: the scratch engine tests `review5_*`
+  (N7), and the two loop tests at `cf53e94`.
+- `table146.py`, `table146.out`: the grid against `cf53e94` (item 4).
+- `plants146.py`, `plants146.out`, `plants146_scratch.out`: the plants.
+- `gates146.log`: the gates.
+
+Paths in the outputs are shortened to `<scratch>` and `<repo>`.

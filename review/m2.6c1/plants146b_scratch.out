@@ -1,0 +1,23 @@
+
+running 1 test
+test engine::tests::review6_two_publishes_ended_by_one_stop_are_each_given_up ... R6f two, one stop, not too old: settled Ok(()) at 1 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped)), ("skz-20261125T010001Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds []
+FAILED
+
+failures:
+
+failures:
+    engine::tests::review6_two_publishes_ended_by_one_stop_are_each_given_up
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.07s
+
+   Compiling skyzfs-agent v0.0.1 (<scratch>/wt146s/crates/skyzfs-agent)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.89s
+     Running unittests src/lib.rs (<scratch>/target-146s/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)
+
+thread 'engine::tests::review6_two_publishes_ended_by_one_stop_are_each_given_up' (30196) panicked at crates/skyzfs-agent/src/engine/tests.rs:2347:5:
+assertion `left == right` failed: [("skz-20261125T010000Z", Refused(Stopped))]
+  left: 1
+ right: 2
+stack backtrace:
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
