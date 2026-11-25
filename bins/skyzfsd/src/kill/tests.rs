@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use skynbd_refs::{LeaseOutcome, ObjectRefStore, RefStore};
 use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore, Precondition, Result};
+use skyzfs_blk::Buf;
+use skyzfs_local::inplace::CutSlice;
+use skyzfs_upload::publish::{Refusal, Request, EXPIRY_DEFAULT};
+use skyzfs_upload::{Answer, Control, CutsNow, Local, Progress, Released, Store, Uploadable};
 
 use super::*;
 use crate::cli::KillAt;
@@ -191,6 +195,7 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
         remote.id,
         Some(KillAt::Swap(2)),
         noted(&said),
+        None,
     );
     let mut up = make(epoch);
     taken(&said);
@@ -238,6 +243,7 @@ fn the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swa
         remote.id,
         Some(KillAt::Put(1)),
         noted(&said),
+        None,
     );
     let mut up = make(epoch);
     taken(&said);
@@ -346,6 +352,7 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
         remote.id,
         Some(KillAt::Manifest(2)),
         noted(&said),
+        None,
     );
     let mut up = make(epoch);
     let made = commit(&mut up, 7, None).expect("the commit");
@@ -388,6 +395,7 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
         remote.id,
         Some(KillAt::Publish(2)),
         noted(&said),
+        None,
     );
     let mut up = make(epoch);
     let made = commit(&mut up, 7, None).expect("the commit");
@@ -417,4 +425,278 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
     );
     let made = block_on(refs.get(remote.id, "snap/second")).expect("read");
     assert!(made.is_some(), "the ref is in the refs");
+}
+
+/// The state of the cuts in the carry tests.
+const STATE: [u8; 16] = [1; 16];
+
+/// Cut `number` of group `group` of [`STATE`], opening as itself if
+/// `itself`, as the store offers it.
+fn offered(number: u64, group: u64, itself: bool) -> Uploadable {
+    Uploadable {
+        state: STATE,
+        number,
+        group,
+        whole: true,
+        itself,
+        base: None,
+        rewound: 0,
+    }
+}
+
+/// A store that offers the cut it is given and reads nothing: what a
+/// [`KillLocal`] needs to see a cut offered and its reading begun.
+#[derive(Default)]
+struct Offers {
+    cut: Option<Uploadable>,
+}
+
+impl Store for Offers {
+    fn uploadable(&mut self) -> Option<Uploadable> {
+        self.cut
+    }
+    fn read(&mut self, _: u64, _: u64, _: &mut Buf) -> std::io::Result<CutSlice> {
+        Err(std::io::Error::other("nothing read in these tests"))
+    }
+    fn begin_sync_copies(&mut self, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn copies_synced(&mut self, _: bool) -> Option<std::io::Result<()>> {
+        None
+    }
+    fn release(&mut self, _: u64) -> Released {
+        Released::LetGo
+    }
+    fn name_committed(&mut self, _: u64, _: u64) -> bool {
+        false
+    }
+    fn abandon_all(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+    fn cuts(&mut self) -> CutsNow {
+        CutsNow::default()
+    }
+}
+
+/// The uploader offers `cut` and begins its reading (a read from block
+/// 0), through `local`.
+fn reads(local: &mut KillLocal<Offers>, cut: Uploadable) {
+    local.inner_mut().cut = Some(cut);
+    block_on(async {
+        assert_eq!(local.uploadable().await, Some(cut));
+        let (_, read) = local.read(cut.number, 0, Buf::zeroed(0)).await;
+        assert!(read.is_err());
+    });
+}
+
+/// A publish of `name` for a cut of [`STATE`] counted after `after`, of
+/// group `group` or later.
+fn request(name: &str, after: u64, group: u64) -> Request {
+    Request {
+        name: name.into(),
+        attachment: [0xa1; 16],
+        state: STATE,
+        after,
+        group,
+        manifest: Vec::new(),
+        expiry: EXPIRY_DEFAULT,
+    }
+}
+
+/// `request` asked through `carry` as the uploader's inbox passes it
+/// on, answered `answer` as the uploader would, and the post after it:
+/// the asker is given that answer.
+fn asked(carry: &Carry, request: Request, answer: Answer) {
+    let (reply, mut answered) = tokio::sync::oneshot::channel();
+    let passed = carry.ask(Control::Ask {
+        request,
+        rewound: 0,
+        reply,
+    });
+    let Control::Ask { reply, .. } = passed else {
+        panic!("an ask passed on as another request: {passed:?}");
+    };
+    assert!(
+        answered.try_recv().is_err(),
+        "no answer before the uploader's"
+    );
+    reply
+        .send(answer.clone())
+        .expect("the answer is waited for");
+    carry.answered();
+    assert_eq!(answered.try_recv(), Ok(answer), "the asker's answer");
+}
+
+/// `carry-put:N` falls once the first segment PUT of the first cut whose
+/// reading began after publish N was accepted has landed, where that cut
+/// carries it: not at a cut read before the publish, nor one of a group
+/// before *G*, nor one that does not open as itself, nor at a PUT that
+/// is not a segment's; once; and the requests of the channel reach the
+/// uploader and their answers the asker. Mutants: publish N counted
+/// from the requests asked rather than accepted, the cut chosen at its
+/// offer rather than its reading, the reading of the cut under way
+/// taken for the chosen, a cut that does not open as itself killed at.
+#[test]
+fn carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it() {
+    let (inner, said) = log();
+    let die = noted(&said);
+    let carry = Carry::new(Some(KillAt::CarryPut(2)), Arc::clone(&die)).expect("a carry hook");
+    let store = KillStore::new(inner, None, Arc::clone(&die)).carrying(Some(Arc::clone(&carry)));
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    let put = |key: &str| block_on(store.put(key, Bytes::from_static(b"x"))).expect("landed");
+
+    asked(&carry, request("a", 0, 1), Answer::Accepted);
+    asked(
+        &carry,
+        request("b", 0, 1),
+        Answer::Refused(Refusal::Attachment),
+    );
+    // Read before publish 2 is accepted, and offered again after it but
+    // not read anew: not chosen, though it would carry it.
+    reads(&mut local, offered(6, 10, true));
+    asked(&carry, request("c", 5, 10), Answer::Accepted);
+    let _ = block_on(local.uploadable());
+    put("vols/a/seg/1");
+    // Read after it: of a group before G, then not opening as itself.
+    reads(&mut local, offered(7, 9, true));
+    put("vols/a/seg/2");
+    reads(&mut local, offered(8, 10, false));
+    put("vols/a/seg/3");
+    // The one: a read further on in it is not a new reading.
+    reads(&mut local, offered(9, 11, true));
+    put("vols/a/node/1");
+    let _ = block_on(local.read(9, 512, Buf::zeroed(0)));
+    put("vols/a/seg/4");
+    put("vols/a/seg/5");
+    asked(&carry, request("d", 9, 11), Answer::Accepted);
+    reads(&mut local, offered(10, 12, true));
+    put("vols/a/seg/6");
+    assert_eq!(
+        taken(&said),
+        [
+            "put vols/a/seg/1",
+            "put vols/a/seg/2",
+            "put vols/a/seg/3",
+            "put vols/a/node/1",
+            "put vols/a/seg/4",
+            "kill carry-put:2: after the first segment PUT of cut 9 (group 11), chosen to carry \
+             publish 2, landed (vols/a/seg/4)",
+            "put vols/a/seg/5",
+            "put vols/a/seg/6",
+        ]
+    );
+}
+
+/// `carry-swap:N` falls once the commit of the first cut whose reading
+/// began after publish N was accepted has landed, where that cut carries
+/// it, and before the cut is let go: not at a cut read before the
+/// publish, nor at one that does not open as itself (the next one is
+/// chosen then), nor at a segment PUT. Mutants: the chosen cut not
+/// checked to carry, not chosen anew after one that does not carry, the
+/// commit of another cut taken for the chosen one's.
+#[test]
+fn carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it() {
+    let (store, said) = log();
+    let (remote, refs, epoch) = placed(&store);
+    let die = noted(&said);
+    let carry = Carry::new(Some(KillAt::CarrySwap(1)), Arc::clone(&die)).expect("a carry hook");
+    let mut make = maker(
+        store.clone(),
+        Arc::clone(&refs),
+        "node-a".into(),
+        remote.id,
+        Some(KillAt::CarrySwap(1)),
+        die,
+        Some(Arc::clone(&carry)),
+    );
+    let mut up = make(epoch);
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    let row = || {
+        block_on(refs.meta_get(remote.id, skyzfs_upload::ROW_KEY))
+            .expect("read")
+            .expect("a row")
+    };
+    reads(&mut local, offered(7, 7, true));
+    asked(&carry, request("t", 6, 7), Answer::Accepted);
+    commit(&mut up, 7, None).expect("cut 7");
+    reads(&mut local, offered(8, 8, false));
+    commit(&mut up, 8, Some(&row())).expect("cut 8");
+    let before = taken(&said);
+    assert!(
+        before.iter().all(|s| !s.starts_with("kill")),
+        "no kill at a cut read before the publish nor at one that does not carry it: {before:?}"
+    );
+    assert!(
+        before.iter().any(|s| s.contains("/seg/")),
+        "segments were put: {before:?}"
+    );
+    reads(&mut local, offered(9, 9, true));
+    // The commit of another cut than the one chosen (not seen in the
+    // daemon, whose commit follows the reading of its cut).
+    carry.committed(CommittedCut {
+        state: STATE,
+        number: 10,
+        group: 10,
+    });
+    assert_eq!(taken(&said), Vec::<String>::new(), "no kill at another cut");
+    commit(&mut up, 9, Some(&row())).expect("cut 9");
+    let said_9 = taken(&said);
+    let n = said_9.len();
+    assert!(n >= 2, "{said_9:?}");
+    assert_eq!(
+        said_9[n - 1],
+        "kill carry-swap:1: after the commit of cut 9 (group 9), which carries publish 1, \
+         landed, before the cut was let go"
+    );
+    assert!(
+        said_9[n - 2].starts_with("put_if") && said_9[n - 2].contains("refs"),
+        "the swap landed first: {said_9:?}"
+    );
+    reads(&mut local, offered(10, 10, true));
+    commit(&mut up, 10, Some(&row())).expect("cut 10");
+    let after = taken(&said);
+    assert!(
+        after.iter().all(|s| !s.starts_with("kill")),
+        "once: {after:?}"
+    );
+}
+
+/// A carry hook only for `carry-put:N` and `carry-swap:N`; an ask whose
+/// asker has gone is passed on so that the uploader finds it gone and
+/// takes nothing, and the other requests of the channel pass unchanged.
+#[test]
+fn a_carry_hook_passes_the_channel_on_as_it_was() {
+    let die = noted(&Said::default());
+    for kill in [
+        None,
+        Some(KillAt::Put(1)),
+        Some(KillAt::Swap(1)),
+        Some(KillAt::Manifest(1)),
+        Some(KillAt::Publish(1)),
+    ] {
+        assert!(Carry::new(kill, Arc::clone(&die)).is_none(), "{kill:?}");
+    }
+    let carry = Carry::new(Some(KillAt::CarrySwap(1)), die).expect("a carry hook");
+    let (reply, answered) = tokio::sync::oneshot::channel();
+    drop(answered);
+    let passed = carry.ask(Control::Ask {
+        request: request("t", 0, 1),
+        rewound: 0,
+        reply,
+    });
+    let Control::Ask { reply, .. } = passed else {
+        panic!("{passed:?}");
+    };
+    assert!(
+        reply.is_closed(),
+        "the asker's going is seen by the uploader"
+    );
+    let (reply, mut answered) = tokio::sync::oneshot::channel();
+    let passed = carry.ask(Control::Progress("t".into(), reply));
+    let Control::Progress(name, reply) = passed else {
+        panic!("{passed:?}");
+    };
+    assert_eq!(name, "t");
+    reply.send(Progress::Pending).expect("sent");
+    assert_eq!(answered.try_recv(), Ok(Progress::Pending));
 }

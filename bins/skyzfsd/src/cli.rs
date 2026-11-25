@@ -138,7 +138,8 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
                  [--commit-delay-ms N] [--request-log PATH] [--request-log-content hash|whole]
                  [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
                  [--refuse-one-fetch start|recovery]
-                 [--kill-at-upload put:N|swap:N|manifest:N|publish:N]";
+                 [--kill-at-upload put:N|swap:N|manifest:N|publish:N]
+                 [--kill-at-upload carry-put:N|carry-swap:N]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -612,6 +613,13 @@ pub enum KillAt {
     /// `publish:N`: once the Nth publish's transaction has landed, before
     /// the uploader knows it.
     Publish(u64),
+    /// `carry-put:N`: once the first segment PUT of the cut chosen to
+    /// carry the Nth publish accepted has landed ([`crate::kill`] says
+    /// which cut is chosen).
+    CarryPut(u64),
+    /// `carry-swap:N`: once the commit of the cut chosen to carry the Nth
+    /// publish accepted has landed, before the cut is let go.
+    CarrySwap(u64),
 }
 
 /// `--refuse-one-fetch`: at which start tag 0's first fetch is sent with
@@ -948,14 +956,14 @@ fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
     }
 }
 
-/// `--kill-at-upload`: `put:N`, `swap:N`, `manifest:N` or `publish:N`, N
-/// from 1.
+/// `--kill-at-upload`: `put:N`, `swap:N`, `manifest:N`, `publish:N`,
+/// `carry-put:N` or `carry-swap:N`, N from 1.
 fn kill_at(text: &str) -> Result<KillAt, UsageError> {
     let name = "--kill-at-upload";
     let bad = || {
         UsageError::Value(
             name.into(),
-            "expected put:N, swap:N, manifest:N or publish:N, N from 1",
+            "expected put:N, swap:N, manifest:N, publish:N, carry-put:N or carry-swap:N, N from 1",
         )
     };
     let (kind, n) = text.split_once(':').ok_or_else(bad)?;
@@ -965,6 +973,8 @@ fn kill_at(text: &str) -> Result<KillAt, UsageError> {
         "swap" => Ok(KillAt::Swap(n)),
         "manifest" => Ok(KillAt::Manifest(n)),
         "publish" => Ok(KillAt::Publish(n)),
+        "carry-put" => Ok(KillAt::CarryPut(n)),
+        "carry-swap" => Ok(KillAt::CarrySwap(n)),
         _ => Err(bad()),
     }
 }

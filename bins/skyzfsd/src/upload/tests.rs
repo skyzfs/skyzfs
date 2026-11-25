@@ -1225,6 +1225,17 @@ fn uploading_from(
     before: impl FnOnce(&Runtime),
     publishes: Publishes,
 ) -> Up {
+    uploading_around(world, take, before, publishes, Plain)
+}
+
+/// [`uploading_from`], with `around` around the uploader.
+fn uploading_around(
+    world: &World,
+    take: bool,
+    before: impl FnOnce(&Runtime),
+    publishes: Publishes,
+    around: impl Around,
+) -> Up {
     world.place(SIZE).expect("made");
     let mut at = start(world.keeper("node-a"), false);
     if take {
@@ -1245,9 +1256,17 @@ fn uploading_from(
         remote().id,
     );
     let (posted, posts) = mpsc::channel();
-    let up = Uploading::start(runtime, keeper, make, desk, publishes, move |shown| {
-        let _ = posted.send(shown);
-    })
+    let up = Uploading::start(
+        runtime,
+        keeper,
+        make,
+        desk,
+        publishes,
+        move |shown| {
+            let _ = posted.send(shown);
+        },
+        around,
+    )
     .expect("started");
     (up, posts, queue, asked)
 }
@@ -1614,6 +1633,90 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
         tellings.recv_timeout(Duration::from_secs(10)),
         Ok(("t".to_owned(), Progress::Withdrawn))
     );
+    assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
+    queue.join().expect("the queue's thread");
+}
+
+/// The hook of `--kill-at-upload carry-swap:N` around the uploader's
+/// thread: each request of the channel reaches the uploader and its
+/// answer the asker, a publish whose asker has gone is not taken, and the
+/// hook counts the publishes accepted. Mutants: the hook's inbox not
+/// read, or its answers not passed on after a post (no answer), an
+/// accepted publish not counted, an ask whose asker went passed on as
+/// still waited for (taken).
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+#[test]
+fn the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted() {
+    use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
+    use skyzfs_upload::{Answer, Control, Progress, Refusal};
+    let world = World::new();
+    let (requests, inbox) = tokio::sync::mpsc::channel(4);
+    let publishes = Publishes {
+        attachment: Some([0xa1; 16]),
+        state: Some([0x5e; 16]),
+        rewound: 0,
+        inbox,
+        told: Box::new(|_, _| {}),
+    };
+    let carry = crate::kill::Carry::new(
+        Some(crate::cli::KillAt::CarrySwap(1)),
+        std::sync::Arc::new(|_: &str| {}),
+    )
+    .expect("a carry hook");
+    let (up, posts, queue, _) = uploading_around(
+        &world,
+        true,
+        |_| {},
+        publishes,
+        std::sync::Arc::clone(&carry),
+    );
+    idle_and_held(&posts);
+    fn within<T>(mut answer: tokio::sync::oneshot::Receiver<T>) -> Option<T> {
+        for _ in 0..1000 {
+            if let Ok(got) = answer.try_recv() {
+                return Some(got);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+    let ask = |name: &str, attachment| Ask {
+        name: name.into(),
+        attachment,
+        state: [0x5e; 16],
+        after: 0,
+        group: 1,
+        manifest: Vec::new(),
+        expiry: EXPIRY_DEFAULT,
+    };
+    let send = |request| {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        requests
+            .blocking_send(Control::Ask {
+                request,
+                rewound: 0,
+                reply,
+            })
+            .expect("sent");
+        answer
+    };
+    assert_eq!(within(send(ask("t", [0xa1; 16]))), Some(Answer::Accepted));
+    assert_eq!(
+        within(send(ask("u", [0xa2; 16]))),
+        Some(Answer::Refused(Refusal::Attachment))
+    );
+    assert_eq!(carry.accepted(), 1);
+    drop(send(ask("w", [0xa1; 16])));
+    let progress = |name: &str| {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        requests
+            .blocking_send(Control::Progress(name.into(), reply))
+            .expect("sent");
+        within(answer)
+    };
+    assert_eq!(progress("t"), Some(Progress::Pending));
+    assert_eq!(progress("w"), Some(Progress::Unknown), "not taken");
+    assert_eq!(carry.accepted(), 1);
     assert_eq!(up.end(false, END_LIMIT), Ended::Kept);
     queue.join().expect("the queue's thread");
 }

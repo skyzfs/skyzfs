@@ -514,6 +514,8 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         ("swap:12", KillAt::Swap(12)),
         ("manifest:1", KillAt::Manifest(1)),
         ("publish:2", KillAt::Publish(2)),
+        ("carry-put:1", KillAt::CarryPut(1)),
+        ("carry-swap:3", KillAt::CarrySwap(3)),
     ] {
         let Ok(Command::Serve(serve)) = kill(spec) else {
             panic!("{spec:?}: {:?}", kill(spec));
@@ -533,6 +535,10 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         "publish:",
         "publish:x",
         "snap:1",
+        "carry-put:0",
+        "carry-swap:",
+        "carry:1",
+        "carry-commit:1",
     ] {
         assert!(matches!(kill(bad), Err(UsageError::Value(..))), "{bad:?}");
     }
