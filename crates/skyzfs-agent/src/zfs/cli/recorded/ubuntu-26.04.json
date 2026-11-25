@@ -1,0 +1,463 @@
+{
+ "records": {
+  "mirror-checkpoint": {
+   "cmd": "zpool checkpoint skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-checkpoint-discard": {
+   "cmd": "zpool checkpoint -d -w skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-get": {
+   "cmd": "zpool get -H -p -o property\\,value guid\\,load_guid\\,multihost\\,readonly\\,checkpoint skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "guid\t16476376150338987236\nload_guid\t9930067105697095545\nmultihost\toff\nreadonly\toff\ncheckpoint\t-\n"
+  },
+  "mirror-get-checkpoint": {
+   "cmd": "zpool get -H -p -o property\\,value guid\\,load_guid\\,multihost\\,readonly\\,checkpoint skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "guid\t16476376150338987236\nload_guid\t9930067105697095545\nmultihost\toff\nreadonly\toff\ncheckpoint\t196608\n"
+  },
+  "mirror-hold-1": {
+   "cmd": "zfs hold -r skyzfs skzqm@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-hold-2": {
+   "cmd": "zfs hold -r skyzfs skzqm@t\n",
+   "rc": 1,
+   "stderr": "cannot hold snapshot 'skzqm@t': tag already exists on this dataset\n",
+   "stdout": ""
+  },
+  "mirror-holds": {
+   "cmd": "zfs holds -H skzqm@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzqm@t\tskyzfs\tWed Nov 25 16:21 2026\n"
+  },
+  "mirror-holds-r": {
+   "cmd": "zfs holds -H -r skzqm@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzqm@t\tskyzfs\tWed Nov 25 16:21 2026\nskzqm/child@t\tskyzfs\tWed Nov 25 16:21 2026\nskzqm/vol@t\tskyzfs\tWed Nov 25 16:21 2026\n"
+  },
+  "mirror-members": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm t < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"members\":{\"skzqm\":\"-8469624383595933232\",\"skzqm/child\":\"-1339969165710018876\",\"skzqm/vol\":\"-5554217455725552327\"}}}"
+  },
+  "mirror-members-absent": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm absent < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"absent\":\"1\"}}"
+  },
+  "mirror-offline": {
+   "cmd": "zpool offline skzqm /mnt/skz-cli-record/m1.img\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-online": {
+   "cmd": "zpool online skzqm /mnt/skz-cli-record/m1.img\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-release-1": {
+   "cmd": "zfs release -r skyzfs skzqm@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-release-2": {
+   "cmd": "zfs release -r skyzfs skzqm@t\n",
+   "rc": 1,
+   "stderr": "cannot release hold from snapshot 'skzqm@t': no such tag on this dataset\n",
+   "stdout": ""
+  },
+  "mirror-resilver-status": {
+   "cmd": "zpool status -P skzqm\n",
+   "note": "not caught: no output of 100 matched /resilver in progress/; this is the last\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: resilvered 513M in 00:00:03 with 0 errors on Wed Nov 25 16:22:17 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-resilver-status-g": {
+   "cmd": "zpool status -P -g skzqm\n",
+   "note": "not caught: no output of 100 matched /resilver in progress/; this is the last\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: resilvered 513M in 00:00:03 with 0 errors on Wed Nov 25 16:22:17 2026\nconfig:\n\n\tNAME                      STATE     READ WRITE CKSUM\n\tskzqm                     ONLINE       0     0     0\n\t  9501878435615107014     ONLINE       0     0     0\n\t    12234803531026141483  ONLINE       0     0     0\n\t    1683628236547958467   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-resilvered": {
+   "cmd": "zpool status -P skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: resilvered 513M in 00:00:03 with 0 errors on Wed Nov 25 16:22:17 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-scrub": {
+   "cmd": "zpool scrub skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-scrub-again": {
+   "cmd": "zpool scrub skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-scrub-canceled": {
+   "cmd": "zpool status -P skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: scrub canceled on Wed Nov 25 16:21:52 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-scrub-pause": {
+   "cmd": "zpool scrub -p skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-scrub-paused": {
+   "cmd": "zpool status -P skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: scrub paused since Wed Nov 25 16:21:52 2026\n\tscrub started on Wed Nov 25 16:21:52 2026\n\t1.00G / 1.00G scanned, 1.00G / 1.00G issued\n\t0B repaired, 99.96% done\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-scrub-status": {
+   "cmd": "zpool status -P skzqm\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: scrub in progress since Wed Nov 25 16:21:51 2026\n\t1.00G / 1.00G scanned, 914M / 1.00G issued at 914M/s\n\t0B repaired, 89.13% done, 00:00:00 to go\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-scrub-status-g": {
+   "cmd": "zpool status -P -g skzqm\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\n  scan: scrub in progress since Wed Nov 25 16:21:51 2026\n\t1.00G / 1.00G scanned, 1.00G / 1.00G issued at 1.00G/s\n\t0B repaired, 99.96% done, 00:00:00 to go\nconfig:\n\n\tNAME                      STATE     READ WRITE CKSUM\n\tskzqm                     ONLINE       0     0     0\n\t  9501878435615107014     ONLINE       0     0     0\n\t    12234803531026141483  ONLINE       0     0     0\n\t    1683628236547958467   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-scrub-stop": {
+   "cmd": "zpool scrub -s skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-snapshot-1": {
+   "cmd": "zfs program -j -t 100000000 -m 104857600 skzqm - skzqm t skyzfs:assist < snapshot.lua\n",
+   "rc": 1,
+   "stderr": "Channel program execution failed:\n[string \"channel program\"]:42: attempt to call global 'pcall' (a nil value)\nstack traceback:\n\t[string \"channel program\"]:42: in main chunk\n",
+   "stdout": ""
+  },
+  "mirror-snapshot-2": {
+   "cmd": "zfs program -j -t 100000000 -m 104857600 skzqm - skzqm t skyzfs:assist < snapshot.lua\n",
+   "rc": 1,
+   "stderr": "Channel program execution failed:\n[string \"channel program\"]:42: attempt to call global 'pcall' (a nil value)\nstack traceback:\n\t[string \"channel program\"]:42: in main chunk\n",
+   "stdout": ""
+  },
+  "mirror-snapshot-cli": {
+   "cmd": "zfs snapshot -r skzqm@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "mirror-status": {
+   "cmd": "zpool status -P skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tskzqm                           ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m0.img  ONLINE       0     0     0\n\t    /mnt/skz-cli-record/m1.img  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-status-g": {
+   "cmd": "zpool status -P -g skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzqm\n state: ONLINE\nconfig:\n\n\tNAME                      STATE     READ WRITE CKSUM\n\tskzqm                     ONLINE       0     0     0\n\t  9501878435615107014     ONLINE       0     0     0\n\t    12234803531026141483  ONLINE       0     0     0\n\t    1683628236547958467   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "mirror-tagged": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm skyzfs < tagged.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"tagged\":{}}}"
+  },
+  "mirror-tagged-held": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm skyzfs < tagged.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"tagged\":{\"t\":\"1\"}}}"
+  },
+  "nocacheflush": {
+   "cmd": "cat /sys/module/zfs/parameters/zfs_nocacheflush\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "0\n"
+  },
+  "none-get": {
+   "cmd": "zpool get -H -p -o property\\,value guid\\,load_guid\\,multihost\\,readonly\\,checkpoint skznone\n",
+   "rc": 1,
+   "stderr": "Cannot get properties of skznone: no such pool available.\n",
+   "stdout": ""
+  },
+  "none-hold": {
+   "cmd": "zfs hold -r skyzfs skznone@t\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': dataset does not exist\n",
+   "stdout": ""
+  },
+  "none-holds": {
+   "cmd": "zfs holds -H skznone@t\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone@t': dataset does not exist\nno datasets available\n",
+   "stdout": ""
+  },
+  "none-holds-r": {
+   "cmd": "zfs holds -H -r skznone@t\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': dataset does not exist\nno datasets available\n",
+   "stdout": ""
+  },
+  "none-members": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skznone - skznone t < members.lua\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\ncannot open pool 'skznone'\n",
+   "stdout": ""
+  },
+  "none-release": {
+   "cmd": "zfs release -r skyzfs skznone@t\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': dataset does not exist\n",
+   "stdout": ""
+  },
+  "none-snapshot-1": {
+   "cmd": "zfs program -j -t 100000000 -m 104857600 skznone - skznone t skyzfs:assist < snapshot.lua\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\ncannot open pool 'skznone'\n",
+   "stdout": ""
+  },
+  "none-status": {
+   "cmd": "zpool status -P skznone\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\n",
+   "stdout": ""
+  },
+  "none-status-g": {
+   "cmd": "zpool status -P -g skznone\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\n",
+   "stdout": ""
+  },
+  "none-tagged": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skznone - skznone skyzfs < tagged.lua\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\ncannot open pool 'skznone'\n",
+   "stdout": ""
+  },
+  "rig-attach": {
+   "cmd": "zpool attach -f skzq /dev/ublkb0 /dev/ublkb1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-checkpoint": {
+   "cmd": "zpool checkpoint skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-checkpoint-discard": {
+   "cmd": "zpool checkpoint -d -w skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-get": {
+   "cmd": "zpool get -H -p -o property\\,value guid\\,load_guid\\,multihost\\,readonly\\,checkpoint skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "guid\t4270366141832664214\nload_guid\t2506374143759571741\nmultihost\toff\nreadonly\toff\ncheckpoint\t-\n"
+  },
+  "rig-get-checkpoint": {
+   "cmd": "zpool get -H -p -o property\\,value guid\\,load_guid\\,multihost\\,readonly\\,checkpoint skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "guid\t4270366141832664214\nload_guid\t2506374143759571741\nmultihost\toff\nreadonly\toff\ncheckpoint\t184320\n"
+  },
+  "rig-hold-1": {
+   "cmd": "zfs hold -r skyzfs skzq@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-hold-2": {
+   "cmd": "zfs hold -r skyzfs skzq@t\n",
+   "rc": 1,
+   "stderr": "cannot hold snapshot 'skzq@t': tag already exists on this dataset\n",
+   "stdout": ""
+  },
+  "rig-holds": {
+   "cmd": "zfs holds -H skzq@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzq@t\tskyzfs\tWed Nov 25 16:21 2026\n"
+  },
+  "rig-holds-r": {
+   "cmd": "zfs holds -H -r skzq@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzq@t\tskyzfs\tWed Nov 25 16:21 2026\nskzq/child@t\tskyzfs\tWed Nov 25 16:21 2026\nskzq/vol@t\tskyzfs\tWed Nov 25 16:21 2026\n"
+  },
+  "rig-members": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"members\":{\"skzq\":\"-5555226786242157994\",\"skzq/child\":\"-6678684705152067317\",\"skzq/vol\":\"3958339386605656179\"}}}"
+  },
+  "rig-members-absent": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq absent < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"absent\":\"1\"}}"
+  },
+  "rig-release-1": {
+   "cmd": "zfs release -r skyzfs skzq@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-release-2": {
+   "cmd": "zfs release -r skyzfs skzq@t\n",
+   "rc": 1,
+   "stderr": "cannot release hold from snapshot 'skzq@t': no such tag on this dataset\n",
+   "stdout": ""
+  },
+  "rig-resilver-status": {
+   "cmd": "zpool status -P skzq\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\nstatus: One or more devices is currently being resilvered.  The pool will\n\tcontinue to function, possibly in a degraded state.\naction: Wait for the resilver to complete.\n  scan: resilver in progress since Wed Nov 25 16:21:53 2026\n\t1.00G / 1.00G scanned, 22.1M / 1.00G issued at 22.1M/s\n\t6.27M resilvered, 2.16% done, 00:00:45 to go\nconfig:\n\n\tNAME             STATE     READ WRITE CKSUM\n\tskzq             ONLINE       0     0     0\n\t  mirror-0       ONLINE       0     0     0\n\t    /dev/ublkb0  ONLINE       0     0     0\n\t    /dev/ublkb1  ONLINE       0     0     0  (resilvering)\n\tlogs\t\n\t  /dev/loop0     ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-resilver-status-g": {
+   "cmd": "zpool status -P -g skzq\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\nstatus: One or more devices is currently being resilvered.  The pool will\n\tcontinue to function, possibly in a degraded state.\naction: Wait for the resilver to complete.\n  scan: resilver in progress since Wed Nov 25 16:21:53 2026\n\t1.00G / 1.00G scanned, 25.5M / 1.00G issued at 25.5M/s\n\t9.66M resilvered, 2.49% done, 00:00:39 to go\nconfig:\n\n\tNAME                      STATE     READ WRITE CKSUM\n\tskzq                      ONLINE       0     0     0\n\t  18147170327720314223    ONLINE       0     0     0\n\t    16271519747545802741  ONLINE       0     0     0\n\t    13055505963219439480  ONLINE       0     0     0  (resilvering)\n\tlogs\t\n\t  15366842799246746635    ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-resilvered": {
+   "cmd": "zpool status -P skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\n  scan: resilvered 1.00G in 00:00:16 with 0 errors on Wed Nov 25 16:22:09 2026\nconfig:\n\n\tNAME             STATE     READ WRITE CKSUM\n\tskzq             ONLINE       0     0     0\n\t  mirror-0       ONLINE       0     0     0\n\t    /dev/ublkb0  ONLINE       0     0     0\n\t    /dev/ublkb1  ONLINE       0     0     0\n\tlogs\t\n\t  /dev/loop0     ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-scrub": {
+   "cmd": "zpool scrub skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-scrub-again": {
+   "cmd": "zpool scrub skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-scrub-canceled": {
+   "cmd": "zpool status -P skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\n  scan: scrub canceled on Wed Nov 25 16:21:47 2026\nconfig:\n\n\tNAME           STATE     READ WRITE CKSUM\n\tskzq           ONLINE       0     0     0\n\t  /dev/ublkb0  ONLINE       0     0     0\n\tlogs\t\n\t  /dev/loop0   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-scrub-pause": {
+   "cmd": "zpool scrub -p skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-scrub-paused": {
+   "cmd": "zpool status -P skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\n  scan: scrub paused since Wed Nov 25 16:21:47 2026\n\tscrub started on Wed Nov 25 16:21:46 2026\n\t1.00G / 1.00G scanned, 235M / 1.00G issued\n\t0B repaired, 22.89% done\nconfig:\n\n\tNAME           STATE     READ WRITE CKSUM\n\tskzq           ONLINE       0     0     0\n\t  /dev/ublkb0  ONLINE       0     0     0\n\tlogs\t\n\t  /dev/loop0   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-scrub-status": {
+   "cmd": "zpool status -P skzq\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\n  scan: scrub in progress since Wed Nov 25 16:21:39 2026\n\t1.00G / 1.00G scanned, 23.2M / 1.00G issued at 23.2M/s\n\t0B repaired, 2.27% done, 00:00:43 to go\nconfig:\n\n\tNAME           STATE     READ WRITE CKSUM\n\tskzq           ONLINE       0     0     0\n\t  /dev/ublkb0  ONLINE       0     0     0\n\tlogs\t\n\t  /dev/loop0   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-scrub-status-g": {
+   "cmd": "zpool status -P -g skzq\n",
+   "note": "caught at try 1\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\n  scan: scrub in progress since Wed Nov 25 16:21:39 2026\n\t1.00G / 1.00G scanned, 24.4M / 1.00G issued at 24.4M/s\n\t0B repaired, 2.38% done, 00:00:41 to go\nconfig:\n\n\tNAME                    STATE     READ WRITE CKSUM\n\tskzq                    ONLINE       0     0     0\n\t  16271519747545802741  ONLINE       0     0     0\n\tlogs\t\n\t  15366842799246746635  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-scrub-stop": {
+   "cmd": "zpool scrub -s skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-snapshot-1": {
+   "cmd": "zfs program -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:assist < snapshot.lua\n",
+   "rc": 1,
+   "stderr": "Channel program execution failed:\n[string \"channel program\"]:42: attempt to call global 'pcall' (a nil value)\nstack traceback:\n\t[string \"channel program\"]:42: in main chunk\n",
+   "stdout": ""
+  },
+  "rig-snapshot-2": {
+   "cmd": "zfs program -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:assist < snapshot.lua\n",
+   "rc": 1,
+   "stderr": "Channel program execution failed:\n[string \"channel program\"]:42: attempt to call global 'pcall' (a nil value)\nstack traceback:\n\t[string \"channel program\"]:42: in main chunk\n",
+   "stdout": ""
+  },
+  "rig-snapshot-cli": {
+   "cmd": "zfs snapshot -r skzq@t\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": ""
+  },
+  "rig-status": {
+   "cmd": "zpool status -P skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\nconfig:\n\n\tNAME           STATE     READ WRITE CKSUM\n\tskzq           ONLINE       0     0     0\n\t  /dev/ublkb0  ONLINE       0     0     0\n\tlogs\t\n\t  /dev/loop0   ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-status-g": {
+   "cmd": "zpool status -P -g skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "  pool: skzq\n state: ONLINE\nconfig:\n\n\tNAME                    STATE     READ WRITE CKSUM\n\tskzq                    ONLINE       0     0     0\n\t  16271519747545802741  ONLINE       0     0     0\n\tlogs\t\n\t  15366842799246746635  ONLINE       0     0     0\n\nerrors: No known data errors\n"
+  },
+  "rig-tagged": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq skyzfs < tagged.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"tagged\":{}}}"
+  },
+  "rig-tagged-held": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq skyzfs < tagged.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"tagged\":{\"t\":\"1\"}}}"
+  },
+  "version": {
+   "cmd": "zfs version\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "zfs-2.4.1-1ubuntu5.1\nzfs-kmod-2.4.1-1ubuntu5.1\n"
+  }
+ },
+ "source": "testing's recorder tests/kernel/zfs-cli-record.sh (skyzfs-testing bd37422), run https://github.com/skyzfs/skyzfs/actions/runs/45652653655, artifact zfs-cli-ubuntu-26.04; Lua at 366b217"
+}
