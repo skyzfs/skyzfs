@@ -1,0 +1,24 @@
+[
+ {
+  "id": "P6",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle's limit one second late",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'error after 31 s, 31 sleeps', want 'error after 30 s, 30 sleeps')"
+  ],
+  "seconds": 26.4,
+  "clean_after": true
+ },
+ {
+  "id": "P8",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle's limit never an error",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'no end in 20 s', want 'error after 30 s, 30 sleeps')"
+  ],
+  "seconds": 44.9,
+  "clean_after": true
+ }
+]

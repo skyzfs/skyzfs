@@ -1,0 +1,243 @@
+cells: 12096 at the head, 12096 at cf53e94
+
+1. Cells that differ (action or report)
+  288 cells; missing at either head: 0
+       2  stalls-8 refused stopped  Release                -> Done { commit: [COMMIT], report: None } report None
+       2  stalls-8 refused stopped  Release                -> Done { commit: [OTHER], report: None } report None
+       2  stalls-8 refused stopped  Release                -> Look                   report None
+       6  stalls-8 refused stopped  Release                -> Release                report Some(Refused(Stopped))
+       8  stalls-8 refused stopped  Wait                   -> Abandon(Destroyed)     report Some(Refused(Stopped))
+      32  stalls-8 refused stopped  Wait                   -> Abandon(NameTaken)     report Some(Refused(Stopped))
+       8  stalls-8 refused stopped  Wait                   -> Abandon(NoProgress)    report Some(Refused(Stopped))
+      14  stalls-8 refused stopped  Wait                   -> Done { commit: [COMMIT], report: None } report None
+       8  stalls-8 refused stopped  Wait                   -> Done { commit: [COMMIT], report: Some(SnapshotGone) } report None
+      14  stalls-8 refused stopped  Wait                   -> Done { commit: [OTHER], report: None } report None
+       8  stalls-8 refused stopped  Wait                   -> Done { commit: [OTHER], report: Some(SnapshotGone) } report None
+      22  stalls-8 refused stopped  Wait                   -> Look                   report None
+      18  stalls-8 refused stopped  Wait                   -> Release                report Some(Refused(Stopped))
+       2  too-old  refused stopped  Release                -> Done { commit: [COMMIT], report: None } report None
+       2  too-old  refused stopped  Release                -> Done { commit: [OTHER], report: None } report None
+       2  too-old  refused stopped  Release                -> Look                   report None
+       6  too-old  refused stopped  Release                -> Release                report Some(Refused(Stopped))
+       8  too-old  refused stopped  Wait                   -> Abandon(Destroyed)     report Some(Refused(Stopped))
+      32  too-old  refused stopped  Wait                   -> Abandon(NameTaken)     report Some(Refused(Stopped))
+       8  too-old  refused stopped  Wait                   -> Abandon(TooOld)        report Some(Refused(Stopped))
+      14  too-old  refused stopped  Wait                   -> Done { commit: [COMMIT], report: None } report None
+       8  too-old  refused stopped  Wait                   -> Done { commit: [COMMIT], report: Some(SnapshotGone) } report None
+      14  too-old  refused stopped  Wait                   -> Done { commit: [OTHER], report: None } report None
+       8  too-old  refused stopped  Wait                   -> Done { commit: [OTHER], report: Some(SnapshotGone) } report None
+      22  too-old  refused stopped  Wait                   -> Look                   report None
+      18  too-old  refused stopped  Wait                   -> Release                report Some(Refused(Stopped))
+  answers among them: ['refused stopped']
+
+2. The ended arm at the head: release or give-up cells, by what allows them
+    216  A: a withdraw answered withdrawn/unknown/expired, then look
+   1728  B: an end of L7's list (stopped included), then look
+    216  C: asked, at held_until, an answer that cannot tell (L5)
+      0  anything else
+  wait cells by answer:
+      264  (none: away)
+      264  accepted
+      264  cuts
+      264  refused busy
+      264  refused ended
+      264  refused no-answer
+      264  refused no-upload
+      264  snap
+      264  unreadable
+  look where a sight is already there: 0 cells
+
+3. stopped against rewound, cell by cell
+      8  stalls-8 gone         -                 same    stopped Look                   rewound Look
+      8  stalls-8 gone         absent            DIFFERS stopped Abandon(Destroyed)     rewound Abandon(Rewound)
+      8  stalls-8 gone         not-ours          same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  stalls-8 gone         ours              same    stopped Done { commit: [COMMIT], report: Some(SnapshotGone) } rewound Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      8  stalls-8 gone         ours-other-commit same    stopped Done { commit: [OTHER], report: Some(SnapshotGone) } rewound Done { commit: [OTHER], report: Some(SnapshotGone) }
+      8  stalls-8 gone         unreadable        same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  stalls-8 whole-held   -                 same    stopped Look                   rewound Look
+      8  stalls-8 whole-held   absent            same    stopped Release                rewound Release
+      8  stalls-8 whole-held   not-ours          same    stopped Release                rewound Release
+      8  stalls-8 whole-held   ours              same    stopped Done { commit: [COMMIT], report: None } rewound Done { commit: [COMMIT], report: None }
+      8  stalls-8 whole-held   ours-other-commit same    stopped Done { commit: [OTHER], report: None } rewound Done { commit: [OTHER], report: None }
+      8  stalls-8 whole-held   unreadable        same    stopped Release                rewound Release
+      8  stalls-8 whole-unheld -                 same    stopped Look                   rewound Look
+      8  stalls-8 whole-unheld absent            same    stopped Abandon(NoProgress)    rewound Abandon(NoProgress)
+      8  stalls-8 whole-unheld not-ours          same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  stalls-8 whole-unheld ours              same    stopped Done { commit: [COMMIT], report: None } rewound Done { commit: [COMMIT], report: None }
+      8  stalls-8 whole-unheld ours-other-commit same    stopped Done { commit: [OTHER], report: None } rewound Done { commit: [OTHER], report: None }
+      8  stalls-8 whole-unheld unreadable        same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  too-old  gone         -                 same    stopped Look                   rewound Look
+      8  too-old  gone         absent            DIFFERS stopped Abandon(Destroyed)     rewound Abandon(Rewound)
+      8  too-old  gone         not-ours          same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  too-old  gone         ours              same    stopped Done { commit: [COMMIT], report: Some(SnapshotGone) } rewound Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      8  too-old  gone         ours-other-commit same    stopped Done { commit: [OTHER], report: Some(SnapshotGone) } rewound Done { commit: [OTHER], report: Some(SnapshotGone) }
+      8  too-old  gone         unreadable        same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  too-old  whole-held   -                 same    stopped Look                   rewound Look
+      8  too-old  whole-held   absent            same    stopped Release                rewound Release
+      8  too-old  whole-held   not-ours          same    stopped Release                rewound Release
+      8  too-old  whole-held   ours              same    stopped Done { commit: [COMMIT], report: None } rewound Done { commit: [COMMIT], report: None }
+      8  too-old  whole-held   ours-other-commit same    stopped Done { commit: [OTHER], report: None } rewound Done { commit: [OTHER], report: None }
+      8  too-old  whole-held   unreadable        same    stopped Release                rewound Release
+      8  too-old  whole-unheld -                 same    stopped Look                   rewound Look
+      8  too-old  whole-unheld absent            same    stopped Abandon(TooOld)        rewound Abandon(TooOld)
+      8  too-old  whole-unheld not-ours          same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  too-old  whole-unheld ours              same    stopped Done { commit: [COMMIT], report: None } rewound Done { commit: [COMMIT], report: None }
+      8  too-old  whole-unheld ours-other-commit same    stopped Done { commit: [OTHER], report: None } rewound Done { commit: [OTHER], report: None }
+      8  too-old  whole-unheld unreadable        same    stopped Abandon(NameTaken)     rewound Abandon(NameTaken)
+      8  young    gone         -                 DIFFERS stopped Wait                   rewound Look
+      8  young    gone         absent            DIFFERS stopped Wait                   rewound Abandon(Rewound)
+      8  young    gone         not-ours          DIFFERS stopped Wait                   rewound Abandon(NameTaken)
+      8  young    gone         ours              DIFFERS stopped Wait                   rewound Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      8  young    gone         ours-other-commit DIFFERS stopped Wait                   rewound Done { commit: [OTHER], report: Some(SnapshotGone) }
+      8  young    gone         unreadable        DIFFERS stopped Wait                   rewound Abandon(NameTaken)
+      2  young    whole-held   -                 DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   -                 DIFFERS stopped Wait                   rewound AskAnew
+      2  young    whole-held   absent            DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   absent            DIFFERS stopped Wait                   rewound AskAnew
+      2  young    whole-held   not-ours          DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   not-ours          DIFFERS stopped Wait                   rewound AskAnew
+      2  young    whole-held   ours              DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   ours              DIFFERS stopped Wait                   rewound AskAnew
+      2  young    whole-held   ours-other-commit DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   ours-other-commit DIFFERS stopped Wait                   rewound AskAnew
+      2  young    whole-held   unreadable        DIFFERS stopped Release                rewound AskAnew
+      6  young    whole-held   unreadable        DIFFERS stopped Wait                   rewound AskAnew
+      8  young    whole-unheld -                 DIFFERS stopped Wait                   rewound Hold
+      8  young    whole-unheld absent            DIFFERS stopped Wait                   rewound Hold
+      8  young    whole-unheld not-ours          DIFFERS stopped Wait                   rewound Hold
+      8  young    whole-unheld ours              DIFFERS stopped Wait                   rewound Hold
+      8  young    whole-unheld ours-other-commit DIFFERS stopped Wait                   rewound Hold
+      8  young    whole-unheld unreadable        DIFFERS stopped Wait                   rewound Hold
+  stopped, by state (the flag and the look folded):
+      2  stalls-8 / asked / at-until / gone / Abandon(Destroyed)
+      4  stalls-8 / asked / at-until / gone / Abandon(NameTaken)
+      2  stalls-8 / asked / at-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  stalls-8 / asked / at-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  stalls-8 / asked / at-until / gone / Look
+      2  stalls-8 / asked / at-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / asked / at-until / whole-held / Done { commit: [OTHER], report: None }
+      2  stalls-8 / asked / at-until / whole-held / Look
+      6  stalls-8 / asked / at-until / whole-held / Release
+      4  stalls-8 / asked / at-until / whole-unheld / Abandon(NameTaken)
+      2  stalls-8 / asked / at-until / whole-unheld / Abandon(NoProgress)
+      2  stalls-8 / asked / at-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / asked / at-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  stalls-8 / asked / at-until / whole-unheld / Look
+      2  stalls-8 / asked / before-until / gone / Abandon(Destroyed)
+      4  stalls-8 / asked / before-until / gone / Abandon(NameTaken)
+      2  stalls-8 / asked / before-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  stalls-8 / asked / before-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  stalls-8 / asked / before-until / gone / Look
+      2  stalls-8 / asked / before-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / asked / before-until / whole-held / Done { commit: [OTHER], report: None }
+      2  stalls-8 / asked / before-until / whole-held / Look
+      6  stalls-8 / asked / before-until / whole-held / Release
+      4  stalls-8 / asked / before-until / whole-unheld / Abandon(NameTaken)
+      2  stalls-8 / asked / before-until / whole-unheld / Abandon(NoProgress)
+      2  stalls-8 / asked / before-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / asked / before-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  stalls-8 / asked / before-until / whole-unheld / Look
+      2  stalls-8 / held / at-until / gone / Abandon(Destroyed)
+      4  stalls-8 / held / at-until / gone / Abandon(NameTaken)
+      2  stalls-8 / held / at-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  stalls-8 / held / at-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  stalls-8 / held / at-until / gone / Look
+      2  stalls-8 / held / at-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / held / at-until / whole-held / Done { commit: [OTHER], report: None }
+      2  stalls-8 / held / at-until / whole-held / Look
+      6  stalls-8 / held / at-until / whole-held / Release
+      4  stalls-8 / held / at-until / whole-unheld / Abandon(NameTaken)
+      2  stalls-8 / held / at-until / whole-unheld / Abandon(NoProgress)
+      2  stalls-8 / held / at-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / held / at-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  stalls-8 / held / at-until / whole-unheld / Look
+      2  stalls-8 / held / before-until / gone / Abandon(Destroyed)
+      4  stalls-8 / held / before-until / gone / Abandon(NameTaken)
+      2  stalls-8 / held / before-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  stalls-8 / held / before-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  stalls-8 / held / before-until / gone / Look
+      2  stalls-8 / held / before-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / held / before-until / whole-held / Done { commit: [OTHER], report: None }
+      2  stalls-8 / held / before-until / whole-held / Look
+      6  stalls-8 / held / before-until / whole-held / Release
+      4  stalls-8 / held / before-until / whole-unheld / Abandon(NameTaken)
+      2  stalls-8 / held / before-until / whole-unheld / Abandon(NoProgress)
+      2  stalls-8 / held / before-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  stalls-8 / held / before-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  stalls-8 / held / before-until / whole-unheld / Look
+      2  too-old / asked / at-until / gone / Abandon(Destroyed)
+      4  too-old / asked / at-until / gone / Abandon(NameTaken)
+      2  too-old / asked / at-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  too-old / asked / at-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  too-old / asked / at-until / gone / Look
+      2  too-old / asked / at-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  too-old / asked / at-until / whole-held / Done { commit: [OTHER], report: None }
+      2  too-old / asked / at-until / whole-held / Look
+      6  too-old / asked / at-until / whole-held / Release
+      4  too-old / asked / at-until / whole-unheld / Abandon(NameTaken)
+      2  too-old / asked / at-until / whole-unheld / Abandon(TooOld)
+      2  too-old / asked / at-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  too-old / asked / at-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  too-old / asked / at-until / whole-unheld / Look
+      2  too-old / asked / before-until / gone / Abandon(Destroyed)
+      4  too-old / asked / before-until / gone / Abandon(NameTaken)
+      2  too-old / asked / before-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  too-old / asked / before-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  too-old / asked / before-until / gone / Look
+      2  too-old / asked / before-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  too-old / asked / before-until / whole-held / Done { commit: [OTHER], report: None }
+      2  too-old / asked / before-until / whole-held / Look
+      6  too-old / asked / before-until / whole-held / Release
+      4  too-old / asked / before-until / whole-unheld / Abandon(NameTaken)
+      2  too-old / asked / before-until / whole-unheld / Abandon(TooOld)
+      2  too-old / asked / before-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  too-old / asked / before-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  too-old / asked / before-until / whole-unheld / Look
+      2  too-old / held / at-until / gone / Abandon(Destroyed)
+      4  too-old / held / at-until / gone / Abandon(NameTaken)
+      2  too-old / held / at-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  too-old / held / at-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  too-old / held / at-until / gone / Look
+      2  too-old / held / at-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  too-old / held / at-until / whole-held / Done { commit: [OTHER], report: None }
+      2  too-old / held / at-until / whole-held / Look
+      6  too-old / held / at-until / whole-held / Release
+      4  too-old / held / at-until / whole-unheld / Abandon(NameTaken)
+      2  too-old / held / at-until / whole-unheld / Abandon(TooOld)
+      2  too-old / held / at-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  too-old / held / at-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  too-old / held / at-until / whole-unheld / Look
+      2  too-old / held / before-until / gone / Abandon(Destroyed)
+      4  too-old / held / before-until / gone / Abandon(NameTaken)
+      2  too-old / held / before-until / gone / Done { commit: [COMMIT], report: Some(SnapshotGone) }
+      2  too-old / held / before-until / gone / Done { commit: [OTHER], report: Some(SnapshotGone) }
+      2  too-old / held / before-until / gone / Look
+      2  too-old / held / before-until / whole-held / Done { commit: [COMMIT], report: None }
+      2  too-old / held / before-until / whole-held / Done { commit: [OTHER], report: None }
+      2  too-old / held / before-until / whole-held / Look
+      6  too-old / held / before-until / whole-held / Release
+      4  too-old / held / before-until / whole-unheld / Abandon(NameTaken)
+      2  too-old / held / before-until / whole-unheld / Abandon(TooOld)
+      2  too-old / held / before-until / whole-unheld / Done { commit: [COMMIT], report: None }
+      2  too-old / held / before-until / whole-unheld / Done { commit: [OTHER], report: None }
+      2  too-old / held / before-until / whole-unheld / Look
+     12  young / asked / at-until / gone / Wait
+     12  young / asked / at-until / whole-held / Release
+     12  young / asked / at-until / whole-unheld / Wait
+     12  young / asked / before-until / gone / Wait
+     12  young / asked / before-until / whole-held / Wait
+     12  young / asked / before-until / whole-unheld / Wait
+     12  young / held / at-until / gone / Wait
+     12  young / held / at-until / whole-held / Wait
+     12  young / held / at-until / whole-unheld / Wait
+     12  young / held / before-until / gone / Wait
+     12  young / held / before-until / whole-held / Wait
+     12  young / held / before-until / whole-unheld / Wait
+
+4. The report
+  cells where the report is not as L7 says: 0
+  cells with a report: 1728; not too old: 0
+      72  stalls-8 / refused rewound / Some(Refused(Rewound))
+      72  stalls-8 / refused stopped / Some(Refused(Stopped))
+      72  too-old / refused rewound / Some(Refused(Rewound))
+      72  too-old / refused stopped / Some(Refused(Stopped))

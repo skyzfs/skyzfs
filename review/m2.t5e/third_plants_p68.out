@@ -1,0 +1,4 @@
+baseline {'tests/kernel/cut-record.sh': ([], 25.2)}
+P6   KILLED    pidle's limit one second late (26.4 s)  by test_cut_record.sh (FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'error after 31 s, 31 sleeps', want 'error after 30 s, 30 sleeps')
+P8   KILLED    pidle's limit never an error (44.9 s)  by test_cut_record.sh (FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'no end in 20 s', want 'error after 30 s, 30 sleeps')
+restored {'tests/kernel/cut-record.sh': []}

@@ -1,2 +1,12 @@
 # 58fc660; rustc 1.100.0 (0ef1bc386 2026-11-09)
 fmt rc=0
+    Finished `dev` profile [optimized] target(s) in 59.88s
+clippy plain rc=0
+    Finished `dev` profile [optimized] target(s) in 27.42s
+clippy test-hooks rc=0
+    Finished `dev` profile [optimized] target(s) in 3.46s
+clippy control-test-program rc=0
+test plain rc=0: passed 1775 failed 0 ignored 16 in 118 test binaries
+test hooks rc=0: passed 184 failed 0 ignored 0 in 4 test binaries
+test ctp rc=0: passed 37 failed 0 ignored 11 in 4 test binaries
+/dev/vda        252G   36G  2.8G  93% /

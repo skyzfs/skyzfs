@@ -1,0 +1,5 @@
+# X12b (the report de-duplicated by code alone) against the scratch test
+# review5_two_publishes_ended_by_one_stop_are_each_reported (rec146.rs), at cd3a67c:
+two, one stop: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld)), ("skz-20261125T010001Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds []
+thread 'engine::tests::review5_two_publishes_ended_by_one_stop_are_each_reported' panicked (reports.len() == 2 fails)
+test result: FAILED. 0 passed; 1 failed

@@ -1,0 +1,27 @@
+# The scratch tests at cd3a67c (scratch146.py, rec146.rs, plan146.rs), the build lines dropped
+running 7 tests
+test engine::tests::review5_a_publish_asked_anew_after_the_stop ... asked anew after the stop: at 700 s asks 101 saves 100 looks 99; 600 s later asks 701 saves 700 looks 699; end Ok(()) at 7200 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 6601, saves 6600, looks 6601, withdraws 1
+ok
+test engine::tests::review5_a_publish_begun_after_the_uploader_stopped ... begun after the stop, bound 600 s: settled Ok(()) at 600 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 600, withdraws 1
+begun after the stop, bound 601 s: settled Ok(()) at 601 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 601, withdraws 1
+ok
+test engine::tests::review5_stopped_asked_waits_until_the_bound ... stopped, asked: at 300 s Err("still under way: skz-20261125T010000Z") holds ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"]; at 1500 s Err("still under way: skz-20261125T010000Z") holds [] asks 1; end Ok(()) at 3600 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 1, withdraws 0
+ok
+test engine::tests::review5_stopped_held_keeps_its_hold_until_the_bound ... stopped, held: at 1800 s Err("still under way: skz-20261125T010000Z") holds ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"]; end Ok(()) at 3600 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 0, withdraws 0
+ok
+test engine::tests::review5_stopped_too_old_is_given_up_and_reported ... stopped, too old: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], withdraws 1, at 60 s
+ok
+test engine::tests::review5_two_publishes_ended_by_one_stop_are_each_reported ... two, one stop: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld)), ("skz-20261125T010001Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped)), ("skz-20261125T010001Z", Refused(Stopped))], holds []
+ok
+test plan::tests::review5_the_ended_arm_in_full ... TABLE	ended	phase	time	pool	withdrawn	snap	answer	action	report
+ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.12s
+
+# The two loop tests at cf53e94 (the base of #146's last look), the same scratch
+running 2 tests
+test engine::tests::review5_a_publish_asked_anew_after_the_stop ... asked anew after the stop: at 700 s asks 101 saves 100 looks 99; 600 s later asks 701 saves 700 looks 699; end Ok(()) at 7200 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 6601, saves 6600, looks 6601, withdraws 1
+ok
+test engine::tests::review5_a_publish_begun_after_the_uploader_stopped ... begun after the stop, bound 600 s: settled Ok(()) at 600 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 600, withdraws 1
+begun after the stop, bound 601 s: settled Ok(()) at 601 s, outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [], holds [], asks 601, withdraws 1
+ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.06s

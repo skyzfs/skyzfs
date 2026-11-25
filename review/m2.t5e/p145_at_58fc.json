@@ -568,5 +568,64 @@
    "test_cut_record.sh"
   ],
   "clean_after": true
+ },
+ {
+  "id": "S13",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "zfs_txg_history not raised",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "S14",
+  "file": ".github/workflows/skyzfs-publish-rig.yml",
+  "what": "the workflow's default without passist",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "L4y",
+  "file": "tests/kernel/publish_check.py",
+  "what": "#141's L4 again: f1 not in ABSENT",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "R46y",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "#141's R46 again: prewindf not a course by name",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N24y",
+  "file": ".github/workflows/skyzfs-publish-rig.yml",
+  "what": "#141's N24 again: the workflow's default list without prewindf",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S14x",
+  "file": ".github/workflows/skyzfs-publish-rig.yml",
+  "what": "#143's S14 again: the workflow's default without prewindc",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
  }
 ]

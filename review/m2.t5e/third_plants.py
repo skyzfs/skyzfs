@@ -45,6 +45,7 @@ SPACED_GAP = "        gap = rows[k]['t0'] - rows[k - 1]['t0']\n"
 PAUSE = '    pause = a / publish_agent.ASSIST_AFTER\n'
 CALL = "                    premise(f'premise_{t}_assists_at_the_decided_pace', not early,\n"
 COUNT = '                self.export_refusals += len(refused)\n'
+LIM = '[ $((SECONDS - t0)) -lt "$1" ] || rig_error "the pool wrote a group within every 12 s'
 PUT = "        put('obs_export_refusals', 'INFO', f'{ck.export_refusals} busy exports"
 
 PLANTS = [
@@ -88,9 +89,9 @@ PLANTS = [
     ('P3', SH, "pidle idle after 1 s (S2 of the first look)", [('[ $((SECONDS - since)) -lt 12 ] ||', '[ $((SECONDS - since)) -lt 1 ] ||')]),
     ('P4', SH, "pidle idle after 11 s", [('[ $((SECONDS - since)) -lt 12 ] ||', '[ $((SECONDS - since)) -lt 11 ] ||')]),
     ('P5', SH, "pidle idle after 13 s", [('[ $((SECONDS - since)) -lt 12 ] ||', '[ $((SECONDS - since)) -le 12 ] ||')]),
-    ('P6', SH, "pidle's limit one second late", [('[ $((SECONDS - t0)) -lt "$1" ] ||', '[ $((SECONDS - t0)) -le "$1" ] ||')]),
+    ('P6', SH, "pidle's limit one second late", [(LIM, LIM.replace('-lt "$1"', '-le "$1"'))]),
     ('P7', SH, "pidle never waits (S3 of the first look)", [('pidle() {\n    local t0', 'pidle() {\n    return 0\n    local t0')]),
-    ('P8', SH, "pidle's limit never an error", [('[ $((SECONDS - t0)) -lt "$1" ] ||', '[ 1 ] ||')]),
+    ('P8', SH, "pidle's limit never an error", [(LIM, LIM.replace('[ $((SECONDS - t0)) -lt "$1" ]', '[ 1 ]'))]),
     ('P9', SH, "pidle sleeps 2 s", [('        sleep 1\n    done\n}\n# LABEL T SECONDS [sync]', '        sleep 2\n    done\n}\n# LABEL T SECONDS [sync]')]),
 ]
 
