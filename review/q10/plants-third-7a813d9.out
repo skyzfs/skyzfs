@@ -43,3 +43,4 @@ B9	KILLED	scale: the fallback snapshot dropped	(shell: FAIL: pin scale's own sna
 B10	KILLED	scale: df dropped	(shell: FAIL: scale's df: got '0', want '2')
 B11	KILLED	scale: the start's budget check dropped	(shell: FAIL: budget spent: not run: got '0', want '1')
 W1	SURVIVED	writing: the stall's window empty (t0 t0)
+W3	SURVIVED	stop_bg: SIGKILL in place of SIGTERM (no end line)
