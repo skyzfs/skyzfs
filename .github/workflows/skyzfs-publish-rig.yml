@@ -83,6 +83,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_publish_agent.py -v
       - run: python3 tests/kernel/test_publish_check.py -v
+      - run: python3 tests/kernel/test_publish_check_main.py -v
       - run: bash tests/kernel/test_cut_record.sh
 
   plan:
