@@ -68,6 +68,7 @@ on:
       - tests/lib/**
       - bins/skyzfsd/**
       - crates/skyzfs-upload/**
+      - crates/skyzfs-control/**
       - crates/skyzfs-local/**
       - crates/skyzfs-uberblock/**
       - crates/skyzfs-ublk/**

@@ -117,6 +117,14 @@ class Rows(unittest.TestCase):
         self.assertEqual(pc.judge_row({'ref': (H, 1), 'row': 'unreadable'}, REQ, H),
                          ['a row that is not of version 1'])
 
+    def test_ctl_commits_commit_differs_in_the_short_id_the_line_shows(self):
+        for c in (H, '0' + H[1:], 'a' * 63 + 'b'):
+            o = pc.other_commit(c)
+            self.assertEqual(len(o), len(c))
+            self.assertNotEqual(o[:12], c[:12])
+        o = pc.other_commit(H)
+        self.assertIn(f'the ref is on {H[:12]}, done named {o[:12]}', pc.judge_row(snap_row(), REQ, o))
+
     def test_the_manifest(self):
         got = snap_row()
         got['fetched'] = b'x' * 12

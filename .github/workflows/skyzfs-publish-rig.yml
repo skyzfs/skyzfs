@@ -53,6 +53,7 @@ on:
       - bins/skyzfs-nodeb/**
       - bins/skyzfsd/**
       - crates/skyzfs-upload/**
+      - crates/skyzfs-control/**
       - crates/skyzfs-local/**
       - crates/skynbd-engine/**
       - crates/skynbd-refs/**

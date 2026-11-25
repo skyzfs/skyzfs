@@ -235,6 +235,12 @@ def done_commit(answer):
     return None
 
 
+def other_commit(commit):
+    """ctl_commit's commit: COMMIT with its first digit changed, so
+    that the line's short ids (12 digits) differ as the commits do."""
+    return ('0' if commit[0] != '0' else '1') + commit[1:]
+
+
 def judge_row(got, req, commit):
     """What node B found of snap/T against the request asked and the
     commit `done` named -> [what is wrong] (empty when it holds)."""
@@ -424,8 +430,7 @@ def main():
             if name == 'pplain' and not controlled and isinstance(row, dict):
                 controlled = True
                 for key, bad_ in (('ctl_below', judge_row(got, dict(req, group=row['group'] + 1), commit)),
-                                  ('ctl_commit', judge_row(got, req, commit[:-1] + ('0' if commit[-1] != '0'
-                                                                                     else '1')))):
+                                  ('ctl_commit', judge_row(got, req, other_commit(commit)))):
                     put(key, 'CAUGHT' if bad_ else 'MISSED', 'check', '; '.join(bad_) or 'the pin held')
                     rc = max(rc, 0 if bad_ else 1)
                 wrong = dict(want)

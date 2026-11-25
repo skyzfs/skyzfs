@@ -31,7 +31,7 @@ name: skyzfs-replay-rig
 #   - a pull request: the reference jobs when it touches the rig
 #     (tests/kernel/, tests/lib/, this file); the daemon jobs when it
 #     touches the rig or the daemon (crates/skyzfs-local/,
-#     bins/skyzfsd/, the ublk crates), on the pull-request budget (about
+#     crates/skyzfs-control/, bins/skyzfsd/, the ublk crates), on the pull-request budget (about
 #     25 minutes a job: every required prefix and every deep check, the
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
@@ -97,6 +97,7 @@ on:
       - tests/lib/**
       - .github/workflows/skyzfs-replay-rig.yml
       - crates/skyzfs-local/**
+      - crates/skyzfs-control/**
       - crates/skyzfs-ublk/**
       - crates/skyzfs-ublk-sys/**
       - bins/skyzfsd/**
@@ -158,7 +159,7 @@ jobs:
               # If the changed files cannot be told, everything runs.
               if changed=$(git diff --name-only "$BASE...HEAD"); then
                 rig='^(tests/kernel/|tests/lib/|\.github/workflows/skyzfs-replay-rig\.yml$)'
-                daemon='^(crates/skyzfs-local/|crates/skyzfs-ublk/|crates/skyzfs-ublk-sys/|bins/skyzfsd/)'
+                daemon='^(crates/skyzfs-local/|crates/skyzfs-control/|crates/skyzfs-ublk/|crates/skyzfs-ublk-sys/|bins/skyzfsd/)'
                 printf '%s\n' "$changed" | grep -q -E "$rig" && { ref=true; dmn=true; }
                 printf '%s\n' "$changed" | grep -q -E "$daemon" && dmn=true
               else
