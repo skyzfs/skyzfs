@@ -30,7 +30,7 @@ The merge brings zfs-topology and changes nothing of the package.
 
 ## Verdict at 09e3227
 
-**Can merge once CI is green on `09e3227`**, as far as this pull request's code goes. The code was judged at `6d1841a` and is unchanged at `09e3227`.
+**Can merge at `09e3227`.** CI is green there (read at 22:49 UTC), and no finding blocks. The code was judged at `6d1841a` and is unchanged at `09e3227`.
 
 - **N5 is fixed**, exactly as verified at the last look (fix probe F1).
   - Its test is the review's N5, and it kills the plants the author names.
@@ -44,7 +44,7 @@ The merge brings zfs-topology and changes nothing of the package.
   - The program never runs a give-up in a process that has settled: `recover` runs first, in a fresh process.
   - The fix is one line, at the same place as N5's.
   - I would not block on it; the lead decides.
-- **CI:** see "CI" below.
+- **CI:** all ten runs on `09e3227` are green. This includes the cut-daemon run, with the course `uv1` that failed at `0ad7944` (see "CI on the head").
 
 ## Defects
 
@@ -98,7 +98,7 @@ So the program cannot reach this. It is a hole in the engine's contract as its o
 3. **Codex's two threads have no answer from the author** (a process item, read at `09e3227`). Both findings were made at `af50814`, and both are fixed in `2d806e8`:
    - P1, "Keep the hold when recovery receives an inconclusive answer" (`plan.rs`), is the review's B1. Plants B1a-h are killed.
    - P2, "Track the publish across snapshot-name collision retries" (`program.rs`), is the review's D2. It is pinned by `a_publish_made_under_its_next_name_exits_by_its_outcome`, and plants D2a-d are killed.
-   - Codex's code review of `09e3227` completed with no findings, and its state says no unresolved findings. Its security review was still running when I read it.
+   - Codex's code review of `09e3227` completed with no findings, and its state says no unresolved findings. Its security review completed and posted nothing.
    - The guide asks the author to answer Codex on its thread. One line on each thread, pointing at `2d806e8`, would close this.
 
 ## The three questions
@@ -221,11 +221,30 @@ No plant survives. The `host::` timing tests did not fail in any run, since the 
 
 ## CI on the head
 
-CI_SECTION
+Read with `gh api`, read-only, at 22:49 UTC. All ten runs on `09e3227` completed with success.
+- **Green with no further reading:** `ci`, `coverage`, `e2e`, `k3s-smoke`, `skyzfs-ci` (on the push), `skyzfs-control-rig`, `skyzfs-nodeb-rig` and `skyzfs-publish-rig`.
+- **`skyzfs-cut-daemon`:** green on `ubuntu-26.04`, `ubuntu-26.04-arm` and `ubuntu-26.04-upload`.
+  - On the upload image, the courses `uv1` and `uv1moved` pass every line (`upload_course: PASS`). Each control is `CAUGHT`, or `SAME` where that is expected.
+  - At `0ad7944`, `uv1` failed on this job. The testing session put that down to a race in the rig. This is one green run: it agrees with that account but does not show the race gone.
+- **`skyzfs-daemon-rig`** (on `skyzfsd`, in-place store): on `ubuntu-24.04`, `ubuntu-26.04` and `ubuntu-26.04-arm`, the judge's table reads:
+  - 53 pins `PASS`;
+  - 1 `WAITING`: `pin_failed_volume_while_a_request_is_held`, not built, as the guide says;
+  - 1 `NA`, which the in-place store's expected table names;
+  - the five controls that must fail, fail.
+  - The judge exited 0. The run built the head merged with `a5e883a`, which is still the tip of zfs-topology.
+- **`skyzfs-replay-rig`** is not triggered at this head, since the pull request no longer touches `skyzfs-ublk-sys` (see above). It was green at `0ad7944`.
+- **The runs on `6d1841a`:** the push of `09e3227` cancelled the long runs still going there (cut-daemon and the daemon rig). They are superseded.
+- **Codex:** both reviews of `09e3227` have completed and posted nothing new.
+  - The code review reports no findings.
+  - The security review's summary field for findings is empty.
 
 ## What blocks the merge
 
-BLOCKS
+Nothing in the code. CI is green on `09e3227`.
+
+Before the author says "ready to merge", Codex's two threads from `af50814` need an answer (suggestion 3).
+
+N6 is for the lead to decide. I recommend fixing it here, but I do not block on it.
 
 ## Decisions for the lead
 
