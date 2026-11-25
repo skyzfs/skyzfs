@@ -532,9 +532,19 @@ fn make_dir(dir: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
     }
+    match parent_of(dir) {
+        Some(parent) => File::open(parent)?.sync_all(),
+        None => Ok(()),
+    }
+}
+
+/// The directory that holds `dir`'s entry: its parent, or `.` for a
+/// relative path of one part (whose parent is empty); `None` only for a
+/// root, which no directory holds.
+fn parent_of(dir: &Path) -> Option<&Path> {
     match dir.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => File::open(parent)?.sync_all(),
-        _ => Ok(()),
+        Some(parent) if parent.as_os_str().is_empty() => Some(Path::new(".")),
+        parent => parent,
     }
 }
 

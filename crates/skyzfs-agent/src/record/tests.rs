@@ -454,3 +454,14 @@ fn bytes_after_the_body_are_corrupt() {
         Err(Corrupt::Body("1 bytes after the body".into()))
     );
 }
+
+/// Mutant: a relative store path of one part (`agent`) has an empty
+/// parent, and its entry in the current directory is never synced.
+#[test]
+fn the_directory_synced_for_a_new_one_is_the_one_that_holds_it() {
+    assert_eq!(parent_of(Path::new("agent")), Some(Path::new(".")));
+    assert_eq!(parent_of(Path::new("a/agent")), Some(Path::new("a")));
+    assert_eq!(parent_of(Path::new("/var/agent")), Some(Path::new("/var")));
+    assert_eq!(parent_of(Path::new("/agent")), Some(Path::new("/")));
+    assert_eq!(parent_of(Path::new("/")), None);
+}
