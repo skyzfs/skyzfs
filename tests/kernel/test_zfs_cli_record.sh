@@ -34,6 +34,7 @@ check "rc" "$(cat "$OUT/r-said/rc")" 3
 check "cmd quoted for bash" "$(cat "$OUT/r-said/cmd")" 'said a\ b'
 check "no note" "$([ -e "$OUT/r-said/note" ] && echo yes || echo no)" no
 check "index line" "$(sed -n 1p "$OUT/index.tsv")" $'r-said\t3\t\tsaid a\\ b'
+check "argv unquoted" "$(tr '\0' '|' < "$OUT/r-said/argv")" "said|a b|"
 
 # stdin from a file, named in cmd; none otherwise.
 printf 'the program\n' > "$LUA_DIR/x.lua"
@@ -42,6 +43,13 @@ check "stdin read" "$(cat "$OUT/r-in/stdout")" "the program"
 check "stdin in cmd" "$(cat "$OUT/r-in/cmd")" "cat < x.lua"
 rec r-noin cat > /dev/null
 check "no stdin" "$(cat "$OUT/r-noin/stdout")" ""
+
+# --expect: the note says whether stdout or stderr matched.
+rec r-exp --expect '^err$' said > /dev/null
+check "expected seen" "$(cat "$OUT/r-exp/note")" 'expected /^err$/: seen'
+rec r-exp-no --expect 'no such tag' said > /dev/null
+check "expected not seen" "$(cat "$OUT/r-exp-no/note")" 'expected /no such tag/: NOT SEEN'
+check "expected in the index" "$(grep '^r-exp-no' "$OUT/index.tsv" | cut -f3)" 'expected /no such tag/: NOT SEEN'
 
 # A name used twice is refused, and the first record stays.
 rec r-said true > /dev/null 2>&1
@@ -70,6 +78,18 @@ check "not caught: the last kept" "$(head -n 1 "$OUT/c-no/stdout")" "try 4"
 check "not caught: note" "$(cat "$OUT/c-no/note")" "not caught: no output of 4 matched /resilver in progress/; this is the last"
 check "not caught: index note" "$(grep '^c-no' "$OUT/index.tsv" | cut -f3)" "not caught: no output of 4 matched /resilver in progress/; this is the last"
 check "no scratch left" "$([ -e "$OUT/.catch" ] && echo yes || echo no)" no
+# A name used twice: refused, and nothing left behind.
+rm -f "$T/n"
+catch c-yes 'scrub in progress' 10 counter > /dev/null 2>&1
+check "catch twice: rc" "$?" 70
+check "catch twice: no scratch left" "$([ -e "$OUT/.catch" ] && echo yes || echo no)" no
+# A try that does not end is the last.
+LIMIT=1
+catch c-hang 'never' 3 sleep 30 > /dev/null
+check "hung: rc" "$?" 1
+check "hung: one try" "$(cat "$OUT/c-hang/note")" "not caught: try 1 did not end within 1 s; this is it"
+check "hung: 124 kept" "$(cat "$OUT/c-hang/rc")" 124
+LIMIT=5
 
 # program: zfs program as the adapter runs it, the Lua on stdin.
 # shellcheck disable=SC2329 # run through rec, catch or program
@@ -97,6 +117,47 @@ check "program --locale cmd" "$(cat "$OUT/p-loc/cmd")" "env LC_ALL=C zfs program
 check "locale not left set" "${LC_ALL:-unset}" unset
 
 # The index has one line a record, in order.
-check "index order" "$(cut -f1 "$OUT/index.tsv" | tr '\n' ' ')" "r-said r-in r-noin r-slow c-yes c-no p-ro p-rw p-loc "
+check "index order" "$(cut -f1 "$OUT/index.tsv" | tr '\n' ' ')" "r-said r-in r-noin r-exp r-exp-no r-slow c-yes c-no c-hang p-ro p-rw p-loc "
+
+# The commands as the adapter runs them (crates/skyzfs-agent, src/zfs.rs
+# and zfs/cli.rs), written out here: agent_commands and record_pool on
+# fake zpool and zfs that print their words. A word the recorder changes
+# fails here.
+unset -f zfs
+cat > "$T/bin/zpool" << 'FAKE'
+#!/bin/sh
+echo "scrub in progress"
+FAKE
+chmod +x "$T/bin/zpool"
+OUT=$T/pins
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+printf -- '-- lua\n' > "$LUA_DIR/snapshot.lua"
+printf -- '-- lua\n' > "$LUA_DIR/tagged.lua"
+record_pool rig skzq > /dev/null 2> "$T/pins.err"
+agent_commands none skznone > /dev/null 2>> "$T/pins.err"
+check "pins: no name twice" "$(grep -c twice "$T/pins.err")" 0
+words() { tr '\0' ' ' < "$OUT/$1/argv"; }
+P="-j -t 100000000 -m 104857600"
+check "pin status" "$(words rig-status)" "zpool status -P skzq "
+check "pin status -g" "$(words rig-status-g)" "zpool status -P -g skzq "
+check "pin get" "$(words rig-get)" "zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skzq "
+check "pin assist set" "$(words rig-assist-set)" "zfs set skyzfs:assist=1700000000001 skzq "
+check "pin assist sync" "$(words rig-assist-sync)" "zpool sync skzq "
+check "pin snapshot" "$(words rig-snapshot-1)" "zfs program $P skzq - skzq t skyzfs:assist "
+check "pin snapshot stdin" "$(sed 's/.* < //' "$OUT/rig-snapshot-1/cmd")" "snapshot.lua"
+check "pin members" "$(words rig-members)" "zfs program -n $P skzq - skzq t "
+check "pin tagged" "$(words rig-tagged)" "zfs program -n $P skzq - skzq skyzfs-publish "
+check "pin hold" "$(words rig-hold-1)" "zfs hold -r skyzfs-publish skzq@t "
+check "pin holds" "$(words rig-holds)" "zfs holds -H skzq@t "
+check "pin holds -r" "$(words rig-holds-r)" "zfs holds -H -r skzq@t "
+check "pin release" "$(words rig-release-1)" "zfs release -r skyzfs-publish skzq@t "
+check "pin the odd one in C.UTF-8" "$(words rig-snapshot-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program $P skzq - skzq o2 skyzfs:assist "
+check "pin the odd one as the adapter" "$(words rig-snapshot-odd)" "zfs program $P skzq - skzq o0 skyzfs:assist "
+check "pin -g partners" "$(for r in scrub-paused scrub-canceled; do words "rig-$r-g"; done)" "zpool status -P -g skzq zpool status -P -g skzq "
+check "pin none's assist" "$(words none-assist-set)" "zfs set skyzfs:assist=1700000000001 skznone "
+# The adapter runs every command with LC_ALL=C (src/host.rs); main
+# exports it.
+check "pin the locale" "$(grep -c '^    export LC_ALL=C$' "$HERE/zfs-cli-record.sh")" 1
 
 exit "$fail"

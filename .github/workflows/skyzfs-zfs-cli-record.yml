@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       lua_ref:
-        description: "the commit or branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run. Empty: 366b217 (#147)"
+        description: "a full commit id or a branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run, resolved once for every image. Empty: 366b217 (#147)"
         default: ""
       images:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
@@ -36,13 +36,37 @@ permissions:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - run: bash tests/kernel/test_zfs_cli_record.sh
+
+  # The Lua's commit, resolved once, so that every image runs the same.
+  lua:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: resolve
+        env:
+          LUA_REF: ${{ inputs.lua_ref || '366b217bc3f09ba046be639653bb9c080752630b' }}
+        run: |
+          case $LUA_REF in
+            -*|*[!A-Za-z0-9._/-]*|'') echo "::error::lua_ref is a full commit id or a branch: $LUA_REF"; exit 64 ;;
+          esac
+          git fetch --quiet --depth=1 origin "$LUA_REF"
+          echo "commit=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
 
   record:
     name: ${{ matrix.image }}
-    needs: unit
+    needs: [unit, lua]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.image }}
     timeout-minutes: 40
@@ -50,34 +74,36 @@ jobs:
       fail-fast: false
       matrix:
         image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
+    env:
+      IMAGE: ${{ matrix.image }}
+      LUA_REF: ${{ needs.lua.outputs.commit }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       # While the names of the image's package mirrors do not resolve,
       # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
       - name: Package mirrors
         run: bash tests/lib/apt-fallback.sh
       - name: The adapter's programs
-        env:
-          LUA_REF: ${{ inputs.lua_ref || '366b217bc3f09ba046be639653bb9c080752630b' }}
         run: |
           case $LUA_REF in
-            -*|*[!A-Za-z0-9._/-]*|'') echo "::error::lua_ref is a commit or a branch: $LUA_REF"; exit 64 ;;
+            *[!0-9a-f]*|'') echo "::error::not a commit id: $LUA_REF"; exit 64 ;;
           esac
           git fetch --quiet --depth=1 origin "$LUA_REF"
           mkdir -p lua
           for f in snapshot members tagged; do
             git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
           done
-          echo "LUA_REF=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
       - name: Record
         run: sudo --preserve-env=LUA_REF tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |
           sudo chmod -R a+rX zfs-cli 2>/dev/null || true
-          tar -czf "zfs-cli-${{ matrix.image }}.tar.gz" zfs-cli 2>/dev/null || true
+          tar -czf "zfs-cli-$IMAGE.tar.gz" zfs-cli 2>/dev/null || true
           {
-            echo "## ZFS command outputs, ${{ matrix.image }}"
+            echo "## ZFS command outputs, $IMAGE"
             echo
             sed 's/^/    /' zfs-cli/about.txt 2>/dev/null
             [ -e zfs-cli/setup-failed.txt ] && echo "**Setup failed:** $(cat zfs-cli/setup-failed.txt)"

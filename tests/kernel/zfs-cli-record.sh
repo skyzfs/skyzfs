@@ -1,77 +1,112 @@
 #!/usr/bin/env bash
 # Recorded outputs of the ZFS commands the agent's ZFS adapter runs
-# (skyzfs-agent, crates/skyzfs-agent/src/zfs/cli/), for its fixtures:
-# the M2.6 plan's Q10. It judges nothing.
+# (skyzfs-agent, crates/skyzfs-agent/src/zfs/cli.rs and zfs/cli/*.lua),
+# for its fixtures: the M2.6 plan's Q10. It judges nothing.
 #
 #   zfs-cli-record.sh OUT LUA_DIR [WORK]
 #
 # LUA_DIR holds snapshot.lua, members.lua and tagged.lua, the programs
-# as the adapter pipes them to `zfs program`. Each command is one
-# record, OUT/NAME/ with:
+# as the adapter pipes them to `zfs program`. Every command runs with
+# LC_ALL=C, as the adapter runs its commands (src/host.rs), unless its
+# record says otherwise. Each command is one record, OUT/NAME/ with:
 #
-#   cmd     the command line, quoted for bash, with "< FILE" for stdin
+#   cmd     the command line, quoted for bash (printf %q: a comma is
+#           written "\,", a byte that is not UTF-8 as $'\377'), with
+#           "< FILE" for stdin
+#   argv    the same words, each ended by a NUL byte, unquoted
 #   stdout  what it wrote to stdout
-#   stderr  what it wrote to stderr
+#   stderr  what it wrote to stderr. When the command was killed at the
+#           limit, the shell's "Killed" line, which names this script,
+#           is in it: that line is not ZFS's
 #   rc      its exit code (124: it did not end within the limit)
-#   note    only where there is something to say (a state looked for
-#           and not caught)
+#   note    only where there is something to say: a state looked for
+#           and whether it was caught, or an expected message and
+#           whether it was seen
 #
 # and one line "NAME<TAB>rc<TAB>note<TAB>cmd" of OUT/index.tsv, in the
-# order run. NAME is "<pool>-<what>" with pool `rig` (skzq: the data on
-# /dev/ublkb0 of the reference ublk server, with a log device), `mirror`
-# (skzqm: a mirror of two files) or `none` (skznone, a pool that does
-# not exist).
+# order run. NAME is "<pool>-<what>" with pool
 #
-# Each pool gets a child file system, a volume, the assist's property
-# set on its root as the agent sets it (skyzfs:assist) and one user
+#   rig     skzq: the data on /dev/ublkb0 of the reference ublk server,
+#           with a log device
+#   mirror  skzqm: a mirror of two files, with a special and a dedup
+#           mirror, a cache device and a spare, so that each class's
+#           header is in its status
+#   remove  skzqr: two files, one of them removed (the removal's states)
+#   none    skznone, a pool that does not exist
+#
+# The adapter's tag is skyzfs-publish (HOLD_TAG, src/zfs.rs) and its
+# property skyzfs:assist (ASSIST_PROPERTY). Each live pool gets a child
+# file system, a volume, skyzfs:assist set on its root and one user
 # property set locally on the child (skyzfs:note), before anything is
-# recorded on it. In order, on each pool:
+# recorded on it. In order, on rig and mirror:
 #
 #   status, status-g       zpool status -P [-g], idle
 #   get                    zpool get -H -p -o property,value guid,
 #                          load_guid,multihost,readonly,checkpoint
-#   snapshot-1, snapshot-2 snapshot.lua twice (the second: EEXIST);
-#                          snapshot-cli only if neither took @t
+#   assist-set, assist-sync
+#                          the assist: zfs set skyzfs:assist=V POOL, then
+#                          zpool sync POOL
+#   snapshot-1             snapshot.lua at @t
+#   snapshot-cli           only if snapshot-1 did not take @t: zfs
+#                          snapshot -r, so that what follows has its @t
+#   snapshot-2             snapshot.lua at @t again: EEXIST (expected)
 #   members, members-absent, tagged
 #                          members.lua at t and at a t that is absent;
 #                          tagged.lua before any hold
-#   hold-1, holds, holds-r, hold-2, tagged-held, release-1, release-2
-#                          the holds, and each twice for its message
+#   hold-1, holds, holds-r, hold-2, tagged-held, release-1,
+#   holds-r-released, release-2
+#                          the holds, and hold and release twice for the
+#                          second's message (expected)
+#   holds-absent, hold-absent, release-absent
+#                          on a snapshot that is not there, on a live pool
+#   hold-root, hold-r-partial, holds-r-partial
+#                          a hold on the root's @t alone, then `hold -r`,
+#                          then what holds it: whether the children get
+#                          the tag when the root has it already
+#   hold-child, release-r-partial, holds-r-after-partial
+#                          a hold on the child's @t alone, then
+#                          `release -r` (the root lacks the tag), then
+#                          what holds it. Holds left are released, with
+#                          no record
 #   set-utf8, set-raw, get-odd
 #                          two user properties set locally on the child,
 #                          one with a value in UTF-8 beyond ASCII and one
 #                          whose value is not UTF-8, and `zfs get` of them
-#   snapshot-odd, snapshot-odd-c, snapshot-odd-utf8
-#                          snapshot.lua with those properties, at @o0, @o1
-#                          and @o2: in the job's locale, with LC_ALL=C and
-#                          with LC_ALL=C.UTF-8 (the adapter inherits its
-#                          locale; `zfs program -j` writes the values)
-#   partial-pre, snapshot-partial, partial-after
-#                          a take that fails part way: the child already
-#                          has @p and the pool's root has not, then
-#                          snapshot.lua at @p, then the snapshots that are
-#                          there (none of the root's should be)
+#   snapshot-odd, snapshot-odd-utf8
+#                          snapshot.lua with those properties, at @o0 with
+#                          LC_ALL=C as the adapter, and at @o2 with
+#                          LC_ALL=C.UTF-8
+#   exists-child-pre, snapshot-exists-child, exists-child-after
+#                          the child has @p and the root has not, then
+#                          snapshot.lua at @p, which refuses at its check
+#                          before taking anything (EEXIST, expected), then
+#                          the snapshots that are there
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
-#                          during a scrub, if caught (note otherwise)
-#   scrub-again, scrub-pause, scrub-paused, scrub-stop, scrub-canceled
-#                          zpool status -P after `zpool scrub -p`, and
-#                          after `zpool scrub -s`
+#                          during a scrub, if caught (the note says)
+#   scrub-again, scrub-pause, scrub-paused, scrub-paused-g, scrub-stop,
+#   scrub-canceled, scrub-canceled-g
+#                          zpool status -P [-g] after `zpool scrub -p`,
+#                          and after `zpool scrub -s`
 #
-# then, since they change the pools, the resilvers:
+# then, since they change the pools:
 #
-#   attach or offline, online
-#   resilver-status, resilver-status-g
-#                          during a resilver, if caught: the rig pool's
-#                          device attached to /dev/ublkb1, the mirror's
-#                          second file brought back online after writes
-#   resilvered             zpool status -P once it ended
+#   rig-attach, rig-resilver-status[-g], rig-resilvered[-g]
+#                          /dev/ublkb1 attached to the rig's device
+#   mirror-offline, mirror-online, mirror-resilver-status[-g],
+#   mirror-resilvered[-g]  the mirror's second file brought back online
+#                          after writes
+#   mirror-rebuild, mirror-rebuild-status[-g], mirror-rebuilt[-g]
+#                          a third file attached with -s (a sequential
+#                          rebuild)
+#   remove-status, remove-status-g, remove, remove-in-progress[-g],
+#   remove-done[-g]        skzqr's second file removed
 #
 # and once: `nocacheflush` (the module parameter), `version` and
-# `locale` (the job's). On the
-# pool that does not exist, every command of the agent's (status,
-# status-g, get, the three programs, holds, holds-r, hold, release).
+# `locale`. On the pool that does not exist, every command the adapter
+# runs: status, status-g, get, assist-set, assist-sync, the three
+# programs, holds, holds-r, hold, release.
 #
 # Meant for a throwaway machine. Exit 0 once set up, whatever the
 # commands answered; 2 when it could not set up.
@@ -88,16 +123,23 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LIMIT=${ZCR_LIMIT:-120}
 # The program's limits, as the adapter passes them.
 PROGRAM_LIMITS=(-t 100000000 -m 104857600)
+# The adapter's hold tag and assist property.
+TAG=skyzfs-publish
+ASSIST=skyzfs:assist
 
-# rec NAME [--in FILE] COMMAND...: run COMMAND once and keep it as the
-# record NAME.
+# rec NAME [--in FILE] [--expect PATTERN] COMMAND...: run COMMAND once
+# and keep it as the record NAME. With --expect, the note says whether
+# its stdout or stderr matched PATTERN (grep -E).
 rec() {
-    local name=$1 in=/dev/null shown d rc=0
+    local name=$1 in=/dev/null expect="" shown d rc=0 note=""
     shift
-    if [ "${1:-}" = --in ]; then
-        in=$2
-        shift 2
-    fi
+    while :; do
+        case ${1:-} in
+            --in) in=$2; shift 2 ;;
+            --expect) expect=$2; shift 2 ;;
+            *) break ;;
+        esac
+    done
     d=$OUT/$name
     if [ -e "$d" ]; then
         echo "zfs-cli-record: the record $name twice" >&2
@@ -108,18 +150,28 @@ rec() {
     shown=${shown% }
     [ "$in" = /dev/null ] || shown="$shown < $(basename "$in")"
     printf '%s\n' "$shown" > "$d/cmd"
+    printf '%s\0' "$@" > "$d/argv"
     lim "$LIMIT" "$@" < "$in" > "$d/stdout" 2> "$d/stderr" || rc=$?
     echo "$rc" > "$d/rc"
-    printf '%s\t%s\t%s\t%s\n' "$name" "$rc" "" "$shown" >> "$OUT/index.tsv"
-    printf '== %s: rc %s\n' "$name" "$rc"
+    if [ -n "$expect" ]; then
+        if cat "$d/stdout" "$d/stderr" | grep -Eq -- "$expect"; then
+            note="expected /$expect/: seen"
+        else
+            note="expected /$expect/: NOT SEEN"
+        fi
+        printf '%s\n' "$note" > "$d/note"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$name" "$rc" "$note" "$shown" >> "$OUT/index.tsv"
+    printf '== %s: rc %s%s\n' "$name" "$rc" "${note:+ ($note)}"
 }
 
 # catch NAME PATTERN TRIES COMMAND...: run COMMAND up to TRIES times,
 # 0.1 s apart, and keep the first output whose stdout matches PATTERN
 # (grep -E) as the record NAME. If none does, the last is kept, with a
-# note that says so. Returns 0 when caught.
+# note that says so; a try that did not end within the limit is the
+# last. Returns 0 when caught and kept.
 catch() {
-    local name=$1 pattern=$2 tries=$3 i tmp rc
+    local name=$1 pattern=$2 tries=$3 i tmp rc caught="" note
     shift 3
     tmp=$OUT/.catch
     for ((i = 1; i <= tries; i++)); do
@@ -127,12 +179,22 @@ catch() {
         mkdir -p "$tmp"
         rc=0
         lim "$LIMIT" "$@" < /dev/null > "$tmp/stdout" 2> "$tmp/stderr" || rc=$?
-        grep -Eq "$pattern" "$tmp/stdout" && break
+        if grep -Eq -- "$pattern" "$tmp/stdout"; then
+            caught=1
+            break
+        fi
+        [ "$rc" = 124 ] && break
         [ "$i" -lt "$tries" ] && sleep 0.1
     done
-    keep "$name" "$tmp" "$rc" "$([ "$i" -le "$tries" ] && echo "caught at try $i" ||
-        echo "not caught: no output of $tries matched /$pattern/; this is the last")" "$@"
-    [ "$i" -le "$tries" ]
+    if [ -n "$caught" ]; then
+        note="caught at try $i"
+    elif [ "$rc" = 124 ]; then
+        note="not caught: try $i did not end within ${LIMIT} s; this is it"
+    else
+        note="not caught: no output of $tries matched /$pattern/; this is the last"
+    fi
+    keep "$name" "$tmp" "$rc" "$note" "$@" || { rm -rf "${tmp:?}"; return 70; }
+    [ -n "$caught" ]
 }
 
 # keep NAME DIR RC NOTE COMMAND...: DIR's stdout and stderr as the
@@ -149,36 +211,115 @@ keep() {
     shown=$(printf '%q ' "$@")
     shown=${shown% }
     printf '%s\n' "$shown" > "$d/cmd"
+    printf '%s\0' "$@" > "$d/argv"
     echo "$rc" > "$d/rc"
     printf '%s\n' "$note" > "$d/note"
     printf '%s\t%s\t%s\t%s\n' "$name" "$rc" "$note" "$shown" >> "$OUT/index.tsv"
     printf '== %s: rc %s (%s)\n' "$name" "$rc" "$note"
 }
 
-# program NAME P LUA [--locale L] [-n] ARGS...: zfs program -j as the
-# adapter runs it, with LC_ALL=L when L is given.
+# program NAME P LUA [--locale L] [--expect PATTERN] [-n] ARGS...: zfs
+# program -j as the adapter runs it, with LC_ALL=L when L is given.
 program() {
-    local name=$1 p=$2 lua=$3 ro=() env=()
+    local name=$1 p=$2 lua=$3 ro=() env=() expect=()
     shift 3
-    if [ "${1:-}" = --locale ]; then
-        env=(env "LC_ALL=$2")
-        shift 2
-    fi
+    while :; do
+        case ${1:-} in
+            --locale) env=(env "LC_ALL=$2"); shift 2 ;;
+            --expect) expect=(--expect "$2"); shift 2 ;;
+            *) break ;;
+        esac
+    done
     if [ "${1:-}" = -n ]; then
         ro=(-n)
         shift
     fi
-    rec "$name" --in "$LUA_DIR/$lua" "${env[@]}" zfs program "${ro[@]}" -j "${PROGRAM_LIMITS[@]}" "$p" - "$@"
+    rec "$name" --in "$LUA_DIR/$lua" "${expect[@]}" "${env[@]}" zfs program "${ro[@]}" -j "${PROGRAM_LIMITS[@]}" "$p" - "$@"
 }
 
-# The agent's commands on pool P, records named PREFIX-...; t is the
-# snapshot's name.
-agent_commands() { # prefix pool: the commands the adapter runs, as it runs them
+# status NAME POOL: zpool status -P and -P -g, the adapter's pair.
+status() {
+    rec "$1" zpool status -P "$2"
+    rec "$1-g" zpool status -P -g "$2"
+}
+
+# The adapter's commands on pool P that need no snapshot, records named
+# PREFIX-...
+agent_commands() { # prefix pool
     local x=$1 p=$2
-    rec "$x-status" zpool status -P "$p"
-    rec "$x-status-g" zpool status -P -g "$p"
+    status "$x-status" "$p"
     rec "$x-get" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
-    program "$x-snapshot-1" "$p" snapshot.lua "$p" t skyzfs:assist
+    rec "$x-assist-set" zfs set "$ASSIST=1700000000001" "$p"
+    rec "$x-assist-sync" zpool sync "$p"
+    program "$x-snapshot-1" "$p" snapshot.lua "$p" t "$ASSIST"
+}
+
+# Release every hold of TAG under P@T that is left, with no record.
+release_quietly() { # pool t
+    local s
+    zfs list -H -o name -t snapshot -r "$1" 2> /dev/null | grep "@$2\$" | while read -r s; do
+        zfs release "$TAG" "$s" > /dev/null 2>&1
+    done
+}
+
+# Everything recorded on a live pool before the changes of its devices.
+record_pool() { # prefix pool
+    local x=$1 p=$2
+    agent_commands "$x" "$p"
+    # Without the program, a snapshot for what follows all the same.
+    zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
+    program "$x-snapshot-2" "$p" snapshot.lua --expect '"errno": *"17"' "$p" t "$ASSIST"
+    program "$x-members" "$p" members.lua -n "$p" t
+    program "$x-members-absent" "$p" members.lua --expect '"absent"' -n "$p" absent
+    program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    rec "$x-hold-1" zfs hold -r "$TAG" "$p@t"
+    rec "$x-holds" zfs holds -H "$p@t"
+    rec "$x-holds-r" zfs holds -H -r "$p@t"
+    rec "$x-hold-2" --expect 'tag already exists' zfs hold -r "$TAG" "$p@t"
+    program "$x-tagged-held" "$p" tagged.lua -n "$p" "$TAG"
+    rec "$x-release-1" zfs release -r "$TAG" "$p@t"
+    rec "$x-holds-r-released" zfs holds -H -r "$p@t"
+    rec "$x-release-2" --expect 'no such tag' zfs release -r "$TAG" "$p@t"
+    rec "$x-holds-absent" zfs holds -H "$p@absent"
+    rec "$x-hold-absent" zfs hold -r "$TAG" "$p@absent"
+    rec "$x-release-absent" zfs release -r "$TAG" "$p@absent"
+    # A hold that some members have and some have not.
+    rec "$x-hold-root" zfs hold "$TAG" "$p@t"
+    rec "$x-hold-r-partial" zfs hold -r "$TAG" "$p@t"
+    rec "$x-holds-r-partial" zfs holds -H -r "$p@t"
+    release_quietly "$p" t
+    rec "$x-hold-child" zfs hold "$TAG" "$p/child@t"
+    rec "$x-release-r-partial" zfs release -r "$TAG" "$p@t"
+    rec "$x-holds-r-after-partial" zfs holds -H -r "$p@t"
+    release_quietly "$p" t
+    # Values beyond ASCII, as the snapshot program reads them.
+    rec "$x-set-utf8" zfs set "skyzfs:utf8=naïve, 日本, ∅" "$p/child"
+    rec "$x-set-raw" zfs set "skyzfs:raw=a$(printf '\xff\xfe')b$(printf '\xc3')" "$p/child"
+    rec "$x-get-odd" zfs get -H -p -o name,property,value,source skyzfs:utf8,skyzfs:raw "$p/child"
+    program "$x-snapshot-odd" "$p" snapshot.lua "$p" o0 "$ASSIST"
+    program "$x-snapshot-odd-utf8" "$p" snapshot.lua --locale C.UTF-8 "$p" o2 "$ASSIST"
+    # The check refuses before anything is taken: the child has @p.
+    rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
+    program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
+    rec "$x-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    rec "$x-checkpoint" zpool checkpoint "$p"
+    rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
+    rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
+    rec "$x-scrub" zpool scrub "$p"
+    catch "$x-scrub-status" 'scrub in progress' 100 zpool status -P "$p"
+    catch "$x-scrub-status-g" 'scrub in progress' 100 zpool status -P -g "$p"
+    lim 600 zpool wait -t scrub "$p" > /dev/null 2>&1
+    rec "$x-scrub-again" zpool scrub "$p"
+    rec "$x-scrub-pause" zpool scrub -p "$p"
+    status "$x-scrub-paused" "$p"
+    rec "$x-scrub-stop" zpool scrub -s "$p"
+    status "$x-scrub-canceled" "$p"
+}
+
+# catch_status NAME PATTERN POOL: the pair during a state, if caught.
+catch_status() {
+    catch "$1" "$2" 100 zpool status -P "$3"
+    catch "$1-g" "$2" 100 zpool status -P -g "$3"
 }
 
 main() {
@@ -193,21 +334,29 @@ main() {
     OUT=$(cd "$OUT" && pwd)
     LUA_DIR=$(cd "$LUA_DIR" && pwd)
     : > "$OUT/index.tsv"
+    # The adapter's locale (src/host.rs).
+    export LC_ALL=C
     export DEBIAN_FRONTEND=noninteractive
-    SLOG=""
+    LOOPS=()
     # shellcheck disable=SC2317,SC2329  # reached through the trap
     cleanup() {
         set +e
-        local p
-        for p in skzq skzqm; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
+        local p l
+        for p in skzq skzqm skzqr; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
         command -v ublk > /dev/null && lim 60 ublk del -a > /dev/null 2>&1
-        [ -n "$SLOG" ] && losetup -d "$SLOG" 2> /dev/null
+        for l in "${LOOPS[@]}"; do losetup -d "$l" 2> /dev/null; done
         rm -rf "${OUT:?}/.catch"
         chmod -R a+rX "$OUT"
     }
     trap cleanup EXIT
 
     setup_failed() { echo "setup: $*" | tee "$OUT/setup-failed.txt" >&2; exit 2; }
+    loop() { # image size: a loop device on a new image, in LOOP (not in a
+        # subshell: LOOPS and setup_failed must reach this shell)
+        truncate -s "$2" "$WORK/$1.img"
+        LOOP=$(losetup --find --show "$WORK/$1.img") || setup_failed "losetup of $1"
+        LOOPS+=("$LOOP")
+    }
 
     apt-get update > /dev/null 2>&1
     apt-get install -y --no-install-recommends zfsutils-linux > "$OUT/apt.log" 2>&1
@@ -234,6 +383,7 @@ main() {
         # shellcheck disable=SC1091
         echo "os $(. /etc/os-release && echo "$PRETTY_NAME")"
         echo "zfs module $(cat /sys/module/zfs/version)"
+        echo "zfs userland $(zfs version 2> /dev/null | head -n 1)"
         echo "lua from ${LUA_REF:-$LUA_DIR}"
         tail -n 1 "$OUT/ublksrv.ver"
     } > "$OUT/about.txt"
@@ -245,6 +395,7 @@ main() {
 
     # The rig pool: data on /dev/ublkb0, a log on a loop device; ublkb1 for
     # the resilver.
+    local n slog cache
     for n in 0 1; do
         truncate -s 4G "$WORK/dev$n.img"
         lim 60 ublk add -t loop -n "$n" -f "$WORK/dev$n.img" -q 1 -d 64 > "$OUT/ublk-add-$n.log" 2>&1 ||
@@ -252,93 +403,69 @@ main() {
     done
     for _ in $(seq 1 40); do [ -b /dev/ublkb0 ] && [ -b /dev/ublkb1 ] && break; sleep 0.25; done
     [ -b /dev/ublkb0 ] && [ -b /dev/ublkb1 ] || setup_failed "no /dev/ublkb0 or ublkb1"
-    truncate -s 512M "$WORK/slog.img"
-    SLOG=$(losetup --find --show "$WORK/slog.img") || setup_failed "losetup of the log"
-    truncate -s 4G "$WORK/m0.img" "$WORK/m1.img"
+    loop slog 512M
+    slog=$LOOP
+    loop cache 512M
+    cache=$LOOP
+    truncate -s 4G "$WORK/m0.img" "$WORK/m1.img" "$WORK/m2.img" "$WORK/spare.img"
+    truncate -s 1G "$WORK/s0.img" "$WORK/s1.img" "$WORK/d0.img" "$WORK/d1.img"
+    truncate -s 2G "$WORK/r0.img" "$WORK/r1.img"
 
-    make_pool() { # pool vdevs...
-        local p=$1
-        shift
+    make_pool() { # pool MiB vdevs...: the pool, its datasets and MiB of data
+        local p=$1 mib=$2
+        shift 2
         lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$p" -O compression=off \
             "$p" "$@" > "$OUT/create-$p.log" 2>&1 || setup_failed "zpool create $p (create-$p.log)"
         {
-            zfs create "$p/child" && zfs create -V 256M "$p/vol" && zfs set skyzfs:assist=1700000000000 "$p" &&
+            zfs create "$p/child" && zfs create -V 256M "$p/vol" && zfs set "$ASSIST=1700000000000" "$p" &&
                 zfs set skyzfs:note=local "$p/child" &&
                 # Enough data that a scrub and a resilver take a moment.
-                "$DD" if=/dev/urandom of="$WORK/mnt/$p/child/data" bs=1M count=1024 conv=fsync status=none &&
+                "$DD" if=/dev/urandom of="$WORK/mnt/$p/child/data" bs=1M count="$mib" conv=fsync status=none &&
                 zpool sync "$p"
         } >> "$OUT/create-$p.log" 2>&1 || setup_failed "the datasets of $p (create-$p.log)"
     }
-    make_pool skzq /dev/ublkb0 log "$SLOG"
-    make_pool skzqm mirror "$WORK/m0.img" "$WORK/m1.img"
+    make_pool skzq 1024 /dev/ublkb0 log "$slog"
+    make_pool skzqm 1024 mirror "$WORK/m0.img" "$WORK/m1.img" special mirror "$WORK/s0.img" "$WORK/s1.img" \
+        dedup mirror "$WORK/d0.img" "$WORK/d1.img" cache "$cache" spare "$WORK/spare.img"
+    make_pool skzqr 768 "$WORK/r0.img" "$WORK/r1.img"
     echo "set up" >> "$OUT/about.txt"
 
-    record_pool() { # prefix pool
-        local x=$1 p=$2
-        agent_commands "$x" "$p"
-        program "$x-snapshot-2" "$p" snapshot.lua "$p" t skyzfs:assist
-        # Without the program, a snapshot for the holds all the same.
-        zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
-        program "$x-members" "$p" members.lua -n "$p" t
-        program "$x-members-absent" "$p" members.lua -n "$p" absent
-        program "$x-tagged" "$p" tagged.lua -n "$p" skyzfs
-        rec "$x-hold-1" zfs hold -r skyzfs "$p@t"
-        rec "$x-holds" zfs holds -H "$p@t"
-        rec "$x-holds-r" zfs holds -H -r "$p@t"
-        rec "$x-hold-2" zfs hold -r skyzfs "$p@t"
-        program "$x-tagged-held" "$p" tagged.lua -n "$p" skyzfs
-        rec "$x-release-1" zfs release -r skyzfs "$p@t"
-        rec "$x-release-2" zfs release -r skyzfs "$p@t"
-        # Values beyond ASCII, as the snapshot program reads them.
-        rec "$x-set-utf8" zfs set "skyzfs:utf8=naïve, 日本, ∅" "$p/child"
-        rec "$x-set-raw" zfs set "skyzfs:raw=a$(printf '\xff\xfe')b$(printf '\xc3')" "$p/child"
-        rec "$x-get-odd" zfs get -H -p -o name,property,value,source skyzfs:utf8,skyzfs:raw "$p/child"
-        program "$x-snapshot-odd" "$p" snapshot.lua "$p" o0 skyzfs:assist
-        program "$x-snapshot-odd-c" "$p" snapshot.lua --locale C "$p" o1 skyzfs:assist
-        program "$x-snapshot-odd-utf8" "$p" snapshot.lua --locale C.UTF-8 "$p" o2 skyzfs:assist
-        # A take that fails part way: the child has @p, the root has not.
-        rec "$x-partial-pre" zfs snapshot "$p/child@p"
-        program "$x-snapshot-partial" "$p" snapshot.lua "$p" p skyzfs:assist
-        rec "$x-partial-after" zfs list -H -t snapshot -o name -r "$p"
-        rec "$x-checkpoint" zpool checkpoint "$p"
-        rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
-        rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
-        rec "$x-scrub" zpool scrub "$p"
-        catch "$x-scrub-status" 'scrub in progress' 100 zpool status -P "$p"
-        catch "$x-scrub-status-g" 'scrub in progress' 100 zpool status -P -g "$p"
-        lim 600 zpool wait -t scrub "$p" > /dev/null 2>&1
-        rec "$x-scrub-again" zpool scrub "$p"
-        rec "$x-scrub-pause" zpool scrub -p "$p"
-        rec "$x-scrub-paused" zpool status -P "$p"
-        rec "$x-scrub-stop" zpool scrub -s "$p"
-        rec "$x-scrub-canceled" zpool status -P "$p"
-    }
     record_pool rig skzq
     record_pool mirror skzqm
 
-    # The resilvers last: they change the pools.
+    # Then what changes the pools' devices.
     rec rig-attach zpool attach -f skzq /dev/ublkb0 /dev/ublkb1
-    catch rig-resilver-status 'resilver in progress' 100 zpool status -P skzq
-    catch rig-resilver-status-g 'resilver in progress' 100 zpool status -P -g skzq
+    catch_status rig-resilver-status 'resilver in progress' skzq
     lim 600 zpool wait -t resilver skzq > /dev/null 2>&1
-    rec rig-resilvered zpool status -P skzq
+    status rig-resilvered skzq
+
     rec mirror-offline zpool offline skzqm "$WORK/m1.img"
-    "$DD" if=/dev/urandom of="$WORK/mnt/skzqm/child/more" bs=1M count=512 conv=fsync status=none
+    "$DD" if=/dev/urandom of="$WORK/mnt/skzqm/child/more" bs=1M count=1024 conv=fsync status=none
     zpool sync skzqm
     rec mirror-online zpool online skzqm "$WORK/m1.img"
-    catch mirror-resilver-status 'resilver in progress' 100 zpool status -P skzqm
-    catch mirror-resilver-status-g 'resilver in progress' 100 zpool status -P -g skzqm
+    catch_status mirror-resilver-status 'resilver in progress' skzqm
     lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
-    rec mirror-resilvered zpool status -P skzqm
+    status mirror-resilvered skzqm
+
+    rec mirror-rebuild zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img"
+    catch_status mirror-rebuild-status 'in progress' skzqm
+    lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
+    status mirror-rebuilt skzqm
+
+    status remove-status skzqr
+    rec remove zpool remove skzqr "$WORK/r1.img"
+    catch_status remove-in-progress 'in progress' skzqr
+    lim 600 zpool wait -t remove skzqr > /dev/null 2>&1
+    status remove-done skzqr
 
     # A pool that does not exist.
     agent_commands none skznone
     program none-members skznone members.lua -n skznone t
-    program none-tagged skznone tagged.lua -n skznone skyzfs
+    program none-tagged skznone tagged.lua -n skznone "$TAG"
     rec none-holds zfs holds -H skznone@t
     rec none-holds-r zfs holds -H -r skznone@t
-    rec none-hold zfs hold -r skyzfs skznone@t
-    rec none-release zfs release -r skyzfs skznone@t
+    rec none-hold zfs hold -r "$TAG" skznone@t
+    rec none-release zfs release -r "$TAG" skznone@t
     exit 0
 }
 
