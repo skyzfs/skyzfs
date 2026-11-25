@@ -104,7 +104,12 @@
 #                          after writes
 #   mirror-rebuild, mirror-rebuild-status[-g], mirror-rebuilt[-g]
 #                          a third file attached with -s (a sequential
-#                          rebuild)
+#                          rebuild). Its status in progress reads
+#                          "resilver (mirror-0) in progress", and is
+#                          most likely not caught: in run 45663170240
+#                          `zpool status` waited behind the attach until
+#                          the rebuild had ended, and only the scrub
+#                          that follows a rebuild was in progress
 #
 # On files, `zpool online` and `zpool attach` return only once the
 # resilver has ended, so these two run in the background while the
@@ -489,7 +494,7 @@ main() {
     status mirror-resilvered skzqm
 
     rec mirror-rebuild zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img" &
-    catch_status mirror-rebuild-status 'in progress' skzqm
+    catch_status mirror-rebuild-status 'resilver \([^)]*\) in progress' skzqm
     wait
     lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
     lim 600 zpool wait -t scrub skzqm > /dev/null 2>&1
