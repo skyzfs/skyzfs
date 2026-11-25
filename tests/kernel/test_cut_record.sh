@@ -523,5 +523,19 @@ is "prewind: looks at r1 with the store down, before it comes back" \
     "$(order_of rec_prewind '^    (bash -c "\$S3_DOWN"|pflow r1|pask r1-look look r1$|bash -c "\$S3_UP")')" \
     "bash pflow pask bash "
 
+# passist (M2.T5's stage 0): an idle pool, a1 carried only by the assist,
+# then a minute of assists for a2, which nothing carries, between two
+# statuses and before the kstat is kept; then a2 withdrawn and looked at.
+is "passist: idle, a1 assisted, idle, a2 assisted between statuses, the kstat kept, then a2 withdrawn and looked at" \
+    "$(order_of rec_passist '^    (create_pool|load|pidle|pflow|ustatus|cat "/proc/spl/kstat/zfs/\$POOL/txgs"|pask|export_pool)')" \
+    "create_pool load pidle pflow pidle ustatus pflow ustatus cat pask pask export_pool "
+is "passist: a1 five groups ahead and a2 far ahead, both assisted" \
+    "$(sed -n '/^rec_passist() {$/,/^}$/p' "$SCRIPT" | grep -cE '^    pflow a1 a1 --group-plus 5 --assist |^    pflow a2 a2 --group-plus 1000000 --expiry-s 900 --assist |^    pask a2-withdraw withdraw a2$|^    pask a2-look look a2$|^    cat "/proc/spl/kstat/zfs/\$POOL/txgs" > "\$RDIR/a2-txgs.txt"$')" 5
+is "passist is a publish course by name" \
+    "$(grep -c '^PUBLISH_NAMED=".* passist"$' "$SCRIPT")" 1
+pidle_fn=$(sed -n '/^pidle() {$/,/^}$/p' "$SCRIPT")
+is "pidle counts only the groups that wrote (ZFS 2.4 commits empty ones), and an empty kstat is the rig's error" \
+    "$(grep -cE "\\\$3 == \"C\" .*\\\$6 \+ 0 > 0|rig_error \"no group that wrote in" <<< "$pidle_fn")" 2
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

@@ -227,6 +227,28 @@ COURSES = {
         'files': {'channel-status.txt': 'control_answered 4\ncontrol_peer 1\ncontrol_malformed 2\n',
                   'socket-mode.txt': '600\n'},
     },
+    # passist: a1 asked with G 5 above its snapshot's group on an idle
+    # pool; the third assist wrote group 55, which cut 8 carried. a2,
+    # asked far ahead, was assisted three times and never carried.
+    'passist': {
+        'ends': {'a1': 'done commit=' + commit_of('a1'), 'a2': 'pending after 70 s', 'a2-withdraw': 'withdrawn',
+                 'a2-look': 'absent'},
+        'requests': {'a1': (7, 55, 50), 'a2': (8, 1000056, 56)},
+        'rows': {'a1': (8, 55)},
+        'log': [(PID, [(7, 50, True), (8, 55, True), (9, 57, True), (10, 58, True), (11, 59, True)])],
+        'files': {'assist.tsv': 'a1\t1011\t1012\t5000\t50\t51\t52\na1\t1013\t1014\t5001\t52\t53\t54\n'
+                                'a1\t1015\t1016\t5002\t54\t55\t56\na2\t1025\t1027\t5003\t56\t57\t57\n'
+                                'a2\t1035\t1037\t5004\t57\t58\t58\na2\t1045\t1052\t5005\t58\t58\t60\n',
+                  'a2-status-before.txt': 'uploaded 8\nupload_blocks 900\n',
+                  'a2-status-after.txt': 'uploaded 11\nupload_blocks 960\n',
+                  # Groups 57, 58 and 60 wrote; 59 wrote nothing.
+                  'a2-txgs.txt': 'txg birth state ndirty nread nwritten reads writes\n'
+                                 + ''.join(f'{g} 1 C 0 0 {w} 0 0\n' for g, w in
+                                           ((56, 4096), (57, 4096), (58, 4096), (59, 0), (60, 4096))),
+                  'agent.tsv': f'1020\t1022\tpublish --name a2 --attachment {A} --state {S} --after 8 '
+                               f'--group 1000056 --manifest m --expiry-s 900\t0\taccepted\n'
+                               '1053\t1060\tpublish-progress --name a2\t0\tpending after 70 s\n'},
+    },
 }
 
 
@@ -715,6 +737,64 @@ class Premises(unittest.TestCase):
                          ('pchannel', 'socket-mode.txt')):
             rc, lines = run_course(name, lambda d, fn=fn: os.remove(os.path.join(d, fn)))
             self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), (name, fn))
+
+
+
+def assists(text):
+    return write('assist.tsv', text)
+
+
+class Assist(unittest.TestCase):
+    """passist: the assist writes a group on a kernel (a verdict), its
+    premises (the rig's), and the pace's line."""
+    RIGHT = COURSES['passist']['files']['assist.tsv']
+
+    def test_the_right_course_names_the_assist_that_wrote_the_carrying_group(self):
+        rc, lines = run_course('passist')
+        self.assertEqual(rc, 0)
+        self.assertEqual(verdicts(lines, 'premise_a1_needed_the_assist', 'pin_assist_writes_a_group',
+                                  'premise_a2_assisted', 'obs_a1_cut', 'obs_assist_pace'),
+                         ['ok', 'ok', 'ok', 'INFO', 'INFO'])
+        self.assertIn('a group assist 3 wrote', lines['obs_a1_cut'][1])
+        pace = lines['obs_assist_pace'][1]
+        for part in ('3 assists', 'committed 3 groups that wrote', 'and 1 that wrote nothing', 'in 2 of them and the `zpool sync` after it in 1',
+                     'counted 3 cuts', 'uploaded 3 cuts', 'and 60 blocks'):
+            self.assertIn(part, pace)
+
+    def test_an_assist_that_wrote_no_group_ends_1(self):
+        rc, lines = run_course('passist', assists(self.RIGHT.replace('5004\t57\t58\t58', '5004\t58\t58\t58')))
+        self.assertEqual((rc, lines['pin_assist_writes_a_group'][0]), (1, 'FAILED'))
+        self.assertIn('assist 5 (a2, V 5004)', lines['pin_assist_writes_a_group'][1])
+
+    def test_a_carrying_group_no_assist_wrote_is_said(self):
+        rc, lines = run_course('passist', rows={'a1': (8, 57)})
+        self.assertIn('a group no assist wrote', lines['obs_a1_cut'][1])
+
+    def test_premises_that_fail_end_2(self):
+        for why, text in (('a1 written past G before any assist', self.RIGHT.replace('\t50\t51\t52', '\t55\t56\t57')),
+                          ('a1 never reached G', self.RIGHT.replace('\t54\t55\t56', '\t53\t53\t54')),
+                          ('no assist of a1', ''.join(ln + '\n' for ln in self.RIGHT.splitlines()
+                                                      if not ln.startswith('a1'))),
+                          ('a2 assisted once', ''.join(ln + '\n' for ln in self.RIGHT.splitlines()[:4])),
+                          ('a line torn', self.RIGHT + 'a2\t1060\t1061\n'),
+                          ('a2 past the kstat\'s history', self.RIGHT.replace('5005\t58\t58\t60', '5005\t58\t58\t61'))):
+            rc, lines = run_course('passist', assists(text))
+            self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), why)
+
+    def test_a_status_or_an_agent_log_the_pace_cannot_read_ends_2(self):
+        for fn, text in (('a2-status-after.txt', 'uploaded x\nupload_blocks 960\n'),
+                         ('a2-status-before.txt', 'upload_blocks 900\n'),
+                         ('agent.tsv', '1020\t1022\tpublish --name a1 --after 8\t0\taccepted\n')):
+            rc, lines = run_course('passist', write(fn, text))
+            self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), fn)
+
+
+class Watch(unittest.TestCase):
+    def test_a_watch_log_with_no_line_is_the_rig_s_error(self):
+        """#143's review, G3."""
+        rc, lines = run_course('pplain', write('watch.log', ''))
+        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        self.assertIn('no line', lines['rig_error'][1])
 
 
 if __name__ == '__main__':

@@ -55,7 +55,7 @@ class Tables(unittest.TestCase):
             },
             'prewindf': {
                 'f1': ('pending after',),             # G far above: it waits
-                'f1-end': ('refused rewound',),       # -F's first cuts are marks, which end it
+                'f1-end': ('refused rewound',),       # -FX's first cuts are marks, which end it
                 'f1-look': ('absent',),               # ended, so never made
             },
             'prewindc': {                             # prewindf's control (#141's review, S1)
@@ -99,6 +99,12 @@ class Tables(unittest.TestCase):
                 'peer': ('refused peer',),
                 'cuts': ('cuts ',),
             },
+            'passist': {                              # the agent's assist on an idle pool (#144)
+                'a1': ('done ',),                     # carried by the groups the assist writes
+                'a2': ('pending after',),             # G far above: never carried
+                'a2-withdraw': ('withdrawn',),
+                'a2-look': ('absent',),               # withdrawn: never made
+            },
         })
         self.assertEqual(pc.PUBLISHED, {
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
@@ -109,11 +115,12 @@ class Tables(unittest.TestCase):
             'pkillman': {'m1': 'm1-end'},
             'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
+            'passist': {'a1': 'a1'},
         })
         # t5 expired, t3 never asked validly, f1 ended by the rewind's
-        # mark, c1 withdrawn, tw withdrawn before the kill.
+        # mark, c1 withdrawn, tw withdrawn before the kill, a2 withdrawn.
         self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',),
-                                     'pkill': ('tw',)})
+                                     'pkill': ('tw',), 'passist': ('a2',)})
         # A look at a name published must name its row.
         self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
         # manifest:1 kills before the transaction (no snap/m1 may show),
@@ -473,6 +480,75 @@ class Premises(unittest.TestCase):
         self.assertEqual(pc.exact_counts({}, {'control_peer': 1}), ['control_peer is missing, not 1'])
         self.assertEqual(pc.exact_counts({'control_answered': '5'}, {'control_answered': 4}),
                          ['control_answered is 5, not 4'])
+
+
+
+KSTAT_HEAD = 'txg      birth            state ndirty       nread        nwritten     reads    writes\n'
+
+
+class Assist(unittest.TestCase):
+    """passist (#144's assist, M2.T5's stage 0): its file, and the pace's
+    figures."""
+
+    def test_assist_tsv_reads_and_a_line_that_does_not_is_the_rig_s_error(self):
+        rows = pc.read_assists('a1\t100\t200\t5000\t60\t61\t61\na2\t300\t400\t5001\t61\t61\t62\n')
+        self.assertEqual(rows, [{'name': 'a1', 't0': 100, 't1': 200, 'value': 5000, 'before': 60, 'mid': 61,
+                                 'after': 61},
+                                {'name': 'a2', 't0': 300, 't1': 400, 'value': 5001, 'before': 61, 'mid': 61,
+                                 'after': 62}])
+        self.assertEqual(pc.read_assists(''), [])
+        for bad in ('a1\t100\t200\t5000\t60\t61\n', 'a1\t100\t200\t5000\t60\t61\tx\n',
+                    '\t100\t200\t5000\t60\t61\t61\n', 'a1\t100\t200\t5000\t60\t61\t61\t9\n'):
+            with self.assertRaises(pc.RigError, msg=bad):
+                pc.read_assists(bad)
+
+    def test_the_span_of_a_name_s_requests(self):
+        text = ('1000000000\t1100000000\tpublish --name a2 --after 7\t0\taccepted\n'
+                '1200000000\t1300000000\tpublish-progress --name a1\t0\tpending\n'
+                '5000000000\t6000000000\tpublish-progress --name a2\t0\tpending\n'
+                '7000000000\t7100000000\tcuts\t0\tcuts x\n')
+        self.assertEqual(pc.requests_span(text, 'a2'), 5.0)
+        self.assertIsNone(pc.requests_span(text, 'a3'))
+
+    def test_the_cut_lines_times(self):
+        log = [{'pid': '31', 'lines': [log_line('cut', 'itself', '17', '43', 1),
+                                       log_line('publish', '-', '-', 'c1 withdrawn', 2, op='withdraw'),
+                                       log_line('cut', 'rewind', '18', '44', 3)]}]
+        self.assertEqual(pc.cut_times(log), [(1000, 17, 43), (3000, 18, 44)])
+
+    def test_the_pace(self):
+        rows = [{'t0': 10 * 10**9, 't1': 11 * 10**9, 'before': 60, 'mid': 61, 'after': 61},
+                {'t0': 25 * 10**9, 't1': 26 * 10**9, 'before': 61, 'mid': 61, 'after': 62},
+                {'t0': 39 * 10**9, 't1': 40 * 10**9, 'before': 62, 'mid': 63, 'after': 64}]
+        cuts = [(9 * 10**9, 1, 60), (10 * 10**9, 2, 61), (30 * 10**9, 3, 62), (40 * 10**9, 4, 64),
+                (41 * 10**9, 5, 65)]
+        # Groups 61 to 64 that wrote, and two between them that wrote nothing.
+        txgs = KSTAT_HEAD + ''.join(f'{g} 1 C 0 0 {w} 0 0\n' for g, w in
+                                    ((59, 4096), (60, 4096), (61, 4096), (62, 0), (63, 8192), (64, 4096), (65, 0)))
+        p = pc.assist_pace(rows, cuts, {'uploaded': '3', 'upload_blocks': '100'},
+                           {'uploaded': '9', 'upload_blocks': '160'}, 60.0, txgs)
+        self.assertEqual(p, {'assists': 3, 'seconds': 30.0, 'assists_per_min': 6.0,
+                             'groups': 3, 'groups_per_min': 6.0, 'empty': 1, 'cuts': 3, 'cuts_per_min': 6.0,
+                             'set_wrote': 2, 'sync_wrote': 2,
+                             'flow_s': 60.0, 'uploaded': 6, 'uploads_per_min': 6.0,
+                             'blocks': 60, 'blocks_per_min': 60.0})
+        for before, after, flow in (({}, {'uploaded': '9', 'upload_blocks': '1'}, 60.0),
+                                    ({'uploaded': '3', 'upload_blocks': '1'}, {'uploaded': 'x', 'upload_blocks': '1'},
+                                     60.0),
+                                    ({'uploaded': '3', 'upload_blocks': '1'}, {'uploaded': '4', 'upload_blocks': '1'},
+                                     None)):
+            with self.assertRaises(pc.RigError):
+                pc.assist_pace(rows, cuts, before, after, flow, txgs)
+
+    def test_the_kstat_s_groups_that_wrote_and_those_that_did_not(self):
+        txgs = KSTAT_HEAD + '41 1 C 0 0 4096 0 0\n42 1 C 0 0 0 0 0\n43 1 C 0 0 512 0 0\n44 1 S 0 0 0 0 0\n'
+        self.assertEqual(pc.kstat_groups(txgs, 40, 43), (2, 1))
+        self.assertEqual(pc.kstat_groups(txgs, 41, 42), (0, 1))
+        # A history that does not reach back, or forward, over the range,
+        # or a group still syncing, or an nwritten that is no number.
+        for lo, hi, text in ((39, 43, txgs), (41, 44, txgs), (40, 43, txgs.replace('42 1 C 0 0 0', '42 1 C 0 0 x'))):
+            with self.assertRaises(pc.RigError, msg=(lo, hi)):
+                pc.kstat_groups(text, lo, hi)
 
 
 if __name__ == '__main__':

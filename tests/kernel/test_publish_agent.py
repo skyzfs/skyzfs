@@ -2,6 +2,7 @@
 """Tests of the agent stand-in of the channel rig (publish_agent.py): no kernel."""
 import contextlib
 import io
+import itertools
 import os
 import socket
 import subprocess
@@ -219,6 +220,110 @@ class AFlow(unittest.TestCase):
         _, _, shell = self.run_flow([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
                                      (0, 'accepted\n'), (0, f'done commit={H}\n')], hold=False)
         self.assertFalse([c for c in shell if 'hold' in c or 'release' in c])
+
+    def assisted(self, rounds, after, walls, synced, step=4):
+        fake = Fake(*([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'), (0, 'accepted\n')]
+                      + [(0, 'pending\n')] * rounds + [(0, f'done commit={H}\n')]))
+        ag = pa.Agent('skyzfsd', 'VOL', 'RUN', self.log, clock=lambda: 1, runner=fake)
+        shell = []
+
+        def sh(cmd):
+            shell.append(' '.join(cmd))
+            if cmd[:2] == ['zfs', 'get'] and 'createtxg' in cmd:
+                return '55\n'
+            if cmd[:2] == ['zfs', 'get']:
+                return '/p\n'
+            return ''
+        clock = iter(range(0, 100000, step))
+        wall = iter(walls)
+        mono = iter(range(1000, 100000, 10))
+        end = pa.flow(ag, 'p', 't1', sleep=lambda s: None, shell=sh, files=lambda root: b'x  f1\n',
+                      now=lambda: next(clock), assist_after=after, synced=lambda pool: next(synced),
+                      wall=lambda: next(wall), mono=lambda: next(mono))
+        with open(os.path.join(self.d.name, 'assist.tsv')) as f:
+            rows = [ln.rstrip('\n').split('\t') for ln in f]
+        return end, shell, rows
+
+    def test_the_assist_sets_a_new_value_then_syncs_and_writes_nothing(self):
+        """#144's `Zfs::assist`: after ASSIST_AFTER, a `zfs set` with a
+        value not set before (one above the last when the wall clock
+        steps back), then `zpool sync`; no nudge."""
+        # Rounds at now() 4, 8, 12, 16 (t0 = 0): no assist before 10 s.
+        # Four reads an assist: before, after the set, then until two agree.
+        synced = iter([60, 61, 61, 61,   61, 62, 62, 62])
+        end, shell, rows = self.assisted(4, 10, [5_000_000_000, 4_000_000_000], synced)
+        self.assertEqual(end, f'done commit={H}')
+        mid = shell[4:-1]
+        self.assertEqual(mid, ['zfs set skyzfs:assist=5000 p', 'zpool sync p',
+                               'zfs set skyzfs:assist=5001 p', 'zpool sync p'])
+        self.assertFalse([c for c in shell if 'nudge' in c])
+        self.assertEqual(rows, [['t1', '1000', '1010', '5000', '60', '61', '61'],
+                                ['t1', '1020', '1030', '5001', '61', '62', '62']])
+
+    def test_the_group_after_the_sync_is_read_until_it_stays_put(self):
+        synced = iter([60, 60, 61, 62, 62])
+        _, _, rows = self.assisted(3, 10, [7_000_000_000], synced)
+        self.assertEqual(rows, [['t1', '1000', '1010', '7000', '60', '60', '62']])
+
+    def test_three_assists_a_second_apart_then_one_every_assist_after(self):
+        """The pace the lead decided on #144: from ASSIST_AFTER after the
+        acceptance, three a round apart, then one every ASSIST_AFTER."""
+        # A round a second (t0 = 0): rounds at 1 to 35 s.
+        _, _, rows = self.assisted(35, 10, iter(range(5_000_000_000, 10**12, 10**9)), itertools.repeat(60), step=1)
+        self.assertEqual([r[3] for r in rows], ['5000', '6000', '7000', '8000', '9000'])
+        # With ASSIST_AFTER 4: at 4, 5 and 6 s, then 10, 14, ... 34 s.
+        os.unlink(os.path.join(self.d.name, 'assist.tsv'))
+        _, _, rows = self.assisted(35, 4, iter(range(5_000_000_000, 10**12, 10**9)), itertools.repeat(60), step=1)
+        self.assertEqual(len(rows), 3 + (35 - 6) // 4)
+
+    def test_no_assist_unless_asked(self):
+        end, calls, shell = self.run_flow([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
+                                           (0, 'accepted\n')] + [(0, 'pending\n')] * 5, limit=250)
+        self.assertFalse([c for c in shell if 'skyzfs:assist' in c])
+        self.assertFalse(os.path.exists(os.path.join(self.d.name, 'assist.tsv')))
+
+    def test_main_passes_the_assist_and_its_wait(self):
+        got = {}
+        with mock.patch.object(pa, 'flow', lambda *a, **k: got.update(k) or f'done commit={H}'), \
+                mock.patch.object(pa, 'Agent', lambda *a: types.SimpleNamespace(log=self.log)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            pa.main(['publish_agent.py', 'flow', 'skyzfsd', 'VOL', 'RUN', self.log, 'p', 't1', '--assist'])
+            self.assertEqual(got['assist_after'], pa.ASSIST_AFTER)
+            pa.main(['publish_agent.py', 'flow', 'skyzfsd', 'VOL', 'RUN', self.log, 'p', 't1', '--assist',
+                     '--assist-after-s', '3'])
+            self.assertEqual(got['assist_after'], 3)
+            pa.main(['publish_agent.py', 'flow', 'skyzfsd', 'VOL', 'RUN', self.log, 'p', 't1',
+                     '--assist-after-s', '3'])
+            self.assertIsNone(got['assist_after'])
+
+
+class WrittenGroup(unittest.TestCase):
+    HEAD = 'txg      birth            state ndirty       nread        nwritten     reads    writes\n'
+
+    def test_the_newest_committed_group_that_wrote(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'p'))
+            with open(os.path.join(d, 'p', 'txgs'), 'w') as f:
+                f.write(self.HEAD +
+                        '41       100              C     4096         0            8192         0        2\n'
+                        '43       300              C     4096         0            12288        0        3\n'
+                        '42       200              C     0            0            4096         0        1\n'
+                        '44       400              C     0            0            0            0        0\n'
+                        '45       500              S     0            0            0            0        0\n'
+                        '46       600              O     0            0            0            0        0\n')
+            # 44 committed and wrote nothing: no uberblock, no cut.
+            self.assertEqual(pa.written_txg('p', root=d), 43)
+
+    def test_no_group_that_wrote_or_no_kstat_is_the_rig_s_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'p'))
+            with open(os.path.join(d, 'p', 'txgs'), 'w') as f:
+                f.write(self.HEAD + '44       400              C     0            0            0            0        0\n'
+                        '45       500              O     0            0            0            0        0\n')
+            with self.assertRaises(pa.RigError):
+                pa.written_txg('p', root=d)
+            with self.assertRaises(pa.RigError):
+                pa.written_txg('q', root=d)
 
 
 class Raw(unittest.TestCase):

@@ -6,7 +6,7 @@ Usage: publish_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 Called by tests/kernel/cut-record.sh as its CUT_CHECK after each of the
 publish courses (pplain, prewind, prewindf, prewindc, pkill, pkillman,
-pkillpub, pchannel), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
+pkillpub, pchannel, passist), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
 daemon's request log; BASE is `-`. Environment: as nodeb_check.py's
 (SKZ_NODEB, SKZ_S3_ENDPOINT, SKZ_S3_BUCKET and the keys). The volume in
 object storage is `cut-NAME`.
@@ -35,7 +35,11 @@ What the course left in DIR:
 - channel-status.txt and socket-mode.txt (pchannel): the status after
   the channel's requests, whose counts (COUNTS) must be exact, and the
   socket's mode before the rig widened it for the peer, which must be
-  600.
+  600;
+- assist.tsv (passist): each of the agent's assists (publish_agent.py
+  --assist), a2-status-before.txt and a2-status-after.txt, the
+  status around a2's publish, and a2-txgs.txt, the pool's txgs kstat
+  after it.
 
 Each answer must be one the table EXPECTED allows for its label, in the
 course's own words: a label with an answer outside the table is a
@@ -88,6 +92,26 @@ before, so no cut is marked, and c1 must still wait a minute of syncs
 later (`pending after`). A daemon that ended every waiting publish at
 an import, whatever its groups, passes prewindf and fails here.
 
+The agent's assist (passist; M2.6b2's `Zfs::assist`, #144; M2.T5's stage
+0): on an idle pool, `zfs set skyzfs:assist=V` with a V not set before,
+then `zpool sync`, at the pace the lead decided on #144: from 10 s after
+the acceptance, three a second apart, then one every 10 s, with nothing
+written to the pool. Every assist must have brought the pool's newest
+group that wrote past where it was (pin_assist_writes_a_group, on the
+kernel: the txgs kstat before the set and after the sync, counting only
+groups committed with `nwritten` above 0; ZFS 2.4 also commits groups
+that write nothing and no uberblock, which are no cut). a1, asked with G
+five above its snapshot's, must be done (on a cut of a group an assist
+wrote: obs_a1_cut). a2 can never be carried: 70 s of assists is the
+pace's figures (obs_assist_pace: the assists, the groups that wrote over
+them, and those that wrote nothing, from a2-txgs.txt, the cuts the
+daemon counted between the first and the last, and the uploads between
+the statuses around a2's publish), and is then withdrawn and must be
+`absent`. A stall's eight asks and its abandon are left to the agent's
+fakes: on a real daemon a stall needs a cut that is not counted while
+the assist writes groups, and no hook makes one (the lead, M2.T5's
+plan).
+
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
 not make the case it is there for: the rig's error, not a verdict. A
@@ -128,6 +152,11 @@ of #139):
   (the rig's mark session-2-ready, on the log's clock) and before the
   line of c1's withdrawal, whatever it answered, and no cut after C
   before that line is a ground of rule (R): the import was no rewind.
+- passist: at a1's first assist the pool's newest group that wrote was
+  below the G asked, and its assists took it to G or past (the kstat's
+  groups, in assist.tsv): without them nothing could have carried a1.
+  a2 was assisted at least twice, and a2-txgs.txt reaches back to the
+  first of its assists.
 - pkill: the instance that answered tw's withdrawal, whatever it
   answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
@@ -144,7 +173,8 @@ changed, which must be caught at the files.
 `pin_watcher_reads`: the watcher beside the daemon (cut_watch.py,
 node B's side of the uploads) ended with no VERDICT line in watch.log:
 node B read the content of every cut it found at head (review of #139).
-A watcher's ERROR line is the rig's error.
+A watcher's ERROR line, or a watch.log with no line, is the rig's error
+(#143's review, G3).
 
 Each line says what it rests on: `kernel and server` (node B's import of
 what the daemon published), `server` (the daemon's answers and what it
@@ -166,7 +196,7 @@ import cut_daemon_check  # noqa: E402
 import nodeb_check  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
+COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel', 'passist')
 
 # label -> the answers allowed, each a prefix of the answer line.
 EXPECTED = {
@@ -245,6 +275,14 @@ EXPECTED = {
         'p1-end': ('refused taken',),
         'p1-look': ('snap ',),
     },
+    # The agent's assist on an idle pool (#144): a1 is carried by the
+    # groups it writes; a2 never can be, and is withdrawn after a minute.
+    'passist': {
+        'a1': ('done ',),
+        'a2': ('pending after',),
+        'a2-withdraw': ('withdrawn',),
+        'a2-look': ('absent',),
+    },
     'pchannel': {
         'nu': ('refused no-upload',),
         'version': ('refused version',),
@@ -265,11 +303,13 @@ PUBLISHED = {
     'pkillman': {'m1': 'm1-end'},
     'pkillpub': {'p1': 'p1-look'},
     'pchannel': {},
+    'passist': {'a1': 'a1'},
 }
 # Names that must have no ref and no row: an expired publish, one never
 # asked validly, one withdrawn before a kill and past whose G the pool's
 # cuts went.
-ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',)}
+ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',),
+          'passist': ('a2',)}
 # The names published -> the label of a `look` at them, whose `snap`
 # answer must name the row node B read (pin_T_look).
 LOOKS = {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}}
@@ -612,6 +652,87 @@ def counted_between(cuts, after, lo, hi):
     return [c for c in cuts if c[0] > after and lo <= c[1] < hi]
 
 
+def read_assists(text):
+    """assist.tsv (publish_agent.py --assist) -> [{'name', 't0', 't1',
+    'value', 'before', 'mid', 'after'}]; a line that does not read is the
+    rig's error."""
+    keys = ('t0', 't1', 'value', 'before', 'mid', 'after')
+    out = []
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 7 or not f[0] or not all(x.isdigit() for x in f[1:]):
+            raise RigError(f'assist.tsv line {k + 1}: not `T ns ns value before mid after`: {ln[:200]!r}')
+        out.append(dict(zip(keys, map(int, f[1:])), name=f[0]))
+    return out
+
+
+def cut_times(instances):
+    """The request log's `cut` lines -> [(ns, number, group)]."""
+    return [(ln['ns'], int(ln['sectors']), int(ln['result'])) for inst in instances for ln in inst['lines']
+            if ln['event'] == 'cut' and ln['sectors'].isdigit() and ln['result'].isdigit()]
+
+
+def requests_span(agent_text, name):
+    """agent.tsv -> the seconds from the first request about NAME to the
+    last answer about it, or None where there was none."""
+    spans = []
+    for ln in agent_text.splitlines():
+        f = ln.split('\t')
+        if len(f) >= 3 and f[0].isdigit() and f[1].isdigit() and f[2].split()[1:3] == ['--name', name]:
+            spans.append((int(f[0]), int(f[1])))
+    if not spans:
+        return None
+    return (max(t1 for _, t1 in spans) - min(t0 for t0, _ in spans)) / 1e9
+
+
+def kstat_groups(text, lo, hi):
+    """The txgs kstat -> (groups that wrote, groups that wrote nothing)
+    committed after LO up to HI. The kstat must list every group in that
+    range: one that has dropped out of its history is the rig's error."""
+    seen = {}
+    for ln in text.splitlines()[1:]:
+        f = ln.split()
+        if len(f) >= 6 and f[0].isdigit() and f[2] == 'C':
+            if not f[5].isdigit():
+                raise RigError(f'the txgs kstat: nwritten is not a number: {ln[:200]!r}')
+            seen[int(f[0])] = int(f[5]) > 0
+    missing = [g for g in range(lo + 1, hi + 1) if g not in seen]
+    if missing:
+        raise RigError(f'the txgs kstat lacks {len(missing)} of the groups {lo + 1} to {hi} '
+                       f'(first {missing[0]})')
+    wrote = sum(1 for g in range(lo + 1, hi + 1) if seen[g])
+    return wrote, hi - lo - wrote
+
+
+def assist_pace(rows, cuts, before, after, flow_s, txgs):
+    """A publish's assists (ROWS, at least two), the log's cut times, the
+    statuses around its publish, that publish's span in seconds and the
+    txgs kstat after it -> the pace's figures."""
+    span = (rows[-1]['t1'] - rows[0]['t0']) / 1e9
+    if span <= 0 or not flow_s:
+        raise RigError(f'assists over {span} s in a publish of {flow_s} s: no pace to read')
+
+    def count(st, key):
+        v = st.get(key, '')
+        if not v.isdigit():
+            raise RigError(f'the status around the assisted publish has no number {key}: {v!r}')
+        return int(v)
+    per = lambda n, s: round(n * 60 / s, 1)  # noqa: E731
+    groups, empty = kstat_groups(txgs, rows[0]['before'], rows[-1]['after'])
+    counted = len([c for c in cuts if rows[0]['t0'] <= c[0] <= rows[-1]['t1']])
+    uploaded = count(after, 'uploaded') - count(before, 'uploaded')
+    blocks = count(after, 'upload_blocks') - count(before, 'upload_blocks')
+    return {
+        'assists': len(rows), 'seconds': round(span, 1), 'assists_per_min': per(len(rows), span),
+        'groups': groups, 'groups_per_min': per(groups, span), 'empty': empty,
+        'cuts': counted, 'cuts_per_min': per(counted, span),
+        'set_wrote': len([r for r in rows if r['mid'] > r['before']]),
+        'sync_wrote': len([r for r in rows if r['after'] > r['mid']]),
+        'flow_s': round(flow_s, 1), 'uploaded': uploaded, 'uploads_per_min': per(uploaded, flow_s),
+        'blocks': blocks, 'blocks_per_min': per(blocks, flow_s),
+    }
+
+
 def status_of(text):
     out = {}
     for ln in text.splitlines():
@@ -675,6 +796,8 @@ def main():
         # recording go on to the check): node B could not read head's
         # content. Every course uploads, so every course has a watcher.
         watch = text_of('watch.log').splitlines()
+        if not watch:
+            raise RigError('the watcher wrote no line to watch.log')
         err = [ln.split('\t', 1)[-1] for ln in watch if '\tERROR ' in ln]
         if err:
             raise RigError(f'the watcher: {err[0]}')
@@ -694,6 +817,7 @@ def main():
             return got
 
         controlled = False
+        carried = {}
         for t, label in PUBLISHED[name].items():
             req = published.get(t)
             if req is None:
@@ -708,6 +832,7 @@ def main():
             got = snap_row(t, os.path.join(nb.dir, f'manifest-{t}.got'))
             bad = judge_row(got, req, commit)
             row = got.get('row')
+            carried[t] = row
             holds(f'pin_{t}_row', bad, 'server',
                   f"snap/{t} and its row on {commit[:12]}: cut {row['number']} of group {row['group']} "
                   f"(asked after {req['after']}, G {req['group']}, the snapshot's createtxg {req['txg']})"
@@ -846,6 +971,45 @@ def main():
                     + ('; cuts not above the groups before them: '
                        + ', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds)
                        if grounds else '; none of them, nor any after C before, a ground of rule (R)'))
+        if name == 'passist':
+            rows = read_assists(text_of('assist.tsv'))
+            a1 = published.get('a1')
+            if a1 is None:
+                raise RigError('no request of a1 in published.tsv')
+            mine = [r for r in rows if r['name'] == 'a1']
+            # On the rig and the kernel alone: where the pool stood when the
+            # assists began, and where they took it.
+            premise('premise_a1_needed_the_assist',
+                    bool(mine) and mine[0]['before'] < a1['group'] <= max(r['after'] for r in mine),
+                    f"a1 asked with G {a1['group']} (its snapshot's {a1['txg']}): "
+                    + (f"the newest group that wrote was {mine[0]['before']} at the first of {len(mine)} assists, "
+                       f"{max(r['after'] for r in mine)} after the last" if mine else 'no assist'))
+            holds('pin_assist_writes_a_group',
+                  [f"assist {k + 1} ({r['name']}, V {r['value']}): newest group that wrote "
+                   f"{r['before']} before the set, "
+                   f"{r['after']} after the sync" for k, r in enumerate(rows) if r['after'] <= r['before']],
+                  'kernel', f'each of {len(rows)} assists (a `zfs set` with a new value, then `zpool sync`, '
+                  'nothing written) brought the pool\'s newest group that wrote past where it was')
+            row = carried.get('a1')
+            if isinstance(row, dict):
+                by = [k + 1 for k, r in enumerate(mine) if r['before'] < row['group'] <= r['after']]
+                put('obs_a1_cut', 'INFO', 'server',
+                    f"cut {row['number']} of group {row['group']} carried a1: "
+                    + (f'a group assist {by[0]} wrote' if by else 'a group no assist wrote'))
+            a2 = [r for r in rows if r['name'] == 'a2']
+            premise('premise_a2_assisted', len(a2) >= 2, f'a2 was assisted {len(a2)} times')
+            p = assist_pace(a2, cut_times(instances), status_of(text_of('a2-status-before.txt')),
+                            status_of(text_of('a2-status-after.txt')), requests_span(text_of('agent.tsv'), 'a2'),
+                            text_of('a2-txgs.txt'))
+            put('obs_assist_pace', 'INFO', 'kernel and server',
+                f"a2, never carried: {p['assists']} assists in {p['seconds']} s ({p['assists_per_min']} a minute); "
+                f"the pool committed {p['groups']} groups that wrote over them ({p['groups_per_min']} a minute) "
+                f"and {p['empty']} that wrote nothing; the `zfs set` "
+                f"wrote a group in {p['set_wrote']} of them and the `zpool sync` after it in {p['sync_wrote']}; "
+                f"the daemon counted {p['cuts']} cuts between the first and the last ({p['cuts_per_min']} a "
+                f"minute); between the statuses around a2's publish ({p['flow_s']} s of requests) it uploaded "
+                f"{p['uploaded']} cuts ({p['uploads_per_min']} a minute) and {p['blocks']} blocks "
+                f"({p['blocks_per_min']} a minute)")
         if name in BETWEEN:
             t, there = BETWEEN[name]
             kill = text_of('kill.tsv').strip()
