@@ -13,3 +13,26 @@ A7	KILLED	cli_snapshot: the about.txt line dropped	(test_zfs_cli_record.sh: FAIL
 A8	KILLED	cli_snapshot: the take whatever the list says	(test_zfs_cli_record.sh: FAIL: not partial, @t there: no CLI: got 'yes', want 'no')
 A9	SURVIVED	cli_snapshot: the list without lim
 A10	SURVIVED	cli_snapshot: the count from the last match, not the first
+A11	KILLED	members_line: counts the return's keys	(test_zfs_cli_record.sh: FAIL: members_line: got 'scale: m-ok: 1 members)
+A12	KILLED	members_line: not after the scale members	(test_zfs_cli_record.sh: FAIL: members line: members: got '0', want '1')
+A13	SURVIVED	record_pool: the old rule (list) back, no cli_snapshot
+A14	KILLED	scale: the old rule (list) back, no cli_snapshot	(test_zfs_cli_record.sh: FAIL: partial: what was taken destroyed: got '', want 'zfs destroy -r skzqs@t ')
+B1	SURVIVED	cli-exists-child: another --expect pattern
+B2	KILLED	cli-exists-root at @o0	(test_zfs_cli_record.sh: FAIL: pin the take at the root's @t: got 'zfs snapshot -r skzq@o0 ', want 'zfs snapshot -r skzq@t ')
+B3	KILLED	cli-limit: the limit on the root	(test_zfs_cli_record.sh: FAIL: pin the limit: got 'zfs set snapshot_limit=0 skzq ', want 'zfs set snapshot_limit=0 skzq/child ')
+B4	SURVIVED	cli-limit: the limit never lifted
+B5	SURVIVED	cli-limit: @q never destroyed
+B6	KILLED	cli-limit: the take without -r	(test_zfs_cli_record.sh: FAIL: pin the take under the limit: got 'zfs snapshot skzq@q ', want 'zfs snapshot -r skzq@q ')
+B7	KILLED	none: the take without -r	(test_zfs_cli_record.sh: FAIL: pin none's take: got 'zfs snapshot skznone@t ', want 'zfs snapshot -r skznone@t ')
+B8	KILLED	scale take-cli without -r	(test_zfs_cli_record.sh: FAIL: pin scale's take by the CLI: got 'zfs snapshot skzqs@c ', want 'zfs snapshot -r skzqs@c ')
+B9	KILLED	cli-exists-child-after dropped	(test_zfs_cli_record.sh: FAIL: pin the snapshots after each: got '/zfs list -H -t snapshot -o name -r skzq ', want 'zfs list -H -t snap)
+C1	SURVIVED	R4: the writer's stdout is the script's again
+C2	SURVIVED	R4: the probe's stdout is the script's again
+C3	KILLED	stopped: the status never said	(test_zfs_cli_record.sh: FAIL: stopped: its status: got 'longest=<0.01 writes=0 before=0.000', want 'longest=<0.01 writes=0 before=0.00)
+C4	KILLED	stop_bg: BG_RC from kill -0, not wait	(test_zfs_cli_record.sh: FAIL: stopped: its status: got 'longest=<0.01 writes=0 before=0.000', want 'longest=<0.01 writes=0 before=0.00)
+C5	SURVIVED	settle: no lim on the zpool sync
+C6	SURVIVED	settle: rc not kept
+C7	KILLED	window: t0 twice	(test_zfs_cli_record.sh: FAIL: window beside snapshot: t0 before t1: got 'no', want 'yes')
+C8	SURVIVED	the stall line on the window t0 t0 (W1)
+C9	SURVIVED	the probe's line on the window t0 t0 (T2)
+C10	KILLED	stopped: the wait message says 60 s whatever ZCR_STOP_TENTHS	(test_zfs_cli_record.sh: FAIL: stopped: one that ignores SIGTERM: got 'the probe did not stop within 60 s', want 'the probe did not sto)

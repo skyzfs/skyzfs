@@ -12,3 +12,30 @@ D6	KILLED	stall: whole second by floor	(test_dsync_writer.py: FAIL: test_a_windo
 D7	SURVIVED	stall: started >= t0 (a start at t0 itself not covered)
 E1	KILLED	report: covered without a read at or after t1	(test_txg_probe.py: FAIL: test_a_probe_that_died_in_the_window_is_not_covered (__main__.Report.test_a_probe_that_died_in_the_windo)
 E2	KILLED	report: covered by the stop, not the last read	(test_txg_probe.py: FAIL: test_a_kstat_never_read_is_not_covered (__main__.Report.test_a_kstat_never_read_is_not_covered))
+E3	SURVIVED	report: a failed sync is a time
+E4	KILLED	report: the baseline takes history from before the start	(test_txg_probe.py: FAIL: test_history_before_the_start_is_not_cut (__main__.Report.test_history_before_the_start_is_not_cut))
+E5	KILLED	report: the baseline's syncs include failed ones	(test_txg_probe.py: FAIL: test_a_failed_sync_is_no_time (__main__.Report.test_a_failed_sync_is_no_time))
+E6	KILLED	report: errors only in the window	(test_txg_probe.py: FAIL: test_a_kstat_never_read_is_not_covered (__main__.Report.test_a_kstat_never_read_is_not_covered))
+E7	KILLED	report: longest_group dirty and written swapped	(test_txg_probe.py: FAIL: test_the_command_line (__main__.Probe.test_the_command_line))
+E8	KILLED	report: an open sync read as failed	(test_txg_probe.py: FAIL: test_an_open_sync (__main__.Report.test_an_open_sync))
+E9	KILLED	report: only syncs that began in the window (Q7)	(test_txg_probe.py: FAIL: test_a_sync_spanning_the_window_counts (__main__.Report.test_a_sync_spanning_the_window_counts))
+E10	KILLED	report: the baseline is the groups that ended by t1	(test_txg_probe.py: FAIL: test_the_command_line (__main__.Probe.test_the_command_line))
+F1	KILLED	scale records kept	(test_zfs_cli_json.py: FAIL: test_scale_and_the_rest_left_out (__main__.Records.test_scale_and_the_rest_left_out))
+F2	KILLED	rc kept as a string	(test_zfs_cli_json.py: FAIL: test_the_command_line (__main__.CommandLine.test_the_command_line))
+F3	KILLED	no hex kept	(test_zfs_cli_json.py: ERROR: test_not_utf8_kept_in_hex (__main__.Records.test_not_utf8_kept_in_hex))
+F4	SURVIVED	not sorted
+F5	SURVIVED	ASCII escapes
+F6	SURVIVED	no indent
+F7	KILLED	cmd's trailing newline dropped	(test_zfs_cli_json.py: FAIL: test_the_command_line (__main__.CommandLine.test_the_command_line))
+F8	KILLED	a record whose stderr is missing dropped	(test_zfs_cli_json.py: FAIL: test_a_missing_output_is_empty (__main__.Records.test_a_missing_output_is_empty))
+G1	KILLED	end_row: no drain	(test_cut_record.sh: FAIL end_row: a torn first read, then two that agree: drained first, the last kept: got '0 looks=3 head=b read)
+G2	KILLED	end_row: the expiry compared too	(test_cut_record.sh: FAIL end_row: a torn first read, then two that agree: drained first, the last kept: got 'drain end-drain.txt)
+G3	SURVIVED	end_row: the lease line not compared at all
+G4	SURVIVED	end_row: only the head line compared
+G5	SURVIVED	end_row: the head's generation not compared
+G6	SURVIVED	end_row: three reads, not ten
+G7	SURVIVED	end_row: no second between reads
+G8	KILLED	end_row: the first read kept, not agreed	(test_cut_record.sh: FAIL end_row: a torn first read, then two that agree: drained first, the last kept: got 'drain end-drain.txt)
+G9	KILLED	end_row: an unsettled row is no error	(test_cut_record.sh: FAIL end_row: ten reads that never agree are the rig's error: got 'drain end-drain.txt)
+G10	KILLED	end_row: reads not kept	(test_cut_record.sh: FAIL end_row: a torn first read, then two that agree: drained first, the last kept: got 'drain end-drain.txt)
+done

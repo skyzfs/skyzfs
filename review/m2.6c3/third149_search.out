@@ -1,0 +1,62 @@
+# N1a (exhaustive to depth 4) and N1b (50 random seeds a case) at 6d1841a, each case also with a person's release of pool/db@t before the give-up (part=true), with the strict check (no release while the request pends at the daemon)
+
+
+running 1 test
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive has been running for over 60 seconds
+N1a depth 4 (118 s): 114552 runs: 12272 published, 99448 given up; 0 wrong publishes, 2832 given up then made, 0 other
+  given up then made: Away Accepted Busy part=false: 236
+  given up then made: Away Accepted Busy part=true: 236
+  given up then made: Away Accepted Idle part=false: 236
+  given up then made: Away Accepted Idle part=true: 236
+  given up then made: Away SentNotRecorded Busy part=false: 118
+  given up then made: Away SentNotRecorded Busy part=true: 118
+  given up then made: Away SentNotRecorded Idle part=false: 118
+  given up then made: Away SentNotRecorded Idle part=true: 118
+  given up then made: NoUpload Accepted Busy part=false: 236
+  given up then made: NoUpload Accepted Busy part=true: 236
+  given up then made: NoUpload Accepted Idle part=false: 236
+  given up then made: NoUpload Accepted Idle part=true: 236
+  given up then made: NoUpload SentNotRecorded Busy part=false: 118
+  given up then made: NoUpload SentNotRecorded Busy part=true: 118
+  given up then made: NoUpload SentNotRecorded Idle part=false: 118
+  given up then made: NoUpload SentNotRecorded Idle part=true: 118
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000, part: false } prefix []: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000, part: false } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000, part: false } prefix [1, 1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 118.23s
+
+
+running 1 test
+test engine::tests::review_scratch::n1b_give_up_random has been running for over 60 seconds
+N1b 50 seeds a case (81 s): 88800 runs: 5559 published, 81407 given up; 0 wrong publishes, 1834 given up then made, 0 other
+  given up then made: Away Accepted Busy part=false: 147
+  given up then made: Away Accepted Busy part=true: 158
+  given up then made: Away Accepted Idle part=false: 153
+  given up then made: Away Accepted Idle part=true: 154
+  given up then made: Away SentNotRecorded Busy part=false: 78
+  given up then made: Away SentNotRecorded Busy part=true: 71
+  given up then made: Away SentNotRecorded Idle part=false: 80
+  given up then made: Away SentNotRecorded Idle part=true: 64
+  given up then made: Ended Accepted Busy part=false: 2
+  given up then made: NoAnswer Accepted Busy part=true: 2
+  given up then made: NoAnswer Accepted Idle part=false: 1
+  given up then made: NoAnswer Accepted Idle part=true: 1
+  given up then made: NoAnswer SentNotRecorded Busy part=false: 1
+  given up then made: NoAnswer SentNotRecorded Idle part=false: 1
+  given up then made: NoUpload Accepted Busy part=false: 150
+  given up then made: NoUpload Accepted Busy part=true: 163
+  given up then made: NoUpload Accepted Idle part=false: 153
+  given up then made: NoUpload Accepted Idle part=true: 156
+  given up then made: NoUpload SentNotRecorded Busy part=false: 73
+  given up then made: NoUpload SentNotRecorded Busy part=true: 73
+  given up then made: NoUpload SentNotRecorded Idle part=false: 75
+  given up then made: NoUpload SentNotRecorded Idle part=true: 78
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 641000, part: false } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 681000, part: false } prefix [211]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000, part: false } prefix [13]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test engine::tests::review_scratch::n1b_give_up_random ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 81.08s
+
