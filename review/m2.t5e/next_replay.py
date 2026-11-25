@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Next look at #145 (M2.T5e) at 9bac3dd: the head's check
-(publish_check.main) on the publish rig's own passist recording of run
-45616155197 (ubuntu-26.04, the pull request's run at 9bac3dd, the first
-with accepted.tsv), node B stood in for (its row of a1 as the run's
-results.tsv names it, a stand-in manifest).
+"""Next look at #145 (M2.T5e) at 9bac3dd and b3bb916: the check of the
+worktree given (publish_check.main) on the publish rig's own passist
+recording of run 45616155197 (ubuntu-26.04, the pull request's run at
+9bac3dd, the first with accepted.tsv), node B stood in for (its row of a1
+as the run's results.tsv names it, a stand-in manifest). The column
+"head" is the worktree's commit, as it is.
 
 Each daemon fault changes only what a faulty daemon would have changed
 (its answers, its request log's lines, what it put in object storage)
@@ -16,9 +17,16 @@ or kernel would have left.
 Every case runs against the head as it is, and with the sketch of B1's
 fix put in by monkeypatching: `a1_premise` counts as a stray only a
 group that wrote from a1's first assist on (B1_SKETCH=first, the
-default) or only one at or above G (B1_SKETCH=ge_g); the V and F cases also
-with the sketch of S1 and S2 (the burst's gaps from the end of the
-assist before, ceilings on the pace, A the decided one).
+default) or only one at or above G (B1_SKETCH=ge_g, which is what
+b3bb916 made of the head); the V and F cases also with the sketch of S1
+and S2 (the burst's gaps from the end of the assist before, ceilings on
+the pace, A the decided one).
+
+The cases D18, D19 and I1 were added for b3bb916: a daemon that publishes
+a1 below G after the assists took the pool past G (the hole asked about:
+the stray check no longer sees groups below G), and a group below G
+written between a1's assists by something else (where the two forms of
+the fix differ; not judged).
 
 Usage: python3 -I next_replay.py WORKTREE ARTIFACT_DIR
 """
@@ -368,7 +376,7 @@ def case(tag, title, want, rows, *changes, ceiling=False):
 
     def flag(rc):
         return 'not judged' if want is None else 'right' if rc == want else f'NOT {want}'
-    print(f'== {tag} {title}\n   head: exit {head[0]} ({flag(head[0])}); with B1\'s sketch: exit {b1[0]} '
+    print(f'== {tag} {title}\n   head ({HEAD}): exit {head[0]} ({flag(head[0])}); with B1\'s sketch: exit {b1[0]} '
           f'({flag(b1[0])})' + (f'; and the ceiling: exit {fixed[0]} ({flag(fixed[0])})' if ceiling else ''))
     for label, (_, res) in (('head', head), ('B1', b1)) + ((('ceil', fixed),) if ceiling else ()):
         for r in res:
@@ -459,6 +467,15 @@ def main():
     case('D17', 'a2 published on cut 27 (group 51) after five assists', 1,
          {'a1': good['a1'], 'a2': (27, 51, h3, state)}, *a2_done(27, 51), only('a2', 5),
          marks(a2_end=(481800000000, 52, 'done')))
+    # For b3bb916 (strays only at or above G): a daemon that publishes a1
+    # below G once the assists have taken the pool past G. The stray check
+    # no longer looks below G; the pins on the row must still see it.
+    case('D18', 'a1 published on cut 11 of group 19 (below G), answered after both assists took the pool to 23', 1,
+         {'a1': (11, 19, h2, state)}, answer('a1', f'done commit={h2}'),
+         log_ended('a1', done, f'done commit={h2}'))
+    case('D19', 'a1 published on cut 9 of group 17 (the hold\'s history, below G), answered after both assists', 1,
+         {'a1': (9, 17, h2, state)}, answer('a1', f'done commit={h2}'),
+         log_ended('a1', done, f'done commit={h2}'))
 
     # Right but slow: a daemon that took longer than the run's.
     case('S1', 'a1 carried later: a third assist (23, 26, 27) 1.1 s after the second, then done', 0,
