@@ -1059,6 +1059,38 @@ status_until() {
     log "$NAME: the status's $2 was ${v:-nothing}, not at least $3, $4 s on"
     return 1
 }
+# FILE C G SECONDS [nudge]: node B's row (DIR/FILE) read again until it
+# names a cut counted after C of group G or later: one the uploader
+# committed, and so one a publish of G asked after C could be made by.
+# For up to SECONDS; with nudge, 4 KiB written and the pool synced
+# between two looks, so that the pool cuts (an idle pool's sync makes no
+# cut). 1 when it did not, which the check judges.
+row_past() {
+    local t0=$SECONDS st="" n="" g=""
+    while :; do
+        nbrow "$1"
+        read -r st n g <<< "$(rowcut "$1")"
+        [[ $n =~ ^[0-9]+$ && $g =~ ^[0-9]+$ ]] && [ "$n" -gt "$2" ] && [ "$g" -ge "$3" ] && return 0
+        [ $((SECONDS - t0)) -lt "$4" ] || break
+        if [ "${5:-}" = nudge ]; then
+            dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
+            z 60 zpool sync "$POOL"
+        fi
+        sleep 0.5
+    done
+    log "$NAME: node B's row names cut ${n:-none} of group ${g:-none}${st:+ ($st)}, not one after $2 of group $3 or later, $4 s on"
+    return 1
+}
+# T SECONDS: until the agent's publish of T has its answer in agent.tsv
+# (any answer; the check judges it), for up to SECONDS. 1 when not.
+asked() {
+    local t0=$SECONDS
+    until awk -F '\t' -v t="$1" '$3 ~ ("^publish --name " t " ") && $5 != "" { f = 1 } END { exit !f }' \
+            "$RDIR/agent.tsv" 2>/dev/null; do
+        [ $((SECONDS - t0)) -lt "$2" ] || return 1
+        sleep 0.2
+    done
+}
 # The volume's state and its newest uploaded cut before another writer
 # acts: DIR/STEP-status.txt after a sync of the pool (where it is
 # imported) and a drain, DIR/STEP-row.txt. Then up to 120 s for the
@@ -1522,18 +1554,25 @@ rec_pplain() {
 }
 
 # prewind (P2): object storage down (CUT_S3_DOWN) while the pool goes
-# on, so that the daemon holds the cuts of a history that a rewind then
-# abandons (an import at a group a few back, zpool import -T). With the
-# store still down, the agent takes r1 and asks; then the store comes
-# back (CUT_S3_UP), the daemon uploads the abandoned cuts and the
-# present history's, and r1 must be published by a cut of the present
-# history: counted after C, of group G or later, opening as itself. The
-# agent syncs a group at a time while it waits (after the rewind no cut
-# opens as itself until the pool's groups pass the abandoned ones). The
-# lease is 900 s, so the outage does not take it away. The status with
-# the store down goes to DIR/rewind-status.txt.
+# on, then an import at a group eight back (zpool import -T), which
+# abandons the newer history. After the rewind no cut opens as itself
+# until the pool's groups pass the abandoned ones: the abandoned
+# uberblocks rank above the new history's in the labels' rings. With the
+# store still down, the agent takes r1 and asks, and syncs nothing: the
+# snapshot's and the hold's own syncs are cuts counted after C, of group
+# G or later, that open only as a rewind, and the pool makes no other
+# while nothing writes. Once r1 is answered the store comes back
+# (CUT_S3_UP), and the uploader commits the newest cut it holds, one of
+# those. The rig waits until node B's row names a cut counted after C of
+# group G or later, with nothing else written (DIR/rewind-row.txt: the
+# check's premise that a cut a daemon without "opens as itself" would
+# name was committed after the ask). Only then does it write and sync a
+# group at a time until r1 ends, and r1 must be published by a later cut
+# of the present history that opens as itself (the review of #139, B2).
+# The lease is 900 s, so the outage does not take it away. The status
+# with the store down goes to DIR/rewind-status.txt.
 rec_prewind() {
-    local groups t pid _i
+    local groups t pid _i t0
     [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "prewind needs CUT_S3_DOWN and CUT_S3_UP"
     create_pool
     load 3
@@ -1551,30 +1590,43 @@ rec_prewind() {
     log "prewind: importing at group $t of ${groups[-1]}, object storage down"
     import_pool -T "$t"
     ustatus rewind-status.txt
-    pflow r1 r1 --sync --limit-s 900 &
+    pflow r1 r1 --limit-s 900 &
     pid=$!
-    sleep 20
+    asked r1 120 || rig_error "the agent's publish of r1 had no answer 120 s on"
     bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
     S3_IS_DOWN=""
     for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
+    row_past rewind-row.txt "$(preq r1 5)" "$(preq r1 2)" 180 || true
     rm -f "$WORK/watch.pause"
+    t0=$SECONDS
+    while kill -0 "$pid" 2>/dev/null && [ $((SECONDS - t0)) -lt 900 ]; do
+        dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
+        z 60 zpool sync "$POOL"
+        sleep 1
+    done
     wait "$pid"
     load 1
     export_pool
 }
 
-# pkill (P3): two publishes pend, each with G 30 above its snapshot's:
-# tw is withdrawn, tk is not. The daemon is killed (kill -9) and the next
-# instance takes over: neither is known to it (pending publishes are in
-# memory). tk asked again is published; tw, never asked again, must read
-# withdrawn or unknown, and never be there, although the pool's cuts go
-# past its G while tk waits (the lead's addition: a kill after the
-# withdrawal was answered and before the publish could land).
+# pkill (P3): tw pends with G 30 above its snapshot's and is withdrawn.
+# Then the instance that knew it is synced, a group at a time, until
+# node B's row names a cut counted after tw's C of tw's G or later
+# (DIR/tw-row.txt): a commit that would have made tw, had the withdrawal
+# left it queued (the review of #139, B3); its status then goes to
+# DIR/tw-status.txt. Then tk pends likewise and is not withdrawn, and
+# the daemon is killed (kill -9). The next instance takes over and knows
+# neither (pending publishes are in memory): tk asked again is
+# published; tw, never asked again, must read withdrawn or unknown, and
+# never be there (the lead's addition: a kill after the withdrawal was
+# answered and before the publish could land).
 rec_pkill() {
     create_pool
     load 1
     pflow tw tw --group-plus 30 --expiry-s 900 --limit-s 3
     pask tw-withdraw withdraw tw
+    row_past tw-row.txt "$(preq tw 5)" "$(preq tw 2)" 300 nudge || true
+    ustatus tw-status.txt
     pflow tk tk --group-plus 30 --expiry-s 900 --limit-s 3
     kill_serve
     serve_start 2
@@ -1639,6 +1691,7 @@ ppeer() {
         "$HERE" "$RUN") || rig_error "no socket under $RUN"
     dir=$(dirname "$sock")
     while [ "$dir" != / ]; do modes+=("$(stat -c %a "$dir") $dir"); chmod o+x "$dir"; dir=$(dirname "$dir"); done
+    stat -c %a "$sock" > "$RDIR/socket-mode.txt"
     chmod 0666 "$sock"
     tmp=$(mktemp -d)
     cp "$HERE/publish_agent.py" "$tmp/"

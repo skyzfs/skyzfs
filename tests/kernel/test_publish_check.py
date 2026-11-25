@@ -23,6 +23,87 @@ def snap_row(commit=H, state=S, number=8, group=50, ref=H, manifest='matches'):
 
 
 class Tables(unittest.TestCase):
+    def test_the_tables_are_exactly_these(self):
+        """A change to what a course allows is a change to this copy too,
+        on purpose (B4 of #139's review). Each entry says why."""
+        self.assertEqual(pc.EXPECTED, {
+            'pplain': {
+                't1': ('done ',),
+                't1-again': ('accepted',),            # the same request twice is one publish
+                't1-again-end': ('done ',),
+                't1-other': ('accepted',),            # answered before any lookup in object storage
+                't1-other-end': ('refused taken',),   # snap/t1 names another manifest
+                't2': ('done ',),
+                'att': ('refused attachment',),
+                'state': ('refused state',),
+                't4': ('done ',),
+                't5': ('expired',),                   # G never reached in its limit
+                't7': ('pending after',),
+                't7-other': ('refused asked',),
+                't7-withdraw': ('withdrawn',),
+                't7-again': ('accepted',),
+                't7-end': ('done ',),
+            },
+            'prewind': {'r1': ('done ',)},
+            'pkill': {
+                'tw': ('pending after',),
+                'tw-withdraw': ('withdrawn',),
+                'tk': ('pending after',),
+                'tw-after': ('withdrawn', 'unknown'),  # the new instance may or may not know tw: never done
+                'tk-after': ('unknown',),             # a pending publish lives in memory only
+                'tk-again': ('accepted',),
+                'tk-end': ('done ',),
+                'tw-last': ('withdrawn', 'unknown'),
+            },
+            'pkillman': {
+                'm1': ('none ', 'unknown'),           # killed under the agent: no answer, or the next one's
+                'm1-after': ('unknown',),
+                'm1-again': ('accepted',),
+                'm1-end': ('done ',),
+            },
+            'pkillpub': {
+                'p1': ('none ', 'unknown'),
+                'p1-after': ('unknown',),
+                'p1-again': ('accepted',),
+                'p1-end': ('done ',),                 # and on the commit that landed (pin_p1_found)
+            },
+            'pchannel': {
+                'nu': ('refused no-upload',),
+                'version': ('refused version',),
+                'malformed': ('refused malformed',),
+                'name': ('refused name',),
+                'peer': ('refused peer',),
+                'cuts': ('cuts ',),
+            },
+        })
+        self.assertEqual(pc.PUBLISHED, {
+            'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
+            'prewind': {'r1': 'r1'},
+            'pkill': {'tk': 'tk-end'},
+            'pkillman': {'m1': 'm1-end'},
+            'pkillpub': {'p1': 'p1-end'},
+            'pchannel': {},
+        })
+        # t5 expired, t3 never asked validly, tw withdrawn before the kill.
+        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'pkill': ('tw',)})
+        # manifest:1 kills before the transaction (no snap/m1 may show),
+        # publish:1 after it (snap/p1 must).
+        self.assertEqual(pc.BETWEEN, {'pkillman': ('m1', False), 'pkillpub': ('p1', True)})
+        # Exact: the peer's request is never read, so not answered.
+        self.assertEqual(pc.COUNTS, {'pchannel': {'control_answered': 4, 'control_peer': 1, 'control_malformed': 2}})
+        self.assertEqual(pc.TW_STATUS, {'publish_withdrawn': 1, 'publish_pending': 0, 'publish_published': 0})
+        self.assertEqual(set(pc.KILLED_BY), set(pc.BETWEEN))
+
+    def test_killed_by_is_in_the_hook_s_own_words(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, 'bins', 'skyzfsd', 'src', 'kill.rs')) as f:
+            src = f.read()
+        self.assertIn('"after the framed manifest PUT {n} landed ({key}), before its ref was made"', src)
+        self.assertIn('"after the transaction of publish {} ({}) landed, before the uploader knew it"', src)
+        self.assertEqual(pc.KILLED_BY['pkillman'],
+                         'after the framed manifest PUT {n} landed'.format(n=1))
+        self.assertEqual(pc.KILLED_BY['pkillpub'], 'after the transaction of publish {} ({}) landed'.format(1, 'p1'))
+
     def test_each_published_name_ends_done_and_each_course_has_a_table(self):
         for course in pc.COURSES:
             self.assertIn(course, pc.EXPECTED)
@@ -135,25 +216,92 @@ class Rows(unittest.TestCase):
         self.assertEqual(pc.judge_manifest({'manifest': None}, b''), ['no manifest object where the row says'])
 
 
-def log_line(event, sector, sectors, result, k):
-    return {'event': event, 'sector': sector, 'sectors': sectors, 'result': result, 'line': k}
+def log_line(event, sector, sectors, result, k, op='-'):
+    return {'event': event, 'sector': sector, 'sectors': sectors, 'result': result, 'line': k, 'op': op}
 
 
 class Cuts(unittest.TestCase):
     def test_cut_lines_and_the_row_s_cut(self):
-        inst = [{'lines': [log_line('applied', '0', '8', '0', 1), log_line('cut', 'itself', '8', '50', 2),
-                           log_line('cut', 'rewind', '9', '51', 3)]},
-                {'lines': [log_line('cut', 'itself', '10', '60', 4)]}]
+        inst = [{'pid': '11', 'lines': [log_line('applied', '0', '8', '0', 1), log_line('cut', 'itself', '8', '50', 2),
+                                        log_line('cut', 'rewind', '9', '51', 3)]},
+                {'pid': '12', 'lines': [log_line('cut', 'itself', '10', '60', 4)]}]
         cuts = pc.cut_lines(inst)
-        self.assertEqual(cuts, [(8, 50, True), (9, 51, False), (10, 60, True)])
+        self.assertEqual(cuts, [(8, 50, True, '11', 2), (9, 51, False, '11', 3), (10, 60, True, '12', 4)])
         self.assertEqual(pc.judge_cut(cuts, {'number': 8, 'group': 50}), [])
         self.assertIn('only with a rewind', pc.judge_cut(cuts, {'number': 9, 'group': 51})[0])
         self.assertIn('is of group 50', pc.judge_cut(cuts, {'number': 8, 'group': 52})[0])
         self.assertIn('no cut line', pc.judge_cut(cuts, {'number': 11, 'group': 60})[0])
-        self.assertEqual(pc.counted_between(cuts, 7, 50, 60), [(8, 50, True), (9, 51, False)])
-        self.assertEqual(pc.counted_between(cuts, 8, 50, 60), [(9, 51, False)])
+        self.assertEqual(pc.counted_between(cuts, 7, 50, 60), [(8, 50, True, '11', 2), (9, 51, False, '11', 3)])
+        self.assertEqual(pc.counted_between(cuts, 8, 50, 60), [(9, 51, False, '11', 3)])
         with self.assertRaises(RigError):
-            pc.cut_lines([{'lines': [log_line('cut', 'maybe', '8', '50', 1)]}])
+            pc.cut_lines([{'pid': '1', 'lines': [log_line('cut', 'maybe', '8', '50', 1)]}])
+
+
+R1 = dict(REQ, name='r1', after=7, group=50)
+
+
+class Premises(unittest.TestCase):
+    """The premises that make prewind and pkill test what they are for."""
+    CUTS = [(8, 50, False, '1', 5), (9, 51, False, '1', 6), (10, 52, True, '1', 7), (11, 49, False, '1', 8)]
+
+    def test_a_committed_rewind_cut_past_c_and_g_then_a_later_one_made_r1(self):
+        self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 10), [])
+
+    def test_each_way_the_rewind_premise_fails(self):
+        cases = [
+            (None, 10, "named no cut"),
+            (('e' * 32, 9, 51), 10, 'not the one asked'),
+            ((S, 7, 50), 10, 'not counted after C = 7'),
+            ((S, 11, 49), 12, 'below G = 50'),
+            ((S, 10, 52), 11, 'opens as itself'),
+            ((S, 12, 53), 13, 'no cut line of number 12'),
+            ((S, 9, 51), 8, 'before cut 9 was committed'),
+        ]
+        for cut, named, why in cases:
+            bad = pc.rewind_committed(self.CUTS, cut, R1, named)
+            self.assertTrue(any(why in b for b in bad), (cut, named, bad))
+
+    def test_r1_made_by_the_rewind_cut_itself_is_left_to_the_verdict(self):
+        self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 9), [])
+        self.assertIn('opens only with a rewind', pc.judge_cut(self.CUTS, {'number': 9, 'group': 51})[0])
+
+    def test_a_cut_number_seen_twice_counts_as_itself_if_either_line_says_so(self):
+        cuts = self.CUTS + [(9, 51, True, '2', 9)]
+        self.assertTrue(any('opens as itself' in b for b in pc.rewind_committed(cuts, (S, 9, 51), R1, 10)))
+
+    def withdraw_log(self):
+        return [
+            {'pid': '21', 'lines': [log_line('cut', 'itself', '8', '50', 1),
+                                    log_line('publish', '-', '-', 'tw withdrawn', 2, op='withdraw'),
+                                    log_line('cut', 'itself', '9', '49', 3),
+                                    log_line('cut', 'itself', '10', '50', 4),
+                                    log_line('cut', 'rewind', '11', '51', 5),
+                                    log_line('cut', 'itself', '12', '52', 6)]},
+            {'pid': '22', 'lines': [log_line('cut', 'itself', '13', '60', 7)]},
+        ]
+
+    def test_cuts_after_the_withdrawal_line_on_its_instance_only(self):
+        pid, past = pc.withdrawn_past(self.withdraw_log(), 'tw', 50)
+        self.assertEqual(pid, '21')
+        # Not cut 8 (before the line), 9 (below G), 11 (a rewind) or 13
+        # (another instance).
+        self.assertEqual(past, [(10, 50), (12, 52)])
+
+    def test_no_withdrawal_line_no_instance(self):
+        log = self.withdraw_log()
+        log[0]['lines'][1] = log_line('publish', '-', '-', 'tw pending', 2, op='withdraw')
+        self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
+        log[0]['lines'][1] = log_line('publish', '-', '-', 'tw withdrawn', 2, op='asked')
+        self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
+
+    def test_exact_counts(self):
+        st = {'publish_withdrawn': '1', 'publish_pending': '0', 'publish_published': '0'}
+        self.assertEqual(pc.exact_counts(st, pc.TW_STATUS), [])
+        self.assertEqual(pc.exact_counts(dict(st, publish_pending='1'), pc.TW_STATUS),
+                         ['publish_pending is 1, not 0'])
+        self.assertEqual(pc.exact_counts({}, {'control_peer': 1}), ['control_peer is missing, not 1'])
+        self.assertEqual(pc.exact_counts({'control_answered': '5'}, {'control_answered': 4}),
+                         ['control_answered is 5, not 4'])
 
 
 if __name__ == '__main__':

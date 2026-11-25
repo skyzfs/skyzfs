@@ -22,7 +22,15 @@ What the course left in DIR:
 - requests.tsv: the daemon's request log (its `cut` lines);
 - status.txt and the course's own status files;
 - T-between.txt: node B's `snap-row` between a kill and the next
-  instance's answer, where the course takes one.
+  instance's answer, where the course takes one; kill.tsv, the killed
+  daemon's exit status, and serve.log, its stderr, which names the hook
+  that killed it (pkillman, pkillpub);
+- rewind-row.txt (prewind), tw-row.txt and tw-status.txt (pkill): node
+  B's `row` and the daemon's status at the course's premise;
+- channel-status.txt and socket-mode.txt (pchannel): the status after
+  the channel's requests, whose counts (COUNTS) must be exact, and the
+  socket's mode before the rig widened it for the peer, which must be
+  600.
 
 Each answer must be one the table EXPECTED allows for its label, in the
 course's own words: a label with an answer outside the table is a
@@ -45,12 +53,26 @@ itself) must find:
   the agent's manifest as the files and digests to find.
 
 For each name in ABSENT, node B must find neither the ref nor the row.
-A premise (PREMISES) that does not hold means the course did not make
-the case it is there for: the rig's error, not a verdict.
+A premise (a `premise_` line) that does not hold means the course did
+not make the case it is there for: the rig's error, not a verdict.
+
+The premises that make two courses test what they are for (the review
+of #139):
+- prewind: a cut counted after C, of group G or later, that opens only
+  as a rewind, was committed after the ask (node B's row read after the
+  store came back, DIR/rewind-row.txt, and that cut's `cut` line), and
+  r1 was not made by an earlier one. A daemon that published without
+  "opens as itself" would have named that cut, which pin_r1_cut judges
+  as a verdict.
+- pkill: the instance that answered tw's withdrawal then counted cuts
+  of tw's G or later that open as itself, and committed one
+  (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
+  have made it. Its status then (DIR/tw-status.txt) must count the
+  withdrawal and nothing pending or published (a pin on the server).
 
 Controls (pplain only; each must FAIL where it is put, or the run
 fails): `ctl_below`, the published row judged against a G one above its
-group; `ctl_commit`, against a done commit with one digit changed;
+group; `ctl_commit`, against a done commit with its first digit changed;
 `ctl_files`, node B's stages against the manifest with one digest
 changed, which must be caught at the files.
 
@@ -150,8 +172,17 @@ ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}
 # publish:1 after it landed (the hook's premise).
 BETWEEN = {'pkillman': ('m1', False), 'pkillpub': ('p1', True)}
 # The channel's counts in the status of the daemon that answered them
-# (pchannel), at least.
-COUNTS = {'pchannel': {'control_peer': 1, 'control_malformed': 2}}
+# (pchannel), exactly: four requests answered (version, malformed, name,
+# cuts; the peer's is refused before it is read and is not one of them),
+# two of them malformed (another greeting is counted as one; a bad name
+# is not), one peer.
+COUNTS = {'pchannel': {'control_answered': 4, 'control_peer': 1, 'control_malformed': 2}}
+# pkill's status after tw's withdrawal and the commit past its G, before
+# tk is asked (DIR/tw-status.txt), exactly.
+TW_STATUS = {'publish_withdrawn': 1, 'publish_pending': 0, 'publish_published': 0}
+# The hook's words in the killed instance's serve.log, by course.
+KILLED_BY = {'pkillman': 'after the framed manifest PUT 1 landed',
+             'pkillpub': 'after the transaction of publish 1 (p1) landed'}
 
 
 def flat(text):
@@ -284,15 +315,62 @@ def judge_manifest(got, sent):
 
 
 def cut_lines(instances):
-    """The request log's `cut` lines -> [(number, group, itself)]."""
+    """The request log's `cut` lines -> [(number, group, itself, pid, line)]."""
     out = []
     for inst in instances:
         for ln in inst['lines']:
             if ln['event'] == 'cut':
                 if not (ln['result'].isdigit() and ln['sectors'].isdigit() and ln['sector'] in ('itself', 'rewind')):
                     raise RigError(f"request log line {ln['line']}: a cut line that does not read")
-                out.append((int(ln['sectors']), int(ln['result']), ln['sector'] == 'itself'))
+                out.append((int(ln['sectors']), int(ln['result']), ln['sector'] == 'itself', inst['pid'], ln['line']))
     return out
+
+
+def rewind_committed(cuts, cut, req, named):
+    """prewind's premise (B2): CUT, the (state, number, group) node B's
+    row named once the store was back, must be of the state asked,
+    counted after C, of group G or later, and one whose `cut` line says
+    it opens only as a rewind; NAMED, the number of the cut that made
+    r1, must not be an earlier one (then that cut was never passed over).
+    r1 made by CUT itself is no premise's failure: it is the fault the
+    course is there to catch, and the row's pin (judge_cut) says so as a
+    verdict -> [what does not hold]."""
+    if cut is None:
+        return ['node B\'s row named no cut after the store came back']
+    state, number, group = cut
+    bad = []
+    if state != req['state']:
+        bad.append(f'the row\'s cut is of state {state}, not the one asked')
+    if number <= req['after']:
+        bad.append(f"the row's cut {number} is not counted after C = {req['after']}")
+    if group < req['group']:
+        bad.append(f"the row's cut is of group {group}, below G = {req['group']}")
+    same = [c for c in cuts if c[0] == number and c[1] == group]
+    if not same:
+        bad.append(f'no cut line of number {number} and group {group} in the request log')
+    elif any(c[2] for c in same):
+        bad.append(f'cut {number} (group {group}) opens as itself: no daemon would pass it over')
+    if named is not None and named < number:
+        bad.append(f'r1 was made by cut {named}, before cut {number} was committed')
+    return bad
+
+
+def withdrawn_past(instances, name, group):
+    """pkill's premise (B3): the instance that answered NAME's withdrawal,
+    and the cuts it counted after that line, of group GROUP or later,
+    that open as itself -> (pid or None, [(number, group)])."""
+    for inst in instances:
+        for ln in inst['lines']:
+            if ln['event'] == 'publish' and ln['op'] == 'withdraw' and ln['result'] == f'{name} withdrawn':
+                return inst['pid'], [(int(c['sectors']), int(c['result'])) for c in inst['lines']
+                                     if c['event'] == 'cut' and c['line'] > ln['line'] and c['sector'] == 'itself'
+                                     and c['result'].isdigit() and int(c['result']) >= group]
+    return None, []
+
+
+def exact_counts(status, want):
+    """-> [what differs]: each key of WANT in STATUS, exactly."""
+    return [f'{k} is {status.get(k) or "missing"}, not {v}' for k, v in want.items() if status.get(k) != str(v)]
 
 
 def judge_cut(cuts, row):
@@ -450,36 +528,61 @@ def main():
             tw, tk = published.get('tw'), published.get('tk')
             if tw is None or tk is None:
                 raise RigError('no request of tw or tk in published.tsv')
-            past = [c for c in cuts if c[1] >= tw['group']]
-            premise('premise_tw_cuts_past_g', bool(past),
-                    f"{len(past)} cuts of group {tw['group']} or later counted: tw would have qualified")
+            pid, past = withdrawn_past(instances, 'tw', tw['group'])
+            row = cut_daemon_check.read_row(text_of('tw-row.txt'), 'tw-row.txt')['cut']
+            committed = row is not None and row[0] == tw['state'] and row[1] > tw['after'] and \
+                (row[1], row[2]) in past
+            premise('premise_tw_committed_past_g', committed,
+                    f"instance {pid or 'none'} answered tw's withdrawal, then counted {len(past)} cuts of group "
+                    f"{tw['group']} or later that open as itself, and node B's row named cut "
+                    f"{row[1] if row else 'none'} of group {row[2] if row else 'none'}"
+                    + (': a commit that would have made tw' if committed else ', not one of them'))
+            holds('pin_tw_withdrawn_status', exact_counts(status_of(text_of('tw-status.txt')), TW_STATUS),
+                  'server', 'after the withdrawal and that commit: ' +
+                  ', '.join(f'{k} {v}' for k, v in TW_STATUS.items()))
         if name == 'prewind':
             r1 = published.get('r1')
             if r1 is None:
                 raise RigError('no request of r1 in published.tsv')
             held = status_of(text_of('rewind-status.txt')).get('cuts_held', '')
             premise('premise_held_at_rewind', held.isdigit() and int(held) > 0,
-                    f'cuts held with object storage down, before the publish: {held or "none"}')
-            old = [c for c in cuts if c[0] <= r1['after'] and c[1] >= r1['group']]
-            premise('premise_abandoned_cuts_at_g', bool(old),
-                    f"{len(old)} cuts counted up to C = {r1['after']} of group {r1['group']} or later: the "
-                    'abandoned history\'s, which the publish must not name')
+                    f'cuts held with object storage down, at the rewind: {held or "none"}')
+            cut = cut_daemon_check.read_row(text_of('rewind-row.txt'), 'rewind-row.txt')['cut']
+            got = snap_row('r1')
+            named = got['row']['number'] if isinstance(got.get('row'), dict) else None
+            bad = rewind_committed(cuts, cut, r1, named)
+            premise('premise_rewind_cut_committed', not bad,
+                    '; '.join(bad) if bad else
+                    f"cut {cut[1]} of group {cut[2]}, counted after C = {r1['after']} at G = {r1['group']} or "
+                    f"later, opens only as a rewind and was committed after the ask; r1 was made by cut {named}")
         if name in BETWEEN:
             t, there = BETWEEN[name]
+            kill = text_of('kill.tsv').strip()
+            serve = text_of('serve.log', need=False)
+            premise(f'premise_{t}_killed_by_the_hook', kill == 'killed_rc\t137' and KILLED_BY[name] in serve,
+                    f"{flat(kill)}; serve.log {'has' if KILLED_BY[name] in serve else 'lacks'} "
+                    f"'{KILLED_BY[name]}'")
             got = read_snap_row(text_of(f'{t}-between.txt'))
             is_there = got['ref'] is not None or got['row'] is not None
             if there:
                 premise(f'premise_{t}_landed', is_there,
                         f'snap/{t} {"was" if is_there else "was not"} there after the kill (the hook after the '
                         'transaction)')
+                end = done_commit(ends.get(f'{t}-end', ''))
+                holds(f'pin_{t}_found', [] if got['ref'] is not None and got['ref'][0] == end else
+                      [f"done names {str(end)[:12]}, the ref after the kill {got['ref'][0][:12] if got['ref'] else 'none'}"],
+                      'server', 'asked again, done on the commit that landed before the kill: found, not made anew')
             else:
                 holds(f'pin_{t}_not_before_the_transaction', ['snap/T or its row after a kill before the '
                                                               'transaction'] if is_there else [], 'server',
                       f'no snap/{t} after a kill between the manifest\'s PUT and the transaction')
-        for k, least in COUNTS.get(name, {}).items():
-            v = status_of(text_of('channel-status.txt')).get(k, '')
-            holds(f'pin_status_{k}', [] if v.isdigit() and int(v) >= least else [f'{k} is {v or "missing"}'],
-                  'server', f'{k} {v}, at least {least}')
+        if name in COUNTS:
+            st = status_of(text_of('channel-status.txt'))
+            for k, want in COUNTS[name].items():
+                holds(f'pin_status_{k}', exact_counts(st, {k: want}), 'server', f'{k} {want}')
+            mode = text_of('socket-mode.txt').strip()
+            holds('pin_socket_mode', [] if mode == '600' else [f'the socket\'s mode is {mode or "unknown"}'],
+                  'server', 'the socket is 0600 as the daemon made it')
     except RigError as e:
         put('rig_error', 'ERROR', 'rig', str(e))
         rc = 2
