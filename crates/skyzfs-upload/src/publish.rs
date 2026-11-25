@@ -259,7 +259,7 @@ pub enum Refusal {
     /// `snap/<name>` exists and does not record this publish: its row
     /// names another commit than the ref, or a cut that does not carry
     /// the request, or another manifest, or it has no row of version 1.
-    #[error("the name names another commit")]
+    #[error("snap/T exists and does not record this request")]
     Taken,
     /// The uploader publishes nothing more: its lease is lost for good, or
     /// its store kept a committed cut ([`Publishing::stop`]). A

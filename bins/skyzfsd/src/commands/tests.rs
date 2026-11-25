@@ -1232,11 +1232,14 @@ mod channel {
             assert!(bytes.is_empty());
             Ok(Reply::Refused(
                 Code::Taken,
-                "the name names another commit".into(),
+                "snap/T exists and does not record this request".into(),
             ))
         });
         assert_eq!(output.exit, Exit::Error);
-        assert_eq!(output.out, "refused taken the name names another commit\n");
+        assert_eq!(
+            output.out,
+            "refused taken snap/T exists and does not record this request\n"
+        );
 
         let output = ask(&publish(&volume, None), |_, _, _| {
             Err(io::Error::from(io::ErrorKind::ConnectionRefused))

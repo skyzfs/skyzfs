@@ -200,7 +200,8 @@ fn look<R: RefStore>(waiter: &Waiter<'_>, lookup: &Lookup<R>, name: &str) -> Res
         None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
-                "object storage did not answer within {} s",
+                "object storage did not answer within what was left of the \
+                 request's {} s",
                 waiter.limit.as_secs_f64()
             ),
         )),
@@ -227,8 +228,9 @@ fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
         None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
-                "the uploader did not answer within {} s; a publish may have been \
-                 taken: ask again, or withdraw it",
+                "the uploader did not answer within what was left of the \
+                 request's {} s; a publish may have been taken: ask again, or \
+                 withdraw it",
                 waiter.limit.as_secs_f64()
             ),
         )),
@@ -248,7 +250,8 @@ fn count(waiter: &Waiter<'_>, desk: &Desk) -> Result<skyzfs_upload::CutsNow, Rep
         None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
-                "the store did not answer within {} s: its queue takes no turn",
+                "the store did not answer within what was left of the \
+                 request's {} s: its queue takes no turn",
                 waiter.limit.as_secs_f64()
             ),
         )),
