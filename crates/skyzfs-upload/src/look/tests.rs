@@ -147,6 +147,44 @@ async fn a_lookup_that_object_storage_fails_is_an_error_and_not_absent() {
     assert!(look(&refs, VOL, "never").await.is_err());
 }
 
+/// A lookup reads the ref, then the row. A failure at any operation of
+/// object storage, the second read's included, is an error and not what
+/// was read before it: with the fault at each operation in turn, the
+/// lookup fails until every operation it makes is allowed, and is then
+/// the whole snapshot.
+///
+/// Mutant: the row's read error taken as no row (L8 of the review of
+/// #140), which answers `unreadable no-row` for a snapshot that is
+/// whole.
+#[tokio::test]
+async fn a_failure_at_any_read_of_a_lookup_is_an_error() {
+    let store = Arc::new(FaultStore::new(MemoryStore::new()));
+    let refs = ObjectRefStore::new(Arc::clone(&store));
+    make(&refs, "t", 1, Some(row(1).encode())).await;
+    let mut failed = 0;
+    for allowed in 0..16 {
+        store.arm(FaultOp::Any, "", allowed).await;
+        match look(&refs, VOL, "t").await {
+            Err(_) => failed += 1,
+            Ok(seen) => {
+                assert_eq!(
+                    seen,
+                    Seen::Snap {
+                        commit: [1; 32],
+                        row: row(1)
+                    },
+                    "with {allowed} operations allowed"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        (2..16).contains(&failed),
+        "the ref's read and the row's each fail the lookup: {failed} failed"
+    );
+}
+
 #[test]
 fn what_is_seen_follows_what_was_found() {
     let found = |commit: u8, row: Option<Vec<u8>>| Found {

@@ -591,7 +591,7 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         zeroes: zeroes_shown(store.zeroes()),
         pump,
         io_queue: Some(store.io_queue()),
-        cuts: Some(store.cuts()),
+        cuts: Some(store.cuts().into()),
         held: Some(held_shown(store)),
         intent: Some(intent_shown(store)),
         // The uploader's thread posts its own (`Board::post_upload`),
@@ -882,6 +882,17 @@ fn why_no_upload(found: Option<Option<&AtStart>>) -> String {
 /// Where the channel's figures go: the board (`Board::post_channel`).
 type ChannelPost = Arc<dyn Fn(ChannelShown) + Send + Sync>;
 
+/// What the channel's `look` reads (M2.6a): the refs of the served
+/// volume's place in object storage, through a client of the channel's
+/// own. The client asks nothing of object storage until a `look`.
+async fn lookup_of(remote: Remote) -> handler::Lookup<crate::upload::Refs> {
+    let (_, refs) = crate::upload::connect(&remote).await;
+    handler::Lookup {
+        vol: remote.id,
+        refs,
+    }
+}
+
 /// Make the channel at `path` (M2.5-2): answered by the uploader through
 /// `requests` where `answers` holds the attachment it serves, with the
 /// count of cuts asked at the store's desk it holds and `look` asked of
@@ -906,13 +917,7 @@ fn open_channel(
     let no_upload = ChannelStateShown::NoUpload;
     let (handler, state) = match answers {
         Ok((attachment, desk, remote)) => {
-            let lookup = move || async move {
-                let (_, refs) = crate::upload::connect(&remote).await;
-                handler::Lookup {
-                    vol: remote.id,
-                    refs,
-                }
-            };
+            let lookup = move || lookup_of(remote);
             match handler::uploader(attachment, requests, desk, lookup, control::ANSWER_LIMIT) {
                 Ok(handler) => (handler, ChannelStateShown::Uploads),
                 Err(e) => (
@@ -4423,6 +4428,24 @@ mod tests {
             name: "vol".into(),
             id: crate::remote::volume_id("vol"),
         }
+    }
+
+    /// `look` reads the served volume's refs, and not another's (L4 of
+    /// the review of #140).
+    ///
+    /// Mutant: another volume's id in the lookup.
+    #[test]
+    fn the_channels_look_reads_the_served_volume() {
+        let runtime = crate::upload::runtime().expect("a runtime");
+        let remote = Remote {
+            id: crate::remote::volume_id("another"),
+            ..placed()
+        };
+        let lookup = runtime
+            .block_on(lookup_of(remote.clone()))
+            .expect("the runtime");
+        assert_eq!(lookup.vol, remote.id);
+        assert_ne!(lookup.vol, placed().id);
     }
 
     #[test]

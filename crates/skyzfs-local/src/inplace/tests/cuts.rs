@@ -1085,6 +1085,27 @@ fn a_start_compares_the_cuts_with_the_groups_in_its_rings() {
     );
 }
 
+/// What rule (R) does not see (the module docs): a rewind to a
+/// checkpoint. `zpool import --rewind-to-checkpoint` writes the
+/// checkpointed uberblock, with its root, as the group after the last:
+/// here the pool is checkpointed at group 10 (root 1), goes on to groups
+/// 11 and 12, and is rewound to the checkpoint, which writes group 13
+/// with root 1. No cut is marked. The agent's premise, which refuses a
+/// pool with a checkpoint, is the guard (the lead's decision D1 on
+/// #140). A change of the rule that marks it shows here, and the docs
+/// change with it.
+#[test]
+fn a_rewind_to_a_checkpoint_is_not_marked() {
+    let disk = created(26, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    let mut seen = Vec::new();
+    for (step, (txg, root)) in [(10, 1), (11, 2), (12, 3), (13, 1)].into_iter().enumerate() {
+        group(&mut store, 10 * step as u64 + 1, txg, root);
+        seen.push(rewound(&store));
+    }
+    assert_eq!(seen, [(1, 0), (2, 0), (3, 0), (4, 0)]);
+}
+
 /// A start that takes up a count takes it as the rewind mark: the mark
 /// is in memory, and what the instance before saw between its last
 /// answer and its death is not known (the lead's answer to the plan's

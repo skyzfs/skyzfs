@@ -180,6 +180,10 @@ fn every_line_reads_back_as_written() {
         Reply::Absent,
         snap(0, 0, 0),
         snap(u64::MAX, u64::MAX, u32::MAX),
+        // A number and a group that differ, read each from its own word
+        // (T1 of the review of #140): the agent compares both with its
+        // request.
+        snap(3, 41, 19),
     ];
     replies.extend(EVERY_UNREAD.map(unreadable));
     for state in [None, Some(S)] {
