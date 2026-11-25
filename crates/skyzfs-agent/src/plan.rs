@@ -76,14 +76,16 @@
 //!     looked up and given up as below (S5 of #144's third look).
 //!   - A refusal that ends the request (the lead's L7 on #144,
 //!     after N4 of its third look): the uploader ended it (`rewound`,
-//!     `state`, `attachment`, `taken`), or the daemon did not run it
+//!     `state`, `attachment`, `taken`, and `stopped`, N6 of its fourth
+//!     look), or the daemon did not run it
 //!     (`name`, `manifest`, `expiry`, `version`, `malformed`, `peer`,
 //!     `store`). Nothing pends: `snap/t` looked up, a publish made is
 //!     done, another's `snap/t` gives the name up ([`Why::NameTaken`]),
 //!     and with none the hold is released and the publish given up
 //!     ([`Why::Rewound`] where a rewind lost `pool@t`), the code
 //!     reported ([`Report::Refused`]). Not too old, these answers end
-//!     the publish in a round too (below), or stop it for a person.
+//!     the publish in a round too (below), or stop it for a person;
+//!     `stopped` gives it up as here ([`Why::Stopped`]).
 //!   - `pending` or `refused asked`: the request withdrawn first. So is
 //!     `absent`, which skyzfsd does not give to `progress` or `withdraw`
 //!     (it answers `look`): a withdraw is safe whatever pends (S4 of the
@@ -138,8 +140,8 @@
 //!   engine makes the report before it records the publish done, so at
 //!   least once: a stop between the two plans the same again (F1 of
 //!   #144's review).
-//! - **A daemon away** (no answer, or `stopped`, `ended`, `no-answer`,
-//!   `no-upload`): wait; a publish asked keeps its hold until
+//! - **A daemon away** (no answer, or `ended`, `no-answer`, `no-upload`):
+//!   wait; a publish asked keeps its hold until
 //!   `held_until`, then releases it. When the daemon answers again, the
 //!   answers above apply, and a hold released is placed again before the
 //!   publish is asked anew.
@@ -164,7 +166,10 @@
 //!   `expiry`, `version`, `malformed`, `peer`) stops the publish and is
 //!   reported ([`Action::Stop`]); so does `store`, which only `look`
 //!   answers, where it comes as an answer about the publish, and `done`
-//!   that `look` does not confirm.
+//!   that `look` does not confirm. That holds for a publish not too old;
+//!   one too old, or stalled [`STALLS_ABANDONED`] times, is looked up and
+//!   given up on these refusals instead (L7, above; S7 of #144's fourth
+//!   look).
 
 use std::time::Duration;
 
@@ -575,14 +580,27 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
 
 /// Whether a refusal of `progress` or `withdraw` says that no request of
 /// the publish pends: the uploader ended it (`rewound`, `state`,
-/// `attachment`, `taken`), or the daemon did not run what it was asked
-/// (`name`, `manifest`, `expiry`, `version`, `malformed`, `peer`,
-/// `store`): a daemon that cannot read this agent's requests accepted none
-/// of them. Not `asked` (one pends), `busy` (one may, later), or the
-/// daemon's silence (`stopped`, `ended`, `no-answer`, `no-upload`).
+/// `attachment`, `taken`, `stopped`), or the daemon did not run what it
+/// was asked (`name`, `manifest`, `expiry`, `version`, `malformed`,
+/// `peer`, `store`): a daemon that cannot read this agent's requests
+/// accepted none of them.
+///
+/// `stopped` is the uploader's answer for good: it ends every publish
+/// pending when it stops (the lease lost, a transaction fenced, a cut
+/// kept committed), takes no step after, and refuses every request after
+/// it until skyzfsd restarts (N6 of #144's fourth look; the lead's
+/// decision for M2.6c). A publish is given up on it whatever its age
+/// (the lead's ruling on #146): waiting would only hold `pool@t` for up
+/// to [`AGE_MAX`], and the next publish covers a restart.
+///
+/// Not `asked` (one pends), `busy`, or the daemon's silence (`ended`,
+/// `no-answer`, `no-upload`). skyzfsd gives `busy` only to a `publish`
+/// it did not accept; here it can only be an ask's answer kept for a
+/// round, and the next round reads `progress` (S7 of the fourth look).
 fn ends(code: Code) -> bool {
     match code {
         Code::Rewound
+        | Code::Stopped
         | Code::State
         | Code::Attachment
         | Code::Taken
@@ -593,19 +611,15 @@ fn ends(code: Code) -> bool {
         | Code::Malformed
         | Code::Peer
         | Code::Store => true,
-        Code::Asked
-        | Code::Busy
-        | Code::Stopped
-        | Code::Ended
-        | Code::NoAnswer
-        | Code::NoUpload => false,
+        Code::Asked | Code::Busy | Code::Ended | Code::NoAnswer | Code::NoUpload => false,
     }
 }
 
 /// What a person is told where `action`, planned from `seen`, gives up a
 /// publish too old, or stalled [`STALLS_ABANDONED`] times, on a refusal
-/// that ends its request ([`Report::Refused`], the lead's L7 on #144):
-/// the release, and the give-up after it. The engine makes it before it
+/// that ends its request ([`Report::Refused`], the lead's L7 on #144),
+/// or any publish on `refused stopped` (the lead's ruling on #146): the
+/// release, and the give-up after it. The engine makes it before it
 /// acts, once a process (as every report: at least once).
 pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report> {
     let under_way = matches!(publish.phase, Phase::Held(_) | Phase::Asked { .. });
@@ -615,7 +629,9 @@ pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report>
         DaemonSeen::Here {
             answer: Reply::Refused(code, _),
             ..
-        } if under_way && ended && gives_up && ends(*code) => Some(Report::Refused(*code)),
+        } if under_way && (ended || *code == Code::Stopped) && gives_up && ends(*code) => {
+            Some(Report::Refused(*code))
+        }
         _ => None,
     }
 }
@@ -737,7 +753,12 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
             Code::Rewound => anew(true),
             Code::Busy => Action::Wait,
             Code::Asked => Action::Withdraw,
-            Code::Stopped | Code::Ended | Code::NoAnswer | Code::NoUpload => away(),
+            // The uploader has stopped for good and takes no step in this
+            // run of skyzfsd: looked up, then given up and reported, the
+            // hold released (the lead's ruling on #146). The next
+            // publish covers a restart.
+            Code::Stopped => look(&|| give_up(pool, broken.unwrap_or(Why::Stopped))),
+            Code::Ended | Code::NoAnswer | Code::NoUpload => away(),
             Code::Name
             | Code::Manifest
             | Code::Expiry

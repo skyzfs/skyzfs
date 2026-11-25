@@ -315,7 +315,12 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::Premise => !premise,
             // The world always cuts again in time: a publish that makes
             // no progress here is a defect of the engine.
-            Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress | Why::TooOld => false,
+            // Nor does its uploader stop for good.
+            Why::ManifestTooLarge
+            | Why::NameTaken
+            | Why::NoProgress
+            | Why::TooOld
+            | Why::Stopped => false,
         };
         if !confirmed {
             return Err(format!(
@@ -1014,6 +1019,172 @@ fn a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported()
         assert!(holds(&world).is_empty(), "{back:?}: {:?}", holds(&world));
         assert!(world.refs.is_empty(), "{back:?}");
     }
+}
+
+/// The world and hook of a publish too old whose request the uploader
+/// ends `refused rewound`: a daemon that counts cuts and uploads none,
+/// and `zpool import -F` (`back`) just before the ended arm's first
+/// withdraw. The hook returns whether the agent stops at a point: here
+/// at the `stop`-th point after the rewind, if any.
+fn rewound_when_too_old(
+    back: Back,
+    stop: Option<usize>,
+) -> (Rc<RefCell<World>>, impl FnMut(Point) -> bool + 'static) {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let hook = {
+        let world = world.clone();
+        let rewound = Cell::new(false);
+        let after = Cell::new(0usize);
+        move |point: Point| {
+            let withdraw = Point {
+                effect: Effect::Withdraw,
+                after: false,
+            };
+            if point == withdraw && !rewound.replace(true) {
+                world.borrow_mut().restart(Restart::RewindF(back), None);
+            }
+            if !rewound.get() {
+                return false;
+            }
+            after.set(after.get() + 1);
+            stop == Some(after.get())
+        }
+    };
+    (world, hook)
+}
+
+/// TG6 of #144's fourth look: the report of a publish too old given up
+/// on a refusal that ends its request is made however the agent stops
+/// after the rewind: at each point from the ended arm's first withdraw
+/// on, the agent stops and another starts on its record; between the
+/// two processes the code is reported at least once, and the publish is
+/// given up with no hold left.
+///
+/// Mutant: the report made after the action that gives the publish up
+/// (a stop just after the save of `Abandon` loses it in both).
+#[test]
+fn a_refused_report_is_made_however_the_agent_stops_after_the_end() {
+    let age_max = Duration::from_secs(60);
+    for (back, why) in [
+        (Back::AfterHold, Why::TooOld),
+        (Back::BelowCreated, Why::Rewound),
+    ] {
+        // Each stop in turn, until a run ends before its stop.
+        let mut runs = 0;
+        for stop in 1..1000 {
+            let (world, hook) = rewound_when_too_old(back, Some(stop));
+            let keep = MemKeep::default();
+            let mut first = agent(&world, &keep)
+                .with_age_max(age_max)
+                .with_points(Box::new(hook));
+            let t = first.begin().expect("begun");
+            match first.settle(LIMIT) {
+                Err(Error::Stopped) => {}
+                // The run ended before its `stop`-th point after the
+                // rewind: no later stop can come.
+                Ok(()) => break,
+                Err(e) => panic!("{back:?} at {stop}: {e}"),
+            }
+            runs += 1;
+            let mut second = agent(&world, &keep).with_age_max(age_max);
+            second.settle(LIMIT).expect("settled");
+            let mut reports = first.reports().to_vec();
+            reports.extend(second.reports().iter().cloned());
+            assert!(
+                reports.contains(&(t.clone(), Report::Refused(skyzfs_control::Code::Rewound))),
+                "{back:?}, stopped at {stop}: {reports:?}"
+            );
+            // Given up once, by one process or the other (a stop after
+            // the save leaves the outcome to the record alone).
+            let mut outcomes = first.outcomes().to_vec();
+            outcomes.extend(second.outcomes().iter().cloned());
+            assert!(
+                outcomes.len() <= 1
+                    && outcomes
+                        .iter()
+                        .all(|o| *o == (t.clone(), Outcome::Abandoned(why))),
+                "{back:?}, stopped at {stop}: {outcomes:?}"
+            );
+            let record = second.record();
+            assert!(record.under_way.is_empty(), "{back:?} at {stop}");
+            assert_eq!(
+                record.abandoned.last().map(|a| (a.name.as_str(), a.why)),
+                Some((t.as_str(), why)),
+                "{back:?}, stopped at {stop}"
+            );
+            let world = world.borrow();
+            assert!(
+                holds(&world).is_empty(),
+                "{back:?} at {stop}: {:?}",
+                holds(&world)
+            );
+        }
+        assert!((4..999).contains(&runs), "{back:?}: {runs} runs");
+    }
+}
+
+/// TG7 of #144's fourth look: a publish reported for its stalls and then
+/// given up on a refusal that ends its request is reported for both, in
+/// one process. The no-cut run of
+/// `a_publish_no_cut_carries_is_reported_then_given_up`; as the daemon
+/// accepts the request that follows the report, the pool is rewound and
+/// the daemon is away until the publish is older than its bound. The
+/// daemon ends the request `refused rewound` as it counts the import's
+/// group, and the agent reads it in the ended arm.
+///
+/// Mutant: the reports de-duplicated by name alone (the code's report
+/// dropped after the stalls').
+#[test]
+fn a_publish_reported_for_its_stalls_then_ended_is_reported_for_both() {
+    let age_max = Duration::from_secs(2 * 3600);
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let hook = {
+        let (world, files) = (world.clone(), keep.0.clone());
+        let (rebooted, rewound) = (Cell::new(false), Cell::new(false));
+        move |point: Point| {
+            if point == ASKED && !rebooted.replace(true) {
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            if point == ASKED && !rewound.get() {
+                let stalls = files
+                    .borrow()
+                    .record
+                    .as_deref()
+                    .and_then(|bytes| Record::decode(bytes).ok())
+                    .and_then(|r| r.under_way.first().map(|p| p.stalls));
+                if stalls >= Some(plan::STALLS_REPORTED) {
+                    rewound.set(true);
+                    let mut world = world.borrow_mut();
+                    world.restart(Restart::RewindF(Back::AfterHold), None);
+                    let bound = u64::try_from(age_max.as_millis()).unwrap_or(u64::MAX);
+                    world.away_until = fake::EPOCH_MS + bound + 60_000;
+                }
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep)
+        .with_age_max(age_max)
+        .with_points(Box::new(hook));
+    let t = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    assert_eq!(
+        agent.outcomes(),
+        [(t.clone(), Outcome::Abandoned(Why::TooOld))]
+    );
+    assert_eq!(
+        agent.reports(),
+        [
+            (t.clone(), Report::NoProgress(plan::STALLS_REPORTED)),
+            (t, Report::Refused(skyzfs_control::Code::Rewound)),
+        ]
+    );
+    let world = world.borrow();
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+    assert!(world.refs.is_empty());
 }
 
 /// L2 of #144's review: a publish older than its bound is given up, and
