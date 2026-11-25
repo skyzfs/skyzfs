@@ -264,7 +264,10 @@ pub fn parse(args: &[String], hooks: bool) -> Result<Command, Usage> {
                 // An option's value is not the next option: `--name
                 // --give-up` is a name forgotten, not a name (S3 of
                 // #149's review). A value that begins with `--` is given
-                // as `--key=--value`.
+                // as `--key=--value`. Where a value is looked for,
+                // `--help` asks for help, but `-h` is taken as the value,
+                // as any word with one dash is (nit 3 of the next look at
+                // #149).
                 Some(value) if value == "--help" => return Ok(Command::Help),
                 Some(value) if value.starts_with("--") => {
                     return usage(format!(

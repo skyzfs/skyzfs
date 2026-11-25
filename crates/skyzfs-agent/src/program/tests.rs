@@ -91,6 +91,12 @@ fn each_command_is_parsed_with_its_options() {
     ] {
         assert_eq!(parse(&args(line), false), Ok(Command::Help), "{line}");
     }
+    // Where a value is looked for, `-h` is the value (nit 3 of the next
+    // look at #149).
+    assert_eq!(
+        parse(&args("record --dir -h"), false),
+        Ok(Command::Record { dir: "-h".into() })
+    );
     // A value that begins with `--`, given with `=`.
     assert_eq!(
         parse(&args("record --dir=--d"), false),

@@ -2633,7 +2633,7 @@ fn an_agent_given_a_mistyped_directory_releases_no_hold() {
 /// published. A refusal that says nothing pends records it held again;
 /// one that does not (`asked`, `ended`, `no-answer`) leaves it asked.
 /// Mutants: the save after the send; held again on every refusal; never
-/// held again.
+/// held again; the asking `held_until` without the channel's wait.
 #[test]
 fn the_record_says_asked_before_the_request_is_sent() {
     // The crash between the save and the send.
@@ -2697,7 +2697,11 @@ fn the_record_says_asked_before_the_request_is_sent() {
     };
     match saved.publish(&t).map(|p| &p.phase) {
         Some(Phase::Asked { held_until_ms, .. }) => {
-            let least = plan::held_until(sent.get(), EXPIRY_DEFAULT);
+            // The channel's wait counts too: the request may be taken as
+            // late as `ASK_LIMIT` after the send (T-b of the next look at
+            // #149; mutant: the asking `held_until` without it).
+            let wait = u64::try_from(skyzfs_control::ASK_LIMIT.as_millis()).expect("ms");
+            let least = plan::held_until(sent.get() + wait, EXPIRY_DEFAULT);
             assert!(*held_until_ms >= least, "{held_until_ms} < {least}");
         }
         other => panic!("{other:?}"),
@@ -2755,4 +2759,113 @@ fn the_record_says_asked_before_the_request_is_sent() {
         let asked = matches!(phase, Some(Phase::Asked { .. }));
         assert_eq!(asked, pends, "{code:?}: {phase:?}");
     }
+}
+
+/// A daemon that accepts the first `publish` and loses its answer (an
+/// `Err`, or `refused no-answer`); as it loses it, it goes away for
+/// `away_s`, and the agent's wall clock steps by `skew_ms`. Taken from
+/// the review of #149 (N5, its scratch daemon `LostAnswer`).
+struct LostAnswer {
+    world: Rc<RefCell<World>>,
+    lost: bool,
+    no_answer: bool,
+    away_s: u64,
+    skew_ms: i64,
+}
+
+impl Daemon for LostAnswer {
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+        let answer = FakeDaemon(self.world.clone()).ask(request, manifest);
+        if matches!(request, Request::Publish(_)) && !self.lost {
+            self.lost = true;
+            let mut w = self.world.borrow_mut();
+            w.away_until = w.now_ms + self.away_s * 1000;
+            w.agent_skew_ms = self.skew_ms;
+            w.log
+                .push(format!("publish answered {answer:?}; the answer is lost"));
+            return if self.no_answer {
+                Ok(Reply::Refused(Code::NoAnswer, String::new()))
+            } else {
+                Err(io::Error::new(io::ErrorKind::ConnectionReset, "lost"))
+            };
+        }
+        answer
+    }
+
+    fn device(&mut self) -> io::Result<u64> {
+        FakeDaemon(self.world.clone()).device()
+    }
+}
+
+/// An ask sent in this process whose answer is lost (`Err` or
+/// `no-answer`) keeps its hold until `held_until` on the clock that does
+/// not step, as an accepted one does, whether the agent goes on alone or
+/// a person gives the publish up in the same process: with the daemon
+/// away for 900 s, with no step of the wall clock and with a step
+/// forward of two hours, `snap/t` is never made on a cut without
+/// `pool@t` (a person destroys it as soon as it is not held), and no
+/// hold is left at the end. N5 and T-a of the next look at #149.
+/// Mutants: the hold timed on the wall clock until an `accepted` is
+/// read (N5); an ask with no answer at all recorded held again (L1j).
+#[test]
+fn an_ask_whose_answer_is_lost_keeps_its_hold_on_the_clock_that_does_not_step() {
+    let mut wrong = Vec::new();
+    for mode in [Mode::Idle, Mode::Abandoned, Mode::Busy] {
+        for no_answer in [false, true] {
+            for give_up in [false, true] {
+                for skew_ms in [0_i64, 2 * 3_600_000] {
+                    let world = World::new(mode);
+                    let keep = MemKeep::default();
+                    let daemon = LostAnswer {
+                        world: world.clone(),
+                        lost: false,
+                        no_answer,
+                        away_s: 900,
+                        skew_ms,
+                    };
+                    let mut a = Agent::new(
+                        FakeZfs(world.clone()),
+                        daemon,
+                        keep.clone(),
+                        FakeClock(world.clone()),
+                        VOLUME,
+                        POOL,
+                    )
+                    .expect("the agent");
+                    let t = a.begin().expect("begun");
+                    world.borrow_mut().destroyer = Some(t.clone());
+                    if give_up {
+                        // The answer is lost in the first rounds; then the
+                        // person gives up.
+                        let _ = a.settle(Duration::from_secs(5));
+                        a.recover(&t, Choice::GiveUp).expect("recovered");
+                    }
+                    let settled = a.settle(LIMIT);
+                    let outcomes = a.outcomes().to_vec();
+                    drop(a);
+                    // Whatever still pends at the daemon has its time to
+                    // land.
+                    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+                    let w = world.borrow();
+                    let case = format!(
+                        "{mode:?} no_answer={no_answer} give_up={give_up} skew={skew_ms}: \
+                         settled {settled:?}, outcomes {outcomes:?}, snap/t on {:?}",
+                        w.refs.get(&t).map(|r| r.number)
+                    );
+                    if w.refs.get(&t).is_some_and(|r| {
+                        !w.commits[&r.commit]
+                            .cut
+                            .snaps
+                            .contains_key(&format!("{POOL}@{t}"))
+                    }) {
+                        wrong.push(format!("{case}: made on a cut without {POOL}@{t}"));
+                    }
+                    if !holds(&w).is_empty() {
+                        wrong.push(format!("{case}: holds left {:?}", holds(&w)));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

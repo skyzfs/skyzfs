@@ -49,17 +49,20 @@
 //! # Time
 //!
 //! The record's times are the wall clock's, since they outlive the
-//! process. For a publish accepted in this process the planner reads the
-//! time as `accepted` plus what the clock that does not step has run
-//! since ([`Clock::mono_ms`]): a step of the wall clock neither releases
-//! its hold before `held_until` nor holds back its syncs (S4 and S11 of
-//! #142's review). A publish's age ([`plan::AGE_MAX`]) is measured the
+//! process. For a publish asked or accepted in this process the planner
+//! reads the time as the recorded `asked_ms` plus what the clock that
+//! does not step has run since ([`Clock::mono_ms`]): a step of the wall
+//! clock neither releases its hold before `held_until` nor holds back its
+//! syncs (S4 and S11 of #142's review). That holds from the record
+//! `asking`, before the request is sent: a request whose answer is lost
+//! may pend, and its hold is kept on the same clock (N5 of #149's next
+//! look). A publish's age ([`plan::AGE_MAX`]) is measured the
 //! same way from `begun_ms`, for a publish begun in this process, and
 //! goes with it when it takes the next name. After a restart the wall
 //! clock is all there is to start from: a step forward while the agent
-//! was down may release a hold early (the request may still land; its
-//! cut holds the snapshot all the same), and a step back keeps it
-//! longer. The age of a publish read from the record is anchored on the
+//! was down may release a hold early (the request may still land, and
+//! where a person destroyed the snapshot after the release, on a cut
+//! without it: R2 of #149's review), and a step back keeps it longer. The age of a publish read from the record is anchored on the
 //! wall clock once, at the first round that reads it, and runs on the
 //! clock that does not step from there (S2 of #144's next look);
 //! `held_until` is read on the wall clock until the request is accepted
@@ -363,9 +366,11 @@ impl fmt::Display for Error {
                 f,
                 "the record's directory holds no agent's marker (`{}`), so it may not be \
                  this volume's agent's directory; the holds of {} that no publish of its \
-                 record names are not released",
+                 record names are not released. Check `--dir`; if it is this volume's agent's \
+                 directory, release those holds by hand (`zfs release -r {} <snapshot>`)",
                 crate::record::MARKER,
-                names.join(" ")
+                names.join(" "),
+                crate::zfs::HOLD_TAG
             ),
         }
     }
@@ -406,7 +411,9 @@ struct Memory {
     /// The syncs since the request under way was accepted
     /// ([`Seen::assists`]).
     assists: u32,
-    /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
+    /// `asked_ms` as recorded, and [`Clock::mono_ms`] then: from the
+    /// record `asking` of a request sent in this process, and again from
+    /// its acceptance ("Time" in the [module docs](self)).
     accepted: Option<(u64, u64)>,
     /// [`Seen::withdrawn`].
     withdrawn: bool,
@@ -704,7 +711,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// goes on: an agent's first run has neither marker nor record, and
     /// no hold of the tag. The lead's words name a missing marker and a
     /// missing record; a record whose marker a person removed is refused
-    /// too, the conservative reading. [`Agent::begin`] sweeps first, so
+    /// too, the conservative reading, by `publish` and by a `settle` that
+    /// saves nothing first. `recover` saves before it sweeps, and the
+    /// save writes the marker, so after it such a record is swept (nit 4
+    /// of the next look at #149). [`Agent::begin`] sweeps first, so
     /// that a publish asked in a mistyped directory fails before its
     /// record and marker are written there.
     fn sweep(&mut self) -> Result<(), Error> {
@@ -1139,6 +1149,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         // within the channel's wait, so its expiry falls before this
         // `held_until`.
         let sent = self.clock.now_ms();
+        let sent_mono = self.clock.mono_ms();
         let asking_until = plan::held_until(
             sent.saturating_add(ms(skyzfs_control::ASK_LIMIT)),
             self.expiry,
@@ -1153,6 +1164,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 };
             })
         })?;
+        // Its hold is timed from here on the clock that does not step:
+        // the answer may be lost while the request pends (N5 of #149's
+        // next look).
+        self.memory.entry(name.clone()).or_default().accepted = Some((sent, sent_mono));
         self.point(Effect::Ask, false)?;
         let answer = self.daemon.ask(&request, &bytes);
         self.point(Effect::Ask, true)?;
@@ -1317,7 +1332,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// [`Agent::name_now`] would follow for ever (found by the second
     /// row of `a_publish_made_under_its_next_name_exits_by_its_outcome`,
     /// D2 of #149's review). The names found so are not recorded: after
-    /// a restart one may be tried once more, and found again.
+    /// a restart the agent walks the names again, one program run each,
+    /// up to as many as it had found (N4 of the next look at #149); it
+    /// still ends, each walk being bounded by the names taken.
     fn fresh_name(&mut self) -> Result<String, Error> {
         let second = self.clock.now_ms() / 1000;
         for taken in 0..=u32::from(u16::MAX) {
