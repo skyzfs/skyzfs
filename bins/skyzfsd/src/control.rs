@@ -45,6 +45,7 @@
 //! | `publish name=T attachment=A state=S after=C group=G manifest=N [expiry-s=E]`, then N bytes | `accepted` |
 //! | `progress name=T` | `pending`, `done commit=H`, `expired`, `withdrawn`, `unknown` |
 //! | `withdraw name=T` | as `progress`, as the publish stands after the withdrawal |
+//! | `look name=T` | `absent`, `snap commit=H state=S number=N group=G manifest-len=L manifest-hash=X`, `unreadable commit=H why=W` |
 //!
 //! Any request can be answered `refused CODE TEXT`: CODE is one word
 //! ([`Code`]) and TEXT says why in words, for a person.
@@ -93,10 +94,28 @@
 //!   still read `pending` and then `done`. While it still pends so, the
 //!   same `publish` asked again undoes the withdrawal, and its `accepted`
 //!   holds: the publish goes on (D1 of the review of #122).
+//! - `look` (work package M2.6a): what `snap/T` is in object storage,
+//!   read there when asked (`skyzfs_upload::look`), whatever this
+//!   daemon's uploader knows of it. `absent`: no ref `snap/T`. `snap`:
+//!   the ref names commit H and has the row of H, which records the cut
+//!   published (its state S, number N and group G) and the ZFS
+//!   manifest's length L and BLAKE3 hash X (64 hex digits); the agent
+//!   compares them with its request. `unreadable`: the ref names H and
+//!   has no row read as its own, W saying why: `no-row`, `version` (a
+//!   row of another version), `length` (of version 1 and another
+//!   length), or `other-commit` (a row of another commit, beside a ref
+//!   deleted and made anew). The daemon looks with a client of object
+//!   storage of the channel's own, and not through its uploader, so a
+//!   look is answered while the uploader steps and after it has stopped
+//!   or ended; `refused store` says that object storage answered with
+//!   an error, and `no-answer` that it did not answer within
+//!   [`ANSWER_LIMIT`]. Neither is `absent`. A daemon with no uploader
+//!   refuses `look` `no-upload` as it does the other requests.
 //!
 //! A name T that no publish can have
 //! (`skyzfs_upload::publish::valid_name`) is refused `name` by each of
-//! `publish`, `progress` and `withdraw`, before the request goes further.
+//! `publish`, `progress`, `withdraw` and `look`, before the request goes
+//! further.
 //!
 //! `refused stopped`, to a `publish` or as a publish's `progress`: this
 //! daemon's uploader steps no more (its lease lost, a commit or a publish
@@ -114,8 +133,9 @@
 //! may still have been taken: ask again, which answers as asking once,
 //! or withdraw it. For `cuts`, which the store's queue answers and not
 //! the uploader, `ended` says that the store is no longer served, and
-//! `no-answer` that its queue took no turn within the limit. The other
-//! codes are a publish's refusals (`skyzfs_upload::Refusal`).
+//! `no-answer` that its queue took no turn within the limit. For `look`,
+//! `no-answer` and `store` are object storage's (above). The other codes
+//! are a publish's refusals (`skyzfs_upload::Refusal`).
 //!
 //! # What the daemon decides here, and the design does not
 //!
@@ -132,8 +152,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use skyzfs_upload::publish::{valid_name, EXPIRY_MAX, MANIFEST_MAX};
-use skyzfs_upload::{Progress, Refusal};
+use skyzfs_upload::publish::{valid_name, SnapRowError, EXPIRY_MAX, MANIFEST_MAX};
+use skyzfs_upload::{Progress, Refusal, Seen};
 
 /// The socket's name in the volume's run directory.
 pub const SOCKET: &str = "control";
@@ -174,6 +194,8 @@ pub enum Request {
     Progress(String),
     /// `withdraw name=T`.
     Withdraw(String),
+    /// `look name=T`.
+    Look(String),
 }
 
 /// What `publish` names. Its manifest travels after the line.
@@ -212,8 +234,78 @@ pub enum Reply {
     Withdrawn,
     /// Not asked of this uploader, or its end has left the view.
     Unknown,
+    /// `look`: no `snap/T`.
+    Absent,
+    /// `look`: `snap/T` and the row of its commit.
+    Snap(SnapReply),
+    /// `look`: `snap/T` with no row read as its own.
+    Unreadable(UnreadableReply),
     /// Refused, and why.
     Refused(Code, String),
+}
+
+/// The answer to `look` where `snap/T` has its row: what the publish
+/// recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapReply {
+    /// The commit `snap/T` names, H.
+    pub commit: [u8; 32],
+    /// The cut state of the cut published, S.
+    pub state: [u8; 16],
+    /// The cut's number in that state, N.
+    pub number: u64,
+    /// The cut's transaction group, G.
+    pub group: u64,
+    /// The ZFS manifest's length, L.
+    pub manifest_len: u32,
+    /// Its BLAKE3 hash, X.
+    pub manifest_hash: [u8; 32],
+}
+
+/// The answer to `look` where `snap/T` has no row read as its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadableReply {
+    /// The commit `snap/T` names, H.
+    pub commit: [u8; 32],
+    /// Why its row is not read, W.
+    pub why: Unread,
+}
+
+/// Why `snap/T`'s row is not read as its own: one word on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unread {
+    /// `no-row`: there is none.
+    NoRow,
+    /// `version`: a row of another version than 1.
+    Version,
+    /// `length`: a row of version 1 of another length.
+    Length,
+    /// `other-commit`: a row that names another commit than the ref's.
+    OtherCommit,
+}
+
+const UNREADS: [(Unread, &str); 4] = [
+    (Unread::NoRow, "no-row"),
+    (Unread::Version, "version"),
+    (Unread::Length, "length"),
+    (Unread::OtherCommit, "other-commit"),
+];
+
+impl Unread {
+    /// The word of why.
+    pub fn word(self) -> &'static str {
+        UNREADS
+            .iter()
+            .find(|(why, _)| *why == self)
+            .map_or("no-row", |(_, word)| word)
+    }
+
+    fn from_word(word: &str) -> Option<Self> {
+        UNREADS
+            .iter()
+            .find(|(_, w)| *w == word)
+            .map(|(why, _)| *why)
+    }
 }
 
 /// The answer to `cuts`.
@@ -267,11 +359,13 @@ pub enum Code {
     /// What answers the request did not answer within the limit: the
     /// uploader, for a publish, its progress or its withdrawal; for
     /// `cuts`, the store's queue, which gives the count between two of
-    /// its turns.
+    /// its turns; for `look`, object storage.
     NoAnswer,
+    /// Object storage answered `look` with an error.
+    Store,
 }
 
-const CODES: [(Code, &str); 16] = [
+const CODES: [(Code, &str); 17] = [
     (Code::Name, "name"),
     (Code::Attachment, "attachment"),
     (Code::State, "state"),
@@ -288,6 +382,7 @@ const CODES: [(Code, &str); 16] = [
     (Code::NoUpload, "no-upload"),
     (Code::Ended, "ended"),
     (Code::NoAnswer, "no-answer"),
+    (Code::Store, "store"),
 ];
 
 impl Code {
@@ -339,6 +434,30 @@ impl Reply {
     /// Whether it is a refusal.
     pub fn refused(&self) -> bool {
         matches!(self, Reply::Refused(..))
+    }
+}
+
+/// The answer to `look` that says what was seen of `snap/T`.
+pub fn seen_reply(seen: &Seen) -> Reply {
+    match seen {
+        Seen::Absent => Reply::Absent,
+        Seen::Snap { commit, row } => Reply::Snap(SnapReply {
+            commit: *commit,
+            state: row.cut.state,
+            number: row.cut.number,
+            group: row.cut.group,
+            manifest_len: row.manifest_len,
+            manifest_hash: row.manifest_hash,
+        }),
+        Seen::Unreadable { commit, why } => Reply::Unreadable(UnreadableReply {
+            commit: *commit,
+            why: match why {
+                skyzfs_upload::Unread::NoRow => Unread::NoRow,
+                skyzfs_upload::Unread::Row(SnapRowError::Version(_)) => Unread::Version,
+                skyzfs_upload::Unread::Row(SnapRowError::Length(_)) => Unread::Length,
+                skyzfs_upload::Unread::OtherCommit(_) => Unread::OtherCommit,
+            },
+        }),
     }
 }
 
@@ -403,6 +522,11 @@ fn id(pairs: &[(&str, &str)], key: &str) -> Result<[u8; 16], String> {
     unhex(text).ok_or_else(|| format!("`{key}` is not 32 hex digits: `{text}`"))
 }
 
+fn hash(pairs: &[(&str, &str)], key: &str) -> Result<[u8; 32], String> {
+    let text = take(pairs, key)?;
+    unhex(text).ok_or_else(|| format!("`{key}` is not 64 hex digits: `{text}`"))
+}
+
 /// Split a line into its words: one space between, none at either end.
 fn words(line: &str) -> Result<Vec<&str>, String> {
     let words: Vec<&str> = line.split(' ').collect();
@@ -457,6 +581,9 @@ impl Request {
             "withdraw" => Ok(Request::Withdraw(
                 take(&pairs(rest, &["name"])?, "name")?.to_string(),
             )),
+            "look" => Ok(Request::Look(
+                take(&pairs(rest, &["name"])?, "name")?.to_string(),
+            )),
             other => Err(format!("`{other}` is not a request")),
         }
     }
@@ -482,6 +609,7 @@ impl Request {
             }
             Request::Progress(name) => format!("progress name={name}"),
             Request::Withdraw(name) => format!("withdraw name={name}"),
+            Request::Look(name) => format!("look name={name}"),
         }
     }
 }
@@ -524,12 +652,43 @@ impl Reply {
             "expired" => bare(Reply::Expired),
             "withdrawn" => bare(Reply::Withdrawn),
             "unknown" => bare(Reply::Unknown),
+            "absent" => bare(Reply::Absent),
             "done" => {
                 let p = pairs(rest, &["commit"])?;
-                let text = take(&p, "commit")?;
-                let commit = unhex(text)
-                    .ok_or_else(|| format!("`commit` is not 64 hex digits: `{text}`"))?;
-                Ok(Reply::Done(commit))
+                Ok(Reply::Done(hash(&p, "commit")?))
+            }
+            "snap" => {
+                let p = pairs(
+                    rest,
+                    &[
+                        "commit",
+                        "state",
+                        "number",
+                        "group",
+                        "manifest-len",
+                        "manifest-hash",
+                    ],
+                )?;
+                let len = number(&p, "manifest-len")?;
+                Ok(Reply::Snap(SnapReply {
+                    commit: hash(&p, "commit")?,
+                    state: id(&p, "state")?,
+                    number: number(&p, "number")?,
+                    group: number(&p, "group")?,
+                    manifest_len: u32::try_from(len)
+                        .map_err(|_| format!("`manifest-len` is out of range: {len}"))?,
+                    manifest_hash: hash(&p, "manifest-hash")?,
+                }))
+            }
+            "unreadable" => {
+                let p = pairs(rest, &["commit", "why"])?;
+                let word = take(&p, "why")?;
+                let why = Unread::from_word(word)
+                    .ok_or_else(|| format!("`why` is not a reason: `{word}`"))?;
+                Ok(Reply::Unreadable(UnreadableReply {
+                    commit: hash(&p, "commit")?,
+                    why,
+                }))
             }
             other => Err(format!("`{other}` is not an answer")),
         }
@@ -559,6 +718,19 @@ impl Reply {
             Reply::Expired => "expired".into(),
             Reply::Withdrawn => "withdrawn".into(),
             Reply::Unknown => "unknown".into(),
+            Reply::Absent => "absent".into(),
+            Reply::Snap(r) => format!(
+                "snap commit={} state={} number={} group={} manifest-len={} manifest-hash={}",
+                hex(&r.commit),
+                hex(&r.state),
+                r.number,
+                r.group,
+                r.manifest_len,
+                hex(&r.manifest_hash)
+            ),
+            Reply::Unreadable(r) => {
+                format!("unreadable commit={} why={}", hex(&r.commit), r.why.word())
+            }
             Reply::Refused(code, text) => {
                 let text: String = text
                     .chars()
@@ -650,7 +822,7 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Result<(Request, Vec<u8
     let name = match &request {
         Request::Cuts => None,
         Request::Publish(p) => Some(&p.name),
-        Request::Progress(name) | Request::Withdraw(name) => Some(name),
+        Request::Progress(name) | Request::Withdraw(name) | Request::Look(name) => Some(name),
     };
     if name.is_some_and(|name| !valid_name(name)) {
         return Ok(Err(Reply::Refused(Code::Name, Refusal::Name.to_string())));

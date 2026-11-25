@@ -724,6 +724,7 @@ impl<R: RefStore> Start<R> {
 /// taken at the start.
 pub struct Uploads {
     vol: skynbd_types::VolumeId,
+    remote: Remote,
     holder: String,
     objects: Objects,
     refs: Refs,
@@ -751,6 +752,7 @@ impl Uploads {
         );
         Ok(Self {
             vol: remote.id,
+            remote: remote.clone(),
             holder,
             objects,
             refs,
@@ -766,6 +768,12 @@ impl Uploads {
     /// The lease at the start, to read.
     pub fn started(&self) -> &Start<Refs> {
         &self.start
+    }
+
+    /// The volume's place in object storage: the channel's `look` reads
+    /// its refs with a client of its own (work package M2.6a).
+    pub fn remote(&self) -> &Remote {
+        &self.remote
     }
 
     /// Start the uploader's thread over `desk`, posting with `publish`:

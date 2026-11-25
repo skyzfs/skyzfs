@@ -7,18 +7,30 @@
 //! whatever step the uploader is in. A stalled PUT or a slow lookup
 //! holds up the publishes' answers, which wait for the step under way,
 //! but not `cuts` (F1 and F4 of the review of #127).
+//!
+//! Nor is `look` (work package M2.6a): the channel reads `snap/T` and its
+//! row in the refs object itself, through a client of object storage of
+//! its own ([`Lookup`]), made on the channel's runtime when the handler
+//! is, and kept. The uploader's client is on the uploader's runtime, and
+//! a look made through it would wait for the uploader's thread; and the
+//! uploader's own lookups are steps of its publishes, not answers to the
+//! agent. A look is answered while the uploader steps, after it has
+//! stopped, and after it has ended.
 
+use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use skynbd_refs::RefStore;
+use skynbd_types::VolumeId;
 use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
 use skyzfs_upload::queued::Desk;
 use skyzfs_upload::{Answer, Control};
-use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Code, CutsReply, Handler, Reply, Request};
+use super::{seen_reply, Code, CutsReply, Handler, Reply, Request};
+use crate::upload::Runtime;
 
 /// How many requests may wait in the uploader's inbox. The channel asks
 /// one at a time, so more wait only after `no-answer`s, whose requests
@@ -30,27 +42,51 @@ pub fn no_upload(why: String) -> Handler {
     Box::new(move |_: &Request, _: Vec<u8>| Reply::Refused(Code::NoUpload, why.clone()))
 }
 
+/// What `look` reads: the volume's refs object in object storage,
+/// through the channel's own client.
+pub struct Lookup<R> {
+    /// The volume's id in object storage.
+    pub vol: VolumeId,
+    /// Its refs.
+    pub refs: R,
+}
+
 /// A handler that asks the uploader through `inbox` (read by
-/// `Uploader::run_with`), and the store's count of cuts at `desk`, for
-/// the daemon that serves `attachment`. Each answer is waited for at
-/// most `limit` ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the daemon).
-pub fn uploader(
+/// `Uploader::run_with`), the store's count of cuts at `desk`, and
+/// `look`s of what `lookup` makes, for the daemon that serves
+/// `attachment`. Each answer is waited for at most `limit`
+/// ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the daemon). `lookup` is
+/// made here, on the channel's runtime, and asks nothing of object
+/// storage.
+pub fn uploader<R, F>(
     attachment: [u8; 16],
     inbox: mpsc::Sender<Control>,
     desk: Arc<Desk>,
+    lookup: impl FnOnce() -> F,
     limit: Duration,
-) -> io::Result<Handler> {
+) -> io::Result<Handler>
+where
+    R: RefStore + 'static,
+    F: Future<Output = Lookup<R>>,
+{
     // The channel's thread is not the runtime's: it waits on its own,
-    // with time to limit the wait.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
+    // with time to limit the wait. The runtime's I/O is the lookup's
+    // client, and its drop does not wait for a name lookup that hangs
+    // (`crate::upload::Runtime`).
+    let runtime = crate::upload::runtime()?;
+    let lookup = runtime.block_on(lookup())?;
     Ok(Box::new(move |request: &Request, manifest: Vec<u8>| {
         let waiter = Waiter {
             runtime: &runtime,
             limit,
         };
-        match answer(&waiter, &inbox, &desk, attachment, request, manifest) {
+        let asked = Asked {
+            inbox: &inbox,
+            desk: &desk,
+            lookup: &lookup,
+            attachment,
+        };
+        match answer(&waiter, &asked, request, manifest) {
             Ok(reply) | Err(reply) => reply,
         }
     }))
@@ -61,14 +97,39 @@ struct Waiter<'a> {
     limit: Duration,
 }
 
-fn answer(
-    waiter: &Waiter<'_>,
-    inbox: &mpsc::Sender<Control>,
-    desk: &Desk,
+impl Waiter<'_> {
+    /// Run `future` on the runtime, for at most the limit: `None` where
+    /// it did not end in time.
+    fn within<F: Future>(&self, future: F) -> Result<Option<F::Output>, Reply> {
+        let limit = self.limit;
+        // The timeout is made inside the runtime: its timer needs the
+        // runtime's context.
+        self.runtime
+            .block_on(async move { tokio::time::timeout(limit, future).await.ok() })
+            .map_err(|e| Reply::Refused(Code::Ended, format!("the channel's runtime: {e}")))
+    }
+}
+
+/// What the handler asks.
+struct Asked<'a, R> {
+    inbox: &'a mpsc::Sender<Control>,
+    desk: &'a Desk,
+    lookup: &'a Lookup<R>,
     attachment: [u8; 16],
+}
+
+fn answer<R: RefStore>(
+    waiter: &Waiter<'_>,
+    asked: &Asked<'_, R>,
     request: &Request,
     manifest: Vec<u8>,
 ) -> Result<Reply, Reply> {
+    let Asked {
+        inbox,
+        desk,
+        lookup,
+        attachment,
+    } = *asked;
     Ok(match request {
         Request::Cuts => {
             let now = count(waiter, desk)?;
@@ -106,7 +167,24 @@ fn answer(
             send(inbox, Control::Withdraw(name.clone(), tx))?;
             Reply::of(&wait(waiter, rx)?)
         }
+        Request::Look(name) => look(waiter, lookup, name)?,
     })
+}
+
+/// What `snap/<name>` is in object storage, read within the waiter's
+/// limit. An error of object storage is `store`, and not `absent`.
+fn look<R: RefStore>(waiter: &Waiter<'_>, lookup: &Lookup<R>, name: &str) -> Result<Reply, Reply> {
+    match waiter.within(skyzfs_upload::look::look(&lookup.refs, lookup.vol, name))? {
+        Some(Ok(seen)) => Ok(seen_reply(&seen)),
+        Some(Err(e)) => Err(Reply::Refused(Code::Store, format!("object storage: {e}"))),
+        None => Err(Reply::Refused(
+            Code::NoAnswer,
+            format!(
+                "object storage did not answer within {} s",
+                waiter.limit.as_secs_f64()
+            ),
+        )),
+    }
 }
 
 /// Put `control` in the uploader's inbox, without waiting for room.
@@ -122,17 +200,11 @@ fn send(inbox: &mpsc::Sender<Control>, control: Control) -> Result<(), Reply> {
 
 /// The uploader's answer, waited for at most the waiter's limit.
 fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
-    // The timeout is made inside the runtime: its timer needs the
-    // runtime's context.
-    let limit = waiter.limit;
-    match waiter
-        .runtime
-        .block_on(async move { tokio::time::timeout(limit, rx).await })
-    {
-        Ok(Ok(answer)) => Ok(answer),
+    match waiter.within(rx)? {
+        Some(Ok(answer)) => Ok(answer),
         // The uploader dropped the request unanswered: it has ended.
-        Ok(Err(_)) => Err(ended()),
-        Err(_) => Err(Reply::Refused(
+        Some(Err(_)) => Err(ended()),
+        None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
                 "the uploader did not answer within {} s; a publish may have been \
@@ -147,17 +219,13 @@ fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
 /// the waiter's limit. A closed desk is a store no longer served:
 /// `ended`, and not a count of nothing (F5 of the review of #127).
 fn count(waiter: &Waiter<'_>, desk: &Desk) -> Result<skyzfs_upload::CutsNow, Reply> {
-    let limit = waiter.limit;
-    match waiter
-        .runtime
-        .block_on(async move { tokio::time::timeout(limit, desk.cuts_now()).await })
-    {
-        Ok(Some(now)) => Ok(now),
-        Ok(None) => Err(Reply::Refused(
+    match waiter.within(desk.cuts_now())? {
+        Some(Some(now)) => Ok(now),
+        Some(None) => Err(Reply::Refused(
             Code::Ended,
             "the store is no longer served".into(),
         )),
-        Err(_) => Err(Reply::Refused(
+        None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
                 "the store did not answer within {} s: its queue takes no turn",

@@ -270,14 +270,7 @@ where
     }
 
     async fn snapshot(&mut self, name: &str) -> Result<Option<Found>, RemoteError> {
-        let Some(value) = self.refs.get(self.vol, &snap_ref(name)).await? else {
-            return Ok(None);
-        };
-        let row = self.refs.meta_get(self.vol, &snap_row_key(name)).await?;
-        Ok(Some(Found {
-            commit: value.commit,
-            row,
-        }))
+        Ok(crate::look::find(&self.refs, self.vol, name).await?)
     }
 
     async fn publish(
