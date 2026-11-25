@@ -1,0 +1,139 @@
+   Compiling skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `test` profile [optimized] target(s) in 17.80s
+     Running unittests src/lib.rs (<target>/debug/build/skyzfsd/b2c8a466414f9b23/out/skyzfsd-b2c8a466414f9b23)
+
+running 10 tests
+test kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires ... ok
+test kill::tests::r150_control_carry_swap_falls_at_the_carrier_read_after_the_acceptance ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+]
+kill line: kill carry-swap:1: after the commit of cut 7 (group 7), which carries publish 1, landed, before the cut was let go
+ok
+test kill::tests::r150_show_3_a_publish_asked_again_counts_as_publish_2 ... [
+    "put vols/a/seg/1",
+    "kill carry-put:2: after the first segment PUT of cut 6 (group 10), chosen to carry publish 2, landed (vols/a/seg/1)",
+]
+ok
+test kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [196, 64, 143, 55, 28, 7, 66, 254, 185, 190, 14, 53, 140, 152, 74, 52, 242, 216, 38, 138, 203, 24, 11, 73, 247, 99, 227, 54, 193, 101, 195, 178], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: true; kill line: kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX30AE26E44AHXVJ4Q8J)
+ok
+test kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [54, 87, 103, 234, 200, 49, 59, 166, 125, 134, 189, 198, 150, 184, 29, 9, 218, 194, 69, 174, 107, 40, 121, 109, 219, 199, 98, 56, 145, 28, 242, 191], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: true; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+ok
+test kill::tests::r150_show_b_carry_swap_falls_at_a_later_cut_when_the_carrier_was_committed_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Published { name: \"t\", number: 7, commit: [91, 17, 236, 215, 59, 226, 243, 210, 230, 55, 248, 100, 200, 11, 212, 235, 8, 239, 48, 158, 111, 51, 96, 62, 0, 8, 242, 64, 147, 230, 160, 224], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: true; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+ok
+test kill::tests::r150_show_d_carry_swap_falls_at_a_later_cut_when_the_carriers_commit_came_back_failed ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Err(Store(\"refs: backend error: backend error: injected fault (after the operation completed)\"))",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [81, 211, 120, 247, 133, 197, 4, 225, 173, 206, 56, 190, 234, 202, 248, 21, 89, 21, 94, 219, 109, 85, 74, 108, 154, 82, 189, 47, 234, 134, 116, 69], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+log: [
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX31ZGJK96CGARH8AHP0",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/c58863547d65f2b7d682f326dfa486737274839058754419b328ac8fcefa4a0a",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/4b88e84c94d8779c26cfa66917866130afa4fe1f460ec1afd9d73a0490412760",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/51d378f785c504e1adce38beeacaf81559155edb6d554a6c9a52bd2fea867445",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/skyzfs/manifest/01M8A1FX31AV0V6BAVY63D5ED5",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/snap/01M8A1FX31AV0V6BAVY63D5ED5",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX31ND5QQVJ41CK8TFY9",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/040a0660ee5d64df78d34d68920db90d382a1f812bdd0a941ca68f0b810bf40c",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/72bd4c0dcf88f4d0ce3142c479d96cd59a06c07c916ce8abd6d1f8cc4e72bd87",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/60028f571e35715c67697f27bc7ddfa5d8a9df7e79eaf0d6fcef0dec8d37adf6",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go",
+]
+published on cut 7: true; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+ok
+test kill::tests::r150_show_n_an_unreached_hook_says_nothing ... ok
+test kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 0, zeroes: 1 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 0 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [172, 246, 203, 42, 15, 25, 201, 132, 212, 253, 110, 156, 140, 216, 169, 140, 178, 163, 187, 134, 85, 125, 31, 66, 65, 189, 202, 61, 175, 152, 221, 252], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+log: [
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/390e6d806622ea26061b374676a17935b0cf653f352b38b8fc8e66e6fe989dd0",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/c54310d087e4c9a893e3a9b86af7a8cd07ca87b8c7ff6d154a942fe28275b912",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/acf6cb2a0f19c984d4fd6e9c8cd8a98cb2a3bb86557d1f4241bdca3daf98ddfc",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/skyzfs/manifest/01M8A1FX31N7BMXW57BVRDJKN2",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/snap/01M8A1FX31N7BMXW57BVRDJKN2",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX31S8S06Y61XX954BCA",
+    "kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX31S8S06Y61XX954BCA)",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/bc075b7d9135fcef40a7df6e871bdc3cd6b167cf76217476ffb9f3453d75d803",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/320e0ef8218c5e22d8a15488bd0c06294c39d7490f70b5f7409ace5640754370",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/ddad62bded2f08e4aaa78dbc58445d401ff625fbb44f1095346a2cc8cb0635e3",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+]
+published on cut 7: true; kill line: kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A1FX31S8S06Y61XX954BCA)
+ok
+test upload::tests::r150_the_carry_hook_skips_an_ask_whose_asker_went_before_it_was_sent ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.04s
+
+     Running unittests src/main.rs (<target>/debug/build/skyzfsd/d021980f0401695d/out/skyzfsd-d021980f0401695d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/closed_output.rs (<target>/debug/build/skyzfsd/b6d2e7f23874b434/out/closed_output-b6d2e7f23874b434)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+   Doc-tests skyzfsd
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test exit 0
+repeat upload::tests::r150_the_carry_hook_skips_an_ask_whose_asker_went_before_it_was_sent: 1 runs, 0 failed
+repeat upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted: 1 runs, 0 failed

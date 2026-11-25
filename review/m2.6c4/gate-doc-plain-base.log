@@ -1,0 +1,80 @@
+    Checking skynbd-types v0.0.1 (<base-worktree>/crates/skynbd-types)
+    Checking skyzfs-blk v0.0.1 (<base-worktree>/crates/skyzfs-blk)
+    Checking skyzfs-mapped v0.0.1 (<base-worktree>/crates/skyzfs-mapped)
+    Checking skyzfs-uberblock v0.0.1 (<base-worktree>/crates/skyzfs-uberblock)
+    Checking skynbd-store v0.0.1 (<base-worktree>/crates/skynbd-store)
+    Checking skynbd-tree v0.0.1 (<base-worktree>/crates/skynbd-tree)
+    Checking skyzfs-control v0.0.1 (<base-worktree>/crates/skyzfs-control)
+    Checking skynbd-format v0.0.1 (<base-worktree>/crates/skynbd-format)
+    Checking skyzfs-local v0.0.1 (<base-worktree>/crates/skyzfs-local)
+    Checking skynbd-refs v0.0.1 (<base-worktree>/crates/skynbd-refs)
+    Checking skyzfs-ublk v0.0.1 (<base-worktree>/crates/skyzfs-ublk)
+    Checking skynbd-engine v0.0.1 (<base-worktree>/crates/skynbd-engine)
+    Checking skyzfs-ublk-sys v0.0.1 (<base-worktree>/crates/skyzfs-ublk-sys)
+    Checking skyzfs-upload v0.0.1 (<base-worktree>/crates/skyzfs-upload)
+ Documenting skyzfsd v0.0.1 (<base-worktree>/bins/skyzfsd)
+error: unresolved link to `crate::refuse`
+   --> bins/skyzfsd/src/cli.rs:590:45
+    |
+590 |     /// to refuse: the first of its kind ([`crate::refuse`]).
+    |                                             ^^^^^^^^^^^^^ no item named `refuse` in module `skyzfsd`
+    |
+    = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:595:57
+    |
+595 |     /// Where the uploader's thread kills the daemon ([`crate::kill`]).
+    |                                                         ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:600:52
+    |
+600 | /// thread kills the daemon, as `kill -9` would ([`crate::kill`]). N
+    |                                                    ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: public documentation for `upload` links to private item `reserve`
+  --> bins/skyzfsd/src/upload.rs:22:41
+   |
+22 | //! the condition that there is none ([`reserve`]), and goes on to make
+   |                                         ^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+   = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `upload` links to private item `refused_over`
+  --> bins/skyzfsd/src/upload.rs:33:23
+   |
+33 | //! in its message ([`refused_over`]). This module's reading, which the
+   |                       ^^^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `shown`
+  --> bins/skyzfsd/src/upload.rs:67:21
+   |
+67 | //! status shows ([`shown`]).
+   |                     ^^^^^ no item named `shown` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+help: there's a similarly named item `Shown` (notice the capitalization)
+   |
+67 - //! status shows ([`shown`]).
+67 + //! status shows ([`Shown`]).
+   |
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/upload.rs:784:29
+    |
+784 |     /// test hooks takes ([`crate::kill`]); a default build has none.
+    |                             ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: unresolved link to `crate::record`
+   --> bins/skyzfsd/src/upload.rs:807:8
+    |
+807 | /// ([`crate::record`]), nothing otherwise.
+    |        ^^^^^^^^^^^^^ no item named `record` in module `skyzfsd`
+
+error: could not document `skyzfsd`

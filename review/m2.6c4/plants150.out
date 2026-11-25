@@ -1,0 +1,59 @@
+('P1', 'KILLED', 'counted when asked, refusals too', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted')
+('P3', 'KILLED', 'the cut under way at the acceptance chosen', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('P4', 'KILLED', 'opens as itself not checked', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('P5', 'KILLED', 'no new choice once a cut is chosen', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('P6', 'KILLED', 'the commit of another cut fires carry-swap', 'kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('P8', 'KILLED', 'an answer not passed on to the asker', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted')
+('P9', 'KILLED', 'an ask whose asker went still waited on', 'kill::tests::a_carry_hook_passes_the_channel_on_as_it_was upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted')
+('P10', 'KILLED', 'a segment PUT fires under carry-swap', 'kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('P11', 'KILLED', 'any PUT fires carry-put', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M1', 'KILLED', 'publish N armed one acceptance early', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M2', 'KILLED', 'publish N armed one acceptance late', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M3', 'SURVIVED', "C's bound: a cut numbered C chosen", '')
+('M4', 'SURVIVED', "G's bound: a cut of group G not chosen", '')
+('M5', 'KILLED', 'G not checked', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M6', 'SURVIVED', 'C not checked', '')
+('M7', 'SURVIVED', 'a read from a later block is a new reading', '')
+('M8', 'KILLED', 'fires more than once', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M9', 'SURVIVED', 'carry-put does not compare the reading with the chosen cut', '')
+('M10', 'KILLED', 'the post does not read the answers', 'upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted')
+('M11', 'KILLED', 'carry-swap fires before the commit landed', 'kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M12', 'KILLED', 'carry-put fires before the PUT landed', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M13', 'SURVIVED', 'maker does not give the hook to the objects (carry-put never fires in the daemon)', '')
+('M14', 'KILLED', 'maker does not give the hook to the remote', 'kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M15', 'SURVIVED', 'Uploads::begin puts Plain around the uploader even with a carry hook', '')
+('M16', 'SURVIVED', 'an ask still waited on is kept after its asker went', '')
+('M17', 'KILLED', 'carry-put and carry-swap swapped in Carry::new', 'kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it')
+('M18', 'KILLED', 'the parser takes carry-put for carry-swap', 'cli::tests::the_test_hooks_are_parsed_in_a_test_build')
+('M19', 'SURVIVED', 'the offer of no cut forgets the cut offered', '')
+('M20', 'SURVIVED', 'the cut read is not checked to be the one offered', '')
+
+P1   KILLED      counted when asked, refusals too  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted]
+P3   KILLED      the cut under way at the acceptance chosen  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+P4   KILLED      opens as itself not checked  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+P5   KILLED      no new choice once a cut is chosen  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+P6   KILLED      the commit of another cut fires carry-swap  [kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+P8   KILLED      an answer not passed on to the asker  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted]
+P9   KILLED      an ask whose asker went still waited on  [kill::tests::a_carry_hook_passes_the_channel_on_as_it_was upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted]
+P10  KILLED      a segment PUT fires under carry-swap  [kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+P11  KILLED      any PUT fires carry-put  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it]
+M1   KILLED      publish N armed one acceptance early  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+M2   KILLED      publish N armed one acceptance late  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+M3   SURVIVED    C's bound: a cut numbered C chosen
+M4   SURVIVED    G's bound: a cut of group G not chosen
+M5   KILLED      G not checked  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it]
+M6   SURVIVED    C not checked
+M7   SURVIVED    a read from a later block is a new reading
+M8   KILLED      fires more than once  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+M9   SURVIVED    carry-put does not compare the reading with the chosen cut
+M10  KILLED      the post does not read the answers  [upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted]
+M11  KILLED      carry-swap fires before the commit landed  [kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+M12  KILLED      carry-put fires before the PUT landed  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it]
+M13  SURVIVED    maker does not give the hook to the objects (carry-put never fires in the daemon)
+M14  KILLED      maker does not give the hook to the remote  [kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it]
+M15  SURVIVED    Uploads::begin puts Plain around the uploader even with a carry hook
+M16  SURVIVED    an ask still waited on is kept after its asker went
+M17  KILLED      carry-put and carry-swap swapped in Carry::new  [kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it]
+M18  KILLED      the parser takes carry-put for carry-swap  [cli::tests::the_test_hooks_are_parsed_in_a_test_build]
+M19  SURVIVED    the offer of no cut forgets the cut offered
+M20  SURVIVED    the cut read is not checked to be the one offered

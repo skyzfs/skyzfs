@@ -1,0 +1,171 @@
+   Compiling skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `test` profile [optimized] target(s) in 18.05s
+     Running unittests src/lib.rs (<target>/debug/build/skyzfsd/b2c8a466414f9b23/out/skyzfsd-b2c8a466414f9b23)
+
+running 10 tests
+test kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires ... ok
+test kill::tests::r150_control_carry_swap_falls_at_the_carrier_read_after_the_acceptance ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+]
+kill line: kill carry-swap:1: after the commit of cut 7 (group 7), which carries publish 1, landed, before the cut was let go
+ok
+test kill::tests::r150_show_3_a_publish_asked_again_counts_as_publish_2 ... [
+    "put vols/a/seg/1",
+    "kill carry-put:2: after the first segment PUT of cut 6 (group 10), chosen to carry publish 2, landed (vols/a/seg/1)",
+]
+ok
+test kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [74, 187, 66, 179, 9, 2, 59, 26, 241, 8, 238, 51, 174, 237, 75, 3, 54, 85, 93, 12, 195, 240, 219, 234, 93, 6, 104, 119, 40, 168, 240, 90], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: false; kill line: kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CAXCH6CB96RJ67G74D0)
+
+thread 'kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before' (27309) panicked at bins/skyzfsd/src/kill/tests.rs:906:5:
+publish 1 made on cut 7: ["Ok(Began { number: 7, rule: Whole })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Ok(PublishLooked { name: \"t\" })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })", "Ok(Published { name: \"t\", number: 7, commit: [74, 187, 66, 179, 9, 2, 59, 26, 241, 8, 238, 51, 174, 237, 75, 3, 54, 85, 93, 12, 195, 240, 219, 234, 93, 6, 104, 119, 40, 168, 240, 90], found: false })", "Ok(Began { number: 8, rule: Whole })", "Ok(Read { number: 8, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfsd::kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [91, 69, 203, 50, 156, 240, 148, 239, 234, 70, 90, 172, 37, 170, 158, 190, 7, 194, 219, 33, 218, 141, 31, 98, 97, 49, 103, 211, 240, 94, 55, 185], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: false; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+
+thread 'kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before' (27310) panicked at bins/skyzfsd/src/kill/tests.rs:887:5:
+publish 1 made on cut 7: ["Ok(Began { number: 7, rule: Whole })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Ok(PublishLooked { name: \"t\" })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })", "Ok(Published { name: \"t\", number: 7, commit: [91, 69, 203, 50, 156, 240, 148, 239, 234, 70, 90, 172, 37, 170, 158, 190, 7, 194, 219, 33, 218, 141, 31, 98, 97, 49, 103, 211, 240, 94, 55, 185], found: false })", "Ok(Began { number: 8, rule: Whole })", "Ok(Read { number: 8, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfsd::kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test kill::tests::r150_show_b_carry_swap_falls_at_a_later_cut_when_the_carrier_was_committed_before ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Published { name: \"t\", number: 7, commit: [79, 111, 129, 170, 102, 5, 237, 205, 170, 191, 254, 5, 30, 66, 206, 156, 31, 34, 209, 44, 63, 58, 48, 36, 9, 76, 36, 224, 237, 111, 110, 121], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+published on cut 7: false; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+
+thread 'kill::tests::r150_show_b_carry_swap_falls_at_a_later_cut_when_the_carrier_was_committed_before' (27311) panicked at bins/skyzfsd/src/kill/tests.rs:926:5:
+publish 1 made on cut 7: ["Ok(Began { number: 7, rule: Whole })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })", "Ok(PublishLooked { name: \"t\" })", "Ok(Published { name: \"t\", number: 7, commit: [79, 111, 129, 170, 102, 5, 237, 205, 170, 191, 254, 5, 30, 66, 206, 156, 31, 34, 209, 44, 63, 58, 48, 36, 9, 76, 36, 224, 237, 111, 110, 121], found: false })", "Ok(Began { number: 8, rule: Whole })", "Ok(Read { number: 8, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfsd::kill::tests::r150_show_b_carry_swap_falls_at_a_later_cut_when_the_carrier_was_committed_before::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test kill::tests::r150_show_d_carry_swap_falls_at_a_later_cut_when_the_carriers_commit_came_back_failed ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Err(Store(\"refs: backend error: backend error: injected fault (after the operation completed)\"))",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [31, 249, 138, 158, 213, 60, 156, 245, 115, 188, 240, 14, 43, 109, 84, 102, 59, 78, 63, 224, 189, 158, 221, 40, 86, 124, 53, 30, 166, 51, 30, 66], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+log: [
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CCNGAGKRCTA7W2DRZGG",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/34b01b00c2afbfbfc73f58a69f30571a40aa05d3fb79f8372cda03605944a437",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/b33e4c3a9f9077c6fa773181a2ac93e166d40545e04958480682e7f2f93eeddc",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/1ff98a9ed53c9cf573bcf00e2b6d54663b4e3fe0bd9edd28567c351ea6331e42",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/skyzfs/manifest/01M8A17CCNA0BG0VKE94W80M8E",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/snap/01M8A17CCNA0BG0VKE94W80M8E",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CCNX007B6D5GFCS2E31",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/3f4ba34c775dc1d43cb91ca083ead144afd1b13d30841fba08fc1353a66e6a4f",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/8d9518b2fb8000560990ab861a8e9af38118c32a9c134b9fa69cb976489f7c24",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/3ae578110a54e9fbe6b57f8a9998b50409ab8044bd1fa6f2030d42c67a274f04",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go",
+]
+published on cut 7: false; kill line: kill carry-swap:1: after the commit of cut 8 (group 8), which carries publish 1, landed, before the cut was let go
+
+thread 'kill::tests::r150_show_d_carry_swap_falls_at_a_later_cut_when_the_carriers_commit_came_back_failed' (27312) panicked at bins/skyzfsd/src/kill/tests.rs:862:5:
+publish 1 made on cut 7: ["Ok(PublishLooked { name: \"t\" })", "Ok(Began { number: 7, rule: Whole })", "Ok(Read { number: 7, blocks: 1, zeroes: 0 })", "Err(Store(\"refs: backend error: backend error: injected fault (after the operation completed)\"))", "Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })", "Ok(Published { name: \"t\", number: 7, commit: [31, 249, 138, 158, 213, 60, 156, 245, 115, 188, 240, 14, 43, 109, 84, 102, 59, 78, 63, 224, 189, 158, 221, 40, 86, 124, 53, 30, 166, 51, 30, 66], found: false })", "Ok(Began { number: 8, rule: Whole })", "Ok(Read { number: 8, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfsd::kill::tests::r150_show_d_carry_swap_falls_at_a_later_cut_when_the_carriers_commit_came_back_failed::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test kill::tests::r150_show_n_an_unreached_hook_says_nothing ... ok
+test kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment ... steps: [
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 0, zeroes: 1 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 0 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [18, 21, 156, 73, 114, 220, 201, 140, 117, 79, 107, 18, 164, 205, 178, 99, 69, 126, 246, 160, 2, 84, 142, 237, 206, 206, 248, 1, 122, 185, 142, 148], found: false })",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+]
+log: [
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/390e6d806622ea26061b374676a17935b0cf653f352b38b8fc8e66e6fe989dd0",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/c54310d087e4c9a893e3a9b86af7a8cd07ca87b8c7ff6d154a942fe28275b912",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/12159c4972dcc98c754f6b12a4cdb263457ef6a002548eedcecef8017ab98e94",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/skyzfs/manifest/01M8A17CCPCJ1AX68RSRQQHM0N",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/snap/01M8A17CCPCJ1AX68RSRQQHM0N",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CCPG2YE8HWYMKPA4CZD",
+    "kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CCPG2YE8HWYMKPA4CZD)",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/17489a40d20b0c0cd764f7001a0928096595c54931f73429847e0aa975d97dec",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/cbd259f9426d666eb5f392c5d193fc041f65de2d9519b468f6027905f4bc0fd3",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/ce1a0dcec9ca2de3d7cc365ab1a517ac353b73a2a789a87fd5aa54e342ececad",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+]
+published on cut 7: false; kill line: kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8A17CCPG2YE8HWYMKPA4CZD)
+
+thread 'kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment' (27314) panicked at bins/skyzfsd/src/kill/tests.rs:948:5:
+publish 1 made on cut 7: ["Ok(PublishLooked { name: \"t\" })", "Ok(Began { number: 7, rule: Whole })", "Ok(Read { number: 7, blocks: 0, zeroes: 1 })", "Ok(Uploaded { number: 7, rule: Whole, blocks: 0 })", "Ok(Published { name: \"t\", number: 7, commit: [18, 21, 156, 73, 114, 220, 201, 140, 117, 79, 107, 18, 164, 205, 178, 99, 69, 126, 246, 160, 2, 84, 142, 237, 206, 206, 248, 1, 122, 185, 142, 148], found: false })", "Ok(Began { number: 8, rule: Whole })", "Ok(Read { number: 8, blocks: 1, zeroes: 0 })", "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfsd::kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test upload::tests::r150_the_carry_hook_skips_an_ask_whose_asker_went_before_it_was_sent ... ok
+
+failures:
+
+failures:
+    kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before
+    kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before
+    kill::tests::r150_show_b_carry_swap_falls_at_a_later_cut_when_the_carrier_was_committed_before
+    kill::tests::r150_show_d_carry_swap_falls_at_a_later_cut_when_the_carriers_commit_came_back_failed
+    kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment
+
+test result: FAILED. 5 passed; 5 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p skyzfsd --lib`
+cargo test exit 101
+repeat upload::tests::r150_the_carry_hook_skips_an_ask_whose_asker_went_before_it_was_sent: 3000 runs, 0 failed
+repeat upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted: 3000 runs, 2 failed

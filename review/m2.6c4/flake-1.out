@@ -1,0 +1,26 @@
+
+running 1 test
+upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted --- FAILED
+
+failures:
+
+---- upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted stdout ----
+
+thread 'upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted' (11737) panicked at bins/skyzfsd/src/upload/tests.rs:1718:5:
+assertion `left == right` failed: not taken
+  left: Some(Pending)
+ right: Some(Unknown)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<core::option::Option<skyzfs_upload::publish::Progress>, core::option::Option<skyzfs_upload::publish::Progress>>
+   4: <skyzfsd::upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.10s
+

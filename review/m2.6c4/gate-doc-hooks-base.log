@@ -1,0 +1,39 @@
+    Checking skyzfs-local v0.0.1 (<base-worktree>/crates/skyzfs-local)
+    Checking skyzfs-ublk v0.0.1 (<base-worktree>/crates/skyzfs-ublk)
+    Checking skyzfs-upload v0.0.1 (<base-worktree>/crates/skyzfs-upload)
+    Checking skyzfs-ublk-sys v0.0.1 (<base-worktree>/crates/skyzfs-ublk-sys)
+ Documenting skyzfsd v0.0.1 (<base-worktree>/bins/skyzfsd)
+error: public documentation for `upload` links to private item `reserve`
+  --> bins/skyzfsd/src/upload.rs:22:41
+   |
+22 | //! the condition that there is none ([`reserve`]), and goes on to make
+   |                                         ^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+   = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `upload` links to private item `refused_over`
+  --> bins/skyzfsd/src/upload.rs:33:23
+   |
+33 | //! in its message ([`refused_over`]). This module's reading, which the
+   |                       ^^^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `shown`
+  --> bins/skyzfsd/src/upload.rs:67:21
+   |
+67 | //! status shows ([`shown`]).
+   |                     ^^^^^ no item named `shown` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+   = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+help: there's a similarly named item `Shown` (notice the capitalization)
+   |
+67 - //! status shows ([`shown`]).
+67 + //! status shows ([`Shown`]).
+   |
+
+error: could not document `skyzfsd`

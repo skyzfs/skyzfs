@@ -1,0 +1,17 @@
+    Checking skynbd-types v0.0.1 (<worktree>/crates/skynbd-types)
+    Checking skyzfs-blk v0.0.1 (<worktree>/crates/skyzfs-blk)
+    Checking skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+    Checking skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+    Checking skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+    Checking skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+    Checking skynbd-tree v0.0.1 (<worktree>/crates/skynbd-tree)
+    Checking skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Checking skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+    Checking skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+    Checking skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+    Checking skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Checking skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `dev` profile [optimized] target(s) in 9.42s
+exit 0

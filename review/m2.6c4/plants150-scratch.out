@@ -1,0 +1,21 @@
+('M3', 'KILLED', "C's bound: a cut numbered C chosen", 'kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires')
+('M4', 'KILLED', "G's bound: a cut of group G not chosen", 'kill::tests::r150_a_cut_under_way_read_on_after_the_acceptance_is_not_chosen kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires kill::tests::r150_control_carry_swap_falls_at_the_carrier_read_after_the_acceptance kill::tests::r150_show_3_a_publish_asked_again_counts_as_publish_2')
+('M6', 'KILLED', 'C not checked', 'kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires')
+('M7', 'KILLED', 'a read from a later block is a new reading', 'kill::tests::r150_a_cut_under_way_read_on_after_the_acceptance_is_not_chosen kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before')
+('M9', 'SURVIVED', 'carry-put does not compare the reading with the chosen cut', '')
+('M13', 'KILLED', 'maker does not give the hook to the objects (carry-put never fires in the daemon)', 'kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment')
+('M15', 'SURVIVED', 'Uploads::begin puts Plain around the uploader even with a carry hook', '')
+('M16', 'SURVIVED', 'an ask still waited on is kept after its asker went', '')
+('M19', 'SURVIVED', 'the offer of no cut forgets the cut offered', '')
+('M20', 'SURVIVED', 'the cut read is not checked to be the one offered', '')
+
+M3   KILLED      C's bound: a cut numbered C chosen  [kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires]
+M4   KILLED      G's bound: a cut of group G not chosen  [kill::tests::r150_a_cut_under_way_read_on_after_the_acceptance_is_not_chosen kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires kill::tests::r150_control_carry_swap_falls_at_the_carrier_read_after_the_acceptance kill::tests::r150_show_3_a_publish_asked_again_counts_as_publish_2]
+M6   KILLED      C not checked  [kill::tests::r150_bounds_a_cut_numbered_c_plus_1_of_group_g_fires]
+M7   KILLED      a read from a later block is a new reading  [kill::tests::r150_a_cut_under_way_read_on_after_the_acceptance_is_not_chosen kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before kill::tests::r150_show_a_carry_swap_falls_at_the_next_cut_when_the_carrier_was_read_before]
+M9   SURVIVED    carry-put does not compare the reading with the chosen cut
+M13  KILLED      maker does not give the hook to the objects (carry-put never fires in the daemon)  [kill::tests::r150_show_a_carry_put_falls_at_the_next_cut_when_the_carrier_was_read_before kill::tests::r150_show_z_carry_put_passes_over_a_carrier_with_no_segment]
+M15  SURVIVED    Uploads::begin puts Plain around the uploader even with a carry hook
+M16  SURVIVED    an ask still waited on is kept after its asker went
+M19  SURVIVED    the offer of no cut forgets the cut offered
+M20  SURVIVED    the cut read is not checked to be the one offered
