@@ -81,6 +81,7 @@ def stall(lines, t0, t1, slow=SLOW):
     """The line for the window [t0, t1], or None when the log has no start."""
     started = None
     last = None
+    ended = None
     longest = None
     before = 0.0
     writes = 0
@@ -105,11 +106,16 @@ def stall(lines, t0, t1, slow=SLOW):
                 if sec + 1 <= t0:
                     before = max(before, lat)
             elif f[0] == "end":
-                last = max(last or 0.0, float(f[1]))
+                ended = float(f[1])
         except (IndexError, ValueError):
             continue
     if started is None:
         return None
+    # The end line is written after the last write: where there is one,
+    # the log runs to it. The last second's row, written at the end,
+    # counts to that second's end, which the writer may not have reached.
+    if ended is not None:
+        last = ended
     shown = "%.3f" % longest if longest is not None else "<%g" % slow
     # Writes are counted in the window's whole seconds: none in a window
     # that holds no whole second.

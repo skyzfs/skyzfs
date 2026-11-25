@@ -70,6 +70,15 @@ class Stall(unittest.TestCase):
         self.assertFalse(dsync_writer.stall(log("start\t90.0", "slow\t108.0\t2.000000"), 100.0, 110.0)
                          .startswith("NOT"))
 
+    def test_the_end_line_bounds_a_last_second_cut_short(self):
+        # The last second is written at the writer's end, part way through
+        # it: the log runs to the end line, not to the second's end.
+        lines = log("start\t90.0", "sec\t100\t40\t0.001", "end\t100.200000\t41")
+        self.assertEqual(dsync_writer.stall(lines, 100.1, 100.8),
+                         "NOT COVERED: the log runs from 90.000 to 100.200, the window from 100.100 to 100.800; "
+                         "longest=<0.01 writes=- before=0.000")
+        self.assertFalse(dsync_writer.stall(lines, 99.5, 100.2).startswith("NOT"))
+
     def test_a_window_with_no_whole_second(self):
         lines = log("start\t90.0", "sec\t100\t40\t0.001", "end\t111.0\t9")
         self.assertEqual(dsync_writer.stall(lines, 100.2, 101.1), "longest=<0.01 writes=- before=0.000")
