@@ -44,3 +44,16 @@ B10	KILLED	scale: df dropped	(shell: FAIL: scale's df: got '0', want '2')
 B11	KILLED	scale: the start's budget check dropped	(shell: FAIL: budget spent: not run: got '0', want '1')
 W1	SURVIVED	writing: the stall's window empty (t0 t0)
 W3	SURVIVED	stop_bg: SIGKILL in place of SIGTERM (no end line)
+W4	SURVIVED	writing: no margin before or after the take
+W5	KILLED	writing: no 60 s for the writer to stop	(shell: FAIL: writer beside snapshot: its stall: got 'the writ', want 'longest=')
+W6	KILLED	writing: about.txt line dropped	(shell: FAIL: writer beside snapshot: said: got '0', want '1')
+W7	KILLED	scale: no writer beside take-cli	(shell: FAIL: writer beside take-cli: its log: got '', want 'start')
+W8	KILLED	writing: the writer's file not in DIR (in OUT)	(shell: FAIL: writer: its file in the root: got 'no', want 'yes')
+K1	KILLED	keep: secs dropped	(shell: FAIL: caught: secs: got '', want '1')
+P1	KILLED	stall: only writes that began in the window	(python: FAIL: test_a_write_across_the_whole_window (__main__.Stall.test_a_write_across_the_whole_w)
+P2	KILLED	write: O_DSYNC dropped	(python: FAIL: test_writes_until_told_and_logs_its_end (__main__.Writer.test_writes_until_told_and_)
+P3	KILLED	write: no handler for SIGTERM	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
+P4	SURVIVED	write: slow is > SLOW, not >=
+P5	SURVIVED	write: the last second's line dropped
+P6	KILLED	stall: before from the seconds dropped	(python: FAIL: test_writes_counted_in_whole_seconds_of_the_window (__main__.Stall.test_writes_count)
+P7	KILLED	write: no end line	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
