@@ -1879,8 +1879,8 @@ def course_wants(name, rdir, status):
                 bad.append(f"{step}: upload_checked {kind!r} once the mismatch was counted, not row_v1 (or "
                            "matched, the whole cut after it)")
             notes.append(f"{step}: upload_checked {kind!r} once the mismatch was counted"
-                         + (": the whole cut after it was checked first, so this step's own word (row_v1) was "
-                            "not seen" if kind == 'matched' else ''))
+                         + (": the whole cut after it was checked first, so this step's own word was not "
+                            "seen, whatever it was (row_v1 is the right one)" if kind == 'matched' else ''))
             if step == 'v1in' and (len(nb_heads) != 1 or first['head'] in nb_heads):
                 # The move is what v1in adds to v1: without it the step is
                 # a second v1 (the review of #137, G-d).

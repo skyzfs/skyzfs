@@ -44,7 +44,9 @@ caught at another stage, fails the run:
   passes. Design §9's criterion asks for the snapshot's content, not a
   pool that imports, and this is why.
 - lacks: the published cut without the last write before its uberblock
-  write that holds a block the cut reaches.
+  write whose withholding changes a copy of a block the cut reaches. A
+  write that changes none (it puts back the bytes already there) is
+  passed over, and the line names it, as the cut rig's withheld does.
 - later: the published cut with the first write after its instant that
   overlaps a block it reaches, or, where none does (ZFS writes a new
   group's blocks to free space), with the first uberblock write of a
@@ -458,15 +460,17 @@ def main():
         nb.put(f'{name}-early', ck.image, 't')
         got['early'] = (nb.verify(f'{name}-early', ref, snap, want, damaged=True),
                         f"cut {early['n']} (group {early['txg']})")
-        v = cut_check.pick_withheld(ck.records, cut, bps, cut_check.withholding_changes(ck.records, ck.read, ck.base_read, cut, bps))
+        v, same = cut_check.withheld_pick(ck, cut, bps)
+        passed = cut_check.passed_over(same)
         if v is None:
-            got['lacks'] = (None, 'no write before the uberblock write holds a block the cut reaches')
+            got['lacks'] = (None, 'no write before the uberblock write changes a copy of a block the cut '
+                            f'reaches{passed}')
         else:
             image_at(0, [i for i in range(cut['prefix']) if i != v])
             nb.put(f'{name}-lacks', ck.image, 't')
             r = ck.records[v]
             got['lacks'] = (nb.verify(f'{name}-lacks', ref, snap, want, damaged=True),
-                            f"without record {v} ({r['bytes']} bytes at {r['offset']})")
+                            f"without record {v} ({r['bytes']} bytes at {r['offset']}){passed}")
         v, kind = cut_check.pick_later(ck.records, cut, bps), 'a write over a block the cut reaches'
         if v is None:
             v, kind = later_uberblock(ubs, cut), 'an uberblock of a later group'

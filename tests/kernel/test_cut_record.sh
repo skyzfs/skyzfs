@@ -303,5 +303,91 @@ is "rec_bound: paused before the create, the writes, a wait, then the status whi
     "$(bound_trace | grep -c '^dd$') $(bound_trace | head -n 1) $(bound_trace | tail -n 5 | tr '\n' ';')" \
     "10 create paused=yes z 60 zpool sync p;sleep 0.3;status status-bound-held.txt paused=yes;load 2;export;"
 
+# status_until reads the status again, with nothing done to the pool,
+# until a count the daemon posts on its own shows (run 45529175986: the
+# peer refused, and control_peer 0 in the status read right after it).
+su_fn=$(sed -n '/^status_until() {$/,/^}$/p' "$SCRIPT")
+is "status_until is in the script" "$([ -n "$su_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are status_until's, run through eval
+until_trace() { ( # the count each look reads, the limit
+    RDIR=$(mktemp -d); NAME=pchannel; looks=0
+    read -r -a counts <<< "$1"
+    ustatus() { echo "control_peer ${counts[$looks]}" > "$RDIR/$1"; looks=$((looks + 1)); }
+    skey() { sed -n "s/^$2 //p" "$RDIR/$1" | head -n 1; }
+    sleep() { :; }
+    log() { echo "log $*"; }
+    eval "$su_fn"
+    status_until s.txt control_peer 1 "$2"; rc=$?
+    echo "$rc looks=$looks file=$(cat "$RDIR/s.txt")"; rm -rf "${RDIR:?}"
+) 2>&1; }
+is "status_until: the count shows at the third look" "$(until_trace "0 0 1 1" 10)" "0 looks=3 file=control_peer 1"
+is "status_until: a count already there is one look" "$(until_trace "2" 10)" "0 looks=1 file=control_peer 2"
+is "status_until: a count that never shows is 1, said, after the last look" \
+    "$(until_trace "0 0" 0)" "log pchannel: the status's control_peer was 0, not at least 1, 0 s on
+1 looks=1 file=control_peer 0"
+is "pchannel waits for the peer's count before it reads the channel's status" \
+    "$(sed -n '/^rec_pchannel() {$/,/^}$/p' "$SCRIPT" | grep -A3 '^    ppeer$' | grep -c '^    status_until channel-status.txt control_peer 1 10 || true$')" 1
+
+# row_past reads node B's row until it names a cut counted after C of
+# group G or later (the premises of prewind and pkill, #139's B2 and B3),
+# nudging the pool between looks only when asked to.
+rp_fn=$(sed -n '/^row_past() {$/,/^}$/p' "$SCRIPT")
+is "row_past is in the script" "$([ -n "$rp_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are row_past's, run through eval
+rowpast_trace() { ( # the rows each look reads ("N G" or "-"), C, G, the limit, nudge
+    RDIR=$(mktemp -d); NAME=course; MNT=$RDIR; POOL=p; looks=0
+    read -r -a rows <<< "$1"
+    nbrow() { local r=${rows[$looks]}; looks=$((looks + 1)); [ "$r" = - ] && : > "$RDIR/$1" ||
+        printf 'row\tS\t%s\t%s\n' "${r%,*}" "${r#*,}" > "$RDIR/$1"; }
+    rowcut() { awk -F '\t' '$1 == "row" && NF == 4 { print $2, $3, $4 }' "$RDIR/$1"; }
+    dd() { echo dd; }
+    z() { echo "z $*"; }
+    sleep() { :; }
+    log() { echo "log $*"; }
+    eval "$rp_fn"
+    row_past r.txt "$2" "$3" "$4" ${5:+"$5"}; rc=$?
+    echo "$rc looks=$looks"; rm -rf "${RDIR:?}"
+) 2>&1; }
+is "row_past: the third row is past C and G" "$(rowpast_trace "7,50 8,49 8,50" 7 50 10)" "0 looks=3"
+is "row_past: nudges between looks when asked, not after the last" \
+    "$(rowpast_trace "7,50 8,50" 7 50 10 nudge)" "dd
+z 60 zpool sync p
+0 looks=2"
+is "row_past: a cut at C is not past it, and the limit is 1, said" \
+    "$(rowpast_trace "7,60" 7 50 0)" "log course: node B's row names cut 7 of group 60 (S), not one after 7 of group 50 or later, 0 s on
+1 looks=1"
+is "row_past: no row at all is said as none" \
+    "$(rowpast_trace "-" 7 50 0)" "log course: node B's row names cut none of group none, not one after 7 of group 50 or later, 0 s on
+1 looks=1"
+
+# asked waits for the agent's publish of T to have its answer.
+ak_fn=$(sed -n '/^asked() {$/,/^}$/p' "$SCRIPT")
+is "asked is in the script" "$([ -n "$ak_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # run through eval
+asked_trace() { ( # agent.tsv's text, T
+    RDIR=$(mktemp -d); printf '%b' "$1" > "$RDIR/agent.tsv"
+    sleep() { :; }
+    eval "$ak_fn"
+    asked "$2" 0; echo "rc=$?"; rm -rf "${RDIR:?}"
+) 2>&1; }
+is "asked: an answered publish of r1" "$(asked_trace '1\t2\tpublish --name r1 --attachment a\t0\taccepted\n' r1)" "rc=0"
+is "asked: a publish of r1 with no answer yet" "$(asked_trace '1\t2\tpublish --name r1 --attachment a\t0\t\n' r1)" "rc=1"
+is "asked: another name's, or r1's look, is not it" \
+    "$(asked_trace '1\t2\tpublish --name r12 --a\t0\taccepted\n1\t2\tprogress --name r1\t0\tpending\n' r1)" "rc=1"
+
+# The order the premises need (#139's B2 and B3).
+order_of() { sed -n "/^$1() {\$/,/^}\$/p" "$SCRIPT" | grep -nE "$2" | cut -d: -f2- | sed 's/^ *//; s/ .*//' | tr '\n' ' '; }
+is "prewind: asks, waits for the answer, brings the store back, waits for the rewind cut's commit, then nudges" \
+    "$(order_of rec_prewind '^    (pflow|asked|bash -c "\$S3_UP"|row_past|rm -f "\$WORK/watch.pause"|while kill)')" \
+    "pflow asked bash row_past rm while "
+is "prewind: the agent does not sync groups itself" \
+    "$(sed -n '/^rec_prewind() {$/,/^}$/p' "$SCRIPT" | grep -c 'pflow r1 .*--sync')" 0
+is "pkill: withdraws, waits for a commit past tw's G, reads the status, then asks tk and kills" \
+    "$(order_of rec_pkill '^    (pask tw-withdraw|row_past|ustatus|pflow tk|kill_serve)')" \
+    "pask row_past ustatus pflow kill_serve "
+is "pchannel: records the socket's mode before the rig widens it" \
+    "$(sed -n '/^ppeer() {$/,/^}$/p' "$SCRIPT" | grep -nE '^    (stat -c %a "\$sock"|chmod 0666)' | cut -d: -f2 | sed 's/^ *//; s/ .*//' | tr '\n' ' ')" \
+    "stat chmod "
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

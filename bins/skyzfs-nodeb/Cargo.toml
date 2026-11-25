@@ -25,3 +25,6 @@ blake3 = { workspace = true }
 # #134, G3), so that the two cannot drift.
 skyzfs-local = { workspace = true }
 skyzfs-upload = { workspace = true }
+# A store that moves head while node B commits (the review of #137, L1).
+async-trait = { workspace = true }
+bytes = { workspace = true }

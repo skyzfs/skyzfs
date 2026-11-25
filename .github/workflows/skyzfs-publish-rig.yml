@@ -1,0 +1,197 @@
+name: skyzfs-publish-rig
+
+# The channel rig (M2.T3's last stage; design §5.2, "A snapshot is
+# published by a cut of the pool's present history", and §5.4): the
+# daemon's publish of a snapshot, asked through its channel (M2.5-2's
+# control socket) by a stand-in for the agent (tests/kernel/publish_agent.py),
+# on a pool whose device skyzfsd serves with its uploads to an object
+# store (MinIO), as the cut rig's upload stage records it
+# (tests/kernel/cut-record.sh, CUT_UPLOAD=1, the publish courses by name).
+# tests/kernel/publish_check.py judges each answer against its table
+# `EXPECTED`, and node B (bins/skyzfs-nodeb, which decodes the snapshot's
+# row itself) reads each snapshot published: its ref, its row, its
+# manifest, and the snapshot itself imported read-only from the bucket
+# (tests/kernel/nodeb_check.py's stages). Each line of the summary says
+# what it rests on: the kernel and the server, the server, the rig (a
+# premise of the course), or the check (a control).
+#
+# The courses: pplain (P1: a plain publish, asking twice, a stale
+# attachment or state, a cut below G, an expiry, a withdrawal and a
+# publish asked anew, a name taken), prewind (P2: a rewind import with
+# the abandoned history's cuts held while object storage is down),
+# pkill, pkillman, pkillpub (P3: kills while a publish pends, after a
+# withdrawal, before and after the publish's transaction), pchannel
+# (P4: no upload, the greeting, a malformed request, a name, another
+# user's peer, the channel's counts).
+#
+# Exit 1 is a verdict against the daemon, exit 2 the rig's own error.
+# Read the summary's table, not the colour.
+#
+# Runs on a pull request that touches the rig's files, the daemon, its
+# uploader or node B (ubuntu-26.04), on a push of the rig's files to a
+# testing branch (ubuntu-26.04), and by dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04"]'
+      courses:
+        description: "courses, separated by spaces (pplain prewind pkill pkillman pkillpub pchannel); empty: all"
+        default: ""
+      daemon_ref:
+        description: "build skyzfsd from this commit (40 hex digits) and not from the checkout, under the checkout's rig. Empty: the checkout"
+        default: ""
+  pull_request:
+    paths:
+      - tests/kernel/publish_*
+      - tests/kernel/test_publish_*
+      - tests/kernel/cut-record.sh
+      - tests/kernel/nodeb_check.py
+      - tests/kernel/cut_daemon_check.py
+      - tests/lib/**
+      - bins/skyzfs-nodeb/**
+      - bins/skyzfsd/**
+      - crates/skyzfs-upload/**
+      - crates/skyzfs-control/**
+      - crates/skyzfs-local/**
+      - crates/skynbd-engine/**
+      - crates/skynbd-refs/**
+      - crates/skynbd-store/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - .github/workflows/skyzfs-publish-rig.yml
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/publish_*
+      - .github/workflows/skyzfs-publish-rig.yml
+
+concurrency:
+  group: publish-rig-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the agent's and the check's logic (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_publish_agent.py -v
+      - run: python3 tests/kernel/test_publish_check.py -v
+      - run: python3 tests/kernel/test_publish_check_main.py -v
+      - run: bash tests/kernel/test_cut_record.sh
+
+  plan:
+    name: which jobs
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.plan.outputs.images }}
+    steps:
+      - id: plan
+        env:
+          IMAGES: ${{ inputs.images || '' }}
+        run: |
+          i=${IMAGES:-'["ubuntu-26.04"]'}
+          python3 -c 'import json, sys
+          v = json.loads(sys.argv[1])
+          ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
+          assert isinstance(v, list) and v and all(x in ok for x in v), v' "$i"
+          echo "images=$i" >> "$GITHUB_OUTPUT"
+
+  record:
+    name: publish through skyzfsd and check, ${{ matrix.image }}
+    needs: plan
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS and the ublk driver
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p pub-out
+          if ! net_try sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy libdevmapper-dev libudev-dev libclang-dev' > pub-out/setup-apt.log 2>&1; then
+            tail -n 40 pub-out/setup-apt.log
+            { echo "## Channel rig: the rig's own error, not a verdict"; echo
+              echo "Installing the packages failed in $NET_TRIES tries: $(net_why pub-out/setup-apt.log)"; } > pub-out/summary.md
+            exit 2
+          fi
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          if ! sudo modprobe ublk_drv; then
+            { echo "## Channel rig: the rig's own error, not a verdict"; echo
+              echo "No ublk driver on this kernel ($(uname -r))."; } > pub-out/summary.md
+            exit 2
+          fi
+          uname -r; sudo zfs version
+      # pgsty/minio, pinned as in the cut rig's upload stage.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && exit 0 || sleep 1
+          done
+          { echo "## Channel rig: the rig's own error, not a verdict"; echo
+            echo "MinIO did not answer in 60 s."; docker logs minio 2>&1 | tail -n 20; } > pub-out/summary.md
+          exit 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cut-daemon-${{ matrix.image }}
+      - name: Build skyzfsd with its test hooks
+        env:
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+        run: |
+          if [ -z "$DAEMON_REF" ]; then
+            cargo build --release --locked -p skyzfsd --features test-hooks
+            echo "SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          else
+            [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+            git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+            (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+            echo "SKYZFSD=$RUNNER_TEMP/daemon-src/target/release/skyzfsd" >> "$GITHUB_ENV"
+            { echo "## The daemon"; echo; echo "Built from $DAEMON_REF (input daemon_ref), not the checkout."; echo; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Build skyzfs-nodeb
+        run: cargo build --locked -p skyzfs-nodeb
+      - name: Publish through skyzfsd and check
+        env:
+          COURSES: ${{ inputs.courses || '' }}
+        run: |
+          read -r -a recs <<< "${COURSES:-pplain prewind pkill pkillman pkillpub pchannel}"
+          for r in "${recs[@]}"; do [[ $r =~ ^p[a-z]+$ ]] || { echo "::error::not a publish course: $r"; exit 64; }; done
+          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
+            CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" \
+            SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
+            SKZ_S3_BUCKET="skyzfs-pub-${{ github.run_id }}-${{ github.run_attempt }}" \
+            AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
+            CUT_CHECK="python3 $PWD/tests/kernel/publish_check.py" \
+            bash tests/kernel/cut-record.sh "$PWD/pub-out" /mnt/skz-cut "${recs[@]}"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX pub-out 2>/dev/null || true
+          if [ -s pub-out/summary.md ]; then cat pub-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 tests/kernel/cut_summary.py pub-out "${{ matrix.image }}" "Channel rig (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
+            || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: publish-rig-${{ matrix.image }}
+          path: pub-out/
+          retention-days: 90
