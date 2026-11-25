@@ -274,7 +274,7 @@ class Premises(unittest.TestCase):
             ((S, 11, 49), 12, 'below G = 50'),
             ((S, 10, 52), 11, 'opens as itself'),
             ((S, 12, 53), 13, 'no cut line of number 12'),
-            ((S, 9, 51), 8, 'before cut 9 was committed'),
+            ((S, 10, 52), 9, 'opens as itself'),
         ]
         for cut, named, why in cases:
             bad = pc.rewind_committed(self.CUTS, cut, R1, named)
@@ -282,6 +282,13 @@ class Premises(unittest.TestCase):
 
     def test_r1_made_by_the_rewind_cut_itself_is_left_to_the_verdict(self):
         self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 9), [])
+        # An earlier cut that opens only as a rewind: the verdict too (D1).
+        self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 8), [])
+
+    def test_r1_made_by_an_earlier_cut_that_opens_as_itself_is_no_case(self):
+        cuts = [(8, 50, True, '1', 5), (9, 51, False, '1', 6)]
+        self.assertEqual(pc.rewind_committed(cuts, (S, 9, 51), R1, 8),
+                         ['r1 was made by cut 8, which opens as itself, before cut 9 was committed'])
         self.assertIn('opens only with a rewind', pc.judge_cut(self.CUTS, {'number': 9, 'group': 51})[0])
 
     def test_a_cut_number_seen_twice_counts_as_itself_if_either_line_says_so(self):

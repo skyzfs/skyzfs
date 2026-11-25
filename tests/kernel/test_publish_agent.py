@@ -365,11 +365,12 @@ class Raw(unittest.TestCase):
         cases = [
             (b'', ''),
             (b'skyzfs-control 2\nrefused peer x\n', 'refused peer x'),
-            # A greeting of another version is not the greeting: its line is
-            # the answer, which the check takes for no answer it expects.
-            (b'skyzfs-control 1\nrefused peer x\n', 'skyzfs-control 1'),
             (b'skyzfs-control 2\nrefused peer x\nmore\n', 'refused peer x'),
-            (b'cuts 1\n', 'cuts 1'),
+            # No greeting, or another version's: skyzfsd's own ask refuses
+            # it (#139's second look, D2).
+            (b'cuts 1\n', 'no answer line: cuts 1\\n'),
+            (b'refused peer x\nmore\n', 'no answer line: refused peer x\\nmore\\n'),
+            (b'skyzfs-control 1\nrefused peer x\n', 'no answer line: skyzfs-control 1\\nrefused peer x\\n'),
             (b'skyzfs-control 2\nrefused peer this daem', 'no answer line: skyzfs-control 2\\nrefused peer this daem'),
             (b'refused peer this daem', 'no answer line: refused peer this daem'),
             (b'skyzfs-control 2\n', 'no answer line: skyzfs-control 2\\n'),
@@ -377,6 +378,48 @@ class Raw(unittest.TestCase):
         ]
         for got, want in cases:
             self.assertEqual(pa.answer_of(got), want, got)
+
+    def test_a_daemon_that_never_answers_is_a_verdict(self):
+        """Connected, nothing written and no close within the limit: the
+        answer `no answer within ... s`, not the rig's error (#139's
+        second look, D3)."""
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'vol-x'))
+            path = os.path.join(d, 'vol-x', 'control')
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.listen(1)
+            held = []
+            done = threading.Event()
+
+            def serve():
+                c, _ = srv.accept()
+                held.append(c)
+                done.wait(10)
+                c.close()
+            th = threading.Thread(target=serve, daemon=True)
+            th.start()
+            log = os.path.join(d, 'agent.tsv')
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    answer = pa.raw(d, log, 'peer', self.REQUEST, limit=0.3)
+            finally:
+                done.set()
+                th.join(10)
+                srv.close()
+            self.assertEqual(answer, 'no answer within 0.3 s')
+            self.assertIn('did not close within 0.3 s (0 bytes written)', err.getvalue())
+
+    def test_a_socket_with_no_listener_is_the_rigs_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'vol-x'))
+            path = os.path.join(d, 'vol-x', 'control')
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.close()  # the file stays, with nobody listening: ECONNREFUSED
+            with self.assertRaises(pa.RigError):
+                pa.raw(d, os.path.join(d, 'agent.tsv'), 'peer', self.REQUEST)
 
     def test_a_cut_short_answer_is_served_as_no_answer_line(self):
         with tempfile.TemporaryDirectory() as d:

@@ -181,7 +181,7 @@ class Agent:
         return self.ask('look', '--name', name)
 
 
-def raw(run, log, label, data, clock=time.monotonic_ns):
+def raw(run, log, label, data, clock=time.monotonic_ns, limit=60):
     """Send `data` as given to the volume's socket (the one `control`
     under RUN) and read the answer: for the requests that `skyzfsd`'s
     commands would not send (another greeting, a malformed line).
@@ -192,21 +192,24 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
     with ECONNRESET and not EOF. As `skyzfsd`'s own `ask` does, the
     answer is read all the same.
 
-    The answer is the line after the greeting, and only a whole line
-    (ended by a newline), as `ask` takes it: anything else the daemon
-    wrote before it closed is answered `no answer line: ...`, which no
-    course allows. Once the connection is made, a daemon that closes
-    with nothing written (EOF, a reset or a broken pipe) answers `''`,
-    which no course allows either: the daemon's fault, and a verdict,
-    whether it read the request or not (the error goes to stderr). The
-    rig's error (RigError, exit 2) is a socket it cannot reach and a
-    read that times out."""
+    The answer is the whole line (ended by a newline) after the greeting
+    HELLO (`skyzfs-control 2`), as `ask` takes it: anything else the daemon wrote
+    before it closed, a line with no greeting before it among them, is
+    answered `no answer line: ...`, which no course allows. Once the
+    connection is made, a daemon that closes with nothing written (EOF,
+    a reset or a broken pipe) answers `''`, and one that writes nothing
+    and does not close within LIMIT seconds answers `no answer within
+    LIMIT s`: neither is allowed, and each is the daemon's fault and a
+    verdict, whether it read the request or not (the error goes to
+    stderr). The rig's error (RigError, exit 2) is a socket it cannot
+    connect to, a connect that times out, and anything else."""
     path = socket_path(run)
     t0 = clock()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(60)
+    s.settimeout(limit)
     got = b''
     err = None
+    late = False
     try:
         s.connect(path)
         try:
@@ -220,10 +223,15 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
             except ConnectionResetError as e:
                 err = err or e
                 break
+            except TimeoutError:
+                late = True
+                break
             if not b:
                 break
             got += b
-        if not got and err is not None:
+        if late:
+            print(f'raw {label}: the daemon did not close within {limit} s ({len(got)} bytes written)', file=sys.stderr)
+        elif not got and err is not None:
             print(f'raw {label}: the daemon closed with nothing written: {err}', file=sys.stderr)
     except OSError as e:
         with open(log, 'a') as f:
@@ -231,7 +239,7 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
         raise RigError(f'the socket {path}: {e}') from None
     finally:
         s.close()
-    answer = answer_of(got)
+    answer = f'no answer within {limit} s' if late and not got else answer_of(got)
     with open(log, 'a') as f:
         f.write(f'{t0}\t{clock()}\traw {label}\t{1 if answer.startswith("refused ") else 0}\t{answer}\n')
     return answer
@@ -239,14 +247,14 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
 
 def answer_of(got):
     """The bytes a daemon wrote -> the answer: the first whole line after
-    the greeting (or the first whole line, where it is not the
-    greeting), '' for nothing at all, and `no answer line: ...` for
-    bytes with no whole answer line in them."""
+    the greeting, '' for nothing at all, and `no answer line: ...` for
+    anything else: bytes with no whole line after a whole greeting, a
+    first line that is not the greeting (skyzfsd's own `ask` refuses
+    it)."""
     text = got.decode('utf-8', 'replace')
     whole = text.split('\n')[:-1]
-    rest = whole[1:] if whole and whole[0] == HELLO else whole
-    if rest:
-        return rest[0]
+    if len(whole) > 1 and whole[0] == HELLO:
+        return whole[1]
     if not text:
         return ''
     return 'no answer line: ' + text.replace('\\', '\\\\').replace('\n', '\\n').replace('\t', '\\t')[:120]

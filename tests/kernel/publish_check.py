@@ -365,10 +365,12 @@ def rewind_committed(cuts, cut, req, named):
     row named once the store was back, must be of the state asked,
     counted after C, of group G or later, and one whose `cut` line says
     it opens only as a rewind; NAMED, the number of the cut that made
-    r1, must not be an earlier one (then that cut was never passed over).
-    r1 made by CUT itself is no premise's failure: it is the fault the
-    course is there to catch, and the row's pin (judge_cut) says so as a
-    verdict -> [what does not hold]."""
+    r1, must not be an earlier one that opens as itself (then CUT was
+    never offered to the publish). r1 made by CUT, or by an earlier cut
+    that opens only as a rewind, is no premise's failure: it is the fault
+    the course is there to catch, and the row's pin (judge_cut) says so
+    as a verdict, which a premise after it must not turn into the rig's
+    error (#139's second look, D1) -> [what does not hold]."""
     if cut is None:
         return ['node B\'s row named no cut after the store came back']
     state, number, group = cut
@@ -384,8 +386,8 @@ def rewind_committed(cuts, cut, req, named):
         bad.append(f'no cut line of number {number} and group {group} in the request log')
     elif any(c[2] for c in same):
         bad.append(f'cut {number} (group {group}) opens as itself: no daemon would pass it over')
-    if named is not None and named < number:
-        bad.append(f'r1 was made by cut {named}, before cut {number} was committed')
+    if named is not None and named < number and any(c[0] == named and c[2] for c in cuts):
+        bad.append(f'r1 was made by cut {named}, which opens as itself, before cut {number} was committed')
     return bad
 
 

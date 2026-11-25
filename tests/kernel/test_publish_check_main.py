@@ -359,6 +359,25 @@ class Pins(unittest.TestCase):
         rc, lines = run_course('pkillpub', change)
         self.assertEqual((rc, lines['pin_p1_found'][0]), (1, 'FAILED'))
 
+    def test_r1_made_by_an_earlier_rewind_only_cut_is_a_verdict_not_the_rig_s_error(self):
+        """#139's second look, D1: the fault lands on a rewind-only cut
+        counted before the one node B's row named."""
+        rc, lines = run_course('prewind', rows={'r1': (8, 50)})
+        self.assertEqual(lines['pin_r1_cut'][0], 'FAILED')
+        self.assertEqual(lines['premise_rewind_cut_committed'][0], 'ok')
+        self.assertEqual(rc, 1)
+
+    def test_t1_asked_again_done_on_another_commit_ends_1(self):
+        def change(d):
+            with open(os.path.join(d, 'ends.tsv')) as f:
+                text = f.read()
+            with open(os.path.join(d, 'ends.tsv'), 'w') as f:
+                f.write(text.replace('t1-again-end\tdone commit=' + commit_of('t1'),
+                                     't1-again-end\tdone commit=' + commit_of('t1x')))
+        rc, lines = run_course('pplain', change)
+        self.assertEqual(lines['pin_answer_t1-again-end'][0], 'ok')
+        self.assertEqual((rc, lines['pin_asking_twice_is_once'][0]), (1, 'FAILED'))
+
     def test_pkillman_with_snap_m1_after_the_kill_ends_1(self):
         rc, lines = run_course('pkillman', write('m1-between.txt', f'ref\t{"9" * 64}\t3\nsnaprow\tnone\n'))
         self.assertEqual((rc, lines['pin_m1_not_before_the_transaction'][0]), (1, 'FAILED'))
@@ -388,9 +407,27 @@ class Premises(unittest.TestCase):
         rc, lines = run_course('prewind', write('rewind-row.txt', node_b_row(7, 50)))
         self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (2, 'ERROR'))
 
-    def test_prewind_with_r1_made_before_the_rewind_cut_ends_2(self):
+    def test_prewind_whose_row_names_a_cut_that_opens_as_itself_ends_2(self):
         rc, lines = run_course('prewind', write('rewind-row.txt', node_b_row(10, 52)))
-        self.assertEqual(rc, 2)
+        self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (2, 'ERROR'))
+        self.assertIn('opens as itself: no daemon would pass it over', lines['premise_rewind_cut_committed'][1])
+
+    def test_prewind_with_r1_made_before_the_rewind_cut_by_one_that_opens_as_itself_ends_2(self):
+        """r1 was published before the rewind-only cut was committed: the
+        course never offered it (#139's second look, P9)."""
+        def change(d):
+            with open(os.path.join(d, 'requests.tsv'), 'w') as f:
+                f.write(log_text([(PID, [(6, 52, True), (7, 45, False), (8, 50, True),
+                                         ('publish', 'asked', 'r1 refused rewound'), (9, 51, False), (10, 52, True),
+                                         (11, 53, True)])]))
+        rc, lines = run_course('prewind', change, rows={'r1': (8, 50)})
+        self.assertEqual(lines['pin_r1_cut'][0], 'ok')
+        self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (2, 'ERROR'))
+        self.assertIn('r1 was made by cut 8, which opens as itself', lines['premise_rewind_cut_committed'][1])
+
+    def test_prewind_without_cuts_held_at_the_rewind_ends_2(self):
+        rc, lines = run_course('prewind', write('rewind-status.txt', 'cuts_held 0\n'))
+        self.assertEqual((rc, lines['premise_held_at_rewind'][0]), (2, 'ERROR'))
 
     def prewind_log(self, lines):
         def change(d):
