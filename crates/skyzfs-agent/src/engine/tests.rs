@@ -341,7 +341,9 @@ fn check(ran: &Ran) -> Result<(), String> {
                     ));
                 }
             }
-            Report::NoProgress(_) => return Err(format!("{t} reported: {report:?}")),
+            Report::NoProgress(_) | Report::Refused(_) => {
+                return Err(format!("{t} reported: {report:?}"))
+            }
         }
     }
     // The other way: a publish recorded done with its snapshot gone is
@@ -961,6 +963,57 @@ fn given_up_too_old(world: &Rc<RefCell<World>>, agent: &FakeAgent, t: &str, leas
     assert!(world.refs.is_empty());
     let took = Duration::from_millis(world.now_ms - fake::EPOCH_MS);
     assert!(took >= least, "{took:?}, less than {least:?}");
+}
+
+/// N4 of #144's third look, the lead's L7: a publish too old whose
+/// request the uploader itself ended (`refused rewound`, after `zpool
+/// import -F`) is looked up and given up, its hold released and the code
+/// reported, as one not too old ends in a round; `pool@t` lost by the
+/// rewind is given up as `Rewound`.
+///
+/// Mutant: the ended arm waiting on the uploader's own ends (the hold
+/// kept for good, and nobody told), or giving up with no report.
+#[test]
+fn a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported() {
+    for (back, why) in [
+        (Back::AfterHold, Why::TooOld),
+        (Back::BelowCreated, Why::Rewound),
+    ] {
+        // A daemon that counts cuts and uploads none, and a rewind just
+        // before the ended arm's first withdraw: the daemon's mark
+        // passes the request's count, and it ends `refused rewound`.
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+        let hook = {
+            let world = world.clone();
+            let rewound = Cell::new(false);
+            move |point: Point| {
+                let withdraw = Point {
+                    effect: Effect::Withdraw,
+                    after: false,
+                };
+                if point == withdraw && !rewound.replace(true) {
+                    world.borrow_mut().restart(Restart::RewindF(back), None);
+                }
+                false
+            }
+        };
+        let (agent, t) = aged_run(&world, Duration::from_secs(60), hook);
+        assert_eq!(
+            agent.outcomes(),
+            [(t.clone(), Outcome::Abandoned(why))],
+            "{back:?}"
+        );
+        assert_eq!(
+            agent.reports(),
+            [(t, Report::Refused(skyzfs_control::Code::Rewound))],
+            "{back:?}"
+        );
+        assert!(agent.record().under_way.is_empty(), "{back:?}");
+        let world = world.borrow();
+        assert!(holds(&world).is_empty(), "{back:?}: {:?}", holds(&world));
+        assert!(world.refs.is_empty(), "{back:?}");
+    }
 }
 
 /// L2 of #144's review: a publish older than its bound is given up, and

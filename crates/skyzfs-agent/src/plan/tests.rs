@@ -1490,8 +1490,27 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
     answers.extend(codes.map(|code| Reply::Refused(code, String::new())));
     let mut wrong = Vec::new();
     for answer in answers {
+        // L7: a refusal that says the request ended, or was never run.
+        let ends = matches!(
+            answer,
+            Reply::Refused(
+                Code::Rewound
+                    | Code::State
+                    | Code::Attachment
+                    | Code::Taken
+                    | Code::Name
+                    | Code::Manifest
+                    | Code::Expiry
+                    | Code::Version
+                    | Code::Malformed
+                    | Code::Peer
+                    | Code::Store,
+                _
+            )
+        );
         let kind = match answer {
-            Reply::Done(_) | Reply::Refused(Code::Taken, _) => "look",
+            Reply::Done(_) => "look",
+            _ if ends => "end",
             Reply::Pending | Reply::Absent | Reply::Refused(Code::Asked, _) => "withdraw",
             Reply::Withdrawn | Reply::Unknown | Reply::Expired => "withdraw first",
             _ => "keep",
@@ -1500,12 +1519,10 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
             "look" => (
                 Action::Look,
                 Action::Look,
-                match answer {
-                    Reply::Done(_) => Action::Stop(Stop::DoneNotSeen),
-                    _ => Action::Wait,
-                },
+                Action::Stop(Stop::DoneNotSeen),
                 Action::Look,
             ),
+            "end" => (Action::Look, Action::Look, Action::Release, Action::Look),
             "withdraw" => (
                 Action::Withdraw,
                 Action::Withdraw,
@@ -1554,9 +1571,24 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
             ),
         ];
         for (what, phase, seen, want) in cases {
-            let got = plan(&publish(phase), &seen);
+            let publish = publish(phase);
+            let got = plan(&publish, &seen);
             if got != want {
                 wrong.push(format!("{answer:?}, {what}: {got:?}, not {want:?}"));
+            }
+            // The code is reported where the publish is given up on it,
+            // and nowhere else.
+            let told = report(&publish, &seen, &got);
+            let want_told = match &answer {
+                Reply::Refused(code, _) if ends && got == Action::Release => {
+                    Some(Report::Refused(*code))
+                }
+                _ => None,
+            };
+            if told != want_told {
+                wrong.push(format!(
+                    "{answer:?}, {what}: reported {told:?}, not {want_told:?}"
+                ));
             }
         }
     }
@@ -1610,6 +1642,48 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
             old().answer(Reply::Unknown).withdrawn(),
             Action::Look,
         ),
+        // L7: the request ended by the uploader, or never run.
+        (
+            "taken, absent, released",
+            old().refused(Code::Taken).looked(SnapSeen::Absent).unheld(),
+            Action::Abandon(Why::TooOld),
+        ),
+        (
+            "rewound, ours",
+            old().refused(Code::Rewound).looked(ours()),
+            published(),
+        ),
+        (
+            "rewound, absent, released",
+            old()
+                .refused(Code::Rewound)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            Action::Abandon(Why::TooOld),
+        ),
+        (
+            "rewound, absent, gone",
+            old().refused(Code::Rewound).looked(SnapSeen::Absent).gone(),
+            Action::Abandon(Why::Rewound),
+        ),
+        (
+            "state, absent, gone",
+            old().refused(Code::State).looked(SnapSeen::Absent).gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        (
+            "version, not ours",
+            old().refused(Code::Version).looked(SnapSeen::NotOurs),
+            Action::Release,
+        ),
+        (
+            "malformed, absent, released",
+            old()
+                .refused(Code::Malformed)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            Action::Abandon(Why::TooOld),
+        ),
     ] {
         let got = plan(&publish(asked()), &seen);
         if got != want {
@@ -1617,6 +1691,19 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // The report goes with the give-up itself too, not with a publish
+    // given up on another answer or one not too old.
+    let given_up = old().refused(Code::Peer).looked(SnapSeen::Absent).unheld();
+    let gave = Action::Abandon(Why::TooOld);
+    assert_eq!(plan(&publish(asked()), &given_up), gave);
+    assert_eq!(
+        report(&publish(asked()), &given_up, &gave),
+        Some(Report::Refused(Code::Peer))
+    );
+    assert_eq!(report(&publish(held()), &expired().unheld(), &gave), None);
+    let young = seen().refused(Code::Peer).looked(SnapSeen::Absent).unheld();
+    assert_eq!(report(&publish(asked()), &young, &gave), None);
+    assert_eq!(report(&publish(taken_phase()), &given_up, &gave), None);
     // Eight stalls are given up as such, too old or not.
     let stalled = Publish {
         stalls: STALLS_ABANDONED,
@@ -1637,8 +1724,19 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
         let seen = seen().refused(code).looked(SnapSeen::Absent);
         assert_eq!(plan(&stalled_asked, &seen), Action::Wait, "{code:?}");
     }
-    let seen = seen().answer(Reply::Expired).looked(SnapSeen::Absent);
-    assert_eq!(plan(&stalled_asked, &seen), Action::Withdraw);
+    let expired_ = seen().answer(Reply::Expired).looked(SnapSeen::Absent);
+    assert_eq!(plan(&stalled_asked, &expired_), Action::Withdraw);
+    // An end the uploader gave is given up on at once, with the code.
+    let ended = seen()
+        .refused(Code::State)
+        .looked(SnapSeen::Absent)
+        .unheld();
+    let gave = Action::Abandon(Why::NoProgress);
+    assert_eq!(plan(&stalled_asked, &ended), gave);
+    assert_eq!(
+        report(&stalled_asked, &ended, &gave),
+        Some(Report::Refused(Code::State))
+    );
 }
 
 fn row(group: u64) -> SnapReply {

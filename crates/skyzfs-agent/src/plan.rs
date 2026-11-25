@@ -65,15 +65,29 @@
 //!   bound never lets the hold go while a request may still pend (the
 //!   lead's L5 on #144, after N1 of its next look). By the daemon's
 //!   answer:
-//!   - `done`, or `refused taken`: `snap/t` looked up; this publish's is
-//!     [`Action::Done`]. `done` that `look` does not confirm stops the
-//!     publish for a person ([`Stop::DoneNotSeen`]), with its hold and
-//!     its record kept, as when the publish is not too old (L6): only a
-//!     person, or M2.6c's `recover`, ends that entry. `refused taken`
-//!     with another's `snap/t` gives the name up ([`Why::NameTaken`]);
-//!     with none, as any other answer below.
-//!   - `pending`, `absent` or `refused asked`: the request withdrawn
-//!     first.
+//!   - `done`: `snap/t` looked up; this publish's, at the commit `done`
+//!     names, is [`Action::Done`]. `done` that `look` does not confirm
+//!     stops the publish for a person ([`Stop::DoneNotSeen`]), with its
+//!     hold and its record kept, as when the publish is not too old (L6).
+//!     The stop is the engine's, in its process: only a person, or
+//!     M2.6c's `recover`, ends that entry while the daemon says `done`.
+//!     After a restart the publish is planned again and stops again;
+//!     once the daemon has forgotten it (`unknown`), it is withdrawn,
+//!     looked up and given up as below (S5 of #144's third look).
+//!   - A refusal that ends the request (the lead's L7 on #144,
+//!     after N4 of its third look): the uploader ended it (`rewound`,
+//!     `state`, `attachment`, `taken`), or the daemon did not run it
+//!     (`name`, `manifest`, `expiry`, `version`, `malformed`, `peer`,
+//!     `store`). Nothing pends: `snap/t` looked up, a publish made is
+//!     done, another's `snap/t` gives the name up ([`Why::NameTaken`]),
+//!     and with none the hold is released and the publish given up
+//!     ([`Why::Rewound`] where a rewind lost `pool@t`), the code
+//!     reported ([`Report::Refused`]). Not too old, these answers end
+//!     the publish in a round too (below), or stop it for a person.
+//!   - `pending` or `refused asked`: the request withdrawn first. So is
+//!     `absent`, which skyzfsd does not give to `progress` or `withdraw`
+//!     (it answers `look`): a withdraw is safe whatever pends (S4 of the
+//!     third look).
 //!   - `withdrawn`, `unknown` or `expired`: withdrawn first, unless the
 //!     daemon has already answered a withdraw so ([`Seen::withdrawn`]);
 //!     then `snap/t` looked up, a publish made is done, and one not made
@@ -91,6 +105,15 @@
 //!   uploader is silent publishes can be, up to
 //!   [`crate::record::UNDER_WAY_MAX`], and the next is refused. The same
 //!   holds for a publish that has stalled [`STALLS_ABANDONED`] times.
+//!
+//!   A give-up after a withdraw rests on the daemon's order: skyzfsd's
+//!   control channel answers one connection at a time, in the order it
+//!   accepts them, and hands an ask to the uploader's inbox (or drops it,
+//!   past its limit) before it takes the next; `progress` and `withdraw`
+//!   go to the same inbox. An ask of an agent that stopped while the
+//!   store's desk was slow is therefore in the inbox, or gone, before its
+//!   successor's withdraw (N5 of #144's third look). A daemon that
+//!   answered connections side by side would break this.
 //! - **What the daemon answers.** `done`, `expired`, `withdrawn`,
 //!   `refused attachment`, `refused state` and `refused taken` are read
 //!   with `look` first: `snap/t` that is this publish's is
@@ -326,7 +349,9 @@ pub enum Stop {
     /// The daemon said `done`, and `look` did not see this publish's
     /// `snap/<t>` with the commit `done` named. The hold and the record
     /// are kept, past the age bound too (the lead's L6 on #144): only a
-    /// person, or M2.6c's `recover`, ends the entry.
+    /// person, or M2.6c's `recover`, ends the entry while the daemon says
+    /// `done`. The stop is the engine's, in its process ([module
+    /// docs](self), "Too old").
     DoneNotSeen,
 }
 
@@ -340,6 +365,9 @@ pub enum Report {
     /// The publish was asked anew this many times in a row with no cut
     /// counted ([`stalls`]).
     NoProgress(u32),
+    /// A publish too old, or stalled [`STALLS_ABANDONED`] times, given up
+    /// where the daemon refused it with this code ([`report`]).
+    Refused(Code),
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held
@@ -545,6 +573,53 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
             .is_some_and(|(group, itself)| itself && group >= taken.group)
 }
 
+/// Whether a refusal of `progress` or `withdraw` says that no request of
+/// the publish pends: the uploader ended it (`rewound`, `state`,
+/// `attachment`, `taken`), or the daemon did not run what it was asked
+/// (`name`, `manifest`, `expiry`, `version`, `malformed`, `peer`,
+/// `store`): a daemon that cannot read this agent's requests accepted none
+/// of them. Not `asked` (one pends), `busy` (one may, later), or the
+/// daemon's silence (`stopped`, `ended`, `no-answer`, `no-upload`).
+fn ends(code: Code) -> bool {
+    match code {
+        Code::Rewound
+        | Code::State
+        | Code::Attachment
+        | Code::Taken
+        | Code::Name
+        | Code::Manifest
+        | Code::Expiry
+        | Code::Version
+        | Code::Malformed
+        | Code::Peer
+        | Code::Store => true,
+        Code::Asked
+        | Code::Busy
+        | Code::Stopped
+        | Code::Ended
+        | Code::NoAnswer
+        | Code::NoUpload => false,
+    }
+}
+
+/// What a person is told where `action`, planned from `seen`, gives up a
+/// publish too old, or stalled [`STALLS_ABANDONED`] times, on a refusal
+/// that ends its request ([`Report::Refused`], the lead's L7 on #144):
+/// the release, and the give-up after it. The engine makes it before it
+/// acts, once a process (as every report: at least once).
+pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report> {
+    let under_way = matches!(publish.phase, Phase::Held(_) | Phase::Asked { .. });
+    let ended = publish.stalls >= STALLS_ABANDONED || seen.too_old;
+    let gives_up = matches!(action, Action::Release | Action::Abandon(_));
+    match &seen.daemon {
+        DaemonSeen::Here {
+            answer: Reply::Refused(code, _),
+            ..
+        } if under_way && ended && gives_up && ends(*code) => Some(Report::Refused(*code)),
+        _ => None,
+    }
+}
+
 /// Held or asked: `asked` is when it was accepted and how long it is
 /// held, once it was.
 fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Seen) -> Action {
@@ -610,13 +685,19 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         // pend (the lead's L5 on #144, after N1 of its next look): the
         // publish is given up only once the daemon has answered a
         // withdraw and `look` has not found it published.
+        let ended = || give_up(pool, broken.unwrap_or(why));
         return match answer {
             Reply::Done(commit) => said_done(commit),
-            Reply::Refused(Code::Taken, _) => look(&away),
+            // The daemon ended the request itself, or never ran it (the
+            // lead's L7 on #144, after N4 of its third look): nothing
+            // pends, and the code is reported ([`report`]).
+            Reply::Refused(Code::Rewound, _) => look(&|| match broken {
+                Some(Why::Destroyed) => give_up(pool, Why::Rewound),
+                _ => ended(),
+            }),
+            Reply::Refused(code, _) if ends(*code) => look(&ended),
             Reply::Pending | Reply::Absent | Reply::Refused(Code::Asked, _) => Action::Withdraw,
-            Reply::Withdrawn | Reply::Unknown | Reply::Expired if seen.withdrawn => {
-                look(&|| give_up(pool, broken.unwrap_or(why)))
-            }
+            Reply::Withdrawn | Reply::Unknown | Reply::Expired if seen.withdrawn => look(&ended),
             Reply::Withdrawn | Reply::Unknown | Reply::Expired => Action::Withdraw,
             _ => away(),
         };

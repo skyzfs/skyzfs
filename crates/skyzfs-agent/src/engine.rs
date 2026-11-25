@@ -519,6 +519,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             return Ok(Moved::No);
         };
         let action = plan::plan(&publish, &seen);
+        // Before the act, as the report of `done` (F1 of #144's review):
+        // a stop between the two makes it again in the next process.
+        if let Some(report) = plan::report(&publish, &seen, &action) {
+            let made = (name.to_string(), report);
+            if !self.reports.contains(&made) {
+                self.reports.push(made);
+            }
+        }
         self.act(&publish, action)
     }
 
