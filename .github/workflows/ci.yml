@@ -100,6 +100,12 @@ jobs:
       # The daemon's fault hooks, which the rigs build and the workspace
       # line does not.
       - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      # The workspace's documentation, as M2.D1 left it: no rustdoc warning
+      # (broken or private intra-doc links, bad code blocks).
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
 
   chart-lint:
     needs: changes
