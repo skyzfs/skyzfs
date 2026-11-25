@@ -1,0 +1,253 @@
+   Compiling skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+   Compiling skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+   Compiling skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+   Compiling skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+   Compiling skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `test` profile [optimized] target(s) in 21.66s
+     Running unittests src/lib.rs (<target>/debug/build/skyzfsd/b2c8a466414f9b23/out/skyzfsd-b2c8a466414f9b23)
+
+running 197 tests
+test cli::tests::a_build_with_the_hooks_lists_them ... ok
+test cli::tests::anything_else_is_a_usage_error ... ok
+test cli::tests::create_takes_a_directory_and_a_size_in_bytes ... ok
+test cli::tests::create_takes_a_place_in_object_storage_whole_or_not_at_all ... ok
+test cli::tests::detach_and_status_name_a_volume ... ok
+test cli::tests::help_is_a_command_and_says_what_the_rig_asks_it_to_say ... ok
+test cli::tests::help_names_the_oldest_kernel_and_the_flags ... ok
+test cli::tests::serve_has_no_choice_of_store ... ok
+test cli::tests::serve_has_the_agreed_defaults_and_options ... ok
+test cli::tests::serve_takes_the_lease_options ... ok
+test cli::tests::the_exit_statuses_are_the_agreed_numbers ... ok
+test cli::tests::the_channels_commands_name_a_volume_and_a_request ... ok
+test cli::tests::the_header_sync_is_on_unless_turned_off_with_held_cuts ... ok
+test cli::tests::the_in_place_store_does_direct_io_on_its_threads ... ok
+test cli::tests::the_io_threads_default_is_the_stores ... ok
+test cli::tests::the_test_hooks_are_refused_in_a_default_build ... ok
+test cli::tests::the_test_hooks_are_parsed_in_a_test_build ... ok
+test cli::tests::the_intent_region_is_a_power_of_two_of_mib_with_held_cuts ... ok
+test commands::tests::a_directory_that_is_no_volume_is_an_error_and_gets_no_lock_file ... ok
+test commands::tests::a_failed_create_leaves_no_directory_it_made ... ok
+test commands::tests::channel::ask_sends_the_request_to_the_volumes_socket_and_prints_the_answer ... ok
+test commands::tests::create_chooses_the_write_unit_by_the_file_systems_block_or_refuses ... ok
+test commands::tests::channel::a_manifest_that_cannot_be_sent_is_not ... ok
+test commands::tests::channel::ask_reaches_a_channel_in_the_volumes_run_directory ... ok
+test commands::tests::a_create_that_fails_half_way_removes_what_it_made ... ok
+test commands::tests::create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothing ... ok
+test commands::tests::create_makes_a_volume_the_store_opens_and_says_what_it_made ... ok
+test commands::tests::create_makes_the_last_part_and_refuses_a_missing_parent_a_file_and_a_volume ... ok
+test commands::tests::create_whose_place_cannot_be_written_says_so ... ok
+test commands::tests::create_with_a_base_pattern_makes_a_volume_that_holds_the_pattern ... ok
+test commands::tests::create_with_a_place_refused_makes_nothing ... ok
+test commands::tests::create_warns_of_a_failure_note_of_this_boot_and_leaves_it ... ok
+test commands::tests::create_with_a_place_refused_locally_writes_no_place ... ok
+test commands::tests::create_with_zero_fill_writes_the_whole_image ... ok
+test commands::tests::detach_leaves_the_failure_note_and_create_warns_of_one_of_this_boot ... ok
+test commands::tests::create_with_a_place_makes_it_first_and_writes_it_beside_the_volume ... ok
+test commands::tests::detach_on_a_kernel_without_the_asynchronous_delete_is_refused_unless_asserted ... ok
+test commands::tests::status_does_not_show_the_status_file_of_another_volume_in_the_same_directory ... ok
+test commands::tests::status_and_detach_do_not_open_the_driver_when_nothing_is_attached_in_this_boot ... ok
+test commands::tests::status_shows_a_failure_of_this_boot_and_says_when_its_file_cannot_be_read ... ok
+test control::tests::a_connection_that_ends_early_is_not_a_request ... ok
+test control::tests::a_looks_answer_keeps_what_was_seen ... ok
+test control::tests::a_publish_hands_its_manifest_to_the_handler ... ok
+test control::tests::a_publishs_refusal_keeps_its_own_code ... ok
+test control::tests::a_request_that_cannot_be_taken_is_refused_without_asking ... ok
+test control::tests::socket::a_peer_of_another_user_is_refused_and_its_request_not_asked ... ok
+test control::tests::socket::a_refusal_before_the_manifest_is_read_reaches_the_client ... ok
+test commands::tests::status_prints_one_key_and_value_per_line_as_the_rig_reads_them ... ok
+test control::tests::socket::a_request_that_stops_part_way_holds_the_thread_no_longer_than_its_limit ... ok
+test control::tests::socket::a_stale_socket_is_replaced_and_anything_else_left ... ok
+test control::tests::socket::accept_is_tried_again_at_once_only_after_a_peer_or_a_signal ... ok
+test control::tests::socket::a_request_that_trickles_holds_the_thread_no_longer_than_its_limit ... ok
+test control::tests::socket::close_ends_the_thread_at_once ... ok
+test control::tests::socket::the_channel_answers_through_its_socket ... ok
+test control::tests::socket::the_channel_posts_its_figures_after_each_connection ... ok
+test control::tests::socket::the_daemons_own_user_and_root_may_ask ... ok
+test control::tests::socket::the_wake_does_not_wait_for_a_full_backlog ... ok
+test control::tests::uploader::a_closed_desk_reads_ended_for_cuts ... ok
+test control::tests::uploader::a_full_inbox_is_not_waited_on ... ok
+test control::tests::uploader::a_look_answers_what_object_storage_holds_without_the_uploader ... ok
+test control::tests::uploader::a_look_that_object_storage_does_not_answer_reads_no_answer ... ok
+test control::tests::uploader::a_look_that_object_storage_fails_reads_store ... ok
+test control::tests::uploader::a_publish_to_a_store_no_longer_served_reads_ended ... ok
+test control::tests::uploader::a_publish_waits_for_the_store_and_the_uploader_within_one_limit ... ok
+test control::tests::uploader::a_store_whose_queue_takes_no_turn_reads_no_answer_for_cuts ... ok
+test control::tests::uploader::an_uploader_that_does_not_answer_in_time_reads_no_answer ... ok
+test control::tests::uploader::an_uploader_that_has_ended_reads_ended ... ok
+test control::tests::uploader::each_request_goes_to_the_uploader_and_its_answer_back ... ok
+test commands::tests::detach_of_a_volume_a_daemon_holds_gives_up_after_two_seconds_and_touches_nothing ... ok
+test control::tests::uploader::without_an_uploader_every_request_is_refused_no_upload ... ok
+test cut_commands::tests::a_command_while_a_write_is_under_way_is_refused_as_busy ... ok
+test cut_commands::tests::a_cut_that_is_empty_is_written_at_once ... ok
+test cut_commands::tests::a_line_is_a_token_and_a_command ... ok
+test cut_commands::tests::a_line_that_is_no_command_is_refused_with_its_token ... ok
+test cut_commands::tests::a_turn_with_no_signal_reads_no_command ... ok
+test cut_commands::tests::a_write_whose_cut_is_let_go_under_it_is_refused ... ok
+test cut_commands::tests::a_write_whose_map_grew_under_it_is_refused ... ok
+test cut_commands::tests::after_a_failure_the_cuts_whose_flush_completed_are_written_and_let_go ... ok
+test cut_commands::tests::every_command_is_refused_while_held_cuts_are_off ... ok
+test cut_commands::tests::held_lists_every_held_cut_oldest_first_then_ok ... ok
+test cut_commands::tests::release_is_refused_in_a_daemon_that_uploads ... ok
+test cut_commands::tests::release_lets_only_the_cut_being_uploaded_go ... ok
+test cut_commands::tests::the_in_place_store_s_cuts_are_written_as_they_were_at_their_instants ... ok
+test cut_commands::tests::the_in_place_store_without_held_cuts_refuses_the_commands ... ok
+test cut_commands::tests::write_puts_the_cut_s_map_into_the_file_a_slice_a_turn ... ok
+test cut_commands::tests::write_refuses_a_cut_it_cannot_write ... ok
+test delay::tests::a_delayed_commit_is_given_on_when_it_is_due_and_the_wait_is_woken ... ok
+test delay::tests::a_failure_gives_on_what_waits_with_an_error ... ok
+test delay::tests::a_hold_names_a_read_or_a_write_that_covers_a_byte_or_a_flush ... ok
+test delay::tests::a_stop_answers_the_held_request ... ok
+test delay::tests::a_stop_gives_on_what_waits_and_delays_nothing_more ... ok
+test control::tests::uploader::the_limit_begins_with_each_request ... ok
+test delay::tests::the_commands_ended_otherwise_than_ok_pass_through ... ok
+test delay::tests::without_a_delay_a_commit_passes_through ... ok
+test kill::tests::a_carry_hook_passes_the_channel_on_as_it_was ... ok
+test kill::tests::a_cut_numbered_c_plus_1_of_group_g_is_chosen_and_none_before ... ok
+test kill::tests::a_cut_under_way_read_on_after_the_acceptance_is_not_chosen ... ok
+test kill::tests::a_name_accepted_again_is_not_counted_again ... ok
+test kill::tests::a_publish_made_on_a_cut_committed_before_its_acceptance_gives_the_hook_up ... ok
+test kill::tests::a_publish_made_on_a_cut_read_before_its_acceptance_gives_the_hook_up ... ok
+test kill::tests::a_publish_made_on_the_chosen_cut_with_no_segment_gives_carry_put_up ... ok
+test kill::tests::a_publish_n_that_ends_without_being_made_gives_the_hook_up ... ok
+test delay::tests::one_request_is_held_and_only_the_first_of_its_kind ... ok
+test kill::tests::carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it ... ok
+test kill::tests::carry_swap_at_the_release_fires_before_the_cut_is_let_go ... ok
+test kill::tests::carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it ... ok
+test kill::tests::carry_swap_fires_as_the_chosen_cut_is_let_go_where_its_commits_call_failed ... ok
+test kill::tests::manifest_n_falls_once_the_nth_framed_manifest_put_has_landed ... ok
+test kill::tests::put_n_falls_once_the_nth_segment_put_has_landed ... ok
+test kill::tests::the_carry_hooks_fire_at_the_carrier_read_after_the_acceptance ... ok
+test kill::tests::the_uploaders_remote_falls_after_the_nth_swap_and_at_a_segment_before_its_swap ... ok
+test kill::tests::the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction ... ok
+test kill::tests::the_uploaders_turns_can_have_the_hook_kill_at_a_cut_after_the_carrier ... ok
+test record::tests::a_command_the_driver_ended_otherwise_than_ok_has_its_line ... ok
+test record::tests::a_failed_wait_or_flush_says_the_commits_may_not_have_gone ... ok
+test record::tests::a_publish_has_its_lines_as_asked_and_as_it_ended ... ok
+test record::tests::a_record_that_cannot_be_opened_is_an_error ... ok
+test record::tests::a_second_instance_appends_to_the_same_record ... ok
+test record::tests::a_write_at_either_end_of_the_volume_has_its_bytes ... ok
+test record::tests::a_write_away_from_the_labels_has_its_hashes_and_its_bytes ... ok
+test record::tests::an_applied_line_has_the_hashes_of_the_blocks_the_write_covers ... ok
+test record::tests::every_operation_is_named ... ok
+test record::tests::the_last_end_runs_from_the_labels_to_the_volumes_end ... ok
+test record::tests::the_record_has_each_request_and_its_answer ... ok
+test record::tests::the_send_line_is_written_before_the_commits_go ... ok
+test record::tests::the_stores_lines_name_the_tag_and_fall_among_the_queues ... ok
+test record::tests::the_times_are_monotonic ... ok
+test record::tests::without_a_file_every_call_passes_through ... ok
+test refuse::tests::a_commit_the_library_will_not_send_is_made_as_any_other ... ok
+test refuse::tests::the_fetch_refused_is_tag_0_at_the_start_named ... ok
+test refuse::tests::the_request_named_has_its_commit_sent_once_with_no_buffer ... ok
+test refuse::tests::without_a_request_named_every_commit_passes_through ... ok
+test remote::tests::a_file_that_is_not_exactly_the_five_lines_is_refused ... ok
+test remote::tests::the_file_is_five_lines_and_reads_back ... ok
+test remote::tests::the_file_is_written_and_read_in_the_directory ... ok
+test remote::tests::the_id_is_the_names_as_the_provisioner_derives_it ... ok
+test remote::tests::values_the_file_cannot_hold_are_refused ... ok
+skyzfsd: the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is to be deleted: device 3 could not be deleted (DEL_DEV_ASYNC of device 3 had no answer within the 200 ms that a start given up waits for the kernel's commands: it stays with the driver, which may still carry it out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it; the volume is not failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed); device 3 could not be deleted (DEL_DEV_ASYNC of device 3 was not sent: the 200 ms that a start given up waits for the kernel's commands had run out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it. Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+test serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up ... ok
+skyzfsd: the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is to be deleted: device 3 could not be deleted (DEL_DEV_ASYNC of device 3 had no answer within the 200 ms that a start given up waits for the kernel's commands: it stays with the driver, which may still carry it out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it; the volume is not failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+test serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it ... ok
+test serve::tests::a_directory_on_zfs_is_refused_by_what_the_kernel_says ... ok
+skyzfsd: the kernel handed over tag 0 of device 3, which the queue does not have or whose request was still out, against the driver's rule: nothing more is answered on this queue, the volume is not failed, and device 3 waits for the next server, as after a kill
+test serve::tests::a_driver_that_breaks_its_rule_ends_serve_with_7_and_leaves_the_device ... ok
+test serve::tests::a_failure_is_noted_as_the_images ... ok
+test serve::tests::a_missing_directory_is_judged_by_where_it_will_be_made_also_when_relative ... ok
+test serve::tests::a_new_map_names_every_region_at_the_start ... ok
+skyzfsd: the kernel refused serve's answer on tag 0 of device 3 (Invalid argument (os error 22)): nothing more is answered on this queue, the volume is not failed, and device 3 waits for the next server, which is handed again what was not answered
+skyzfsd: the kernel refused serve's answer on tag 0 of device 3 (Invalid argument (os error 22)): nothing more is answered on this queue, the volume is not failed, and device 3 waits for the next server, which is handed again what was not answered
+skyzfsd: the kernel handed over tag 0 of device 3, which the queue does not have or whose request was still out, against the driver's rule: nothing more is answered on this queue, the volume is not failed, and device 3 waits for the next server, as after a kill
+test serve::tests::a_refused_commit_ends_serve_with_8_and_leaves_the_device ... ok
+skyzfsd: the kernel refused the fetch of tag 0 on queue 0 of device 3 (Invalid argument (os error 22)): nothing more is answered on this queue, the volume is not failed, and device 3 is left as it is; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+skyzfsd: the kernel refused the fetch of tag 0 on queue 0 of device 3 (Invalid argument (os error 22)): nothing more is answered on this queue, the volume is not failed, and device 3 is left as it is; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+test serve::tests::a_refused_fetch_ends_the_queue_and_serve_gives_the_start_up_with_9 ... ok
+test serve::tests::a_refused_start_says_a_waiting_device_is_left ... ok
+test serve::tests::a_run_directory_that_lands_elsewhere_than_predicted_is_refused_once_made ... ok
+test serve::tests::a_start_given_up_deletes_a_device_this_serve_added_and_leaves_one_it_took_over ... ok
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed); device 3 could not be deleted (DEL_DEV_ASYNC of device 3 had no answer within the 1 s that a start given up waits for the kernel's commands: it stays with the driver, which may still carry it out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it. Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is to be deleted: device 3 could not be deleted (the driver refused the delete) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it; the volume is not failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed); device 3 could not be deleted (DEL_DEV_ASYNC of device 3 was not sent: the 1 s that a start given up waits for the kernel's commands had run out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it. Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed); device 3 could not be deleted (DEL_DEV_ASYNC of device 3 was not sent: the 1 s that a start given up waits for the kernel's commands had run out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it. Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed); device 3 could not be deleted (DEL_DEV_ASYNC of device 3 was not sent: the 1 s that a start given up waits for the kernel's commands had run out) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it. Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+test serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for ... ok
+skyzfsd: the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is deleted; the volume is not failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+skyzfsd: the end of the recovery of device 3 had no answer within 30 s: serve gives it up; device 3 is left waiting for the next server, as after a kill, with the I/O it holds; the volume is not failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed). Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed). Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed). Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+skyzfsd: the volume failed while it was served (a write or sync of the volume's image failed). Note: a pool imported on this volume's device does not notice that the device is gone while it only writes: it goes on reading ONLINE and, with a log device, acknowledging synchronous writes that never reach the volume. A read that must reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be imported again before a reboot
+test serve::tests::a_start_with_no_answer_is_given_up_in_order ... ok
+skyzfsd: warning: the channel /tmp/.tmpvc1Ysu/missing/control could not be made (No such file or directory (os error 2)): the volume is served, and nothing can be published while it is
+test serve::tests::the_channel_says_why_it_publishes_nothing_and_a_failed_one_is_left ... ok
+test serve::tests::the_channels_look_reads_the_served_volume ... ok
+test serve::tests::the_default_holder_needs_a_machine_id ... ok
+test serve::tests::the_failure_line_counts_answers_only_when_the_queues_thread_said_so ... ok
+test control::tests::socket::close_does_not_wait_on_a_full_backlog ... ok
+test serve::tests::the_held_cuts_reach_the_status_each_in_its_field ... ok
+test serve::tests::the_holder_is_the_option_or_the_hosts_name_and_machine_id ... ok
+test serve::tests::the_intent_region_reaches_the_store ... ok
+test serve::tests::the_log_fault_counts_writes_zeroes_and_discards_only ... ok
+test serve::tests::the_queues_thread_answers_what_a_silent_store_holds_once_the_volume_failed ... ok
+test serve::tests::the_reason_for_no_upload_names_another_holder ... ok
+test serve::tests::the_start_is_waited_for_within_its_limit ... ok
+test serve::tests::the_start_says_when_it_could_not_read_a_ring ... ok
+test serve::tests::the_status_carries_the_stores_header_syncs_apart_from_the_write_paths ... ok
+test serve::tests::the_uploaders_end_is_said ... ok
+test serve::tests::the_uploads_come_from_the_file_remote_and_the_lease_options_need_one ... ok
+test serve::tests::the_volumes_lock_outlives_the_queues_thread_until_the_joiner_lets_go ... ok
+test timing::tests::the_live_wait_and_the_begin_of_a_recovery_are_timed ... ok
+test upload::tests::a_create_makes_the_volume_with_the_empty_commit_and_takes_it_again ... ok
+test upload::tests::a_create_refuses_a_clone_under_the_name ... ok
+test upload::tests::a_create_refuses_a_head_that_only_looks_empty ... ok
+test upload::tests::a_create_refuses_a_name_that_is_another_volumes ... ok
+test upload::tests::a_create_that_loses_the_heads_swap_refuses_a_volume_served_or_written_since ... ok
+test upload::tests::a_create_that_stopped_before_its_head_counts_as_a_volume_of_its_size ... ok
+test upload::tests::a_runtime_is_dropped_without_waiting_for_its_blocking_work ... ok
+test upload::tests::a_store_out_of_reach_or_silent_serves_with_no_lease_yet ... ok
+test upload::tests::an_end_with_no_lease_held_says_it_was_kept ... ok
+test upload::tests::another_holders_lease_refuses_the_start_unless_the_operator_says_otherwise ... ok
+test upload::tests::any_other_end_keeps_the_lease ... ok
+test upload::tests::fixed_keys_sign_only_with_no_session_token ... ok
+test serve::tests::the_give_ups_commands_share_one_limit ... ok
+test upload::tests::the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted ... ok
+test upload::tests::the_daemons_remote_commits_under_the_epoch_it_is_made_for ... ok
+test upload::tests::the_end_at_exit_0_lets_the_lease_go ... ok
+test upload::tests::the_end_does_not_wait_for_work_left_on_the_runtime ... ok
+test upload::tests::the_lease_is_taken_after_the_open_and_a_refusal_gives_the_lock_back ... ok
+test upload::tests::the_region_is_aws_region_or_the_default ... ok
+test upload::tests::the_start_takes_a_lease_nobody_holds ... ok
+test upload::tests::the_status_shows_the_publishes ... ok
+test upload::tests::the_status_shows_the_uploader_as_it_is ... ok
+publish t: withdrawn
+test upload::tests::the_thread_answers_the_channel_for_its_attachment_and_state ... ok
+test upload::tests::two_creates_of_the_name_at_once_leave_the_superblock_of_the_volume_made ... ok
+test kill::tests::a_publish_n_whose_call_failed_gives_the_hook_up ... ok
+test upload::tests::work_in_object_storage_ends_at_its_limit_with_blocking_work_left ... ok
+test upload::tests::nothing_is_posted_once_the_desk_is_closed ... ok
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 197 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.20s
+
+     Running unittests src/main.rs (<target>/debug/build/skyzfsd/d021980f0401695d/out/skyzfsd-d021980f0401695d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/closed_output.rs (<target>/debug/build/skyzfsd/b6d2e7f23874b434/out/closed_output-b6d2e7f23874b434)
+
+running 3 tests
+test help_into_a_closed_pipe_exits_0 ... ok
+test a_usage_error_with_standard_error_closed_exits_with_the_usage_status ... ok
+test an_error_of_a_command_with_its_output_closed_keeps_its_status ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests skyzfsd
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit 0

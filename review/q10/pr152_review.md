@@ -22,6 +22,30 @@ Findings 2-4 are small and can ride along or follow. Finding 5 corrects
 the description: run 45703752703 did not exercise the new path it was
 dispatched for.
 
+## What blocks the merge, and decisions for the lead
+
+- **Blocks:** finding 1, unless the lead takes it as a follow-up.
+  - The step was added at the lead's request to stop broken doc links
+    reaching `zfs-topology`.
+  - As written, it does not check the module that #150's links are in.
+- **Does not block:**
+  - findings 2-4 and the suggestions;
+  - the test gaps in the plant table.
+- **Decisions:**
+  1. Whether the doc step must cover the two feature builds before the
+     merge (the reviewer's view), or as a follow-up.
+  2. Whether the converter must carry `note` now (finding 2), or
+     M2.6c-2b reads `index.tsv` when it refreshes.
+  3. The description's claim about run 45703752703 (finding 5) should
+     be corrected. The lead decides whether R1's new path needs a
+     kernel run at all, or the unit tests suffice. No reliable way to
+     force a partial take is known here.
+  4. For M2.6c-2b, three facts from the two runs:
+     - root is not held to `snapshot_limit`;
+     - a missing pool exits 2;
+     - the refresh rewrites 7 of the 10 recordings tests (TAG, GUIDs,
+       the program now succeeds).
+
 ## Findings, most severe first
 
 ### Defects
@@ -321,17 +345,20 @@ request's diff against a5e883a is the same 13 test and workflow files.
 
 | Workflow | Result |
 |---|---|
-| ci | lint success, with `cargo doc` passing in 36 s after the three clippy lines; unit-arm64, s3-backends and chart-lint success; `test` still running when read |
-| skyzfs-ci (push) | gate success; lint, unit-arm64 and test skipped (pull request open), as designed |
-| coverage | success |
-| nodeb-rig | success |
-| publish-rig | success |
-| cut-daemon | success |
-| cut-rig, daemon-rig, e2e | running when read |
-| replay-rig, kernel-probe | queued when read |
+Every run on 889cfd5 is green.
 
-Codex has one finding (P2, `dsync_writer.py:108`; finding 3), with no
-answer yet.
+| Workflow | Result |
+|---|---|
+| ci | success. The `cargo doc` step passed in 36 s, after the three clippy lines. |
+| skyzfs-ci (push) | success. The gate passed; lint, unit-arm64 and test were skipped because a pull request is open, as designed. |
+| coverage, e2e | success |
+| cut-rig, cut-daemon | success |
+| daemon-rig | success (daemon on three images, stand-in on two) |
+| replay-rig | success |
+| publish-rig, nodeb-rig, kernel-probe | success |
+
+Codex has one finding (P2, `dsync_writer.py:108`; finding 3). It had no
+answer when last read.
 
 ## Recorder run 45703752703 (26.04, f47d864): figures for the lead
 

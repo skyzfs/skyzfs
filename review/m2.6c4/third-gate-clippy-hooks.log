@@ -1,0 +1,7 @@
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Checking skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+    Checking skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `dev` profile [optimized] target(s) in 3.54s
+exit 0
