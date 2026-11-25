@@ -1,0 +1,30 @@
+prewindf as a right daemon leaves it: exit 0
+prewindf, daemon does not end f1 (realistic log): exit 1
+    pin_answer_f1-end FAILED: [server] answered 'pending after 300 s', not refused rewound
+    pin_f1_ended_after_the_rewind_cut FAILED: [server] the request log never ends f1
+prewindf, the PR test (ended line kept): exit 1
+    pin_answer_f1-end FAILED: [server] answered 'pending after 300 s', not refused rewound
+prewindf, mark strictly below the top (realistic log): exit 1
+    pin_answer_f1-end FAILED: [server] answered 'pending after 300 s', not refused rewound
+    pin_f1_ended_after_the_rewind_cut FAILED: [server] the request log never ends f1
+prewindf, f1 ended expired: exit 1
+    pin_answer_f1-end FAILED: [server] answered 'expired', not refused rewound
+    pin_f1_ended_after_the_rewind_cut FAILED: [server] f1's first end is 'f1 expired' (line 5)
+prewind as a right daemon leaves it: exit 0
+prewind, M2.5 at the ask (realistic log): exit 1
+    pin_answer_r1 FAILED: [server] answered 'pending after 300 s', not refused rewound
+prewind, M2.5 at the ask, the PR test (refusal line kept): exit 1
+    pin_answer_r1 FAILED: [server] answered 'done commit=82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828', not refused rewound
+prewind, r1 refused with another code (realistic log): exit 1
+    pin_answer_r1 FAILED: [server] answered 'refused asked other parameters', not refused rewound
+prewind, r1 on the earlier rewind-only cut 8 (D1): exit 1
+    pin_r1_row FAILED: [server] the row's cut 8 was not counted after C = 10
+    pin_r1_cut FAILED: [server] cut 8 (group 50) opens only with a rewind
+    pin_r1_above_top FAILED: [server] r1's cut is of group 50, not above the top 52
+prewind, r1 on rewind-only cut 9 (the row named): exit 1
+    pin_r1_row FAILED: [server] the row's cut 9 was not counted after C = 10
+    pin_r1_cut FAILED: [server] cut 9 (group 51) opens only with a rewind
+    pin_r1_above_top FAILED: [server] r1's cut is of group 51, not above the top 52
+prewind, r1 at the top group 52: exit 1
+    pin_r1_row FAILED: [server] the row's cut 10 was not counted after C = 10
+    pin_r1_above_top FAILED: [server] r1's cut is of group 52, not above the top 52

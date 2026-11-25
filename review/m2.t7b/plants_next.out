@@ -1,0 +1,14 @@
+unplanted: all pass
+L1	KILLED	judge_look without the commit	test_publish_check.py, test_publish_check_main.py
+L2x	KILLED	prewindf's end read from a refusal when asked as well	test_publish_check.py
+L3	KILLED	the look pins skipped	test_publish_check_main.py
+L4	KILLED	f1 not in ABSENT	test_publish_check.py, test_publish_check_main.py
+L5x	KILLED	prewindf's premise without its ground	test_publish_check_main.py
+L6x	KILLED	the import premise without the damage	test_publish_check_main.py
+L7	KILLED	absent allowed with the store down	test_publish_check.py, test_publish_check_main.py
+L8	KILLED	pending allowed for f1's end	test_publish_check.py, test_publish_check_main.py
+L9	KILLED	t1's look dropped	test_cut_record.sh
+L10	KILLED	f1 asked after the export	test_cut_record.sh
+L11	KILLED	f1's end read with no syncs	test_cut_record.sh
+L12	KILLED	r1's look dropped	test_cut_record.sh
+L13x	KILLED	prewindf: the import without the damage	test_cut_record.sh

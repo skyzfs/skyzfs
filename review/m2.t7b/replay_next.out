@@ -1,0 +1,83 @@
+== prewindf as run: exit 0 (as it should)
+== prewindf, a daemon that never ends f1 (no ended line; f1-end pending): rule (R) not at the equal group, or not at all: exit 1 (as it should)
+   pin_answer_f1-end	FAILED	[server] answered 'pending after 300 s', not refused rewound
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] the request log never ends f1
+== prewindf, f1 ended expired: exit 1 (as it should)
+   pin_answer_f1-end	FAILED	[server] answered 'expired', not refused rewound
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] f1's first end is 'f1 expired' (line 7196)
+== prewindf, f1 ended refused store: exit 1 (as it should)
+   pin_answer_f1-end	FAILED	[server] answered 'refused store x', not refused rewound
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] f1's first end is 'f1 refused store' (line 7196)
+== prewindf, the daemon ends f1 (answer right) and writes no ended line: exit 1 (as it should)
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] the request log never ends f1
+== prewindf, f1 ended rewound before the rewind cut (at the export, before cut 16): exit 1 (as it should)
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] f1's first end (line 3979) came before the rewind cut
+== prewindf, f1 ended rewound just before cut 17 (the ground): exit 1 (as it should)
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] f1's first end (line 6642) came before the rewind cut
+== prewindf, f1 published on cut 18 (group 35) and done: exit 1 (as it should)
+   pin_answer_f1-end	FAILED	[server] answered 'done commit=abababababababababababababababababababababababababababababababab', not refused rewound
+   pin_f1_absent	FAILED	[server] a ref snap/T; a row
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] f1's first end is 'f1 done commit=abababababababababababababababababababababababababababababababab' (line 7196)
+== prewindf, f1's expiry 5 s in agent.tsv (R41; the ground came 4.39 s after the send, within it): exit 0 (as it should)
+== prewindf, f1's expiry 4 s in agent.tsv (f1 expired before the ground): exit 2 (as it should)
+   premise_f1_waited_across_a_rewind_cut	ERROR	[rig] cuts counted after C = 10 within f1's expiry, not above the groups before them: none; 1 more after the expiry
+   rig_error	ERROR	[rig] premise_f1_waited_across_a_rewind_cut: cuts counted after C = 10 within f1's expiry, not above the groups before them: none; 1 more after the expiry
+== prewindf, no --expiry-s in agent.tsv (the default, 600 s): exit 0 (as it should)
+== prewindf, no cut not above the groups before it (cut 17 dropped): exit 2 (as it should)
+   premise_f1_waited_across_a_rewind_cut	ERROR	[rig] cuts counted after C = 10 within f1's expiry, not above the groups before them: none
+   rig_error	ERROR	[rig] premise_f1_waited_across_a_rewind_cut: cuts counted after C = 10 within f1's expiry, not above the groups before them: none
+== prewindf, f1's C after the ground (published.tsv C = 17): exit 2 (as it should)
+   premise_f1_waited_across_a_rewind_cut	ERROR	[rig] cuts counted after C = 17 within f1's expiry, not above the groups before them: none
+   rig_error	ERROR	[rig] premise_f1_waited_across_a_rewind_cut: cuts counted after C = 17 within f1's expiry, not above the groups before them: none
+== prewindf, rewind-f.txt without an import line: exit 2 (as it should)
+   premise_f1_import_f	ERROR	[rig] zeroed 3 copies of the root block of group 34: DVA[0]=<0:130e000:1000> DVA[1]=<0:210e000:1000> DVA[2]=<0:40c2000:1000> == zpool import -d (the listing) pool: skzcut id: 16380016710302234181 state: FAULTED status: The pool metada
+   rig_error	ERROR	[rig] premise_f1_import_f: zeroed 3 copies of the root block of group 34: DVA[0]=<0:130e000:1000> DVA[1]=<0:210e000:1000> DVA[2]=<0:40c2000:1000> == zpool import -d (the listing) pool: skzcut id: 16380016710302234181 state: FAULTED status: The 
+== prewindf, agent.tsv without the publish of f1: exit 2 (as it should)
+   rig_error	ERROR	[rig] no publish of f1 in agent.tsv
+== prewindf, agent.tsv with an expiry that is not a number: exit 2 (as it should)
+   rig_error	ERROR	[rig] agent.tsv: an expiry that is not a number: '336022744343\t336037146938\tpublish --name f1 --attachment 89cf1bb0a5a6e619381cd1bb351daf9d --state 4c9a8ed2b956dc14000bec7920fcfff7 --after 10 --group 1000021 --manifest /home/runner/work/skyzf
+== prewindf, a cut line that does not read: exit 2 (as it should)
+   rig_error	ERROR	[rig] request log line 6642: a cut line that does not read
+== prewind as run: exit 0 (as it should)
+== prewind, a daemon without rule (R) at the ask (r1 accepted, pending; its log line): exit 1 (as it should)
+   pin_answer_r1	FAILED	[server] answered 'pending after 300 s', not refused rewound
+== prewind, the same daemon also published r1 on rewind-only cut 23 once the store came back: exit 1 (as it should)
+   pin_answer_r1	FAILED	[server] answered 'pending after 300 s', not refused rewound
+   pin_r1_row	FAILED	[server] the row's cut 23 was not counted after C = 27
+   pin_r1_cut	FAILED	[server] cut 23 (group 33) opens only with a rewind
+   pin_r1_above_top	FAILED	[server] r1's cut is of group 33, not above the top 43
+== prewind, r1 refused with another code (refused asked): exit 1 (as it should)
+   pin_answer_r1	FAILED	[server] answered 'refused asked other parameters', not refused rewound
+== prewind, r1 made by cut 23 of group 33: exit 1 (as it should)
+   pin_r1_row	FAILED	[server] the row's cut 23 was not counted after C = 27
+   pin_r1_cut	FAILED	[server] cut 23 (group 33) opens only with a rewind
+   pin_r1_above_top	FAILED	[server] r1's cut is of group 33, not above the top 43
+== prewind, r1 made by cut 22 of group 32: exit 1 (as it should)
+   pin_r1_row	FAILED	[server] the row's cut 22 was not counted after C = 27
+   pin_r1_cut	FAILED	[server] cut 22 (group 32) opens only with a rewind
+   pin_r1_above_top	FAILED	[server] r1's cut is of group 32, not above the top 43
+== prewind, r1 made by cut 27 of group 43: exit 1 (as it should)
+   pin_r1_row	FAILED	[server] the row's cut 27 was not counted after C = 27
+   pin_r1_above_top	FAILED	[server] r1's cut is of group 43, not above the top 43
+== prewind, r1-look answered absent with the store down: exit 1 (as it should)
+   pin_answer_r1-look	FAILED	[server] answered 'absent', not refused store or refused no-answer
+== prewind, the daemon's `asked` line of r1's first ask absent (its answer right): exit 0 (NOT 2)
+== prewind, rewind-top.txt not a number: exit 2 (as it should)
+   rig_error	ERROR	[rig] rewind-top.txt: not a group: '4x3'
+== prewind, the ask before any ground (the asked line moved before cut 19): exit 2 (as it should)
+   premise_r1_asked_after_a_rewind_cut	ERROR	[rig] cuts counted after C = 20 before r1 was asked, not above the groups before them: none
+   rig_error	ERROR	[rig] premise_r1_asked_after_a_rewind_cut: cuts counted after C = 20 before r1 was asked, not above the groups before them: none
+== pkill as run: exit 0 (as it should)
+== pkill, withdraw answered pending (and logged so; no ended line): exit 1 (as it should)
+   pin_answer_tw-withdraw	FAILED	[server] answered 'pending', not withdrawn
+== pkill, the daemon's withdraw line absent: exit 2 (as it should)
+   premise_tw_committed_past_g	ERROR	[rig] instance none answered tw's withdrawal, then counted 0 cuts of group 43 or later that open as itself, and node B's row named cut 19 of group 43, not one of them
+   rig_error	ERROR	[rig] premise_tw_committed_past_g: instance none answered tw's withdrawal, then counted 0 cuts of group 43 or later that open as itself, and node B's row named cut 19 of group 43, not one of them
+== pplain as run (t1-look with the stand-in's manifest): exit 0 (as it should)
+== pplain, t1-look with number=11: exit 1 (as it should)
+   pin_t1_look	FAILED	[server] the look says number 11, the row 10
+== e0c51f8's prewindf recording (stopped at the refused -F) through the new check: exit 2 (as it should)
+   rig_error	ERROR	[rig] the course left no answer for f1-end
+== e0c51f8's prewind recording through the new check (r1 on cut 28 of group 45): exit 0 (as it should)
+
+34 of 35 cases ended as they should
