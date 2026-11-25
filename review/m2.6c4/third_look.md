@@ -19,7 +19,7 @@
 - **T's docs are accurate on the three points I raised**: the `Turns::next` order, `carry-put`'s window ending at the first segment PUT, and what the rig's comparison sees.
 - **One qualification for the lead (D1).** Under `carry-put`, the design itself allows a difference between the kill line's cut and the row's after the restart. The docs' "a difference is a finding against the daemon" does not allow for it.
 - **G1 and G2 are closed.** Plants N5, N6 and N1 are killed by the pull request's own tests.
-- PLANTS_LINE
+- **Plants: 32 of 33 killed at this head**, among them the seven new ones on R2's fix (V1 to V7). Only M16 survives, as before, and it cannot be reached deterministically.
 - **Gates are clean at the head.**
 
 ## Findings, most severe first
@@ -55,14 +55,19 @@ Since F2, `carry-swap` does kill at a commit whose call failed but which landed:
 
 **Landed and not landed.** The call is the only place a publish writes. The lookup is `Remote::snapshot`, and the manifests' PUTs and the refs transaction are all inside `Remote::publish`. So any error in the publish's writes reaches the hook. The hook cannot tell a write that landed (R2) from one that did not (R1), and gives up on both. The docs (`kill.rs:65-69`) and `publish_failed`'s own doc say this is the conservative reading.
 
-**A step is never dropped half done.** The uploader's step is not cancelled: `step_keeping` in `uploader.rs` polls it to its end. So no path leaves the hook untold after a publish's write was sent.
+**A step is not dropped half done.** While the uploader runs, its step is not cancelled: `step_keeping` in `uploader.rs` polls it to its end ("neither it nor a renewal is dropped half done"). So no path leaves the hook untold after a publish's write was sent.
 
-**No kill after giving up.** Two guards stop it, and either one alone is enough in this course:
+**No kill after giving up.** Two guards stop it:
 
 - `reads` chooses nothing once the hook is done (`kill.rs:441`);
-- `fires` returns nothing once it is done (`kill.rs:472-478`).
+- `fires` returns nothing once it is done (`kill.rs:474-476`).
 
-The test asserts the lines in full: the arming line, then the give-up, and nothing else. That holds although cut 8 is checked, read and committed after the give-up, and the post follows the publish. Plants V5 and V6 each remove one guard: V5 gives a stray "chosen" line, and V6 is held by the other guard (results below).
+The test asserts the lines in full: the arming line, then the give-up, and nothing else. That holds although cut 8 is checked, read and committed after the give-up, and the post follows the publish.
+
+Each guard is needed, and each is pinned:
+
+- **V5** removes the first guard. The R2 test and two others catch it: a cut read after the give-up is chosen again and says so.
+- **V6** removes the second guard. It is caught by `a_publish_n_that_ends_without_being_made_gives_the_hook_up` and two of the firing tests, where the hook would fire at a cut chosen before it gave up, or fire a second time. In the R2 course itself no cut is chosen before the give-up, so the first guard holds there.
 
 **The test** (`a_publish_n_whose_call_failed_gives_the_hook_up`, `kill/tests.rs:1221`):
 
@@ -95,7 +100,36 @@ The pull request's `the_uploaders_turns_can_have_the_hook_kill_at_a_cut_after_th
 
 **How the plants were run.** Each plant was applied alone to a clean worktree of the head. Then `cargo test -p skyzfsd --features test-hooks -- kill:: carry the_test_hooks_are_parsed_in_a_test_build` ran with a 600 s limit, and the file was restored in a `finally` (`plants150t.py`). These are the plants of `plants150n.py` again, Q4 and Q6 run as Q4b and Q6b, plus the new V plants on R2's fix.
 
-PLANTS_TABLE
+**32 of 33 KILLED; only M16 survives, as before.** No plant hit the 600 s limit (`plants150t.out`).
+
+| Plant | What it breaks | Result | Killed by (one of) |
+|---|---|---|---|
+| Q1 | `KillRemote::publish` does not tell the hook of a publish made | KILLED | the F1 course tests |
+| Q2 | the ended publishes not read | KILLED | `a_publish_n_that_ends_without_being_made_...` |
+| Q3 | no fire at the chosen cut's release | KILLED | `carry_swap_at_the_release_fires_before_...`, `carry_swap_fires_as_the_chosen_cut_is_let_go_...` |
+| Q4b | every acceptance counted | KILLED | `a_name_accepted_again_is_not_counted_again` |
+| Q5 | any publish made, or failed, gives the hook up | KILLED | `a_name_accepted_again_is_not_counted_again` |
+| Q6b | any publish ended gives the hook up | KILLED | `a_publish_n_that_ends_without_being_made_...` |
+| Q7 | the chosen cut not told apart in the give-up line | KILLED | `a_publish_made_on_the_chosen_cut_with_no_segment_...` |
+| Q8 | the release fires under `carry-put` too | KILLED | the same |
+| Q9 | the release of any cut fires `carry-swap` | KILLED | `carry_swap_falls_after_...` |
+| P9 | an ask whose asker went still waited on (B1's test) | KILLED | B1's test |
+| M3, M4, M6, M7 | the bounds C and G; a later read as a new reading | KILLED | `a_cut_numbered_c_plus_1_...`, `a_cut_under_way_...` |
+| M13 | `maker` does not give the hook to the objects | KILLED | `the_carry_hooks_fire_at_the_carrier_...`, `the_uploaders_turns_can_have_...` |
+| M16 | an ask still waited on is kept after its asker went | SURVIVED | unreachable deterministically (`review.md`) |
+| N1 | `carry-swap` fires after the release (G2) | KILLED | `carry_swap_at_the_release_fires_before_the_cut_is_let_go` |
+| N2, N3, N4 | the counting of names | KILLED | the counting tests |
+| N5 | `ended` without its `done` check (G1) | KILLED | `a_publish_n_whose_call_failed_gives_the_hook_up` |
+| N6 | `gives_up_at` without its `done` check (G1) | KILLED | the same |
+| N7 | a publish made on the chosen cut does not give up | KILLED | `a_publish_made_on_the_chosen_cut_with_no_segment_...` |
+| N8, N9, N10 | the S1 lines | KILLED | the lines asserted in full |
+| V1 | R2's fix reverted | KILLED | `a_publish_n_whose_call_failed_gives_the_hook_up` |
+| V2 | `publish_failed` does nothing | KILLED | the same |
+| V3 | the give-up sets `done` but says nothing | KILLED | the F1 tests and the R2 test |
+| V4 | the give-up says so but does not set `done` (fires later) | KILLED | the F1 tests and the R2 test |
+| V5 | `reads` chooses after the give-up | KILLED | the R2 test and two more |
+| V6 | `fires` without its `done` check | KILLED | `a_publish_n_that_ends_...` and two more |
+| V7 | a failed call reported as "was made on" | KILLED | the R2 test |
 
 ## Gates
 
