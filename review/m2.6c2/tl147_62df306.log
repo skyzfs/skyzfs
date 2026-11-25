@@ -1,0 +1,7 @@
+# cargo test -p skyzfs-agent --lib at 62df306 (scratch worktree; rustc 1.100.0)
+test zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded ... FAILED
+test zfs::cli::recordings::holds_read_as_recorded ... FAILED
+thread 'zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded' panicked at crates/skyzfs-agent/src/zfs/cli/recordings.rs:487:9:
+thread 'zfs::cli::recordings::holds_read_as_recorded' panicked at crates/skyzfs-agent/src/zfs/cli/recordings.rs:532:13:
+test result: FAILED. 112 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+# at ab8db11 (tl147_gates.log): 123 passed; 0 failed

@@ -1,0 +1,14 @@
+### at ab8db11
+test engine::tests::tl147_a_partial_hold_after_the_hold ... TL147 hold keep_root=true: outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]; holds left ["tank@skz-20261125T010000Z"]; published refs 0
+TL147 hold keep_root=false: outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]; holds left ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z"]; published refs 0
+test engine::tests::tl147_a_partial_hold_at_done ... TL147 done keep_root=true: outcomes [("skz-20261125T010000Z", Published([3, ...]))]; holds left ["tank@skz-20261125T010000Z"]
+TL147 done keep_root=false: outcomes [("skz-20261125T010000Z", Published([3, ...]))]; holds left ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z"]
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; finished in 0.00s
+exit 0
+### at 0f709ae
+test engine::tests::tl147_a_partial_hold_after_the_hold ... TL147 hold keep_root=true: outcomes [("skz-20261125T010000Z", Published([3, ...]))]; holds left []; published refs 1
+TL147 hold keep_root=false: outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]; holds left ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z"]; published refs 0
+test engine::tests::tl147_a_partial_hold_at_done ... TL147 done keep_root=true: outcomes [("skz-20261125T010000Z", Published([3, ...]))]; holds left []
+TL147 done keep_root=false: outcomes [("skz-20261125T010000Z", Published([3, ...]))]; holds left ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z"]
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 114 filtered out; finished in 0.00s
+exit 0

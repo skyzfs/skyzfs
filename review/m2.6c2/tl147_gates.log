@@ -1,0 +1,215 @@
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+ab8db1166e6d04b2afee4df65ab1e795d88de14a
+== cargo fmt --all --check
+== exit 0
+== cargo clippy -p skyzfs-agent -p skyzfs-control --all-targets -- -D warnings
+    Checking serde_core v1.0.229
+    Checking scopeguard v1.2.0
+    Checking linux-raw-sys v0.12.1
+    Checking cfg-if v1.0.4
+    Checking bitflags v2.13.1
+    Checking lock_api v0.4.14
+    Checking byteorder v1.5.0
+    Checking spin v0.9.9
+    Checking hash32 v0.2.1
+    Checking thiserror v2.0.19
+    Checking libc v0.2.187
+    Checking stable_deref_trait v1.2.1
+    Checking cobs v0.3.0
+    Checking zmij v1.0.23
+    Checking cpufeatures v0.3.0
+    Checking once_cell v1.21.4
+    Checking arrayref v0.3.9
+    Checking memchr v2.8.3
+    Checking rustix v1.1.4
+    Checking getrandom v0.4.3
+    Checking arrayvec v0.7.8
+    Checking constant_time_eq v0.4.2
+    Checking fastrand v2.5.0
+    Checking itoa v1.0.18
+    Checking blake3 v1.8.5
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking heapless v0.7.17
+    Checking postcard v1.1.3
+    Checking tempfile v3.27.0
+    Checking skyzfs-control v0.0.1 ($SCRATCH/tl147/crates/skyzfs-control)
+    Checking skyzfs-agent v0.0.1 ($SCRATCH/tl147/crates/skyzfs-agent)
+    Finished `dev` profile [optimized] target(s) in 3.52s
+== exit 0
+== cargo test -p skyzfs-agent -p skyzfs-control
+   Compiling skyzfs-control v0.0.1 ($SCRATCH/tl147/crates/skyzfs-control)
+   Compiling skyzfs-agent v0.0.1 ($SCRATCH/tl147/crates/skyzfs-agent)
+    Finished `test` profile [optimized] target(s) in 6.67s
+     Running unittests src/lib.rs ($SCRATCH/tl147-target/debug/build/skyzfs-agent/75b41660cbd03d00/out/skyzfs_agent-75b41660cbd03d00)
+
+running 123 tests
+test daemon::tests::the_device_is_the_block_devices_number ... ok
+test engine::tests::a_manifest_changed_under_the_agent_stops_its_publish ... ok
+test engine::tests::a_name_a_person_took_first_is_passed_over ... ok
+test engine::tests::a_hold_outlasts_the_deadline_of_the_last_acceptance ... ok
+test daemon::tests::an_ask_with_no_daemon_fails ... ok
+test engine::tests::a_pool_refused_its_premise_gets_no_snapshot ... ok
+test engine::tests::a_publish_asked_anew_after_the_uploader_stopped_is_given_up ... ok
+test engine::tests::a_publish_no_cut_carries_is_reported_then_given_up ... ok
+test engine::tests::a_publish_reported_for_its_stalls_then_ended_is_reported_for_both ... ok
+test engine::tests::a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process ... ok
+test engine::tests::a_publish_that_stalls_again_after_a_reset_is_reported_again ... ok
+test engine::tests::a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported ... ok
+test engine::tests::a_publish_whose_daemon_is_taken_over_at_each_request_is_given_up ... ok
+test engine::tests::a_publish_with_no_loss_is_published_in_each_mode ... ok
+test engine::tests::a_publish_older_than_its_bound_is_given_up_and_its_hold_released ... ok
+test engine::tests::a_refused_report_is_made_however_the_agent_stops_after_the_end ... ok
+test engine::tests::a_report_is_made_once_in_a_process_for_each_kind ... ok
+test engine::tests::a_persons_action_at_any_point_is_met ... ok
+test engine::tests::a_restart_as_the_cuts_are_read_is_met_with_the_agent_down_after_it_asks ... ok
+test engine::tests::a_restart_as_the_cuts_are_read_is_met ... ok
+test engine::tests::a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs ... ok
+test engine::tests::a_step_forward_of_the_wall_clock_does_not_release_a_hold_early ... ok
+test engine::tests::a_snapshot_gone_report_is_made_however_the_agent_stops_after_the_loss ... ok
+test engine::tests::a_stopped_uploader_gives_each_publish_up_at_once ... ok
+test engine::tests::asking_anew_checks_the_snapshot_and_its_hold_before_the_count ... ok
+test engine::tests::at_most_eight_publishes_are_under_way ... ok
+test engine::tests::each_sync_task_sets_a_value_of_its_own ... ok
+test engine::tests::on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request ... ok
+test engine::tests::a_restart_under_a_running_agent_at_any_point_is_met ... ok
+test daemon::tests::an_ask_ends_at_the_limit_it_was_given ... ok
+test engine::tests::the_daemon_lost_at_any_point_of_a_publish_is_recovered_from ... ok
+test engine::tests::the_sweep_leaves_the_holds_of_publishes_under_way ... ok
+test fs::tests::disk_writes_renames_lists_and_removes_files_in_a_directory ... ok
+test host::tests::a_program_gives_its_code_and_both_outputs_in_the_c_locale ... ok
+test host::tests::a_program_not_found_is_an_error ... ok
+test engine::tests::the_agent_stopped_at_any_point_recovers_in_any_restart ... ok
+test host::tests::a_program_past_its_limit_goes_with_what_it_started ... ok
+test host::tests::a_program_past_its_limit_is_killed_and_not_waited_for ... ok
+test host::tests::a_program_reads_what_it_is_given ... ok
+test engine::tests::a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once ... ok
+test engine::tests::the_matrices_need_the_rule_r_of_the_daemon ... ok
+test host::tests::stat_tells_a_file_from_anything_else ... ok
+test manifest::tests::a_manifest_is_version_1s_canonical_json ... ok
+test manifest::tests::a_manifest_over_the_protocols_limit_is_refused ... ok
+test manifest::tests::a_string_is_written_with_the_shortest_escapes ... ok
+test manifest::tests::a_value_that_is_not_printable_ascii_is_written_in_hex ... ok
+test manifest::tests::every_manifest_reads_back_as_written ... ok
+test manifest::tests::only_the_canonical_bytes_of_version_1_are_read ... ok
+test manifest::tests::the_members_are_the_root_then_its_descendants_in_order ... ok
+test manifest::tests::the_snapshots_are_the_members_names_and_snapshot_guids ... ok
+test names::tests::a_name_is_the_utc_second_in_iso_8601s_basic_form ... ok
+test names::tests::every_name_is_one_the_protocol_takes ... ok
+test names::tests::names_sort_as_their_times ... ok
+test plan::tests::a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend ... ok
+test plan::tests::a_publish_that_makes_no_progress_is_reported_then_given_up ... ok
+test plan::tests::an_earlier_request_that_landed_is_this_publishs ... ok
+test plan::tests::an_end_that_may_hide_a_publish_is_looked_up_first ... ok
+test plan::tests::asked_with_the_daemon_away_the_hold_is_kept_until_held_until ... ok
+test plan::tests::at_the_intent_the_snapshot_is_taken_or_given_up ... ok
+test plan::tests::done_is_recorded_only_as_look_sees_it ... ok
+test plan::tests::done_it_is_released_then_forgotten ... ok
+test plan::tests::held_it_is_asked_with_the_count_read_before_the_snapshot ... ok
+test plan::tests::held_until_is_the_acceptance_plus_the_expiry_plus_the_margin ... ok
+test plan::tests::pending_a_sync_helps_only_where_no_cut_has_carried_the_request ... ok
+test plan::tests::refused_stopped_gives_a_publish_up_whatever_its_age ... ok
+test plan::tests::rewound_and_unknown_are_asked_anew_and_looked_up_only_where_broken ... ok
+test plan::tests::snap_t_is_ours_where_it_records_this_manifest_and_a_group_not_before_g ... ok
+test plan::tests::taken_it_is_held_once_its_members_and_load_guid_are_verified ... ok
+test plan::tests::the_other_refusals_wait_withdraw_or_stop ... ok
+test record::crash::a_call_that_fails_leaves_the_record_before_or_after_and_the_step_can_be_asked_again ... ok
+test record::crash::a_power_cut_after_any_call_leaves_the_record_before_or_after_each_step ... ok
+test record::crash::a_second_agent_is_refused_the_directory_while_the_first_has_it ... ok
+test record::crash::the_model_loses_what_was_not_synced ... ok
+test record::tests::a_corrupt_record_is_not_written_over ... ok
+test record::tests::a_head_that_is_not_version_2s_is_named ... ok
+test record::tests::a_name_given_up_leaves_those_under_way_and_the_newest_are_kept ... ok
+test record::tests::a_record_changed_or_cut_short_is_corrupt ... ok
+test record::tests::a_record_reads_back_as_written ... ok
+test record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read ... ok
+test record::tests::a_saved_record_loads_and_none_is_absent ... ok
+test record::tests::bytes_after_the_body_are_corrupt ... ok
+test record::tests::manifests_are_kept_by_name_beside_the_record ... ok
+test record::tests::the_directory_synced_for_a_new_one_is_the_one_that_holds_it ... ok
+test record::tests::version_2s_bytes_are_these ... ok
+test zfs::cli::recordings::a_checkpoint_as_recorded_is_refused ... ok
+test zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded ... ok
+test zfs::cli::recordings::a_resilver_is_busy_and_a_scrub_is_not_as_recorded ... ok
+test zfs::cli::recordings::holds_read_as_recorded ... ok
+test zfs::cli::recordings::members_and_tagged_read_as_recorded ... ok
+test zfs::cli::recordings::missing_pool_name_from_a_pool_that_exists_is_an_error ... ok
+test zfs::cli::recordings::the_properties_read_as_recorded ... ok
+test zfs::cli::recordings::the_recorded_failure_of_the_snapshot_program_is_an_error ... ok
+test zfs::cli::recordings::the_recordings_are_of_the_versions_the_docs_name ... ok
+test zfs::cli::recordings::the_rigs_pool_as_recorded_passes_the_premise ... ok
+test zfs::cli::tests::a_command_past_its_limit_is_an_error ... ok
+test zfs::cli::tests::a_hold_already_there_is_held_where_every_member_has_it ... ok
+test zfs::cli::tests::a_layout_that_changed_between_its_two_reads_is_refused ... ok
+test zfs::cli::tests::a_name_that_holds_the_words_does_not_say_them ... ok
+test zfs::cli::tests::a_release_without_the_tag_is_released_where_no_member_keeps_it ... ok
+test zfs::cli::tests::a_status_that_cannot_be_read_is_refused ... ok
+test zfs::cli::tests::a_take_that_failed_part_way_is_destroyed ... ok
+test zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex ... ok
+test zfs::cli::tests::every_kind_of_vdev_and_class_reads_as_it_is ... ok
+test zfs::cli::tests::held_is_the_tag_on_every_members_snapshot ... ok
+test zfs::cli::tests::no_such_pool_is_no_pool ... ok
+test zfs::cli::tests::nocacheflush_is_read_from_the_module ... ok
+test zfs::cli::tests::only_a_resilver_rebuild_or_removal_under_way_is_busy ... ok
+test zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took ... ok
+test zfs::cli::tests::the_assist_sets_the_property_then_syncs ... ok
+test zfs::cli::tests::the_members_are_read_by_a_read_only_program ... ok
+test zfs::cli::tests::the_program_and_the_manifest_agree_on_what_is_printable ... ok
+test zfs::cli::tests::the_properties_read_as_they_are ... ok
+test zfs::cli::tests::the_rigs_pool_reads_as_one_disk_and_passes_the_premise ... ok
+test zfs::cli::tests::the_snapshot_program_makes_the_manifests_members ... ok
+test zfs::cli::tests::the_snapshot_program_takes_nothing_before_it_has_read_everything ... ok
+test zfs::cli::tests::the_snapshot_programs_failures_say_what_was_taken ... ok
+test zfs::cli::tests::the_tagged_snapshots_are_read_by_name ... ok
+test zfs::cli::tests::the_words_of_a_datasets_name_are_not_its_message ... ok
+test zfs::cli::tests::what_is_not_a_snapshots_name_is_not_destroyed ... ok
+test zfs::tests::a_pool_is_one_leaf_disk_on_the_volume_and_nothing_else_it_must_not_be ... ok
+test host::tests::an_output_held_open_past_the_end_is_waited_for_only_to_the_limit ... ok
+test host::tests::at_the_most_children_left_running_a_call_is_refused ... ok
+test host::tests::more_output_than_the_bound_is_an_error ... ok
+
+test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running unittests src/lib.rs ($SCRATCH/tl147-target/debug/build/skyzfs-control/e1cfe4307ca4722f/out/skyzfs_control-e1cfe4307ca4722f)
+
+running 16 tests
+test tests::each_line_of_version_1_reads_the_same_in_version_2 ... ok
+test tests::a_refusals_text_stays_on_one_line_within_the_limit ... ok
+test tests::a_line_that_is_not_exactly_a_request_does_not_parse ... ok
+test tests::every_line_reads_back_as_written ... ok
+test tests::socket::a_daemon_of_version_1_is_not_read ... ok
+test tests::socket::a_limit_too_long_is_an_error ... ok
+test tests::socket::a_link_at_the_sockets_path_is_refused ... ok
+test tests::socket::a_socket_or_a_daemon_of_another_user_is_refused ... ok
+test tests::socket::a_full_backlog_is_tried_again_after_pauses_that_grow ... ok
+test tests::socket::a_read_cut_by_the_deadline_is_timed_out ... ok
+test tests::socket::no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once ... ok
+test tests::socket::an_ask_ends_at_its_limit_however_the_daemon_spreads_its_answer ... ok
+test tests::the_lines_are_version_2s_words ... ok
+test tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit ... ok
+test tests::socket::the_wait_for_a_connection_counts_in_the_deadline ... ok
+test tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+
+   Doc-tests skyzfs_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfs_control
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-control
+   Compiling rustix v1.1.4
+    Checking skyzfs-control v0.0.1 ($SCRATCH/tl147/crates/skyzfs-control)
+ Documenting skyzfs-control v0.0.1 ($SCRATCH/tl147/crates/skyzfs-control)
+ Documenting skyzfs-agent v0.0.1 ($SCRATCH/tl147/crates/skyzfs-agent)
+    Finished `dev` profile [optimized] target(s) in 1.53s
+   Generated $SCRATCH/tl147-target/doc/skyzfs_agent/index.html and 1 other file
+== exit 0

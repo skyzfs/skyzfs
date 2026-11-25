@@ -1,0 +1,26 @@
+{"id": "T1", "what": "partial take: never destroyed (the arm left out)", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T2", "what": "partial take: EEXIST not excluded", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T3", "what": "partial take: taken 0 counted", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T4", "what": "partial take: no `taken` counted as taken", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed", "zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took"]}
+{"id": "T5", "what": "partial take: `failed` not required (author: equivalent)", "result": "SURVIVED", "failed": []}
+{"id": "T6", "what": "partial take: the destroy's outcome left out of the error", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T7", "what": "partial take: `destroyed` whatever the destroy gave", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T8", "what": "partial take: errno read from the wrong key (EEXIST never seen)", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T9", "what": "partial take: the destroy run without -r", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed", "zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex", "zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took"]}
+{"id": "T10", "what": "partial take: destroy_taken's wording used (program named twice)", "result": "KILLED", "failed": ["zfs::cli::tests::a_take_that_failed_part_way_is_destroyed"]}
+{"id": "T11", "what": "partial take: run before the unreadable arm (order swapped)", "result": "SURVIVED", "failed": []}
+{"id": "S1a", "what": "destroy: the name guard left out", "result": "KILLED", "failed": ["zfs::cli::tests::what_is_not_a_snapshots_name_is_not_destroyed"]}
+{"id": "S1b", "what": "destroy: the guard on the pool, not on t", "result": "KILLED", "failed": ["zfs::cli::tests::what_is_not_a_snapshots_name_is_not_destroyed"]}
+{"id": "S1c", "what": "destroy: `dataset does not exist` read as `was not taken` again", "result": "KILLED", "failed": ["zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took"]}
+{"id": "S1d", "what": "destroy: `could not find any snapshots` read as `was not found`", "result": "KILLED", "failed": ["zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took"]}
+{"id": "S4", "what": "the prefix not taken off (program named twice)", "result": "KILLED", "failed": ["(build failed)"]}
+{"id": "F1a", "what": "held: the root's tag alone", "result": "KILLED", "failed": ["zfs::cli::recordings::holds_read_as_recorded", "zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "F1b", "what": "held: the root not checked first", "result": "KILLED", "failed": ["zfs::cli::recordings::holds_read_as_recorded", "zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "F1c", "what": "held: any member instead of every", "result": "KILLED", "failed": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "F1d", "what": "held: members gone between the reads read as held", "result": "KILLED", "failed": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "F1e", "what": "fake held: the root's tag alone", "result": "SURVIVED", "failed": []}
+{"id": "F3a", "what": "manifest: 0x7f printable (the review's N1)", "result": "KILLED", "failed": ["zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex", "zfs::cli::tests::the_program_and_the_manifest_agree_on_what_is_printable"]}
+{"id": "F3b", "what": "manifest: 0x20 not printable", "result": "KILLED", "failed": ["manifest::tests::a_value_that_is_not_printable_ascii_is_written_in_hex", "zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex", "zfs::cli::tests::the_program_and_the_manifest_agree_on_what_is_printable"]}
+{"id": "F3c", "what": "program: the pattern widened to DEL", "result": "KILLED", "failed": ["zfs::cli::tests::the_program_and_the_manifest_agree_on_what_is_printable"]}
+{"id": "T3n", "what": "says: the first `: ` (the review's N12)", "result": "KILLED", "failed": ["zfs::cli::tests::a_name_that_holds_the_words_does_not_say_them"]}
+{"id": "S4", "what": "the prefix not taken off (program named twice)", "result": "KILLED", "failed": ["zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took"]}
