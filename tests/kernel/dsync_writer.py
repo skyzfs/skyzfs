@@ -25,11 +25,16 @@
             longest=SECONDS writes=N before=SECONDS
         longest: the longest write that overlapped the window, "<SLOW"
         when no write of SLOW or more did; writes: the writes that ended
-        in the window's whole seconds; before: the longest write that
-        ended before T0. Exit 2 when the log has no start.
+        in the window's whole seconds ("-" when it holds none); before:
+        the longest write that ended before T0. A log that did not run
+        from T0 to T1 (its start after T0, or its end, last second or
+        last slow write before T1) is said first: "NOT COVERED: the log
+        runs from A to B, the window from T0 to T1; " and then the line.
+        Exit 2 when the log has no start.
 
 Times are time.time(), the clock `date +%s.%N` reads.
 """
+import math
 import os
 import signal
 import sys
@@ -74,7 +79,9 @@ def write(path, log, slow=SLOW, block=BLOCK, span=SPAN, flags=os.O_DSYNC):
 
 def stall(lines, t0, t1, slow=SLOW):
     """The line for the window [t0, t1], or None when the log has no start."""
-    started = False
+    started = None
+    last = None
+    ended = None
     longest = None
     before = 0.0
     writes = 0
@@ -82,25 +89,42 @@ def stall(lines, t0, t1, slow=SLOW):
         f = line.rstrip("\n").split("\t")
         try:
             if f[0] == "start":
-                started = True
+                started = float(f[1])
+                last = max(last or started, started)
             elif f[0] == "slow":
                 s, lat = float(f[1]), float(f[2])
+                last = max(last or 0.0, s + lat)
                 if s < t1 and s + lat > t0:
                     longest = max(longest or 0.0, lat)
                 elif s + lat <= t0:
                     before = max(before, lat)
             elif f[0] == "sec":
                 sec, count, lat = int(f[1]), int(f[2]), float(f[3])
+                last = max(last or 0.0, sec + 1.0)
                 if t0 <= sec and sec + 1 <= t1:
                     writes += count
                 if sec + 1 <= t0:
                     before = max(before, lat)
+            elif f[0] == "end":
+                ended = float(f[1])
         except (IndexError, ValueError):
             continue
-    if not started:
+    if started is None:
         return None
+    # The end line is written after the last write: where there is one,
+    # the log runs to it. The last second's row, written at the end,
+    # counts to that second's end, which the writer may not have reached.
+    if ended is not None:
+        last = ended
     shown = "%.3f" % longest if longest is not None else "<%g" % slow
-    return "longest=%s writes=%d before=%.3f" % (shown, writes, before)
+    # Writes are counted in the window's whole seconds: none in a window
+    # that holds no whole second.
+    whole = math.ceil(t0) + 1 <= t1
+    line = "longest=%s writes=%s before=%.3f" % (shown, writes if whole else "-", before)
+    if started > t0 or last < t1:
+        line = "NOT COVERED: the log runs from %.3f to %.3f, the window from %.3f to %.3f; %s" % (
+            started, last, t0, t1, line)
+    return line
 
 
 def main(argv):

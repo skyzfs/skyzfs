@@ -37,7 +37,7 @@ class Stall(unittest.TestCase):
         self.assertEqual(dsync_writer.stall(lines, 100.0, 110.0), "longest=<0.01 writes=0 before=3.000")
 
     def test_a_write_ending_at_the_start_is_before(self):
-        lines = log("start\t90.0", "slow\t99.0\t1.000000")
+        lines = log("start\t90.0", "slow\t99.0\t1.000000", "end\t111.0\t9")
         self.assertEqual(dsync_writer.stall(lines, 100.0, 110.0), "longest=<0.01 writes=0 before=1.000")
 
     def test_writes_counted_in_whole_seconds_of_the_window(self):
@@ -48,8 +48,41 @@ class Stall(unittest.TestCase):
         self.assertIsNone(dsync_writer.stall(log("slow\t101.0\t5.0"), 100.0, 110.0))
 
     def test_a_torn_line_is_skipped(self):
-        lines = log("start\t90.0", "slow\t101.0", "slow\t102.0\t1.5")
+        lines = log("start\t90.0", "slow\t101.0", "slow\t102.0\t1.5", "end\t111.0\t9")
         self.assertEqual(dsync_writer.stall(lines, 100.0, 110.0).split()[0], "longest=1.500")
+
+    def test_a_log_that_ends_in_the_window_is_not_covered(self):
+        # The writer's last word is at 104.5: what came after is not known.
+        lines = log("start\t90.0", "sec\t103\t10\t0.001", "slow\t104.0\t0.500000")
+        self.assertEqual(dsync_writer.stall(lines, 100.0, 110.0),
+                         "NOT COVERED: the log runs from 90.000 to 104.500, the window from 100.000 to 110.000; "
+                         "longest=0.500 writes=10 before=0.000")
+
+    def test_a_log_that_starts_in_the_window_is_not_covered(self):
+        lines = log("start\t102.0", "end\t111.0\t9")
+        self.assertTrue(dsync_writer.stall(lines, 100.0, 110.0).startswith(
+            "NOT COVERED: the log runs from 102.000 to 111.000,"))
+
+    def test_the_last_second_and_a_slow_write_cover(self):
+        # A second counted to its end, a slow write to its end: both reach t1.
+        self.assertFalse(dsync_writer.stall(log("start\t90.0", "sec\t109\t1\t0.001"), 100.0, 110.0)
+                         .startswith("NOT"))
+        self.assertFalse(dsync_writer.stall(log("start\t90.0", "slow\t108.0\t2.000000"), 100.0, 110.0)
+                         .startswith("NOT"))
+
+    def test_the_end_line_bounds_a_last_second_cut_short(self):
+        # The last second is written at the writer's end, part way through
+        # it: the log runs to the end line, not to the second's end.
+        lines = log("start\t90.0", "sec\t100\t40\t0.001", "end\t100.200000\t41")
+        self.assertEqual(dsync_writer.stall(lines, 100.1, 100.8),
+                         "NOT COVERED: the log runs from 90.000 to 100.200, the window from 100.100 to 100.800; "
+                         "longest=<0.01 writes=- before=0.000")
+        self.assertFalse(dsync_writer.stall(lines, 99.5, 100.2).startswith("NOT"))
+
+    def test_a_window_with_no_whole_second(self):
+        lines = log("start\t90.0", "sec\t100\t40\t0.001", "end\t111.0\t9")
+        self.assertEqual(dsync_writer.stall(lines, 100.2, 101.1), "longest=<0.01 writes=- before=0.000")
+        self.assertEqual(dsync_writer.stall(lines, 100.0, 101.0).split()[1], "writes=40")
 
 
 def open_flags(pid, path):
@@ -115,7 +148,7 @@ class Writer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "w.tsv")
             with open(out, "w") as f:
-                f.write("start\t90.0\nslow\t101.0\t4.250000\n")
+                f.write("start\t90.0\nslow\t101.0\t4.250000\nend\t111.0\t9\n")
             r = subprocess.run([sys.executable, os.path.join(HERE, "dsync_writer.py"), "stall", out, "100", "110"],
                                capture_output=True, text=True)
             self.assertEqual((r.returncode, r.stdout), (0, "longest=4.250 writes=0 before=0.000\n"))
