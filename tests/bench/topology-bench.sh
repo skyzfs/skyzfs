@@ -937,7 +937,7 @@ if skz:
           'the window; its verdict says "seed inside window, lease at release" and the lease\'s epoch. A seed row '
           '(one that says it uploads and had committed no upload at its window\'s start, or none after its seed, so '
           'that its window began with the seed or with the upload that carries what was written while the seed '
-          'ran) keeps its verdict on its line but is not one of design §9\'s median, which is the steady '
+          'ran, and whose daemon had found no cut committed already) keeps its verdict on its line but is not one of design §9\'s median, which is the steady '
           'state\'s ratio: the count after the table puts it apart.\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|---|')

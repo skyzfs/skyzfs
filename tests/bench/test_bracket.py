@@ -340,6 +340,21 @@ class SeedRows(unittest.TestCase):
             rows[1]['skyzfsd'] = uploading(sb)
             self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'], sb)
 
+    def test_a_daemon_that_found_cuts_committed_is_not_a_seed_row(self):
+        """Review of #132: a daemon started again over a volume seeded
+        before it counts its uploads from 0, though its window did not
+        begin with the seed; `upload_found_committed` above 0 says so."""
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=None), row(3, 'zfs-slog', 1000)]
+        for sb, seed in (({'uploaded': '0', 'upload_found_committed': '0'}, True),
+                         ({'uploaded': '0'}, True),                                    # a status from before the key
+                         ({'uploaded': '0', 'upload_found_committed': '1'}, False),
+                         ({'uploaded': '0', 'upload_found_committed': '12'}, False),
+                         ({'uploaded': '0', 'upload_found_committed': 'x'}, False),
+                         ({'uploaded': '1', 'uploaded_whole': '1', 'upload_found_committed': '0'}, True),
+                         ({'uploaded': '1', 'uploaded_whole': '1', 'upload_found_committed': '3'}, False)):
+            rows[1]['skyzfsd'] = uploading(sb)
+            self.assertEqual(bk.bracketed(rows[1], rows)['seed_row'] is not None, seed, sb)
+
     def test_steady_rows_are_not(self):
         rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, skyzfsd=uploading()), row(3, 'zfs-slog', 1000)]
         self.assertIsNone(bk.bracketed(rows[1], rows)['seed_row'])
@@ -406,6 +421,16 @@ class ASeedInTheWindow(unittest.TestCase):
         k = seeding()
         del k['after']['uploaded_whole']
         self.assert_no_verdict(self.judge(k), said, 'not read whole at its end')
+        # The clause names a lease held at the end only when there was one
+        # (review of #132: it said "held" of a lease lost or never taken).
+        held, none = 'under the lease held at its end', 'under a lease, since none was held at its end'
+        for sb, sa, under in (({'lease': 'held', 'lease_epoch': '1'}, {'lease_epoch': '2'}, held),
+                              ({}, {'uploaded_whole': '0'}, held),
+                              ({}, {'lease': 'lost'}, none), ({}, {'lease': 'none'}, none),
+                              ({}, {'lease': 'waiting'}, none)):
+            b = self.judge(seeding(sb, sa))
+            self.assert_no_verdict(b, why + ' ' + under)
+            self.assertNotIn(held if under == none else none, b['verdict'])
         # Two daemons, or an end not read, are said as before.
         self.assert_no_verdict(self.judge(seeding(sa={'pid': '5151'}, pid_same=False)),
                                'its daemon was not shown to be the same')
