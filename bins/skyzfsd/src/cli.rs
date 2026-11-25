@@ -614,7 +614,7 @@ pub enum KillAt {
     /// the uploader knows it.
     Publish(u64),
     /// `carry-put:N`: once the first segment PUT of the cut chosen to
-    /// carry the Nth publish accepted has landed ([`crate::kill`] says
+    /// carry the Nth publish accepted has landed (`crate::kill` says
     /// which cut is chosen).
     CarryPut(u64),
     /// `carry-swap:N`: once the commit of the cut chosen to carry the Nth
