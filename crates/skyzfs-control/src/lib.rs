@@ -131,7 +131,11 @@
 //! may still have been taken: ask again, which answers as asking once,
 //! or withdraw it. For `cuts`, which the store's queue answers and not
 //! the uploader, `ended` says that the store is no longer served, and
-//! `no-answer` that its queue took no turn within the limit. For `look`,
+//! `no-answer` that its queue took no turn within the limit. A `publish`
+//! goes there first, for the store's rewind mark, which goes with it to
+//! the uploader (B3 of the review of #140): it can be answered either
+//! of those before the uploader sees it, and its two waits share the
+//! one [`ANSWER_LIMIT`]. For `look`,
 //! `no-answer` and `store` are object storage's (above). The other codes
 //! are a publish's refusals (`skyzfs_upload::Refusal`).
 
