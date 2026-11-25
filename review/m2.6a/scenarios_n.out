@@ -1,0 +1,60 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.10s
+
+running 6 tests
+test next_a_pending_publish_ended_by_another_ask ... P1 first step: PublishLooked { name: "p1" }
+P1 second step: Began { number: 2, rule: Delta }
+P2 answer: Accepted; P1 now Refused(Rewound)
+steps: [PublishLooked { name: "p2" }, Read { number: 2, blocks: 5, zeroes: 0 }, Uploaded { number: 2, rule: Delta, blocks: 5 }, Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+P1 Refused(Rewound) on group None
+ok
+test next_a_pending_publish_without_another_ask ... steps: [Read { number: 2, blocks: 5, zeroes: 0 }, Uploaded { number: 2, rule: Delta, blocks: 5 }, Published { name: "p1", number: 2, commit: [52, 108, 213, 84, 192, 154, 70, 209, 74, 194, 6, 101, 17, 74, 4, 184, 2, 239, 91, 255, 54, 226, 144, 235, 223, 112, 1, 66, 125, 236, 184, 49], found: false }, Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+P1 alone Done([52, 108, 213, 84, 192, 154, 70, 209, 74, 194, 6, 101, 17, 74, 4, 184, 2, 239, 91, 255, 54, 226, 144, 235, 223, 112, 1, 66, 125, 236, 184, 49]) on group Some(51)
+ok
+test next_f2a_with_the_mark_at_the_ask ... F2a' store: count 3 rewound 3
+F2a' answer: Refused(Rewound)
+F2a' steps: [Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+F2a' snap/t on group: None
+ok
+test next_f2b_with_the_mark_at_the_ask ... F2b' store: count 3 rewound 3
+F2b' answer: Refused(Rewound)
+F2b' steps: [Read { number: 2, blocks: 5, zeroes: 0 }, Uploaded { number: 2, rule: Delta, blocks: 5 }, Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+F2b' snap/t on group: None
+ok
+test next_table_of_rule_r ... TABLE rising: (count, rewound) = (3, 0), want (3, 0)
+TABLE -F: equal group, new root: (count, rewound) = (3, 3), want (3, 3)
+TABLE -T: lower group: (count, rewound) = (3, 3), want (3, 3)
+TABLE same uberblock again: a repeat: (count, rewound) = (2, 0), want (2, 0)
+TABLE one lower (errs low): (count, rewound) = (3, 3), want (3, 3)
+TABLE two rewinds: (count, rewound) = (5, 5), want (5, 5)
+TABLE rewind then rising: (count, rewound) = (5, 4), want (5, 4)
+TABLE take-over: (count, rewound) = (2, 2), want (2, 2)
+TABLE take-over then rising: (count, rewound) = (3, 2), want (3, 2)
+TABLE take-over after a rewind: (count, rewound) = (4, 4), want (4, 4)
+TABLE reboot: new state: (count, rewound) = (0, 0), want (0, 0)
+TABLE reboot then lower: (count, rewound) = (1, 1), want (1, 1)
+TABLE reboot then lower twice: (count, rewound) = (2, 2), want (2, 2)
+TABLE checkpoint rewind: higher group, new root: (count, rewound) = (3, 0), want (3, 0)
+TABLE errs low, then -F at the top: (count, rewound) = (4, 3), want (4, 3)
+TABLE -T then the abandoned top's group anew: (count, rewound) = (7, 6), want (7, 6)
+TABLE take-over in the -T window: (count, rewound) = (6, 5), want (6, 5)
+TABLE a pool made anew, one daemon: (count, rewound) = (5, 5), want (5, 5)
+TABLE a pool made anew, then a restart: (count, rewound) = (5, 3), want (5, 3)
+ok
+test next_the_cost_after_t ... COST ask after 10 (count 11, mark 11): Refused(Rewound)
+COST ask after 11 (count 11, mark 11): Accepted
+COST   then group 24: Refused(Rewound)
+COST ask after 12 (count 12, mark 12): Accepted
+COST   then group 25: Refused(Rewound)
+COST ask after 13 (count 13, mark 13): Accepted
+COST   then group 26: Refused(Rewound)
+COST ask after 14 (count 14, mark 14): Accepted
+COST   then group 27: Refused(Rewound)
+COST ask after 15 (count 15, mark 15): Accepted
+COST   then group 28: Refused(Rewound)
+COST ask after 16 (count 16, mark 16): Accepted
+COST   then group 29: Done([178, 99, 3, 74, 69, 110, 32, 184, 53, 187, 139, 0, 1, 19, 157, 7, 221, 145, 227, 56, 252, 222, 189, 56, 31, 121, 95, 51, 28, 179, 171, 81])
+COST snap/t on group Some(29)
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+

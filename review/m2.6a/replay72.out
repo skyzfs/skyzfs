@@ -1,0 +1,48 @@
+##### the check at 72a3b5e, the rig's recording at 72a3b5e (26.04)
+prewind: judge_ends: all ok
+prewind: r1 commit from r1-end: 2e818488f7eb
+pkill: judge_ends: all ok
+pkill: tk commit from tk-end: a94a8da83202
+pkillman: judge_ends: all ok
+pkillman: m1 commit from m1-end: c5b721b74886
+pkillpub: judge_ends: all ok
+pkillpub: p1 commit from p1-look: af43a26bbfee
+prewind: row cut ('fe43c3e68775db7058c539e391a968c9', 23, 33) first C 20 last C 27
+prewind: premise with the first ask: holds
+prewind: premise with the last ask:  ["the row's cut 23 is not counted after C = 27"]
+##### the check at 72a3b5e, the rig's recording at 7d1152a (26.04)
+prewind: judge_ends: RigError: the course left no answer for r1-anew, r1-end
+prewind: r1 commit from r1-end: None
+pkill: judge_ends: RigError: the course left no answer for tk-anew
+pkill: tk commit from tk-end: None
+pkillman: judge_ends: RigError: the course left no answer for m1-anew
+pkillman: m1 commit from m1-end: None
+pkillpub: judge_ends: RigError: the course left no answer for p1-anew, p1-look
+pkillpub: p1 commit from p1-look: None
+prewind: row cut ('39e9a7373f98b3e8b734c71030a44842', 22, 33) first C 19 last C 19
+prewind: premise with the first ask: holds
+prewind: premise with the last ask:  holds
+##### the check at 7d1152a, the rig's recording at 72a3b5e (26.04)
+prewind: judge_ends: RigError: answers the table does not know: r1-anew, r1-end
+prewind: r1 commit from r1: None
+pkill: judge_ends: RigError: answers the table does not know: tk-anew
+pkill: tk commit from tk-end: a94a8da83202
+pkillman: judge_ends: RigError: answers the table does not know: m1-anew
+pkillman: m1 commit from m1-end: c5b721b74886
+pkillpub: judge_ends: RigError: answers the table does not know: p1-anew, p1-look
+pkillpub: p1 commit from p1-end: None
+prewind: row cut ('fe43c3e68775db7058c539e391a968c9', 23, 33) first C 27 last C 27
+prewind: premise with the first ask: ["the row's cut 23 is not counted after C = 27"]
+prewind: premise with the last ask:  ["the row's cut 23 is not counted after C = 27"]
+##### the check at 7d1152a, the rig's recording at 7d1152a (26.04)
+prewind: judge_ends: [('r1', 'refused rewound a rewind may have been counted after the count asked from')]
+prewind: r1 commit from r1: None
+pkill: judge_ends: [('tk-again', 'refused rewound a rewind may have been counted after the count asked from'), ('tk-end', 'unknown')]
+pkill: tk commit from tk-end: None
+pkillman: judge_ends: [('m1-again', 'refused rewound a rewind may have been counted after the count asked from'), ('m1-end', 'unknown')]
+pkillman: m1 commit from m1-end: None
+pkillpub: judge_ends: [('p1-again', 'refused rewound a rewind may have been counted after the count asked from'), ('p1-end', 'unknown')]
+pkillpub: p1 commit from p1-end: None
+prewind: row cut ('39e9a7373f98b3e8b734c71030a44842', 22, 33) first C 19 last C 19
+prewind: premise with the first ask: holds
+prewind: premise with the last ask:  holds
