@@ -6,14 +6,18 @@
 | Base | `8f0390f` (the tip of `zfs-topology`) |
 | What was read | `git diff aeeb3cd...d629834`: `bins/skyzfsd/src/{kill.rs, kill/tests.rs, upload.rs, upload/tests.rs}`, against `review.md` beside this note and the author's answer (issue comment 7174745360) |
 | Codex | completed on `d629834` with no findings |
-| CI on the head | green, but the daemon rig was still running (list at the end) |
+| CI on the head | all green (list at the end) |
 
 ## Verdict
 
 **Not ready to merge as it stands. One small fix remains (R2).**
 
 - **B1 is fixed.** The test now drops the receiver before it sends. In 6000 runs at the head it failed 0 times. At the old rate (6 in 9000), about 4 failures were expected.
-- **F1(a), F2, Z, S1 and S2 are built as the lead ruled.** Each is tested through the real `Driver` and `kill::maker`. PLANTS_SUMMARY
+- **F1(a), F2, Z, S1 and S2 are built as the lead ruled.** Each is tested through the real `Driver` and `kill::maker`.
+- **Plants: 22 of 26 are caught by the pull request's tests.** That includes all nine of the author's I ran, and M3, M4, M6, M7 and M13, which survived at `aeeb3cd`. Of the four that survive:
+  - N1 is caught by a scratch test of mine (G2);
+  - N5 and N6 are a minor gap (G1);
+  - M16 is unchanged (G3).
 - **R2 blocks, in my view. It is a defect against F1(a) as ruled and against the module's own docs.** Certain in the code, unlikely in a run. Suppose publish N's transaction lands, but its call comes back failed. Then the hook is never told about the publish. It kills at a later cut, after `snap/<name>` exists, and the kill line says that cut was "chosen to carry publish N". The fix is a few lines in `KillRemote::publish`.
 - **T is a suggestion: the docs misdescribe the residual window.** The window is real and needs no fault. It is the uploader's ordinary turn order whenever a publish's lookup took longer than the next cut's check and read. I built it in cases A and B, for both hooks. It is benign for M2.6's purpose. But the docs need three corrections, and the author's answer says the order cannot be built, which is wrong.
 - **The default build is unchanged.** The S1 lines and the new `posted` argument reach nothing outside a test-hooks build.
@@ -32,7 +36,7 @@
 4. The uploader calls `Driver::publish_failed` (`crates/skyzfs-upload/src/uploader.rs:603`), and the publish waits its first second.
 5. The cut has the steps meanwhile. Cut 8 is read, which makes it chosen ("cut 8 (group 8) chosen to carry publish 1"), and committed. The hook then kills with `carry-swap:1: after the commit of cut 8 (group 8), chosen to carry publish 1, landed, before the cut was let go`.
 6. By then publish 1 has been made on cut 7.
-7. Without the kill, once the wait is over, the recheck finds `snap/t` and ends the publish `Published { number: 7, found: true }`. The found path does not call `Remote::publish`, so even then the hook is not told on that path.
+7. Without the kill, once the wait is over, the recheck finds `snap/t` and ends the publish `Published { number: 7, found: true }`. That path does not call `Remote::publish`. The hook would learn of the publish only at the post that follows, through `Carry::ended`, a second or more after the publish was made.
 
 **Built.** `r150n_show_r2_a_publish_landed_whose_call_failed_lets_the_hook_kill_after_it` in `scratch150n.rs` passes at the head (`run150n.out`). Its log shows `put .../snap/...` and `put_if .../refs` before the kill line, no "no kill" line, and the later `found: true` on cut 7. `carry-put` goes through the same code. I did not run it under `carry-put`.
 
@@ -48,7 +52,7 @@
 - The course of R1 (below) also gives up rather than kill. That is conservative, and costs only that serve's kill.
 - A test like my R2 course pins it.
 
-### T. Suggestion (docs), certain, likely in the daemon: the window the docs leave open is the uploader's normal turn order
+### T. Suggestion (docs), certain, reachable with no fault: the window the docs leave open is the uploader's ordinary turn order
 
 `kill.rs:65-68`: "Where the chosen cut's commit lands before the publish's step has made it on another cut, the hook still fires; the kill line names the cut chosen, which a rig compares with the cut the snapshot's row names after the restart."
 
@@ -85,12 +89,12 @@ Each drives `step_cut` and `step_publish` in the order above, through `kill::mak
 
 - The kill still falls between the acceptance and the ref.
 - Cut 7 was let go before the kill. A new uploader knows only the cuts it has committed or found committed since it began (`crates/skyzfs-upload/src/publish.rs:10-12`).
-- So after the restart, cut 8 is found committed (`carry-swap`, not let go) or uploaded again (`carry-put`), and the publish asked again is made on cut 8. That is the cut the kill line names.
+- So after the restart, cut 8 is found committed (`carry-swap`, not let go) or uploaded again (`carry-put`). The publish asked again, with the same *C*, *G* and cut state (the cut state outlives the daemon, design §5.2), is made on cut 8. That is the cut the kill line names. I reasoned this from the code and did not run a restart.
 - The course therefore tests a kill at the commit, or segment PUT, of a cut that ends up carrying publish N.
 
 **What the docs get wrong.**
 
-1. They present the window as a rare order, and the answer says it cannot be built. It is the uploader's ordinary order whenever the publish is ahead in counted time.
+1. They do not say how the window is reached, and the answer says the order cannot be built. It is the uploader's ordinary order whenever the publish is ahead in counted time.
 2. For `carry-put` the window ends at the chosen cut's first segment PUT, not at its commit.
 3. The rig's comparison does not detect T: the kill line and the row both name cut 8. It detects R2, where they differ (8 against 7). T needs no detection. The docs should say that in T the restarted serve makes the publish on the cut the kill line names, and that a mismatch means something else (R2, until it is fixed).
 
@@ -102,7 +106,34 @@ A refs write that fails without landing makes the publish wait (1 s). The cut ha
 
 `r150n_show_r1_a_failed_publish_step_lets_the_hook_kill_at_the_next_cut` passes at the head. This is the window the docs name, reached through a failure. It is benign for the same reason as T. If R2 is fixed by giving up when the call fails, this course gives up too.
 
-### PLANTS_FINDING
+### G1. Test gap, minor: the hook's "done" checks in `ended` and `published` are not tested through the post
+
+Plants N5 and N6 survive both the pull request's tests and mine. Each removes the `seen.done` check:
+
+- N5 removes it in `Carry::ended` (`kill.rs:335-338`);
+- N6 removes it in `Carry::published` (`kill.rs:359-366`).
+
+N5 matters in an ordinary course:
+
+1. Publish N is made on a cut the hook did not choose.
+2. `published` gives up and says so.
+3. At the next post, `posted` passes the ended publishes, publish N among them as done.
+4. Without the check, `ended` says a second "… ended (…) before the hook fired; no kill".
+
+The pull request's F1 tests drive the `Driver` and do not post after the publish, so nothing catches it. The effect is only an extra line on standard error, but a rig that reads those lines would see two give-ups.
+
+**Suggestion.** In the F1 tests, call `carry.posted(&driver.publishing().take_ended())` after the publish's step and assert the lines in full. N6 is the same, the other way round.
+
+### G2. Test gap, minor: no test of the pull request orders the kill against the release
+
+Plant N1 fires `carry-swap` after the inner release rather than before it. It survives the pull request's tests and is caught only by my `r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go`, whose store logs its releases. The kill line says "before the cut was let go", so a rig reads a guarantee into it.
+
+**Suggestion.** Take that test, or assert the order in `carry_swap_fires_as_the_chosen_cut_is_let_go_where_its_commits_call_failed`.
+
+### G3. Unchanged: M16 and M15
+
+- **M16:** an ask still waited on is kept after its asker went. It survives as before. The window is microseconds wide and cannot be reached deterministically (`review.md`).
+- **M15:** the wiring in `Uploads::begin`. It is left to a rig, as the answer says.
 
 ## Answers to what the coordinator asked
 
@@ -135,7 +166,7 @@ Both come after the commit landed.
 
 **A chosen cut found committed** must have been read after the arming in this serve. So its commit landed in this serve, after the reading: this is F2's case.
 
-**The order of kill and release is pinned.** `r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go` logs the store's release. It shows the kill line ("…landed (its call failed; seen as the cut was let go), before the cut was let go") before `release 7`. No test of the pull request orders the two. N1_RESULT
+**The order of kill and release is pinned.** `r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go` logs the store's release. It shows the kill line ("…landed (its call failed; seen as the cut was let go), before the cut was let go") before `release 7`. No test of the pull request orders the two: plant N1, which fires after the release, survives them and is caught by this test (G2).
 
 ### 3. F1(a): a kill at a cut that does not carry publish N while the line says it does
 
@@ -156,7 +187,53 @@ The test-hooks test binary at the head was copied aside and run one test per pro
 
 ### 5. Do the tests fail when each new behaviour breaks? And the default build
 
-PLANTS_TABLE
+**How the plants were run.** Each plant was applied alone to a clean worktree of the head. Then `cargo test -p skyzfsd --features test-hooks -- kill:: carry the_test_hooks_are_parsed_in_a_test_build` ran with a 600 s limit, and the file was restored in a `finally` whatever happened (`plants150n.py`). The verdicts:
+
+- **KILLED:** a test failed, or the limit was reached.
+- **SURVIVED:** all passed.
+- **NOT APPLIED:** the text was not found exactly once, or the plant did not compile.
+
+A second pass ran the survivors again with my scratch tests appended (`SCRATCH=scratch150n.rs`).
+
+**The plants.**
+
+- **Q1 to Q9** are the author's, from the answer's table.
+- **Q4 and Q6** as I first wrote them did not compile. **Q4b and Q6b** are the same changes, written so that they compile.
+- **P9 and the M plants** are from `review.md`.
+- **The N plants** are new.
+
+| Plant | What it breaks | The pull request's tests | With my scratch tests |
+|---|---|---|---|
+| Q1 | `KillRemote::publish` does not tell the hook | KILLED | |
+| Q2 | the ended publishes not read | KILLED | |
+| Q3 | no fire at the chosen cut's release | KILLED | |
+| Q4b | every acceptance counted | KILLED | |
+| Q5 | any publish made gives the hook up | KILLED | |
+| Q6b | any publish ended gives the hook up | KILLED | |
+| Q7 | the chosen cut not told apart in the give-up line | KILLED | |
+| Q8 | the release fires under `carry-put` too | KILLED | |
+| Q9 | the release of any cut fires `carry-swap` | KILLED | |
+| P9 | an ask whose asker went still waited on (B1's test) | KILLED | |
+| M3 | a cut numbered C chosen | KILLED | |
+| M4 | a cut of group G not chosen | KILLED | |
+| M6 | C not checked | KILLED | |
+| M7 | a read from a later block counts as a new reading | KILLED | |
+| M13 | `maker` does not give the hook to the objects | KILLED | |
+| M16 | an ask still waited on is kept after its asker went | SURVIVED | SURVIVED (G3) |
+| N1 | `carry-swap` fires at the release after the cut was let go | SURVIVED | KILLED (G2) |
+| N2 | a refused name counted among the names | KILLED | |
+| N3 | armed again at each new name after the Nth | KILLED | |
+| N4 | armed one name early | KILLED | |
+| N5 | `ended` without its `done` check (a second give-up line) | SURVIVED | SURVIVED (G1) |
+| N6 | `published` without its `done` check (a second give-up line) | SURVIVED | SURVIVED (G1) |
+| N7 | a publish made on the chosen cut does not give the hook up | KILLED | |
+| N8 | the arming line names G for C and C for G | KILLED | |
+| N9 | the end of a choice never said | KILLED | |
+| N10 | a chosen cut that does not open as itself not said so | KILLED | |
+
+- The author's claim of 13 of 13 holds for the nine of their plants I ran: Q1 to Q9, with Q4 and Q6 as Q4b and Q6b.
+- M3, M4, M6, M7 and M13, which survived at `aeeb3cd`, are now caught by the pull request's own tests.
+- No plant hit the 600 s limit.
 
 **The S1 lines and the default build.**
 
@@ -189,7 +266,7 @@ They were run at the head on toolchain 1.100.0 (`rustup update stable` reported 
 | 45701879489 | publish rig | success |
 | 45701879577 | cut-daemon | success |
 | 45701879699 | replay rig | success |
-| 45701879479 | daemon rig | DAEMON_RIG |
+| 45701879479 | daemon rig (24.04, 26.04 and 26.04-arm, on the daemon) | success, ended 21:42 UTC; job conclusions only, the summary tables were not readable through the REST API |
 
 **Not covered.** No job starts a daemon with `carry-put` or `carry-swap`. So M15 (the wiring in `Uploads::begin`) is still shown by no test, and CI has not shown the hook in the daemon. That is testing's item 7.
 
@@ -211,4 +288,4 @@ They were run at the head on toolchain 1.100.0 (`rustup update stable` reported 
 - `run150n.sh`: runs them against a clean worktree of the head and restores the file.
 - `b1repeat150n.sh`: builds the test-hooks test binary, copies it aside, and runs B1's test `REPEAT` times.
 - `plants150n.py`: the plants, each alone, with a 600 s limit and a restore in `finally`.
-- `run150n.out`, `b1repeat150n.out`, `plants150n.out`, PLANTS_EXTRA `next-gate-*.log`: the outputs. Paths are replaced by `<worktree>`, `<target>` and `<scratch>`.
+- `run150n.out`, `b1repeat150n.out`, `plants150n.out` (the first pass), `plants150n-q.out` (Q4b and Q6b), `plants150n-scratch.out` (the survivors with my scratch tests), `next-gate-*.log`: the outputs. Paths are replaced by `<worktree>`, `<target>` and `<scratch>`.

@@ -1,0 +1,164 @@
+   Compiling skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Finished `test` profile [optimized] target(s) in 23.00s
+     Running unittests src/lib.rs (<target>/debug/build/skyzfsd/b2c8a466414f9b23/out/skyzfsd-b2c8a466414f9b23)
+
+running 5 tests
+test kill::tests::r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go ... [
+    "say carry-swap:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-swap:1: cut 7 (group 7) chosen to carry publish 1",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8AA76KNAE3QRY27N9P8QD9N",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/f9403b9e84b1907ace202dd8e3a6117753e3c56646bf2f37ab414e83efd6e07f",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/898d3c15319d0c582b24738017936c505ebe9b3d5ebe8b3269a686398a0af7fa",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/1719911972fba73ea1e447332ef3efbf07ae41e746d03242f963cb99c9c03700",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "kill carry-swap:1: after the commit of cut 7 (group 7), chosen to carry publish 1, landed (its call failed; seen as the cut was let go), before the cut was let go",
+    "release 7",
+]
+ok
+test kill::tests::r150n_show_r1_a_failed_publish_step_lets_the_hook_kill_at_the_next_cut ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Err(Store(\"refs: backend error: backend error: injected fault\"))",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Published { name: \"t\", number: 7, commit: [177, 70, 173, 217, 227, 69, 178, 23, 91, 126, 156, 192, 2, 32, 152, 205, 184, 85, 118, 185, 23, 188, 228, 129, 17, 148, 194, 148, 227, 50, 192, 173], found: false })",
+    "Ok(Idle)",
+]
+wait: 1s
+the hook: [
+    "say carry-swap:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-swap:1: cut 8 (group 8) chosen to carry publish 1",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), chosen to carry publish 1, landed, before the cut was let go",
+]
+after: []
+ok
+test kill::tests::r150n_show_r2_a_publish_landed_whose_call_failed_lets_the_hook_kill_after_it ... steps: [
+    "Ok(Began { number: 7, rule: Whole })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(PublishLooked { name: \"t\" })",
+    "Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "Err(Store(\"refs: backend error: backend error: injected fault (after the operation completed)\"))",
+    "Ok(Began { number: 8, rule: Whole })",
+    "Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "Ok(Published { name: \"t\", number: 7, commit: [220, 78, 75, 41, 235, 30, 53, 153, 112, 221, 56, 200, 152, 76, 137, 167, 182, 127, 131, 219, 157, 26, 54, 126, 75, 34, 118, 198, 70, 30, 127, 52], found: true })",
+    "Ok(Idle)",
+    "Ok(Idle)",
+]
+log: [
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/skyzfs/manifest/01M8AA77MSRWCNECWWEA4DGGRP",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/snap/01M8AA77MSRWCNECWWEA4DGGRP",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "say carry-swap:1: cut 8 (group 8) chosen to carry publish 1",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8AA77MSXVD6KJB7J2RGNT59",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/fae0cc0e11ab9cc1dfc599d0ac6e2107e6c0e4506586cc3ff347a0a2b56d86ed",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/node/6b12d12568696355fc083ce9b932c10d05183557d20fbe96a2269204eb558947",
+    "put skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/commit/9ff76fe962ecf1cb564f8eb9cc175b90524ac8db4f0acaca2add97148c8a9a43",
+    "put_if skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/refs",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), chosen to carry publish 1, landed, before the cut was let go",
+]
+ok
+test kill::tests::r150n_show_t_case_b_the_uploaders_turns_let_the_hook_kill_at_the_next_cut ... CarrySwap(1)
+steps: [
+    "cut: Ok(Began { number: 7, rule: Whole })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "publish: Ok(PublishLooked { name: \"t\" })",
+    "cut: Ok(Began { number: 8, rule: Whole })",
+    "cut: Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "publish: Ok(Published { name: \"t\", number: 7, commit: [211, 215, 97, 137, 42, 20, 227, 108, 154, 120, 157, 31, 236, 134, 217, 189, 202, 255, 76, 44, 253, 141, 18, 101, 133, 25, 229, 25, 90, 101, 113, 49], found: false })",
+]
+publish due after the lookup: true
+the hook before the publish's step: [
+    "say carry-swap:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-swap:1: cut 8 (group 8) chosen to carry publish 1",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), chosen to carry publish 1, landed, before the cut was let go",
+]
+after it: []
+CarryPut(1)
+steps: [
+    "cut: Ok(Began { number: 7, rule: Whole })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 7, rule: Whole, blocks: 1 })",
+    "publish: Ok(PublishLooked { name: \"t\" })",
+    "cut: Ok(Began { number: 8, rule: Whole })",
+    "cut: Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "publish: Ok(Published { name: \"t\", number: 7, commit: [134, 199, 94, 231, 169, 10, 133, 179, 124, 78, 252, 231, 81, 87, 186, 61, 93, 232, 155, 155, 180, 113, 93, 104, 240, 62, 51, 235, 117, 31, 34, 218], found: false })",
+]
+publish due after the lookup: true
+the hook before the publish's step: [
+    "say carry-put:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-put:1: cut 8 (group 8) chosen to carry publish 1",
+    "kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8AA78NMA8NS25NGX3GS06HX)",
+]
+after it: []
+ok
+test kill::tests::r150n_show_t_the_uploaders_turns_let_the_hook_kill_at_the_next_cut ... CarrySwap(1)
+steps: [
+    "cut: Ok(Began { number: 7, rule: Whole })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "publish: Ok(PublishLooked { name: \"t\" })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "cut: Ok(Began { number: 8, rule: Whole })",
+    "cut: Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "publish: Ok(Published { name: \"t\", number: 7, commit: [97, 99, 42, 216, 79, 130, 20, 65, 98, 145, 223, 47, 211, 183, 109, 81, 8, 234, 239, 254, 106, 128, 176, 209, 179, 113, 87, 88, 189, 145, 199, 200], found: false })",
+]
+publish due after 7's commit: true
+the hook before the publish's step: [
+    "say carry-swap:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-swap:1: cut 8 (group 8) chosen to carry publish 1",
+    "kill carry-swap:1: after the commit of cut 8 (group 8), chosen to carry publish 1, landed, before the cut was let go",
+]
+after it: []
+CarryPut(1)
+steps: [
+    "cut: Ok(Began { number: 7, rule: Whole })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "publish: Ok(PublishLooked { name: \"t\" })",
+    "cut: Ok(Read { number: 7, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 7, rule: Whole, blocks: 2 })",
+    "cut: Ok(Began { number: 8, rule: Whole })",
+    "cut: Ok(Read { number: 8, blocks: 1, zeroes: 0 })",
+    "cut: Ok(Uploaded { number: 8, rule: Whole, blocks: 1 })",
+    "publish: Ok(Published { name: \"t\", number: 7, commit: [254, 188, 60, 107, 191, 111, 225, 102, 110, 127, 136, 61, 74, 228, 200, 95, 215, 221, 175, 119, 254, 13, 34, 164, 81, 159, 151, 115, 126, 60, 77, 94], found: false })",
+]
+publish due after 7's commit: true
+the hook before the publish's step: [
+    "say carry-put:1: publish 1 (t) accepted: armed for the first cut read from now on of its state, counted after 6, of group 7 or later",
+    "say carry-put:1: cut 8 (group 8) chosen to carry publish 1",
+    "kill carry-put:1: after the first segment PUT of cut 8 (group 8), chosen to carry publish 1, landed (skynbd/v1/0XX0D00GKE92KSGBWBYKVXBQ25/seg/01M8AA78NM2FXKXAY1VJ22ZDKB)",
+]
+after it: []
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 194 filtered out; finished in 2.11s
+
+     Running unittests src/main.rs (<target>/debug/build/skyzfsd/d021980f0401695d/out/skyzfsd-d021980f0401695d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/closed_output.rs (<target>/debug/build/skyzfsd/b6d2e7f23874b434/out/closed_output-b6d2e7f23874b434)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+   Doc-tests skyzfsd
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test exit 0

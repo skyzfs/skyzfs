@@ -1,0 +1,6 @@
+('Q4b', 'KILLED', 'every acceptance counted (S2), compiling', 'kill::tests::a_name_accepted_again_is_not_counted_again')
+('Q6b', 'KILLED', 'any publish ended gives the hook up, compiling', 'kill::tests::a_publish_n_that_ends_without_being_made_gives_the_hook_up')
+
+Q4b  KILLED      every acceptance counted (S2), compiling  [kill::tests::a_name_accepted_again_is_not_counted_again]
+Q6b  KILLED      any publish ended gives the hook up, compiling  [kill::tests::a_publish_n_that_ends_without_being_made_gives_the_hook_up]
+exit 0

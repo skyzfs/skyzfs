@@ -1,0 +1,10 @@
+('M16', 'SURVIVED', 'an ask still waited on is kept after its asker went', '')
+('N1', 'KILLED', 'carry-swap fires at the release after the cut was let go', 'kill::tests::r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go')
+('N5', 'SURVIVED', 'an end after the hook is done gives it up again (a second line)', '')
+('N6', 'SURVIVED', 'a publish made after the hook is done gives it up again (a second line)', '')
+
+M16  SURVIVED    an ask still waited on is kept after its asker went
+N1   KILLED      carry-swap fires at the release after the cut was let go  [kill::tests::r150n_carry_swap_at_the_release_fires_before_the_cut_is_let_go]
+N5   SURVIVED    an end after the hook is done gives it up again (a second line)
+N6   SURVIVED    a publish made after the hook is done gives it up again (a second line)
+exit 0
