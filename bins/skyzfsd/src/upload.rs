@@ -794,7 +794,7 @@ impl Uploads {
         #[cfg(all(target_os = "linux", feature = "test-hooks"))]
         {
             let die = crate::kill::sigkill();
-            let carry = crate::kill::Carry::new(kill, Arc::clone(&die));
+            let carry = crate::kill::Carry::new(kill, Arc::clone(&die), crate::kill::said());
             let make = crate::kill::maker(objects, refs, holder, vol, kill, die, carry.clone());
             match carry {
                 Some(carry) => {
@@ -829,8 +829,8 @@ pub trait Around: Send + 'static {
         inbox: tokio::sync::mpsc::Receiver<Control>,
     ) -> tokio::sync::mpsc::Receiver<Control>;
     /// After each post of the uploader, which follows each request it
-    /// answered, on its thread.
-    fn posted(&self);
+    /// answered, on its thread, with the publishes that ended in it.
+    fn posted(&self, ended: &[(String, Progress)]);
 }
 
 /// Nothing around the uploader.
@@ -850,7 +850,7 @@ impl Around for Plain {
         inbox
     }
 
-    fn posted(&self) {}
+    fn posted(&self, _ended: &[(String, Progress)]) {}
 }
 
 /// What is told of each publish that ends, after its line on standard
@@ -1158,7 +1158,7 @@ impl Uploading {
                     let inbox = around.inbox(publishes.inbox);
                     let mut keeper = uploader
                         .run_with(asked, inbox, |s| {
-                            around.posted();
+                            around.posted(&s.publishes.ended);
                             for (name, progress) in &s.publishes.ended {
                                 crate::to_stderr(&format!(
                                     "{}\n",

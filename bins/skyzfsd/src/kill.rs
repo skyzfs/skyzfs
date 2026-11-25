@@ -28,10 +28,11 @@
 //!
 //! # The cut chosen to carry a publish
 //!
-//! Publish N is the Nth publish the uploader accepted in this serve
-//! (`Answer::Accepted` to the channel's `publish`). A request refused
-//! is not counted; one asked again under a name already accepted is
-//! accepted again, and counted again. The hook ([`Carry`]) chooses
+//! Publish N is the Nth name the uploader accepted a publish of in this
+//! serve (`Answer::Accepted` to the channel's `publish`). A request
+//! refused is not counted, nor one asked again under a name already
+//! accepted: only the first acceptance of each name counts (S2 of the
+//! review of #150). The hook ([`Carry`]) chooses
 //! the first cut whose reading begins after publish N was accepted (the
 //! uploader's read of it from block 0, after its check found it to
 //! upload) and that is of the request's cut state, counted after its
@@ -46,15 +47,32 @@
 //! accepted, though it may be the cut that carries it.
 //!
 //! `carry-swap:N` fires once the chosen cut's commit has landed, so only
-//! where it commits. `carry-put:N` fires at the first segment PUT of the
-//! chosen cut that landed, where the hook cannot know whether the cut
-//! will commit: it fires where the cut carries the publish should it
-//! commit. A chosen cut that puts no segment (its blocks are all zeroes)
-//! is passed over at its end, and the next is chosen.
+//! where it commits: where the commit's call came back as landed, or,
+//! where the call failed and the uploader found the cut named by the row,
+//! as the cut is let go (F2 of the review of #150). `carry-put:N` fires
+//! at the first segment PUT of the chosen cut that landed, where the hook
+//! cannot know whether the cut will commit: it fires where the cut
+//! carries the publish should it commit. A chosen cut that puts no
+//! segment (its blocks are all zeroes) is not fired at: where the publish
+//! is made on it, the hook gives up (below); otherwise the next cut whose
+//! reading begins is chosen.
 //!
-//! The stderr line names the cut chosen by its number and group.
+//! The cut the uploader makes the publish on is its own choice: the
+//! first committed cut that carries it, which may be one whose reading
+//! began before the publish was accepted, or one committed before (F1 of
+//! the review of #150). So where publish N is made, on any cut, or ends
+//! without being made, before the hook has fired, the hook says so and
+//! gives up: it kills nowhere in that serve. Where the chosen cut's
+//! commit lands before the publish's step has made it on another cut,
+//! the hook still fires; the kill line names the cut chosen, which a rig
+//! compares with the cut the snapshot's row names after the restart.
+//!
+//! The kill line names the cut chosen by its number and group. The hook
+//! also says on standard error, without killing, when it arms (publish N
+//! accepted, with its name, *C* and *G*), when it chooses a cut or lets
+//! a choice go, and when it gives up (S1 of the review of #150).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,7 +84,7 @@ use skynbd_store::{ObjectStore, Precondition, Result};
 use skynbd_types::{CommitHash, VolumeId};
 use skyzfs_blk::Buf;
 use skyzfs_local::inplace::{CommittedCut, CutSlice};
-use skyzfs_upload::publish::{Found, Request, Snapshot};
+use skyzfs_upload::publish::{Found, Progress, Request, Snapshot};
 use skyzfs_upload::{
     Answer, Control, EngineRemote, Local, Observed, Queued, Released, Remote, RemoteError,
     Uploadable,
@@ -77,6 +95,16 @@ use crate::cli::KillAt;
 
 /// What a kill point does once reached: given what was reached.
 pub type Die = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What a carry hook says of its course, short of a kill.
+pub type Say = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The daemon's: on standard error.
+pub fn said() -> Say {
+    Arc::new(|line: &str| {
+        crate::to_stderr(&format!("skyzfsd: test hook --kill-at-upload: {line}\n"));
+    })
+}
 
 /// The daemon's: say what was reached on standard error, then SIGKILL
 /// to the daemon itself.
@@ -117,8 +145,10 @@ where
 }
 
 /// What a cut must be to be chosen for a publish ([module docs](self)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Wanted {
+    /// The publish's name.
+    name: String,
     state: [u8; 16],
     after: u64,
     group: u64,
@@ -127,6 +157,7 @@ struct Wanted {
 impl Wanted {
     fn of(request: &Request) -> Self {
         Self {
+            name: request.name.clone(),
             state: request.state,
             after: request.after,
             group: request.group,
@@ -161,8 +192,8 @@ enum CarryAt {
 struct Seen {
     /// The publishes passed on and not yet answered, in order.
     asked: VecDeque<Asked>,
-    /// The publishes accepted.
-    accepted: u64,
+    /// The names accepted, each counted at its first acceptance.
+    names: HashSet<String>,
     /// Publish N's, once accepted.
     wanted: Option<Wanted>,
     /// The cut last offered.
@@ -171,8 +202,8 @@ struct Seen {
     reading: Option<Uploadable>,
     /// The cut chosen to carry publish N.
     chosen: Option<Uploadable>,
-    /// The hook fired.
-    fired: bool,
+    /// The hook fired, or gave up: it does nothing more.
+    done: bool,
 }
 
 /// Whether `a` and `b` are the same cut.
@@ -188,13 +219,15 @@ pub struct Carry {
     at: CarryAt,
     n: u64,
     die: Die,
+    say: Say,
     seen: Mutex<Seen>,
 }
 
 impl Carry {
     /// The hook of `kill` where it is `carry-put:N` or `carry-swap:N`,
-    /// killing by `die`; `None` otherwise.
-    pub fn new(kill: Option<KillAt>, die: Die) -> Option<Arc<Self>> {
+    /// killing by `die` and saying its course by `say`; `None`
+    /// otherwise.
+    pub fn new(kill: Option<KillAt>, die: Die, say: Say) -> Option<Arc<Self>> {
         let (at, n) = match kill {
             Some(KillAt::CarryPut(n)) => (CarryAt::Put, n),
             Some(KillAt::CarrySwap(n)) => (CarryAt::Swap, n),
@@ -204,8 +237,24 @@ impl Carry {
             at,
             n,
             die,
+            say,
             seen: Mutex::new(Seen::default()),
         }))
+    }
+
+    /// The kill point, as it was named.
+    fn point(&self) -> String {
+        match self.at {
+            CarryAt::Put => format!("carry-put:{}", self.n),
+            CarryAt::Swap => format!("carry-swap:{}", self.n),
+        }
+    }
+
+    /// Say each of `lines`, prefixed by the kill point.
+    fn say_all(&self, lines: Vec<String>) {
+        for line in lines {
+            (self.say)(&format!("{}: {line}", self.point()));
+        }
     }
 
     fn seen(&self) -> MutexGuard<'_, Seen> {
@@ -248,15 +297,22 @@ impl Carry {
     /// publishes accepted, and drop a publish whose asker has gone before
     /// it was answered (the uploader then takes nothing).
     pub fn answered(&self) {
+        let mut said = Vec::new();
         let mut seen = self.seen();
         for mut asked in std::mem::take(&mut seen.asked) {
             match asked.answer.try_recv() {
                 Ok(answer) => {
-                    if answer == Answer::Accepted {
-                        seen.accepted += 1;
-                        if seen.accepted == self.n {
-                            seen.wanted = Some(asked.wanted);
-                        }
+                    if answer == Answer::Accepted
+                        && seen.names.insert(asked.wanted.name.clone())
+                        && u64::try_from(seen.names.len()) == Ok(self.n)
+                    {
+                        let wanted = &asked.wanted;
+                        said.push(format!(
+                            "publish {} ({}) accepted: armed for the first cut read from now on \
+                             of its state, counted after {}, of group {} or later",
+                            self.n, wanted.name, wanted.after, wanted.group
+                        ));
+                        seen.wanted = Some(asked.wanted.clone());
                     }
                     let _ = asked.reply.send(answer);
                 }
@@ -267,6 +323,59 @@ impl Carry {
                 Err(_) => {}
             }
         }
+        drop(seen);
+        self.say_all(said);
+    }
+
+    /// The publishes that ended in the uploader's last post: where
+    /// publish N is among them and the hook has not fired, it gives up
+    /// (F1 of the review of #150). One made on a cut has given it up
+    /// already ([`Carry::published`]).
+    fn ended(&self, ended: &[(String, Progress)]) {
+        let mut seen = self.seen();
+        if seen.done {
+            return;
+        }
+        let Some(wanted) = &seen.wanted else {
+            return;
+        };
+        let Some((name, progress)) = ended.iter().find(|(name, _)| *name == wanted.name) else {
+            return;
+        };
+        seen.done = true;
+        drop(seen);
+        self.say_all(vec![format!(
+            "publish {} ({name}) ended ({}) before the hook fired; no kill",
+            self.n,
+            crate::control::reply_of(progress).line()
+        )]);
+    }
+
+    /// Publish `name` was made on `cut`: where it is publish N and the
+    /// hook has not fired, the hook gives up, whichever cut it was (F1 of
+    /// the review of #150).
+    fn published(&self, name: &str, cut: CommittedCut) {
+        let mut seen = self.seen();
+        if seen.done
+            || seen
+                .wanted
+                .as_ref()
+                .is_none_or(|wanted| wanted.name != name)
+        {
+            return;
+        }
+        seen.done = true;
+        let which = if seen.chosen.is_some_and(|chosen| chosen.row() == cut) {
+            "the cut chosen"
+        } else {
+            "which the hook did not choose"
+        };
+        drop(seen);
+        self.say_all(vec![format!(
+            "publish {} ({name}) was made on cut {} (group {}), {which}, before the hook \
+             fired; no kill",
+            self.n, cut.number, cut.group
+        )]);
     }
 
     /// The uploader was offered `cut`.
@@ -288,23 +397,46 @@ impl Carry {
             return;
         };
         seen.reading = Some(cut);
-        let Some(wanted) = seen.wanted else {
+        let Some(wanted) = &seen.wanted else {
             return;
         };
-        if seen.fired || seen.chosen.is_some_and(|chosen| same(&chosen, &cut)) {
+        if seen.done || seen.chosen.is_some_and(|chosen| same(&chosen, &cut)) {
             return;
         }
-        seen.chosen = wanted.chooses(&cut).then_some(cut);
+        let chosen = wanted.chooses(&cut).then_some(cut);
+        let mut said = Vec::new();
+        if let Some(gone) = seen.chosen {
+            said.push(format!(
+                "cut {} (group {}) is no longer chosen: it ended without the hook firing",
+                gone.number, gone.group
+            ));
+        }
+        if let Some(cut) = chosen {
+            said.push(format!(
+                "cut {} (group {}) chosen to carry publish {}{}",
+                cut.number,
+                cut.group,
+                self.n,
+                if cut.itself {
+                    ""
+                } else {
+                    ", but it does not open as itself: the hook does not fire at it"
+                }
+            ));
+        }
+        seen.chosen = chosen;
+        drop(seen);
+        self.say_all(said);
     }
 
     /// The chosen cut, where it carries the publish and the hook has not
     /// fired: it fires now.
     fn fires(&self, seen: &mut Seen, cut: impl Fn(&Uploadable) -> bool) -> Option<Uploadable> {
         let chosen = seen.chosen.filter(|chosen| chosen.itself && cut(chosen))?;
-        if seen.fired {
+        if seen.done {
             return None;
         }
-        seen.fired = true;
+        seen.done = true;
         Some(chosen)
     }
 
@@ -339,8 +471,29 @@ impl Carry {
         let fired = self.fires(&mut self.seen(), |chosen| chosen.row() == cut);
         if let Some(cut) = fired {
             (self.die)(&format!(
-                "carry-swap:{n}: after the commit of cut {} (group {}), which carries publish \
-                 {n}, landed, before the cut was let go",
+                "carry-swap:{n}: after the commit of cut {} (group {}), chosen to carry \
+                 publish {n}, landed, before the cut was let go",
+                cut.number,
+                cut.group,
+                n = self.n
+            ));
+        }
+    }
+
+    /// Cut `number` is about to be let go, its commit landed: where it is
+    /// the chosen cut and the hook has not fired, its commit's call came
+    /// back failed while the commit landed, and `carry-swap` fires now
+    /// (F2 of the review of #150).
+    fn letting_go(&self, number: u64) {
+        if self.at != CarryAt::Swap {
+            return;
+        }
+        let fired = self.fires(&mut self.seen(), |chosen| chosen.number == number);
+        if let Some(cut) = fired {
+            (self.die)(&format!(
+                "carry-swap:{n}: after the commit of cut {} (group {}), chosen to carry \
+                 publish {n}, landed (its call failed; seen as the cut was let go), before the \
+                 cut was let go",
                 cut.number,
                 cut.group,
                 n = self.n
@@ -350,8 +503,8 @@ impl Carry {
 
     /// The publishes accepted so far.
     #[cfg(test)]
-    pub fn accepted(&self) -> u64 {
-        self.seen().accepted
+    pub fn accepted(&self) -> usize {
+        self.seen().names.len()
     }
 }
 
@@ -375,8 +528,9 @@ impl crate::upload::Around for Arc<Carry> {
         passes
     }
 
-    fn posted(&self) {
+    fn posted(&self, ended: &[(String, Progress)]) {
         self.answered();
+        self.ended(ended);
     }
 }
 
@@ -417,6 +571,7 @@ impl<L: Local> Local for KillLocal<L> {
     }
 
     async fn release(&mut self, number: u64) -> Released {
+        self.carry.letting_go(number);
         self.inner.release(number).await
     }
 
@@ -639,6 +794,9 @@ impl<R: Remote> Remote for KillRemote<R> {
                 "after the transaction of publish {} ({}) landed, before the uploader knew it",
                 self.publishes, snapshot.name
             ));
+        }
+        if let Some(carry) = &self.carry {
+            carry.published(snapshot.name, snapshot.row.cut);
         }
         Ok(())
     }

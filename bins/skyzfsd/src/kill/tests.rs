@@ -89,6 +89,12 @@ fn noted(said: &Said) -> Die {
     })
 }
 
+/// What a carry hook says, written down in `said` as `say ...`.
+fn heard(said: &Said) -> Say {
+    let said = Arc::clone(said);
+    Arc::new(move |line: &str| said.lock().expect("the log").push(format!("say {line}")))
+}
+
 fn taken(said: &Said) -> Vec<String> {
     std::mem::take(&mut *said.lock().expect("the log"))
 }
@@ -539,8 +545,10 @@ fn asked(carry: &Carry, request: Request, answer: Answer) {
 #[test]
 fn carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_that_carries_it() {
     let (inner, said) = log();
+    let lines = Said::default();
     let die = noted(&said);
-    let carry = Carry::new(Some(KillAt::CarryPut(2)), Arc::clone(&die)).expect("a carry hook");
+    let carry = Carry::new(Some(KillAt::CarryPut(2)), Arc::clone(&die), heard(&lines))
+        .expect("a carry hook");
     let store = KillStore::new(inner, None, Arc::clone(&die)).carrying(Some(Arc::clone(&carry)));
     let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
     let put = |key: &str| block_on(store.put(key, Bytes::from_static(b"x"))).expect("landed");
@@ -585,6 +593,19 @@ fn carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_th
             "put vols/a/seg/6",
         ]
     );
+    assert_eq!(
+        taken(&lines),
+        [
+            "say carry-put:2: publish 2 (c) accepted: armed for the first cut read from now on \
+             of its state, counted after 5, of group 10 or later",
+            "say carry-put:2: cut 8 (group 10) chosen to carry publish 2, but it does not open \
+             as itself: the hook does not fire at it",
+            "say carry-put:2: cut 8 (group 10) is no longer chosen: it ended without the hook \
+             firing",
+            "say carry-put:2: cut 9 (group 11) chosen to carry publish 2",
+        ],
+        "what the hook said of its course (S1 of the review of #150)"
+    );
 }
 
 /// `carry-swap:N` falls once the commit of the first cut whose reading
@@ -593,13 +614,19 @@ fn carry_put_falls_at_the_first_segment_of_the_first_cut_read_after_publish_n_th
 /// publish, nor at one that does not open as itself (the next one is
 /// chosen then), nor at a segment PUT. Mutants: the chosen cut not
 /// checked to carry, not chosen anew after one that does not carry, the
-/// commit of another cut taken for the chosen one's.
+/// commit of another cut taken for the chosen one's, the release of
+/// another cut taken for the chosen one's.
 #[test]
 fn carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_carries_it() {
     let (store, said) = log();
     let (remote, refs, epoch) = placed(&store);
     let die = noted(&said);
-    let carry = Carry::new(Some(KillAt::CarrySwap(1)), Arc::clone(&die)).expect("a carry hook");
+    let carry = Carry::new(
+        Some(KillAt::CarrySwap(1)),
+        Arc::clone(&die),
+        heard(&Said::default()),
+    )
+    .expect("a carry hook");
     let mut make = maker(
         store.clone(),
         Arc::clone(&refs),
@@ -638,6 +665,8 @@ fn carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_
         number: 10,
         group: 10,
     });
+    // And another cut let go while 9 is chosen.
+    block_on(local.release(8));
     assert_eq!(taken(&said), Vec::<String>::new(), "no kill at another cut");
     commit(&mut up, 9, Some(&row())).expect("cut 9");
     let said_9 = taken(&said);
@@ -645,7 +674,7 @@ fn carry_swap_falls_after_the_commit_of_the_first_cut_read_after_publish_n_that_
     assert!(n >= 2, "{said_9:?}");
     assert_eq!(
         said_9[n - 1],
-        "kill carry-swap:1: after the commit of cut 9 (group 9), which carries publish 1, \
+        "kill carry-swap:1: after the commit of cut 9 (group 9), chosen to carry publish 1, \
          landed, before the cut was let go"
     );
     assert!(
@@ -674,9 +703,13 @@ fn a_carry_hook_passes_the_channel_on_as_it_was() {
         Some(KillAt::Manifest(1)),
         Some(KillAt::Publish(1)),
     ] {
-        assert!(Carry::new(kill, Arc::clone(&die)).is_none(), "{kill:?}");
+        assert!(
+            Carry::new(kill, Arc::clone(&die), heard(&Said::default())).is_none(),
+            "{kill:?}"
+        );
     }
-    let carry = Carry::new(Some(KillAt::CarrySwap(1)), die).expect("a carry hook");
+    let carry =
+        Carry::new(Some(KillAt::CarrySwap(1)), die, heard(&Said::default())).expect("a carry hook");
     let (reply, answered) = tokio::sync::oneshot::channel();
     drop(answered);
     let passed = carry.ask(Control::Ask {
@@ -699,4 +732,477 @@ fn a_carry_hook_passes_the_channel_on_as_it_was() {
     assert_eq!(name, "t");
     reply.send(Progress::Pending).expect("sent");
     assert_eq!(answered.try_recv(), Ok(Progress::Pending));
+}
+
+// The cut the uploader makes publish N on, against the cut the hook
+// chooses (F1, F2 and Z of the review of #150): the uploader's own
+// driver, through the remote `kill::maker` makes, over a store that holds
+// whole cuts. These began as the review's demonstrations of the defects
+// (`r150_show_*`), and now pin the fix.
+
+/// A store that holds whole cuts of `blocks` blocks each, read one block
+/// a slice, and lets a cut go at its release; a cut's blocks may all be
+/// zeroes (`zero`), read as a run of zeroes and put as no segment.
+struct Holds {
+    held: Vec<(Uploadable, u64, bool)>,
+}
+
+impl Store for Holds {
+    fn uploadable(&mut self) -> Option<Uploadable> {
+        self.held.first().map(|(cut, _, _)| *cut)
+    }
+    fn read(&mut self, number: u64, from: u64, buf: &mut Buf) -> std::io::Result<CutSlice> {
+        let Some(&(_, blocks, zero)) = self.held.iter().find(|(c, _, _)| c.number == number) else {
+            return Err(std::io::Error::other("gone"));
+        };
+        let next = (from + 1 < blocks).then_some(from + 1);
+        if zero {
+            return Ok(CutSlice {
+                blocks: Vec::new(),
+                zeroes: vec![(from, 1)],
+                next,
+                copied: false,
+            });
+        }
+        buf.set_blocks(1)
+            .map_err(|_| std::io::Error::other("the buffer"))?;
+        buf.fill((number + from + 1) as u8);
+        Ok(CutSlice {
+            blocks: vec![from],
+            zeroes: Vec::new(),
+            next,
+            copied: false,
+        })
+    }
+    fn begin_sync_copies(&mut self, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn copies_synced(&mut self, _: bool) -> Option<std::io::Result<()>> {
+        Some(Ok(()))
+    }
+    fn release(&mut self, number: u64) -> Released {
+        self.held.retain(|(c, _, _)| c.number != number);
+        Released::LetGo
+    }
+    fn name_committed(&mut self, _: u64, _: u64) -> bool {
+        false
+    }
+    fn abandon_all(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+    fn cuts(&mut self) -> CutsNow {
+        CutsNow::default()
+    }
+}
+
+type Rig = skyzfs_upload::Driver<
+    KillLocal<Holds>,
+    KillRemote<
+        EngineRemote<
+            KillStore<FaultStore<Log>>,
+            Arc<skynbd_refs::ActingRefStore<Arc<ObjectRefStore<FaultStore<Log>>>>>,
+        >,
+    >,
+>;
+
+/// The uploader's driver over `held`, with the remote the daemon's
+/// test-hooks build makes for `kill` (`kill::maker`), over a store in
+/// memory that can fail a write after it has landed: the driver, the
+/// hook, the faults, and the log, in which the hook's lines are written
+/// down as `say ...` and its kill as `kill ...`.
+fn rig(
+    kill: KillAt,
+    held: Vec<(Uploadable, u64, bool)>,
+) -> (Rig, Arc<Carry>, FaultStore<Log>, Said) {
+    let (store, said) = log();
+    let (remote, _, epoch) = placed(&store);
+    let faults = FaultStore::new(store);
+    let refs = Arc::new(ObjectRefStore::new(faults.clone()));
+    let die = noted(&said);
+    let carry = Carry::new(Some(kill), Arc::clone(&die), heard(&said)).expect("a carry hook");
+    let mut make = maker(
+        faults.clone(),
+        refs,
+        "node-a".into(),
+        remote.id,
+        Some(kill),
+        die,
+        Some(Arc::clone(&carry)),
+    );
+    let driver = skyzfs_upload::Driver::with_slices(
+        KillLocal::new(Holds { held }, Arc::clone(&carry)),
+        make(epoch),
+        1,
+    )
+    .with_publishing(skyzfs_upload::Publishing::new(
+        Some([0xa1; 16]),
+        Some(STATE),
+    ));
+    let _ = taken(&said);
+    (driver, carry, faults, said)
+}
+
+/// Step until the hook kills or `n` steps: the steps, by their debug form.
+fn steps(driver: &mut Rig, said: &Said, n: usize) -> Vec<String> {
+    let mut seen = Vec::new();
+    for _ in 0..n {
+        let step = block_on(driver.step());
+        seen.push(format!("{step:?}"));
+        if said
+            .lock()
+            .expect("the log")
+            .iter()
+            .any(|s| s.starts_with("kill"))
+        {
+            break;
+        }
+    }
+    seen
+}
+
+/// Accept publish `t` (C 6, G 7) in the driver's publishes and in the
+/// hook, as the daemon's thread would.
+fn accept(driver: &mut Rig, carry: &Carry) {
+    assert_eq!(
+        driver.publishing().ask(request("t", 6, 7)),
+        Answer::Accepted
+    );
+    asked(carry, request("t", 6, 7), Answer::Accepted);
+}
+
+/// Whether one of `seen`'s steps made a publish on cut `number`.
+fn published_on(seen: &[String], number: u64) -> bool {
+    let number = format!("number: {number}");
+    seen.iter()
+        .any(|s| s.contains("Published {") && s.contains(&number))
+}
+
+/// The hook's lines and its kill in `log`.
+fn hooks(log: &[String]) -> Vec<String> {
+    log.iter()
+        .filter(|s| s.starts_with("say ") || s.starts_with("kill "))
+        .cloned()
+        .collect()
+}
+
+const ARMED: &str = "publish 1 (t) accepted: armed for the first cut read from now on of its \
+                     state, counted after 6, of group 7 or later";
+
+/// F2: the chosen cut's commit lands and its call comes back failed (the
+/// refs object's write takes effect, then an error). The driver finds the
+/// row naming the cut and lets it go without the remote answering Ok:
+/// `carry-swap` fires as the cut is let go, before the publish is made on
+/// it. Mutant: no fire at the release (the hook then gives up at the
+/// publish, with no kill).
+#[test]
+fn carry_swap_fires_as_the_chosen_cut_is_let_go_where_its_commits_call_failed() {
+    let held = vec![
+        (offered(7, 7, true), 1, false),
+        (offered(8, 8, true), 1, false),
+    ];
+    let (mut driver, carry, faults, said) = rig(KillAt::CarrySwap(1), held);
+    accept(&mut driver, &carry);
+    // The lookup, the check of 7 and its read.
+    let mut seen = steps(&mut driver, &said, 3);
+    // Cut 7's commit: the swap lands, its answer is an error.
+    block_on(faults.arm_after(FaultOp::Put, "/refs", 0));
+    seen.extend(steps(&mut driver, &said, 1));
+    block_on(faults.disarm());
+    seen.extend(steps(&mut driver, &said, 12));
+    assert!(
+        seen.iter().any(|s| s.contains("injected fault")),
+        "the commit's call failed: {seen:?}"
+    );
+    assert!(
+        !published_on(&seen, 7),
+        "killed before the publish: {seen:?}"
+    );
+    assert_eq!(
+        hooks(&taken(&said)),
+        [
+            format!("say carry-swap:1: {ARMED}"),
+            "say carry-swap:1: cut 7 (group 7) chosen to carry publish 1".into(),
+            "kill carry-swap:1: after the commit of cut 7 (group 7), chosen to carry publish 1, \
+             landed (its call failed; seen as the cut was let go), before the cut was let go"
+                .into(),
+        ]
+    );
+}
+
+/// F1, case A, for each kill point: the carrier's reading began before
+/// publish 1 was accepted, and the publish is made on it. The hook, which
+/// chose the next cut, gives up when the publish is made, and kills
+/// nowhere. Mutant: the check on the publish missing (the hook kills at
+/// cut 8).
+#[test]
+fn a_publish_made_on_a_cut_read_before_its_acceptance_gives_the_hook_up() {
+    for kill in [KillAt::CarrySwap(1), KillAt::CarryPut(1)] {
+        let held = vec![
+            (offered(7, 7, true), 2, false),
+            (offered(8, 8, true), 1, false),
+        ];
+        let (mut driver, carry, _faults, said) = rig(kill, held);
+        // The check of 7 and its first slice, then the acceptance.
+        let mut seen = steps(&mut driver, &said, 2);
+        accept(&mut driver, &carry);
+        seen.extend(steps(&mut driver, &said, 14));
+        assert!(published_on(&seen, 7), "{kill:?}: {seen:?}");
+        let point = match kill {
+            KillAt::CarryPut(_) => "carry-put:1",
+            _ => "carry-swap:1",
+        };
+        let lines = hooks(&taken(&said));
+        assert!(
+            lines.iter().all(|s| !s.starts_with("kill")),
+            "{kill:?}: no kill: {lines:?}"
+        );
+        assert!(
+            lines.contains(&format!(
+                "say {point}: publish 1 (t) was made on cut 7 (group 7), which the hook did not \
+                 choose, before the hook fired; no kill"
+            )),
+            "{kill:?}: {lines:?}"
+        );
+    }
+}
+
+/// F1, case B: the carrier was committed before publish 1 was accepted;
+/// the lookup gives it the publish at once, and the hook gives up there.
+#[test]
+fn a_publish_made_on_a_cut_committed_before_its_acceptance_gives_the_hook_up() {
+    let held = vec![
+        (offered(7, 7, true), 1, false),
+        (offered(8, 8, true), 1, false),
+    ];
+    let (mut driver, carry, _faults, said) = rig(KillAt::CarrySwap(1), held);
+    let mut seen = steps(&mut driver, &said, 3);
+    accept(&mut driver, &carry);
+    seen.extend(steps(&mut driver, &said, 14));
+    assert!(published_on(&seen, 7), "{seen:?}");
+    let lines = hooks(&taken(&said));
+    assert!(lines.iter().all(|s| !s.starts_with("kill")), "{lines:?}");
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some(
+            "say carry-swap:1: publish 1 (t) was made on cut 7 (group 7), which the hook did not \
+             choose, before the hook fired; no kill"
+        ),
+        "{lines:?}"
+    );
+}
+
+/// Z: the chosen cut puts no segment (its blocks are zeroes), so
+/// `carry-put` does not fire at it; the publish is made on it, and the
+/// hook gives up there rather than kill at the next cut.
+#[test]
+fn a_publish_made_on_the_chosen_cut_with_no_segment_gives_carry_put_up() {
+    let held = vec![
+        (offered(7, 7, true), 1, true),
+        (offered(8, 8, true), 1, false),
+    ];
+    let (mut driver, carry, _faults, said) = rig(KillAt::CarryPut(1), held);
+    accept(&mut driver, &carry);
+    let seen = steps(&mut driver, &said, 16);
+    assert!(published_on(&seen, 7), "{seen:?}");
+    let lines = hooks(&taken(&said));
+    assert!(lines.iter().all(|s| !s.starts_with("kill")), "{lines:?}");
+    assert!(
+        lines.contains(
+            &"say carry-put:1: publish 1 (t) was made on cut 7 (group 7), the cut chosen, \
+              before the hook fired; no kill"
+                .to_string()
+        ),
+        "{lines:?}"
+    );
+}
+
+/// The course the hook is for, for each kill point: the carrier is read
+/// after the acceptance, and the hook fires at it before the publish is
+/// made. This also shows that `kill::maker` gives the hook to the objects
+/// and to the remote (M13 of the review of #150).
+#[test]
+fn the_carry_hooks_fire_at_the_carrier_read_after_the_acceptance() {
+    for (kill, line) in [
+        (
+            KillAt::CarrySwap(1),
+            "kill carry-swap:1: after the commit of cut 7 (group 7), chosen to carry publish 1, \
+             landed, before the cut was let go",
+        ),
+        (
+            KillAt::CarryPut(1),
+            "kill carry-put:1: after the first segment PUT of cut 7 (group 7), chosen to carry \
+             publish 1, landed",
+        ),
+    ] {
+        let held = vec![
+            (offered(7, 7, true), 1, false),
+            (offered(8, 8, true), 1, false),
+        ];
+        let (mut driver, carry, _faults, said) = rig(kill, held);
+        accept(&mut driver, &carry);
+        let seen = steps(&mut driver, &said, 16);
+        let lines = hooks(&taken(&said));
+        assert!(
+            lines.last().is_some_and(|s| s.starts_with(line)),
+            "{kill:?}: {lines:?}"
+        );
+        assert!(
+            !seen.iter().any(|s| s.contains("Published {")),
+            "{kill:?}: killed before the publish's transaction: {seen:?}"
+        );
+    }
+}
+
+/// F1: publish N ends without being made (here at its deadline) before
+/// the hook fires: the hook gives up with a line and kills nowhere; the
+/// end of another publish changes nothing. Mutant: the post's ended
+/// publishes not read.
+#[test]
+fn a_publish_n_that_ends_without_being_made_gives_the_hook_up() {
+    let (store, said) = log();
+    let (remote, refs, epoch) = placed(&store);
+    let die = noted(&said);
+    let carry =
+        Carry::new(Some(KillAt::CarrySwap(1)), Arc::clone(&die), heard(&said)).expect("a hook");
+    let mut make = maker(
+        store.clone(),
+        Arc::clone(&refs),
+        "node-a".into(),
+        remote.id,
+        Some(KillAt::CarrySwap(1)),
+        die,
+        Some(Arc::clone(&carry)),
+    );
+    let mut up = make(epoch);
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    asked(&carry, request("t", 6, 7), Answer::Accepted);
+    reads(&mut local, offered(7, 7, true));
+    crate::upload::Around::posted(&carry, &[("u".into(), Progress::Expired)]);
+    crate::upload::Around::posted(&carry, &[("t".into(), Progress::Expired)]);
+    commit(&mut up, 7, None).expect("cut 7");
+    assert_eq!(
+        hooks(&taken(&said)),
+        [
+            format!("say carry-swap:1: {ARMED}"),
+            "say carry-swap:1: cut 7 (group 7) chosen to carry publish 1".into(),
+            "say carry-swap:1: publish 1 (t) ended (expired) before the hook fired; no kill".into(),
+        ]
+    );
+}
+
+/// S2 (open point 3): publish N is the Nth name accepted; a name asked
+/// again and accepted again is not counted again; and another publish
+/// made before the hook fires does not give it up. Mutants: every
+/// acceptance counted (the hook arms on the second ask of "a"), any
+/// publish made giving the hook up (it kills nowhere).
+#[test]
+fn a_name_accepted_again_is_not_counted_again() {
+    let (inner, said) = log();
+    let die = noted(&said);
+    let carry =
+        Carry::new(Some(KillAt::CarryPut(2)), Arc::clone(&die), heard(&said)).expect("a hook");
+    let store = KillStore::new(inner, None, Arc::clone(&die)).carrying(Some(Arc::clone(&carry)));
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    asked(&carry, request("a", 5, 10), Answer::Accepted);
+    asked(&carry, request("a", 5, 10), Answer::Accepted);
+    assert_eq!(carry.accepted(), 1);
+    reads(&mut local, offered(6, 10, true));
+    block_on(store.put("vols/a/seg/1", Bytes::from_static(b"x"))).expect("landed");
+    assert_eq!(taken(&said), ["put vols/a/seg/1"], "not armed");
+    asked(&carry, request("b", 6, 10), Answer::Accepted);
+    assert_eq!(carry.accepted(), 2);
+    // Publish 1 ("a") is made: not publish 2, so the hook goes on.
+    carry.published(
+        "a",
+        CommittedCut {
+            state: STATE,
+            number: 6,
+            group: 10,
+        },
+    );
+    reads(&mut local, offered(7, 10, true));
+    block_on(store.put("vols/a/seg/2", Bytes::from_static(b"x"))).expect("landed");
+    assert_eq!(
+        taken(&said),
+        [
+            "say carry-put:2: publish 2 (b) accepted: armed for the first cut read from now on \
+             of its state, counted after 6, of group 10 or later",
+            "say carry-put:2: cut 7 (group 10) chosen to carry publish 2",
+            "put vols/a/seg/2",
+            "kill carry-put:2: after the first segment PUT of cut 7 (group 10), chosen to carry \
+             publish 2, landed (vols/a/seg/2)",
+        ]
+    );
+}
+
+/// C and G at their bounds: a cut numbered C, even of a group after G,
+/// is not chosen, nor one counted after C of a group before G; the first
+/// cut numbered C + 1 of group G is, and the hook fires there. Mutants
+/// M3 (a cut numbered C chosen), M4 (a cut of group G not chosen) and M6
+/// (C not checked) of the review of #150.
+#[test]
+fn a_cut_numbered_c_plus_1_of_group_g_is_chosen_and_none_before() {
+    let (inner, said) = log();
+    let die = noted(&said);
+    let carry = Carry::new(
+        Some(KillAt::CarryPut(1)),
+        Arc::clone(&die),
+        heard(&Said::default()),
+    )
+    .expect("a carry hook");
+    let store = KillStore::new(inner, None, Arc::clone(&die)).carrying(Some(Arc::clone(&carry)));
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    asked(&carry, request("a", 5, 10), Answer::Accepted);
+    // Cut 5 (= C) of group 12: not counted after C.
+    reads(&mut local, offered(5, 12, true));
+    block_on(store.put("vols/a/seg/1", Bytes::from_static(b"x"))).expect("landed");
+    // Cut 6 (= C + 1) of group 9 (< G): not chosen.
+    reads(&mut local, offered(6, 9, true));
+    block_on(store.put("vols/a/seg/2", Bytes::from_static(b"x"))).expect("landed");
+    // Cut 7 of group 10 (= G): chosen.
+    reads(&mut local, offered(7, 10, true));
+    block_on(store.put("vols/a/seg/3", Bytes::from_static(b"x"))).expect("landed");
+    assert_eq!(
+        taken(&said),
+        [
+            "put vols/a/seg/1",
+            "put vols/a/seg/2",
+            "put vols/a/seg/3",
+            "kill carry-put:1: after the first segment PUT of cut 7 (group 10), chosen to carry \
+             publish 1, landed (vols/a/seg/3)",
+        ]
+    );
+}
+
+/// The cut under way at the acceptance, read on from a later block after
+/// it, is not chosen: only a reading from block 0 begins a cut's
+/// reading. The next cut is chosen. Mutant M7 of the review of #150
+/// (every read counted as a new reading).
+#[test]
+fn a_cut_under_way_read_on_after_the_acceptance_is_not_chosen() {
+    let (inner, said) = log();
+    let die = noted(&said);
+    let carry = Carry::new(
+        Some(KillAt::CarryPut(1)),
+        Arc::clone(&die),
+        heard(&Said::default()),
+    )
+    .expect("a carry hook");
+    let store = KillStore::new(inner, None, Arc::clone(&die)).carrying(Some(Arc::clone(&carry)));
+    let mut local = KillLocal::new(Offers::default(), Arc::clone(&carry));
+    reads(&mut local, offered(6, 10, true));
+    asked(&carry, request("a", 5, 10), Answer::Accepted);
+    let _ = block_on(local.read(6, 512, Buf::zeroed(0)));
+    block_on(store.put("vols/a/seg/1", Bytes::from_static(b"x"))).expect("landed");
+    reads(&mut local, offered(7, 10, true));
+    block_on(store.put("vols/a/seg/2", Bytes::from_static(b"x"))).expect("landed");
+    assert_eq!(
+        taken(&said),
+        [
+            "put vols/a/seg/1",
+            "put vols/a/seg/2",
+            "kill carry-put:1: after the first segment PUT of cut 7 (group 10), chosen to carry \
+             publish 1, landed (vols/a/seg/2)",
+        ]
+    );
 }

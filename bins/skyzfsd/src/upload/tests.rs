@@ -1661,6 +1661,7 @@ fn the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted() {
     let carry = crate::kill::Carry::new(
         Some(crate::cli::KillAt::CarrySwap(1)),
         std::sync::Arc::new(|_: &str| {}),
+        std::sync::Arc::new(|_: &str| {}),
     )
     .expect("a carry hook");
     let (up, posts, queue, _) = uploading_around(
@@ -1706,7 +1707,18 @@ fn the_carry_hook_passes_the_channel_on_and_counts_the_publishes_accepted() {
         Some(Answer::Refused(Refusal::Attachment))
     );
     assert_eq!(carry.accepted(), 1);
-    drop(send(ask("w", [0xa1; 16])));
+    // An ask whose asker has gone before it is sent: the answer's
+    // receiver is dropped first, so that the hook's forwarder cannot pass
+    // it on while the asker still waits (B1 of the review of #150).
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    drop(answer);
+    requests
+        .blocking_send(Control::Ask {
+            request: ask("w", [0xa1; 16]),
+            rewound: 0,
+            reply,
+        })
+        .expect("sent");
     let progress = |name: &str| {
         let (reply, answer) = tokio::sync::oneshot::channel();
         requests
