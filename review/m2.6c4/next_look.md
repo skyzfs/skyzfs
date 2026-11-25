@@ -176,7 +176,7 @@ They were run at the head on toolchain 1.100.0 (`rustup update stable` reported 
 | the same with `--features test-hooks` | clean |
 | `cargo test -p skyzfsd` | 142 passed, plus 3 in `closed_output` |
 | `cargo test -p skyzfsd --features test-hooks` | 194 passed, plus 3 in `closed_output` |
-| my scratch tests (`run150n.sh`) | RUN150N_COUNT |
+| my scratch tests (`run150n.sh`) | 5 of 5 pass at the head (`run150n.out`) |
 
 ## CI on `d629834`, read only
 
