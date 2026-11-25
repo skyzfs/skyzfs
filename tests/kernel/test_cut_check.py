@@ -38,6 +38,44 @@ def cut(n, txg, ub_record, prefix=None):
             'rootbp': (n,)}
 
 
+class ExportAfterImport(unittest.TestCase):
+    """A busy export after a check's import waits and tries again, as the
+    replay rig's does (#33); anything else ends at once."""
+    PS = '  41   3 zpool zpool import -d /dev/loop9 skzcut\n  42  9 bash bash x\n'
+
+    def exporting(self, answers):
+        calls, slept = [], []
+        answers = iter(answers)
+
+        def run(cmd, timeout=None):
+            calls.append(cmd[:2])
+            if cmd[0] == 'ps':
+                return 0, self.PS, ''
+            return next(answers)
+        rc, out, refused = cut_check.export_after_import('skzcut', run=run, sleep=slept.append)
+        return rc, out, refused, calls, slept
+
+    def test_busy_twice_then_exported(self):
+        busy = (1, "cannot export 'skzcut': pool is busy", '')
+        rc, _, refused, calls, slept = self.exporting([busy, busy, (0, '', '')])
+        self.assertEqual((rc, slept), (0, [1, 2]))
+        self.assertEqual(len(refused), 2)
+        self.assertIn('pid 41, 3 s: zpool import -d /dev/loop9 skzcut', refused[0])
+        self.assertEqual(calls.count(['zpool', 'export']), 3)
+
+    def test_busy_after_every_wait_is_returned(self):
+        busy = (1, "cannot export 'skzcut': pool is busy", '')
+        rc, out, refused, calls, slept = self.exporting([busy] * 5)
+        waits = list(cut_check.replay_check.EXPORT_WAITS)
+        self.assertEqual((rc, slept), (1, waits))
+        self.assertEqual(len(refused), len(waits) + 1)
+        self.assertIn('busy', out)
+
+    def test_another_failure_is_not_tried_again(self):
+        rc, _, refused, calls, slept = self.exporting([(1, "cannot export 'skzcut': no such pool", '')])
+        self.assertEqual((rc, refused, slept, len(calls)), (1, [], [], 1))
+
+
 class Kstat(unittest.TestCase):
     def test_committed_groups_that_wrote_only(self):
         self.assertEqual(cut_check.committed_txgs(KSTAT), [4, 5])
