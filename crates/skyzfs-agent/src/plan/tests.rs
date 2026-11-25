@@ -8,6 +8,7 @@ use skyzfs_control::{Code, CutsReply, Reply, SnapReply, UnreadableReply, EXPIRY_
 
 use super::*;
 use crate::record::{Count, Member, Person, Phase, Publish, Taken, Why};
+use crate::zfs::Held;
 
 const LOAD: u64 = 0x10ad;
 const ATTACHMENT: [u8; 16] = [0xa1; 16];
@@ -121,7 +122,7 @@ fn seen() -> Seen {
             load_guid: LOAD,
             premise: true,
             snapshot: Some(members()),
-            held: true,
+            hold: Held::All,
         },
         daemon: DaemonSeen::Here {
             cuts: cuts(),
@@ -162,12 +163,16 @@ trait With: Sized {
         })
     }
     fn unheld(self) -> Seen {
-        self.with(|s| s.pool.held = false)
+        self.with(|s| s.pool.hold = Held::No)
+    }
+    /// The tag on some members' `@t` and not on others.
+    fn partly(self) -> Seen {
+        self.with(|s| s.pool.hold = Held::Part)
     }
     fn gone(self) -> Seen {
         self.with(|s| {
             s.pool.snapshot = None;
-            s.pool.held = false;
+            s.pool.hold = Held::No;
         })
     }
     fn members(self, members: Vec<Member>) -> Seen {
@@ -1234,6 +1239,61 @@ fn done_it_is_released_then_forgotten() {
     ]);
 }
 
+/// A hold on some members' `@t` only (a person released the others)
+/// is no hold to go on with, and is released wherever a whole one would
+/// be (TL-F1 of #147's review). Mutants: a part taken as held (NL-F1),
+/// or as no hold where the publish ends.
+#[test]
+fn a_hold_on_some_members_is_released_where_the_publish_ends() {
+    check(vec![
+        ("taken", taken_phase(), seen().partly(), Action::Hold),
+        (
+            "taken, too old",
+            taken_phase(),
+            seen().partly().too_old(),
+            Action::Release,
+        ),
+        (
+            "taken, replaced",
+            taken_phase(),
+            seen().members(replaced()).partly(),
+            Action::Release,
+        ),
+        (
+            "a snapshot with no manifest",
+            intent(),
+            seen().partly(),
+            Action::Release,
+        ),
+        (
+            "held, not asked",
+            held(),
+            seen().answer(Reply::Unknown).partly(),
+            Action::Hold,
+        ),
+        ("asked, pending", asked(), seen().partly(), Action::Withdraw),
+        (
+            "asked, away, at held_until",
+            asked(),
+            seen().away().at(UNTIL).partly(),
+            Action::Release,
+        ),
+        (
+            "asked, away, before it",
+            asked(),
+            seen().away().at(UNTIL - 1).partly(),
+            Action::Wait,
+        ),
+        ("done", done(), seen().partly(), Action::Release),
+        (
+            "done, away",
+            done(),
+            seen().away().partly(),
+            Action::Release,
+        ),
+    ]);
+}
+
 /// `look`'s answer for the publish taken, as a row of group `group`.
 /// Mutant: a stall counted where a cut was counted, where the daemon is
 /// another, or for a publish never accepted; the report made at another
@@ -2290,6 +2350,12 @@ fn a_publish_too_old_held_for_a_daemon_away_is_reported() {
     assert_eq!(
         report(&publish(asked()), &away.clone().unheld(), &Action::Wait),
         None
+    );
+    // A hold on some members only is still a hold waited on (#147's
+    // `Held::Part`, merged here).
+    assert_eq!(
+        report(&publish(asked()), &away.clone().partly(), &Action::Wait),
+        Some(Report::HeldAway)
     );
     assert_eq!(report(&publish(asked()), &away, &Action::Release), None);
     assert_eq!(report(&publish(taken_phase()), &away, &Action::Wait), None);

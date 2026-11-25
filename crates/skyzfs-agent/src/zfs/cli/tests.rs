@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::host::fake::Fake;
-use crate::zfs::{premise, HOLD_TAG};
+use crate::zfs::{premise, Held, HOLD_TAG};
 
 const RIG: &str = "  pool: tank
  state: ONLINE
@@ -930,8 +930,10 @@ fn a_release_without_the_tag_is_released_where_no_member_keeps_it() {
 
 /// `held` is the tag on every member's `@t`: the root's alone is not
 /// enough (NL-F1 of #147's review), and a snapshot that does not exist
-/// is not held. Mutants: any hold taken as the tag, the root's tag taken
-/// for every member's, a missing snapshot an error.
+/// is not held. Where some members have it and others not, it is a part
+/// (TL-F1), which the planner releases. Mutants: any hold taken as the
+/// tag, the root's tag taken for every member's, a missing snapshot an
+/// error, a part read as none.
 #[test]
 fn held_is_the_tag_on_every_members_snapshot() {
     const BOTH: &str = r#"{"return":{"members":{"tank":"11","tank/db":"22"}}}"#;
@@ -955,33 +957,37 @@ fn held_is_the_tag_on_every_members_snapshot() {
     assert_eq!(
         held(Ok(&every), Some(BOTH)),
         (
-            Ok(true),
+            Ok(Held::All),
             vec![HOLDS_R.to_string(), MEMBERS_WORDS.to_string()]
         )
     );
     assert_eq!(
         held(Ok(ROOT), Some(BOTH)).0,
-        Ok(false),
+        Ok(Held::Part),
         "the root's only: tank/db@skz-1 lacks it"
     );
-    assert_eq!(held(Ok(DB), None).0, Ok(false), "the root lacks it");
+    assert_eq!(
+        held(Ok(DB), None),
+        (Ok(Held::Part), vec![HOLDS_R.to_string()]),
+        "the root lacks it: a part, with no member read"
+    );
     assert_eq!(
         held(Ok("tank@skz-1\tother\tWed Nov 25 10:00 2026\n"), None).0,
-        Ok(false)
+        Ok(Held::No)
     );
-    assert_eq!(held(Ok(""), None).0, Ok(false));
+    assert_eq!(held(Ok(""), None).0, Ok(Held::No));
     assert_eq!(
         held(
             Err("cannot open 'tank@skz-1': dataset does not exist\n"),
             None
         )
         .0,
-        Ok(false)
+        Ok(Held::No)
     );
     assert_eq!(
         held(Ok(&every), Some(r#"{"return":{"absent":"1"}}"#)).0,
-        Ok(false),
-        "gone between the two reads"
+        Ok(Held::Part),
+        "gone between the two reads: the tags read are a part"
     );
 }
 

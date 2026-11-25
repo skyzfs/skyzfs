@@ -313,6 +313,10 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::ManifestLost => in_manifest_window(ran.stopped_at),
             Why::Destroyed | Why::Rewound | Why::Replaced => !survived,
             Why::Premise => !premise,
+            // A person released the hold on some members: `hold -r`
+            // refuses until the publish is too old (TL-F1 of #147's
+            // review, no repair by the lead's ruling).
+            Why::TooOld => world.log.contains(&format!("partly released {t}")),
             // The world always cuts again in time: a publish that makes
             // no progress here is a defect of the engine.
             // Nor does its uploader stop for good in the matrices (it does
@@ -320,9 +324,8 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::ManifestTooLarge
             | Why::NameTaken
             | Why::NoProgress
-            | Why::TooOld
             | Why::Stopped
-            // No person acts in the matrices.
+            // No person gives a publish up in the matrices.
             | Why::Person => false,
         };
         if !confirmed {
@@ -349,6 +352,11 @@ fn check(ran: &Ran) -> Result<(), String> {
                     ));
                 }
             }
+            // A publish whose hold a person partly released is given up
+            // too old, and its last answer is reported where the daemon
+            // had refused it (in ErrLow, the person's release is the cut
+            // with the stale group, and the daemon refuses `rewound`).
+            Report::Refused(_) if world.log.contains(&format!("partly released {t}")) => {}
             Report::NoProgress(_) | Report::Refused(_) | Report::HeldAway => {
                 return Err(format!("{t} reported: {report:?}"))
             }
@@ -2360,6 +2368,65 @@ fn each_effect_is_named_by_a_word_of_its_own() {
     assert_eq!(Effect::from_word("recover"), Some(Effect::Recover));
     assert_eq!(Effect::from_word("unwind"), None);
     assert_eq!(Effect::from_word(""), None);
+}
+
+/// A person releases the agent's hold on `pool/db@t` once it is held:
+/// the hold left on the root alone is no hold to go on with. The publish
+/// is not asked, `hold -r` refuses until it is too old, and it is then
+/// given up with the root's tag released (TL-F1 of #147's review).
+/// Mutants: a part taken as held, in the adapter's fake or the planner
+/// (the publish is published on a hold that is not whole; F1e of the
+/// review), or as no hold where it ends (the root's tag left).
+#[test]
+fn a_hold_a_person_partly_released_is_given_up_and_released() {
+    for mode in MODES {
+        let world = World::new(mode);
+        let keep = MemKeep::default();
+        let name = Rc::new(RefCell::new(String::new()));
+        let held = Point {
+            effect: Effect::Held,
+            after: true,
+        };
+        let hook = {
+            let (world, name) = (world.clone(), name.clone());
+            move |p: Point, _: &str| {
+                if p == held {
+                    world.borrow_mut().user(User::ReleaseChild, &name.borrow());
+                }
+                false
+            }
+        };
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        *name.borrow_mut() = agent.begin().expect("begun");
+        let settled = agent.settle(LIMIT).map_err(|e| e.to_string());
+        let ran = Ran {
+            world: world.clone(),
+            files: keep.0.clone(),
+            settled,
+            outcomes: agent.outcomes().to_vec(),
+            reports: agent.reports().to_vec(),
+            points: 0,
+            cuts_read: 0,
+            stopped_at: None,
+            gone_at_done: BTreeSet::new(),
+        };
+        if let Err(why) = check(&ran) {
+            panic!("{}", failed(&format!("{mode:?}"), &ran, &why));
+        }
+        let name = name.borrow().clone();
+        assert!(
+            world
+                .borrow()
+                .log
+                .contains(&format!("partly released {name}")),
+            "{mode:?}: the hook did not release"
+        );
+        assert_eq!(
+            ran.outcomes,
+            vec![(name, Outcome::Abandoned(Why::TooOld))],
+            "{mode:?}"
+        );
+    }
 }
 
 /// What [`with_the_uploader_stopped`] saw.
