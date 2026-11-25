@@ -1,0 +1,15 @@
+
+running 5 tests
+test scratch147::k1_a_partial_line_held_ends_at_the_limit ... k1: TimedOut after 422.954856ms: the daemon did not answer within the ask's limit
+ok
+test scratch147::k2_a_daemon_that_never_reads_a_large_manifest ... k2: TimedOut after 428.903021ms: the daemon did not answer within the ask's limit
+ok
+test scratch147::k3_a_reply_over_the_line_bound ... k3: InvalidData: no whole line within 4096 bytes
+ok
+test scratch147::k4_a_link_at_the_path_is_followed ... k4: through a link: Ok(Withdrawn)
+ok
+test scratch147::k5_a_full_backlog_then_a_slow_answer_is_one_limit ... k5: Err(Custom { kind: TimedOut, error: "the daemon did not answer within the ask's limit" }) after 1.001717121s (backlog filled with 2)
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 7.02s
+

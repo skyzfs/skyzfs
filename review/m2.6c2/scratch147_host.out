@@ -1,0 +1,23 @@
+
+running 8 tests
+test host::scratch147::r1_the_child_is_killed_and_reaped ... r1: returned after 300.256147ms; child 6755 state 300 ms later: None
+ok
+test host::scratch147::r2_a_child_that_ignores_term_is_killed ... r2: returned after 300.229901ms; child state 300 ms later: None
+ok
+test host::scratch147::r3_a_stopped_child_is_killed ... r3: returned after 300.248007ms; child state: None
+ok
+test host::scratch147::r4_a_grandchild_outlives_the_call_and_holds_two_threads ... r4: returned after 300.245088ms; grandchild 6780 state Some('S'); threads 2 before, 4 after the call
+r4: threads once the grandchild has ended: 2
+ok
+test host::scratch147::r5_threads_and_zombies_after_many_calls ... r5: threads 2 before 8 calls, 18 300 ms after; zombies []
+r5: threads 4.8 s after: 2
+ok
+test host::scratch147::r6_an_exit_0_with_output_held_is_timed_out ... r6: `sh` ended and its standard output stayed open past the limit
+ok
+test host::scratch147::r7_input_to_a_child_that_never_reads ... r7: returned after 300.186538ms; threads 4 before, 4 300 ms after
+ok
+test host::scratch147::r8_output_past_the_bound_then_running ... r8: TimedOut after 2.000296499s: `sh` did not end within 2 s: killed, and not waited for
+ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out; finished in 16.01s
+
