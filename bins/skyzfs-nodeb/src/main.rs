@@ -13,6 +13,7 @@
 //! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
 //! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--row ROW] [--expect-row ROW]
 //! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row ROW [--expect-row ROW]
+//! skyzfs-nodeb snap-row --endpoint URL --bucket B --volume NAME --snapshot T [--out FILE]
 //! ```
 //!
 //! The keys are `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The
@@ -38,6 +39,18 @@
 //!   one after the other, not together: a reader that wants them to
 //!   agree reads them again around what it does. Then the volume's
 //!   lease: `lease HOLDER EPOCH EXPIRES_UNIX_MS` or `lease none`.
+//! - `snap-row` (M2.T6, the daemon's publish): the ref `snap/T`, `ref
+//!   HEX GEN` or `ref none`, then the snapshot's row that the daemon
+//!   writes in the same transaction (the meta row `skyzfs/snap/T`,
+//!   `skyzfs-upload`'s publish.rs), decoded here and not by the
+//!   uploader's code: `snaprow STATE NUMBER GROUP COMMIT SNAPID LEN
+//!   HASH` for a row of version 1, `snaprow none`, or `snaprow
+//!   unreadable HEX`. With `--out`, and a row that reads, the ZFS
+//!   manifest it names (`<volume prefix>skyzfs/manifest/<SNAPID>`) is
+//!   written to FILE: `manifest LEN BLAKE3 matches|differs`, whether
+//!   its length and hash are the row's, or `manifest none` when the
+//!   object is not there. The ref and the row are read one after the
+//!   other, not together.
 //!
 //! `bucket` makes the bucket where it is not there (`put` does it too),
 //! for a daemon's `create` that puts the volume there.
@@ -169,6 +182,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         "release" => &[("--holder", &a.holder)],
         "move-head" => &[("--at", &a.at), ("--group", &a.group)],
         "set-row" => &[("--row", &a.row)],
+        "snap-row" => &[("--snapshot", &a.snapshot)],
         c => return Err(format!("unknown command {c}")),
     };
     for (name, v) in need {
@@ -511,6 +525,130 @@ async fn expected_row<S: ObjectStore + Clone + 'static>(
         .await
         .map_err(|e| format!("meta {ROW_KEY}: {e}"))?;
     Ok(row_holds(spec, now.as_deref()).then_some(now))
+}
+
+/// A snapshot's row among the refs object's meta rows (`skyzfs-upload`'s
+/// `SNAP_ROW_PREFIX` and `SNAP_ROW_LEN`), version 1, 118 bytes, little
+/// endian: version u16, the cut state's name 16 bytes, the cut's number
+/// and group u64, the commit 32 bytes, the snapshot's id (a ULID, big
+/// endian) 16 bytes, the ZFS manifest's length u32 and its BLAKE3 hash
+/// 32 bytes. Decoded here so that the rig does not read the row with
+/// the code that wrote it.
+const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
+const SNAP_ROW_LEN: usize = 118;
+
+/// What a snapshot's row of version 1 holds.
+#[derive(Debug, PartialEq, Eq)]
+struct SnapRowRead {
+    snap: ulid::Ulid,
+    manifest_len: u32,
+    manifest_hash: [u8; 32],
+}
+
+/// -> the line, and what the manifest is checked against when the row reads.
+fn snap_row_line(bytes: Option<&[u8]>) -> (String, Option<SnapRowRead>) {
+    let Some(b) = bytes else {
+        return ("snaprow\tnone".to_string(), None);
+    };
+    if b.len() != SNAP_ROW_LEN || b[..2] != 1u16.to_le_bytes() {
+        return (format!("snaprow\tunreadable\t{}", hex(b)), None);
+    }
+    let u64_at = |at: usize| {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&b[at..at + 8]);
+        u64::from_le_bytes(w)
+    };
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&b[66..82]);
+    let mut len = [0u8; 4];
+    len.copy_from_slice(&b[82..86]);
+    let mut manifest_hash = [0u8; 32];
+    manifest_hash.copy_from_slice(&b[86..118]);
+    let r = SnapRowRead {
+        snap: ulid::Ulid::from_bytes(id),
+        manifest_len: u32::from_le_bytes(len),
+        manifest_hash,
+    };
+    let line = format!(
+        "snaprow\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        hex(&b[2..18]),
+        u64_at(18),
+        u64_at(26),
+        hex(&b[34..66]),
+        r.snap,
+        r.manifest_len,
+        hex(&r.manifest_hash)
+    );
+    (line, Some(r))
+}
+
+/// The line for the manifest object's bytes, as checked against the row.
+fn manifest_line(bytes: &[u8], row: &SnapRowRead) -> String {
+    let h = blake3::hash(bytes);
+    let same =
+        bytes.len() as u64 == u64::from(row.manifest_len) && *h.as_bytes() == row.manifest_hash;
+    format!(
+        "manifest\t{}\t{}\t{}",
+        bytes.len(),
+        h.to_hex(),
+        if same { "matches" } else { "differs" }
+    )
+}
+
+async fn snap_row(a: &Args) -> Result<(), String> {
+    let (store, refs) = open(a).await?;
+    for line in snap_row_lines(&store, &refs, volume_id(&a.volume), &a.snapshot, &a.out).await? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// snap-row's lines for snapshot `snapshot` of `vol`, on any store: the
+/// ref `snap/T`, the row `skyzfs/snap/T`, and, where `out` names a file
+/// and the row reads, the manifest object the row names (written to
+/// `out`). The keys are built here and not with the uploader's code; a
+/// test reads the uploader's own keys with it (the review of #139, N2).
+async fn snap_row_lines<S: ObjectStore>(
+    store: &S,
+    refs: &ObjectRefStore<S>,
+    vol: VolumeId,
+    snapshot: &str,
+    out: &str,
+) -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    let name = format!("snap/{snapshot}");
+    match refs
+        .get(vol, &name)
+        .await
+        .map_err(|e| format!("refs: {e}"))?
+    {
+        Some(v) => lines.push(format!("ref\t{}\t{}", hex(&v.commit), v.generation)),
+        None => lines.push("ref\tnone".to_string()),
+    }
+    let key = format!("{SNAP_ROW_PREFIX}{snapshot}");
+    let b = refs
+        .meta_get(vol, &key)
+        .await
+        .map_err(|e| format!("meta {key}: {e}"))?;
+    let (line, read) = snap_row_line(b.as_deref());
+    lines.push(line);
+    let (Some(r), false) = (read, out.is_empty()) else {
+        return Ok(lines);
+    };
+    let mkey = format!(
+        "{}skyzfs/manifest/{}",
+        skynbd_engine::keys::volume_prefix(vol),
+        r.snap
+    );
+    match store.get(&mkey, None).await {
+        Ok(bytes) => {
+            std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+            lines.push(manifest_line(&bytes, &r));
+        }
+        Err(skynbd_store::StoreError::NotFound(_)) => lines.push("manifest\tnone".to_string()),
+        Err(e) => return Err(format!("{mkey}: {e}")),
+    }
+    Ok(lines)
 }
 
 async fn row(a: &Args) -> Result<(), String> {
@@ -904,7 +1042,7 @@ async fn main() -> ExitCode {
     let a = match parse(&argv) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get|row|bucket|lease|release|move-head|set-row (see the source's header)");
+            eprintln!("skyzfs-nodeb: {e}\nusage: put|refs|get|row|bucket|lease|release|move-head|set-row|snap-row (see the source's header)");
             return ExitCode::from(2);
         }
     };
@@ -917,6 +1055,7 @@ async fn main() -> ExitCode {
         "release" => release(&a).await.map(|()| 0),
         "move-head" => move_head(&a).await,
         "set-row" => set_row(&a).await,
+        "snap-row" => snap_row(&a).await.map(|()| 0),
         _ => get(&a).await,
     };
     match r {
@@ -1026,6 +1165,180 @@ mod tests {
             vec![(0, 2 * BLOCK), (3 * BLOCK, BLOCK), (5 * BLOCK, 512)]
         );
         assert!(runs(&vec![0u8; 3 * BLOCK]).is_empty());
+    }
+
+    fn a_snap_row() -> skyzfs_upload::publish::SnapRow {
+        skyzfs_upload::publish::SnapRow {
+            cut: skyzfs_local::inplace::CommittedCut {
+                state: [0xab; 16],
+                number: 7,
+                group: 4242,
+            },
+            commit: [0xcd; 32],
+            snap: skynbd_types::SnapId(ulid::Ulid::from_parts(1_700_000_000_000, 99)),
+            manifest_len: 1234,
+            manifest_hash: [0xef; 32],
+        }
+    }
+
+    #[test]
+    fn the_snap_row_is_read_as_the_daemon_writes_it() {
+        let row = a_snap_row();
+        let b = row.encode();
+        assert_eq!(b.len(), SNAP_ROW_LEN);
+        assert_eq!(
+            skyzfs_upload::publish::snap_row_key("t1"),
+            format!("{SNAP_ROW_PREFIX}t1")
+        );
+        let (line, read) = snap_row_line(Some(&b));
+        assert_eq!(
+            line,
+            format!(
+                "snaprow\t{}\t7\t4242\t{}\t{}\t1234\t{}",
+                "ab".repeat(16),
+                "cd".repeat(32),
+                row.snap,
+                "ef".repeat(32)
+            )
+        );
+        let read = read.expect("a row of version 1 reads");
+        assert_eq!(read.snap, row.snap.0);
+        // The manifest's object is where the daemon puts it.
+        let vol = volume_id("v");
+        assert_eq!(
+            format!(
+                "{}skyzfs/manifest/{}",
+                skynbd_engine::keys::volume_prefix(vol),
+                read.snap
+            ),
+            skyzfs_upload::publish::manifest_key(vol, row.snap)
+        );
+        assert_eq!(snap_row_line(None), ("snaprow\tnone".to_string(), None));
+        let mut v2 = b.clone();
+        v2[0] = 2;
+        assert!(snap_row_line(Some(&v2))
+            .0
+            .starts_with("snaprow\tunreadable\t02"));
+        assert!(snap_row_line(Some(&b[..117])).1.is_none());
+        let mut long = b.clone();
+        long.push(0);
+        assert!(snap_row_line(Some(&long))
+            .0
+            .starts_with("snaprow\tunreadable\t"));
+    }
+
+    /// The review of #139, N2: snap-row finds the ref, the row and the
+    /// manifest at the keys the uploader writes them under (its own key
+    /// functions, not a copy of their format strings), and refuses a
+    /// row whose version's high byte is not 0.
+    #[tokio::test]
+    async fn snap_row_reads_what_the_uploader_writes_where_it_writes_it() {
+        use skyzfs_upload::publish::{manifest_key, snap_ref, snap_row_key};
+        let (store, refs, vol, _) = put_small("snaprowkeys").await;
+        let m = b"0123  a/file\n".to_vec();
+        let mut row = a_snap_row();
+        row.manifest_len = m.len() as u32;
+        row.manifest_hash = *blake3::hash(&m).as_bytes();
+        let head = refs
+            .get(vol, &snap_ref("t"))
+            .await
+            .expect("refs")
+            .expect("put_image made snap/t");
+        row.commit = head.commit;
+        let put_row = |value: Vec<u8>| {
+            let refs = Arc::clone(&refs);
+            async move {
+                let ops = vec![RefOp::MetaPut {
+                    key: snap_row_key("t"),
+                    value,
+                }];
+                assert!(matches!(
+                    refs.transact(vol, ops).await.expect("transact"),
+                    TxnOutcome::Committed
+                ));
+            }
+        };
+        put_row(row.encode()).await;
+        store
+            .put(&manifest_key(vol, row.snap), bytes::Bytes::from(m.clone()))
+            .await
+            .expect("put the manifest");
+        let out =
+            std::env::temp_dir().join(format!("skyzfs-nodeb-snaprowkeys-{}.m", std::process::id()));
+        let out = out.to_str().expect("path").to_string();
+        let lines = snap_row_lines(&store, &refs, vol, "t", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            format!("ref\t{}\t{}", hex(&head.commit), head.generation)
+        );
+        assert_eq!(lines[1], snap_row_line(Some(&row.encode())).0);
+        assert!(lines[1].starts_with(&format!(
+            "snaprow\t{}\t7\t4242\t{}\t",
+            "ab".repeat(16),
+            hex(&head.commit)
+        )));
+        assert_eq!(
+            lines[2],
+            manifest_line(&m, &snap_row_line(Some(&row.encode())).1.expect("reads"))
+        );
+        assert!(lines[2].ends_with("\tmatches"));
+        assert_eq!(std::fs::read(&out).expect("the manifest written out"), m);
+        // Another name is not there at all.
+        let other = snap_row_lines(&store, &refs, vol, "u", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(
+            other,
+            vec!["ref\tnone".to_string(), "snaprow\tnone".to_string()]
+        );
+        // A row of version 257 (0x0101: low byte 1) is unreadable.
+        let mut v257 = row.encode();
+        v257[..2].copy_from_slice(&257u16.to_le_bytes());
+        put_row(v257).await;
+        let lines = snap_row_lines(&store, &refs, vol, "t", &out)
+            .await
+            .expect("snap-row");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].starts_with("snaprow\tunreadable\t0101"),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn the_manifest_is_checked_against_the_row() {
+        let m = b"0123  a/file\n".to_vec();
+        let mut r = SnapRowRead {
+            snap: ulid::Ulid::nil(),
+            manifest_len: m.len() as u32,
+            manifest_hash: *blake3::hash(&m).as_bytes(),
+        };
+        let line = manifest_line(&m, &r);
+        assert_eq!(
+            line,
+            format!(
+                "manifest\t{}\t{}\tmatches",
+                m.len(),
+                blake3::hash(&m).to_hex()
+            )
+        );
+        r.manifest_len += 1;
+        assert!(manifest_line(&m, &r).ends_with("\tdiffers"));
+        r.manifest_len -= 1;
+        r.manifest_hash[0] ^= 1;
+        assert!(manifest_line(&m, &r).ends_with("\tdiffers"));
+    }
+
+    #[test]
+    fn snap_row_needs_its_snapshot() {
+        let base = "--endpoint e --bucket b --volume v";
+        assert!(parse(&args(&format!("snap-row {base}"))).is_err());
+        let a = parse(&args(&format!("snap-row {base} --snapshot t1 --out m"))).expect("parses");
+        assert_eq!((a.snapshot.as_str(), a.out.as_str()), ("t1", "m"));
     }
 
     fn cut_bytes(version: u16, commit: Option<[u8; 32]>) -> Vec<u8> {
@@ -1264,11 +1577,6 @@ mod tests {
             .is_err());
     }
 
-    /// move-head with --row: head moves and the row is written in one
-    /// transaction (the cut rig's uv1 courses: a row of version 1 left
-    /// with head moved by another writer). Under a guard that no longer
-    /// holds, neither moves. The forms that name the head being written
-    /// are refused.
     #[test]
     fn move_head_takes_the_row_forms_known_before_the_commit() {
         let s = "cd".repeat(16);
@@ -1349,6 +1657,125 @@ mod tests {
         assert_eq!(fresh.meta_get(vol, ROW_KEY).await.expect("meta_get"), v1);
     }
 
+    /// A store that, at the first PUT of a commit object, runs another
+    /// node B's move-head on the same bucket: the engine PUTs its commit
+    /// object before it swaps head, so the swap that follows loses.
+    #[derive(Clone)]
+    struct MovesHead {
+        inner: skynbd_store::MemoryStore,
+        vol: VolumeId,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for MovesHead {
+        async fn put(&self, key: &str, data: bytes::Bytes) -> skynbd_store::Result<()> {
+            let fire = key.contains("commit/")
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst);
+            if fire {
+                let refs = Arc::new(ObjectRefStore::new(self.inner.clone()));
+                move_head_on(
+                    self.inner.clone(),
+                    refs,
+                    self.vol,
+                    BLOCK as u64,
+                    Some(7),
+                    None,
+                    None,
+                )
+                .await
+                .expect("the other node B's move")
+                .expect("its head");
+            }
+            self.inner.put(key, data).await
+        }
+        async fn get(
+            &self,
+            key: &str,
+            range: Option<std::ops::Range<u64>>,
+        ) -> skynbd_store::Result<bytes::Bytes> {
+            self.inner.get(key, range).await
+        }
+        async fn exists(&self, key: &str) -> skynbd_store::Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> skynbd_store::Result<Vec<String>> {
+            self.inner.list(prefix).await
+        }
+        async fn delete(&self, key: &str) -> skynbd_store::Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_with_mtime(
+            &self,
+            prefix: &str,
+        ) -> skynbd_store::Result<Vec<(String, Option<u64>)>> {
+            self.inner.list_with_mtime(prefix).await
+        }
+        async fn get_versioned(&self, key: &str) -> skynbd_store::Result<(bytes::Bytes, String)> {
+            self.inner.get_versioned(key).await
+        }
+        async fn put_if(
+            &self,
+            key: &str,
+            data: bytes::Bytes,
+            pre: skynbd_store::Precondition,
+        ) -> skynbd_store::Result<String> {
+            self.inner.put_if(key, data, pre).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_swap_of_head_through_move_head() {
+        // The guard's call site (the review of #137, N2 and L1): another
+        // writer moves head between node B's open and its swap. With
+        // --expect-row the swap's loss is "row moved"; with --row alone
+        // it is an error.
+        let (store, _, vol, _) = put_small("move-lost").await;
+        let s = "cd".repeat(16);
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1");
+        let moves = MovesHead {
+            inner: store,
+            vol,
+            armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let refs = Arc::new(ObjectRefStore::new(moves.clone()));
+        assert_eq!(set_row_on(&refs, vol, v1.clone(), None).await, Ok(true));
+        let head = || async {
+            refs.get(vol, "head")
+                .await
+                .expect("get")
+                .expect("head")
+                .commit
+        };
+        let before = head().await;
+        moves.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let guarded = move_head_on(
+            moves.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(40),
+            Some(v1.clone()),
+            v1.clone(),
+        )
+        .await
+        .expect("a lost swap under a guard is no error");
+        assert_eq!(guarded, None);
+        let other = head().await;
+        assert_ne!(other, before, "the other writer's move landed");
+        moves.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = move_head_on(moves.clone(), Arc::clone(&refs), vol, 0, Some(40), None, v1)
+            .await
+            .expect_err("a lost swap without a guard is an error");
+        assert!(err.starts_with("commit: "), "{err}");
+        assert_ne!(head().await, other, "the second other writer's move landed");
+    }
+
+    /// move-head with --row: head moves and the row is written in one
+    /// transaction (the cut rig's uv1 courses: a row of version 1 left
+    /// with head moved by another writer). Under a guard that no longer
+    /// holds, neither moves. The forms that name the head being written
+    /// are refused.
     #[tokio::test]
     async fn move_head_writes_the_row_in_the_same_commit() {
         let (store, refs, vol, _) = put_small("move-row").await;

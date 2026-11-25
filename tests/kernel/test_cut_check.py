@@ -5,6 +5,7 @@
 """
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -252,6 +253,48 @@ class Picks(unittest.TestCase):
         # Different bytes are picked as before.
         data[2] = b'D' * 4096
         self.assertEqual(cut_check.pick_withheld(records, c, self.BPS, differs), 2)
+
+    def test_the_rigs_pick_through_the_checkers_log_and_base(self):
+        """The pick both rigs make (`withheld_pick`): with the checker's
+        reader and its base image on disk, so that the wiring of
+        `differs` and of `base_read` is reached without a kernel (the
+        review of #132, R10 to R12)."""
+        o = self.OFF
+        data = {0: b'A' * 4096, 1: b'B' * 4096, 2: b'B' * 4096, 4: b'C' * 4096}
+        records = [rec(0, (), o + 0x1000, 4096), rec(1, (), o + 0x9000, 4096), rec(2, (), o + 0x9000, 4096),
+                   rec(3, ('flush',)), rec(4, (), 0, 4096), rec(5, ('flush',))]
+        c = cut(1, 5, 4, 6)
+        with tempfile.TemporaryDirectory() as d:
+            base = os.path.join(d, 'base.img')
+            with open(base, 'wb') as f:
+                f.truncate(o + 0x10000)
+            ck = cut_check.Check.__new__(cut_check.Check)
+            ck.records, ck.read, ck.base = records, lambda r: data[r['i']], base
+            # 2 puts back 1's bytes and covers them: both passed over.
+            self.assertEqual(cut_check.withheld_pick(ck, c, self.BPS), (0, [2, 1]))
+            # The base image already holds record 0's bytes: no write is left.
+            with open(base, 'r+b') as f:
+                f.seek(o + 0x1000)
+                f.write(b'A' * 4096)
+            self.assertEqual(cut_check.withheld_pick(ck, c, self.BPS), (None, [2, 1, 0]))
+            # Bytes that differ from the base are picked.
+            data[0] = b'E' * 4096
+            self.assertEqual(cut_check.withheld_pick(ck, c, self.BPS), (0, [2, 1]))
+
+    def test_base_read_reads_the_base_and_zeros_past_its_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck = cut_check.Check.__new__(cut_check.Check)
+            ck.base = os.path.join(d, 'base.img')
+            with open(ck.base, 'wb') as f:
+                f.write(b'xyz')
+            self.assertEqual(ck.base_read(1, 4), b'yz\0\0')
+            self.assertEqual(ck.base_read(5, 2), b'\0\0')
+
+    def test_the_writes_passed_over_are_named(self):
+        self.assertEqual(cut_check.passed_over([]), '')
+        self.assertEqual(cut_check.passed_over([7]), ' (passed over, as withholding them changes no copy: record 7)')
+        self.assertEqual(cut_check.passed_over(list(range(10, 0, -1))),
+                         ' (passed over, as withholding them changes no copy: records 10, 9, 8, 7, 6, 5, 4, 3 ...)')
 
     def test_only_the_copies_bytes_count(self):
         """A write that differs only outside the copies it meets changes no copy."""
