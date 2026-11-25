@@ -1,0 +1,25 @@
+# plants142.py at 05d79f4, one plant at a time (suites: a = skyzfs-agent, l = skyzfs-local --lib, d = skyzfsd --lib with its test hooks)
+## run 1: R1-R8, M1-M2, P1-P7
+R1 two fields of a publish swapped (a format change): SURVIVED
+R2 a reason inserted first in Why (a format change): SURVIVED
+R3 bytes after the body read: SURVIVED
+R4 the file not synced before the rename: SURVIVED
+R5 the directory not synced after the rename: SURVIVED
+R6 written in place, no temporary file: SURVIVED
+R7 the new directory's parent not synced: SURVIVED
+R8 a removed manifest's directory not synced: SURVIVED
+M1 the canonical re-encode not compared: KILLED (a): manifest::tests::only_the_canonical_bytes_of_version_1_are_read
+M2 a GUID's leading zero taken: KILLED (a): manifest::tests::only_the_canonical_bytes_of_version_1_are_read
+P1 ours without the group: KILLED (a): plan::tests::snap_t_is_ours_where_it_records_this_manifest_and_a_group_not_before_g
+P2 ours without the hash: KILLED (a): plan::tests::snap_t_is_ours_where_it_records_this_manifest_and_a_group_not_before_g
+P3 pending kept after load_guid moved: KILLED (a): plan::tests::held_it_is_asked_with_the_count_read_before_the_snapshot, plan::tests::pending_a_sync_helps_only_where_no_cut_has_carried_the_request
+P4 the hold released after held_until, not at it: KILLED (a): plan::tests::asked_with_the_daemon_away_the_hold_is_kept_until_held_until
+P5 done at any commit: KILLED (a): plan::tests::done_is_recorded_only_as_look_sees_it
+P6 unknown and rewound looked up when the snapshot is broken (F1's fix): KILLED (a): plan::tests::held_it_is_asked_with_the_count_read_before_the_snapshot, plan::tests::rewound_and_unknown_are_asked_anew_without_a_look
+P7 Held recorded before the hold is seen: KILLED (a): plan::tests::taken_it_is_held_once_its_members_and_load_guid_are_verified
+## run 2: Q5, Q7, Wb (Wb's suite was then `--bin skyzfsd`, which holds no control test: void)
+Q5 a second state of the top's group not remembered: KILLED (l): inplace::tests::cuts::a_second_state_of_the_tops_group_is_remembered
+Q7 unverified uberblocks in the rings raise the top: KILLED (l): inplace::tests::cuts::an_uberblock_that_does_not_verify_does_not_raise_the_top
+Wb the limit counted from the handler's making: SURVIVED
+## run 3: Wb again, suite `--lib`
+Wb the limit counted from the handler's making: KILLED (d): control::tests::uploader::the_limit_begins_with_each_request
