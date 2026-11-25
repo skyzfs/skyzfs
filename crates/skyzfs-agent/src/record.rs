@@ -28,8 +28,9 @@
 //! whom) is for a person to judge. A record of another version is
 //! corrupt to this agent, as the plan says (no reader of other versions
 //! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
-//! was begun, and [`Why::NoProgress`], [`Why::TooOld`] and
-//! [`Why::Stopped`]; version 1
+//! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; M2.6c-1
+//! appended [`Why::Stopped`] to it, before any agent ran it (S11 of
+//! #146's review); version 1
 //! (M2.6b1) is not read, since no agent that wrote it ever ran: the
 //! crate had no engine and no program then. No agent has run version 2
 //! either; from the first run of the program (M2.6c), any change to the

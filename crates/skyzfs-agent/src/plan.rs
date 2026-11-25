@@ -85,7 +85,11 @@
 //!     ([`Why::Rewound`] where a rewind lost `pool@t`), the code
 //!     reported ([`Report::Refused`]). Not too old, these answers end
 //!     the publish in a round too (below), or stop it for a person;
-//!     `stopped` gives it up as here ([`Why::Stopped`]).
+//!     `stopped` gives it up as here ([`Why::Stopped`]). That holds
+//!     where `stopped` is the answer to the publish's own `publish`
+//!     too, which skyzfsd does not keep: the engine keeps the answer
+//!     across the look and the release, so that the round after the
+//!     release gives the publish up on it (N8 of #146's review).
 //!   - `pending` or `refused asked`: the request withdrawn first. So is
 //!     `absent`, which skyzfsd does not give to `progress` or `withdraw`
 //!     (it answers `look`): a withdraw is safe whatever pends (S4 of the
@@ -165,11 +169,12 @@
 //! - A refusal that says the agent asked wrongly (`name`, `manifest`,
 //!   `expiry`, `version`, `malformed`, `peer`) stops the publish and is
 //!   reported ([`Action::Stop`]); so does `store`, which only `look`
-//!   answers, where it comes as an answer about the publish, and `done`
-//!   that `look` does not confirm. That holds for a publish not too old;
-//!   one too old, or stalled [`STALLS_ABANDONED`] times, is looked up and
-//!   given up on these refusals instead (L7, above; S7 of #144's fourth
-//!   look).
+//!   answers, where it comes as an answer about the publish. So does
+//!   `done` that `look` does not confirm, at any age (L6). The
+//!   refusals, not `done`, stop only a publish not too old: one too old,
+//!   or stalled [`STALLS_ABANDONED`] times, is looked up and given up on
+//!   them instead (L7, above; S7 of #144's fourth look; S8 of #146's
+//!   review).
 
 use std::time::Duration;
 
@@ -587,9 +592,11 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
 ///
 /// `stopped` is the uploader's answer for good: it ends every publish
 /// pending when it stops (the lease lost, a transaction fenced, a cut
-/// kept committed), takes no step after, and refuses every request after
-/// it until skyzfsd restarts (N6 of #144's fourth look; the lead's
-/// decision for M2.6c). A publish is given up on it whatever its age
+/// kept committed), takes no step after, and refuses every `publish`
+/// after it until skyzfsd restarts, without keeping it (N6 of #144's
+/// fourth look; the lead's decision for M2.6c). `progress`, `withdraw`
+/// and `look` go on answering: `progress` of a name whose `publish` was
+/// so refused answers `unknown` (S9 of #146's review). A publish is given up on it whatever its age
 /// (the lead's ruling on #146): waiting would only hold `pool@t` for up
 /// to [`AGE_MAX`], and the next publish covers a restart.
 ///
@@ -756,7 +763,9 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
             // The uploader has stopped for good and takes no step in this
             // run of skyzfsd: looked up, then given up and reported, the
             // hold released (the lead's ruling on #146). The next
-            // publish covers a restart.
+            // publish covers a restart. Where the answer was to this
+            // publish's own `publish`, the engine keeps it for the round
+            // after the release (N8 of #146's review).
             Code::Stopped => look(&|| give_up(pool, broken.unwrap_or(Why::Stopped))),
             Code::Ended | Code::NoAnswer | Code::NoUpload => away(),
             Code::Name

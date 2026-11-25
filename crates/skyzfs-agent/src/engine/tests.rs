@@ -315,7 +315,8 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::Premise => !premise,
             // The world always cuts again in time: a publish that makes
             // no progress here is a defect of the engine.
-            // Nor does its uploader stop for good.
+            // Nor does its uploader stop for good in the matrices (it does
+            // in `a_stopped_uploader_gives_each_publish_up_at_once`).
             Why::ManifestTooLarge
             | Why::NameTaken
             | Why::NoProgress
@@ -1975,4 +1976,171 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
             "{mode:?}: destroyed while {phase:?}"
         );
     }
+}
+
+/// What [`with_the_uploader_stopped`] saw.
+#[derive(Debug)]
+struct StopRun {
+    names: Vec<String>,
+    outcomes: Vec<(String, Outcome)>,
+    reports: Vec<(String, Report)>,
+    holds: u32,
+    asks: u32,
+    releases: u32,
+    /// The world's time from the stop to the end of the settle.
+    after_stop_ms: u64,
+    held_at_end: Vec<String>,
+}
+
+/// Begin `publishes` publishes and settle them, the daemon's uploader
+/// stopping for good (skyzfsd's `Publishing::stop`) at the agent's
+/// `nth` point equal to `at` (from 1), or before the first begins where
+/// `at` is `None`. Nothing is ever uploaded (the lag is a year), so no
+/// publish is made before the stop.
+fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> StopRun {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let stopped_at = Rc::new(Cell::new(None::<u64>));
+    let counts = Rc::new(Cell::new((0_u32, 0_u32, 0_u32)));
+    if at.is_none() {
+        let mut w = world.borrow_mut();
+        w.stop_uploader();
+        stopped_at.set(Some(w.now_ms));
+    }
+    let hook = {
+        let (world, stopped_at, counts) = (world.clone(), stopped_at.clone(), counts.clone());
+        let reached = Cell::new(0_u32);
+        move |point: Point| {
+            let (mut holds, mut asks, mut releases) = counts.get();
+            match (point.effect, point.after) {
+                (Effect::Hold, true) => holds += 1,
+                (Effect::Ask, true) => asks += 1,
+                (Effect::Release, true) => releases += 1,
+                _ => {}
+            }
+            counts.set((holds, asks, releases));
+            if let Some((p, nth)) = at {
+                if point == p {
+                    reached.set(reached.get() + 1);
+                    if reached.get() == nth {
+                        let mut w = world.borrow_mut();
+                        w.stop_uploader();
+                        stopped_at.set(Some(w.now_ms));
+                    }
+                }
+            }
+            false
+        }
+    };
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    let names = (0..publishes)
+        .map(|_| agent.begin().expect("begun"))
+        .collect::<Vec<_>>();
+    agent.settle(LIMIT).expect("settled");
+    let (hold_count, asks, releases) = counts.get();
+    let world = world.borrow();
+    let stopped = stopped_at.get().expect("the uploader stopped");
+    StopRun {
+        names,
+        outcomes: agent.outcomes().to_vec(),
+        reports: agent.reports().to_vec(),
+        holds: hold_count,
+        asks,
+        releases,
+        after_stop_ms: world.now_ms - stopped,
+        held_at_end: holds(&world),
+    }
+}
+
+/// Each publish is given up as `stopped` soon after the stop, reported
+/// once, its hold released, and no more holds, asks or releases than
+/// `per` (holds, asks, releases) for each.
+fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32)) {
+    let n = u32::try_from(run.names.len()).expect("a few");
+    for t in &run.names {
+        assert!(
+            run.outcomes
+                .iter()
+                .any(|(name, o)| name == t && *o == Outcome::Abandoned(Why::Stopped)),
+            "{t}: {run:?}"
+        );
+        let reported = run
+            .reports
+            .iter()
+            .filter(|(name, r)| name == t && *r == Report::Refused(skyzfs_control::Code::Stopped))
+            .count();
+        assert_eq!(reported, 1, "{t} reported once: {run:?}");
+    }
+    assert_eq!(run.outcomes.len(), run.names.len(), "{run:?}");
+    assert_eq!(run.reports.len(), run.names.len(), "{run:?}");
+    assert_eq!(
+        (run.holds, run.asks, run.releases),
+        (per.0 * n, per.1 * n, per.2 * n),
+        "holds, asks and releases: {run:?}"
+    );
+    assert!(run.held_at_end.is_empty(), "{run:?}");
+    // A round or two of ticks, not until the publish is too old.
+    assert!(run.after_stop_ms <= 10_000, "{run:?}");
+}
+
+/// TG12 of #146's review, N8: a publish whose `publish` is refused
+/// `stopped` (the uploader stopped for good) is given up as `Stopped`
+/// whatever its age, and so is one whose request the stop ended; each
+/// once, with one hold and one release, reported once. The stopped
+/// uploader refuses every `publish` after and does not keep it, so
+/// `progress` of that name answers `unknown`: the answer refused must
+/// outlast the release that follows the look, or the publish is held and
+/// asked again and again, with no tick between, until it is too old.
+/// Mutant: the answer forgotten at the release (N8); one report for two
+/// publishes ended by one stop (X12b of the review).
+#[test]
+fn a_stopped_uploader_gives_each_publish_up_at_once() {
+    let asked = (
+        Point {
+            effect: Effect::Asked,
+            after: true,
+        },
+        1,
+    );
+    let held = (
+        Point {
+            effect: Effect::Held,
+            after: true,
+        },
+        1,
+    );
+    // Asked: the stop ends the request that pends.
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(asked), 1), (1, 1, 1));
+    // Held and not asked: the ask is refused.
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(held), 1), (1, 1, 1));
+    // Begun after the stop.
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 1), (1, 1, 1));
+    // Two publishes asked, ended by one stop: each is reported.
+    let second = (
+        Point {
+            effect: Effect::Asked,
+            after: true,
+        },
+        2,
+    );
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(second), 2), (1, 1, 1));
+    // Two begun after it.
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 2), (1, 1, 1));
+}
+
+/// N8's other case: a publish whose request expired before the stop is
+/// asked anew after it, the ask refused `stopped`; it is given up at
+/// once, not held and asked anew until it is too old.
+#[test]
+fn a_publish_asked_anew_after_the_uploader_stopped_is_given_up() {
+    let anew = (
+        Point {
+            effect: Effect::Count,
+            after: false,
+        },
+        1,
+    );
+    let run = with_the_uploader_stopped(Some(anew), 1);
+    given_up_at_the_stop(&run, (1, 2, 1));
 }
