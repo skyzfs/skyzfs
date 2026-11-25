@@ -48,7 +48,7 @@ const FEATURES_APPLY: u8 = 1;
 const FEATURES_NONE: u8 = 2;
 
 /// How long a connect may take on its own. Note this is not additive
-/// with [`READ_TIMEOUT`]: the read timer is armed before the connector
+/// with `READ_TIMEOUT`: the read timer is armed before the connector
 /// future is first polled, so connect time is charged against it too and
 /// the worst case for a whole request is 60 s, not 70 s.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -120,7 +120,7 @@ pub fn control_plane_client() -> reqwest::Client {
 /// The same client with caller-chosen dials, for a caller whose requests
 /// are a different shape than this crate's.
 ///
-/// [`READ_TIMEOUT`] is sized for the agent's upload path — it has to
+/// `READ_TIMEOUT` is sized for the agent's upload path — it has to
 /// cover a whole `chunk_bytes` object going out — which makes it the
 /// wrong number for a caller that only makes small RPCs and has someone
 /// waiting on the answer. Sharing the *constructor* is the point;

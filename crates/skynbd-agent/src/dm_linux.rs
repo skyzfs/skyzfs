@@ -179,7 +179,7 @@ pub fn write_probe(mount: &Path) -> Result<bool, StackError> {
 /// tell "was not frozen" from "still frozen", and a freeze has to tell
 /// "could not freeze it right now" from "there is nothing left to
 /// freeze". Collapsing the second distinction is what would make
-/// [`DmStack::capture`] refuse to run on exactly the volume whose delta
+/// `DmStack::capture` refuse to run on exactly the volume whose delta
 /// most needs to escape.
 ///
 /// Split out as a free function because the interesting behaviour is the

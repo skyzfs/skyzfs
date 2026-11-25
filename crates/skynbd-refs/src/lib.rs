@@ -276,13 +276,13 @@ pub trait RefStore: Send + Sync {
 
     /// Acquire, renew (same holder, epoch kept) or steal (expired holder,
     /// epoch bumped) the volume's lease (design D-M3). One method for all
-    /// three because the semantics are one state machine: [`lease::acquire`].
+    /// three because the semantics are one state machine: `lease::acquire`.
     async fn lease_acquire(&self, vol: VolumeId, holder: &str, ttl_ms: u64)
         -> Result<LeaseOutcome>;
 
     /// Renew the lease only if its row is `(holder, epoch)`, live,
     /// expired or released, in one conditional write
-    /// ([`lease::renew`]). Never takes the lease: a row of another
+    /// (`lease::renew`). Never takes the lease: a row of another
     /// holder or another epoch, or no row, is
     /// [`RenewOutcome::NotHeld`] and nothing is written. A holder that
     /// keeps a lease it already holds renews it here and not with

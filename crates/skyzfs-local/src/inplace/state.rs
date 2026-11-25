@@ -800,8 +800,8 @@ pub struct Figures {
     pub abandoned: u64,
     /// The cuts replaced by a newer cut before they were uploaded: the
     /// cut that waits when a newer cut's flush completes
-    /// ([`CutState::flushed`]), and a cut whose flush is still under way
-    /// at the next cut's instant ([`CutState::freeze`]); the newer cut
+    /// (`CutState::flushed`), and a cut whose flush is still under way
+    /// at the next cut's instant (`CutState::freeze`); the newer cut
     /// takes the map either way. A flush completed by a start's sync
     /// counts in the instance that the start opened. Counted since this
     /// instance of the state was opened, in memory only: not kept across
