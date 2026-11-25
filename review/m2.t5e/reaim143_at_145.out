@@ -1,0 +1,9 @@
+baseline {'tests/kernel/publish_check.py': 'all pass', 'tests/kernel/cut-record.sh': 'all pass'}
+L4r	NOT APPLIED	f1 not in ABSENT	0 matches
+R4r	KILLED	asked_line: any op	test_publish_check.py
+R13r	KILLED	prewind's ground from the anew C	test_publish_check_main.py
+R25r	KILLED	prewindf not a course of the check	test_publish_check_main.py
+P1r	KILLED	the anchor read as the refusal again	test_publish_check_main.py
+R46r	NOT APPLIED	prewindf not a course by name	0 matches
+N24r	NOT APPLIED	the workflow's default list without prewindf	0 matches
+tree clean

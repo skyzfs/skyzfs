@@ -59,5 +59,8 @@ S11  KILLED    no withdrawal of a2  by test_cut_record.sh
 S12  KILLED    PUBLISH_NAMED without passist  by test_cut_record.sh
 S13  SURVIVED  zfs_txg_history not raised
 S14  KILLED    the workflow's default without passist  by test_cut_record.sh
+L4y  KILLED    #141's L4 again: f1 not in ABSENT  by test_publish_check.py, test_publish_check_main.py
+R46y KILLED    #141's R46 again: prewindf not a course by name  by test_cut_record.sh
+N24y KILLED    #141's N24 again: the workflow's default list without prewindf  by test_cut_record.sh
 S14x KILLED    #143's S14 again: the workflow's default without prewindc  by test_cut_record.sh
 restored {'tests/kernel/publish_check.py': [], 'tests/kernel/cut-record.sh': [], 'tests/kernel/publish_agent.py': [], '.github/workflows/skyzfs-publish-rig.yml': []}

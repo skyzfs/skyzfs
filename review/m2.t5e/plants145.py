@@ -10,6 +10,9 @@ exactly once.
 - K: the check's passist block and its helpers (publish_check.py).
 - S: rec_passist, pidle and the course's wiring (cut-record.sh, the
   workflow).
+- V1x, S14x, L4y, R46y, N24y: earlier reviews' plants (#143's V1 and
+  S14; #141's L4, R46 and N24) aimed again at text this pull request
+  changed.
 
 The probe's lines (ublk-probe.sh) have no local suite: the kernel probe
 is their only judge, so they are not planted here.
@@ -144,6 +147,15 @@ PLANTS = [
     ('S14', WF, "the workflow's default without passist",
      [('${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist}',
        '${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel}')]),
+    # #141's L4, R46 and N24, as #143's review aimed them (reaim143.py),
+    # aimed again at the tables and lists this pull request lengthened.
+    ('L4y', PC, "#141's L4 again: f1 not in ABSENT", [("'prewindf': ('f1',), ", "")]),
+    ('R46y', SH, "#141's R46 again: prewindf not a course by name",
+     [('PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist"',
+       'PUBLISH_NAMED="pplain prewind prewindc pkill pkillman pkillpub pchannel passist"')]),
+    ('N24y', WF, "#141's N24 again: the workflow's default list without prewindf",
+     [('${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist}',
+       '${COURSES:-pplain prewind prewindc pkill pkillman pkillpub pchannel passist}')]),
     # #143's S14 (the default without prewindc), aimed again at the list
     # this pull request lengthened.
     ('S14x', WF, "#143's S14 again: the workflow's default without prewindc",

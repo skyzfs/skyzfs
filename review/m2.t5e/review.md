@@ -154,9 +154,10 @@ here.
    `accepted.tsv`. Both are kstat reads, whatever the daemon answered.
 2. premise_a1 becomes `w_acc < G and (crossed if w_end >= G else not pended)`:
    - the pool was below G when a1 was accepted;
-   - if it reached G by the end, an assist of a1's took it across G;
-   - if not, a1 must not be `pending` (it was not carryable, so a
-     `done` is the daemon's fault and the pins judge it).
+   - if it reached G by the end, one of a1's assists took it across G;
+   - if it did not, a1 could not have been carried. A `done` is then the
+     daemon's fault, and the pins judge it (1). A `pending` means the
+     rig's assists never brought the pool to G: the rig's error (2).
 3. For a2: if its end is not `pending after`, `obs_assist_pace` is NA
    and the premise is skipped; `pin_answer_a2` has judged it.
 4. `assist.tsv` is read with `need=False`.
@@ -188,8 +189,9 @@ Only D13 remains, which is F2.
 every pin passed and the line it fails for is INFO. A daemon that drops
 a counter from its status reads as the rig's fault.
 
-**Suggestion.** Make the line NA, saying which key is missing, as the
-check does elsewhere for figures it cannot read.
+**Suggestion.** Make the line NA (or INFO saying which key is missing)
+and leave the verdict to the pins. `publish_check.py` has no NA line
+yet; the daemon rig's judge has them.
 
 ## Test gaps and suggestions (none blocks)
 
@@ -289,7 +291,8 @@ MMP, scrub or resilver repairs, `zpool initialize`.
 - **An empty group writes no uberblock** (`vdev_config_sync`, when
   `uberblock_update` says nothing changed and no config is dirty).
 - **On a multihost pool every group writes one.** There, "idle" never
-  comes, and `pidle` and `idle_pool` end in the rig's error, not a pass.
+  comes: `pidle` ends in the rig's error, and the probe's pin reads "not
+  checked", a FAIL. Neither is a pass.
 - **An uberblock with `nwritten` 0** cannot happen: the label writes are
   writes.
 
@@ -324,7 +327,7 @@ awk's doubles are exact to 2^53 bytes, far above any one group.
 - **V1** (G1): a1 carried by a group no assist wrote ends 0.
 - **V2 and V3** (G2): the pace and the timing are not judged.
 
-**No other judged case ends 0 wrongly.**
+**No other case of the replay ends 0 wrongly.**
 
 ### (3) The stand-in against #144's engine
 
@@ -370,7 +373,7 @@ The value matches too: #144's engine uses `now_ms.max(last + 1)`
 
 **Does an agent that follows #144 pass the course?** Yes. One that
 followed b5063b2 (once a second) would also pass: a1 the same, a2 with
-about 60 assists rather than 8, and `obs_assist_pace` saying so. Only
+an assist about every 1.1 s for 60 s rather than 8 in all, and `obs_assist_pace` saying so. Only
 INFO lines describe the pace (G2).
 
 **Are the pace figures judged with tolerances that can fail?** No.
@@ -467,8 +470,15 @@ file restored in a finally, 600 s a suite, the tree clean after each):
   ends in passist). Aimed again at the new text (V1x and S14x in
   `plants145.py`), both are KILLED. Every other plant has the result
   it had at d3b75af.
-- **#141's next look** (`review/m2.t7b/plants_next.py`, 91 plants):
-  RESULT141.
+- **#141's next look** (`review/m2.t7b/plants_next.py`, 91 plants;
+  `p141_at_145.out`): 71 KILLED, 13 SURVIVED and 7 NOT APPLIED, line for
+  line the same as at d3b75af. The 7 are those #143 displaced.
+  - #143's review aimed them again (`review/m2.t5d/reaim143.py`). Re-run
+    here (`reaim143_at_145.out`), four are KILLED.
+  - Three no longer apply, because this pull request lengthened their
+    text: L4 (ABSENT), R46 (`PUBLISH_NAMED`) and N24 (the workflow's
+    default list). Aimed at the new text (L4y, R46y and N24y in
+    `plants145.py`), all three are KILLED.
 - **#132's** bench plants were not re-run: this pull request touches no
   bench file.
 
@@ -492,10 +502,10 @@ All pass:
 | skyzfs-nodeb-rig | 45600486023 | success |
 | skyzfs-cut-daemon | 45600485931 | success |
 | **skyzfs-cut-rig** | **45600485861** | **ubuntu-24.04 failed** (job 139157785744); 24.04-arm, 26.04, 26.04-arm and the reference passed |
-| skyzfs-daemon-rig | 45600486134 | cancelled about 30 s after it started |
-| skyzfs-replay-rig | 45600486060 | cancelled about 30 s after it started |
+| skyzfs-daemon-rig | 45600486134 | cancelled within a minute of its start (11:02 UTC) |
+| skyzfs-replay-rig | 45600486060 | cancelled within a minute of its start (11:02 UTC) |
 
-The push runs (45600335xxx) were cancelled by the pull request's.
+The push runs of the same head (45600335xxx) were cancelled too.
 
 **The cut rig's failure.**
 
@@ -517,9 +527,9 @@ The push runs (45600335xxx) were cancelled by the pull request's.
 - **What to do:** the author has answered it with aabde27 (above). Its
   cut rig on ubuntu-24.04 shows whether the export now passes.
 
-**The daemon and replay rigs.** They are cancelled with no newer run
-of the pull request; their concurrency groups are per pull request. They
-start because `tests/kernel/` changed, but they read none of the files
+**The daemon and replay rigs.** They were cancelled with no newer run
+of the pull request, although their concurrency groups are per pull
+request; the API does not say who cancelled them. They start because `tests/kernel/` changed, but they read none of the files
 this pull request changes:
 
 - the daemon rig: `daemon-rig.sh`, `daemon_check.py` and its tests;
@@ -566,7 +576,9 @@ All in `review/m2.t5e/`:
   the passist recording through `publish_check.main`, at the head and
   with the sketch;
 - `premise_sketch.diff`: the sketch of F1's fix (on cb91ad1);
-- `plants145.py`, `plants145.out`, `plants145.json`: this review's
-  plants;
-- `p139_at_145.out`, `p143_at_145.out`, `p141_at_145.out`: #139's,
-  #143's and #141's plants re-run at cb91ad1.
+- `plants145.py`, `plants145.out`, `plants145.json`: this review's 59
+  plants, and five earlier plants aimed again at text this pull request
+  changed (V1x, S14x, L4y, R46y, N24y);
+- `p139_at_145.out`, `p143_at_145.out`, `p141_at_145.out`,
+  `reaim143_at_145.out`: #139's, #143's and #141's plants, and #143's
+  re-aimed ones, re-run at cb91ad1.
