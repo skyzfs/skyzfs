@@ -482,8 +482,8 @@ fn on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request() {
 }
 
 /// Mutant: the sync task's value set again (the fake writes no group for
-/// a property set to the value it holds, more conservative than the
-/// kernel probe of #145 found on ZFS 2.4.1). Two
+/// a property set to the value it holds, where ZFS 2.4.1 writes one as
+/// for a new value: the conservative model). Two
 /// publishes in a row on an idle pool, the daemon rebooted as each is
 /// first accepted, each need a sync task (a request asked anew is carried
 /// by no other group), and the agent's clock steps back between them:

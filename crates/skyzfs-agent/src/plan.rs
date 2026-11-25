@@ -146,13 +146,18 @@ pub const ASSIST_PAUSE: Duration = Duration::from_secs(1);
 
 /// The syncs of a request with no qualifying cut that are run
 /// [`ASSIST_PAUSE`] apart; each after them waits [`ASSIST_AFTER`] (the
-/// lead's decision on #144). Since each sync writes a group of its own,
-/// a pool whose cut never comes would otherwise get a group a second for
-/// as long as the publish stalls: up to [`STALLS_ABANDONED`] requests
-/// that run to their expiry, about 80 minutes at the default expiry. Spaced, it costs about six
-/// groups a minute: at the default expiry, three syncs from
+/// lead's decision on #144). Through the `zfs` command each sync writes
+/// two groups, the set's and the one in which the sync writes the set's
+/// history record (the kernel probe of #145, ZFS 2.4.1), and the daemon
+/// counts a cut for each. Unspaced, a pool whose cut never comes would
+/// get two groups a second for as long as the publish stalls: up to
+/// [`STALLS_ABANDONED`] requests that run to their expiry, about 80
+/// minutes at the default expiry. Spaced, it costs about twelve groups
+/// (and cuts) a minute: at the default expiry, three syncs from
 /// [`ASSIST_AFTER`] after `accepted`, then one each [`ASSIST_AFTER`],
-/// about 61 a request.
+/// about 61 syncs and 122 groups a request; on a nearly empty pool, about
+/// 440 uploaded blocks a minute (#145's review). The lead accepted that
+/// cost for the command's route.
 pub const ASSIST_QUICK: u32 = 3;
 
 /// The stalls in a row ([`stalls`]) at which a publish is reported

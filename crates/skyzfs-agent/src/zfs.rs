@@ -275,12 +275,13 @@ pub trait Zfs {
     /// #142's review). `value` differs at each call, so that no call
     /// sets the property to what it already is. The kernel probe of #145
     /// (ZFS 2.4.1, one run on each of Ubuntu 24.04 and 26.04) saw each
-    /// call write two groups, the set's and the sync's (about 310 KiB
-    /// each), and a bare `zpool sync` write none; through the daemon, the
-    /// second call's set carried a waiting publish about 11 s after it
-    /// was accepted. A set to the value already held also wrote groups
-    /// there, so a new value at each call is a margin on that version,
-    /// kept for any other.
+    /// call write two groups, the set's and the one in which the sync
+    /// writes the set's history record (about 310 KiB each), and a bare
+    /// `zpool sync` write none; through the daemon, the second call's set
+    /// carried a waiting publish about 11 s after it was accepted. A set
+    /// to the value the property already holds writes a group too, so a
+    /// new value at each call is not needed there; it is kept, as it
+    /// costs nothing.
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError>;
 }
 

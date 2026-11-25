@@ -1254,13 +1254,12 @@ impl Zfs for FakeZfs {
         let mut world = self.0.borrow_mut();
         let now = world.now_ms;
         world.synced_at.push(now);
-        // `zfs set` is a sync task: its own group. The `zpool sync` after
-        // it writes nothing more, since every change here is written as
-        // it is made: a plain sync of an idle pool writes no group.
-        // A property set to the value it holds writes nothing here: more
-        // conservative than ZFS 2.4.1, where the kernel probe of #145
-        // (one run on each of Ubuntu 24.04 and 26.04) saw such a set,
-        // then `zpool sync`, write groups.
+        // `zfs set` is a sync task: its own group; the `zpool sync` after
+        // it writes a second, with the set's history record (the kernel
+        // probe of #145, ZFS 2.4.1). A plain sync of an idle pool writes
+        // no group. A property set to the value it holds writes nothing
+        // here, where ZFS 2.4.1 writes a group as for a new value: the
+        // conservative model, which a test of the agent's values needs.
         if world.plain_sync {
             world
                 .log
@@ -1272,6 +1271,7 @@ impl Zfs for FakeZfs {
         } else {
             world.assists.push(value);
             world.sync("zfs set skyzfs:assist");
+            world.sync("zpool sync: the set's history record");
         }
         Ok(())
     }
