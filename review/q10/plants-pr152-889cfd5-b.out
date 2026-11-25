@@ -1,0 +1,14 @@
+base shell: passes
+base writer: passes
+base probe: passes
+base json: passes
+base cut: passes
+D1	KILLED	stall: NOT COVERED only on a late start	(test_dsync_writer.py: FAIL: test_a_log_that_ends_in_the_window_is_not_covered (__main__.Stall.test_a_log_that_ends_in_the_window_is_)
+D2	KILLED	stall: covered when the log reaches t1 exactly or not (<=)	(test_dsync_writer.py: FAIL: test_the_last_second_and_a_slow_write_cover (__main__.Stall.test_the_last_second_and_a_slow_write_cover))
+D3	KILLED	stall: a second covers only to its start	(test_dsync_writer.py: FAIL: test_the_last_second_and_a_slow_write_cover (__main__.Stall.test_the_last_second_and_a_slow_write_cover))
+D4	KILLED	stall: a slow write covers only to its start	(test_dsync_writer.py: FAIL: test_a_log_that_ends_in_the_window_is_not_covered (__main__.Stall.test_a_log_that_ends_in_the_window_is_)
+D5	KILLED	stall: the end line not counted	(test_dsync_writer.py: FAIL: test_a_log_that_starts_in_the_window_is_not_covered (__main__.Stall.test_a_log_that_starts_in_the_window)
+D6	KILLED	stall: whole second by floor	(test_dsync_writer.py: FAIL: test_a_window_with_no_whole_second (__main__.Stall.test_a_window_with_no_whole_second))
+D7	SURVIVED	stall: started >= t0 (a start at t0 itself not covered)
+E1	KILLED	report: covered without a read at or after t1	(test_txg_probe.py: FAIL: test_a_probe_that_died_in_the_window_is_not_covered (__main__.Report.test_a_probe_that_died_in_the_windo)
+E2	KILLED	report: covered by the stop, not the last read	(test_txg_probe.py: FAIL: test_a_kstat_never_read_is_not_covered (__main__.Report.test_a_kstat_never_read_is_not_covered))

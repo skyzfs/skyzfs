@@ -1,0 +1,15 @@
+base shell: passes
+base writer: passes
+base probe: passes
+base json: passes
+base cut: test_cut_record.sh: FAIL the publish rig's default courses are the script's publish courses: got '', want 'pplain prewind prewindf
+A1	KILLED	partial: keyed on "taken", not "failed"	(test_zfs_cli_record.sh: FAIL: partial, no count: said: got '', want '1')
+A2	KILLED	partial: only when the count is there and above 0 (#147's rule)	(test_zfs_cli_record.sh: FAIL: partial, no count: said: got '', want '1')
+A3	KILLED	cli_snapshot: no destroy of the partial take	(test_zfs_cli_record.sh: FAIL: partial: what was taken destroyed: got '', want 'zfs destroy -r skzqs@t ')
+A4	KILLED	cli_snapshot: the destroy without -r	(test_zfs_cli_record.sh: FAIL: partial: what was taken destroyed: got 'zfs destroy skzqs@t ', want 'zfs destroy -r skzqs@t ')
+A5	KILLED	cli_snapshot: the destroy at @c	(test_zfs_cli_record.sh: FAIL: partial: what was taken destroyed: got 'zfs destroy -r skzqs@c ', want 'zfs destroy -r skzqs@t ')
+A6	KILLED	cli_snapshot: no retake after the destroy	(test_zfs_cli_record.sh: FAIL: partial: then the CLI's @t: got '', want 'zfs snapshot -r skzqs@t ')
+A7	KILLED	cli_snapshot: the about.txt line dropped	(test_zfs_cli_record.sh: FAIL: partial: said, with the count: got '0', want '1')
+A8	KILLED	cli_snapshot: the take whatever the list says	(test_zfs_cli_record.sh: FAIL: not partial, @t there: no CLI: got 'yes', want 'no')
+A9	SURVIVED	cli_snapshot: the list without lim
+A10	SURVIVED	cli_snapshot: the count from the last match, not the first
