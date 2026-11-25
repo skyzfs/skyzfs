@@ -828,6 +828,36 @@ fn row(group: u64) -> SnapReply {
     }
 }
 
+/// An earlier request landed: the publish was asked with C, refused
+/// `rewound`, and asked anew with a count read after the rewind (here 9,
+/// in another cut state). The first request was the one the daemon
+/// carried, by a cut it counted after C under its own rule (R). The
+/// request asked anew ends `refused taken`, and `look` shows a row with
+/// the first count's cut (number C + 1, the first state) and this
+/// manifest. That row is this publish's: it is recorded done, at the
+/// commit `look` sees, whatever count the record now holds (the lead's
+/// decision on #142's reading 1).
+///
+/// Mutant: the row's number or state compared with the count recorded
+/// last (the row is then another's, and the name given up).
+#[test]
+fn an_earlier_request_that_landed_is_this_publishs() {
+    let landed = || {
+        let snap = snap_seen(&Reply::Snap(row(G)), &taken()).expect("a look's answer");
+        seen()
+            .answer(Reply::Refused(Code::Taken, String::new()))
+            .looked(snap)
+    };
+    let mut anew = publish(asked());
+    anew.count.after = 9;
+    anew.count.state = [0x5f; 16];
+    assert_eq!(plan(&anew, &landed()), Action::Done(COMMIT));
+    assert_eq!(plan(&anew, &landed().unheld()), Action::Done(COMMIT));
+    let mut first = publish(asked());
+    first.count.after = C;
+    assert_eq!(plan(&first, &landed()), Action::Done(COMMIT));
+}
+
 /// Mutant: a `snap/t` of another manifest, or of a cut before the
 /// snapshot's group, read as ours; or one asked with another count (an
 /// earlier request, or of another cut state) not read as ours.

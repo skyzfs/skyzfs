@@ -56,9 +56,11 @@
 //!   and number with the request; they are not compared here, since a
 //!   request asked before an [`Action::AskAnew`] (with another count)
 //!   may be the one that landed, a withdrawal losing to it. Each request
-//!   this agent made was taken by the daemon under its own rules; the
-//!   manifest, which holds the members' random 64-bit GUIDs, names this
-//!   snapshot.
+//!   this agent made was taken by the daemon under its own rules, rule
+//!   (R) among them, when it landed; the manifest's hash, over the
+//!   members' random 64-bit snapshot GUIDs, names this snapshot. The
+//!   lead agreed (#142); `an_earlier_request_that_landed_is_this_publishs`
+//!   is its row.
 //! - A publish held and not yet asked waits for a daemon away without
 //!   a limit; the plan's `held_until` begins at `accepted`.
 //! - A refusal that says the agent asked wrongly (`name`, `manifest`,
