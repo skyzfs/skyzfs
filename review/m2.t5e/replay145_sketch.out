@@ -1,0 +1,160 @@
+== P0 passist as run: exit 0 (as it should)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D1 a1 never carried although the assists wrote groups 22 and 23 at or above G (pending after 300 s): exit 1 (as it should)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D2 a1 published on cut 11 of group 19 (below G 20) right after assist 1: the agent stopped there: exit 1 (as it should)
+   pin_a1_row	FAILED	[server] the row's cut is of group 19, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 19 when its end was read; 1 assists, none took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 9 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 11 of group 19 carried a1: a group assist 1 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D3 a1 published on cut 9 of group 17 (the hold's history, below G) before any assist: exit 1 (as it should)
+   pin_a1_row	FAILED	[server] the row's cut is of group 17, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 17 when its end was read; 0 assists, none took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 8 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 9 of group 17 carried a1: a group no assist wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D4 a daemon that ignores G: a1 done on cut 8 (group 16) and a2 done on cut 17 (group 31), before any assist; a2's withdrawal answers done, its look a snap: exit 1 (as it should)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=f9ae2163fbb61dab817f6d5c04ae3cca number=17 group=31 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a1_row	FAILED	[server] the row's cut is of group 16, below G = 20
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 16 when its end was read; 0 assists, none took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 0 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 8 of group 16 carried a1: a group no assist wrote
+   obs_assist_pace	NA	[rig] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef' after 0 assists
+== D5 a2 published on cut 21 (group 37) after its second assist: G far above ignored: exit 1 (as it should)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=f9ae2163fbb61dab817f6d5c04ae3cca number=21 group=37 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 4 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[rig] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef' after 2 assists
+== D6 a2 published on cut 19 (group 33) after its first assist: exit 1 (as it should)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=f9ae2163fbb61dab817f6d5c04ae3cca number=19 group=33 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 3 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[rig] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef' after 1 assists
+== D7 a2 expired by the daemon after 5 s (expiry 900 asked): no assist of a2: exit 1 (as it should)
+   pin_answer_a2	FAILED	[server] answered 'expired', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'expired', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 2 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[rig] a2 ended 'expired' after 0 assists
+== D8 a2 refused at once (refused name): no assist of a2: exit 1 (as it should)
+   pin_answer_a2	FAILED	[server] answered 'refused name x', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'unknown', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 2 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[rig] a2 ended 'refused name x' after 0 assists
+== D9 the withdrawal of a2 ignored (pending): exit 1 (as it should)
+   pin_answer_a2-withdraw	FAILED	[server] answered 'pending', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D10 a2-look answers a snap with nothing published: exit 1 (as it should)
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd state=f9ae2163fbb61dab817f6d5c04ae3cca number=20 group=34 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D11 the daemon counts no cut for the assists' groups (cuts of 18 to 67 dropped); a1 pending: exit 1 (as it should)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 0 cuts between the first and the last (0.0 a minute); between the statuses around a2's publish (70.2 s of requests)
+== D12 a1 carried by cut 12 written as opening only as a rewind (pin_a1_cut): exit 1 (as it should)
+   pin_a1_cut	FAILED	[server] cut 12 (group 22) opens only with a rewind
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+== D13 the status after a2 lacks upload_blocks (a status the daemon wrote short): exit 2 (NOT 1)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   rig_error	ERROR	[rig] the status around the assisted publish has no number upload_blocks: ''
+== R1 the stand-in never assisted a1, which pends: exit 2 (as it should)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 17 when its end was read; 0 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 17 when its end was read; 0 assists, none took it from below G to G or past
+== R2 a1 at G before any assist (the pool not idle: the first assist found group 21): exit 2 (as it should)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 27 when its end was read; 2 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 27 when its end was read; 2 assists, none took it from below G to G or past
+== R3 the assists wrote nothing on the kernel (after = before for a1), a1 pending: exit 2 (as it should)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 17 when its end was read; 2 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 17 when its end was read; 2 assists, none took it from below G to G or past
+== R4 no assist.tsv: exit 2 (as it should)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 0 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 0 assists, none took it from below G to G or past
+== R5 no a2-txgs.txt: exit 2 (as it should)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   rig_error	ERROR	[rig] no a2-txgs.txt
+== R6 a2-txgs.txt short (groups up to 40 out of its history): exit 2 (as it should)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   rig_error	ERROR	[rig] the txgs kstat lacks 8 of the groups 33 to 67 (first 33)
+== R7 a2 assisted once by the stand-in, a2 pending: exit 2 (as it should)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 3 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ERROR	[rig] a2 was assisted 1 times
+   rig_error	ERROR	[rig] premise_a2_assisted: a2 was assisted 1 times
+== R8 an assist line torn: exit 2 (as it should)
+   rig_error	ERROR	[rig] assist.tsv line 11: not `T ns ns value before mid after`: 'a2\t1\t2'
+== V1 a1 carried by group 22 that no assist wrote (assist 2 read 23 before its set): something else wrote it: exit 2 (as it should)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 25 when its end was read; 2 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 25 when its end was read; 2 assists, none took it from below G to G or past
+== V4 a1 carried before any assist by group 20 that something else wrote (the pool not idle): exit 2 (as it should)
+   pin_a1_cut	FAILED	[server] cut 10 is of group 18 in the request log, the row says 20
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 20 when its end was read; 0 assists, none took it from below G to G or past
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 20 when its end was read; 0 assists, none took it from below G to G or past
+== V2 an assist storm: a2 assisted every second (35 rows, not the pace decided): exit 0 (not judged here)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 37 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 35 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 35 assists in 34.0 s (61.7 a minute); the pool committed 16 groups that wrote over them (28.2 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 35 of them and the `zpool sync` after it in 0; the daemon counted 12 cuts between the first and the last (21.2 a minute); between the statuses around a2's publish (70.2 s of requ
+== V3 a1 assisted from 1 s after the acceptance (before ASSIST_AFTER, and before twice it): exit 0 (not judged here)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20 (its snapshot's 15): the newest group that wrote was 16 when it was accepted and 23 when its end was read; 2 assists, assist 2 took it from below G to G or past
+   pin_assist_writes_a_group	ok	[kernel] each of 10 assists (a `zfs set` with a new value, then `zpool sync`, nothing written) brought the pool's newest group that wrote past where it was
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 a minute); between the statuses around a2's publish (70.2 s of request
+
+23 of 24 judged cases as they should; not: D13

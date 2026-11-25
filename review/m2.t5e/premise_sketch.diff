@@ -1,0 +1,92 @@
+diff --git a/tests/kernel/publish_agent.py b/tests/kernel/publish_agent.py
+index 543e15e..490bea8 100644
+--- a/tests/kernel/publish_agent.py
++++ b/tests/kernel/publish_agent.py
+@@ -385,15 +385,24 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
+         t0 = now()
+         last = 0
+         assists, assisted_at = 0, 0
++        at_accept = synced(pool) if assist_after is not None else None
++
++        def ended(end):
++            # The pool's newest group that wrote when the request was
++            # accepted and when its end was read: the kstat alone.
++            if at_accept is not None:
++                with open(os.path.join(os.path.dirname(agent.log), 'accepted.tsv'), 'a') as f:
++                    f.write(f'{name}\t{at_accept}\t{settled(pool, synced, sleep)}\n')
++            return end
+         while True:
+             verb, fields, code, text = agent.progress(name)
+             if verb == 'refused':
+-                return f'refused {code} {text}'
++                return ended(f'refused {code} {text}')
+             if verb in ENDS:
+-                return verb + ''.join(f' {k}={v}' for k, v in fields.items())
++                return ended(verb + ''.join(f' {k}={v}' for k, v in fields.items()))
+             waited = now() - t0
+             if waited > limit:
+-                return f'pending after {limit} s'
++                return ended(f'pending after {limit} s')
+             if sync:
+                 # A group with something in it: an idle pool's sync makes
+                 # no cut.
+diff --git a/tests/kernel/publish_check.py b/tests/kernel/publish_check.py
+index ca3498d..acd6afc 100644
+--- a/tests/kernel/publish_check.py
++++ b/tests/kernel/publish_check.py
+@@ -972,18 +972,33 @@ def main():
+                        + ', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds)
+                        if grounds else '; none of them, nor any after C before, a ground of rule (R)'))
+         if name == 'passist':
+-            rows = read_assists(text_of('assist.tsv'))
++            # No file where the agent made no assist (an end before the first).
++            rows = read_assists(text_of('assist.tsv', need=False))
+             a1 = published.get('a1')
+             if a1 is None:
+                 raise RigError('no request of a1 in published.tsv')
+             mine = [r for r in rows if r['name'] == 'a1']
+-            # On the rig and the kernel alone: where the pool stood when the
+-            # assists began, and where they took it.
++            acc = {}
++            for ln in text_of('accepted.tsv').splitlines():
++                f = ln.split('\t')
++                if len(f) != 3 or not f[1].isdigit() or not f[2].isdigit():
++                    raise RigError(f'accepted.tsv: not T, a group and a group: {ln!r}')
++                acc[f[0]] = (int(f[1]), int(f[2]))
++            if 'a1' not in acc:
++                raise RigError('no line of a1 in accepted.tsv')
++            g, (w_acc, w_end) = a1['group'], acc['a1']
++            crossed = [k + 1 for k, r in enumerate(mine) if r['before'] < g <= r['after']]
++            # On the kstat alone, whatever the daemon answered: the pool
++            # below G when a1 was asked; when its end was read, either still
++            # below G (a1 cannot have been carried, so it must not have
++            # pended) or past it by an assist of a1's.
++            pended = ends['a1'].startswith('pending after')
+             premise('premise_a1_needed_the_assist',
+-                    bool(mine) and mine[0]['before'] < a1['group'] <= max(r['after'] for r in mine),
+-                    f"a1 asked with G {a1['group']} (its snapshot's {a1['txg']}): "
+-                    + (f"the newest group that wrote was {mine[0]['before']} at the first of {len(mine)} assists, "
+-                       f"{max(r['after'] for r in mine)} after the last" if mine else 'no assist'))
++                    w_acc < g and (crossed if w_end >= g else not pended),
++                    f"a1 asked with G {g} (its snapshot's {a1['txg']}): the newest group that wrote was {w_acc} "
++                    f"when it was accepted and {w_end} when its end was read; {len(mine)} assists"
++                    + (f", assist {crossed[0]} took it from below G to G or past" if crossed else
++                       ', none took it from below G to G or past'))
+             holds('pin_assist_writes_a_group',
+                   [f"assist {k + 1} ({r['name']}, V {r['value']}): newest group that wrote "
+                    f"{r['before']} before the set, "
+@@ -997,7 +1012,13 @@ def main():
+                     f"cut {row['number']} of group {row['group']} carried a1: "
+                     + (f'a group assist {by[0]} wrote' if by else 'a group no assist wrote'))
+             a2 = [r for r in rows if r['name'] == 'a2']
+-            premise('premise_a2_assisted', len(a2) >= 2, f'a2 was assisted {len(a2)} times')
++            if not ends['a2'].startswith('pending after'):
++                # Ended early: pin_answer_a2 has judged it; no pace to read.
++                put('obs_assist_pace', 'NA', 'rig', f"a2 ended {ends['a2']!r} after {len(a2)} assists")
++                a2 = None
++            else:
++                premise('premise_a2_assisted', len(a2) >= 2, f'a2 was assisted {len(a2)} times')
++        if name == 'passist' and a2 is not None:
+             p = assist_pace(a2, cut_times(instances), status_of(text_of('a2-status-before.txt')),
+                             status_of(text_of('a2-status-after.txt')), requests_span(text_of('agent.tsv'), 'a2'),
+                             text_of('a2-txgs.txt'))
