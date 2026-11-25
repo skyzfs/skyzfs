@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Tests of the agent stand-in of the channel rig (publish_agent.py): no kernel."""
+import contextlib
+import io
 import os
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import publish_agent as pa  # noqa: E402
@@ -258,15 +262,113 @@ class Raw(unittest.TestCase):
                 self.assertEqual(f.read().split('\t')[2:],
                                  ['raw peer', '1', 'refused peer this daemon answers its own user\n'])
 
-    def test_a_reset_with_no_answer_is_the_rigs_error(self):
+    def test_a_reset_with_nothing_written_is_the_answer_nothing(self):
+        """A daemon that closes with the request unread and nothing
+        written answers '', a verdict as it is when it read the request
+        (#139's review, N5), and not the rig's error."""
         with tempfile.TemporaryDirectory() as d:
             th = self.serve_unread(d, b'')
             log = os.path.join(d, 'agent.tsv')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(pa.raw(d, log, 'peer', self.REQUEST), '')
+            th.join(10)
+            self.assertIn('raw peer: the daemon closed with nothing written', err.getvalue())
+            with open(log) as f:
+                self.assertEqual(f.read().split('\t')[2:], ['raw peer', '0', '\n'])
+
+    def test_a_socket_that_is_not_there_is_the_rigs_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'vol-x'))
+            open(os.path.join(d, 'vol-x', 'control'), 'w').close()  # a file, not a socket
+            log = os.path.join(d, 'agent.tsv')
             with self.assertRaises(pa.RigError):
                 pa.raw(d, log, 'peer', self.REQUEST)
-            th.join(10)
             with open(log) as f:
                 self.assertEqual(f.read().split('\t')[2:4], ['raw peer', '2'])
+
+    def serve_first(self, d, answer, closed):
+        """A daemon that answers and closes before the client has written
+        a byte: CLOSED is set once it has closed."""
+        os.makedirs(os.path.join(d, 'vol-x'))
+        path = os.path.join(d, 'vol-x', 'control')
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        srv.settimeout(10)
+
+        def serve():
+            try:
+                c, _ = srv.accept()
+                if answer:
+                    c.sendall(answer)
+                c.close()
+            finally:
+                srv.close()
+                closed.set()
+        th = threading.Thread(target=serve, daemon=True)
+        th.start()
+        return th
+
+    def late_writer(self, closed):
+        """publish_agent's `socket` module with a socket whose writes wait
+        for CLOSED: the other order on the wire, where the client's write
+        fails with EPIPE (#139's review, X1). The test's server keeps the
+        real module."""
+        mod = types.ModuleType('socket')
+        mod.__dict__.update(socket.__dict__)
+
+        class Late(socket.socket):
+            def sendall(self, data, *args):
+                closed.wait(10)
+                return super().sendall(data, *args)
+        mod.socket = Late
+        return mock.patch.object(pa, 'socket', mod)
+
+    def test_an_answer_before_the_client_writes_is_the_answer(self):
+        with tempfile.TemporaryDirectory() as d:
+            closed = threading.Event()
+            th = self.serve_first(d, b'skyzfs-control 1\nrefused peer this daemon answers its own user\n', closed)
+            log = os.path.join(d, 'agent.tsv')
+            with self.late_writer(closed):
+                answer = pa.raw(d, log, 'peer', self.REQUEST)
+            th.join(10)
+            self.assertTrue(closed.is_set())
+            self.assertEqual(answer, 'refused peer this daemon answers its own user')
+
+    def test_a_close_before_the_client_writes_with_nothing_is_the_answer_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            closed = threading.Event()
+            th = self.serve_first(d, b'', closed)
+            log = os.path.join(d, 'agent.tsv')
+            err = io.StringIO()
+            with self.late_writer(closed), contextlib.redirect_stderr(err):
+                self.assertEqual(pa.raw(d, log, 'peer', self.REQUEST), '')
+            th.join(10)
+            self.assertIn('the daemon closed with nothing written', err.getvalue())
+
+    def test_only_a_whole_line_is_an_answer(self):
+        """As skyzfsd's own `ask` takes it (#139's review, N5)."""
+        cases = [
+            (b'', ''),
+            (b'skyzfs-control 1\nrefused peer x\n', 'refused peer x'),
+            (b'skyzfs-control 1\nrefused peer x\nmore\n', 'refused peer x'),
+            (b'cuts 1\n', 'cuts 1'),
+            (b'skyzfs-control 1\nrefused peer this daem', 'no answer line: skyzfs-control 1\\nrefused peer this daem'),
+            (b'refused peer this daem', 'no answer line: refused peer this daem'),
+            (b'skyzfs-control 1\n', 'no answer line: skyzfs-control 1\\n'),
+            (b'skyzfs-control 1\na\tb', 'no answer line: skyzfs-control 1\\na\\tb'),
+        ]
+        for got, want in cases:
+            self.assertEqual(pa.answer_of(got), want, got)
+
+    def test_a_cut_short_answer_is_served_as_no_answer_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            th = self.serve_unread(d, b'skyzfs-control 1\nrefused peer this daem')
+            log = os.path.join(d, 'agent.tsv')
+            self.assertEqual(pa.raw(d, log, 'peer', self.REQUEST),
+                             'no answer line: skyzfs-control 1\\nrefused peer this daem')
+            th.join(10)
 
     def test_not_one_socket_is_the_rigs_error(self):
         with tempfile.TemporaryDirectory() as d:

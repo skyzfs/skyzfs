@@ -40,8 +40,10 @@ the snapshot's createtxg.
 
 `flow` prints the publish's end (`done commit=H`, `expired`, ...) and
 exits 0 when it was answered at all, 1 when a request was refused (the
-refusal printed), 2 on the rig's own error. `ask` and `raw` print the
-answer line and exit 0, or 1 for a refusal; 2 when no answer came.
+refusal printed), 2 on the rig's own error. `ask` prints the answer
+line and exits 0, or 1 for a refusal; 2 when no answer came. `raw`
+prints the answer line and exits 0 whatever it says (the check judges
+it), and 2 when the socket could not be reached or the read timed out.
 """
 import hashlib
 import os
@@ -175,8 +177,17 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
     of another user) answers and closes with the request unread. On
     Linux the write can then fail, and the read after the answer fails
     with ECONNRESET and not EOF. As `skyzfsd`'s own `ask` does, the
-    answer is read all the same, and an error is the rig's only when no
-    answer came."""
+    answer is read all the same.
+
+    The answer is the line after the greeting, and only a whole line
+    (ended by a newline), as `ask` takes it: anything else the daemon
+    wrote before it closed is answered `no answer line: ...`, which no
+    course allows. Once the connection is made, a daemon that closes
+    with nothing written (EOF, a reset or a broken pipe) answers `''`,
+    which no course allows either: the daemon's fault, and a verdict,
+    whether it read the request or not (the error goes to stderr). The
+    rig's error (RigError, exit 2) is a socket it cannot reach and a
+    read that times out."""
     path = socket_path(run)
     t0 = clock()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -200,18 +211,32 @@ def raw(run, log, label, data, clock=time.monotonic_ns):
                 break
             got += b
         if not got and err is not None:
-            raise err
+            print(f'raw {label}: the daemon closed with nothing written: {err}', file=sys.stderr)
     except OSError as e:
         with open(log, 'a') as f:
             f.write(f'{t0}\t{clock()}\traw {label}\t2\t{e}\n')
         raise RigError(f'the socket {path}: {e}') from None
     finally:
         s.close()
-    lines = got.decode('utf-8', 'replace').splitlines()
-    answer = lines[1] if len(lines) > 1 and lines[0] == HELLO else (lines[0] if lines else '')
+    answer = answer_of(got)
     with open(log, 'a') as f:
         f.write(f'{t0}\t{clock()}\traw {label}\t{1 if answer.startswith("refused ") else 0}\t{answer}\n')
     return answer
+
+
+def answer_of(got):
+    """The bytes a daemon wrote -> the answer: the first whole line after
+    the greeting (or the first whole line, where it is not the
+    greeting), '' for nothing at all, and `no answer line: ...` for
+    bytes with no whole answer line in them."""
+    text = got.decode('utf-8', 'replace')
+    whole = text.split('\n')[:-1]
+    rest = whole[1:] if whole and whole[0] == HELLO else whole
+    if rest:
+        return rest[0]
+    if not text:
+        return ''
+    return 'no answer line: ' + text.replace('\\', '\\\\').replace('\n', '\\n').replace('\t', '\\t')[:120]
 
 
 def socket_path(run):
