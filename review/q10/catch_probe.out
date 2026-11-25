@@ -1,0 +1,24 @@
+-- x-hold-2: rc=0 note=NONE
+   stdout='' stderr=''
+   catch returned 1
+-- x-fails: rc=1 note=not caught: no output of 3 matched /scrub in progress/; this is the last
+   stdout='' stderr=cannot\ open\ \'skzq\':\ no\ such\ pool
+   catch returned 1
+-- x-flap: rc=1 note=not caught: no output of 3 matched /never/; this is the last
+   stdout=try\ 3 stderr=gone
+   catch returned 0
+-- x-both: rc=2 note=caught at try 1
+   stdout=scan:\ scrub\ in\ progress stderr=''
+   catch returned 1 after 5 s for 3 tries at LIMIT=1
+-- x-hang: rc=124 note=not caught: no output of 3 matched /scrub in progress/; this is the last
+   stdout='' stderr=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/q10/probe/p/tests/kernel/../lib/lim.sh:\ line\ 24:\ 25338\ Killed\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \"\$@\"\ 0\<\&0\ \>\ \"\$out\"\ 2\>\ \"\$err\"
+   catch returned 0 (keep said: zfs-cli-record: the record x-fails twice)
+-- x-fails: rc=1 note=not caught: no output of 3 matched /scrub in progress/; this is the last
+   stdout='' stderr=cannot\ open\ \'skzq\':\ no\ such\ pool
+   OUT/.catch left: stderr stdout 
+-- the summary's rows:
+| x-hold-2 | 0 |  |
+| x-fails | 1 | not caught: no output of 3 matched /scrub in progress/; this is the last |
+| x-flap | 1 | not caught: no output of 3 matched /never/; this is the last |
+| x-both | 2 | caught at try 1 |
+| x-hang | 124 | not caught: no output of 3 matched /scrub in progress/; this is the last |
