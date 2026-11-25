@@ -793,12 +793,21 @@ class Assist(unittest.TestCase):
         rc, lines = run_course('passist', rows={'a1': (8, 57)})
         self.assertIn('a group no assist wrote', lines['obs_a1_cut'][1])
 
-    def test_a_group_no_assist_wrote_before_the_end_ends_2(self):
-        """#145's G1 (V1): group 53 wrote between a1's first and second
-        assists, and no assist wrote it: the pool was not idle."""
-        rc, lines = run_course('passist', assists(self.RIGHT.replace('5001\t52\t53\t54', '5001\t53\t53\t54')))
+    def test_a_group_from_g_on_no_assist_wrote_ends_2(self):
+        """#145's G1 (V1): a2's assists took the pool to G 55, and group
+        56 wrote after the last of them by the end: a1 could have been
+        carried by a group no assist wrote."""
+        rc, lines = run_course('passist', both(
+            assists(self.RIGHT.replace('a1\t1013\t1014\t5001\t52\t53\t54\n', 'a1\t1013\t1014\t5001\t52\t54\t55\n')
+                    .replace('a1\t1015\t1016\t5002\t54\t55\t56\n', ''))))
         self.assertEqual((rc, lines['premise_a1_needed_the_assist'][0]), (2, 'ERROR'))
-        self.assertIn('groups no assist wrote: 53', lines['premise_a1_needed_the_assist'][1])
+        self.assertIn('groups no assist wrote: 56', lines['premise_a1_needed_the_assist'][1])
+
+    def test_a_group_below_g_no_assist_wrote_carries_nothing(self):
+        """The hold's history, written by the txg timeout after the
+        acceptance (passist's first run at 9bac3dd): group 51 for G 55."""
+        rc, lines = run_course('passist', assists(self.RIGHT.replace('5000\t50\t51\t52', '5000\t51\t51\t52')))
+        self.assertEqual((rc, lines['premise_a1_needed_the_assist'][0]), (0, 'ok'))
 
     def test_premises_that_fail_end_2(self):
         for why, change in (

@@ -112,9 +112,12 @@ the statuses around a2's publish), and is then withdrawn and must be
 never on how long the daemon answered `pending` (#145's review, F1):
 - premise_a1_needed_the_assist: when a1 was accepted the pool had not
   written group G. If it wrote G by a1's end, one of a1's assists took
-  it across G, and every group that wrote from the acceptance to the end
-  was an assist's (a pool that was not idle, or a1 carried by a group no
-  assist wrote, is the rig's error: G1). If it had not, nothing could
+  it across G, and every group at or above G that wrote by the end was
+  an assist's (a1 carried by a group no assist wrote is the rig's error:
+  G1). Groups below G carry nothing, and one may write after the
+  acceptance that no assist wrote: the snapshot's hold logs its history,
+  which the txg timeout writes about 5 s later (passist's first run at
+  9bac3dd, group 17 for G 20). If it had not, nothing could
   carry a1: an end other than `pending` is the daemon's, which the pins
   judge, and `pending` means the assists never took the pool to G, the
   rig's error. a1 refused before it was accepted makes no case: its pin
@@ -748,12 +751,13 @@ def a1_premise(g, marks, rows, txgs):
         return True, said + ': below G at the end, so the end was the daemon\'s alone (the pins judge it)'
     crossed = [k + 1 for k, r in enumerate(rows) if r['before'] < g <= r['after']]
     theirs = {x for r in rows for x in range(r['before'] + 1, r['after'] + 1)}
-    stray = sorted(written_groups(txgs, w_acc, top) - theirs)
+    # Below G a group carries nothing: the hold's history may write one.
+    stray = sorted(x for x in written_groups(txgs, w_acc, top) - theirs if x >= g)
     if not crossed:
         return False, said + ': no assist took the pool across G'
     if stray:
         return False, said + f": groups no assist wrote: {', '.join(map(str, stray[:10]))}"
-    return True, said + f': assist {crossed[0]} took it across G, and every group that wrote was an assist\'s'
+    return True, said + f': assist {crossed[0]} took it across G, and every group from G on that wrote was an assist\'s'
 
 
 def pace_faults(rows, accepted_ns, after):

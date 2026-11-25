@@ -577,9 +577,9 @@ class Assist(unittest.TestCase):
                 (50, {'accepted': acc, 'end': (9, 52, 'done')}, [(50, 51, 52)], range(40, 70),
                  'G was written before any assist'),
                 (55, {'accepted': acc, 'end': (9, 56, 'done')}, [], range(40, 70), 'no assist took the pool across G'),
-                # Assists that wrote and a group in between that none wrote.
-                (55, {'accepted': acc, 'end': (9, 56, 'done')}, [(50, 51, 52), (53, 54, 56)], range(40, 70),
-                 'groups no assist wrote: 53'),
+                # Assists that wrote and a group from G on that none wrote.
+                (55, {'accepted': acc, 'end': (9, 58, 'done')}, [(50, 51, 52), (52, 54, 55), (56, 57, 58)],
+                 range(40, 70), 'groups no assist wrote: 56'),
                 # The end read past the last assist: a group after it.
                 (55, {'accepted': acc, 'end': (9, 57, 'done')}, [(50, 51, 52), (52, 54, 56)], range(40, 70),
                  'groups no assist wrote: 57'),
@@ -589,8 +589,16 @@ class Assist(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn(said, why)
         # A group the kstat says wrote nothing is no stray, however it lies.
-        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 57, 'done')}, [(50, 51, 52), (53, 54, 56)],
-                          [x for x in range(40, 70) if x not in (53, 57)])
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 58, 'done')}, [(50, 51, 52), (52, 54, 55), (56, 57, 58)],
+                          [x for x in range(40, 70) if x != 56])
+        self.assertTrue(ok, why)
+        # Below G a group no assist wrote carries nothing (the hold's
+        # history, which the txg timeout writes after the acceptance: the
+        # first run at 9bac3dd, group 17 for G 20, accepted at 16; here
+        # 30 groups on).
+        ok, why = self.a1(50, {'accepted': (0, 46, 10.0), 'end': (9, 53, 'done')}, [(47, 48, 49), (49, 52, 53)])
+        self.assertTrue(ok, why)
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 56, 'done')}, [(50, 51, 52), (53, 54, 56)])
         self.assertTrue(ok, why)
         # A kstat that does not reach back over a1's groups is the rig's.
         with self.assertRaises(pc.RigError):
