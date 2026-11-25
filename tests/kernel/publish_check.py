@@ -6,7 +6,7 @@ Usage: publish_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 Called by tests/kernel/cut-record.sh as its CUT_CHECK after each of the
 publish courses (pplain, prewind, prewindf, prewindc, pkill, pkillman,
-pkillpub, pchannel), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
+pkillpub, pchannel, passist), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
 daemon's request log; BASE is `-`. Environment: as nodeb_check.py's
 (SKZ_NODEB, SKZ_S3_ENDPOINT, SKZ_S3_BUCKET and the keys). The volume in
 object storage is `cut-NAME`.
@@ -35,7 +35,12 @@ What the course left in DIR:
 - channel-status.txt and socket-mode.txt (pchannel): the status after
   the channel's requests, whose counts (COUNTS) must be exact, and the
   socket's mode before the rig widened it for the peer, which must be
-  600.
+  600;
+- assist.tsv (passist): each of the agent's assists (publish_agent.py
+  --assist); accepted.tsv, the pool's newest group that wrote when each
+  publish was accepted and when its end was read, by the kstat;
+  a2-status-before.txt and a2-status-after.txt, the status around a2's
+  publish; and a2-txgs.txt, the pool's txgs kstat after it.
 
 Each answer must be one the table EXPECTED allows for its label, in the
 course's own words: a label with an answer outside the table is a
@@ -88,6 +93,53 @@ before, so no cut is marked, and c1 must still wait a minute of syncs
 later (`pending after`). A daemon that ended every waiting publish at
 an import, whatever its groups, passes prewindf and fails here.
 
+The agent's assist (passist; M2.6b2's `Zfs::assist`, #144; M2.T5's stage
+0): on an idle pool, `zfs set skyzfs:assist=V` with a V not set before,
+then `zpool sync`, at the pace the lead decided on #144: from 10 s after
+the acceptance, three a second apart, then one every 10 s, with nothing
+written to the pool. Every assist must have brought the pool's newest
+group that wrote past where it was (pin_assist_writes_a_group, on the
+kernel: the txgs kstat before the set and after the sync, counting only
+groups committed with `nwritten` above 0; ZFS 2.4 also commits groups
+that write nothing and no uberblock, which are no cut). a1, asked with G
+five above its snapshot's, must be done (on a cut of a group an assist
+wrote: obs_a1_cut). a2 can never be carried: 70 s of assists is the
+pace's figures (obs_assist_pace: the assists, the groups that wrote over
+them, and those that wrote nothing, from a2-txgs.txt, the cuts the
+daemon counted between the first and the last, and the uploads between
+the statuses around a2's publish), and is then withdrawn and must be
+`absent`. The premises rest on accepted.tsv, assist.tsv and the kstat,
+never on how long the daemon answered `pending` (#145's review, F1):
+- premise_a1_needed_the_assist: when a1 was accepted the pool had not
+  written group G. If it wrote G by a1's end, one of a1's assists took
+  it across G, and every group at or above G that wrote by the end was
+  an assist's (a1 carried by a group no assist wrote is the rig's error:
+  G1). Groups below G carry nothing, and one may write after the
+  acceptance that no assist wrote: the snapshot's hold logs its history,
+  which the txg timeout writes about 5 s later (passist's first run at
+  9bac3dd, group 17 for G 20). If it had not, nothing could
+  carry a1: an end other than `pending` is the daemon's, which the pins
+  judge, and `pending` means the assists never took the pool to G, the
+  rig's error. a1 refused before it was accepted makes no case: its pin
+  judges it.
+- premise_a1_ and premise_a2_assists_at_the_decided_pace: floors only.
+  The first assist at least A (the agent's wait, accepted.tsv) after
+  its acceptance, the next ASSIST_BURST - 1 each at least the agent's
+  1 s pause after the end of the one before, the rest at least 0.95 A
+  apart (G2; the next look's S2). A ceiling is no premise: a slow
+  runner would make it flaky. obs_assist_gap_over_3x (INFO) lists each
+  gap over 3 times its decided value, the end of a publish that ended
+  `pending` included (the lead's answer to the next look's S1).
+- premise_a2_assisted: at least two assists of a2, read only when a2
+  ended `pending after`; another end is the daemon's, pin_answer_a2
+  judges it, and obs_assist_pace is NA.
+A status around a2 without `uploaded` or `upload_blocks` leaves the
+pace's upload figures out and says so (F2): the line is INFO.
+
+A stall's eight asks and its abandon are left to the agent's fakes: on
+a real daemon a stall needs a cut that is not counted while the assist
+writes groups, and no hook makes one (the lead, M2.T5's plan).
+
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
 not make the case it is there for: the rig's error, not a verdict. A
@@ -128,6 +180,16 @@ of #139):
   (the rig's mark session-2-ready, on the log's clock) and before the
   line of c1's withdrawal, whatever it answered, and no cut after C
   before that line is a ground of rule (R): the import was no rewind.
+- passist (the agent's marks in accepted.tsv, its assists in
+  assist.tsv, and the kstat; never the daemon's answers): when a1 was
+  accepted the pool had not written G; if it wrote G by a1's end, an
+  assist of a1 took it across G and every group from G on that wrote
+  was an assist's; if it had not, a1 did not end `pending`; a1 refused
+  before its acceptance makes no case. Each publish's assists kept the
+  decided pace, floors only (premise_a1_ and premise_a2_assists_at_the_
+  decided_pace); obs_assist_gap_over_3x shows the ceilings. a2, if it
+  ended `pending after`, was assisted at least twice; a2-txgs.txt
+  reaches back over the course's groups.
 - pkill: the instance that answered tw's withdrawal, whatever it
   answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
@@ -144,7 +206,8 @@ changed, which must be caught at the files.
 `pin_watcher_reads`: the watcher beside the daemon (cut_watch.py,
 node B's side of the uploads) ended with no VERDICT line in watch.log:
 node B read the content of every cut it found at head (review of #139).
-A watcher's ERROR line is the rig's error.
+A watcher's ERROR line, or a watch.log with no line, is the rig's error
+(#143's review, G3).
 
 Each line says what it rests on: `kernel and server` (node B's import of
 what the daemon published), `server` (the daemon's answers and what it
@@ -164,9 +227,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import cut_daemon_check  # noqa: E402
 import nodeb_check  # noqa: E402
+import publish_agent  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
+COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel', 'passist')
 
 # label -> the answers allowed, each a prefix of the answer line.
 EXPECTED = {
@@ -245,6 +309,14 @@ EXPECTED = {
         'p1-end': ('refused taken',),
         'p1-look': ('snap ',),
     },
+    # The agent's assist on an idle pool (#144): a1 is carried by the
+    # groups it writes; a2 never can be, and is withdrawn after a minute.
+    'passist': {
+        'a1': ('done ',),
+        'a2': ('pending after',),
+        'a2-withdraw': ('withdrawn',),
+        'a2-look': ('absent',),
+    },
     'pchannel': {
         'nu': ('refused no-upload',),
         'version': ('refused version',),
@@ -265,11 +337,13 @@ PUBLISHED = {
     'pkillman': {'m1': 'm1-end'},
     'pkillpub': {'p1': 'p1-look'},
     'pchannel': {},
+    'passist': {'a1': 'a1'},
 }
 # Names that must have no ref and no row: an expired publish, one never
 # asked validly, one withdrawn before a kill and past whose G the pool's
 # cuts went.
-ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',)}
+ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',),
+          'passist': ('a2',)}
 # The names published -> the label of a `look` at them, whose `snap`
 # answer must name the row node B read (pin_T_look).
 LOOKS = {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}}
@@ -612,6 +686,197 @@ def counted_between(cuts, after, lo, hi):
     return [c for c in cuts if c[0] > after and lo <= c[1] < hi]
 
 
+def read_assists(text):
+    """assist.tsv (publish_agent.py --assist) -> [{'name', 't0', 't1',
+    'value', 'before', 'mid', 'after'}]; a line that does not read is the
+    rig's error."""
+    keys = ('t0', 't1', 'value', 'before', 'mid', 'after')
+    out = []
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        if len(f) != 7 or not f[0] or not all(x.isdigit() for x in f[1:]):
+            raise RigError(f'assist.tsv line {k + 1}: not `T ns ns value before mid after`: {ln[:200]!r}')
+        out.append(dict(zip(keys, map(int, f[1:])), name=f[0]))
+    return out
+
+
+def cut_times(instances):
+    """The request log's `cut` lines -> [(ns, number, group)]."""
+    return [(ln['ns'], int(ln['sectors']), int(ln['result'])) for inst in instances for ln in inst['lines']
+            if ln['event'] == 'cut' and ln['sectors'].isdigit() and ln['result'].isdigit()]
+
+
+def requests_span(agent_text, name):
+    """agent.tsv -> the seconds from the first request about NAME to the
+    last answer about it, or None where there was none."""
+    spans = []
+    for ln in agent_text.splitlines():
+        f = ln.split('\t')
+        if len(f) >= 3 and f[0].isdigit() and f[1].isdigit() and f[2].split()[1:3] == ['--name', name]:
+            spans.append((int(f[0]), int(f[1])))
+    if not spans:
+        return None
+    return (max(t1 for _, t1 in spans) - min(t0 for t0, _ in spans)) / 1e9
+
+
+def read_marks(text):
+    """accepted.tsv (publish_agent.py --assist) -> {T: {'accepted': (ns,
+    W, A), 'end': (ns, W, VERB)}}; a line that does not read, or a mark
+    twice, is the rig's error."""
+    out = {}
+    for k, ln in enumerate(text.splitlines()):
+        f = ln.split('\t')
+        ok = len(f) == 5 and bool(f[0]) and f[1] in ('accepted', 'end') and f[2].isdigit() and f[3].isdigit() \
+            and f[1] not in out.get(f[0], {}) and bool(f[4])
+        last = f[4] if ok else None
+        if ok and f[1] == 'accepted':
+            try:
+                last = float(f[4])
+            except ValueError:
+                ok = False
+            ok = ok and last > 0
+        if not ok:
+            raise RigError(f'accepted.tsv line {k + 1}: not `T accepted|end ns group A|verb`, or a mark twice: '
+                           f'{ln[:200]!r}')
+        out.setdefault(f[0], {})[f[1]] = (int(f[2]), int(f[3]), last)
+    return out
+
+
+def a1_premise(g, marks, rows, txgs):
+    """premise_a1_needed_the_assist from the kstat and the agent's own
+    records alone (#145's F1): G, a1's marks, its assists and the txgs
+    kstat -> (holds, detail)."""
+    if 'end' not in marks:
+        return False, 'a1 was accepted and has no end mark'
+    w_acc, w_end, verb = marks['accepted'][1], marks['end'][1], marks['end'][2]
+    top = max([w_end] + [r['after'] for r in rows])
+    said = (f'a1 asked with G {g}: the newest group that wrote was {w_acc} when it was accepted and {top} by its '
+            f'end ({verb}), over {len(rows)} assists')
+    if w_acc >= g:
+        return False, said + ': G was written before any assist'
+    if top < g:
+        if verb == 'pending':
+            return False, said + ': the assists never took the pool to G, so nothing could carry a1'
+        return True, said + ': below G at the end, so the end was the daemon\'s alone (the pins judge it)'
+    crossed = [k + 1 for k, r in enumerate(rows) if r['before'] < g <= r['after']]
+    theirs = {x for r in rows for x in range(r['before'] + 1, r['after'] + 1)}
+    # Below G a group carries nothing: the hold's history may write one.
+    stray = sorted(x for x in written_groups(txgs, w_acc, top) - theirs if x >= g)
+    if not crossed:
+        return False, said + ': no assist took the pool across G'
+    if stray:
+        return False, said + f": groups no assist wrote: {', '.join(map(str, stray[:10]))}"
+    return True, said + f': assist {crossed[0]} took it across G, and every group from G on that wrote was an assist\'s'
+
+
+def pace_faults(rows, accepted_ns, after, end=None):
+    """A publish's assists against the decided pace -> (faults, slow).
+    AFTER is the agent's wait A in s, END its end mark (ns, group, verb).
+
+    The faults are floors, the premise's verdict (#145's G2, and the
+    lead's answer to the next look's S1): the first assist at least A
+    after the acceptance; each of the next ASSIST_BURST - 1 at least the
+    agent's pause after the end of the one before (its loop's sleep(1)
+    after the sync, as #144's engine pauses after `assisted_ms`: 1 s at
+    the decided A of ASSIST_AFTER s, scaled with A so a test's clock
+    scales too); the rest at least 0.95 A after the one before, start to
+    start (the agent measures its wait from a kstat read, not from the
+    set).
+
+    The slow ones are each gap more than 3 times its decided value
+    (the first over 3 A after the acceptance; a pause in the burst over
+    3 pauses; a gap past it over 3 A; a publish that ended `pending`
+    over 3 A after its last assist's end, or its acceptance with none).
+    They are only an observation, obs_assist_gap_over_3x: a slow runner
+    must not make a verdict flaky."""
+    bad, slow = [], []
+    a = after * 1e9
+    pause = a / publish_agent.ASSIST_AFTER
+    name = rows[0]['name'] if rows else 'the publish'
+    if rows:
+        first = rows[0]['t0'] - accepted_ns
+        if first < a:
+            bad.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance, before {after} s")
+        if first > 3 * a:
+            slow.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance")
+    for k in range(1, len(rows)):
+        if k < publish_agent.ASSIST_BURST:
+            gap = rows[k]['t0'] - rows[k - 1]['t1']
+            if gap < pause:
+                bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.2f} s after the end of the one before, "
+                           f'in the burst, before the pause of {pause / 1e9:g} s')
+            if gap > 3 * pause:
+                slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the end of the one before, in the burst")
+            continue
+        gap = rows[k]['t0'] - rows[k - 1]['t0']
+        if gap < 0.95 * a:
+            bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before, past the burst")
+        if gap > 3 * a:
+            slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before")
+    if end is not None and end[2] == 'pending':
+        last = rows[-1]['t1'] if rows else accepted_ns
+        if end[0] - last > 3 * a:
+            since = 'its last assist' if rows else 'its acceptance, with no assist'
+            slow.append(f'{name} ended pending {(end[0] - last) / 1e9:.1f} s after {since}')
+    return bad, slow
+
+def written_groups(text, lo, hi):
+    """The txgs kstat -> the groups committed after LO up to HI that wrote
+    (`nwritten` above 0). The kstat must list every group in that range:
+    one that has dropped out of its history is the rig's error."""
+    seen = {}
+    for ln in text.splitlines()[1:]:
+        f = ln.split()
+        if len(f) >= 6 and f[0].isdigit() and f[2] == 'C':
+            if not f[5].isdigit():
+                raise RigError(f'the txgs kstat: nwritten is not a number: {ln[:200]!r}')
+            seen[int(f[0])] = int(f[5]) > 0
+    missing = [g for g in range(lo + 1, hi + 1) if g not in seen]
+    if missing:
+        raise RigError(f'the txgs kstat lacks {len(missing)} of the groups {lo + 1} to {hi} '
+                       f'(first {missing[0]})')
+    return {g for g in range(lo + 1, hi + 1) if seen[g]}
+
+
+def kstat_groups(text, lo, hi):
+    """The txgs kstat -> (groups that wrote, groups that wrote nothing)
+    committed after LO up to HI (written_groups' range)."""
+    wrote = len(written_groups(text, lo, hi))
+    return wrote, hi - lo - wrote
+
+
+def assist_pace(rows, cuts, before, after, flow_s, txgs):
+    """A publish's assists (ROWS, at least two), the log's cut times, the
+    statuses around its publish, that publish's span in seconds and the
+    txgs kstat after it -> the pace's figures."""
+    span = (rows[-1]['t1'] - rows[0]['t0']) / 1e9
+    if span <= 0 or not flow_s:
+        raise RigError(f'assists over {span} s in a publish of {flow_s} s: no pace to read')
+
+    lacks = sorted({f'{k} ({w})' for w, st in (('before', before), ('after', after))
+                    for k in ('uploaded', 'upload_blocks') if not st.get(k, '').isdigit()})
+
+    def diff(key):
+        # A status without the count is the daemon's, not the rig's: the
+        # line says so and gives no upload figures (#145's F2).
+        return None if lacks else int(after[key]) - int(before[key])
+    per = lambda n, s: None if n is None else round(n * 60 / s, 1)  # noqa: E731
+    groups, empty = kstat_groups(txgs, rows[0]['before'], rows[-1]['after'])
+    counted = len([c for c in cuts if rows[0]['t0'] <= c[0] <= rows[-1]['t1']])
+    uploaded = diff('uploaded')
+    blocks = diff('upload_blocks')
+    return {
+        'lacks': lacks,
+        'assists': len(rows), 'seconds': round(span, 1), 'assists_per_min': per(len(rows), span),
+        'groups': groups, 'groups_per_min': per(groups, span), 'empty': empty,
+        'cuts': counted, 'cuts_per_min': per(counted, span),
+        'set_wrote': len([r for r in rows if r['mid'] > r['before']]),
+        'sync_wrote': len([r for r in rows if r['after'] > r['mid']]),
+        'flow_s': round(flow_s, 1), 'uploaded': uploaded, 'uploads_per_min': per(uploaded, flow_s),
+        'blocks': blocks, 'blocks_per_min': per(blocks, flow_s),
+    }
+
+
 def status_of(text):
     out = {}
     for ln in text.splitlines():
@@ -675,6 +940,8 @@ def main():
         # recording go on to the check): node B could not read head's
         # content. Every course uploads, so every course has a watcher.
         watch = text_of('watch.log').splitlines()
+        if not watch:
+            raise RigError('the watcher wrote no line to watch.log')
         err = [ln.split('\t', 1)[-1] for ln in watch if '\tERROR ' in ln]
         if err:
             raise RigError(f'the watcher: {err[0]}')
@@ -694,6 +961,7 @@ def main():
             return got
 
         controlled = False
+        carried = {}
         for t, label in PUBLISHED[name].items():
             req = published.get(t)
             if req is None:
@@ -708,6 +976,7 @@ def main():
             got = snap_row(t, os.path.join(nb.dir, f'manifest-{t}.got'))
             bad = judge_row(got, req, commit)
             row = got.get('row')
+            carried[t] = row
             holds(f'pin_{t}_row', bad, 'server',
                   f"snap/{t} and its row on {commit[:12]}: cut {row['number']} of group {row['group']} "
                   f"(asked after {req['after']}, G {req['group']}, the snapshot's createtxg {req['txg']})"
@@ -846,6 +1115,67 @@ def main():
                     + ('; cuts not above the groups before them: '
                        + ', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds)
                        if grounds else '; none of them, nor any after C before, a ground of rule (R)'))
+        if name == 'passist':
+            # On the rig and the kernel alone (#145's F1): the agent's
+            # records and the kstat, whatever the daemon answered.
+            rows = read_assists(text_of('assist.tsv', need=False))
+            marks = read_marks(text_of('accepted.tsv', need=False))
+            txgs = text_of('a2-txgs.txt')
+            mine = [r for r in rows if r['name'] == 'a1']
+            if 'accepted' not in marks.get('a1', {}):
+                premise('premise_a1_needed_the_assist', ends.get('a1', '').startswith('refused '),
+                        f"a1 was never accepted (it ended {ends.get('a1')!r}): "
+                        + ('no case to make, and pin_answer_a1 judges the refusal'
+                           if ends.get('a1', '').startswith('refused ') else 'and was not refused'))
+            else:
+                a1 = published.get('a1')
+                if a1 is None:
+                    raise RigError('a1 was accepted and has no request in published.tsv')
+                premise('premise_a1_needed_the_assist', *a1_premise(a1['group'], marks['a1'], mine, txgs))
+            slow = []
+            for t in ('a1', 'a2'):
+                if 'accepted' in marks.get(t, {}):
+                    early, late = pace_faults([r for r in rows if r['name'] == t], marks[t]['accepted'][0],
+                                              marks[t]['accepted'][2], marks[t].get('end'))
+                    premise(f'premise_{t}_assists_at_the_decided_pace', not early,
+                            '; '.join(early) or f"{t}'s assists from {marks[t]['accepted'][2]} s after its "
+                            f'acceptance, {publish_agent.ASSIST_BURST} at first, then spaced, none early')
+                    slow += late
+            put('obs_assist_gap_over_3x', 'INFO', 'rig', '; '.join(slow) or
+                'no gap of the assists over 3 times its decided value (first, burst, spaced, end)')
+            holds('pin_assist_writes_a_group',
+                  [f"assist {k + 1} ({r['name']}, V {r['value']}): newest group that wrote "
+                   f"{r['before']} before the set, "
+                   f"{r['after']} after the sync" for k, r in enumerate(rows) if r['after'] <= r['before']],
+                  'kernel', f'each of {len(rows)} assists (a `zfs set` with a new value, then `zpool sync`, '
+                  'nothing written) brought the pool\'s newest group that wrote past where it was')
+            row = carried.get('a1')
+            if isinstance(row, dict):
+                by = [k + 1 for k, r in enumerate(mine) if r['before'] < row['group'] <= r['after']]
+                put('obs_a1_cut', 'INFO', 'server',
+                    f"cut {row['number']} of group {row['group']} carried a1: "
+                    + (f'a group assist {by[0]} wrote' if by else 'a group no assist wrote'))
+            a2 = [r for r in rows if r['name'] == 'a2']
+            if not ends.get('a2', '').startswith('pending after'):
+                put('obs_assist_pace', 'NA', 'server',
+                    f"a2 ended {ends.get('a2')!r}, not `pending after`: pin_answer_a2 judges that, and there is "
+                    'no pace to read')
+            else:
+                premise('premise_a2_assisted', len(a2) >= 2, f'a2 was assisted {len(a2)} times')
+                p = assist_pace(a2, cut_times(instances), status_of(text_of('a2-status-before.txt', need=False)),
+                                status_of(text_of('a2-status-after.txt', need=False)),
+                                requests_span(text_of('agent.tsv'), 'a2'), txgs)
+                ups = (f"between the statuses around a2's publish ({p['flow_s']} s of requests) it uploaded "
+                       f"{p['uploaded']} cuts ({p['uploads_per_min']} a minute) and {p['blocks']} blocks "
+                       f"({p['blocks_per_min']} a minute)" if not p['lacks'] else
+                       f"no upload figures: the statuses around a2's publish lack {', '.join(p['lacks'])}")
+                put('obs_assist_pace', 'INFO', 'kernel and server',
+                    f"a2, never carried: {p['assists']} assists in {p['seconds']} s ({p['assists_per_min']} a "
+                    f"minute); the pool committed {p['groups']} groups that wrote over them ({p['groups_per_min']} "
+                    f"a minute) and {p['empty']} that wrote nothing; the `zfs set` "
+                    f"wrote a group in {p['set_wrote']} of them and the `zpool sync` after it in "
+                    f"{p['sync_wrote']}; the daemon counted {p['cuts']} cuts between the first and the last "
+                    f"({p['cuts_per_min']} a minute); " + ups)
         if name in BETWEEN:
             t, there = BETWEEN[name]
             kill = text_of('kill.tsv').strip()

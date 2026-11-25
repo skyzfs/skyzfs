@@ -294,6 +294,8 @@ pub struct FakeDaemonState {
     known: Vec<(Cut, [u8; 32])>,
     pending: Vec<Pending>,
     ended: BTreeMap<String, Ended>,
+    /// The uploader has stopped for good ([`World::stop_uploader`]).
+    stopped: bool,
 }
 
 impl FakeDaemonState {
@@ -313,6 +315,7 @@ impl FakeDaemonState {
             known: Vec::new(),
             pending: Vec::new(),
             ended: BTreeMap::new(),
+            stopped: false,
         }
     }
 
@@ -552,6 +555,19 @@ impl World {
         {
             self.die_now();
         }
+    }
+
+    /// The uploader stops for good, as skyzfsd's does when its lease is
+    /// lost or its store keeps a committed cut (`Publishing::stop`):
+    /// every publish pending ends refused `stopped`, kept for its name,
+    /// and every `publish` after is refused `stopped` and not kept.
+    /// `progress`, `withdraw` and `look` go on answering, so `progress`
+    /// of a name that never pended answers `unknown`. A restart of the
+    /// daemon begins with an uploader that has not stopped.
+    pub fn stop_uploader(&mut self) {
+        self.log.push("the uploader stops".into());
+        self.daemon.stopped = true;
+        self.end_where(|_| true, Ended::Refused(Code::Stopped));
     }
 
     /// End each publish pending that `which` names, with `how`.
@@ -1073,6 +1089,9 @@ impl World {
         }
         let refused = |code| Ok(Reply::Refused(code, String::new()));
         let daemon = &mut self.daemon;
+        if daemon.stopped {
+            return refused(Code::Stopped);
+        }
         if request.attachment != daemon.attachment {
             return refused(Code::Attachment);
         }
