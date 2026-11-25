@@ -1108,8 +1108,6 @@ fn a_text_is_cut_at_a_character_and_kept_on_one_line() {
     assert_eq!(Text::of(&[0xff; 128]).said(), "\u{fffd}".repeat(128));
 }
 
-/// The uploader's thread posts its state apart from the queue's: a post
-/// of the store keeps it, and a change of it alone is written.
 /// Each check's finding keeps its code in the file and its word in
 /// `status`, `row_v1` (code 6, F1's N3) among them, with no new version:
 /// a reader that does not know a code reads it as not said.
@@ -1146,6 +1144,8 @@ fn each_finding_of_the_check_keeps_its_code_and_its_word() {
     }
 }
 
+/// The uploader's thread posts its state apart from the queue's: a post
+/// of the store keeps it, and a change of it alone is written.
 #[test]
 fn the_uploaders_post_is_kept_by_the_stores_and_written_on_its_own() {
     let board = Board::new();

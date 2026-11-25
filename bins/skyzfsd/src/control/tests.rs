@@ -456,8 +456,13 @@ mod socket {
     /// (N3 of the review of #133): room is made 1.5 s into a wait of 5 s,
     /// and the connection follows within 200 ms. Mutant: a pause that
     /// keeps doubling (CE), which tries at 1023 ms and then at 2047 ms,
-    /// half a second after the room. A first pause of 50 ms (CF) is not
-    /// caught here or above; it costs a connect 50 ms at most.
+    /// half a second after the room. A pause capped at a few hundred ms
+    /// can still try soon after the room by chance (a cap of 500 ms, CE5,
+    /// tries at 1511 ms), so the tries are counted too: at 50 ms there
+    /// are about 36 before the connection, at a cap of 200 ms 16, so at
+    /// least 20 are asked for (T1 of the review of #136). Not caught here
+    /// or above: a cap of 100 ms (22 tries), which costs a connect 100 ms
+    /// at most, and a first pause of 50 ms (CF), which costs it 50 ms.
     #[test]
     fn a_connect_is_made_soon_after_the_backlog_has_room() {
         let dir = dir();
@@ -478,6 +483,10 @@ mod socket {
         assert!(
             late < Duration::from_millis(200),
             "connected {late:?} after the backlog had room, at try {tries}"
+        );
+        assert!(
+            tries >= 20,
+            "only {tries} tries, connected {late:?} after the backlog had room"
         );
         drop(stream);
         drop(held);
