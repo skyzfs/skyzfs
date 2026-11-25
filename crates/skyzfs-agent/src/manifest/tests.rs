@@ -8,7 +8,7 @@ fn member(name: &str, kind: Kind, guid: u64, local: &[(&str, &str)]) -> Member {
         snapshot_guid: guid + 1,
         local: local
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
             .collect(),
     }
 }
@@ -80,14 +80,16 @@ fn a_string_is_written_with_the_shortest_escapes() {
 fn every_manifest_reads_back_as_written() {
     let mut odd = small();
     odd.members[1].local = [
-        ("q\"uote", "back\\slash"),
-        ("lines", "a\nb\rc\td\u{8}e\u{c}f"),
-        ("low", "\u{1}\u{1f}\u{7f}"),
-        ("utf8", "é ü 漢 🦀"),
-        ("empty", ""),
+        ("q\"uote", &b"back\\slash"[..]),
+        ("lines", b"a\nb\rc\td\x08e\x0cf"),
+        ("low", b"\x01\x1f\x7f"),
+        ("utf8", "é ü 漢 🦀".as_bytes()),
+        ("latin1", b"caf\xe9"),
+        ("invalid", b"\xc3\x28\xff\x00"),
+        ("empty", b""),
     ]
     .iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .map(|(k, v)| (k.to_string(), v.to_vec()))
     .collect();
     odd.pool_guid = 0;
     odd.createtxg = u64::MAX;
@@ -256,7 +258,9 @@ fn a_manifest_over_the_protocols_limit_is_refused() {
         // key, with no comma.
         assert!(manifest.members[0].local.is_empty());
         let pad = "p".repeat(len - base - "\"pad\":\"\"".len());
-        manifest.members[0].local.insert("pad".into(), pad);
+        manifest.members[0]
+            .local
+            .insert("pad".into(), pad.into_bytes());
         manifest
     };
     let max = skyzfs_control::MANIFEST_MAX;
@@ -292,4 +296,78 @@ fn the_snapshots_are_the_members_names_and_snapshot_guids() {
             },
         ]
     );
+}
+
+/// A value that is not printable ASCII: a byte above 0x7f, UTF-8 or
+/// not, and a control character, each in lower-case hex under its
+/// encoding (the review of #147, B2 and the lead's L1). Mutant: such a
+/// value written as a string, upper-case hex, or a printable value in
+/// hex.
+#[test]
+fn a_value_that_is_not_printable_ascii_is_written_in_hex() {
+    let mut manifest = small();
+    manifest.members[1].local = [
+        ("mountpoint", &b"/srv/caf\xc3\xa9"[..]),
+        ("com.example:latin1", b"caf\xe9"),
+        ("com.example:tab", b"a\tb"),
+        ("com.example:plain", b"a \"b\" ~"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_vec()))
+    .collect();
+    let bytes = manifest.encode().expect("encoded");
+    let text = String::from_utf8(bytes.clone()).expect("ASCII");
+    assert!(text.is_ascii());
+    let local = concat!(
+        r#""local":{"com.example:latin1":{"encoding":"hex","value":"636166e9"},"#,
+        r#""com.example:plain":"a \"b\" ~","#,
+        r#""com.example:tab":{"encoding":"hex","value":"610962"},"#,
+        r#""mountpoint":{"encoding":"hex","value":"2f7372762f636166c3a9"}}"#
+    );
+    assert!(text.contains(local), "{text}");
+    assert_eq!(Manifest::decode(&bytes), Ok(manifest));
+
+    // One content, one form.
+    for (from, to) in [
+        // Upper-case hex.
+        ("636166e9", "636166E9"),
+        // A printable value in hex.
+        (
+            r#""a \"b\" ~""#,
+            r#"{"encoding":"hex","value":"6120226222207e"}"#,
+        ),
+        // A value that is not printable ASCII as a string.
+        (
+            r#"{"encoding":"hex","value":"2f7372762f636166c3a9"}"#,
+            r#""/srv/café""#,
+        ),
+    ] {
+        let changed = text.replacen(from, to, 1);
+        assert_ne!(changed, text);
+        assert_eq!(
+            Manifest::decode(changed.as_bytes()),
+            Err(ManifestError::NotCanonical),
+            "{to}"
+        );
+    }
+    for (from, to) in [
+        (r#""encoding":"hex""#, r#""encoding":"base64""#),
+        ("636166e9", "636166e"),
+        ("636166e9", "636166zz"),
+        // A sign, which `u8::from_str_radix` would take.
+        ("636166e9", "636166+e"),
+        (
+            r#"{"encoding":"hex","value":"636166e9"}"#,
+            r#"{"encoding":"hex","value":"636166e9","more":1}"#,
+        ),
+        (r#"{"encoding":"hex","value":"636166e9"}"#, "7"),
+    ] {
+        assert!(
+            matches!(
+                Manifest::decode(text.replacen(from, to, 1).as_bytes()),
+                Err(ManifestError::Shape(_))
+            ),
+            "{to}"
+        );
+    }
 }

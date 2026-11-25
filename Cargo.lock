@@ -4198,6 +4198,7 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "postcard",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "skyzfs-control",

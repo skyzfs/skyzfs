@@ -1,7 +1,7 @@
 //! The adapter on a fake host: the commands it runs, and its parsers on
 //! output written by hand after OpenZFS's `zpool status`, `zpool get`
-//! and `zfs program -j` (to be checked against recorded output on the
-//! rigs: the plan's Q10).
+//! and `zfs program -j`. The parsers on output recorded from ZFS are
+//! in `recordings.rs`.
 
 use std::path::PathBuf;
 
@@ -58,7 +58,6 @@ config:
 \t    /var/f3         ONLINE       0     0     0
 \t  draid1:2d:4c:0s-2 ONLINE       0     0     0
 \t    /dev/sdi        ONLINE       0     0     0
-\t  indirect-3        ONLINE       0     0     0
 \t  spare-4           ONLINE       0     0     0
 \t    /dev/sdj        ONLINE       0     0     0
 \t    /dev/sdh        ONLINE       0     0     0
@@ -140,6 +139,7 @@ fn the_rigs_pool_reads_as_one_disk_and_passes_the_premise() {
             dedup: 0,
             other: 1,
             busy: None,
+            removed: None,
         }
     );
     let props = Props {
@@ -222,13 +222,12 @@ fn every_kind_of_vdev_and_class_reads_as_it_is() {
                 vec![file(1007), file(1008), file(1009)]
             ),
             interior(VdevKind::Draid, 1010, vec![leaf(1011, Some(0x880))]),
-            interior(VdevKind::Indirect, 1012, vec![]),
             interior(
                 VdevKind::Spare,
-                1013,
-                vec![leaf(1014, Some(0x900)), leaf(1015, Some(0x900))]
+                1012,
+                vec![leaf(1013, Some(0x900)), leaf(1014, Some(0x900))]
             ),
-            interior(VdevKind::Other("4022".into()), 1016, vec![]),
+            interior(VdevKind::Other("4022".into()), 1015, vec![]),
         ]
     );
     assert_eq!((layout.special, layout.dedup, layout.other), (1, 1, 2));
@@ -239,39 +238,57 @@ fn every_kind_of_vdev_and_class_reads_as_it_is() {
 }
 
 /// A scrub under way is not busy; a removal or a rebuild under way is,
-/// and one finished is not. Mutants: any scan line taken as busy, the
-/// removal line not read.
+/// and one finished is not; any `remove:` line, under way or done, is a
+/// removal (the lead's L4 on #147). Mutants: any scan line taken as busy,
+/// the removal line not read, a finished removal not kept.
 #[test]
 fn only_a_resilver_rebuild_or_removal_under_way_is_busy() {
     let with = |line: &str| RIG.replace(" state: ONLINE\n", &format!(" state: ONLINE\n{line}\n"));
-    for (line, busy) in [
+    for (line, busy, removed) in [
         (
             "  scan: scrub in progress since Wed Nov 25 10:00:00 2026",
+            false,
             false,
         ),
         (
             "  scan: scrub repaired 0B in 00:00:01 with 0 errors on Wed Nov 25",
             false,
+            false,
         ),
         (
             "  scan: resilvered 1.2G in 00:01:00 with 0 errors on Wed Nov 25",
+            false,
             false,
         ),
         (
             "  scan: rebuild in progress since Wed Nov 25 10:00:00 2026",
             true,
+            false,
+        ),
+        // A sequential rebuild, as `zpool status` words it.
+        (
+            "  scan: resilver (draid1:2d:4c:0s-0) in progress since Wed Nov 25",
+            true,
+            false,
         ),
         (
             "remove: Evacuation of /dev/sdb in progress since Wed Nov 25",
+            true,
             true,
         ),
         (
             "remove: Removal of vdev 1 copied 1G in 0h1m, completed on Wed",
             false,
+            true,
         ),
     ] {
         let status = parse_status(&with(line), "tank").expect("parsed");
         assert_eq!(status.busy.is_some(), busy, "{line}");
+        assert_eq!(
+            status.removed.as_deref(),
+            removed.then(|| line.trim()),
+            "{line}"
+        );
     }
 }
 
@@ -407,7 +424,7 @@ fn the_snapshot_program_makes_the_manifests_members() {
     let local = |pairs: &[(&str, &str)]| {
         pairs
             .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .map(|(k, v)| ((*k).to_string(), v.as_bytes().to_vec()))
             .collect::<BTreeMap<_, _>>()
     };
     assert_eq!(program.createtxg, 812);
@@ -476,23 +493,11 @@ fn the_snapshot_programs_failures_say_what_was_taken() {
         panic!("not an error");
     };
     assert!(why.contains("after 1 were taken"), "{why}");
-    let Err(ZfsError::Other(why)) =
-        run(r#"{"failed":"tank/db","property":"keylocation","why":"EINVAL"}"#)
-    else {
-        panic!("not an error");
-    };
-    assert!(
-        why.contains("`keylocation`") && why.contains("before any"),
-        "{why}"
-    );
-    for bad in [
-        r#"{"createtxg":"x","members":{}}"#,
-        r#"{"createtxg":"1","members":{"tank/db":{"guid":"1","local":{},"snapshot_guid":"2","type":"filesystem"}}}"#,
-        r#"{"createtxg":"1","members":{"tank":{"guid":"1","local":{},"snapshot_guid":"2","type":"bookmark"}}}"#,
-        r#"{"createtxg":"1"}"#,
-    ] {
-        assert!(matches!(run(bad), Err(ZfsError::Other(_))), "{bad}");
-    }
+    // A failure with no errno is an error too.
+    assert!(matches!(
+        run(r#"{"failed":"tank/db"}"#),
+        Err(ZfsError::Other(why)) if why.contains("tank/db")
+    ));
     let mut fake = Fake::default();
     fake.fails(
         SNAPSHOT_WORDS,
@@ -506,6 +511,134 @@ fn the_snapshot_programs_failures_say_what_was_taken() {
     let mut fake = Fake::default();
     fake.fails(SNAPSHOT_WORDS, 1, "cannot open 'tank': no such pool\n");
     assert_eq!(cli(fake).snapshot("tank", "skz-1"), Err(ZfsError::NoPool));
+}
+
+const DESTROY: &str = "zfs destroy -r tank@skz-1";
+
+/// The snapshot program's output given as bytes, exit 0, and what
+/// `zfs destroy -r tank@skz-1` then gives.
+fn taken_unread(
+    stdout: &[u8],
+    destroy: Result<&str, &str>,
+) -> (Result<Program, ZfsError>, Vec<String>) {
+    let mut fake = Fake::default();
+    fake.give(
+        SNAPSHOT_WORDS,
+        Ok(Output {
+            code: Some(0),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        }),
+    );
+    match destroy {
+        Ok(out) => fake.ok(DESTROY, out),
+        Err(e) => fake.fails(DESTROY, 1, e),
+    };
+    let mut zfs = cli(fake);
+    let done = zfs.snapshot("tank", "skz-1");
+    let words = zfs.host().words().into_iter().map(String::from).collect();
+    (done, words)
+}
+
+/// Output of the snapshot program that cannot be read after it exited
+/// 0 (cut off, as `zfs program -j` cuts it at a byte it cannot print
+/// and still exits 0; not UTF-8; a result of the wrong shape that does
+/// not say it failed) is an error, and `pool@t` is destroyed with what
+/// it took before anything relies on it; the error says what became of
+/// it. Mutants: a cut-off output taken as a result, the destroy left
+/// out, run on a failure the program reported, or its failure lost.
+#[test]
+fn output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took() {
+    let cut = &TAKEN.as_bytes()[..TAKEN.len() / 2];
+    let shapes: [&[u8]; 6] = [
+        cut,
+        b"",
+        b"{\"return\":{\"createtxg\":\"812\",\"members\":{\"tank\":\xff}}}",
+        br#"{"return":{"createtxg":"x","members":{}}}"#,
+        br#"{"return":{"createtxg":"1","members":{"tank/db":{"guid":"1","local":{},"snapshot_guid":"2","type":"filesystem"}}}}"#,
+        br#"{"return":{"createtxg":"1"}}"#,
+    ];
+    for stdout in shapes {
+        let shown = String::from_utf8_lossy(stdout);
+        let (done, words) = taken_unread(stdout, Ok(""));
+        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{shown}");
+        let Err(ZfsError::Other(why)) = done else {
+            panic!("{shown}: {done:?}");
+        };
+        assert!(why.contains("tank@skz-1 destroyed"), "{shown}: {why}");
+    }
+    for gone in [
+        "could not find any snapshots to destroy; check snapshot names.\n",
+        "cannot open 'tank': dataset does not exist\n",
+    ] {
+        let (done, _) = taken_unread(cut, Err(gone));
+        assert!(
+            matches!(&done, Err(ZfsError::Other(why))
+                if why.contains("cannot be read") && why.contains("tank@skz-1 was not taken")),
+            "{gone}: {done:?}"
+        );
+    }
+    let (done, _) = taken_unread(
+        cut,
+        Err("cannot destroy snapshot tank@skz-1: pool I/O is currently suspended\n"),
+    );
+    assert!(
+        matches!(&done, Err(ZfsError::Other(why)) if why.contains("could not be destroyed")),
+        "{done:?}"
+    );
+    // A failure the program reported is not destroyed: it says what it
+    // took.
+    let (done, words) = taken_unread(
+        br#"{"return":{"failed":"tank/db@skz-1","errno":"28"}}"#,
+        Ok(""),
+    );
+    assert_eq!(words, [SNAPSHOT_WORDS]);
+    assert!(matches!(done, Err(ZfsError::Other(_))));
+}
+
+/// A local property's value comes as it is when it is printable ASCII
+/// and in hex under `encoding` otherwise; a byte above 0x7f and bytes
+/// that are not UTF-8 reach the manifest as they were. A string that is
+/// not printable ASCII, a hex value of the wrong case, length or form,
+/// and an unknown encoding are refused, and `pool@t` destroyed.
+/// Mutants: hex not decoded, a non-ASCII string let through, an extra
+/// key let through.
+#[test]
+fn a_value_that_is_not_printable_ascii_comes_in_hex() {
+    let with = |local: &str| {
+        format!(
+            r#"{{"return":{{"createtxg":"812","members":{{"tank":{{"guid":"11","local":{local},"snapshot_guid":"12","type":"filesystem"}}}}}}}}"#
+        )
+    };
+    let mut fake = Fake::default();
+    fake.ok(
+        SNAPSHOT_WORDS,
+        &with(
+            r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~"}"#,
+        ),
+    );
+    let program = cli(fake).snapshot("tank", "skz-1").expect("taken");
+    let local = &program.members[0].local;
+    assert_eq!(local["a:latin1"], [0xe9]);
+    assert_eq!(local["a:bad"], [0xff, 0x00, 0xfe]);
+    assert_eq!(local["a:tab"], b"\ta");
+    assert_eq!(local["a:plain"], b"x y~");
+    for bad in [
+        r#"{"a":"caf\u00e9"}"#,
+        r#"{"a":"a\tb"}"#,
+        r#"{"a":{"encoding":"hex","value":"E9"}}"#,
+        r#"{"a":{"encoding":"hex","value":"e"}}"#,
+        r#"{"a":{"encoding":"hex","value":"+e"}}"#,
+        r#"{"a":{"encoding":"hex","value":"61"}}"#,
+        r#"{"a":{"encoding":"hex","value":"zz"}}"#,
+        r#"{"a":{"encoding":"base64","value":"6Q=="}}"#,
+        r#"{"a":{"encoding":"hex","value":"e9","x":"1"}}"#,
+        r#"{"a":["e9"]}"#,
+    ] {
+        let (done, words) = taken_unread(with(bad).as_bytes(), Ok(""));
+        assert!(matches!(done, Err(ZfsError::Other(_))), "{bad}: {done:?}");
+        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{bad}");
+    }
 }
 
 const MEMBERS_WORDS: &str = "zfs program -n -j -t 100000000 -m 104857600 tank - tank skz-1";
@@ -549,10 +682,17 @@ const RELEASE: &str = "zfs release -r skyzfs-publish tank@skz-1";
 const HOLDS: &str = "zfs holds -H tank@skz-1";
 const HOLDS_R: &str = "zfs holds -H -r tank@skz-1";
 
-/// A hold already there is held; a snapshot that does not exist is
-/// [`ZfsError::NoSnapshot`]. Mutant: "tag already exists" an error.
+/// A hold already there is held only where every member carries the
+/// tag: `zfs hold -r` holds nothing when one member has it already, so
+/// the members are read and their holds checked. A snapshot that does
+/// not exist is [`ZfsError::NoSnapshot`]. Mutants: "tag already exists"
+/// an error, or taken as held with no look; a member without the tag
+/// missed.
 #[test]
-fn a_hold_already_there_is_held() {
+fn a_hold_already_there_is_held_where_every_member_has_it() {
+    const EXISTS: &str =
+        "cannot hold snapshot 'tank/db@skz-1': tag already exists on this dataset\n";
+    const BOTH: &str = r#"{"return":{"members":{"tank":"11","tank/db":"22"}}}"#;
     let hold = |given: Result<&str, &str>| {
         let mut fake = Fake::default();
         match given {
@@ -565,11 +705,31 @@ fn a_hold_already_there_is_held() {
         done
     };
     assert_eq!(hold(Ok("")), Ok(()));
+    let tagged = "tank@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n\
+                  tank/db@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n";
+    let mut fake = Fake::default();
+    fake.fails(HOLD, 1, EXISTS)
+        .ok(MEMBERS_WORDS, BOTH)
+        .ok(HOLDS_R, tagged);
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.hold("tank", "skz-1", HOLD_TAG), Ok(()));
+    assert_eq!(zfs.host().words(), [HOLD, MEMBERS_WORDS, HOLDS_R]);
+    let mut fake = Fake::default();
+    fake.fails(HOLD, 1, EXISTS).ok(MEMBERS_WORDS, BOTH).ok(
+        HOLDS_R,
+        "tank/db@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n\
+         tank@skz-1\tother\tWed Nov 25 10:00 2026\n",
+    );
+    let e = cli(fake)
+        .hold("tank", "skz-1", HOLD_TAG)
+        .expect_err("one member without the tag");
+    assert!(e.to_string().contains("tank@skz-1"), "{e}");
+    let mut fake = Fake::default();
+    fake.fails(HOLD, 1, EXISTS)
+        .ok(MEMBERS_WORDS, r#"{"return":{"absent":"1"}}"#);
     assert_eq!(
-        hold(Err(
-            "cannot hold snapshot 'tank@skz-1': tag already exists on this dataset\n"
-        )),
-        Ok(())
+        cli(fake).hold("tank", "skz-1", HOLD_TAG),
+        Err(ZfsError::NoSnapshot)
     );
     assert_eq!(
         hold(Err("cannot open 'tank@skz-1': dataset does not exist\n")),
@@ -581,6 +741,37 @@ fn a_hold_already_there_is_held() {
         )),
         Err(ZfsError::Other(_))
     ));
+}
+
+/// A message is read after the last `": "` of its line, so the name of
+/// a dataset (which may hold spaces) is not taken for it. Mutant: the
+/// whole line matched (S1).
+#[test]
+fn the_words_of_a_datasets_name_are_not_its_message() {
+    const SUSPENDED: &str = "pool I/O is currently suspended";
+    let mut fake = Fake::default();
+    fake.fails(
+        HOLD,
+        1,
+        &format!("cannot hold snapshot 'tank/no such pool@skz-1': {SUSPENDED}\n"),
+    );
+    let e = cli(fake)
+        .hold("tank", "skz-1", HOLD_TAG)
+        .expect_err("suspended");
+    assert!(matches!(e, ZfsError::Other(_)), "{e:?}");
+    assert!(e.to_string().contains(SUSPENDED), "{e}");
+    let mut fake = Fake::default();
+    fake.fails(
+        RELEASE,
+        1,
+        &format!(
+            "cannot release hold from snapshot 'tank/dataset does not exist@skz-1': {SUSPENDED}\n"
+        ),
+    );
+    let e = cli(fake)
+        .release("tank", "skz-1", HOLD_TAG)
+        .expect_err("suspended");
+    assert!(matches!(e, ZfsError::Other(_)), "{e:?}");
 }
 
 /// No such tag, or no such snapshot, is released, but only where no
@@ -729,4 +920,30 @@ fn the_snapshot_program_takes_nothing_before_it_has_read_everything() {
     assert_eq!(SNAPSHOT_PROGRAM.matches("zfs.sync.").count(), 1);
     assert!(!MEMBERS_PROGRAM.contains("zfs.sync."));
     assert!(!TAGGED_PROGRAM.contains("zfs.sync."));
+    // Nothing the channel programs' sandbox leaves out: on ZFS 2.2 and
+    // 2.4 a call of `pcall` failed the program (the recordings of Q10),
+    // and the sandbox has no file, operating system or loading functions
+    // either (zfs-program(8)).
+    for program in [SNAPSHOT_PROGRAM, MEMBERS_PROGRAM, TAGGED_PROGRAM] {
+        for absent in [
+            "pcall",
+            "xpcall",
+            "print(",
+            "require",
+            "dofile",
+            "loadfile",
+            "load(",
+            "io.",
+            "os.",
+            "debug.",
+            "coroutine.",
+        ] {
+            let code: String = program
+                .lines()
+                .map(|line| line.split("--").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!code.contains(absent), "a program calls `{absent}`");
+        }
+    }
 }

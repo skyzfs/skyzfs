@@ -1,12 +1,45 @@
 use std::io;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use super::*;
 
 const LIMIT: Duration = Duration::from_secs(10);
 
+/// Held by every test that runs a program, as the count of children
+/// left running ([`stuck`]) is the process's own.
+static RUNS: Mutex<()> = Mutex::new(());
+
+fn runs() -> MutexGuard<'static, ()> {
+    RUNS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn sh(script: &str, stdin: &[u8], limit: Duration) -> io::Result<Output> {
+    let _runs = runs();
     System.run("sh", &["-c", script], stdin, limit)
+}
+
+/// Whether process `pid` has ended: gone, or a zombie that nobody here
+/// reaps (the container's first process may not).
+fn ended(pid: &str) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z')),
+    }
+}
+
+/// Wait up to five seconds for `done`.
+fn soon(mut done: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done()
 }
 
 /// A program's exit code and both its outputs come back, and it runs in
@@ -24,6 +57,7 @@ fn a_program_gives_its_code_and_both_outputs_in_the_c_locale() {
 /// reads an end at once. Mutant: the input not written.
 #[test]
 fn a_program_reads_what_it_is_given() {
+    let _runs = runs();
     let out = System.run("cat", &[], b"a manifest", LIMIT).expect("ran");
     assert_eq!((out.code, out.stdout), (Some(0), b"a manifest".to_vec()));
     let out = System.run("cat", &[], &[], LIMIT).expect("ran");
@@ -47,6 +81,54 @@ fn a_program_past_its_limit_is_killed_and_not_waited_for() {
         took >= limit && took < limit + Duration::from_secs(1),
         "{took:?}"
     );
+}
+
+/// A program killed at its limit is killed with its process group, what
+/// it started included, and is reaped: both are gone soon after, and it
+/// is no longer counted as left running. Mutants: the child alone
+/// killed, the group not its own, no reaper, the count not taken down.
+#[test]
+fn a_program_past_its_limit_goes_with_what_it_started() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let pids = dir.path().join("pids");
+    let script = format!("sleep 30 & echo $$ $! > {}; exec sleep 30", pids.display());
+    let _runs = runs();
+    let before = stuck();
+    let e = System
+        .run("sh", &["-c", &script], &[], Duration::from_millis(300))
+        .expect_err("past its limit");
+    assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+    let pids = std::fs::read_to_string(&pids).expect("the pids");
+    let pids: Vec<&str> = pids.split_whitespace().collect();
+    assert_eq!(pids.len(), 2, "{pids:?}");
+    for pid in &pids {
+        assert!(soon(|| ended(pid)), "{pid} still runs");
+    }
+    assert!(soon(|| stuck() == before), "{} left counted", stuck());
+}
+
+/// At [`STUCK_MAX`] children left running, a call is refused with the
+/// error [`STUCK`] and starts nothing; below it, calls run. A limit too
+/// long to add to the clock is refused, not a panic. Mutants: no cap,
+/// the cap off by one, an overflowing limit.
+#[test]
+fn at_the_most_children_left_running_a_call_is_refused() {
+    let _runs = runs();
+    // The children of the other tests, killed, are reaped.
+    assert!(soon(|| stuck() == 0), "{} left counted", stuck());
+    STUCK_NOW.fetch_add(STUCK_MAX, Ordering::SeqCst);
+    let refused = System.run("true", &[], &[], LIMIT);
+    STUCK_NOW.fetch_sub(1, Ordering::SeqCst);
+    let below = System.run("true", &[], &[], LIMIT);
+    STUCK_NOW.fetch_sub(STUCK_MAX - 1, Ordering::SeqCst);
+    let e = refused.expect_err("at the cap");
+    assert_eq!(e.kind(), io::ErrorKind::WouldBlock, "{e}");
+    assert!(e.to_string().contains(STUCK), "{e}");
+    assert_eq!(below.expect("below the cap").code, Some(0));
+    let e = System
+        .run("true", &[], &[], Duration::MAX)
+        .expect_err("too long");
+    assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{e}");
 }
 
 /// A program that ends and leaves its output open to a child of its own
@@ -77,6 +159,7 @@ fn more_output_than_the_bound_is_an_error() {
 /// A program that cannot be started is an error of the run.
 #[test]
 fn a_program_not_found_is_an_error() {
+    let _runs = runs();
     let e = System
         .run("skyzfs-agent-no-such-program", &[], &[], LIMIT)
         .expect_err("not found");
