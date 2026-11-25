@@ -66,6 +66,48 @@ fn r150n_show_t_the_uploaders_turns_let_the_hook_kill_at_the_next_cut() {
     }
 }
 
+/// T in case B: cut 7, the carrier, committed before publish 1 was
+/// accepted. The publish's lookup takes a turn; its transaction is then
+/// due at once, but where the lookup took longer than the cut's turns
+/// since both became due, the cut has the next turns: cut 8 is checked,
+/// read (chosen) and committed first. Each hook kills at cut 8, and the
+/// publish's next step makes it on cut 7. No fault is needed.
+#[test]
+fn r150n_show_t_case_b_the_uploaders_turns_let_the_hook_kill_at_the_next_cut() {
+    for kill in [KillAt::CarrySwap(1), KillAt::CarryPut(1)] {
+        let held = vec![
+            (offered(7, 7, true), 1, false),
+            (offered(8, 8, true), 1, false),
+        ];
+        let (mut driver, carry, _faults, said) = rig(kill, held);
+        let mut seen = Vec::new();
+        cut_step(&mut driver, &mut seen); // Began 7
+        cut_step(&mut driver, &mut seen); // Read 7
+        cut_step(&mut driver, &mut seen); // Uploaded 7
+        accept(&mut driver, &carry);
+        publish_step(&mut driver, &mut seen); // the lookup
+        let due = driver.publish_due();
+        cut_step(&mut driver, &mut seen); // Began 8
+        cut_step(&mut driver, &mut seen); // Read 8: chosen
+        cut_step(&mut driver, &mut seen); // Uploaded 8
+        let before = hooks(&taken(&said));
+        publish_step(&mut driver, &mut seen); // the publish's transaction
+        let after = hooks(&taken(&said));
+        eprintln!(
+            "{kill:?}\nsteps: {seen:#?}\npublish due after the lookup: {due}\nthe hook before \
+             the publish's step: {before:#?}\nafter it: {after:#?}"
+        );
+        assert!(due, "{kill:?}: the publish was due when cut 8 was checked");
+        assert!(
+            before
+                .last()
+                .is_some_and(|s| s.starts_with("kill") && s.contains("of cut 8 (group 8)")),
+            "{kill:?}: the kill fell at cut 8: {before:?}"
+        );
+        assert!(published_on(&seen, 7), "{kill:?}: publish 1 made on cut 7: {seen:?}");
+    }
+}
+
 /// R1: the publish's transaction fails before it lands, and the publish
 /// waits its first second (`Publishing::wait_after`, which the uploader
 /// calls after a failed publish step). The cut has the steps meanwhile:

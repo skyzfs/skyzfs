@@ -31,10 +31,20 @@ PLANTS = [
     ("Q4", KILL, "every acceptance counted (S2)",
      "&& seen.names.insert(asked.wanted.name.clone())",
      "&& seen.names.insert(format!(\"{}#{}\", asked.wanted.name, seen.names.len()))"),
+    # Q4 as written above takes `seen.names` twice and does not compile;
+    # Q4b is the same change, written so that it does.
+    ("Q4b", KILL, "every acceptance counted (S2), compiling",
+     "&& seen.names.insert(asked.wanted.name.clone())",
+     "&& { let k = seen.names.len(); seen.names.insert(format!(\"{}#{k}\", asked.wanted.name)) }"),
     ("Q5", KILL, "any publish made gives the hook up",
      ".is_none_or(|wanted| wanted.name != name)", ".is_none()"),
     ("Q6", KILL, "any publish ended gives the hook up",
      ".find(|(name, _)| *name == wanted.name)", ".first()"),
+    # Q6 as written above calls `first` on an iterator and does not
+    # compile; Q6b is the same change, written so that it does.
+    ("Q6b", KILL, "any publish ended gives the hook up, compiling",
+     ".find(|(name, _)| *name == wanted.name)",
+     ".find(|(name, _)| { let _ = (name, wanted); true })"),
     ("Q7", KILL, "the chosen cut not told apart in the give-up line",
      "seen.chosen.is_some_and(|chosen| chosen.row() == cut)", "false"),
     ("Q8", KILL, "the release fires under carry-put too",
