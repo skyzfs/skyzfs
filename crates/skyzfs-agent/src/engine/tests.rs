@@ -2936,3 +2936,170 @@ fn an_ask_whose_answer_is_lost_keeps_its_hold_on_the_clock_that_does_not_step() 
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// A daemon that loses the answer to its `n`-th `publish` (an `Err`, or
+/// `refused no-answer`); the request itself is the fake's, accepted.
+struct LoseNth {
+    world: Rc<RefCell<World>>,
+    n: usize,
+    seen: usize,
+    no_answer: bool,
+    lost: Rc<Cell<bool>>,
+}
+
+impl Daemon for LoseNth {
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+        let answer = FakeDaemon(self.world.clone()).ask(request, manifest);
+        if matches!(request, Request::Publish(_)) {
+            self.seen += 1;
+            if self.seen == self.n {
+                self.lost.set(true);
+                self.world.borrow_mut().log.push(format!(
+                    "publish {} answered {answer:?}; the answer is lost",
+                    self.n
+                ));
+                return if self.no_answer {
+                    Ok(Reply::Refused(Code::NoAnswer, String::new()))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::ConnectionReset, "lost"))
+                };
+            }
+        }
+        answer
+    }
+
+    fn device(&mut self) -> io::Result<u64> {
+        FakeDaemon(self.world.clone()).device()
+    }
+}
+
+/// One run of N6: the first request accepted; where `moved`, the pool
+/// exported and imported (`-T`, one group back, after the hold) while it
+/// pends, so that the agent withdraws it (the answer `withdrawn` sets
+/// `memory.withdrawn`) and asks anew; the answer to that ask (or, without
+/// `moved`, to the first) lost; then a person's give-up in the same
+/// process, and a person who destroys `pool@t` as soon as it is not
+/// held. Whether a hold was released while a request pended at the
+/// daemon, and whether `snap/t` was made on a cut without `pool@t`.
+fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, String) {
+    let world = World::new(mode);
+    world.borrow_mut().lag_ms = 60_000;
+    let keep = MemKeep::default();
+    let lost = Rc::new(Cell::new(false));
+    let daemon = LoseNth {
+        world: world.clone(),
+        n: if moved { 2 } else { 1 },
+        seen: 0,
+        no_answer,
+        lost: lost.clone(),
+    };
+    let name: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let early: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let (world, name, early) = (world.clone(), name.clone(), early.clone());
+        let mut rewound = false;
+        move |p: Point, _: &str| {
+            if moved
+                && !rewound
+                && p == (Point {
+                    effect: Effect::Asked,
+                    after: true,
+                })
+            {
+                rewound = true;
+                let t = name.borrow().clone();
+                world
+                    .borrow_mut()
+                    .restart(Restart::RewindT(Back::AfterHold), Some(&t));
+            }
+            if p.effect == Effect::Release && !p.after {
+                let t = name.borrow().clone();
+                let (now, away, silent) = {
+                    let mut w = world.borrow_mut();
+                    let saved = (w.now_ms, w.away_until, w.silent_until);
+                    w.away_until = 0;
+                    w.silent_until = 0;
+                    saved
+                };
+                let reply = FakeDaemon(world.clone()).ask(&Request::Progress(t), &[]);
+                {
+                    let mut w = world.borrow_mut();
+                    w.away_until = away;
+                    w.silent_until = silent;
+                    w.calls.pop();
+                }
+                if matches!(reply, Ok(Reply::Pending)) {
+                    early.borrow_mut().push(now);
+                }
+            }
+            false
+        }
+    };
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        daemon,
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(Box::new(hook));
+    let t = a.begin().expect("begun");
+    name.borrow_mut().clone_from(&t);
+    world.borrow_mut().destroyer = Some(t.clone());
+    let mut rounds = 0;
+    while !lost.get() && rounds < 900 {
+        let _ = a.settle(Duration::from_secs(1));
+        rounds += 1;
+    }
+    let lost_at = rounds;
+    a.recover(&t, Choice::GiveUp).expect("recovered");
+    let settled = a.settle(LIMIT);
+    let outcomes = a.outcomes().to_vec();
+    drop(a);
+    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+    let w = world.borrow();
+    let wrong = w.refs.get(&t).is_some_and(|r| {
+        !w.commits[&r.commit]
+            .cut
+            .snaps
+            .contains_key(&format!("{POOL}@{t}"))
+    });
+    let early = !early.borrow().is_empty();
+    let line = format!(
+        "{mode:?} no_answer={no_answer} moved={moved}: lost {} after {lost_at} s; settled {settled:?}; outcomes {:?}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}\n  log tail {:?}",
+        lost.get(),
+        outcomes.iter().map(|(n, o)| format!("{n} {o:?}")).collect::<Vec<_>>(),
+        w.refs.get(&t).map(|r| r.number),
+        holds(&w),
+        w.log.iter().rev().take(10).collect::<Vec<_>>()
+    );
+    (early, wrong, line)
+}
+
+/// A withdraw answered for one request does not count for the next
+/// (N6 of #149's third look; the reviewer's scratch test, taken): the
+/// first request accepted and pending; where `moved`, the pool imported
+/// back one group while it pends, so that the agent withdraws it (the
+/// answer `withdrawn`) and asks anew; the answer to that ask (or, without
+/// `moved`, to the first) lost; then a person's give-up in the same
+/// process, and a person who destroys `pool@t` as soon as it is not held.
+/// No hold is released while a request pends at the daemon, and `snap/t`
+/// is never made on a cut without `pool@t`. Mutant: `withdrawn` not
+/// cleared at the asking commit (4 of the 4 `moved` rows fail).
+#[test]
+fn a_withdraw_answered_does_not_count_for_the_request_asked_anew() {
+    let mut found = Vec::new();
+    for mode in [Mode::Idle, Mode::Busy] {
+        for no_answer in [false, true] {
+            for moved in [false, true] {
+                let (early, wrong, line) = n6_run(mode, no_answer, moved);
+                if early || wrong {
+                    found.push(line);
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}

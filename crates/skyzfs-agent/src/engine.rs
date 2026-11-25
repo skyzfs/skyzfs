@@ -368,7 +368,7 @@ impl fmt::Display for Error {
                 "the record's directory holds no agent's marker (`{}`), so it may not be \
                  this volume's agent's directory; the holds of {} that no publish of its \
                  record names are not released. Check `--dir`; if it is this volume's agent's \
-                 directory, release those holds by hand (`zfs release -r {} <snapshot>`)",
+                 directory, release those holds by hand (`zfs release -r {} <pool>@<name>`)",
                 crate::record::MARKER,
                 names.join(" "),
                 crate::zfs::HOLD_TAG
@@ -1167,8 +1167,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         })?;
         // Its hold is timed from here on the clock that does not step:
         // the answer may be lost while the request pends (N5 of #149's
-        // next look).
-        self.memory.entry(name.clone()).or_default().accepted = Some((sent, sent_mono));
+        // next look). A new request may be out from here, and no withdraw
+        // has been answered for it: a withdraw answered for an earlier
+        // request does not count for this one (N6 of #149's third look).
+        let memory = self.memory.entry(name.clone()).or_default();
+        memory.accepted = Some((sent, sent_mono));
+        memory.withdrawn = false;
         self.point(Effect::Ask, false)?;
         let answer = self.daemon.ask(&request, &bytes);
         self.point(Effect::Ask, true)?;
