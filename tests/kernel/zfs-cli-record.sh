@@ -37,6 +37,20 @@
 #                          tagged.lua before any hold
 #   hold-1, holds, holds-r, hold-2, tagged-held, release-1, release-2
 #                          the holds, and each twice for its message
+#   set-utf8, set-raw, get-odd
+#                          two user properties set locally on the child,
+#                          one with a value in UTF-8 beyond ASCII and one
+#                          whose value is not UTF-8, and `zfs get` of them
+#   snapshot-odd, snapshot-odd-c, snapshot-odd-utf8
+#                          snapshot.lua with those properties, at @o0, @o1
+#                          and @o2: in the job's locale, with LC_ALL=C and
+#                          with LC_ALL=C.UTF-8 (the adapter inherits its
+#                          locale; `zfs program -j` writes the values)
+#   partial-pre, snapshot-partial, partial-after
+#                          a take that fails part way: the child already
+#                          has @p and the pool's root has not, then
+#                          snapshot.lua at @p, then the snapshots that are
+#                          there (none of the root's should be)
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -54,7 +68,8 @@
 #                          second file brought back online after writes
 #   resilvered             zpool status -P once it ended
 #
-# and once: `nocacheflush` (the module parameter) and `version`. On the
+# and once: `nocacheflush` (the module parameter), `version` and
+# `locale` (the job's). On the
 # pool that does not exist, every command of the agent's (status,
 # status-g, get, the three programs, holds, holds-r, hold, release).
 #
@@ -140,14 +155,20 @@ keep() {
     printf '== %s: rc %s (%s)\n' "$name" "$rc" "$note"
 }
 
-program() { # name P LUA [-n] ARGS...: zfs program -j as the adapter runs it
-    local name=$1 p=$2 lua=$3 ro=()
+# program NAME P LUA [--locale L] [-n] ARGS...: zfs program -j as the
+# adapter runs it, with LC_ALL=L when L is given.
+program() {
+    local name=$1 p=$2 lua=$3 ro=() env=()
     shift 3
+    if [ "${1:-}" = --locale ]; then
+        env=(env "LC_ALL=$2")
+        shift 2
+    fi
     if [ "${1:-}" = -n ]; then
         ro=(-n)
         shift
     fi
-    rec "$name" --in "$LUA_DIR/$lua" zfs program "${ro[@]}" -j "${PROGRAM_LIMITS[@]}" "$p" - "$@"
+    rec "$name" --in "$LUA_DIR/$lua" "${env[@]}" zfs program "${ro[@]}" -j "${PROGRAM_LIMITS[@]}" "$p" - "$@"
 }
 
 # The agent's commands on pool P, records named PREFIX-...; t is the
@@ -220,6 +241,7 @@ main() {
 
     rec version zfs version
     rec nocacheflush cat /sys/module/zfs/parameters/zfs_nocacheflush
+    rec locale locale
 
     # The rig pool: data on /dev/ublkb0, a log on a loop device; ublkb1 for
     # the resilver.
@@ -267,6 +289,17 @@ main() {
         program "$x-tagged-held" "$p" tagged.lua -n "$p" skyzfs
         rec "$x-release-1" zfs release -r skyzfs "$p@t"
         rec "$x-release-2" zfs release -r skyzfs "$p@t"
+        # Values beyond ASCII, as the snapshot program reads them.
+        rec "$x-set-utf8" zfs set "skyzfs:utf8=naïve, 日本, ∅" "$p/child"
+        rec "$x-set-raw" zfs set "skyzfs:raw=a$(printf '\xff\xfe')b$(printf '\xc3')" "$p/child"
+        rec "$x-get-odd" zfs get -H -p -o name,property,value,source skyzfs:utf8,skyzfs:raw "$p/child"
+        program "$x-snapshot-odd" "$p" snapshot.lua "$p" o0 skyzfs:assist
+        program "$x-snapshot-odd-c" "$p" snapshot.lua --locale C "$p" o1 skyzfs:assist
+        program "$x-snapshot-odd-utf8" "$p" snapshot.lua --locale C.UTF-8 "$p" o2 skyzfs:assist
+        # A take that fails part way: the child has @p, the root has not.
+        rec "$x-partial-pre" zfs snapshot "$p/child@p"
+        program "$x-snapshot-partial" "$p" snapshot.lua "$p" p skyzfs:assist
+        rec "$x-partial-after" zfs list -H -t snapshot -o name -r "$p"
         rec "$x-checkpoint" zpool checkpoint "$p"
         rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
         rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"

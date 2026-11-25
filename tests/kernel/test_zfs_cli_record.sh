@@ -82,7 +82,21 @@ check "program cmd" "$(cat "$OUT/p-ro/cmd")" "zfs program -n -j -t 100000000 -m 
 program p-rw skzq members.lua skzq t skyzfs:assist > /dev/null
 check "program without -n" "$(head -n 1 "$OUT/p-rw/stdout")" "program -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:assist"
 
+# With a locale: env in front, and LC_ALL set for zfs alone. env runs
+# the zfs on PATH, not a function: the fake is a script.
+mkdir -p "$T/bin"
+cat > "$T/bin/zfs" << 'FAKE'
+#!/bin/sh
+printf '%s %s\n' "${LC_ALL:-unset}" "$*"
+FAKE
+chmod +x "$T/bin/zfs"
+PATH=$T/bin:$PATH
+program p-loc skzq members.lua --locale C -n skzq t > /dev/null
+check "program --locale" "$(cat "$OUT/p-loc/stdout")" "C program -n -j -t 100000000 -m 104857600 skzq - skzq t"
+check "program --locale cmd" "$(cat "$OUT/p-loc/cmd")" "env LC_ALL=C zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t < members.lua"
+check "locale not left set" "${LC_ALL:-unset}" unset
+
 # The index has one line a record, in order.
-check "index order" "$(cut -f1 "$OUT/index.tsv" | tr '\n' ' ')" "r-said r-in r-noin r-slow c-yes c-no p-ro p-rw "
+check "index order" "$(cut -f1 "$OUT/index.tsv" | tr '\n' ' ')" "r-said r-in r-noin r-slow c-yes c-no p-ro p-rw p-loc "
 
 exit "$fail"
