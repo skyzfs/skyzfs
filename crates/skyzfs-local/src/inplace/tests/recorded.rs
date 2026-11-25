@@ -284,6 +284,14 @@ type Counted = (u64, u64, u64, u64, bool);
 /// (the record's mark `session-N-begin`), as a daemon started for that
 /// attachment would, and its count is carried on in the numbers.
 fn replay(pool: &Pool, mutants: u128, restart: bool) -> Vec<Counted> {
+    replay_marking(pool, mutants, restart).0
+}
+
+/// The same, and each value the rule's rewind mark takes (work package
+/// M2.6a, rule (R)), as it moves at a flush's barrier. Without
+/// `restart` the rule's numbers are the record's; with it, each store
+/// begun counts from 0 again and its marks are not the record's.
+fn replay_marking(pool: &Pool, mutants: u128, restart: bool) -> (Vec<Counted>, Vec<u64>) {
     let labels = Labels::for_size(pool.dev_bytes);
     let rings: Vec<_> = labels.rings().collect();
     // The rings as the record has left them so far.
@@ -321,10 +329,15 @@ fn replay(pool: &Pool, mutants: u128, restart: bool) -> Vec<Counted> {
     };
     // A record's write is request 3i, a flush before it 3i+1, a flush
     // after it 3i+2; the records before an instant follow from which.
-    let flush = |rule: &mut CutRule, id: u64| {
+    let mut marks: Vec<u64> = Vec::new();
+    let mut flush = |rule: &mut CutRule, id: u64| {
         let id = RequestId(id);
         rule.received(id, &Op::Flush);
         rule.barrier(id);
+        let rewound = rule.cuts().rewound;
+        if marks.last().copied().unwrap_or(0) != rewound {
+            marks.push(rewound);
+        }
         rule.ended(id);
     };
     for record in &pool.records {
@@ -395,7 +408,7 @@ fn replay(pool: &Pool, mutants: u128, restart: bool) -> Vec<Counted> {
         }
     }
     take(&heard);
-    counted
+    (counted, marks)
 }
 
 /// The reference's cuts of a recorded pool, with whether each opens as
@@ -561,4 +574,67 @@ fn the_recordings_notice_the_defects_of_a_repeat() {
              set the table to what the new recordings notice"
         );
     }
+}
+
+/// Rule (R) on the recordings (work package M2.6a): one store that sees
+/// a whole record moves its rewind mark at exactly the reference's cuts
+/// whose group is not above the highest group of the cuts before them,
+/// and at no other. The table pins where that is, so that a refresh of
+/// the fixtures that loses a rewind is noticed. In `rewindf` it is cut
+/// 19, the first of the import by `-FX`: group 43 again, with another
+/// root, after cut 18 of group 43, and it opens as itself (the case the
+/// plan's §0 is about). In `rewind` and `rewindsync` it is cut 23, the
+/// first of the import by `-T` (group 39 after group 51), and each cut
+/// after it up to the abandoned group 51: the rule's cost after `-T`. In
+/// `multihost` it is the stale cuts 10 and 27, a state of an older cut
+/// written again after a newer one, whose group errs low: the
+/// conservative reading takes them for rewinds (the agent publishes no
+/// pool with `multihost=on`, design §6.2). A mark that does not move
+/// (the defect `REWIND_UNSEEN`) is noticed in each pool the table names;
+/// one that compares a cut with the cut before it alone (the defect
+/// `REWIND_BY_PREVIOUS`) moves only at the first cut of each `-T`.
+#[test]
+fn the_rewind_mark_moves_at_the_recorded_rewinds() {
+    let pinned: &[(&str, &[u64])] = &[
+        ("multihost", &[10, 27]),
+        ("rewind", &[23, 24, 25, 26, 27, 28, 29]),
+        ("rewindf", &[19]),
+        ("rewindsync", &[23, 24, 25, 26, 27]),
+    ];
+    let mut found: Vec<(String, Vec<u64>)> = Vec::new();
+    for pool in pools() {
+        let reference = reference(&pool);
+        let mut top = None;
+        let mut wanted = Vec::new();
+        for &(number, group, ..) in &reference {
+            if top.is_some_and(|top| group <= top) {
+                wanted.push(number);
+            }
+            top = top.max(Some(group));
+        }
+        let (counted, marks) = replay_marking(&pool, 0, false);
+        assert_eq!(counted, reference, "{}", pool.name);
+        assert_eq!(marks, wanted, "{}", pool.name);
+        let (_, unseen) = replay_marking(&pool, Mutants::REWIND_UNSEEN, false);
+        assert!(
+            wanted.is_empty() || unseen.is_empty(),
+            "{}: a mark that does not move is not noticed",
+            pool.name
+        );
+        let previous: Vec<u64> = reference
+            .windows(2)
+            .filter(|pair| pair[1].1 <= pair[0].1)
+            .map(|pair| pair[1].0)
+            .collect();
+        let (_, by_previous) = replay_marking(&pool, Mutants::REWIND_BY_PREVIOUS, false);
+        assert_eq!(by_previous, previous, "{}: the defect", pool.name);
+        if !wanted.is_empty() {
+            found.push((pool.name.clone(), wanted));
+        }
+    }
+    let found: Vec<(&str, &[u64])> = found
+        .iter()
+        .map(|(name, cuts)| (name.as_str(), cuts.as_slice()))
+        .collect();
+    assert_eq!(found, pinned, "the recorded rewinds");
 }

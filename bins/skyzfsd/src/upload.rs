@@ -724,6 +724,7 @@ impl<R: RefStore> Start<R> {
 /// taken at the start.
 pub struct Uploads {
     vol: skynbd_types::VolumeId,
+    remote: Remote,
     holder: String,
     objects: Objects,
     refs: Refs,
@@ -751,6 +752,7 @@ impl Uploads {
         );
         Ok(Self {
             vol: remote.id,
+            remote: remote.clone(),
             holder,
             objects,
             refs,
@@ -766,6 +768,12 @@ impl Uploads {
     /// The lease at the start, to read.
     pub fn started(&self) -> &Start<Refs> {
         &self.start
+    }
+
+    /// The volume's place in object storage: the channel's `look` reads
+    /// its refs with a client of its own (work package M2.6a).
+    pub fn remote(&self) -> &Remote {
+        &self.remote
     }
 
     /// Start the uploader's thread over `desk`, posting with `publish`:
@@ -812,6 +820,9 @@ pub struct Publishes {
     pub attachment: Option<[u8; 16]>,
     /// The store's cut state.
     pub state: Option<[u8; 16]>,
+    /// The store's rewind mark at the start
+    /// (`skyzfs_upload::Publishing::set_rewound`).
+    pub rewound: u64,
     /// The channel's requests.
     pub inbox: tokio::sync::mpsc::Receiver<Control>,
     /// Told of each publish that ends.
@@ -823,7 +834,7 @@ pub struct Publishes {
 pub fn publish_ended_said(name: &str, progress: &Progress) -> String {
     format!(
         "publish {name}: {}",
-        crate::control::Reply::of(progress).line()
+        crate::control::reply_of(progress).line()
     )
 }
 
@@ -1080,6 +1091,7 @@ impl Uploading {
                 if let Some(state) = publishes.state {
                     uploader.publishing().set_state(state);
                 }
+                uploader.publishing().set_rewound(publishes.rewound);
                 let mut told = publishes.told;
                 let end = runtime.block_on(async {
                     let asked = async {

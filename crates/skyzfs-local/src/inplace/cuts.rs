@@ -80,6 +80,58 @@
 //!   rewind to its group, which a later abandoned history above it
 //!   shows: after a rewind import, the abandoned groups stay in the
 //!   rings until the new ones are written over them.
+//! - **A cut may follow a rewind** (work package M2.6a; the plan's §0,
+//!   rule (R)): the store keeps [`Cuts::rewound`], the number of the
+//!   newest cut whose group is not above the highest group the store has
+//!   seen since its start, in any other state: in the rings its start
+//!   read, or in an uberblock applied since. Or it keeps the count the
+//!   store started with, if that is higher. After `zpool import -F` the
+//!   first group of the new history has the abandoned best's number,
+//!   another root, and opens as itself at once (above). After `-T` the
+//!   new history's groups are below the abandoned ones until they pass
+//!   them. Either way a publish asked before the rewind could be carried
+//!   by a cut of a history without its snapshot, and the uploader
+//!   refuses a publish asked below the mark (`rewound`).
+//!
+//!   The comparison is with the highest group, not with the cut before
+//!   (M2.6a's first form, the defect [`Mutants::REWIND_BY_PREVIOUS`]).
+//!   A cut whose group errs low (a stale write, below) is marked, but
+//!   then the first group of a later `-F` is above that low cut: compared
+//!   with it alone, the new history would pass for new (found by the
+//!   crash matrix of M2.6b; the lead's decision on #140). Its cost: after
+//!   `-T`, each new cut up to the abandoned top's group moves the mark,
+//!   so a publish asked in that window is refused and asked anew each
+//!   time. The cuts below that group do not open as themselves while the
+//!   abandoned top is in the rings, so they could carry no publish
+//!   anyway; the cut at that group overwrites it and is as the first of
+//!   a `-F`. An uberblock whose group
+//!   errs high, above the pool's own groups (as only another writer
+//!   could put in a ring), raises the top, which only delays publishes
+//!   and never lets one through.
+//!
+//!   The readings are conservative, where the design is silent: a group
+//!   that errs low counts as a rewind, and the count at the start counts
+//!   as one, as the mark is in memory and a take-over cannot know what
+//!   the instance before saw (the lead's answer to the plan's Q1, in
+//!   place of a mark in the cut state). The top is in memory too, read
+//!   again from the rings at each start.
+//!
+//!   What (R) does not see:
+//!   - **A rewind to a checkpoint.** `zpool import
+//!     --rewind-to-checkpoint` writes the checkpointed uberblock as the
+//!     group after the last (OpenZFS 2.4.1, `spa_ld_checkpoint_rewind`:
+//!     `checkpoint.ub_txg = spa->spa_uberblock.ub_txg + 1`), above every
+//!     group before it, so no cut is marked. The agent guards it: its
+//!     premise refuses a pool with a checkpoint, and every check reads
+//!     that again (M2.6b; the lead's decision D1 on #140). What is left:
+//!     a checkpoint taken and rewound to inside one publish's window (at
+//!     most its expiry) while the agent is down.
+//!   - **A rewind whose new groups pass the top before any cut is
+//!     counted**: an import by `-T`, with no flush reaching its barrier
+//!     until the groups passed the abandoned ones. ZFS flushes at each
+//!     group unless `zfs_nocacheflush` is set, which the agent's premise
+//!     refuses. The agent's check of the pool's load GUID sees that one
+//!     (M2.6b).
 //!
 //! Each rule has a defect among [`Mutants`] and a test that fails with
 //! it (`tests/cuts.rs`). The recorded pools of M2.T1 hold the parser,
@@ -104,7 +156,8 @@
 //!   behind, or the first after a start, with no newest cut in memory)
 //!   makes a cut whose group is lower than the one the volume holds: the
 //!   volume is still a complete pool, and the group only delays a
-//!   publish.
+//!   publish. Rule (R) marks such a cut, so the publishes asked before
+//!   it are refused and asked anew.
 //! - **It can err high in one case: a cut made during an import** (the
 //!   review's read of the amended §5.2, in the implementation notes
 //!   under M2, "The read of these rules"). A mark left from before the
@@ -203,6 +256,13 @@ pub struct Cuts {
     pub count: u64,
     /// The newest cut; `None` before the first.
     pub newest: Option<Cut>,
+    /// The number of the newest cut that may follow a rewind: whose
+    /// group is not above the highest group the store has seen since its
+    /// start in another state, or the count the store started with if
+    /// that is higher; 0 where neither is, so that no request is below
+    /// it (work package M2.6a). A publish asked after a lower count is
+    /// refused `rewound`.
+    pub rewound: u64,
 }
 
 /// A moment of the rule, as a watcher is told of it.
@@ -256,6 +316,16 @@ pub(crate) enum Event {
     Cut(RequestId, Cut, State),
 }
 
+/// The highest group the store has seen since its start (rule (R)).
+#[derive(Debug, Clone, Copy)]
+struct Top {
+    txg: u64,
+    /// Its state, where only one state of that group was seen; `None`
+    /// where two were (the first group of a rewind by `-F` beside the
+    /// abandoned best).
+    state: Option<State>,
+}
+
 /// What a write or a write-zeroes that reaches a ring changes there,
 /// from its receipt until it is applied or ends.
 #[derive(Debug)]
@@ -289,6 +359,9 @@ pub(crate) struct CutRule {
     /// Flushes received after a mark, by request: each carries a cut,
     /// counted at its barrier.
     carrying: BTreeMap<RequestId, Uberblock>,
+    /// The highest group seen since the start, in the rings the start
+    /// read or an uberblock applied: what rule (R) compares a cut with.
+    top: Option<Top>,
     cuts: Cuts,
     watching: Watching,
     /// What the cut state is to record, not yet taken.
@@ -316,6 +389,7 @@ impl CutRule {
             newest: None,
             previous: None,
             carrying: BTreeMap::new(),
+            top: None,
             cuts: Cuts::default(),
             watching: Watching::default(),
             events: Vec::new(),
@@ -324,7 +398,9 @@ impl CutRule {
 
     /// Take up what the cut state recorded of an instance before this
     /// one: the count, the newest cut's state and whether it opens as
-    /// itself, and the mark.
+    /// itself, and the mark. The count it starts with is taken as a
+    /// rewind's ([`Cuts::rewound`]): what the instance before saw is not
+    /// kept.
     pub(crate) fn restore(
         &mut self,
         count: u64,
@@ -332,6 +408,9 @@ impl CutRule {
         mark: Option<State>,
     ) {
         self.cuts.count = count;
+        if !self.mutants.has(Mutants::REWIND_START_FORGOTTEN) {
+            self.cuts.rewound = count;
+        }
         self.cuts.newest = newest.map(|(state, itself)| Cut {
             number: count,
             group: state.txg,
@@ -346,6 +425,7 @@ impl CutRule {
     /// must not write into the blocks the suite reads (`harness.rs`).
     #[cfg(test)]
     pub(crate) fn applied_state(&mut self, id: RequestId, state: State) {
+        self.saw(state);
         if self.marks(&state) {
             self.mark = Some(mark_of(state));
             self.events.push(Event::Mark(id, state));
@@ -383,6 +463,11 @@ impl CutRule {
         if !self.mutants.has(Mutants::RINGS_UNREAD) {
             let found = self.found(offset, data);
             self.view.changed(offset, data.len() as u64, &found);
+            for uberblock in found {
+                if uberblock.verified() && uberblock.counts() {
+                    self.saw(uberblock.state);
+                }
+            }
         }
     }
 
@@ -488,6 +573,7 @@ impl CutRule {
                 continue;
             }
             let state = uberblock.state;
+            self.saw(state);
             if self.marks(&state) {
                 self.mark = Some(uberblock);
                 if !self.mutants.has(Mutants::MARK_BEFORE_WHOLE) {
@@ -496,6 +582,35 @@ impl CutRule {
             }
             self.previous = Some(state);
         }
+    }
+
+    /// An uberblock naming `state` is in the rings at the start, or has
+    /// been applied: the top rises to it, or learns of a second state of
+    /// its group.
+    fn saw(&mut self, state: State) {
+        match &mut self.top {
+            Some(top) if state.txg < top.txg => {}
+            Some(top) if state.txg == top.txg => {
+                if top.state != Some(state) {
+                    top.state = None;
+                }
+            }
+            _ => {
+                self.top = Some(Top {
+                    txg: state.txg,
+                    state: Some(state),
+                });
+            }
+        }
+    }
+
+    /// Whether a cut marked by `state` may follow a rewind (rule (R)):
+    /// whether its group is below the top, or the top's group in another
+    /// state.
+    fn follows_a_rewind(&self, state: &State) -> bool {
+        self.top.is_some_and(|top| {
+            state.txg < top.txg || (state.txg == top.txg && top.state != Some(*state))
+        })
     }
 
     /// Whether an applied uberblock naming `state` marks: whether it is
@@ -543,6 +658,17 @@ impl CutRule {
             group: state.txg,
             itself,
         };
+        let rewound = if self.mutants.has(Mutants::REWIND_BY_PREVIOUS) {
+            // The defect: compared with the cut before it alone.
+            self.cuts
+                .newest
+                .is_some_and(|before| cut.group <= before.group)
+        } else {
+            self.follows_a_rewind(&state)
+        };
+        if rewound && !self.mutants.has(Mutants::REWIND_UNSEEN) {
+            self.cuts.rewound = cut.number;
+        }
         self.cuts.newest = Some(cut);
         self.events.push(Event::Cut(id, cut, state));
         self.watching.tell(Seen::Cut(id, cut));

@@ -822,6 +822,10 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         plain("withdraw --name t --dir /v/a"),
         ask(Request::Withdraw("t".into()), None)
     );
+    assert_eq!(
+        plain("look --dir /v/a --name pool.t-1_x"),
+        ask(Request::Look("pool.t-1_x".into()), None)
+    );
     let (a, s) = ("a1".repeat(16), "5E".repeat(16));
     let publish = |expiry| Publish {
         name: "t".into(),
@@ -852,6 +856,7 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         ("cuts --dir /v/a", "cuts"),
         ("withdraw --dir /v/a --name t", "withdraw"),
         ("publish-progress --dir /v/a --name t", "publish-progress"),
+        ("look --dir /v/a --name t", "look"),
     ] {
         assert_eq!(plain(line).map(|c| c.name()), Ok(name));
     }
@@ -864,6 +869,9 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         "publish-progress --dir /v/a".into(),
         "withdraw --dir /v/a --name a/b".into(),
         format!("withdraw --dir /v/a --name {long}"),
+        "look --dir /v/a".into(),
+        "look --dir /v/a --name a:b".into(),
+        "look --dir /v/a --name t --manifest /m".into(),
         full.replace(" --group 41", ""),
         full.replace(" --attachment ", " --attachment 0"),
         full.replace(&format!("--state {s}"), &format!("--state {}", &s[2..])),

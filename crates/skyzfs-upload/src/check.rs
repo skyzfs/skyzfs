@@ -165,6 +165,7 @@ mod tests {
             whole: false,
             itself: true,
             base: Some(BASE),
+            rewound: 0,
         }
     }
 

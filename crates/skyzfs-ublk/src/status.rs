@@ -322,6 +322,28 @@ pub struct Status {
     pub shown: StoreShown,
 }
 
+/// The count of cuts and the newest cut, as the status file carries
+/// them: the store's [`Cuts`] without its rewind mark, which the file
+/// does not carry (the uploader reads the mark from the store, M2.6a). A
+/// type of the status's own, so that no reader takes a mark the file
+/// never held for "no rewind" (N4 of the review of #140).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CutsShown {
+    /// The cuts counted, in the cut state's numbering.
+    pub count: u64,
+    /// The newest cut; `None` before the first.
+    pub newest: Option<Cut>,
+}
+
+impl From<Cuts> for CutsShown {
+    fn from(cuts: Cuts) -> Self {
+        Self {
+            count: cuts.count,
+            newest: cuts.newest,
+        }
+    }
+}
+
 /// The store and the pump as the queue thread posts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StoreShown {
@@ -334,7 +356,7 @@ pub struct StoreShown {
     pub io_queue: Option<IoQueue>,
     /// The count of cuts and the newest cut. `None` in a file of a
     /// version before the eleventh.
-    pub cuts: Option<Cuts>,
+    pub cuts: Option<CutsShown>,
     /// The held cuts. `None` in a file of a version before the
     /// thirteenth.
     pub held: Option<HeldShown>,
@@ -1265,7 +1287,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
         counters.commands_failed = field(after(272));
         counters.last_command_failure = failure_at(after(280));
         let count = field(after(288));
-        let cuts = Cuts {
+        let cuts = CutsShown {
             count,
             // The eleventh version does not say whether the newest cut
             // opens as itself: read as not, and `status` prints nothing

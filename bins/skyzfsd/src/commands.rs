@@ -707,7 +707,7 @@ pub fn create_warning(dir: &Path, run_dir: &Path, boot: &[u8; 16]) -> Option<Str
     ))
 }
 
-/// `cuts`, `publish`, `publish-progress` and `withdraw`: send `ask`'s
+/// `cuts`, `publish`, `publish-progress`, `withdraw` and `look`: send `ask`'s
 /// request to the channel of the daemon that serves its volume, through
 /// `asker` (`control::ask` with [`crate::control::ASK_LIMIT`]), and print
 /// the answer's line. A publish's manifest is read from its file first,

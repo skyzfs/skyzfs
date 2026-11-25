@@ -73,6 +73,44 @@
 //! once the expiry has passed by its own clock with a margin for the
 //! channel (M2.6). The agent can also withdraw a publish
 //! ([`Publishing::withdraw`]): it ends the same way, at once.
+//!
+//! **A rewind ends a publish that waits** (work package M2.6a, rule (R)
+//! of its plan). The store counts as a rewind's every cut whose group is
+//! not above the highest group it has seen since its start, and the
+//! count it started with (`skyzfs_local::inplace::Cuts::rewound`, whose
+//! docs also say what the rule does not see): after `zpool import -F`
+//! the first group of the new history has the abandoned best's number
+//! and opens as itself, so without the rule a publish asked before the
+//! rewind would be carried by a cut of a history that may lack `pool@t`.
+//! A request asked after a lower count than the mark is refused
+//! ([`Refusal::Rewound`]), and a publish pending that has no cut yet (to
+//! be looked up, or waiting) ends so once the mark passes its count
+//! ([`Publishing::set_rewound`]). The agent then checks `pool@t` and asks
+//! again with a count read anew (M2.6).
+//!
+//! The mark comes here at two moments (B3 of the review of #140). The
+//! daemon's channel reads the store's mark at the desk with each
+//! `publish` and gives it with the request
+//! ([`crate::uploader::Control::Ask`]). And the driver gives it at each
+//! check of a cut, before that cut can be committed. Between two checks
+//! the mark here can be a rewind behind the store's, for as long as the
+//! cut under way takes; the mark given with the ask is what keeps a
+//! request asked then, with a count from before the rewind, from a cut
+//! of the abandoned history. A driver used without the channel, as the
+//! tests use it, has only the checks.
+//!
+//! Why that is enough. A snapshot returns once its group is synced, and
+//! the sync's flush counts the cuts of the history it was taken on; so a
+//! rewind before the agent's snapshot has its first cut counted before
+//! the ask, and is in the mark given with it. A request accepted was
+//! therefore asked after a count at or above every rewind counted before
+//! its snapshot, and the cuts counted after that count, up to the next
+//! rewind's first cut, are of its snapshot's history. The check of that
+//! first cut ends the publish if no cut was given to it yet; one given
+//! its cut before goes on, as that cut is of its snapshot's history.
+//! With the mark in memory, a request asked of the daemon before a
+//! restart is refused by the next (the lead's answer to the plan's Q1,
+//! in place of M2.5's new deadline there).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -84,9 +122,9 @@ use skyzfs_local::inplace::CommittedCut;
 
 use crate::backoff::Backoff;
 
-/// The largest ZFS manifest a request carries: 1 MiB. Its format is the
-/// agent's (M2.6); the daemon stores it as it came.
-pub const MANIFEST_MAX: usize = 1 << 20;
+// The limits of a request are the channel protocol's (M2.6a): the
+// agent reads them there without linking this crate.
+pub use skyzfs_control::{valid_name, EXPIRY_DEFAULT, EXPIRY_MAX, MANIFEST_MAX};
 
 /// The cuts committed, or found committed, that the uploader keeps in
 /// view for a request that comes after their commit: the newest 64. A
@@ -102,13 +140,6 @@ pub const PENDING_MAX: usize = 64;
 
 /// The outcomes kept for [`Publishing::progress`]: the newest 1024.
 pub const OUTCOMES_KEPT: usize = 1024;
-
-/// How long a publish may pend where the agent names no expiry: ten
-/// minutes. The channel (M2.5-2) fills it in.
-pub const EXPIRY_DEFAULT: Duration = Duration::from_secs(10 * 60);
-
-/// The longest a publish may pend: an hour.
-pub const EXPIRY_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// The prefix of a snapshot's row among the refs object's meta rows.
 pub const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
@@ -137,16 +168,6 @@ pub fn manifest_key(vol: VolumeId, snap: SnapId) -> String {
         "{}skyzfs/manifest/{snap}",
         skynbd_engine::keys::volume_prefix(vol)
     )
-}
-
-/// Whether `name` may name a snapshot: 1 to 128 of `[A-Za-z0-9._-]`, as
-/// SkyNBD's engine requires of a snapshot's name.
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
 /// A request to publish a cut as `snap/<name>`.
@@ -246,6 +267,11 @@ pub enum Refusal {
     /// same: a new uploader asked again finds it.
     #[error("this uploader publishes nothing more")]
     Stopped,
+    /// A cut that may follow a rewind was counted after the count the
+    /// request names, or the daemon started after it ([module
+    /// docs](self)): read the count again, and ask anew.
+    #[error("a rewind may have been counted after the count asked from")]
+    Rewound,
 }
 
 /// The answer to a request. A request is answered with no I/O, so it is
@@ -485,6 +511,8 @@ impl Outcome {
 pub struct Publishing {
     attachment: Option<[u8; 16]>,
     state: Option<[u8; 16]>,
+    /// The store's rewind mark, as last given ([`Publishing::set_rewound`]).
+    rewound: u64,
     stopped: bool,
     pending: Vec<Pending>,
     known: VecDeque<Known>,
@@ -511,6 +539,7 @@ impl Publishing {
         Self {
             attachment,
             state,
+            rewound: 0,
             stopped: false,
             pending: Vec::new(),
             known: VecDeque::new(),
@@ -538,6 +567,22 @@ impl Publishing {
     pub fn set_state(&mut self, state: [u8; 16]) {
         self.state = Some(state);
         self.end_where(|p| p.request.state != state, Refusal::State);
+    }
+
+    /// The store's rewind mark (`skyzfs_local::inplace::Cuts::rewound`):
+    /// the driver gives it at each check of a cut, the daemon at the
+    /// uploader's start, and the channel with each request
+    /// ([`crate::uploader::Control::Ask`]). The mark never goes back. Each publish pending
+    /// that has no cut yet and that was asked after a lower count ends
+    /// refused ([`Refusal::Rewound`]); one given its cut goes on ([module
+    /// docs](self)).
+    pub fn set_rewound(&mut self, rewound: u64) {
+        self.rewound = self.rewound.max(rewound);
+        let mark = self.rewound;
+        self.end_where(
+            |p| p.request.after < mark && matches!(p.stage, Stage::Look | Stage::Wait),
+            Refusal::Rewound,
+        );
     }
 
     /// The uploader publishes nothing more: its lease is lost for good, or
@@ -636,6 +681,11 @@ impl Publishing {
                 pending.lapse = None;
             }
             return Answer::Accepted;
+        }
+        // After the same request pending, which is answered as it
+        // stands: one given its cut before the rewind goes on.
+        if request.after < self.rewound {
+            return Answer::Refused(Refusal::Rewound);
         }
         if self.pending.len() >= PENDING_MAX {
             return Answer::Refused(Refusal::Busy);

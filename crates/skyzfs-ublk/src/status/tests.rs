@@ -52,7 +52,7 @@ fn sample() -> Status {
                 in_flight_max: 24,
                 waiting_max: 25,
             }),
-            cuts: Some(Cuts {
+            cuts: Some(CutsShown {
                 count: 29,
                 newest: Some(Cut {
                     number: 29,
@@ -265,7 +265,7 @@ fn the_file_has_the_documented_layout() {
 #[test]
 fn before_the_first_cut_the_file_has_no_group() {
     let mut status = sample();
-    status.shown.cuts = Some(Cuts::default());
+    status.shown.cuts = Some(CutsShown::default());
     let bytes = encode(&status);
     assert_eq!(u64_at(&bytes, 288), 0);
     assert_eq!(u64_at(&bytes, 296), 0);
@@ -498,7 +498,7 @@ fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
     assert_eq!(value(&lines, "cuts"), Some("29"));
     assert_eq!(value(&lines, "cut_group"), Some("30"));
     assert_eq!(value(&lines, "cut_opens"), Some("itself"));
-    if let Some(Cuts {
+    if let Some(CutsShown {
         newest: Some(cut), ..
     }) = status.shown.cuts.as_mut()
     {
@@ -512,7 +512,7 @@ fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
         5,
     );
     assert_eq!(value(&lines, "cut_opens"), Some("rewind"));
-    status.shown.cuts = Some(Cuts::default());
+    status.shown.cuts = Some(CutsShown::default());
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
         Some(&status),
@@ -1365,7 +1365,7 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     expected.shown.channel = None;
     expected.shown.held = None;
     expected.shown.intent = None;
-    if let Some(Cuts {
+    if let Some(CutsShown {
         newest: Some(cut), ..
     }) = expected.shown.cuts.as_mut()
     {
@@ -1478,7 +1478,7 @@ fn a_change_of_the_store_alone_is_written() {
     // The first write: nothing was posted yet.
     assert_eq!(written.recv_timeout(wait), Ok(StoreShown::default()));
     let cut = StoreShown {
-        cuts: Some(Cuts {
+        cuts: Some(CutsShown {
             count: 1,
             newest: Some(Cut {
                 number: 1,
@@ -2450,7 +2450,7 @@ fn a_write_asked_for_again_is_made_within_an_interval() {
 #[test]
 fn a_cut_that_opens_only_with_a_rewind_goes_through_the_file_as_one() {
     let mut status = sample();
-    if let Some(Cuts {
+    if let Some(CutsShown {
         newest: Some(cut), ..
     }) = status.shown.cuts.as_mut()
     {

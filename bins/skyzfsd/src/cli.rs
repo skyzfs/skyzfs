@@ -124,6 +124,7 @@ pub const USAGE: &str = "usage:
                  [--manifest FILE] [--expiry-s N] [--run-dir DIR]
   skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
   skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
+  skyzfsd look   --dir DIR --name T [--run-dir DIR]
   skyzfsd help";
 
 /// The test hooks, which a build with the feature `test-hooks` takes and
@@ -339,6 +340,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
                   [--manifest FILE] [--expiry-s N] [--run-dir DIR]
   skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
   skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
+  skyzfsd look --dir DIR --name T [--run-dir DIR]
       Ask the daemon serving the volume, through its channel (the socket
       control in the volume's run directory, made before the daemon
       prints ready; a daemon answers only its own user and root), and print
@@ -359,9 +361,16 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       `accepted` says only that it pends: publish-progress says how it
       stands (pending, done commit=H, expired, withdrawn, unknown, or
       refused), and withdraw ends it unless it is made already. Asking
-      the same publish again is asking it once. A daemon with no place
-      in object storage, or serving without upload, refuses each
-      request no-upload.
+      the same publish again is asking it once.
+      look prints what the snapshot snap/T is in object storage, read
+      there when asked: absent; or snap commit=H state=S number=N
+      group=G manifest-len=L manifest-hash=X, the commit it names and
+      the cut and ZFS manifest its publish recorded; or unreadable
+      commit=H why=W, a snap/T whose record cannot be read as its own
+      (W: no-row, version, length or other-commit). Object storage that
+      fails is refused store, never absent.
+      A daemon with no place in object storage, or serving without
+      upload, refuses each request no-upload.
 
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,
@@ -463,8 +472,8 @@ impl Exit {
 pub enum UsageError {
     /// No command, or one that does not exist.
     #[error(
-        "expected a command: create, serve, detach, status, cuts, publish, publish-progress or \
-         withdraw"
+        "expected a command: create, serve, detach, status, cuts, publish, publish-progress, \
+         withdraw or look"
     )]
     Command,
     /// An argument that is not an option of the command.
@@ -676,14 +685,14 @@ pub enum Command {
     Detach(Detach),
     /// `status`.
     Status(Volume),
-    /// `cuts`, `publish`, `publish-progress` or `withdraw`.
+    /// `cuts`, `publish`, `publish-progress`, `withdraw` or `look`.
     Ask(Ask),
     /// `help`, `--help` or `-h`: print [`HELP`].
     Help,
 }
 
-/// `cuts`, `publish`, `publish-progress` and `withdraw`: a request to
-/// the channel of the daemon that serves a volume ([`crate::control`]).
+/// `cuts`, `publish`, `publish-progress`, `withdraw` and `look`: a
+/// request to the channel of the daemon that serves a volume ([`crate::control`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     /// The volume whose daemon is asked.
@@ -709,6 +718,7 @@ impl Command {
                 crate::control::Request::Publish(_) => "publish",
                 crate::control::Request::Progress(_) => "publish-progress",
                 crate::control::Request::Withdraw(_) => "withdraw",
+                crate::control::Request::Look(_) => "look",
             },
             Command::Help => "help",
         }
@@ -1144,13 +1154,14 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             request: crate::control::Request::Cuts,
             manifest: None,
         })),
-        "publish-progress" | "withdraw" => {
+        "publish-progress" | "withdraw" | "look" => {
             let given = Given::collect(NAMED, args, hooks)?;
             let name = snapshot_name(&given)?;
             Ok(Command::Ask(Ask {
                 volume: volume(&given)?,
                 request: match command.as_str() {
                     "withdraw" => crate::control::Request::Withdraw(name),
+                    "look" => crate::control::Request::Look(name),
                     _ => crate::control::Request::Progress(name),
                 },
                 manifest: None,

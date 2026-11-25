@@ -2,8 +2,8 @@
 """The agent's side of a publish, stood in for (M2.T3, the channel rig).
 
 The agent proper is M2.6's. This stand-in follows the daemon's channel
-as `bins/skyzfsd/src/control.rs`'s module documentation gives it
-(protocol version 1) and design §5.2, "A snapshot is published by a cut
+as `crates/skyzfs-control/src/lib.rs`'s crate documentation gives it
+(protocol version 2) and design §5.2, "A snapshot is published by a cut
 of the pool's present history":
 
 1. `cuts`: the attachment A, the cut state S and the count C;
@@ -18,6 +18,11 @@ of the pool's present history":
    ones, and an idle pool makes no next cut);
 5. `zfs release`.
 
+A request refused `rewound` (a rewind, or a daemon's start, may have been
+counted after C) is asked anew by the rig's courses with a count read
+anew (`ask cuts`), as the agent's AskAnew does; `ask look T` reads
+`snap/T` as the daemon finds it (`snap ...`, `absent`, `unreadable ...`).
+
 Every request and its answer goes to AGENT.tsv, one line each, with
 the monotonic clock (the request log's) before and after: the check
 reads what was asked and answered from it, and nothing else.
@@ -27,7 +32,7 @@ Usage:
                          [--limit-s S] [--manifest-out FILE] [--no-hold]
                          [--group-plus K] [--twice]
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv cuts
-  publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw T
+  publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw|look T
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv publish T A S C G MANIFEST [E]
   publish_agent.py raw   RUN AGENT.tsv LABEL  (stdin: the bytes to send, as given)
 
@@ -52,7 +57,7 @@ import subprocess
 import sys
 import time
 
-HELLO = 'skyzfs-control 1'
+HELLO = 'skyzfs-control 2'
 ENDS = ('done', 'expired', 'withdrawn', 'unknown')
 
 
@@ -84,11 +89,16 @@ def parse_answer(line):
             raise RigError(f'not an answer line: {line!r}')
         fields[k] = v
     known = {'cuts': {'attachment', 'state', 'count', 'group', 'opens'}, 'accepted': set(), 'pending': set(),
-             'done': {'commit'}, 'expired': set(), 'withdrawn': set(), 'unknown': set()}
+             'done': {'commit'}, 'expired': set(), 'withdrawn': set(), 'unknown': set(),
+             'snap': {'commit', 'state', 'number', 'group', 'manifest-len', 'manifest-hash'}, 'absent': set(),
+             'unreadable': {'commit', 'why'}}
     if verb not in known or set(fields) != known[verb]:
         raise RigError(f'not an answer line: {line!r}')
-    if verb == 'done' and not is_hex(fields['commit'], 64):
+    if verb in ('done', 'snap', 'unreadable') and not is_hex(fields['commit'], 64):
         raise RigError(f'a commit that is not 64 hex digits: {line!r}')
+    if verb == 'snap' and not (is_hex(fields['state'], 32) and is_hex(fields['manifest-hash'], 64)
+                               and all(fields[k].isdigit() for k in ('number', 'group', 'manifest-len'))):
+        raise RigError(f'a snap answer whose fields do not read: {line!r}')
     if verb == 'cuts':
         if not is_hex(fields['attachment'], 32) or not (fields['state'] == 'none' or is_hex(fields['state'], 32)):
             raise RigError(f'a cuts answer whose attachment or state is not 32 hex digits: {line!r}')
@@ -122,7 +132,7 @@ def manifest_of(root):
 
 
 class Agent:
-    """The channel through `skyzfsd cuts|publish|publish-progress|withdraw`."""
+    """The channel through `skyzfsd cuts|publish|publish-progress|withdraw|look`."""
 
     def __init__(self, skyzfsd, vol, run, log, clock=time.monotonic_ns, runner=subprocess.run):
         self.skyzfsd, self.vol, self.run, self.log = skyzfsd, vol, run, log
@@ -166,6 +176,9 @@ class Agent:
 
     def withdraw(self, name):
         return self.ask('withdraw', '--name', name)
+
+    def look(self, name):
+        return self.ask('look', '--name', name)
 
 
 def raw(run, log, label, data, clock=time.monotonic_ns):
@@ -337,8 +350,8 @@ def main(argv):
             req, args = rest[0], rest[1:]
             if req == 'cuts':
                 a = agent.cuts()
-            elif req in ('progress', 'withdraw'):
-                a = (agent.progress if req == 'progress' else agent.withdraw)(args[0])
+            elif req in ('progress', 'withdraw', 'look'):
+                a = {'progress': agent.progress, 'withdraw': agent.withdraw, 'look': agent.look}[req](args[0])
             elif req == 'publish':
                 a = agent.publish(*args[:6], expiry=args[6] if len(args) > 6 else None)
             else:

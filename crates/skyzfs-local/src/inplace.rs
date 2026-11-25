@@ -500,6 +500,16 @@ impl Mutants {
     /// Setting a bit does not ask for its page to be written: no sync
     /// makes it durable (the review's plant A9 on #105).
     pub(crate) const INTENT_SET_UNWRITTEN: u128 = 1 << 72;
+    /// A cut that may follow a rewind does not move the rewind mark
+    /// (work package M2.6a, rule (R)).
+    pub(crate) const REWIND_UNSEEN: u128 = 1 << 73;
+    /// A start does not take the count it starts with as a rewind's
+    /// mark (work package M2.6a, rule (R)).
+    pub(crate) const REWIND_START_FORGOTTEN: u128 = 1 << 74;
+    /// Rule (R) compares a cut with the cut before it, not with the
+    /// highest group seen: M2.6a's first form, which a cut whose group
+    /// errs low followed by a rewind by `-F` gets past.
+    pub(crate) const REWIND_BY_PREVIOUS: u128 = 1 << 75;
 
     pub(crate) fn has(self, flag: u128) -> bool {
         self.0 & flag != 0

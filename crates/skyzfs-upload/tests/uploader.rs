@@ -2173,7 +2173,12 @@ async fn run_with_answers_the_channels_requests_between_turns() {
         move |shown| post.post(Duration::ZERO, shown),
     );
     let client = async move {
-        let answer = ask_of(&inbox, |r| Control::Ask(asked(state, "t", 0, 7), r)).await;
+        let answer = ask_of(&inbox, |r| Control::Ask {
+            request: asked(state, "t", 0, 7),
+            rewound: 0,
+            reply: r,
+        })
+        .await;
         assert_eq!(answer, Answer::Accepted);
         let done = loop {
             match ask_of(&inbox, |r| Control::Progress("t".into(), r)).await {
@@ -2224,7 +2229,12 @@ async fn a_publish_accepted_between_turns_is_taken_at_once() {
         // Into the middle of an idle wait.
         tokio::time::sleep(IDLE / 2).await;
         let asked_at = tokio::time::Instant::now();
-        let answer = ask_of(&inbox, |r| Control::Ask(asked(state, "t", 0, 7), r)).await;
+        let answer = ask_of(&inbox, |r| Control::Ask {
+            request: asked(state, "t", 0, 7),
+            rewound: 0,
+            reply: r,
+        })
+        .await;
         assert_eq!(answer, Answer::Accepted);
         // Polled with a short sleep, not a yield: the clock is paused and
         // moves only while every task waits, and a mutant that leaves the
@@ -2261,7 +2271,11 @@ async fn a_request_whose_asker_gave_up_is_not_taken() {
     *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     let (reply, answer) = tokio::sync::oneshot::channel();
     drop(answer);
-    assert!(!up.control(Control::Ask(asked(state, "t", 0, 7), reply)));
+    assert!(!up.control(Control::Ask {
+        request: asked(state, "t", 0, 7),
+        rewound: 0,
+        reply,
+    }));
     assert_eq!(up.publishing().progress("t"), Progress::Unknown);
     assert_eq!(up.publishing().figures().accepted, 0);
 
@@ -2301,7 +2315,12 @@ async fn a_publish_whose_time_is_up_reads_expired_between_turns() {
         // up, 1.1 s after it was accepted, between two idle turns.
         let mut request = asked(state, "t", 0, 100);
         request.expiry = Duration::from_millis(1100);
-        let answer = ask_of(&inbox, |r| Control::Ask(request, r)).await;
+        let answer = ask_of(&inbox, |r| Control::Ask {
+            request,
+            rewound: 0,
+            reply: r,
+        })
+        .await;
         assert_eq!(answer, Answer::Accepted);
         tokio::time::sleep(Duration::from_millis(1099)).await;
         let before = ask_of(&inbox, |r| Control::Progress("t".into(), r)).await;
@@ -2332,14 +2351,176 @@ async fn a_request_is_judged_against_the_cut_state_given_at_the_start() {
     let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
     *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(up.control(Control::Ask(asked(state, "t", 0, 1), reply)));
+    assert!(up.control(Control::Ask {
+        request: asked(state, "t", 0, 1),
+        rewound: 0,
+        reply,
+    }));
     assert_eq!(answer.await.ok(), Some(Answer::Accepted));
     let mut other = state;
     other[0] ^= 1;
     let (reply, answer) = tokio::sync::oneshot::channel();
-    assert!(!up.control(Control::Ask(asked(other, "u", 0, 1), reply)));
+    assert!(!up.control(Control::Ask {
+        request: asked(other, "u", 0, 1),
+        rewound: 0,
+        reply,
+    }));
     assert_eq!(answer.await.ok(), Some(Answer::Refused(Refusal::State)));
     assert_eq!(up.publishing().progress("t"), Progress::Pending);
+}
+
+/// The store's count of cuts and rewind mark now, as the daemon's channel
+/// reads them at the desk; it gives the mark with each `publish`
+/// (`CutsNow::rewound`).
+fn counted<R, F, M>(up: &mut Uploader<InPlace<SimDisk>, R, F, M>) -> (u64, u64)
+where
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    let store = up.driver().expect("the driver").local();
+    let now = <InPlace<SimDisk> as skyzfs_upload::Store>::cuts(store);
+    (now.count, now.rewound)
+}
+
+/// B3 of the review of #140, from the rewind on: `zpool import -T`
+/// rewinds the pool below cut 2's group 51, and the first cut of the new
+/// history, of group 40, is counted: cut 3, and the store's mark is 3.
+/// `pool@t` is taken on the new history at group 40, and asked with
+/// *C* = 1, read before cut 2, and with the store's mark, between two
+/// turns of the uploader, so before its check of cut 3: the answer.
+fn a_rewind_and_an_ask_with_an_older_count<R, F, M>(
+    fx: &mut Fixture,
+    up: &mut Uploader<InPlace<SimDisk>, R, F, M>,
+    state: [u8; 16],
+) -> Answer
+where
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 12, 0x12);
+        fx.group_anew(store, 40);
+    }
+    let (count, rewound) = counted(up);
+    assert_eq!((count, rewound), (3, 3), "the new history's first cut");
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    up.control(Control::Ask {
+        request: asked(state, "t", 1, 40),
+        rewound,
+        reply,
+    });
+    answer.try_recv().expect("answered at once")
+}
+
+/// B3 of the review of #140 (work package M2.6a), a cut of the old
+/// history committed: cut 1 (group 30) is committed, the agent reads
+/// *C* = 1, and cut 2 (group 51) is committed. Then the rewind and the
+/// ask ([`a_rewind_and_an_ask_with_an_older_count`]): with the store's
+/// mark given with it, the request is refused `rewound` at once, though
+/// the uploader's own mark is still 0. Asked again with the count read
+/// anew, it is published on the next cut above the abandoned group.
+///
+/// Mutant: the mark given with the request not taken (the uploader's
+/// own is 0 until its check of cut 3): the request is accepted, its
+/// lookup finds `snap/t` absent and gives it cut 2, of the old history,
+/// which has no `pool@t`, and it is published there before cut 3 is
+/// checked.
+#[tokio::test(start_paused = true)]
+async fn a_publish_asked_after_a_rewind_with_an_older_count_is_refused_beside_a_committed_cut() {
+    let mut fx = Fixture::new(88).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 30);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_idle(&mut up, 100).await;
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 11, 0x11);
+        fx.group(store, 51);
+    }
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(51, "cut 2").await;
+
+    let answer = a_rewind_and_an_ask_with_an_older_count(&mut fx, &mut up, state);
+    assert_eq!(answer, Answer::Refused(Refusal::Rewound));
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(40, "cut 3").await;
+    assert_eq!(snap(&fx, "t").await.0, None, "no cut carries it");
+
+    // Asked again with the count read anew (the agent checks `pool@t`
+    // first, M2.6): the next cut above the abandoned group 51 carries it.
+    // The cuts of groups 41 to 51 would each be marked, the cost of rule
+    // (R) after `-T`.
+    let (count, rewound) = counted(&mut up);
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    up.control(Control::Ask {
+        request: asked(state, "t", count, 40),
+        rewound,
+        reply,
+    });
+    assert_eq!(answer.await.ok(), Some(Answer::Accepted));
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 13, 0x13);
+        fx.group(store, 52);
+    }
+    for _ in 0..100 {
+        let wait = up.turn().await;
+        if up.publishing().progress("t") != Progress::Pending {
+            break;
+        }
+        tokio::time::advance(wait).await;
+    }
+    let head = head_of(&fx).await;
+    assert_eq!(up.publishing().progress("t"), Progress::Done(head));
+    fx.assert_uploaded(52, "cut 4").await;
+}
+
+/// B3 of the review of #140 (work package M2.6a), a cut of the old
+/// history uploading: cut 1 (group 30) is committed, the agent reads
+/// *C* = 1, and cut 2 (group 51) is read and synced, its commit the
+/// uploader's next step. Then the rewind and the ask
+/// ([`a_rewind_and_an_ask_with_an_older_count`]): with the store's mark
+/// given with it, the request is refused `rewound` at once, and no cut
+/// carries it.
+///
+/// Mutant: the mark given with the request not taken: the request is
+/// accepted and waits, and cut 2's commit hands it cut 2, of the old
+/// history, before the check of cut 3 gives the uploader the mark.
+#[tokio::test(start_paused = true)]
+async fn a_publish_asked_after_a_rewind_with_an_older_count_is_refused_while_a_cut_uploads() {
+    let mut fx = Fixture::new(89).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 10, 0x10);
+    fx.group(&mut store, 30);
+    let state = store.cut_state_id().expect("the cut state");
+    let clock = Clock::new();
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    until_idle(&mut up, 100).await;
+    {
+        let store = up.driver().expect("the driver").local();
+        fx.write(store, 11, 0x11);
+        fx.group(store, 51);
+    }
+    until_doing(&mut up, Doing::Committing, 100).await;
+
+    let answer = a_rewind_and_an_ask_with_an_older_count(&mut fx, &mut up, state);
+    assert_eq!(answer, Answer::Refused(Refusal::Rewound));
+    until_idle(&mut up, 100).await;
+    fx.assert_uploaded(40, "cut 3").await;
+    assert_eq!(snap(&fx, "t").await.0, None, "no cut carries it");
+    assert_eq!(
+        up.publishing().progress("t"),
+        Progress::Unknown,
+        "refused at the ask: never pending"
+    );
 }
 
 /// The channel's requests, each answered between two turns, do not hold
@@ -2387,7 +2568,12 @@ async fn the_channels_requests_do_not_hold_back_the_leases_renewal() {
             let answer = match i % 3 {
                 1 => format!(
                     "{:?}",
-                    ask_of(&inbox, |r| Control::Ask(asked(state, &name, 0, 100), r)).await
+                    ask_of(&inbox, |r| Control::Ask {
+                        request: asked(state, &name, 0, 100),
+                        rewound: 0,
+                        reply: r,
+                    })
+                    .await
                 ),
                 2 => format!(
                     "{:?}",
@@ -3410,7 +3596,11 @@ async fn a_publish_is_made_during_a_whole_wait() {
     assert_eq!(wait, Duration::from_secs(60));
     // The agent asks for a publish carried by cut 1 (after 0, group 7).
     let (reply, answer) = tokio::sync::oneshot::channel();
-    if up.control(Control::Ask(asked(state, "p", 0, 7), reply)) {
+    if up.control(Control::Ask {
+        request: asked(state, "p", 0, 7),
+        rewound: 0,
+        reply,
+    }) {
         sleep = Duration::ZERO;
     }
     assert_eq!(answer.await.expect("an answer"), Answer::Accepted);
@@ -3795,7 +3985,11 @@ async fn a_publish_between_two_whole_cuts_lost_does_not_end_the_waits() {
     })
     .await;
     let (reply, answer) = tokio::sync::oneshot::channel();
-    if up.control(Control::Ask(asked(state, "p", 0, 7), reply)) {
+    if up.control(Control::Ask {
+        request: asked(state, "p", 0, 7),
+        rewound: 0,
+        reply,
+    }) {
         sleep = Duration::ZERO;
     }
     assert_eq!(answer.await.expect("an answer"), Answer::Accepted);

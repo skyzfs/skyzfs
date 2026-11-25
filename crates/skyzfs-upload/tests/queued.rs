@@ -429,9 +429,10 @@ async fn a_queue_that_turns_only_when_woken_answers_every_call() {
 /// The count of cuts a request on the daemon's channel reads (M2.5-2) is
 /// the store's, taken on the store's own thread when the call comes:
 /// its cut state, the cuts counted in it, and the newest. Before the
-/// first cut the count is 0 and there is no newest. The count is not a
-/// call: [`Desk::answered`] leaves it out. Mutants: a count one short of
-/// the store's; a count counted as a call.
+/// first cut the count is 0 and there is no newest. The store's rewind
+/// mark comes with it (M2.6a). The count is not a call:
+/// [`Desk::answered`] leaves it out. Mutants: a count one short of the
+/// store's; a count counted as a call; the mark left out.
 #[tokio::test]
 async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
     let mut fx = Fixture::new(53).await;
@@ -443,7 +444,8 @@ async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
         CutsNow {
             state,
             count: 0,
-            newest: None
+            newest: None,
+            rewound: 0,
         },
         "no cut yet"
     );
@@ -451,6 +453,10 @@ async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
     fx.group(&mut store, 7);
     fx.write(&mut store, 11, 0x11);
     fx.group(&mut store, 8);
+    // `zpool import -F` back to group 7: group 8 written anew, whose cut
+    // marks the rewind (M2.6a).
+    fx.write(&mut store, 12, 0x12);
+    fx.group_anew(&mut store, 8);
 
     let (wake, woken) = std::sync::mpsc::channel();
     let desk = Desk::new(move || {
@@ -464,12 +470,13 @@ async fn the_count_of_cuts_is_read_through_the_desk_on_the_stores_thread() {
         now,
         Some(CutsNow {
             state,
-            count: 2,
+            count: 3,
             newest: Some(Cut {
-                number: 2,
+                number: 3,
                 group: 8,
                 itself: true
-            })
+            }),
+            rewound: 3,
         })
     );
     assert_eq!(
@@ -534,7 +541,8 @@ async fn the_count_is_given_while_a_put_of_the_uploader_stalls() {
                 number: 1,
                 group: 7,
                 itself: true
-            })
+            }),
+            rewound: 0,
         })),
         "answered while the PUT stalls"
     );

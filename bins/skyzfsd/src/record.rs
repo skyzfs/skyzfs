@@ -341,7 +341,7 @@ pub fn channel(mut handler: Handler, mut lines: Lines) -> Handler {
                 &reply,
             ),
             Request::Withdraw(name) => lines.publish(PublishLine::Withdraw, name, &reply),
-            Request::Cuts | Request::Progress(_) => {}
+            Request::Cuts | Request::Progress(_) | Request::Look(_) => {}
         }
         reply
     })

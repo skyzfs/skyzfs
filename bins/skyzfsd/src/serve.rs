@@ -203,6 +203,7 @@ use crate::cli::{Exit, Serve};
 use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
 use crate::control::{self, handler, Channel, ChannelFigures};
 use crate::delay::Delayed;
+use crate::remote::Remote;
 use crate::timing::{TimedControl, TimedVolume};
 use crate::upload::{
     AtStart, Ended, Leased, Publishes, Uploading, Uploads, END_LIMIT, RELEASE_LIMIT,
@@ -590,7 +591,7 @@ fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShow
         zeroes: zeroes_shown(store.zeroes()),
         pump,
         io_queue: Some(store.io_queue()),
-        cuts: Some(store.cuts()),
+        cuts: Some(store.cuts().into()),
         held: Some(held_shown(store)),
         intent: Some(intent_shown(store)),
         // The uploader's thread posts its own (`Board::post_upload`),
@@ -881,10 +882,23 @@ fn why_no_upload(found: Option<Option<&AtStart>>) -> String {
 /// Where the channel's figures go: the board (`Board::post_channel`).
 type ChannelPost = Arc<dyn Fn(ChannelShown) + Send + Sync>;
 
+/// What the channel's `look` reads (M2.6a): the refs of the served
+/// volume's place in object storage, through a client of the channel's
+/// own. The client asks nothing of object storage until a `look`.
+async fn lookup_of(remote: Remote) -> handler::Lookup<crate::upload::Refs> {
+    let (_, refs) = crate::upload::connect(&remote).await;
+    handler::Lookup {
+        vol: remote.id,
+        refs,
+    }
+}
+
 /// Make the channel at `path` (M2.5-2): answered by the uploader through
 /// `requests` where `answers` holds the attachment it serves, with the
-/// count of cuts asked at the store's desk it holds, and refused
-/// `no-upload` with `answers`' reason otherwise. A channel that cannot be
+/// count of cuts asked at the store's desk it holds and `look` asked of
+/// the refs of the volume's place in object storage it holds, through a
+/// client of the channel's own (M2.6a), and refused `no-upload` with
+/// `answers`' reason otherwise. A channel that cannot be
 /// made is said, and the volume is served all the same: serving it comes
 /// before publishing it (this module's reading; the design leaves the
 /// channel to M2.5).
@@ -895,15 +909,16 @@ type ChannelPost = Arc<dyn Fn(ChannelShown) + Send + Sync>;
 /// with the test hooks).
 fn open_channel(
     path: &Path,
-    answers: Result<([u8; 16], Arc<Desk>), String>,
+    answers: Result<([u8; 16], Arc<Desk>, Remote), String>,
     requests: tokio::sync::mpsc::Sender<skyzfs_upload::Control>,
     post: ChannelPost,
     record: impl FnOnce(control::Handler) -> control::Handler,
 ) -> Option<Channel> {
     let no_upload = ChannelStateShown::NoUpload;
     let (handler, state) = match answers {
-        Ok((attachment, desk)) => {
-            match handler::uploader(attachment, requests, desk, control::ANSWER_LIMIT) {
+        Ok((attachment, desk, remote)) => {
+            let lookup = move || lookup_of(remote);
+            match handler::uploader(attachment, requests, desk, lookup, control::ANSWER_LIMIT) {
                 Ok(handler) => (handler, ChannelStateShown::Uploads),
                 Err(e) => (
                     handler::no_upload(format!("the channel's runtime: {e}")),
@@ -1205,6 +1220,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // start: the store's, which changes only at a start (F5 of the review
     // of #127).
     let cut_state = served.cut_state_id();
+    // The store's rewind mark at the start, which is at least the count
+    // it took up (M2.6a): a publish asked of the instance before is
+    // refused `rewound` from the first request, not at the first check.
+    let rewound = served.cuts().rewound;
     let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
         number,
@@ -1490,7 +1509,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                         lines.publish(
                             crate::record::PublishLine::Ended,
                             name,
-                            &control::Reply::of(progress),
+                            &control::reply_of(progress),
                         );
                     })
                 }
@@ -1501,15 +1520,18 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let publishes = Publishes {
                 attachment: attachment.as_ref().ok().copied(),
                 state: cut_state,
+                rewound,
                 inbox,
                 told,
             };
-            // The channel asks the store's count of cuts at the desk.
+            // The channel asks the store's count of cuts at the desk, and
+            // looks snapshots up in the volume's place.
             let counts = Arc::clone(&desk);
+            let remote = begun.remote().clone();
             match begun.begin(desk, publishes, move |shown| board.post_upload(shown), kill) {
                 Ok(thread) => {
                     uploading = Some(thread);
-                    answers = attachment.clone().map(|a| (a, counts));
+                    answers = attachment.clone().map(|a| (a, counts, remote));
                 }
                 Err(e) => {
                     say(format_args!(
@@ -4397,6 +4419,35 @@ mod tests {
     ///
     /// Mutant: a reason dropped, a failed bind that ends the serve, a
     /// state or a figure not posted.
+    /// A place in object storage that nothing listens at: the channel's
+    /// client is made, and asked nothing.
+    fn placed() -> Remote {
+        Remote {
+            endpoint: "http://127.0.0.1:9".into(),
+            bucket: "bucket".into(),
+            name: "vol".into(),
+            id: crate::remote::volume_id("vol"),
+        }
+    }
+
+    /// `look` reads the served volume's refs, and not another's (L4 of
+    /// the review of #140).
+    ///
+    /// Mutant: another volume's id in the lookup.
+    #[test]
+    fn the_channels_look_reads_the_served_volume() {
+        let runtime = crate::upload::runtime().expect("a runtime");
+        let remote = Remote {
+            id: crate::remote::volume_id("another"),
+            ..placed()
+        };
+        let lookup = runtime
+            .block_on(lookup_of(remote.clone()))
+            .expect("the runtime");
+        assert_eq!(lookup.vol, remote.id);
+        assert_ne!(lookup.vol, placed().id);
+    }
+
     #[test]
     fn the_channel_says_why_it_publishes_nothing_and_a_failed_one_is_left() {
         use crate::control::{ask, Code, Reply, Request, IO_LIMIT, SOCKET};
@@ -4440,7 +4491,7 @@ mod tests {
 
         let channel = open_channel(
             &path,
-            Ok(([1; 16], Desk::new(|| {}))),
+            Ok(([1; 16], Desk::new(|| {}), placed())),
             requests.clone(),
             post.clone(),
             |h| h,
@@ -4458,7 +4509,7 @@ mod tests {
         let nowhere = keep.path().join("missing").join(SOCKET);
         assert!(open_channel(
             &nowhere,
-            Ok(([1; 16], Desk::new(|| {}))),
+            Ok(([1; 16], Desk::new(|| {}), placed())),
             requests,
             post,
             |h| h

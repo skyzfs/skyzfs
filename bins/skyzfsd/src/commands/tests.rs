@@ -6,12 +6,12 @@ use std::path::PathBuf;
 
 use skyzfs_blk::Base;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{Cut, Cuts, Opened, VolumeConfig};
+use skyzfs_local::inplace::{Cut, Opened, VolumeConfig};
 use skyzfs_ublk::lifecycle::{
     AddError, Attachment, DeviceInfo, DeviceState, Failure, Held, Reason, Records, Shape,
 };
 use skyzfs_ublk::pump::Counters;
-use skyzfs_ublk::status::{Status, StoreShown};
+use skyzfs_ublk::status::{CutsShown, Status, StoreShown};
 
 use super::*;
 use crate::remote::Remote;
@@ -190,7 +190,7 @@ fn sample() -> Status {
         first_write_copies: 0,
         start_ms: 0,
         shown: StoreShown {
-            cuts: Some(Cuts {
+            cuts: Some(CutsShown {
                 count: 3,
                 newest: Some(Cut {
                     number: 3,

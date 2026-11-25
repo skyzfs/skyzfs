@@ -23,192 +23,6 @@ fn publish(expiry: Option<Duration>) -> Request {
     })
 }
 
-fn every_code() -> Vec<Code> {
-    CODES.iter().map(|(code, _)| *code).collect()
-}
-
-/// Mutant: any word of the protocol changed (it is version 1's: a
-/// change is a new version).
-#[test]
-fn the_lines_are_version_1s_words() {
-    let hex_a = "a1".repeat(16);
-    let hex_s = "5e".repeat(16);
-    assert_eq!(Request::Cuts.line(), "cuts");
-    assert_eq!(
-        publish(None).line(),
-        format!(
-            "publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 manifest=5"
-        )
-    );
-    assert_eq!(
-        publish(Some(Duration::from_secs(90))).line(),
-        format!(
-            "publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 \
-             manifest=5 expiry-s=90"
-        )
-    );
-    assert_eq!(Request::Progress("t".into()).line(), "progress name=t");
-    assert_eq!(Request::Withdraw("t".into()).line(), "withdraw name=t");
-    let cuts = |state, newest| {
-        Reply::Cuts(CutsReply {
-            attachment: A,
-            state,
-            count: 7,
-            newest,
-        })
-        .line()
-    };
-    assert_eq!(
-        cuts(None, None),
-        format!("cuts attachment={hex_a} state=none count=7 group=none opens=none")
-    );
-    assert_eq!(
-        cuts(Some(S), Some((12, true))),
-        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself")
-    );
-    assert_eq!(
-        cuts(Some(S), Some((12, false))),
-        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind")
-    );
-    assert_eq!(
-        Reply::Done([0x0f; 32]).line(),
-        format!("done commit={}", "0f".repeat(32))
-    );
-    for (reply, line) in [
-        (Reply::Accepted, "accepted"),
-        (Reply::Pending, "pending"),
-        (Reply::Expired, "expired"),
-        (Reply::Withdrawn, "withdrawn"),
-        (Reply::Unknown, "unknown"),
-        (
-            Reply::Refused(Code::NoAnswer, "late".into()),
-            "refused no-answer late",
-        ),
-    ] {
-        assert_eq!(reply.line(), line);
-    }
-    let words: Vec<&str> = every_code().into_iter().map(Code::word).collect();
-    assert_eq!(
-        words,
-        [
-            "name",
-            "attachment",
-            "state",
-            "manifest",
-            "expiry",
-            "asked",
-            "busy",
-            "taken",
-            "stopped",
-            "version",
-            "malformed",
-            "peer",
-            "no-upload",
-            "ended",
-            "no-answer"
-        ]
-    );
-}
-
-/// Mutant: a field dropped or swapped in either direction.
-#[test]
-fn every_line_reads_back_as_written() {
-    let requests = [
-        Request::Cuts,
-        publish(None),
-        publish(Some(EXPIRY_MAX)),
-        Request::Progress("x".into()),
-        Request::Withdraw("y".into()),
-    ];
-    for request in requests {
-        assert_eq!(Request::parse(&request.line()), Ok(request));
-    }
-    let mut replies = vec![
-        Reply::Accepted,
-        Reply::Pending,
-        Reply::Done([7; 32]),
-        Reply::Expired,
-        Reply::Withdrawn,
-        Reply::Unknown,
-    ];
-    for state in [None, Some(S)] {
-        for newest in [None, Some((0, true)), Some((u64::MAX, false))] {
-            replies.push(Reply::Cuts(CutsReply {
-                attachment: A,
-                state,
-                count: u64::MAX,
-                newest,
-            }));
-        }
-    }
-    for code in every_code() {
-        replies.push(Reply::Refused(code, format!("why {}", code.word())));
-        replies.push(Reply::Refused(code, String::new()));
-    }
-    for reply in replies {
-        assert_eq!(Reply::parse(&reply.line()), Ok(reply));
-    }
-}
-
-/// Mutant: a key taken twice, a key of another verb, or a value parsed
-/// loosely.
-#[test]
-fn a_line_that_is_not_exactly_a_request_does_not_parse() {
-    let a = "a1".repeat(16);
-    let good = format!("publish name=t attachment={a} state={a} after=1 group=2 manifest=0");
-    assert!(Request::parse(&good).is_ok());
-    for bad in [
-        String::new(),
-        "cut".into(),
-        "CUTS".into(),
-        "cuts ".into(),
-        " cuts".into(),
-        "cuts name=t".into(),
-        "progress".into(),
-        "progress name=t name=u".into(),
-        "progress  name=t".into(),
-        "progress name".into(),
-        "withdraw name=t after=1".into(),
-        good.replace(" group=2", ""),
-        good.replace("after=1", "after=+1"),
-        good.replace("after=1", "after=-1"),
-        good.replace("after=1", "after=18446744073709551616"),
-        good.replace("after=1", "after="),
-        good.replace(&format!("state={a}"), &format!("state={}", &a[2..])),
-        good.replace(&format!("state={a}"), &format!("state={}g", &a[1..])),
-        good.replace(&format!("state={a}"), "state=none"),
-        format!("{good} after=1"),
-        format!("{good} expiry-s=x"),
-        format!("{good} commit=00"),
-    ] {
-        assert!(Request::parse(&bad).is_err(), "`{bad}` parsed");
-    }
-    for bad in [
-        "cuts",
-        "accepted now",
-        "done",
-        "done commit=00",
-        "refused nope why",
-        &format!("cuts attachment={a} state=none count=1 group=3 opens=none"),
-        &format!("cuts attachment={a} state=none count=1 group=none opens=itself"),
-    ] {
-        assert!(Reply::parse(bad).is_err(), "`{bad}` parsed");
-    }
-}
-
-/// Mutant: a refusal's text written as it came (a `\n` in it would end
-/// the answer early; one over the limit would not be read).
-#[test]
-fn a_refusals_text_stays_on_one_line_within_the_limit() {
-    let line = Reply::Refused(Code::Taken, "one\ntwo\rthree".into()).line();
-    assert_eq!(line, "refused taken one two three");
-    let line = Reply::Refused(Code::Taken, "é".repeat(LINE_MAX)).line();
-    assert!(line.len() < LINE_MAX, "{}", line.len());
-    assert!(line.starts_with("refused taken é"));
-    let back = read_line(&mut Cursor::new(format!("{line}\n"))).map(|l| Reply::parse(&l));
-    assert!(matches!(back, Ok(Ok(Reply::Refused(Code::Taken, _)))));
-}
-
 /// Mutant: a publish's refusal given another code.
 #[test]
 fn a_publishs_refusal_keeps_its_own_code() {
@@ -222,19 +36,83 @@ fn a_publishs_refusal_keeps_its_own_code() {
         (Refusal::Busy, Code::Busy),
         (Refusal::Taken, Code::Taken),
         (Refusal::Stopped, Code::Stopped),
+        (Refusal::Rewound, Code::Rewound),
     ];
     for (refusal, code) in cases {
-        assert_eq!(Code::of(&refusal), code);
+        assert_eq!(code_of(&refusal), code);
         assert_eq!(
-            Reply::of(&Progress::Refused(refusal.clone())),
+            reply_of(&Progress::Refused(refusal.clone())),
             Reply::Refused(code, refusal.to_string())
         );
     }
-    assert_eq!(Reply::of(&Progress::Pending), Reply::Pending);
-    assert_eq!(Reply::of(&Progress::Done([3; 32])), Reply::Done([3; 32]));
-    assert_eq!(Reply::of(&Progress::Expired), Reply::Expired);
-    assert_eq!(Reply::of(&Progress::Withdrawn), Reply::Withdrawn);
-    assert_eq!(Reply::of(&Progress::Unknown), Reply::Unknown);
+    assert_eq!(reply_of(&Progress::Pending), Reply::Pending);
+    assert_eq!(reply_of(&Progress::Done([3; 32])), Reply::Done([3; 32]));
+    assert_eq!(reply_of(&Progress::Expired), Reply::Expired);
+    assert_eq!(reply_of(&Progress::Withdrawn), Reply::Withdrawn);
+    assert_eq!(reply_of(&Progress::Unknown), Reply::Unknown);
+}
+
+/// Mutant: a field of what was seen lost or swapped, or a reason why a
+/// row is not read given another word.
+#[test]
+fn a_looks_answer_keeps_what_was_seen() {
+    use skynbd_types::SnapId;
+    use skyzfs_local::inplace::CommittedCut;
+    use skyzfs_upload::publish::{SnapRow, SnapRowError};
+    use skyzfs_upload::Seen;
+
+    let row = SnapRow {
+        cut: CommittedCut {
+            state: S,
+            number: 0x0102_0304_0506_0708,
+            group: 0x1112_1314_1516_1718,
+        },
+        commit: [0x22; 32],
+        snap: SnapId(ulid::Ulid::from(9u128)),
+        manifest_len: 0x3132_3334,
+        manifest_hash: [0x44; 32],
+    };
+    assert_eq!(seen_reply(&Seen::Absent), Reply::Absent);
+    assert_eq!(
+        seen_reply(&Seen::Snap {
+            commit: [0x23; 32],
+            row
+        }),
+        Reply::Snap(SnapReply {
+            commit: [0x23; 32],
+            state: S,
+            number: 0x0102_0304_0506_0708,
+            group: 0x1112_1314_1516_1718,
+            manifest_len: 0x3132_3334,
+            manifest_hash: [0x44; 32],
+        })
+    );
+    for (why, wanted) in [
+        (skyzfs_upload::Unread::NoRow, Unread::NoRow),
+        (
+            skyzfs_upload::Unread::Row(SnapRowError::Version(2)),
+            Unread::Version,
+        ),
+        (
+            skyzfs_upload::Unread::Row(SnapRowError::Length(117)),
+            Unread::Length,
+        ),
+        (
+            skyzfs_upload::Unread::OtherCommit([1; 32]),
+            Unread::OtherCommit,
+        ),
+    ] {
+        assert_eq!(
+            seen_reply(&Seen::Unreadable {
+                commit: [0x24; 32],
+                why
+            }),
+            Reply::Unreadable(UnreadableReply {
+                commit: [0x24; 32],
+                why: wanted
+            })
+        );
+    }
 }
 
 /// One end of a connection, in memory: what the peer sent, and what is
@@ -324,7 +202,11 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
     let expiry = |e| publish(Some(e)).line().replace("manifest=5", "manifest=0");
     for (sent, code) in [
         (format!("{HELLO}x\ncuts\n"), Code::Version),
-        ("skyzfs-control 2\ncuts\n".to_string(), Code::Version),
+        // A client of version 1 (each line of which reads the same in
+        // version 2) is refused at its greeting, before a word it would
+        // not read; and so is one of a version after this one.
+        ("skyzfs-control 1\ncuts\n".to_string(), Code::Version),
+        ("skyzfs-control 3\ncuts\n".to_string(), Code::Version),
         (format!("cuts\n{HELLO}\n"), Code::Version),
         (format!("{}\ncuts\n", "h".repeat(LINE_MAX)), Code::Version),
         (format!("{HELLO}\n{long}\n"), Code::Malformed),
@@ -333,6 +215,9 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
         (format!("{HELLO}\n{}\n", over.line()), Code::Manifest),
         (format!("{HELLO}\nprogress name=a\tb\n"), Code::Name),
         (format!("{HELLO}\nwithdraw name=a/b\n"), Code::Name),
+        (format!("{HELLO}\nlook name=a b\n"), Code::Malformed),
+        (format!("{HELLO}\nlook name=a:b\n"), Code::Name),
+        (format!("{HELLO}\nlook name=\n"), Code::Name),
         (
             format!(
                 "{HELLO}\n{}\n",
@@ -392,141 +277,6 @@ mod socket {
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("a directory")
-    }
-
-    /// A daemon whose socket's backlog is full, and that takes no more
-    /// connections: an ask gives up within its limit, and is not held by
-    /// the connect (Codex on #129). Mutant: a blocking connect, which
-    /// waits for room before any timeout applies.
-    #[test]
-    fn an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit() {
-        let dir = dir();
-        let path = dir.path().join("full.sock");
-        let listener = small_backlog(&path);
-        let held = fill_backlog(&path);
-        let limit = Duration::from_millis(300);
-        let (done, ended) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let began = std::time::Instant::now();
-            let answer = ask(&path, &Request::Cuts, &[], limit);
-            let _ = done.send((answer, began.elapsed()));
-        });
-        let (answer, took) = ended
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the ask ends, and is not held by the connect");
-        let e = answer.expect_err("no connection was taken");
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
-        assert!(e.to_string().contains("backlog is full"), "{e}");
-        assert!(
-            took >= limit && took < limit + Duration::from_secs(2),
-            "{took:?}"
-        );
-        drop(held);
-        drop(listener);
-    }
-
-    /// While the backlog is full the connect tries again after a pause
-    /// that doubles from 1 ms to 50 ms, not in a busy loop: about a dozen
-    /// tries in 300 ms (G2 of the review of #131). Mutants: no pause (CB,
-    /// thousands of tries), a pause that does not grow (CD, about 300),
-    /// no try again (one).
-    #[test]
-    fn a_full_backlog_is_tried_again_after_pauses_that_grow() {
-        let dir = dir();
-        let path = dir.path().join("full.sock");
-        let listener = small_backlog(&path);
-        let held = fill_backlog(&path);
-        let mut tries = 0;
-        let began = std::time::Instant::now();
-        let e = connect_counted(&path, Duration::from_millis(300), &mut tries)
-            .expect_err("no connection was taken");
-        let took = began.elapsed();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
-        assert!(took >= Duration::from_millis(300), "{took:?}");
-        // 1, 2, 4, 8, 16 and 32 ms, then 50 ms, the last cut to what is
-        // left: 12 tries at most in 300 ms (try 12 comes at the limit),
-        // fewer where a pause runs long, since a sleep never ends early.
-        assert!((2..=12).contains(&tries), "{tries} tries in {took:?}");
-        drop(held);
-        drop(listener);
-    }
-
-    /// The pause between tries stops growing at 50 ms, so a connect is
-    /// made soon after the backlog has room, however long it has waited
-    /// (N3 of the review of #133): room is made 1.5 s into a wait of 5 s,
-    /// and the connection follows within 200 ms. Mutant: a pause that
-    /// keeps doubling (CE), which tries at 1023 ms and then at 2047 ms,
-    /// half a second after the room. A pause capped at a few hundred ms
-    /// can still try soon after the room by chance (a cap of 500 ms, CE5,
-    /// tries at 1511 ms), so the tries are counted too: at 50 ms there
-    /// are about 36 before the connection, at a cap of 200 ms 16, so at
-    /// least 20 are asked for (T1 of the review of #136). Not caught here
-    /// or above: a cap of 100 ms (22 tries), which costs a connect 100 ms
-    /// at most, and a first pause of 50 ms (CF), which costs it 50 ms.
-    #[test]
-    fn a_connect_is_made_soon_after_the_backlog_has_room() {
-        let dir = dir();
-        let path = dir.path().join("room.sock");
-        let listener = small_backlog(&path);
-        let held = fill_backlog(&path);
-        let room = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1500));
-            let taken = listener.accept().expect("a connection waiting");
-            (std::time::Instant::now(), taken, listener)
-        });
-        let mut tries = 0;
-        let stream = connect_counted(&path, Duration::from_secs(5), &mut tries)
-            .expect("connected once the backlog had room");
-        let connected = std::time::Instant::now();
-        let (made, _taken, _listener) = room.join().expect("the thread that made room");
-        let late = connected.saturating_duration_since(made);
-        assert!(
-            late < Duration::from_millis(200),
-            "connected {late:?} after the backlog had room, at try {tries}"
-        );
-        assert!(
-            tries >= 20,
-            "only {tries} tries, connected {late:?} after the backlog had room"
-        );
-        drop(stream);
-        drop(held);
-    }
-
-    /// No daemon at the socket (a socket left by one that has gone, or a
-    /// file that is no socket), or no socket at all: the ask fails at
-    /// once, after one try, and says which. Only a full backlog is tried
-    /// again (G2 of the review of #131). Mutant: every error of the
-    /// connect tried again until the limit (CA), which turns "no daemon"
-    /// into a wait of the whole limit and the message of a full backlog.
-    #[test]
-    fn no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once() {
-        let dir = dir();
-        let stale = dir.path().join("stale.sock");
-        drop(UnixListener::bind(&stale).expect("bound"));
-        let plain = dir.path().join("plain.sock");
-        std::fs::write(&plain, b"").expect("written");
-        let missing = dir.path().join("missing.sock");
-        let limit = Duration::from_secs(5);
-        for (path, kind) in [
-            (&stale, io::ErrorKind::ConnectionRefused),
-            (&plain, io::ErrorKind::ConnectionRefused),
-            (&missing, io::ErrorKind::NotFound),
-        ] {
-            let mut tries = 0;
-            let began = std::time::Instant::now();
-            let e = connect_counted(path, limit, &mut tries).expect_err("no daemon");
-            assert_eq!(e.kind(), kind, "{}: {e}", path.display());
-            assert_eq!(tries, 1, "{}", path.display());
-            let e = ask(path, &Request::Cuts, &[], limit).expect_err("no daemon");
-            assert_eq!(e.kind(), kind, "{}: {e}", path.display());
-            assert!(!e.to_string().contains("backlog"), "{e}");
-            assert!(
-                began.elapsed() < Duration::from_secs(2),
-                "{}: {:?}",
-                path.display(),
-                began.elapsed()
-            );
-        }
     }
 
     /// The errors of `accept` after which the channel's thread takes the
@@ -977,9 +727,13 @@ mod socket {
 mod uploader {
     use std::sync::Weak;
 
+    use skynbd_refs::{MemoryRefStore, ObjectRefStore, RefOp, RefStore, TxnOutcome};
+    use skynbd_store::{FaultOp, FaultStore, MemoryStore, ObjectStore};
+    use skynbd_types::{SnapId, VolumeId};
     use skyzfs_blk::Buf;
+    use skyzfs_local::inplace::CommittedCut;
     use skyzfs_local::inplace::{Cut, CutSlice};
-    use skyzfs_upload::publish::Request as Ask;
+    use skyzfs_upload::publish::{snap_ref, snap_row_key, Request as Ask, SnapRow};
     use skyzfs_upload::queued::Desk;
     use skyzfs_upload::{Answer, Control, CutsNow, Released, Store, Uploadable};
     use tokio::sync::mpsc;
@@ -987,6 +741,17 @@ mod uploader {
     use super::*;
 
     const LIMIT: Duration = Duration::from_secs(10);
+
+    /// The volume the channel looks snapshots up in.
+    const VOL: VolumeId = VolumeId(ulid::Ulid(0x51));
+
+    /// A lookup in refs that hold no snapshot.
+    async fn no_snapshots() -> handler::Lookup<MemoryRefStore> {
+        handler::Lookup {
+            vol: VOL,
+            refs: MemoryRefStore::new(),
+        }
+    }
 
     /// The count of cuts the store of [`answered_desk`] holds.
     const NOW: CutsNow = CutsNow {
@@ -997,6 +762,7 @@ mod uploader {
             group: 9,
             itself: false,
         }),
+        rewound: 2,
     };
 
     /// A store that holds no cut to upload, and counts [`NOW`].
@@ -1065,18 +831,24 @@ mod uploader {
             }
             seen
         });
-        let handler = handler::uploader(A, tx, answered_desk(), LIMIT).expect("a handler");
+        let handler =
+            handler::uploader(A, tx, answered_desk(), no_snapshots, LIMIT).expect("a handler");
         (handler, thread)
     }
 
     /// Mutant: a field of a request or an answer lost on the way (the
-    /// attachment answered is the daemon's, not the request's), or the
-    /// count of cuts asked of the uploader.
+    /// attachment answered is the daemon's, not the request's), the
+    /// count of cuts asked of the uploader, or the store's rewind mark
+    /// not given with a publish (B3 of the review of #140).
     #[test]
     fn each_request_goes_to_the_uploader_and_its_answer_back() {
         let (mut handler, thread) = uploader_with(|control, seen| match control {
-            Control::Ask(ask, reply) => {
-                seen.push(format!("{ask:?}"));
+            Control::Ask {
+                request: ask,
+                rewound,
+                reply,
+            } => {
+                seen.push(format!("{ask:?} at mark {rewound}"));
                 let _ = reply.send(match ask.name.as_str() {
                     "taken" => Answer::Refused(Refusal::Taken),
                     _ => Answer::Accepted,
@@ -1125,7 +897,7 @@ mod uploader {
         let seen = thread.join().expect("the uploader");
         let ask = |name: &str, expiry| {
             format!(
-                "{:?}",
+                "{:?} at mark 2",
                 Ask {
                     name: name.into(),
                     attachment: A,
@@ -1153,14 +925,80 @@ mod uploader {
     #[test]
     fn an_uploader_that_does_not_answer_in_time_reads_no_answer() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler = handler::uploader(A, tx, answered_desk(), Duration::from_millis(50))
-            .expect("a handler");
+        let mut handler = handler::uploader(
+            A,
+            tx,
+            answered_desk(),
+            no_snapshots,
+            Duration::from_millis(50),
+        )
+        .expect("a handler");
         let reply = handler(&Request::Progress("t".into()), Vec::new());
         assert!(
             matches!(reply, Reply::Refused(Code::NoAnswer, _)),
             "{reply:?}"
         );
         drop(rx);
+    }
+
+    /// A `publish` asks the desk for the store's rewind mark, then the
+    /// uploader, and waits for both within the one limit: the agent's
+    /// client waits [`ASK_LIMIT`](skyzfs_control::ASK_LIMIT), the limit
+    /// and a margin for the channel, and not twice the limit (B3 of the
+    /// review of #140). Here the store answers after 0.8 of the limit and
+    /// the uploader never does: `no-answer` comes at the limit.
+    ///
+    /// Mutant: each wait given the whole limit (the answer comes at 1.8
+    /// of it).
+    #[test]
+    fn a_publish_waits_for_the_store_and_the_uploader_within_one_limit() {
+        let limit = Duration::from_secs(1);
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        let desk = Desk::new(move || {
+            let _ = wake.send(());
+        });
+        let weak: Weak<Desk> = Arc::downgrade(&desk);
+        std::thread::spawn(move || {
+            while woken.recv().is_ok() {
+                std::thread::sleep(limit * 4 / 5);
+                let Some(desk) = weak.upgrade() else {
+                    return;
+                };
+                desk.answer(&mut Counting);
+            }
+        });
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, limit).expect("a handler");
+        let began = std::time::Instant::now();
+        let reply = handler(&publish(None), Vec::new());
+        let took = began.elapsed();
+        let Reply::Refused(Code::NoAnswer, why) = reply else {
+            panic!("{reply:?}");
+        };
+        assert!(why.contains("the uploader did not answer"), "{why}");
+        assert!(
+            took >= limit && took < limit * 8 / 5,
+            "answered after {took:?}, with a limit of {limit:?}"
+        );
+        drop(rx);
+    }
+
+    /// A `publish` to a store no longer served reads `ended`, as `cuts`
+    /// does, and is not given to the uploader: no mark could go with it.
+    ///
+    /// Mutant: the uploader asked with no mark, or a mark of 0.
+    #[test]
+    fn a_publish_to_a_store_no_longer_served_reads_ended() {
+        let (tx, mut rx) = mpsc::channel(handler::INBOX);
+        let desk = answered_desk();
+        desk.close();
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, LIMIT).expect("a handler");
+        let reply = handler(&publish(None), Vec::new());
+        assert!(
+            matches!(&reply, Reply::Refused(Code::Ended, why) if why.contains("store")),
+            "{reply:?}"
+        );
+        assert!(rx.try_recv().is_err(), "the uploader was asked");
     }
 
     /// A store whose queue takes no turn leaves `cuts` unanswered: the
@@ -1172,8 +1010,8 @@ mod uploader {
     fn a_store_whose_queue_takes_no_turn_reads_no_answer_for_cuts() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
         let desk = Desk::new(|| {});
-        let mut handler =
-            handler::uploader(A, tx, desk, Duration::from_millis(50)).expect("a handler");
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, Duration::from_millis(50))
+            .expect("a handler");
         // On a thread of its own, so that a handler that waits for the
         // store with no limit fails the test and does not hang it.
         let (done, answer) = std::sync::mpsc::channel();
@@ -1199,7 +1037,7 @@ mod uploader {
         let (tx, rx) = mpsc::channel(handler::INBOX);
         let desk = answered_desk();
         desk.close();
-        let mut handler = handler::uploader(A, tx, desk, LIMIT).expect("a handler");
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, LIMIT).expect("a handler");
         let reply = handler(&Request::Cuts, Vec::new());
         assert!(
             matches!(&reply, Reply::Refused(Code::Ended, why) if why.contains("store")),
@@ -1213,7 +1051,8 @@ mod uploader {
     #[test]
     fn an_uploader_that_has_ended_reads_ended() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler = handler::uploader(A, tx, answered_desk(), LIMIT).expect("a handler");
+        let mut handler =
+            handler::uploader(A, tx, answered_desk(), no_snapshots, LIMIT).expect("a handler");
         drop(rx);
         let reply = handler(&Request::Progress("t".into()), Vec::new());
         assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
@@ -1233,8 +1072,14 @@ mod uploader {
     #[test]
     fn a_full_inbox_is_not_waited_on() {
         let (tx, rx) = mpsc::channel(handler::INBOX);
-        let mut handler = handler::uploader(A, tx.clone(), answered_desk(), Duration::from_secs(5))
-            .expect("a handler");
+        let mut handler = handler::uploader(
+            A,
+            tx.clone(),
+            answered_desk(),
+            no_snapshots,
+            Duration::from_secs(5),
+        )
+        .expect("a handler");
         for _ in 0..handler::INBOX {
             let (reply, _) = tokio::sync::oneshot::channel();
             tx.try_send(Control::Progress("t".into(), reply))
@@ -1271,11 +1116,223 @@ mod uploader {
             publish(None),
             Request::Progress("t".into()),
             Request::Withdraw("t".into()),
+            Request::Look("t".into()),
         ] {
             assert_eq!(
                 handler(&request, Vec::new()),
                 Reply::Refused(Code::NoUpload, "no `remote` file".into())
             );
         }
+    }
+
+    fn row(commit: u8) -> SnapRow {
+        SnapRow {
+            cut: CommittedCut {
+                state: S,
+                number: 5,
+                group: 44,
+            },
+            commit: [commit; 32],
+            snap: SnapId(ulid::Ulid::from(7u128)),
+            manifest_len: 12,
+            manifest_hash: [0x4d; 32],
+        }
+    }
+
+    /// Make `snap/<name>` of [`VOL`] on `commit` in `refs`, with `row`
+    /// beside it where one is given.
+    fn make(refs: &impl RefStore, name: &str, commit: u8, row: Option<SnapRow>) {
+        let mut ops = vec![RefOp::CasRef {
+            name: snap_ref(name),
+            expected: None,
+            new_commit: Some([commit; 32]),
+        }];
+        if let Some(row) = row {
+            ops.push(RefOp::MetaPut {
+                key: snap_row_key(name),
+                value: row.encode(),
+            });
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        let outcome = runtime.block_on(refs.transact(VOL, ops)).expect("made");
+        assert_eq!(outcome, TxnOutcome::Committed);
+    }
+
+    /// A look reads `snap/T` and its row in object storage, through the
+    /// channel's own client: it is not asked of the uploader, and is
+    /// answered after the uploader has ended.
+    ///
+    /// Mutant: a look asked of the uploader (`ended`), the volume's id
+    /// not the lookup's (`absent`), or a field of what was seen lost.
+    #[test]
+    fn a_look_answers_what_object_storage_holds_without_the_uploader() {
+        let refs = Arc::new(MemoryRefStore::new());
+        make(&*refs, "ours", 3, Some(row(3)));
+        make(&*refs, "bare", 3, None);
+        make(&*refs, "other", 4, Some(row(3)));
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        // The uploader has ended: its inbox is closed.
+        drop(rx);
+        let lookup = {
+            let refs = Arc::clone(&refs);
+            move || async move { handler::Lookup { vol: VOL, refs } }
+        };
+        let mut handler =
+            handler::uploader(A, tx, answered_desk(), lookup, LIMIT).expect("a handler");
+        let look =
+            |handler: &mut Handler, name: &str| handler(&Request::Look(name.into()), Vec::new());
+        assert_eq!(
+            look(&mut handler, "ours"),
+            Reply::Snap(SnapReply {
+                commit: [3; 32],
+                state: S,
+                number: 5,
+                group: 44,
+                manifest_len: 12,
+                manifest_hash: [0x4d; 32],
+            })
+        );
+        assert_eq!(look(&mut handler, "never"), Reply::Absent);
+        assert_eq!(
+            look(&mut handler, "bare"),
+            Reply::Unreadable(UnreadableReply {
+                commit: [3; 32],
+                why: Unread::NoRow
+            })
+        );
+        assert_eq!(
+            look(&mut handler, "other"),
+            Reply::Unreadable(UnreadableReply {
+                commit: [4; 32],
+                why: Unread::OtherCommit
+            })
+        );
+        // Each look reads anew: a snapshot made since is seen.
+        make(&*refs, "never", 3, Some(row(3)));
+        assert!(matches!(look(&mut handler, "never"), Reply::Snap(_)));
+        // The uploader's requests still read `ended`.
+        let reply = handler(&Request::Progress("ours".into()), Vec::new());
+        assert!(matches!(reply, Reply::Refused(Code::Ended, _)), "{reply:?}");
+    }
+
+    /// Mutant: an error of object storage answered `absent` (the agent
+    /// would ask anew for a name that may be published), or the wrong
+    /// code.
+    #[test]
+    fn a_look_that_object_storage_fails_reads_store() {
+        let store = FaultStore::new(MemoryStore::new());
+        let refs = ObjectRefStore::new(store.clone());
+        make(&refs, "t", 3, Some(row(3)));
+        let lookup = move || async move { handler::Lookup { vol: VOL, refs } };
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler =
+            handler::uploader(A, tx, answered_desk(), lookup, LIMIT).expect("a handler");
+        assert!(matches!(
+            handler(&Request::Look("t".into()), Vec::new()),
+            Reply::Snap(_)
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(store.arm(FaultOp::Any, "", 0));
+        for name in ["t", "never"] {
+            let reply = handler(&Request::Look(name.into()), Vec::new());
+            let Reply::Refused(Code::Store, why) = &reply else {
+                panic!("{name}: {reply:?}");
+            };
+            assert!(why.starts_with("object storage: "), "{why}");
+        }
+        drop(rx);
+    }
+
+    /// Objects whose reads never end while `stall` is set.
+    #[derive(Clone)]
+    struct Stalling {
+        inner: MemoryStore,
+        stall: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Stalling {
+        async fn put(&self, key: &str, data: bytes::Bytes) -> skynbd_store::Result<()> {
+            self.inner.put(key, data).await
+        }
+        async fn get(
+            &self,
+            key: &str,
+            range: Option<std::ops::Range<u64>>,
+        ) -> skynbd_store::Result<bytes::Bytes> {
+            if self.stall.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            self.inner.get(key, range).await
+        }
+        async fn exists(&self, key: &str) -> skynbd_store::Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> skynbd_store::Result<Vec<String>> {
+            self.inner.list(prefix).await
+        }
+        async fn delete(&self, key: &str) -> skynbd_store::Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn get_versioned(&self, key: &str) -> skynbd_store::Result<(bytes::Bytes, String)> {
+            if self.stall.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            self.inner.get_versioned(key).await
+        }
+        async fn put_if(
+            &self,
+            key: &str,
+            data: bytes::Bytes,
+            pre: skynbd_store::Precondition,
+        ) -> skynbd_store::Result<String> {
+            self.inner.put_if(key, data, pre).await
+        }
+    }
+
+    /// Object storage that does not answer leaves the look unanswered:
+    /// the channel waits its limit and says `no-answer`, naming object
+    /// storage.
+    ///
+    /// Mutant: the look waited for with no limit (the test would not
+    /// end), or the wrong code.
+    #[test]
+    fn a_look_that_object_storage_does_not_answer_reads_no_answer() {
+        let stall = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let objects = Stalling {
+            inner: MemoryStore::new(),
+            stall: Arc::clone(&stall),
+        };
+        let lookup = move || async move {
+            handler::Lookup {
+                vol: VOL,
+                refs: ObjectRefStore::new(objects),
+            }
+        };
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler =
+            handler::uploader(A, tx, answered_desk(), lookup, Duration::from_millis(50))
+                .expect("a handler");
+        // On a thread of its own, so that a look that waits with no
+        // limit fails the test and does not hang it.
+        let (done, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let first = handler(&Request::Look("t".into()), Vec::new());
+            stall.store(false, Ordering::SeqCst);
+            let _ = done.send((first, handler(&Request::Look("t".into()), Vec::new())));
+        });
+        let (first, then) = answer
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the handler answers within its limit");
+        let Reply::Refused(Code::NoAnswer, why) = first else {
+            panic!("{first:?}");
+        };
+        assert!(why.contains("object storage did not answer"), "{why}");
+        assert_eq!(then, Reply::Absent);
+        drop(rx);
     }
 }

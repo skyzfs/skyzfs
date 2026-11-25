@@ -97,7 +97,8 @@ def node_b_row(n, g):
 
 
 # Each course as a right daemon leaves it: the answers, the requests
-# (T: C, G, the snapshot's createtxg), node B's rows, the request log,
+# (T: C, G, the snapshot's createtxg; a list where T was asked anew,
+# the last the one judged), node B's rows, the request log,
 # and the course's own files.
 COURSES = {
     'pplain': {
@@ -115,17 +116,19 @@ COURSES = {
         'files': {},
     },
     'prewind': {
-        'ends': {'r1': 'done commit=' + commit_of('r1')},
-        'requests': {'r1': (7, 50, 50)},
-        'rows': {'r1': (10, 52)},
-        'log': [(PID, [(8, 50, False), (9, 51, False), (10, 52, True)])],
+        'ends': {'r1': 'refused rewound a rewind may have been counted after the count asked from',
+                 'r1-anew': 'accepted', 'r1-end': 'done commit=' + commit_of('r1')},
+        # The first ask, refused, then the one asked anew past the top.
+        'requests': {'r1': [(7, 50, 50), (10, 50, 50)]},
+        'rows': {'r1': (11, 53)},
+        'log': [(PID, [(8, 50, False), (9, 51, False), (10, 52, True), (11, 53, True)])],
         'files': {'rewind-status.txt': 'cuts_held 3\n', 'rewind-row.txt': node_b_row(9, 51)},
     },
     'pkill': {
         'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tk': 'pending after 9',
-                 'tw-after': 'unknown', 'tk-after': 'unknown', 'tk-again': 'accepted',
-                 'tk-end': 'done commit=' + commit_of('tk'), 'tw-last': 'unknown'},
-        'requests': {'tw': (7, 50, 20), 'tk': (9, 80, 50)},
+                 'tw-after': 'unknown', 'tk-after': 'unknown', 'tk-again': 'refused rewound',
+                 'tk-anew': 'accepted', 'tk-end': 'done commit=' + commit_of('tk'), 'tw-last': 'unknown'},
+        'requests': {'tw': (7, 50, 20), 'tk': [(9, 80, 50), (11, 80, 50)]},
         'rows': {'tk': (12, 80)},
         'log': [(PID, [(8, 49, True), ('publish', 'withdraw', 'tw withdrawn'), (9, 50, True)]),
                 (PID2, [(12, 80, True)])],
@@ -133,8 +136,9 @@ COURSES = {
                   'tw-status.txt': 'publish_withdrawn 1\npublish_pending 0\npublish_published 0\n'},
     },
     'pkillpub': {
-        'ends': {'p1': 'unknown', 'p1-after': 'unknown', 'p1-again': 'accepted',
-                 'p1-end': 'done commit=' + commit_of('p1')},
+        'ends': {'p1': 'unknown', 'p1-after': 'unknown', 'p1-again': 'refused rewound', 'p1-anew': 'accepted',
+                 'p1-end': 'refused taken', 'p1-look': f'snap commit={commit_of("p1")} state={S} number=8 group=50 '
+                                                        f'manifest-len=1 manifest-hash={"0" * 64}'},
         'requests': {'p1': (7, 50, 50)},
         'rows': {'p1': (8, 50)},
         'log': [(PID, [(8, 50, True)]), (PID2, [])],
@@ -144,18 +148,18 @@ COURSES = {
         'between': 'p1',
     },
     'pkillman': {
-        'ends': {'m1': 'unknown', 'm1-after': 'unknown', 'm1-again': 'accepted',
+        'ends': {'m1': 'unknown', 'm1-after': 'unknown', 'm1-again': 'refused rewound', 'm1-anew': 'accepted',
                  'm1-end': 'done commit=' + commit_of('m1')},
-        'requests': {'m1': (7, 50, 50)},
-        'rows': {'m1': (8, 50)},
-        'log': [(PID, [(8, 50, True)]), (PID2, [])],
+        'requests': {'m1': [(7, 50, 50), (9, 50, 50)]},
+        'rows': {'m1': (10, 50)},
+        'log': [(PID, [(8, 50, True)]), (PID2, [(10, 50, True)])],
         'files': {'kill.tsv': 'killed_rc\t137\n',
                   'serve.log': 'skyzfsd: test hook --kill-at-upload: killed after the framed manifest PUT 1 landed '
                                '(v/skyzfs/manifest/x), before its ref was made\n',
                   'm1-between.txt': 'ref\tnone\nsnaprow\tnone\n'},
     },
     'pchannel': {
-        'ends': {'nu': 'refused no-upload', 'version': 'refused version not 1',
+        'ends': {'nu': 'refused no-upload', 'version': 'refused version not 2',
                  'malformed': 'refused malformed', 'name': 'refused name', 'peer': 'refused peer its own user',
                  'cuts': 'cuts 3'},
         'requests': {},
@@ -176,11 +180,12 @@ def run_course(name, change=None, rows=None, fail=(), miss_files=False, row_only
         with open(os.path.join(d, 'ends.tsv'), 'w') as f:
             f.write(''.join(f'{k}\t{v}\n' for k, v in c['ends'].items()))
         with open(os.path.join(d, 'published.tsv'), 'w') as f:
-            for t, (after, group, txg) in c['requests'].items():
+            for t, reqs in c['requests'].items():
                 m = os.path.join(d, f'manifest-{t}')
                 with open(m, 'wb') as g:
                     g.write(manifest_of(t))
-                f.write(f'{t}\t{group}\t{A}\t{S}\t{after}\t{m}\t{txg}\n')
+                for after, group, txg in (reqs if isinstance(reqs, list) else [reqs]):
+                    f.write(f'{t}\t{group}\t{A}\t{S}\t{after}\t{m}\t{txg}\n')
         with open(os.path.join(d, 'requests.tsv'), 'w') as f:
             f.write(log_text(c['log']))
         for fn, text in c['files'].items():
@@ -311,6 +316,30 @@ class Pins(unittest.TestCase):
         self.assertEqual(lines['pin_r1_cut'][0], 'FAILED')
         self.assertEqual(lines['premise_rewind_cut_committed'][0], 'ok')
         self.assertEqual(rc, 1)
+
+    def test_a_request_from_before_a_rewind_not_refused_rewound_ends_1(self):
+        """A daemon without rule (R) (M2.6a): the request asked with the
+        count from before the take-over or below the abandoned top is
+        answered as M2.5 answered it."""
+        for course, label, answer in (('prewind', 'r1', 'done commit=' + commit_of('r1')),
+                                      ('pkill', 'tk-again', 'accepted'),
+                                      ('pkillman', 'm1-again', 'accepted'),
+                                      ('pkillpub', 'p1-again', 'accepted')):
+            def change(d, label=label, answer=answer):
+                with open(os.path.join(d, 'ends.tsv')) as f:
+                    rows = [ln.split('\t', 1) for ln in f.read().splitlines()]
+                with open(os.path.join(d, 'ends.tsv'), 'w') as f:
+                    f.write(''.join(f'{k}\t{answer if k == label else v}\n' for k, v in rows))
+            rc, lines = run_course(course, change)
+            self.assertEqual((rc, lines[f'pin_answer_{label}'][0]), (1, 'FAILED'), course)
+
+    def test_prewind_s_premise_is_of_the_first_ask(self):
+        """The rewind cut (9, group 51) was counted after the first ask's
+        C (7) and before the second's (10): the premise holds of the first."""
+        rc, lines = run_course('prewind')
+        self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (0, 'ok'))
+        self.assertIn('counted after C = 7', lines['premise_rewind_cut_committed'][1])
+        self.assertIn('asked after 10', lines['pin_r1_row'][1])
 
     def test_pkillpub_done_on_another_commit_than_landed_ends_1(self):
         def change(d):

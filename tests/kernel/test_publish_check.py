@@ -44,28 +44,36 @@ class Tables(unittest.TestCase):
                 't7-again': ('accepted',),
                 't7-end': ('done ',),
             },
-            'prewind': {'r1': ('done ',)},
+            'prewind': {
+                'r1': ('refused rewound',),       # rule (R): below the abandoned top every cut is a mark
+                'r1-anew': ('accepted',),         # past the top, with a count read then
+                'r1-end': ('done ',),
+            },
             'pkill': {
                 'tw': ('pending after',),
                 'tw-withdraw': ('withdrawn',),
                 'tk': ('pending after',),
                 'tw-after': ('withdrawn', 'unknown'),  # the new instance may or may not know tw: never done
                 'tk-after': ('unknown',),             # a pending publish lives in memory only
-                'tk-again': ('accepted',),
+                'tk-again': ('refused rewound',),  # the count from before the take-over
+                'tk-anew': ('accepted',),
                 'tk-end': ('done ',),
                 'tw-last': ('withdrawn', 'unknown'),
             },
             'pkillman': {
                 'm1': ('none ', 'unknown'),           # killed under the agent: no answer, or the next one's
                 'm1-after': ('unknown',),
-                'm1-again': ('accepted',),
+                'm1-again': ('refused rewound',),
+                'm1-anew': ('accepted',),
                 'm1-end': ('done ',),
             },
             'pkillpub': {
                 'p1': ('none ', 'unknown'),
                 'p1-after': ('unknown',),
-                'p1-again': ('accepted',),
-                'p1-end': ('done ',),                 # and on the commit that landed (pin_p1_found)
+                'p1-again': ('refused rewound',),
+                'p1-anew': ('accepted',),
+                'p1-end': ('refused taken',),     # landed on a cut counted before the new count
+                'p1-look': ('snap ',),            # on the commit that landed (pin_p1_found)
             },
             'pchannel': {
                 'nu': ('refused no-upload',),
@@ -78,10 +86,10 @@ class Tables(unittest.TestCase):
         })
         self.assertEqual(pc.PUBLISHED, {
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
-            'prewind': {'r1': 'r1'},
+            'prewind': {'r1': 'r1-end'},
             'pkill': {'tk': 'tk-end'},
             'pkillman': {'m1': 'm1-end'},
-            'pkillpub': {'p1': 'p1-end'},
+            'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
         })
         # t5 expired, t3 never asked validly, tw withdrawn before the kill.
@@ -105,11 +113,22 @@ class Tables(unittest.TestCase):
         self.assertEqual(pc.KILLED_BY['pkillpub'], 'after the transaction of publish {} ({}) landed'.format(1, 'p1'))
 
     def test_each_published_name_ends_done_and_each_course_has_a_table(self):
+        """Each published name ends `done`, but p1, which `look` reads
+        after `refused taken` (rule (R), M2.6a)."""
         for course in pc.COURSES:
             self.assertIn(course, pc.EXPECTED)
             self.assertIn(course, pc.PUBLISHED)
             for t, label in pc.PUBLISHED[course].items():
-                self.assertEqual(pc.EXPECTED[course][label], ('done ',), (course, t))
+                want = ('snap ',) if (course, t) == ('pkillpub', 'p1') else ('done ',)
+                self.assertEqual(pc.EXPECTED[course][label], want, (course, t))
+
+    def test_a_snap_answer_names_its_commit_as_done_does(self):
+        h = 'c' * 64
+        self.assertEqual(pc.done_commit(f'done commit={h}'), h)
+        self.assertEqual(pc.done_commit(f'snap commit={h} state={"b" * 32} number=8 group=50 manifest-len=1 '
+                                        f'manifest-hash={"0" * 64}'), h)
+        for other in (f'snap commit={h}', 'absent', f'unreadable commit={h} why=version', 'refused taken x'):
+            self.assertIsNone(pc.done_commit(other), other)
         for course, (t, _) in pc.BETWEEN.items():
             self.assertIn(t, pc.PUBLISHED[course])
 
