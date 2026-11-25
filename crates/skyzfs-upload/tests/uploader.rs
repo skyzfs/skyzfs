@@ -2316,7 +2316,7 @@ async fn a_publish_whose_time_is_up_reads_expired_between_turns() {
         let mut request = asked(state, "t", 0, 100);
         request.expiry = Duration::from_millis(1100);
         let answer = ask_of(&inbox, |r| Control::Ask {
-            request: request,
+            request,
             rewound: 0,
             reply: r,
         })

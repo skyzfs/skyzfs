@@ -47,12 +47,13 @@ const EVERY_UNREAD: [Unread; 4] = [
     Unread::OtherCommit,
 ];
 
-/// Mutant: any word of the protocol changed (it is version 1's: a
-/// change is a new version).
+/// Mutant: any word of the protocol changed, the greeting's included
+/// (it is version 2's: a change is a new version).
 #[test]
-fn the_lines_are_version_1s_words() {
+fn the_lines_are_version_2s_words() {
     let hex_a = "a1".repeat(16);
     let hex_s = "5e".repeat(16);
+    assert_eq!(HELLO, "skyzfs-control 2");
     assert_eq!(Request::Cuts.line(), "cuts");
     assert_eq!(
         publish(None).line(),
@@ -205,6 +206,95 @@ fn every_line_reads_back_as_written() {
     }
 }
 
+/// Each line of version 1, as its daemon and client wrote them, reads
+/// the same in version 2: the greeting changed (a reader of version 1
+/// does not read version 2's new words as "not said"), and no line of
+/// version 1 did. Mutant: a word of version 1 changed.
+#[test]
+fn each_line_of_version_1_reads_the_same_in_version_2() {
+    let hex_a = "a1".repeat(16);
+    let hex_s = "5e".repeat(16);
+    let requests = [
+        ("cuts".to_string(), Request::Cuts),
+        (
+            format!(
+                "publish name=pool-7.b_c attachment={hex_a} state={hex_s} after=3 group=41 \
+                 manifest=5"
+            ),
+            publish(None),
+        ),
+        (
+            format!(
+                "publish expiry-s=90 manifest=5 group=41 after=3 state={hex_s} \
+                 attachment={hex_a} name=pool-7.b_c"
+            ),
+            publish(Some(Duration::from_secs(90))),
+        ),
+        ("progress name=t".into(), Request::Progress("t".into())),
+        ("withdraw name=t".into(), Request::Withdraw("t".into())),
+    ];
+    for (line, request) in requests {
+        assert_eq!(Request::parse(&line), Ok(request), "{line}");
+    }
+    let cuts = |state, newest| {
+        Reply::Cuts(CutsReply {
+            attachment: A,
+            state,
+            count: 7,
+            newest,
+        })
+    };
+    let mut replies = vec![
+        (
+            format!("cuts attachment={hex_a} state=none count=7 group=none opens=none"),
+            cuts(None, None),
+        ),
+        (
+            format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself"),
+            cuts(Some(S), Some((12, true))),
+        ),
+        (
+            format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind"),
+            cuts(Some(S), Some((12, false))),
+        ),
+        ("accepted".into(), Reply::Accepted),
+        ("pending".into(), Reply::Pending),
+        (
+            format!("done commit={}", "0f".repeat(32)),
+            Reply::Done([0x0f; 32]),
+        ),
+        ("expired".into(), Reply::Expired),
+        ("withdrawn".into(), Reply::Withdrawn),
+        ("unknown".into(), Reply::Unknown),
+    ];
+    let version_1s = [
+        (Code::Name, "name"),
+        (Code::Attachment, "attachment"),
+        (Code::State, "state"),
+        (Code::Manifest, "manifest"),
+        (Code::Expiry, "expiry"),
+        (Code::Asked, "asked"),
+        (Code::Busy, "busy"),
+        (Code::Taken, "taken"),
+        (Code::Stopped, "stopped"),
+        (Code::Version, "version"),
+        (Code::Malformed, "malformed"),
+        (Code::Peer, "peer"),
+        (Code::NoUpload, "no-upload"),
+        (Code::Ended, "ended"),
+        (Code::NoAnswer, "no-answer"),
+    ];
+    for (code, word) in version_1s {
+        replies.push((
+            format!("refused {word} it says why"),
+            Reply::Refused(code, "it says why".into()),
+        ));
+    }
+    for (line, reply) in replies {
+        assert_eq!(Reply::parse(&line), Ok(reply), "{line}");
+    }
+}
+
 /// Mutant: a key taken twice, a key of another verb, or a value parsed
 /// loosely.
 #[test]
@@ -287,6 +377,42 @@ mod socket {
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("a directory")
+    }
+
+    /// A daemon of version 1 greets with its own greeting, and its answer
+    /// is not read, even one that would parse: the client of version 2
+    /// gives an error that names both greetings. Mutant: the greeting not
+    /// compared.
+    #[test]
+    fn a_daemon_of_version_1_is_not_read() {
+        use std::io::{BufRead, Write};
+        let dir = dir();
+        let path = dir.path().join("v1.sock");
+        let listener = UnixListener::bind(&path).expect("bound");
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepted");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+            let mut greeting = String::new();
+            reader.read_line(&mut greeting).expect("read");
+            let mut stream = stream;
+            stream
+                .write_all(
+                    b"skyzfs-control 1\nrefused version this daemon speaks `skyzfs-control 1`\n",
+                )
+                .expect("written");
+            greeting
+        });
+        let asked = client::ask(&path, &Request::Cuts, &[], Duration::from_secs(10));
+        assert_eq!(daemon.join().ok(), Some(format!("{HELLO}\n")));
+        let Err(e) = asked else {
+            panic!("an answer of version 1 was read: {asked:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        let why = e.to_string();
+        assert!(
+            why.contains("`skyzfs-control 1`") && why.contains(HELLO),
+            "{why}"
+        );
     }
 
     /// A daemon whose socket's backlog is full, and that takes no more

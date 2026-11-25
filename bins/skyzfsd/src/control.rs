@@ -5,7 +5,7 @@
 //! §5.4). It is the daemon's first interface that is not a file. The rule
 //! a publish follows, and what object storage holds once it is made, are
 //! `skyzfs_upload::publish`'s (M2.5-1); this module carries the requests
-//! to the uploader and its answers back. The protocol (version 1), its
+//! to the uploader and its answers back. The protocol (version 2), its
 //! limits and the client are `skyzfs_control`'s (M2.6a), so that the
 //! agent does not link the daemon; they are re-exported here.
 //!

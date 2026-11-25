@@ -16,7 +16,17 @@
 //! the protocol's: the uploader's rule of a publish
 //! (`skyzfs_upload::publish`) applies these same ones, from here.
 //!
-//! # The protocol, version 1
+//! # The protocol, version 2
+//!
+//! Version 2 is version 1 with the verb `look`, its answers `snap`,
+//! `absent` and `unreadable`, and the refusal codes `rewound` and
+//! `store`. Each line of version 1 reads the same in version 2. The
+//! greeting changed all the same (CONTRIBUTING, "Formats are
+//! versioned"): a reader of version 1 takes a word it does not know for
+//! an answer that does not parse, an error and not "not said", so the
+//! exception for a new code does not hold. A peer of the other version
+//! is refused at the greeting (`version`), before any word it cannot
+//! read.
 //!
 //! Lines end with `\n` and are UTF-8, at most [`LINE_MAX`] bytes. The
 //! client sends the greeting [`HELLO`], one request line, and for
@@ -161,8 +171,8 @@ pub fn valid_name(name: &str) -> bool {
 /// The socket's name in the volume's run directory.
 pub const SOCKET: &str = "control";
 
-/// The greeting of version 1, the first line each way.
-pub const HELLO: &str = "skyzfs-control 1";
+/// The greeting of version 2, the first line each way.
+pub const HELLO: &str = "skyzfs-control 2";
 
 /// The longest line, its `\n` included.
 pub const LINE_MAX: usize = 4096;

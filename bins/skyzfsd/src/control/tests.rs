@@ -202,7 +202,11 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
     let expiry = |e| publish(Some(e)).line().replace("manifest=5", "manifest=0");
     for (sent, code) in [
         (format!("{HELLO}x\ncuts\n"), Code::Version),
-        ("skyzfs-control 2\ncuts\n".to_string(), Code::Version),
+        // A client of version 1 (each line of which reads the same in
+        // version 2) is refused at its greeting, before a word it would
+        // not read; and so is one of a version after this one.
+        ("skyzfs-control 1\ncuts\n".to_string(), Code::Version),
+        ("skyzfs-control 3\ncuts\n".to_string(), Code::Version),
         (format!("cuts\n{HELLO}\n"), Code::Version),
         (format!("{}\ncuts\n", "h".repeat(LINE_MAX)), Code::Version),
         (format!("{HELLO}\n{long}\n"), Code::Malformed),
