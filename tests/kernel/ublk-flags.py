@@ -73,6 +73,10 @@ ROWS = [
     ('zinject_pool_state', 'Failing flush: pool state'),
     ('zinject_events', 'Failing flush: `zpool events` so far'),
     ('zinject_after_clear', 'Failing flush: after removing the fault'),
+    ('assist_idle', 'The assist: the pool idle'),
+    ('obs_zpool_sync_idle', 'The assist: a bare `zpool sync` on the idle pool'),
+    ('obs_zfs_set_same_value', 'The assist: `zfs set` of the value it holds, then `zpool sync`'),
+    ('obs_assist_pace', 'The assist: one a second for 30 s'),
 ]
 for _p, _t in (('rec', 'Recovery with reissue (`-r 1 -i 1`)'), ('rec0', 'Recovery without reissue (`-r 1 -i 0`)')):
     ROWS += [
@@ -94,6 +98,7 @@ PINS = [
     ('pin_no_partition_table', 'No partition table on the vdev (§6.2)'),
     ('pin_label_at_byte_0', 'First label at byte 0 (§4.2)'),
     ('pin_flush_delivered', 'Flushes reach the ublk queue (§4.2)'),
+    ('pin_zfs_set_writes_a_group_on_an_idle_pool', 'A `zfs set` of a new value, then `zpool sync`, writes a group on an idle pool (§5.2, the assist)'),
     ('pin_recovery_reissue', 'Daemon loss with reissue is invisible to ZFS (§4.2)'),
 ]
 
@@ -163,7 +168,7 @@ def main():
         if p['res'].get('setup_error'):
             print(f"**The probe's own error on {n}, not a verdict on the kernel:** "
                   f"{p['res']['setup_error']}. The pins below were not checked there.\n")
-    # All four rows, always: a pin that was never checked is not a pass.
+    # Every row, always: a pin that was never checked is not a pass.
     print('**Pinned properties.** A FAIL, or a property that was not checked, fails the probe.\n')
     print('| | ' + ' | '.join(names) + ' |')
     print('|---|' + '---|' * len(probes))
