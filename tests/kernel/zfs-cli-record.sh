@@ -135,6 +135,11 @@
 #                          snapshot.lua at @p, which refuses at its check
 #                          before taking anything (EEXIST, expected), then
 #                          the snapshots that are there
+#   cli-exists-child, cli-exists-child-after, cli-exists-root
+#                          zfs snapshot -r, the take, where it fails: at
+#                          @p, which the child has ("dataset already
+#                          exists", expected), then the snapshots there;
+#                          at @t, which the root has (expected)
 #   destroy, destroy-after, destroy-absent
 #                          what the adapter runs when it cannot read the
 #                          snapshot program's output: zfs destroy -r P@T,
@@ -145,6 +150,12 @@
 #   destroy-held-hold, destroy-held, destroy-held-after
 #                          the same on @o2 with a hold on the child's
 #                          @o2 alone, then the snapshots there
+#   cli-limit-set, cli-limit, cli-limit-after
+#                          snapshot_limit=0 on the child, then zfs
+#                          snapshot -r at @q, then the snapshots there:
+#                          whether a limit refuses the take run as root
+#                          (the limit is then lifted and @q destroyed,
+#                          with no record)
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -183,7 +194,8 @@
 # and once: `nocacheflush` (the module parameter), `version` and
 # `locale`. On the pool that does not exist, every command the adapter
 # runs: status, status-g, get, assist-set, assist-sync, the three
-# programs, holds, holds-r, hold, release, destroy.
+# programs, holds, holds-r, hold, release, destroy, and the take by
+# zfs snapshot -r (snapshot-cli).
 #
 # Not recorded: the snapshot program's output that cannot be read (the
 # case that makes the adapter run destroy -r), which cannot be made to
@@ -451,6 +463,11 @@ record_pool() { # prefix pool
     rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
     program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
     rec "$x-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    # zfs snapshot -r, the take since e6788b0, where it fails: the
+    # child's @p is there, and the root's @t is there.
+    rec "$x-cli-exists-child" --expect 'dataset already exists' zfs snapshot -r "$p@p"
+    rec "$x-cli-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    rec "$x-cli-exists-root" --expect 'dataset already exists' zfs snapshot -r "$p@t"
     # The adapter's destroy -r of a take it cannot read.
     rec "$x-destroy" zfs destroy -r "$p@o0"
     rec "$x-destroy-after" zfs list -H -t snapshot -o name -r "$p"
@@ -459,6 +476,13 @@ record_pool() { # prefix pool
     rec "$x-destroy-held" zfs destroy -r "$p@o2"
     rec "$x-destroy-held-after" zfs list -H -t snapshot -o name -r "$p"
     release_quietly "$p" o2
+    # A limit on the child's snapshots: root is not held to it where it
+    # may change it, so this records whether the take is refused.
+    rec "$x-cli-limit-set" zfs set snapshot_limit=0 "$p/child"
+    rec "$x-cli-limit" zfs snapshot -r "$p@q"
+    rec "$x-cli-limit-after" zfs list -H -t snapshot -o name -r "$p"
+    lim 120 zfs set snapshot_limit=none "$p/child" > /dev/null 2>&1
+    lim 120 zfs destroy -r "$p@q" > /dev/null 2>&1
     rec "$x-checkpoint" zpool checkpoint "$p"
     rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
@@ -485,6 +509,7 @@ record_none() { # prefix pool
     rec "$x-hold" zfs hold -r "$TAG" "$p@t"
     rec "$x-release" zfs release -r "$TAG" "$p@t"
     rec "$x-destroy" zfs destroy -r "$p@t"
+    rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
 }
 
 # scale_all COUNT...: scale for each count, at most three, each at most

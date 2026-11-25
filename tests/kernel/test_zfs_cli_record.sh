@@ -214,6 +214,12 @@ check "pin holds -r" "$(words rig-holds-r)" "zfs holds -H -r skzq@t "
 check "pin release" "$(words rig-release-1)" "zfs release -r skyzfs-publish skzq@t "
 check "pin destroy" "$(words rig-destroy)" "zfs destroy -r skzq@o0 "
 check "pin none's destroy" "$(words none-destroy)" "zfs destroy -r skznone@t "
+check "pin none's take" "$(words none-snapshot-cli)" "zfs snapshot -r skznone@t "
+check "pin the take at the child's @p" "$(words rig-cli-exists-child)" "zfs snapshot -r skzq@p "
+check "pin the take at the root's @t" "$(words rig-cli-exists-root)" "zfs snapshot -r skzq@t "
+check "pin the limit" "$(words rig-cli-limit-set)" "zfs set snapshot_limit=0 skzq/child "
+check "pin the take under the limit" "$(words rig-cli-limit)" "zfs snapshot -r skzq@q "
+check "pin the snapshots after each" "$(words rig-cli-exists-child-after)/$(words rig-cli-limit-after)" "zfs list -H -t snapshot -o name -r skzq /zfs list -H -t snapshot -o name -r skzq "
 check "pin the odd one in C.UTF-8" "$(words rig-snapshot-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program $P skzq - skzq o2 skyzfs:assist "
 check "pin the odd one as the adapter" "$(words rig-snapshot-odd)" "zfs program $P skzq - skzq o0 skyzfs:assist "
 check "pin none's assist" "$(words none-assist-set)" "zfs set skyzfs:assist=1700000000001 skznone "
@@ -253,7 +259,7 @@ check "scale's limit is its own" "$LIMIT" 5
 check "scale's image removed" "$([ -e "$WORK/scale.img" ] && echo yes || echo no)" no
 check "scale's df" "$(grep -c '^scale 3: df: ' "$OUT/about.txt")" 2
 # The records meant to show one message say whether they did.
-for r in snapshot-2 members-absent hold-2 release-2 snapshot-exists-child destroy-absent; do
+for r in snapshot-2 members-absent hold-2 release-2 snapshot-exists-child destroy-absent cli-exists-child cli-exists-root; do
     check "pin --expect on $r" "$(cut -c1-10 "$OUT/rig-$r/note" 2>/dev/null)" "expected /"
 done
 
@@ -290,6 +296,14 @@ for d in "$OUT"/*/; do
             esac
             ;;
         "zfs holds") seen="$seen holds"; [ "${w[2]}" = -H ] || bad="$bad -H:$n" ;;
+        "zfs snapshot")
+            seen="$seen take"
+            case $n in
+                # The child's @p alone, on purpose.
+                *-exists-child-pre) [ "${#w[@]}" = 3 ] || bad="$bad pre:$n" ;;
+                *) [ "${#w[@]}" = 4 ] && [ "${w[2]}" = -r ] && [[ ${w[3]} == *@* ]] || bad="$bad take:$n" ;;
+            esac
+            ;;
         "zfs destroy")
             seen="$seen destroy"
             [ "${#w[@]}" = 4 ] && [ "${w[2]}" = -r ] && [[ ${w[3]} == *@* ]] || bad="$bad destroy:$n"
@@ -305,7 +319,7 @@ for d in "$OUT"/*/; do
     esac
 done
 check "rules: every record" "${bad:-none}" none
-for k in program hold holds destroy status; do
+for k in program hold holds destroy status take; do
     check "rules: met a $k" "$(case "$seen " in *" $k "*) echo yes ;; *) echo no ;; esac)" yes
 done
 # The locale: adapter_env sets it, and nothing else in the script does
