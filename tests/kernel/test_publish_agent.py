@@ -218,6 +218,56 @@ class Raw(unittest.TestCase):
             with open(log) as f:
                 self.assertEqual(f.read().split('\t')[2:], ['raw version', '1', 'refused version not 1\n'])
 
+    REQUEST = b'skyzfs-control 1\ncuts\n'
+
+    def serve_unread(self, d, answer):
+        """A daemon that answers and closes without reading the request,
+        as skyzfsd refuses a peer of another user. The request is only
+        peeked at, so that it is there and unread when the daemon closes:
+        on Linux the client's read after the answer then fails with
+        ECONNRESET, not EOF."""
+        os.makedirs(os.path.join(d, 'vol-x'))
+        path = os.path.join(d, 'vol-x', 'control')
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        srv.settimeout(10)
+
+        def serve():
+            try:
+                c, _ = srv.accept()
+                c.settimeout(10)
+                c.recv(len(self.REQUEST), socket.MSG_PEEK | socket.MSG_WAITALL)
+                if answer:
+                    c.sendall(answer)
+                c.close()
+            finally:
+                srv.close()
+        th = threading.Thread(target=serve, daemon=True)
+        th.start()
+        return th
+
+    def test_an_answer_before_a_reset_is_the_answer(self):
+        with tempfile.TemporaryDirectory() as d:
+            th = self.serve_unread(d, b'skyzfs-control 1\nrefused peer this daemon answers its own user\n')
+            log = os.path.join(d, 'agent.tsv')
+            answer = pa.raw(d, log, 'peer', self.REQUEST)
+            th.join(10)
+            self.assertEqual(answer, 'refused peer this daemon answers its own user')
+            with open(log) as f:
+                self.assertEqual(f.read().split('\t')[2:],
+                                 ['raw peer', '1', 'refused peer this daemon answers its own user\n'])
+
+    def test_a_reset_with_no_answer_is_the_rigs_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            th = self.serve_unread(d, b'')
+            log = os.path.join(d, 'agent.tsv')
+            with self.assertRaises(pa.RigError):
+                pa.raw(d, log, 'peer', self.REQUEST)
+            th.join(10)
+            with open(log) as f:
+                self.assertEqual(f.read().split('\t')[2:4], ['raw peer', '2'])
+
     def test_not_one_socket_is_the_rigs_error(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(pa.RigError):

@@ -169,21 +169,38 @@ class Agent:
 def raw(run, log, label, data, clock=time.monotonic_ns):
     """Send `data` as given to the volume's socket (the one `control`
     under RUN) and read the answer: for the requests that `skyzfsd`'s
-    commands would not send (another greeting, a malformed line)."""
+    commands would not send (another greeting, a malformed line).
+
+    A daemon that refuses before it has read the whole request (a peer
+    of another user) answers and closes with the request unread. On
+    Linux the write can then fail, and the read after the answer fails
+    with ECONNRESET and not EOF. As `skyzfsd`'s own `ask` does, the
+    answer is read all the same, and an error is the rig's only when no
+    answer came."""
     path = socket_path(run)
     t0 = clock()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(60)
+    got = b''
+    err = None
     try:
         s.connect(path)
-        s.sendall(data)
-        s.shutdown(socket.SHUT_WR)
-        got = b''
+        try:
+            s.sendall(data)
+            s.shutdown(socket.SHUT_WR)
+        except (BrokenPipeError, ConnectionResetError) as e:
+            err = e
         while True:
-            b = s.recv(65536)
+            try:
+                b = s.recv(65536)
+            except ConnectionResetError as e:
+                err = err or e
+                break
             if not b:
                 break
             got += b
+        if not got and err is not None:
+            raise err
     except OSError as e:
         with open(log, 'a') as f:
             f.write(f'{t0}\t{clock()}\traw {label}\t2\t{e}\n')
