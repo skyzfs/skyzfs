@@ -442,5 +442,70 @@ is "pchannel: records the socket's mode before the rig widens it" \
     "$(sed -n '/^ppeer() {$/,/^}$/p' "$SCRIPT" | grep -nE '^    (stat -c %a "\$sock"|chmod 0666)' | cut -d: -f2 | sed 's/^ *//; s/ .*//' | tr '\n' ' ')" \
     "stat chmod "
 
+is "prewind: reads the abandoned top after the export and before the rewind" \
+    "$(order_of rec_prewind '^    (export_pool|out=\$\(pagent ask cuts|echo "\$top"|import_pool -T)')" \
+    "export_pool out=\$(pagent echo import_pool export_pool "
+top_line=$(sed -n '/^rec_prewind() {$/,/^}$/p' "$SCRIPT" | grep -m1 '^    top=')
+is "prewind's top line is in the script" "$([ -n "$top_line" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2154  # out and top are the top line's, run through eval
+is "prewind's top is the group of the cuts answer" \
+    "$(out='cuts attachment=a state=b count=19 group=43 opens=itself'; eval "$top_line"; echo "$top")" 43
+# shellcheck disable=SC2034,SC2154  # out and top are the top line's, run through eval
+is "prewind's top before any cut is empty (the rig's error)" \
+    "$(out='cuts attachment=a state=b count=0 group=none opens=none'; eval "$top_line"; echo "[$top]")" "[]"
+
+# rec_pkillat's steps, and which requests asked anew are the ones judged
+# (#140's review, N5): r1, tk and m1 by the request asked anew, p1 by its
+# first, since the publish found was made for it.
+pk_fn=$(sed -n '/^rec_pkillat() {$/,/^}$/p' "$SCRIPT")
+is "pkillat: after the take-over, asks how T stands, asks again, then anew, waits, and looks at p1" \
+    "$(grep -nE '^ +(pask "\$t-after"|pagain "\$t-again"|if \[ "\$t" = p1 \]|panew "\$t-anew"|pwait "\$t-end"|pask "\$t-look" look|else)' <<< "$pk_fn" | cut -d: -f2- | sed 's/^ *//; s/ .*//' | tr '\n' ' ')" \
+    "pask pagain if panew pwait pask else panew pwait "
+is "pkillat: p1 asked anew is not recorded, the others are" \
+    "$(sed -n '/^    if \[ "\$t" = p1 \]; then$/,/^    fi$/p' <<< "$pk_fn" | grep -E '^ +panew ' | sed 's/^ *//')" \
+    'panew "$t-anew" "$t"
+panew "$t-anew" "$t" record'
+is "every panew of the script, with its arguments" \
+    "$(grep -E '^ +panew ' "$SCRIPT" | sed 's/^ *//')" \
+    'panew r1-anew r1 record
+panew tk-anew tk record
+panew "$t-anew" "$t"
+panew "$t-anew" "$t" record'
+is "pkillat: asking again records nothing (the take-over's request is refused)" \
+    "$(grep -cE '^ +pagain (tk-again|"\$t-again") .* record$' "$SCRIPT")" 0
+
+# prewindf: f1 pends, then the pool is exported, its newest root block
+# zeroed and imported with -F; f1's end is read after that, with the
+# pool synced between looks (the lead's addition to M2.6a's rig).
+is "prewindf: f1 pends, export, the root block zeroed, import -F (or -FX), then f1's end" \
+    "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_rewind_f|import_pool|pwait f1-end)')" \
+    "pflow export_pool zero_newest_root import_rewind_f pwait export_pool "
+is "prewindf: f1 is asked with G far above, so that it waits, and lives 900 s (its premise's expiry)" \
+    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pflow f1 f1 --group-plus 1000000 --expiry-s 900 ')" 1
+# The workflow runs every publish course by default (#141's review).
+WF=${SCRIPT%/*}/../../.github/workflows/skyzfs-publish-rig.yml
+is "the publish rig's default courses are the script's publish courses" \
+    "$(sed -n 's/.*\${COURSES:-\([a-z ]*\)}.*/\1/p' "$WF")" \
+    "$(sed -n 's/^PUBLISH_NAMED="\(.*\)"$/\1/p' "$SCRIPT")"
+is "prewindf: f1's end is read with the pool synced between looks" \
+    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pwait f1-end f1 [0-9]* sync$')" 1
+is "rewindf zeroes the root block and imports as prewindf does" \
+    "$(order_of rec_rewindf '^    (export_pool|zero_newest_root|import_rewind_f|committed)')" \
+    "export_pool zero_newest_root import_rewind_f committed export_pool "
+ir_fn=$(sed -n '/^import_rewind_f() {$/,/^}$/p' "$SCRIPT")
+is "import_rewind_f tries -F, then -FX, and says which imported" \
+    "$(grep -cE '^    for opt in -F -FX; do$|^    echo "imported with \$how" >> "\$RDIR/rewind-f.txt"$' <<< "$ir_fn")" 2
+is "prewindf is a publish course by name" \
+    "$(grep -c '^PUBLISH_NAMED=".* prewindf .*"$' "$SCRIPT")" 1
+
+# look (M2.6a): at t1 after it was done, at t5 after it expired and at t3,
+# never asked validly; at r1 with the store down, before it comes back.
+is "pplain: looks at t1 once done, at t5 once expired, and at t3" \
+    "$(order_of rec_pplain '^    (pwait t1-again-end|pask t1-look look t1$|pflow t5|pask t5-look look t5$|pask t3-look look t3$)')" \
+    "pwait pask pflow pask pask "
+is "prewind: looks at r1 with the store down, before it comes back" \
+    "$(order_of rec_prewind '^    (bash -c "\$S3_DOWN"|pflow r1|pask r1-look look r1$|bash -c "\$S3_UP")')" \
+    "bash pflow pask bash "
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

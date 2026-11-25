@@ -5,7 +5,8 @@ snapshot is published by a cut of the pool's present history", and §5.4).
 Usage: publish_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 Called by tests/kernel/cut-record.sh as its CUT_CHECK after each of the
-publish courses (pplain, prewind, pkill, pkillman, pkillpub, pchannel),
+publish courses (pplain, prewind, prewindf, pkill, pkillman, pkillpub,
+pchannel),
 recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
 daemon's request log; BASE is `-`. Environment: as nodeb_check.py's
 (SKZ_NODEB, SKZ_S3_ENDPOINT, SKZ_S3_BUCKET and the keys). The volume in
@@ -27,6 +28,11 @@ What the course left in DIR:
   that killed it (pkillman, pkillpub);
 - rewind-row.txt (prewind), tw-row.txt and tw-status.txt (pkill): node
   B's `row` and the daemon's status at the course's premise;
+- rewind-top.txt (prewind): the group of the daemon's newest cut before
+  the rewind, from `cuts` (the abandoned history's top);
+- rewind-f.txt (prewindf): what was zeroed of the newest group's root
+  block, and `imported with -F` or `-FX` (on the daemon -F alone is
+  refused: the labels' config is of the damaged group);
 - channel-status.txt and socket-mode.txt (pchannel): the status after
   the channel's requests, whose counts (COUNTS) must be exact, and the
   socket's mode before the rig widened it for the peer, which must be
@@ -61,20 +67,59 @@ landed before the kill was carried by a cut counted before the new
 count), and `look p1` then names the commit of snap/p1: for p1 the
 `snap` answer of the look stands in for `done` above.
 
+`look` (M2.6a; LOOKS): its `snap` answer for a name published must name
+the row node B read (its commit, state, cut, group and manifest), and
+for a name never published it must be `absent` (pplain's t5 and t3).
+With object storage down it must be `refused store` or `refused
+no-answer`, never `absent` (prewind's r1-look).
+
+A publish waiting for its cut across a rewind import (prewindf: the
+newest group's root block zeroed, then `zpool import -F`, which on this
+pool takes -FX) is ended by rule (R): its progress reads `refused
+rewound`, and the request log's first end of f1 says so after the
+rewind cut (pin_f1_ended_after_the_rewind_cut). That is all prewindf
+pins: the mark ends a waiting publish. f1 is asked with G far above
+its snapshot's, so no daemon that honours G could publish it in either
+history, and pin_f1_absent cannot fail for one (#141's review, D-c).
+
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
-not make the case it is there for: the rig's error, not a verdict.
+not make the case it is there for: the rig's error, not a verdict. A
+premise rests on what the rig and the kernel did (the request log's
+cut lines, the place of a request in it, the agent's own records, the
+pool), never on the daemon's answer to the request the course judges:
+a daemon that does not refuse, end or withdraw as the course asks fails
+a pin (exit 1), not a premise (#141's review, B2).
 
 The premises that make two courses test what they are for (the review
 of #139):
 - prewind: a cut counted after the first ask's C, of group G or later,
   that opens only as a rewind, was committed after that ask (node B's
   row read after the store came back, DIR/rewind-row.txt, and that
-  cut's `cut` line), and r1 was not made by an earlier one. A daemon
-  that published without "opens as itself", and without rule (R), would
-  have named that cut, which pin_answer_r1 and pin_r1_cut judge as
-  verdicts.
-- pkill: the instance that answered tw's withdrawal then counted cuts
+  cut's `cut` line), and r1 was not made by an earlier one that opens
+  as itself. And the ask came after a ground of rule (R) in the request
+  log: a cut counted after the first C whose group is not above the
+  groups of the instance's cuts before it, ahead of the line of r1's
+  first ask, whatever it was answered (pin_answer_r1 judges the
+  answer). r1 asked anew
+  must then be made by a cut above the top (DIR/rewind-top.txt;
+  pin_r1_above_top) that opens as itself (pin_r1_cut).
+  What the course pins is rule (R) at the ask (pin_answer_r1) and the
+  way out past the top. Under rule (R) r1 is refused before the
+  rewind-only cut is committed, and no publish can wait across such a
+  cut, so the course does not test "opens as itself" with a publish
+  waiting: that rests on the unit tests of skyzfs-upload's publish and
+  on the cut rig, which judges each cut's opening against the kernel
+  (#140's review, N1).
+- prewindf: the import was made with -F or -FX after the newest
+  group's root block was zeroed (DIR/rewind-f.txt), and a cut counted
+  after f1's C whose group is not above the groups of the instance's
+  cuts before it was counted while f1 could still wait: before f1's
+  expiry, counted from the agent's send in agent.tsv on the request
+  log's clock (so a course whose f1 expired first is the rig's error,
+  and not a daemon that did not end it).
+- pkill: the instance that answered tw's withdrawal, whatever it
+  answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
   (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
   have made it. Its status then (DIR/tw-status.txt) must count the
@@ -106,7 +151,7 @@ import cut_daemon_check  # noqa: E402
 import nodeb_check  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('pplain', 'prewind', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
+COURSES = ('pplain', 'prewind', 'prewindf', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
 
 # label -> the answers allowed, each a prefix of the answer line.
 EXPECTED = {
@@ -114,6 +159,7 @@ EXPECTED = {
         't1': ('done ',),
         't1-again': ('accepted',),            # asking twice is asking once
         't1-again-end': ('done ',),
+        't1-look': ('snap ',),                # the row of snap/t1 (LOOKS)
         't1-other': ('accepted',),            # another manifest: answered with no I/O
         't1-other-end': ('refused taken',),   # then looked up: snap/t1 names another
         't2': ('done ',),                     # --twice
@@ -121,6 +167,8 @@ EXPECTED = {
         'state': ('refused state',),
         't4': ('done ',),                     # G asked 20 above the snapshot's
         't5': ('expired',),
+        't5-look': ('absent',),               # expired: never made
+        't3-look': ('absent',),               # never asked validly
         't7': ('pending after',),
         't7-other': ('refused asked',),       # pending with other parameters
         't7-withdraw': ('withdrawn',),
@@ -132,8 +180,15 @@ EXPECTED = {
     # read then, it is published.
     'prewind': {
         'r1': ('refused rewound',),           # the snapshot's and hold's cuts open only as a rewind
+        'r1-look': ('refused store', 'refused no-answer'),  # object storage down: never `absent`
         'r1-anew': ('accepted',),             # past the abandoned top, a count read then
         'r1-end': ('done ',),
+    },
+    # A rewind by `zpool import -F` while f1 waits for its cut: the mark
+    # ends it.
+    'prewindf': {
+        'f1': ('pending after',),
+        'f1-end': ('refused rewound',),
     },
     'pkill': {
         'tw': ('pending after',),
@@ -179,6 +234,7 @@ EXPECTED = {
 PUBLISHED = {
     'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
     'prewind': {'r1': 'r1-end'},
+    'prewindf': {},
     'pkill': {'tk': 'tk-end'},
     'pkillman': {'m1': 'm1-end'},
     'pkillpub': {'p1': 'p1-look'},
@@ -187,7 +243,10 @@ PUBLISHED = {
 # Names that must have no ref and no row: an expired publish, one never
 # asked validly, one withdrawn before a kill and past whose G the pool's
 # cuts went.
-ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}
+ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'pkill': ('tw',)}
+# The names published -> the label of a `look` at them, whose `snap`
+# answer must name the row node B read (pin_T_look).
+LOOKS = {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}}
 # Between a kill and the next instance's answer (T-between.txt): whether
 # snap/T is there. manifest:1 kills before the transaction (a crash
 # there leaves no snap/T: the design's atomic visibility, the server's);
@@ -292,6 +351,18 @@ def done_commit(answer):
     return None
 
 
+def judge_look(answer, row):
+    """`look`'s `snap commit=H state=S number=N group=G manifest-len=L
+    manifest-hash=X` against the row node B read -> [what differs]
+    (#140's review, N6): its commit, state, cut, group and manifest."""
+    f = dict(w.split('=', 1) for w in answer.split()[1:] if '=' in w)
+    if not isinstance(row, dict):
+        return ['node B read no row to compare the look with']
+    want = {'commit': row['commit'], 'state': row['state'], 'number': str(row['number']), 'group': str(row['group']),
+            'manifest-len': str(row['manifest_len']), 'manifest-hash': row['manifest_hash']}
+    return [f'the look says {k} {f.get(k, "nothing")}, the row {v}' for k, v in want.items() if f.get(k) != v]
+
+
 def other_commit(commit):
     """ctl_commit's commit: COMMIT with its first digit changed, so
     that the line's short ids (12 digits) differ as the commits do."""
@@ -357,10 +428,12 @@ def rewind_committed(cuts, cut, req, named):
     row named once the store was back, must be of the state asked,
     counted after C, of group G or later, and one whose `cut` line says
     it opens only as a rewind; NAMED, the number of the cut that made
-    r1, must not be an earlier one (then that cut was never passed over).
-    r1 made by CUT itself is no premise's failure: it is the fault the
-    course is there to catch, and the row's pin (judge_cut) says so as a
-    verdict -> [what does not hold]."""
+    r1, must not be an earlier one that opens as itself (then CUT was
+    never offered to the publish). r1 made by CUT, or by an earlier cut
+    that opens only as a rewind, is no premise's failure: it is the fault
+    the course is there to catch, and the row's pin (judge_cut) says so
+    as a verdict, which a premise after it must not turn into the rig's
+    error (#139's second look, D1) -> [what does not hold]."""
     if cut is None:
         return ['node B\'s row named no cut after the store came back']
     state, number, group = cut
@@ -376,22 +449,90 @@ def rewind_committed(cuts, cut, req, named):
         bad.append(f'no cut line of number {number} and group {group} in the request log')
     elif any(c[2] for c in same):
         bad.append(f'cut {number} (group {group}) opens as itself: no daemon would pass it over')
-    if named is not None and named < number:
-        bad.append(f'r1 was made by cut {named}, before cut {number} was committed')
+    if named is not None and named < number and any(c[0] == named and c[2] for c in cuts):
+        bad.append(f'r1 was made by cut {named}, which opens as itself, before cut {number} was committed')
     return bad
 
 
 def withdrawn_past(instances, name, group):
     """pkill's premise (B3): the instance that answered NAME's withdrawal,
-    and the cuts it counted after that line, of group GROUP or later,
-    that open as itself -> (pid or None, [(number, group)])."""
+    whatever it answered (#141's review, B2: whether it was `withdrawn`
+    is pin_answer_tw-withdraw's and the status pin's), and the cuts it
+    counted after that line, of group GROUP or later, that open as
+    itself -> (pid or None, [(number, group)])."""
     for inst in instances:
         for ln in inst['lines']:
-            if ln['event'] == 'publish' and ln['op'] == 'withdraw' and ln['result'] == f'{name} withdrawn':
+            if ln['event'] == 'publish' and ln['op'] == 'withdraw' and ln['result'].split(' ', 1)[0] == name:
                 return inst['pid'], [(int(c['sectors']), int(c['result'])) for c in inst['lines']
                                      if c['event'] == 'cut' and c['line'] > ln['line'] and c['sector'] == 'itself'
                                      and c['result'].isdigit() and int(c['result']) >= group]
     return None, []
+
+
+def rewind_cuts(instances, after, stop=None):
+    """The ground of rule (R) in the request log's cut lines alone: the
+    cuts counted after AFTER whose group is not above the highest group
+    of that instance's cut lines before them, up to the first line for
+    which STOP holds (all of them where STOP is None) -> (whether a
+    STOP line was found, [(number, group, the highest before, its ns)]).
+    No premise reads the daemon's answer to the request it judges
+    (#141's review, B2): a daemon that does not refuse or end a request
+    fails a pin (exit 1), and the rig's error stays the rig's."""
+    for inst in instances:
+        top, seen = None, []
+        for ln in inst['lines']:
+            if stop is not None and stop(ln):
+                return True, seen
+            if ln['event'] == 'cut' and ln['result'].isdigit() and ln['sectors'].isdigit():
+                number, group = int(ln['sectors']), int(ln['result'])
+                if top is not None and number > after and group <= top:
+                    seen.append((number, group, top, ln['ns']))
+                top = group if top is None else max(top, group)
+        if stop is None and seen:
+            return False, seen
+    return False, []
+
+
+def asked_line(name):
+    """-> a STOP for rewind_cuts: the request log's line of NAME's ask,
+    whatever the daemon answered."""
+    return lambda ln: ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
+
+
+def ask_deadline(agent_text, name):
+    """agent.tsv -> the monotonic ns by which NAME's first publish has
+    expired at the latest counted from the agent's send: its start plus
+    its `--expiry-s` (600 where none was given; the daemon counts from
+    its acceptance, which is later, so a cut before this is within the
+    expiry). None where the agent asked no publish of NAME."""
+    for ln in agent_text.splitlines():
+        f = ln.split('\t')
+        if len(f) < 3 or not f[0].isdigit():
+            continue
+        words = f[2].split()
+        if words[:3] != ['publish', '--name', name]:
+            continue
+        expiry = words[words.index('--expiry-s') + 1] if '--expiry-s' in words[:-1] else '600'
+        if not expiry.isdigit():
+            raise RigError(f'agent.tsv: an expiry that is not a number: {ln[:200]!r}')
+        return int(f[0]) + int(expiry) * 1_000_000_000
+    return None
+
+
+def judge_ended(instances, name, ns):
+    """-> [what is wrong]: NAME's first end in the request log (a
+    `publish ended` line) must be `refused rewound`, after NS (the
+    ground's cut; prewindf's pin of rule (R) ending a waiting publish)."""
+    ended = [ln for inst in instances for ln in inst['lines']
+             if ln['event'] == 'publish' and ln['op'] == 'ended' and ln['result'].split(' ', 1)[0] == name]
+    if not ended:
+        return [f'the request log never ends {name}']
+    first, bad = ended[0], []
+    if first['result'] != f'{name} refused rewound':
+        bad.append(f"{name}'s first end is {first['result']!r} (line {first['line']})")
+    if first['ns'] <= ns:
+        bad.append(f"{name}'s first end (line {first['line']}) came before the rewind cut")
+    return bad
 
 
 def exact_counts(status, want):
@@ -514,6 +655,10 @@ def main():
                       f'{len(sent)} bytes, the row\'s length and hash, the bytes sent')
                 holds(f'pin_{t}_cut', judge_cut(cuts, row), 'server',
                       f"cut {row['number']} of group {row['group']} opens as itself in the request log")
+            look = LOOKS.get(name, {}).get(t)
+            if look is not None:
+                holds(f'pin_{t}_look', judge_look(ends[look], row), 'server',
+                      f'{look} names the row node B read: its commit, state, cut, group and manifest')
             if name == 'pplain' and t == 't1':
                 again = done_commit(ends['t1-again-end'])
                 holds('pin_asking_twice_is_once', [] if again == commit else
@@ -572,17 +717,53 @@ def main():
             r1 = read_published(text_of('published.tsv'), first=True).get('r1')
             if r1 is None:
                 raise RigError('no request of r1 in published.tsv')
+            if published['r1'] == r1:
+                raise RigError('r1 was not asked anew: its last request in published.tsv is its first')
+            found, grounds = rewind_cuts(instances, r1['after'], asked_line('r1'))
+            premise('premise_r1_asked_after_a_rewind_cut', found and bool(grounds),
+                    'no line of r1\'s ask in the request log' if not found else
+                    f"cuts counted after C = {r1['after']} before r1 was asked, not above the groups before them: "
+                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds) or 'none'))
             held = status_of(text_of('rewind-status.txt')).get('cuts_held', '')
             premise('premise_held_at_rewind', held.isdigit() and int(held) > 0,
                     f'cuts held with object storage down, at the rewind: {held or "none"}')
             cut = cut_daemon_check.read_row(text_of('rewind-row.txt'), 'rewind-row.txt')['cut']
             got = snap_row('r1')
             named = got['row']['number'] if isinstance(got.get('row'), dict) else None
+            top = text_of('rewind-top.txt').strip()
+            if not top.isdigit():
+                raise RigError(f'rewind-top.txt: not a group: {top!r}')
+            group = got['row']['group'] if isinstance(got.get('row'), dict) else None
+            holds('pin_r1_above_top', [] if group is not None and group > int(top) else
+                  [f"r1's cut is of group {group if group is not None else 'none'}, not above the top {top}"],
+                  'server', f"r1 asked anew was made by a cut of group {group}, above the abandoned history's "
+                  f"top {top}")
             bad = rewind_committed(cuts, cut, r1, named)
             premise('premise_rewind_cut_committed', not bad,
                     '; '.join(bad) if bad else
                     f"cut {cut[1]} of group {cut[2]}, counted after C = {r1['after']} at G = {r1['group']} or "
                     f"later, opens only as a rewind and was committed after the ask; r1 was made by cut {named}")
+        if name == 'prewindf':
+            f1 = published.get('f1')
+            if f1 is None:
+                raise RigError('no request of f1 in published.tsv')
+            damage = text_of('rewind-f.txt')
+            zeroed = damage.split()[1] if damage.startswith('zeroed ') and len(damage.split()) > 1 else ''
+            premise('premise_f1_import_f', zeroed.isdigit() and int(zeroed) > 0 and
+                    any(ln in ('imported with -F', 'imported with -FX') for ln in damage.splitlines()),
+                    flat(damage)[:300] or 'rewind-f.txt is empty')
+            deadline = ask_deadline(text_of('agent.tsv'), 'f1')
+            if deadline is None:
+                raise RigError('no publish of f1 in agent.tsv')
+            _, grounds = rewind_cuts(instances, f1['after'])
+            within = [g for g in grounds if g[3] <= deadline]
+            premise('premise_f1_waited_across_a_rewind_cut', bool(within),
+                    f"cuts counted after C = {f1['after']} within f1's expiry, not above the groups before them: "
+                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in within) or 'none')
+                    + (f'; {len(grounds) - len(within)} more after the expiry' if len(grounds) > len(within) else ''))
+            holds('pin_f1_ended_after_the_rewind_cut', judge_ended(instances, 'f1', within[0][3]), 'server',
+                  f'f1 ended `refused rewound` after cut {within[0][0]} of group {within[0][1]}, which the mark '
+                  f'of rule (R) covers (the top before it {within[0][2]})')
         if name in BETWEEN:
             t, there = BETWEEN[name]
             kill = text_of('kill.tsv').strip()

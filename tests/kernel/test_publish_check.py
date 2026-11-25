@@ -31,6 +31,7 @@ class Tables(unittest.TestCase):
                 't1': ('done ',),
                 't1-again': ('accepted',),            # the same request twice is one publish
                 't1-again-end': ('done ',),
+                't1-look': ('snap ',),                # the row node B reads (pin_t1_look)
                 't1-other': ('accepted',),            # answered before any lookup in object storage
                 't1-other-end': ('refused taken',),   # snap/t1 names another manifest
                 't2': ('done ',),
@@ -38,6 +39,8 @@ class Tables(unittest.TestCase):
                 'state': ('refused state',),
                 't4': ('done ',),
                 't5': ('expired',),                   # G never reached in its limit
+                't5-look': ('absent',),               # expired, so never made
+                't3-look': ('absent',),               # never asked validly
                 't7': ('pending after',),
                 't7-other': ('refused asked',),
                 't7-withdraw': ('withdrawn',),
@@ -46,8 +49,13 @@ class Tables(unittest.TestCase):
             },
             'prewind': {
                 'r1': ('refused rewound',),       # rule (R): below the abandoned top every cut is a mark
+                'r1-look': ('refused store', 'refused no-answer'),  # object storage down: never `absent`
                 'r1-anew': ('accepted',),         # past the top, with a count read then
                 'r1-end': ('done ',),
+            },
+            'prewindf': {
+                'f1': ('pending after',),             # G far above: it waits
+                'f1-end': ('refused rewound',),       # -F's first cuts are marks, which end it
             },
             'pkill': {
                 'tw': ('pending after',),
@@ -87,13 +95,17 @@ class Tables(unittest.TestCase):
         self.assertEqual(pc.PUBLISHED, {
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
             'prewind': {'r1': 'r1-end'},
+            'prewindf': {},
             'pkill': {'tk': 'tk-end'},
             'pkillman': {'m1': 'm1-end'},
             'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
         })
-        # t5 expired, t3 never asked validly, tw withdrawn before the kill.
-        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'pkill': ('tw',)})
+        # t5 expired, t3 never asked validly, f1 ended by the rewind's
+        # mark, tw withdrawn before the kill.
+        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'pkill': ('tw',)})
+        # A look at a name published must name its row.
+        self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
         # manifest:1 kills before the transaction (no snap/m1 may show),
         # publish:1 after it (snap/p1 must).
         self.assertEqual(pc.BETWEEN, {'pkillman': ('m1', False), 'pkillpub': ('p1', True)})
@@ -121,6 +133,9 @@ class Tables(unittest.TestCase):
             for t, label in pc.PUBLISHED[course].items():
                 want = ('snap ',) if (course, t) == ('pkillpub', 'p1') else ('done ',)
                 self.assertEqual(pc.EXPECTED[course][label], want, (course, t))
+            for t, label in pc.LOOKS.get(course, {}).items():
+                self.assertIn(t, pc.PUBLISHED[course])
+                self.assertEqual(pc.EXPECTED[course][label], ('snap ',), (course, t))
 
     def test_a_snap_answer_names_its_commit_as_done_does(self):
         h = 'c' * 64
@@ -236,7 +251,27 @@ class Rows(unittest.TestCase):
 
 
 def log_line(event, sector, sectors, result, k, op='-'):
-    return {'event': event, 'sector': sector, 'sectors': sectors, 'result': result, 'line': k, 'op': op}
+    return {'event': event, 'sector': sector, 'sectors': sectors, 'result': result, 'line': k, 'op': op,
+            'ns': 1000 * k}
+
+
+class Look(unittest.TestCase):
+    ROW = {'state': S, 'number': 9, 'group': 15, 'commit': H, 'snap': 'x', 'manifest_len': 414,
+           'manifest_hash': 'd' * 64}
+    LOOK = f'snap commit={H} state={S} number=9 group=15 manifest-len=414 manifest-hash={"d" * 64}'
+
+    def test_a_look_that_names_the_row(self):
+        self.assertEqual(pc.judge_look(self.LOOK, self.ROW), [])
+
+    def test_each_field_that_differs_is_said(self):
+        self.assertEqual(pc.judge_look(self.LOOK.replace('number=9', 'number=8'), self.ROW),
+                         ['the look says number 8, the row 9'])
+        self.assertEqual(pc.judge_look(self.LOOK.replace(' group=15', ''), self.ROW),
+                         ['the look says group nothing, the row 15'])
+        self.assertEqual(len(pc.judge_look(f'snap commit={H}', self.ROW)), 5)
+        self.assertEqual(pc.judge_look(self.LOOK, dict(self.ROW, commit='e' * 64)),
+                         [f'the look says commit {H}, the row {"e" * 64}'])
+        self.assertEqual(pc.judge_look(self.LOOK, None), ['node B read no row to compare the look with'])
 
 
 class Cuts(unittest.TestCase):
@@ -274,7 +309,7 @@ class Premises(unittest.TestCase):
             ((S, 11, 49), 12, 'below G = 50'),
             ((S, 10, 52), 11, 'opens as itself'),
             ((S, 12, 53), 13, 'no cut line of number 12'),
-            ((S, 9, 51), 8, 'before cut 9 was committed'),
+            ((S, 10, 52), 9, 'opens as itself'),
         ]
         for cut, named, why in cases:
             bad = pc.rewind_committed(self.CUTS, cut, R1, named)
@@ -282,6 +317,13 @@ class Premises(unittest.TestCase):
 
     def test_r1_made_by_the_rewind_cut_itself_is_left_to_the_verdict(self):
         self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 9), [])
+        # An earlier cut that opens only as a rewind: the verdict too (D1).
+        self.assertEqual(pc.rewind_committed(self.CUTS, (S, 9, 51), R1, 8), [])
+
+    def test_r1_made_by_an_earlier_cut_that_opens_as_itself_is_no_case(self):
+        cuts = [(8, 50, True, '1', 5), (9, 51, False, '1', 6)]
+        self.assertEqual(pc.rewind_committed(cuts, (S, 9, 51), R1, 8),
+                         ['r1 was made by cut 8, which opens as itself, before cut 9 was committed'])
         self.assertIn('opens only with a rewind', pc.judge_cut(self.CUTS, {'number': 9, 'group': 51})[0])
 
     def test_a_cut_number_seen_twice_counts_as_itself_if_either_line_says_so(self):
@@ -308,10 +350,83 @@ class Premises(unittest.TestCase):
 
     def test_no_withdrawal_line_no_instance(self):
         log = self.withdraw_log()
-        log[0]['lines'][1] = log_line('publish', '-', '-', 'tw pending', 2, op='withdraw')
-        self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
         log[0]['lines'][1] = log_line('publish', '-', '-', 'tw withdrawn', 2, op='asked')
         self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
+        log[0]['lines'][1] = log_line('publish', '-', '-', 'tw2 withdrawn', 2, op='withdraw')
+        self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
+
+    def test_the_withdrawal_line_whatever_it_answered(self):
+        """B2 of #141's review: a daemon that answers the withdrawal
+        `pending` fails pin_answer_tw-withdraw, and the premise holds."""
+        log = self.withdraw_log()
+        log[0]['lines'][1] = log_line('publish', '-', '-', 'tw pending', 2, op='withdraw')
+        self.assertEqual(pc.withdrawn_past(log, 'tw', 50), ('21', [(10, 50), (12, 52)]))
+
+    @staticmethod
+    def rewound_log(refusal='r1 refused rewound', op='asked'):
+        # The run at #140's 7d1152a (45551498087): the pool reached group
+        # 43; r1 asked with C = 19 was refused after cuts 20 and 21.
+        return [{'pid': '31', 'lines': [log_line('cut', 'itself', '17', '43', 1),
+                                        log_line('cut', 'rewind', '18', '27', 2),
+                                        log_line('cut', 'rewind', '19', '29', 3),
+                                        log_line('cut', 'rewind', '20', '31', 4),
+                                        log_line('cut', 'rewind', '21', '32', 5),
+                                        log_line('publish', '-', '-', refusal, 6, op=op),
+                                        log_line('cut', 'rewind', '22', '33', 7),
+                                        log_line('cut', 'itself', '26', '48', 8)]}]
+
+    def test_the_cuts_rule_r_refused_on(self):
+        ask = pc.asked_line('r1')
+        self.assertEqual(pc.rewind_cuts(self.rewound_log(), 19, ask), (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]))
+        # Cuts after the ask (22) are no ground, nor those at or before C.
+        self.assertEqual(pc.rewind_cuts(self.rewound_log(), 21, ask), (True, []))
+
+    def test_a_cut_above_the_groups_before_it_is_no_ground(self):
+        log = self.rewound_log()
+        log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '44', 4), log_line('cut', 'itself', '21', '45', 5)]
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, []))
+        # The equal group (the first cut of an -FX import) is a ground.
+        log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '43', 4)]
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, [(20, 43, 43, 4000)]))
+
+    def test_the_ask_is_the_anchor_whatever_it_was_answered(self):
+        """B2 of #141's review: a daemon without rule (R) at the ask, which
+        answers r1 `accepted`, fails pin_answer_r1 (exit 1); the premise
+        rests on the cut lines and the ask's place only."""
+        for answer in ('r1 accepted', 'r1 refused rewound', 'r1 refused store'):
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer), 19, pc.asked_line('r1')),
+                             (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]), answer)
+        for answer, op in (('r12 accepted', 'asked'), ('r1 refused rewound', 'ended'),
+                           ('r1 withdrawn', 'withdraw')):
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer, op), 19, pc.asked_line('r1'))[0], False,
+                             (answer, op))
+
+    def test_with_no_stop_every_ground_of_the_first_instance_that_has_one(self):
+        """prewindf: the ground needs no end line."""
+        log = self.rewound_log('f1 accepted')
+        self.assertEqual(pc.rewind_cuts(log, 19), (False, [(20, 31, 43, 4000), (21, 32, 43, 5000), (22, 33, 43, 7000)]))
+        self.assertEqual(pc.rewind_cuts([{'pid': '1', 'lines': []}] + log, 19)[1][0], (20, 31, 43, 4000))
+        self.assertEqual(pc.rewind_cuts(log, 26), (False, []))
+
+    def test_an_end_after_the_ground(self):
+        log = self.rewound_log('f1 accepted')
+        log[0]['lines'].append(log_line('publish', '-', '-', 'f1 refused rewound', 9, op='ended'))
+        self.assertEqual(pc.judge_ended(log, 'f1', 4000), [])
+        self.assertEqual(len(pc.judge_ended(log, 'f1', 9000)), 1)
+        log[0]['lines'].insert(7, log_line('publish', '-', '-', 'f1 expired', 7, op='ended'))
+        self.assertEqual(pc.judge_ended(log, 'f1', 4000), ["f1's first end is 'f1 expired' (line 7)"])
+        self.assertEqual(pc.judge_ended(self.rewound_log('f1 accepted'), 'f1', 4000),
+                         ['the request log never ends f1'])
+
+    def test_the_ask_s_deadline_from_the_agent_s_record(self):
+        text = ('100\t200\tcuts\t0\tcuts attachment=a\n'
+                '5000000000\t5000000100\tpublish --name f1 --attachment a --after 3 --expiry-s 900\t0\taccepted\n'
+                '7000000000\t7000000100\tpublish --name f1 --attachment a --after 4\t0\taccepted\n')
+        self.assertEqual(pc.ask_deadline(text, 'f1'), 905_000_000_000)
+        self.assertEqual(pc.ask_deadline(text.split('\n', 2)[2], 'f1'), 607_000_000_000)
+        self.assertIsNone(pc.ask_deadline(text, 'f12'))
+        with self.assertRaises(RigError):
+            pc.ask_deadline('1\t2\tpublish --name f1 --expiry-s x\t0\t\n', 'f1')
 
     def test_exact_counts(self):
         st = {'publish_withdrawn': '1', 'publish_pending': '0', 'publish_published': '0'}
