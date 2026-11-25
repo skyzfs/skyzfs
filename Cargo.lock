@@ -4193,6 +4193,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-agent"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "postcard",
+ "serde",
+ "serde_json",
+ "skyzfs-control",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "skyzfs-blk"
 version = "0.0.1"
 dependencies = [

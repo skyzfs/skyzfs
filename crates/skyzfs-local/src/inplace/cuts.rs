@@ -109,6 +109,15 @@
 //!   could put in a ring), raises the top, which only delays publishes
 //!   and never lets one through.
 //!
+//!   A stated limit (N3 of the review of #140; the lead's D-d): (R)
+//!   over-marks a pool made anew on a volume the same daemon serves.
+//!   `zpool create` writes the rings with uberblocks of group 0, so the
+//!   new pool's groups start low, while the top in memory is still the
+//!   old pool's. Every cut is marked, and every publish refused
+//!   `rewound`, until the new pool's groups pass the old top or the
+//!   daemon restarts (the top is read again from the rings). It only
+//!   delays.
+//!
 //!   The readings are conservative, where the design is silent: a group
 //!   that errs low counts as a rewind, and the count at the start counts
 //!   as one, as the mark is in memory and a take-over cannot know what
@@ -123,9 +132,13 @@
 //!     `checkpoint.ub_txg = spa->spa_uberblock.ub_txg + 1`), above every
 //!     group before it, so no cut is marked. The agent guards it: its
 //!     premise refuses a pool with a checkpoint, and every check reads
-//!     that again (M2.6b; the lead's decision D1 on #140). What is left:
-//!     a checkpoint taken and rewound to inside one publish's window (at
-//!     most its expiry) while the agent is down.
+//!     that again (M2.6b; the lead's decision D1 on #140). A checkpoint
+//!     taken after `pool@t` holds `pool@t`, so a rewind to it publishes
+//!     the snapshot asked for. One taken before `pool@t` is caught by
+//!     the agent's premise check at Taken, after the snapshot (S1 of the
+//!     review of #140; D4 of #142's). What is left: a checkpoint taken
+//!     and rewound to within one publish's window (at most its expiry)
+//!     while the agent is down and no check runs.
 //!   - **A rewind whose new groups pass the top before any cut is
 //!     counted**: an import by `-T`, with no flush reaching its barrier
 //!     until the groups passed the abandoned ones. ZFS flushes at each

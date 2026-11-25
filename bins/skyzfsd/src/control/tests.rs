@@ -983,6 +983,35 @@ mod uploader {
         drop(rx);
     }
 
+    /// The one limit is each request's own: it begins when the request
+    /// does, not when the handler was made. A handler made and left idle
+    /// past its limit still answers a request whose uploader answers
+    /// within it (after a quarter of it: an answer at once can slip
+    /// through a timeout of zero, whose timer ticks in milliseconds).
+    ///
+    /// Mutant: the limit's start taken once, when the handler is made
+    /// (plant Wb of the next look at #140; the request then reads
+    /// `no-answer` at once).
+    #[test]
+    fn the_limit_begins_with_each_request() {
+        let limit = Duration::from_millis(200);
+        let (tx, mut rx) = mpsc::channel(handler::INBOX);
+        let uploader = std::thread::spawn(move || {
+            while let Some(control) = rx.blocking_recv() {
+                if let Control::Ask { reply, .. } = control {
+                    std::thread::sleep(limit / 4);
+                    let _ = reply.send(Answer::Accepted);
+                }
+            }
+        });
+        let mut handler =
+            handler::uploader(A, tx, answered_desk(), no_snapshots, limit).expect("a handler");
+        std::thread::sleep(limit * 2);
+        assert_eq!(handler(&publish(None), Vec::new()), Reply::Accepted);
+        drop(handler);
+        uploader.join().expect("the fake uploader");
+    }
+
     /// A `publish` to a store no longer served reads `ended`, as `cuts`
     /// does, and is not given to the uploader: no mark could go with it.
     ///

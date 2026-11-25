@@ -1106,6 +1106,64 @@ fn a_rewind_to_a_checkpoint_is_not_marked() {
     assert_eq!(seen, [(1, 0), (2, 0), (3, 0), (4, 0)]);
 }
 
+/// A second state of the top's group is remembered: after group 20 is
+/// named in another state (as the first group of a `-F` names it), a
+/// cut that names group 20's first state again is marked as well, since
+/// neither state can be told for the pool's own. Only a replayed or
+/// foreign write names it so (plant Q5 of the next look at #140, which
+/// kept the first state as the top's).
+#[test]
+fn a_second_state_of_the_tops_group_is_remembered() {
+    let disk = created(27, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    let mut seen = Vec::new();
+    for (step, (txg, root)) in [(19, 1), (20, 1), (20, 2), (20, 1)].into_iter().enumerate() {
+        group(&mut store, 10 * step as u64 + 1, txg, root);
+        seen.push(rewound(&store));
+    }
+    assert_eq!(seen, [(1, 0), (2, 0), (3, 3), (4, 4)]);
+}
+
+/// The start raises the top only with an uberblock of the rings that
+/// verifies: a slot whose checksum fails (torn, or not ZFS's) is not
+/// the pool's. Here a slot of group 50 is written without its checksum
+/// before a take-over; the cuts after the start, of groups 30 and 31,
+/// are above the pool's own and are not marked. A start that raised the
+/// top with it would mark them, which only delays publishes (plant Q7
+/// of the next look at #140).
+#[test]
+fn an_uberblock_that_does_not_verify_does_not_raise_the_top() {
+    let disk = created(28, 0);
+    let region = region();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    group(&mut store, 1, 20, 1);
+    for label in 0..LABELS {
+        let offset = ring(label) + (50 % RING_SLOTS) * SLOT;
+        let unsealed = Op::Write {
+            offset,
+            data: uberblock(50, 9),
+        };
+        assert!(run(&mut store, 11 + label as u64, unsealed).result.is_ok());
+    }
+    assert!(run(&mut store, 11 + LABELS as u64, Op::Flush)
+        .result
+        .is_ok());
+    assert_eq!(
+        rewound(&store),
+        (1, 0),
+        "an unverified slot counted as a cut"
+    );
+    drop(store);
+    disk.kill();
+    let mut store = start_on(&disk, 0, &region, ON_CALLER);
+    let mut seen = vec![rewound(&store)];
+    group(&mut store, 21, 30, 2);
+    seen.push(rewound(&store));
+    group(&mut store, 31, 31, 3);
+    seen.push(rewound(&store));
+    assert_eq!(seen, [(1, 1), (2, 1), (3, 1)]);
+}
+
 /// A start that takes up a count takes it as the rewind mark: the mark
 /// is in memory, and what the instance before saw between its last
 /// answer and its death is not known (the lead's answer to the plan's

@@ -67,22 +67,23 @@
 //!
 //!   The E seconds are counted from the acceptance on this daemon's
 //!   uploader: asked again while it pends, a publish keeps the deadline
-//!   it had; asked of the next daemon (after a restart), it has a new
-//!   one where no cut was counted after C before the restart, and is
-//!   refused `rewound` otherwise (below). So an agent that holds
-//!   `pool@T` while its publish pends counts its hold from its last
-//!   request answered `accepted`, not its first (q11 of the review of
-//!   #122).
+//!   it had. Asked of the next daemon (after a restart), it is a request
+//!   of that daemon, judged by the one rule below, and has a new deadline
+//!   if it is accepted. So an agent that holds `pool@T` while its publish
+//!   pends counts its hold from its last request answered `accepted`,
+//!   not its first (q11 of the review of #122).
 //!
 //!   `refused rewound`, to a `publish` or as its `progress` (work
-//!   package M2.6a): a cut that may follow a rewind was counted after C,
-//!   before the request or while it waits for its cut (one whose group
-//!   is not above the highest group the daemon has seen since its start,
-//!   as the first groups after `zpool import -F` or `-T` are), or this
-//!   daemon started after C, so a cut that carries the request may be of
-//!   a history without `pool@T`. Nothing is published. The agent checks
-//!   `pool@T` and asks again with a count read anew. A publish that was
-//!   given its cut before the rewind is not ended so
+//!   package M2.6a). One rule: a request whose C is below the count this
+//!   daemon started with, or below the live rewind mark, is refused
+//!   `rewound`, when it is asked or later, while it waits for its cut,
+//!   once the mark passes C. The mark is the number of the newest cut
+//!   whose group is not above the highest group this daemon has seen
+//!   since its start, as the first groups after `zpool import -F` or `-T`
+//!   are; it never goes back. A cut that carries such a request may be
+//!   of a history without `pool@T`. Nothing is published. The agent
+//!   checks `pool@T` and asks again with a count read anew. A publish
+//!   already given its cut when the mark passes its C is not ended so
 //!   (`skyzfs_upload::publish`).
 //! - `progress`: how the publish of T stands. `done` names the commit
 //!   (H, 64 hex digits) that `snap/T` names. `unknown`: not asked of
@@ -355,7 +356,8 @@ pub enum Code {
     Asked,
     /// Too many publishes pend.
     Busy,
-    /// `snap/T` names another commit.
+    /// `snap/T` exists and does not record this request: it names
+    /// another commit, or its row records another cut or manifest.
     Taken,
     /// The uploader publishes nothing more.
     Stopped,
