@@ -28,7 +28,14 @@
 //! - **Pending**: withdrawn where the hold is not there, the snapshot
 //!   is broken, or `load_guid` changed. Otherwise, with no qualifying
 //!   cut [`ASSIST_AFTER`] after `accepted`, `zpool sync`
-//!   ([`Action::Assist`]), one at a time, [`ASSIST_PAUSE`] apart.
+//!   ([`Action::Assist`]), one at a time, [`ASSIST_PAUSE`] apart. With a
+//!   qualifying cut, a sync once [`ASSIST_AFTER`] has passed since the
+//!   last one, and no sooner than twice [`ASSIST_AFTER`] after
+//!   `accepted` ([`assist_due`]): the daemon's `cuts` counts the newest
+//!   cut and does not say whether it was abandoned, and one abandoned on
+//!   an idle pool would otherwise stop every sync until the request
+//!   expires (Codex on #142; the lead's D3). Where the cut lands, the
+//!   request ends and so do the syncs.
 //! - **What the daemon answers.** `done`, `expired`, `withdrawn`,
 //!   `refused attachment`, `refused state` and `refused taken` are read
 //!   with `look` first: `snap/t` that is this publish's is
@@ -78,7 +85,8 @@ use crate::record::{Count, Member, Phase, Publish, Taken, Why};
 
 /// How long after `accepted` a publish with no qualifying cut is helped
 /// by `zpool sync`: two of ZFS's default transaction group timeouts (the
-/// lead's Q8).
+/// lead's Q8). With a qualifying cut, also the least time between two
+/// syncs ([`assist_due`]).
 pub const ASSIST_AFTER: Duration = Duration::from_secs(10);
 
 /// The least time between two syncs of one publish. "One at a time" (the
@@ -284,6 +292,31 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
     }
 }
 
+/// Whether a publish pending since `asked_ms`, last helped at
+/// `assisted_ms`, is due a `zpool sync` at `now_ms`.
+///
+/// With no qualifying cut: from [`ASSIST_AFTER`] after `asked_ms`, each
+/// [`ASSIST_PAUSE`] after the last. With one (`carried`): a cut that
+/// carries the request is on its way, so a sync helps only where that cut
+/// was abandoned (the daemon's `cuts` cannot say): once [`ASSIST_AFTER`]
+/// has passed since the last sync, and since twice [`ASSIST_AFTER`]
+/// after `asked_ms`. It cannot spin: a sync is due at most once per
+/// [`ASSIST_AFTER`] here (and per [`ASSIST_PAUSE`] without such a cut),
+/// since the engine records each in [`Seen::assisted_ms`] before it plans
+/// again, and the request ends, at the latest at its expiry, after which
+/// nothing pends.
+fn assist_due(carried: bool, asked_ms: u64, assisted_ms: Option<u64>, now_ms: u64) -> bool {
+    let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    let after = |at: u64, d: Duration| now_ms >= at.saturating_add(ms(d));
+    if carried {
+        let from = asked_ms.saturating_add(ms(ASSIST_AFTER));
+        let from = assisted_ms.map_or(from, |last| last.max(from));
+        after(from, ASSIST_AFTER)
+    } else {
+        after(asked_ms, ASSIST_AFTER) && assisted_ms.is_none_or(|last| after(last, ASSIST_PAUSE))
+    }
+}
+
 /// Whether the daemon's newest cut carries the request: of its state,
 /// counted after its count, of the snapshot's group or later, and opened
 /// as itself.
@@ -339,14 +372,8 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
                 // Accepted before the agent stopped, and not recorded.
                 return Action::Ask;
             };
-            if qualifies(cuts, &publish.count, taken) {
-                return Action::Wait;
-            }
-            let after = |ms: u64, d: Duration| {
-                seen.now_ms >= ms.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-            };
-            let paused = seen.assisted_ms.is_none_or(|ms| after(ms, ASSIST_PAUSE));
-            if after(asked_ms, ASSIST_AFTER) && paused {
+            let carried = qualifies(cuts, &publish.count, taken);
+            if assist_due(carried, asked_ms, seen.assisted_ms, seen.now_ms) {
                 Action::Assist
             } else {
                 Action::Wait

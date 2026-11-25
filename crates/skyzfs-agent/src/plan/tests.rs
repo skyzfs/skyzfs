@@ -430,7 +430,8 @@ fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
         (
             "here, past held_until: a publish pending keeps its hold",
             asked(),
-            seen().at(UNTIL + 1).cuts(carrying()),
+            // Helped a moment ago, so that no sync is due either.
+            seen().at(UNTIL + 1).cuts(carrying()).assisted(UNTIL),
             Action::Wait,
         ),
     ];
@@ -457,9 +458,11 @@ fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
     check(rows);
 }
 
-/// Mutant: `zpool sync` run where a cut already carries the request,
-/// before [`ASSIST_AFTER`], more often than [`ASSIST_PAUSE`], or where a
-/// part of the cut's test is left out.
+/// Mutant: `zpool sync` run where a cut already carries the request
+/// more often than once per [`ASSIST_AFTER`] or before twice it, never
+/// run while one does (an abandoned cut stops the help until the
+/// expiry), run before [`ASSIST_AFTER`], more often than
+/// [`ASSIST_PAUSE`], or where a part of the cut's test is left out.
 #[test]
 fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
     let due = ASKED + 10 * SECOND;
@@ -502,6 +505,49 @@ fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
             Action::Assist,
         ),
     ];
+    // A cut that carries it may have been abandoned, which `cuts` does
+    // not say: a sync once ASSIST_AFTER has passed since the last, and
+    // from twice ASSIST_AFTER after `accepted` (Codex on #142).
+    let twice = ASKED + 20 * SECOND;
+    let carried = |at: u64| seen().at(at).cuts(carrying());
+    rows.extend([
+        (
+            "a cut carries it, a ms before twice due",
+            asked(),
+            carried(twice - 1),
+            Action::Wait,
+        ),
+        (
+            "a cut carries it, twice due",
+            asked(),
+            carried(twice),
+            Action::Assist,
+        ),
+        (
+            "a cut carries it, assisted before twice due, at twice due",
+            asked(),
+            carried(twice).assisted(due),
+            Action::Assist,
+        ),
+        (
+            "a cut carries it, assisted a ms less than ASSIST_AFTER ago",
+            asked(),
+            carried(twice + 5 * SECOND).assisted(twice - 5 * SECOND + 1),
+            Action::Wait,
+        ),
+        (
+            "a cut carries it, assisted ASSIST_AFTER ago",
+            asked(),
+            carried(twice + 5 * SECOND).assisted(twice - 5 * SECOND),
+            Action::Assist,
+        ),
+        (
+            "a cut carries it, assisted a pause ago",
+            asked(),
+            carried(twice + 30 * SECOND).assisted(twice + 29 * SECOND),
+            Action::Wait,
+        ),
+    ]);
     let not_carrying = [
         (
             "another attachment",

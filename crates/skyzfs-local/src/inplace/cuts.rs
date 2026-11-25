@@ -134,11 +134,11 @@
 //!     premise refuses a pool with a checkpoint, and every check reads
 //!     that again (M2.6b; the lead's decision D1 on #140). A checkpoint
 //!     taken after `pool@t` holds `pool@t`, so a rewind to it publishes
-//!     the snapshot asked for. What is left: a checkpoint taken before
-//!     `pool@t` that the agent's last check before the snapshot did not
-//!     see, rewound to inside one publish's window (at most its expiry)
-//!     while the agent is down. A check after the snapshot closes it
-//!     (S1 of the review of #140).
+//!     the snapshot asked for. One taken before `pool@t` is caught by
+//!     the agent's premise check at Taken, after the snapshot (S1 of the
+//!     review of #140; D4 of #142's). What is left: a checkpoint taken
+//!     and rewound to within one publish's window (at most its expiry)
+//!     while the agent is down and no check runs.
 //!   - **A rewind whose new groups pass the top before any cut is
 //!     counted**: an import by `-T`, with no flush reaching its barrier
 //!     until the groups passed the abandoned ones. ZFS flushes at each
