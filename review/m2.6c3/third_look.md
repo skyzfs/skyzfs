@@ -1,6 +1,10 @@
-# Third look at #149 (M2.6c-3, the program `skyzfs-agent`) at 6d1841a
+# Third look at #149 (M2.6c-3, the program `skyzfs-agent`) at 6d1841a, and its merge 09e3227
 
-- **Head:** `6d1841a46bde7be423fa37f5f0fcd25a23840fe1`. **Base:** `zfs-topology` (the pull request's base sha `8f0390f`).
+- **Head now:** `09e322790c8bd2ca2078a9635bc9ad3f6a92000c`. It merges `zfs-topology` at `a5e883a` (with #147 and #151 merged there) into `6d1841a`. **Base:** `zfs-topology`; the pull request's base sha is now `a5e883a`.
+- **Head of the review proper:** `6d1841a46bde7be423fa37f5f0fcd25a23840fe1`. The base was then `8f0390f`.
+- **Which head each part was judged at:**
+  - The code, the three questions, N6, the scratch tests, the searches and the plants were judged at `6d1841a`. They hold at `09e3227` because the package's files are byte for byte the same there (next section).
+  - The merge `09e3227`, the gates and CI were judged at `09e3227`.
 - **Previous look:** `0ad7944` (`next_look.md` here, posted on the pull request as comment 7173804184). N5 blocked by the lead's ruling, plus T-a, T-b and nits.
 - **The author's answer:** https://github.com/skyzfs/skyzfs/pull/149#issuecomment-7175161277
 - **Diff reviewed:** `git diff 0ad7944...6d1841a`, in three parts:
@@ -8,9 +12,25 @@
   - `03793ac`: the merge of #147's head `66b9044`, read with `git show --remerge-diff`.
   - `6d1841a`: docs only.
 
-## Verdict
+## The new head 09e3227: the merge of zfs-topology
 
-**Can merge once CI is green on the head**, as far as this pull request's code goes.
+The merge brings zfs-topology and changes nothing of the package.
+- **Parents:** `6d1841a` and `a5e883a`, the tip of `origin/zfs-topology`. #147 is merged there as `f927674` (its head `66b9044`, which `03793ac` had merged) and #151 as `d8f7f7c`.
+- **No conflict and no hand edit:**
+  - `git show --remerge-diff 09e3227` is empty.
+  - `git merge-tree --write-tree 6d1841a a5e883a` exits 0 with tree `75ee4d3`, which is `09e3227`'s tree.
+- **What the merge brings** (`git diff 6d1841a 09e3227`): 25 files, +2036/-32, all of them zfs-topology's. These are the workflows, the zfs-cli record, the txg probe, the dsync writer, `skynbd-*`, `skyzfsd`, `skyzfs-local` and the docs. None is in `skyzfs-agent`, `skyzfs-agent-cli` or `skyzfs-control`. Those three crates depend only on each other.
+- **The pull request's own diff against zfs-topology** (`git diff a5e883a 09e3227`) is this package alone: 16 files, +4056/-151.
+  - The files are `Cargo.toml`, `Cargo.lock`, `bins/skyzfs-agent/` and `crates/skyzfs-agent/`.
+  - The patch is identical to the one `6d1841a` carried over `66b9044` for those 16 files.
+  - Every one of the 17 files the branch changed since `66b9044` has the same blob at `6d1841a` and `09e3227`.
+- **One file left the diff:** `crates/skyzfs-ublk-sys/src/queue.rs`.
+  - The branch had a doc-link fix there, from `af50814`. zfs-topology made the same change in `cd4d0b5` ("Docs: cargo doc without warnings"), and both sides have the same blob.
+  - So it drops out of the diff. As a result, the replay rig is no longer triggered on this pull request.
+
+## Verdict at 09e3227
+
+**Can merge once CI is green on `09e3227`**, as far as this pull request's code goes. The code was judged at `6d1841a` and is unchanged at `09e3227`.
 
 - **N5 is fixed**, exactly as verified at the last look (fix probe F1).
   - Its test is the review's N5, and it kills the plants the author names.
@@ -75,6 +95,11 @@ So the program cannot reach this. It is a hole in the engine's contract as its o
    - `<pool>@<name>` would say what to type.
    - With #147's partial holds, the remedy may fail on a member that has no tag, depending on how ZFS treats `-r` there. That is #147's ground; I have not checked it.
 2. Nit 1 of the last look (the stall test's doc) is left as it was, as I suggested; N3 is unchanged at this head.
+3. **Codex's two threads have no answer from the author** (a process item, read at `09e3227`). Both findings were made at `af50814`, and both are fixed in `2d806e8`:
+   - P1, "Keep the hold when recovery receives an inconclusive answer" (`plan.rs`), is the review's B1. Plants B1a-h are killed.
+   - P2, "Track the publish across snapshot-name collision retries" (`program.rs`), is the review's D2. It is pinned by `a_publish_made_under_its_next_name_exits_by_its_outcome`, and plants D2a-d are killed.
+   - Codex's code review of `09e3227` completed with no findings, and its state says no unresolved findings. Its security review was still running when I read it.
+   - The guide asks the author to answer Codex on its thread. One line on each thread, pointing at `2d806e8`, would close this.
 
 ## The three questions
 
@@ -150,9 +175,9 @@ Right.
 
 ## Verification
 
-### Gates (`gates149t.log`)
+### Gates (`gates149t.log` at `6d1841a`, `gates149m.log` at `09e3227`)
 
-Run with rustc 1.100.0 (stable after `rustup update stable`), with my own target directory and `debug=0`:
+Run with rustc 1.100.0 (stable after `rustup update stable`), with my own target directory and `debug=0`. The results are the same at both heads:
 
 | Gate | Result |
 |---|---|
@@ -214,4 +239,4 @@ BLOCKS
 - `third149_search.out`: N1a and N1b.
 - `third149_scratch.out`: N2, N2b, N2c, N3, N4, N4b, N5 and N6, and N6 with F2.
 - `plants149t.py` and `plants149t.out`.
-- `gates149t.log`, made by `gates149n.sh`.
+- `gates149t.log` (at `6d1841a`) and `gates149m.log` (at `09e3227`), both made by `gates149n.sh`.
