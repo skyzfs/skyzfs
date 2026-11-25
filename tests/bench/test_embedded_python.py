@@ -209,6 +209,75 @@ class Embedded(unittest.TestCase):
             self.assertNotIn('upload', r['skyzfsd'])
             self.assertNotIn('uploads to', r['skyzfsd']['serve_args'])
 
+    def test_the_median_s_counts_and_the_seed_paragraph(self):
+        """The count after the verdict table, at verdicts of both kinds in
+        both groups, a seed's marked BELOW among them (review of #132, N9
+        and N10); the paragraph's seed rule and seed rows (S19, S19b); and
+        the status table's column for a start with no pid (O7)."""
+        devs = 'dev pool 0 0 0 0 0 0 0 0\ndev origin 0 0 0 0 0 0 0 0\n'
+        st = lambda **kv: devs + ''.join(f'skz {k} {v}\n' for k, v in kv.items())
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload none\nbuild abc\n')
+            plain = self.row(d, {'.before': st(pid=7, uploaded=0), '.after': st(pid=7, uploaded=0), '.pgbench': ''})
+            self.assertNotIn('upload', plain['skyzfsd'])
+            with open(os.path.join(d, 'zfs-skyzfsd.skzinfo'), 'w') as f:
+                f.write('serve_args \nrelease_every 0\nupload http://127.0.0.1:9000 tb-1-1 tb-17\nbuild abc\n'
+                        'upload_from_load window\n')
+            with open(os.path.join(d, 'r.released'), 'w') as f:
+                f.write('1795069506\n')
+            # a seed let go at its window and committed in it: judged, marked
+            marked = self.row(d, {'.before': st(pid=7, lease='none', lease_epoch=0, uploaded=0, uploaded_whole=0,
+                                                upload_found_committed=0),
+                                  '.after': st(pid=7, lease='held', lease_epoch=1, uploaded=1, uploaded_whole=1,
+                                               upload_found_committed=0), '.pgbench': ''})
+            self.assertIs(marked['skyzfsd']['released_here'], True)
+            os.unlink(os.path.join(d, 'r.released'))
+            # a seed row with no verdict: the lease not held at its end
+            unheld = self.row(d, {'.before': st(pid=7, lease='none', uploaded=0, uploaded_whole=0),
+                                  '.after': st(pid=7, lease='waiting', uploaded=0, uploaded_whole=0), '.pgbench': ''})
+            # O7: a row whose start was not read, and one whose start shows no daemon
+            nostart = self.row(d, {'.before': devs + 'skz read_at_ns 1000\n', '.after': st(pid=7, uploaded=3),
+                                   '.pgbench': ''})
+            gonestart = self.row(d, {'.before': devs + 'skz read_at_ns 1000\nskz counters left_by_a_daemon_that_is_gone\n',
+                                     '.after': st(pid=7, uploaded=3), '.pgbench': ''})
+            model = {k: v for k, v in plain.items() if k != 'skyzfsd'}
+            model.update(topology='zfs-slog', origin_delay_ms=0)
+            seq = [('m', 1000), (plain, 950), ('m', 1000), (plain, 960), ('m', 1000), (plain, 850), ('m', 1000),
+                   (marked, 850), ('m', 1000), (unheld, 950), ('m', 1000), (nostart, 950), ('m', 1000),
+                   (gonestart, 950), ('m', 1000)]
+            for n, (r, tps) in enumerate(seq, 1):
+                r = dict(model if r == 'm' else r, tps=float(tps), machine='m', workload='tpcb')
+                os.makedirs(os.path.join(d, 'out', str(n)))
+                with open(os.path.join(d, 'out', str(n), f"tpcb-{r['topology']}.json"), 'w') as f:
+                    json.dump(r, f)
+            p = subprocess.run(['bash', SCRIPT, 'summarize', os.path.join(d, 'out')], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+            verdicts = [ln.rstrip(' |').split(' | ')[-1] for ln in p.stdout.split('| verdict |', 1)[1].split('\n\n')[0].splitlines()[2:]]
+            self.assertEqual([v.split(' (')[0][:16] for v in verdicts],
+                             ['at least 0.90', 'at least 0.90', 'BELOW 0.90', 'BELOW 0.90', 'NO VERDICT: the ',
+                              'NO VERDICT: the ', 'NO VERDICT: the '], p.stdout[-3000:])
+            self.assertIn('BELOW 0.90 (seed inside window, lease at release (epoch 1)) |', p.stdout)
+            self.assertIn("\nRows for design §9's median (the steady state): 3 with a verdict (2 at least, 1 below), "
+                          "2 with none.\n", p.stdout)
+            self.assertIn("Seed rows, not in the median (1 with a verdict (0 at least, 1 below), 1 with none): ",
+                          p.stdout)
+            # S19: the seed rule; S19b: the seed rows, by their subject
+            self.assertIn('A row whose seed was let go at its first window (TB_SKZ_UPLOAD_FROM_LOAD=window) measures the '
+                          'seed in that window: it is judged when its own window let MinIO go, the volume had no lease '
+                          "and no upload had committed at the window's start, and a whole upload had committed by its "
+                          'end under the lease held there, which the daemon took in the window; its verdict says "seed '
+                          'inside window, lease at release" and the lease\'s epoch.', p.stdout)
+            self.assertIn("A seed row (one that says it uploads and had committed no upload at its window's start, or "
+                          'none after its seed, so that its window began with the seed or with the upload that carries '
+                          'what was written while the seed ran, and whose daemon had found no cut committed already) '
+                          "keeps its verdict on its line but is not one of design §9's median", p.stdout)
+            status = p.stdout.split('one server throughout', 1)[1].split('\n\n')[0].splitlines()[2:]
+            self.assertEqual(sorted(ln.split(' | ')[13] for ln in status),
+                             ['no serving daemon at an end', 'status not read', 'yes', 'yes', 'yes', 'yes', 'yes'],
+                             p.stdout[-3000:])
+
     def test_the_intent_maps_table(self):
         """The intent map's syncs over the window (M2.3) and the header's
         own (status version 16; on by default since #133): a row from a

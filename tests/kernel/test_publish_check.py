@@ -56,10 +56,18 @@ class Tables(unittest.TestCase):
             'prewindf': {
                 'f1': ('pending after',),             # G far above: it waits
                 'f1-end': ('refused rewound',),       # -F's first cuts are marks, which end it
+                'f1-look': ('absent',),               # ended, so never made
+            },
+            'prewindc': {                             # prewindf's control (#141's review, S1)
+                'c1': ('pending after',),
+                'c1-end': ('pending after',),         # a plain import marks no cut: it still waits
+                'c1-withdraw': ('withdrawn',),
+                'c1-look': ('absent',),               # withdrawn, so never made
             },
             'pkill': {
                 'tw': ('pending after',),
                 'tw-withdraw': ('withdrawn',),
+                'tw-look': ('absent',),               # withdrawn, with a cut past its G committed
                 'tk': ('pending after',),
                 'tw-after': ('withdrawn', 'unknown'),  # the new instance may or may not know tw: never done
                 'tk-after': ('unknown',),             # a pending publish lives in memory only
@@ -96,14 +104,16 @@ class Tables(unittest.TestCase):
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
             'prewind': {'r1': 'r1-end'},
             'prewindf': {},
+            'prewindc': {},
             'pkill': {'tk': 'tk-end'},
             'pkillman': {'m1': 'm1-end'},
             'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
         })
         # t5 expired, t3 never asked validly, f1 ended by the rewind's
-        # mark, tw withdrawn before the kill.
-        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'pkill': ('tw',)})
+        # mark, c1 withdrawn, tw withdrawn before the kill.
+        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',),
+                                     'pkill': ('tw',)})
         # A look at a name published must name its row.
         self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
         # manifest:1 kills before the transaction (no snap/m1 may show),
@@ -371,12 +381,12 @@ class Premises(unittest.TestCase):
                                         log_line('cut', 'rewind', '19', '29', 3),
                                         log_line('cut', 'rewind', '20', '31', 4),
                                         log_line('cut', 'rewind', '21', '32', 5),
-                                        log_line('publish', '-', '-', refusal, 6, op=op),
+                                        log_line('publish', '30', '19', refusal, 6, op=op),
                                         log_line('cut', 'rewind', '22', '33', 7),
                                         log_line('cut', 'itself', '26', '48', 8)]}]
 
     def test_the_cuts_rule_r_refused_on(self):
-        ask = pc.asked_line('r1')
+        ask = pc.asked_line('r1', 19)
         self.assertEqual(pc.rewind_cuts(self.rewound_log(), 19, ask), (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]))
         # Cuts after the ask (22) are no ground, nor those at or before C.
         self.assertEqual(pc.rewind_cuts(self.rewound_log(), 21, ask), (True, []))
@@ -384,22 +394,28 @@ class Premises(unittest.TestCase):
     def test_a_cut_above_the_groups_before_it_is_no_ground(self):
         log = self.rewound_log()
         log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '44', 4), log_line('cut', 'itself', '21', '45', 5)]
-        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, []))
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19)), (True, []))
         # The equal group (the first cut of an -FX import) is a ground.
         log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '43', 4)]
-        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, [(20, 43, 43, 4000)]))
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19)), (True, [(20, 43, 43, 4000)]))
 
     def test_the_ask_is_the_anchor_whatever_it_was_answered(self):
         """B2 of #141's review: a daemon without rule (R) at the ask, which
         answers r1 `accepted`, fails pin_answer_r1 (exit 1); the premise
         rests on the cut lines and the ask's place only."""
         for answer in ('r1 accepted', 'r1 refused rewound', 'r1 refused store'):
-            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer), 19, pc.asked_line('r1')),
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer), 19, pc.asked_line('r1', 19)),
                              (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]), answer)
         for answer, op in (('r12 accepted', 'asked'), ('r1 refused rewound', 'ended'),
                            ('r1 withdrawn', 'withdraw')):
-            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer, op), 19, pc.asked_line('r1'))[0], False,
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer, op), 19, pc.asked_line('r1', 19))[0], False,
                              (answer, op))
+        # Review of #141, N3: the line of an ask with another C (an ask
+        # anew) is not the first ask's.
+        self.assertEqual(pc.rewind_cuts(self.rewound_log(), 19, pc.asked_line('r1', 27)), (False, []))
+        log = self.rewound_log()
+        log[0]['lines'][5] = log_line('publish', '30', '27', 'r1 accepted', 6, op='asked')
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19))[0], False)
 
     def test_with_no_stop_every_ground_of_the_first_instance_that_has_one(self):
         """prewindf: the ground needs no end line."""
@@ -407,6 +423,27 @@ class Premises(unittest.TestCase):
         self.assertEqual(pc.rewind_cuts(log, 19), (False, [(20, 31, 43, 4000), (21, 32, 43, 5000), (22, 33, 43, 7000)]))
         self.assertEqual(pc.rewind_cuts([{'pid': '1', 'lines': []}] + log, 19)[1][0], (20, 31, 43, 4000))
         self.assertEqual(pc.rewind_cuts(log, 26), (False, []))
+
+    def test_the_cuts_since_the_import_up_to_the_withdrawal(self):
+        """prewindc's premise (#141's review, S1): cuts counted after C,
+        on lines after the import's mark, before the withdrawal's line."""
+        log = [{'pid': '31', 'lines': [log_line('cut', 'itself', '17', '43', 1),
+                                       log_line('cut', 'itself', '18', '44', 2),
+                                       log_line('cut', 'itself', '19', '45', 3),
+                                       log_line('cut', 'itself', '20', '46', 4),
+                                       log_line('publish', '-', '-', 'c1 withdrawn', 5, op='withdraw'),
+                                       log_line('cut', 'itself', '21', '47', 6)]}]
+        stop = pc.withdraw_line('c1')
+        self.assertEqual(pc.cuts_since(log, 17, 2500, stop), [(19, 45), (20, 46)])
+        # counted at or before C, though after the mark: not one
+        self.assertEqual(pc.cuts_since(log, 19, 2500, stop), [(20, 46)])
+        self.assertEqual(pc.cuts_since(log, 20, 0, stop), [])
+        # whatever the withdrawal answered; another name's is not c1's
+        log[0]['lines'][4] = log_line('publish', '-', '-', 'c1 unknown', 5, op='withdraw')
+        self.assertEqual(pc.cuts_since(log, 17, 2500, stop), [(19, 45), (20, 46)])
+        for result, op in (('c12 withdrawn', 'withdraw'), ('c1 withdrawn', 'ended')):
+            log[0]['lines'][4] = log_line('publish', '-', '-', result, 5, op=op)
+            self.assertEqual(pc.cuts_since(log, 17, 2500, stop), [], (result, op))
 
     def test_an_end_after_the_ground(self):
         log = self.rewound_log('f1 accepted')

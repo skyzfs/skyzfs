@@ -41,7 +41,9 @@ at its window's start (`uploaded` 0 there), or no upload after its
 seed (`uploaded` at most `uploaded_whole` there): whatever it uploaded
 in the window began with the seed, or with the first upload after it,
 which carries every block written while the seed ran (review's D6 on
-#132). Its verdict stands on its own line
+#132), and whose daemon had found no cut committed already
+(`upload_found_committed` 0 there: not a daemon started again over a
+volume seeded before it). Its verdict stands on its own line
 and is not one of the median of design §9, which is the steady
 state's ratio (the lead's decision on #132); `bracketed` says so in
 `seed_row`.
@@ -158,8 +160,12 @@ def not_uploading(row):
             seed = ("; its window is not marked as the one that let MinIO go, so its seed was not measured from its "
                     "release")
         elif (k.get('upload') or {}).get('from_load') == 'window':
-            seed = (f"; its seed, let go at the window's start, was not shown to commit inside it under the lease held "
-                    f"at its end (uploaded {sb.get('uploaded', 'not read')} at its start, "
+            # The lease named only when the end held one (review of #132:
+            # the clause said "held" of a lease lost or never taken).
+            under = ('under the lease held at its end' if lease[1][0] in LEASE_HELD
+                     else 'under a lease, since none was held at its end')
+            seed = (f"; its seed, let go at the window's start, was not shown to commit inside it {under} "
+                    f"(uploaded {sb.get('uploaded', 'not read')} at its start, "
                     f"{sa.get('uploaded_whole', 'not read')} whole at its end)")
         return (f'it did not hold the lease for the whole window (at its start {lease[0][0]} at epoch {lease[0][1]}, '
                 f'at its end {lease[1][0]} at epoch {lease[1][1]}){seed}')
@@ -180,11 +186,19 @@ def seed_row(row):
     whose status shows no more uploads than whole ones there: the seed
     had committed (as whole uploads) and nothing after it, so the
     window's first upload carries every block written while the seed
-    ran (review's D6 on #132, the lead's decision)."""
+    ran (review's D6 on #132, the lead's decision).
+
+    Not a row whose daemon found cuts committed already at the window's
+    start (`upload_found_committed` above 0, or not a number): a daemon
+    started again over a volume seeded before it counts its uploads from
+    0, and its window did not begin with the seed (review of #132). A
+    status without the key (a daemon from before it) is read as 0."""
     k = row.get('skyzfsd') or {}
     if not k.get('upload'):
         return None
     sb = k.get('before') or {}
+    if str(sb.get('upload_found_committed', '0')) != '0':
+        return None
     u, w = str(sb.get('uploaded', '')), str(sb.get('uploaded_whole', ''))
     if u == '0':
         return 'no upload had committed at its window\'s start'

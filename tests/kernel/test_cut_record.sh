@@ -475,7 +475,7 @@ is "pkillat: asking again records nothing (the take-over's request is refused)" 
     "$(grep -cE '^ +pagain (tk-again|"\$t-again") .* record$' "$SCRIPT")" 0
 
 # prewindf: f1 pends, then the pool is exported, its newest root block
-# zeroed and imported with -F; f1's end is read after that, with the
+# zeroed and imported with -F or else -FX; f1's end is read after that, with the
 # pool synced between looks (the lead's addition to M2.6a's rig).
 is "prewindf: f1 pends, export, the root block zeroed, import -F (or -FX), then f1's end" \
     "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_rewind_f|import_pool|pwait f1-end)')" \
@@ -495,6 +495,22 @@ is "rewindf zeroes the root block and imports as prewindf does" \
 ir_fn=$(sed -n '/^import_rewind_f() {$/,/^}$/p' "$SCRIPT")
 is "import_rewind_f tries -F, then -FX, and says which imported" \
     "$(grep -cE '^    for opt in -F -FX; do$|^    echo "imported with \$how" >> "\$RDIR/rewind-f.txt"$' <<< "$ir_fn")" 2
+# prewindc (#141's review, S1): prewindf's control, with nothing zeroed
+# and a plain import; c1 is read after a minute of syncs, withdrawn and
+# looked at.
+is "prewindc: c1 pends, export, a plain import, then c1's end, withdrawal and look" \
+    "$(order_of rec_prewindc '^    (pflow c1|export_pool|zero_newest_root|import_rewind_f|import_pool|pwait c1-end|pask c1-withdraw|pask c1-look)')" \
+    "pflow export_pool import_pool pwait pask pask export_pool "
+is "prewindc: c1 is asked as f1 is, and read with the pool synced between looks" \
+    "$(sed -n '/^rec_prewindc() {$/,/^}$/p' "$SCRIPT" | grep -cE '^    pflow c1 c1 --group-plus 1000000 --expiry-s 900 |^    pwait c1-end c1 60 sync$|^    pask c1-withdraw withdraw c1$|^    pask c1-look look c1$')" 4
+is "prewindc is a publish course by name" \
+    "$(grep -c '^PUBLISH_NAMED=".* prewindc .*"$' "$SCRIPT")" 1
+# Looks at names that must be absent: f1 once ended, tw once withdrawn
+# and a cut past its G committed.
+is "prewindf: f1 is looked at after its end" \
+    "$(order_of rec_prewindf '^    (pwait f1-end|pask f1-look look f1$|load 1$)')" "pwait pask load "
+is "pkill: tw is looked at after its status, before tk is asked" \
+    "$(order_of rec_pkill '^    (ustatus tw-status.txt|pask tw-look look tw$|pflow tk)')" "ustatus pask pflow "
 is "prewindf is a publish course by name" \
     "$(grep -c '^PUBLISH_NAMED=".* prewindf .*"$' "$SCRIPT")" 1
 

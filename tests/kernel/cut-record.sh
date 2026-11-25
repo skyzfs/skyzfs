@@ -28,7 +28,8 @@
 #              long
 #   rewindf    create, load, export, the newest group's root block (the
 #              MOS's objset, all its copies) overwritten with zeros
-#              through the recorded device, `zpool import -F`, load,
+#              through the recorded device, `zpool import -F` (or
+#              -FX where -F is refused: import_rewind_f), load,
 #              export; OUT/NAME/rewind-f.txt says what the import said
 #   slog       the product's layout (design §6.1): the data device
 #              recorded, a log device of 256 MiB on another loop file
@@ -101,8 +102,9 @@
 # upload courses, below rec_failed).
 # The publish courses (the channel rig, skyzfs-publish-rig.yml; below
 # rec_ufailed) are made then too, by name only: pplain, prewind,
-# prewindf, pkill, pkillman, pkillpub and pchannel. An agent (publish_agent.py) asks the
-# daemon through its channel to publish snapshots of the pool, and
+# prewindf, prewindc, pkill, pkillman, pkillpub and pchannel. An agent
+# (publish_agent.py) asks the daemon through its channel to publish
+# snapshots of the pool, and
 # DIR/ends.tsv gets each answer under the course's label for it, for
 # publish_check.py (their CUT_CHECK).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
@@ -176,7 +178,7 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
-PUBLISH_NAMED="pplain prewind prewindf pkill pkillman pkillpub pchannel"
+PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel"
 KNOWN=$ALL
 [ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED"; }
 RECS=${*:-$ALL}
@@ -631,8 +633,11 @@ rec_rewindsync() {
     export_pool
 }
 # Every copy of the root block of the exported pool's newest uberblock
-# zeroed, so that the newest group does not open and `zpool import -F`
-# goes back past it (rewindf, prewindf). What was zeroed goes to
+# zeroed, so that the newest group does not open (rewindf, prewindf).
+# import_rewind_f then imports the pool: `-F` goes back past that group
+# where the labels allow it; on these pools they hold the damaged
+# group's config and refuse it, and `-FX` writes the damaged group's
+# number again with another root block. What was zeroed goes to
 # DIR/rewind-f.txt, the uberblock zdb read to newest-before-damage.txt.
 zero_newest_root() {
     local ub dvas d off asize ss n=0
@@ -1687,7 +1692,8 @@ rec_prewind() {
 # `refused rewound`. That is all the course pins (#141's review, D-c):
 # with G far above, no daemon that honours G could publish f1 in either
 # history. The check's premise is the ground in the cut lines alone,
-# counted before f1's expiry (900 s); the end is a pin.
+# counted before f1's expiry (900 s); the end is a pin. Once ended, f1
+# must read `absent` to `look`.
 rec_prewindf() {
     create_pool
     load 3
@@ -1696,6 +1702,28 @@ rec_prewindf() {
     zero_newest_root
     import_rewind_f
     pwait f1-end f1 300 sync
+    pask f1-look look f1
+    load 1
+    export_pool
+}
+
+# prewindc: prewindf's control (#141's review, S1). The same course with
+# nothing zeroed and a plain import: its first group is above every
+# group before the export, so rule (R) marks no cut, and c1 must still
+# wait after a minute of syncs (`pending after 60 s`). A daemon that
+# ended every waiting publish at an import, whatever its groups, would
+# pass prewindf and fail here. c1 is then withdrawn, and must read
+# `absent` to `look`. The check's premise: cuts counted after c1's C
+# once the import returned, and none of them a ground of (R).
+rec_prewindc() {
+    create_pool
+    load 3
+    pflow c1 c1 --group-plus 1000000 --expiry-s 900 --limit-s 3
+    export_pool
+    import_pool
+    pwait c1-end c1 60 sync
+    pask c1-withdraw withdraw c1
+    pask c1-look look c1
     load 1
     export_pool
 }
@@ -1705,7 +1733,8 @@ rec_prewindf() {
 # node B's row names a cut counted after tw's C of tw's G or later
 # (DIR/tw-row.txt): a commit that would have made tw, had the withdrawal
 # left it queued (the review of #139, B3); its status then goes to
-# DIR/tw-status.txt. Then tk pends likewise and is not withdrawn, and
+# DIR/tw-status.txt, and `look tw` must read `absent`. Then tk pends
+# likewise and is not withdrawn, and
 # the daemon is killed (kill -9). The next instance takes over and knows
 # neither (pending publishes are in memory). tk asked again as it was
 # asked is refused `rewound`: the instance's count at its start is a
@@ -1721,6 +1750,7 @@ rec_pkill() {
     pask tw-withdraw withdraw tw
     row_past tw-row.txt "$(preq tw 5)" "$(preq tw 2)" 300 nudge || true
     ustatus tw-status.txt
+    pask tw-look look tw
     pflow tk tk --group-plus 30 --expiry-s 900 --limit-s 3
     kill_serve
     serve_start 2

@@ -78,7 +78,10 @@ class FakeNodeB:
 
 
 def log_text(instances):
-    """[(pid, [(number, group, itself) or (event, op, result)])] -> the request log."""
+    """[(pid, [(number, group, itself) or (event, op, result[, G, C])])] -> the request log.
+
+    A publish's `asked` line carries G and C in its sector and sectors
+    columns, as skyzfsd writes it (record.rs)."""
     out, ns = [], 1000
     for pid, lines in instances:
         out.append(f'{ns}\t{pid}\tstart\t0\t-\t-\t-\t64')
@@ -87,7 +90,8 @@ def log_text(instances):
             if isinstance(ln[0], int):
                 out.append(f'{ns}\t{pid}\tcut\t-\t-\t{"itself" if ln[2] else "rewind"}\t{ln[0]}\t{ln[1]}')
             else:
-                out.append(f'{ns}\t{pid}\t{ln[0]}\t-\t{ln[1]}\t-\t-\t{ln[2]}')
+                g, c = ln[3:5] if len(ln) == 5 else ('-', '-')
+                out.append(f'{ns}\t{pid}\t{ln[0]}\t-\t{ln[1]}\t{g}\t{c}\t{ln[2]}')
         ns += 10
     return ''.join(ln + '\n' for ln in out)
 
@@ -145,13 +149,14 @@ COURSES = {
         # cuts 8 and 9, after the first C and not above it, are the
         # refusal's ground.
         'log': [(PID, [(6, 52, True), (7, 45, False), (8, 50, False), (9, 51, False),
-                       ('publish', 'asked', 'r1 refused rewound'), (10, 52, True), (11, 53, True)])],
+                       ('publish', 'asked', 'r1 refused rewound', 50, 7), (10, 52, True), (11, 53, True)])],
         'files': {'rewind-status.txt': 'cuts_held 3\n', 'rewind-row.txt': node_b_row(9, 51),
                   'rewind-top.txt': '52\n'},
     },
     'prewindf': {
         'ends': {'f1': 'pending after 3 s',
-                 'f1-end': 'refused rewound a rewind may have been counted after the count asked from'},
+                 'f1-end': 'refused rewound a rewind may have been counted after the count asked from',
+                 'f1-look': 'absent'},
         'requests': {'f1': (7, 1000050, 50)},
         'rows': {},
         # The export synced up to group 55 (cut 9); -F went back past it,
@@ -164,8 +169,21 @@ COURSES = {
                   'agent.tsv': f'990\t995\tpublish --name f1 --attachment {A} --state {S} --after 7 '
                                f'--group 1000050 --manifest m --expiry-s 900\t0\taccepted\n'},
     },
+    # prewindf's control: a plain import (session 2 ready at ns 1035, the
+    # log's clock); cuts 10 and 11 after it go on above group 55, and c1
+    # still waits.
+    'prewindc': {
+        'ends': {'c1': 'pending after 3 s', 'c1-end': 'pending after 60 s', 'c1-withdraw': 'withdrawn',
+                 'c1-look': 'absent'},
+        'requests': {'c1': (7, 1000050, 50)},
+        'rows': {},
+        'log': [(PID, [(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True),
+                       ('publish', 'withdraw', 'c1 withdrawn'), (12, 58, True)])],
+        'files': {'marks.tsv': '1005\tsession-1-begin\n1006\tsession-1-ready\n1025\tsession-1-end\n'
+                               '1030\tsession-2-begin\n1035\tsession-2-ready\n'},
+    },
     'pkill': {
-        'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tk': 'pending after 9',
+        'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tw-look': 'absent', 'tk': 'pending after 9',
                  'tw-after': 'unknown', 'tk-after': 'unknown', 'tk-again': 'refused rewound',
                  'tk-anew': 'accepted', 'tk-end': 'done commit=' + commit_of('tk'), 'tw-last': 'unknown'},
         'requests': {'tw': (7, 50, 20), 'tk': [(9, 80, 50), (11, 80, 50)]},
@@ -232,6 +250,8 @@ def run_course(name, change=None, rows=None, fail=(), miss_files=False, row_only
         for fn, text in c['files'].items():
             with open(os.path.join(d, fn), 'w') as f:
                 f.write(text)
+        with open(os.path.join(d, 'watch.log'), 'w') as f:
+            f.write('1000\tfetched cut 1 (group 4, state x): 107 blocks, 107 changed\n2000\tstopped\n')
         if 'between' in c:
             # What landed before the kill: the ref on the commit p1-end names.
             t = c['between']
@@ -381,7 +401,7 @@ class Pins(unittest.TestCase):
         def change(d):
             with open(os.path.join(d, 'requests.tsv'), 'w') as f:
                 f.write(log_text([(PID, [(6, 52, True), (7, 45, False), (8, 50, False), (9, 51, False),
-                                         ('publish', 'asked', 'r1 accepted'), (10, 52, True),
+                                         ('publish', 'asked', 'r1 accepted', 50, 7), (10, 52, True),
                                          ('publish', 'ended', 'r1 done commit=' + commit_of('r1'))])]))
             answer('r1', 'done commit=' + commit_of('r1'))(d)
         rc, lines = run_course('prewind', change, rows={'r1': (10, 52)})
@@ -518,7 +538,7 @@ class Premises(unittest.TestCase):
         def change(d):
             with open(os.path.join(d, 'requests.tsv'), 'w') as f:
                 f.write(log_text([(PID, [(6, 52, True), (7, 45, False), (8, 50, False),
-                                         ('publish', 'asked', 'r1 refused rewound'), (9, 51, True), (10, 52, True),
+                                         ('publish', 'asked', 'r1 refused rewound', 50, 7), (9, 51, True), (10, 52, True),
                                          (11, 53, True)])]))
         rc, lines = run_course('prewind', change)
         self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (2, 'ERROR'))
@@ -539,7 +559,7 @@ class Premises(unittest.TestCase):
         def change(d):
             with open(os.path.join(d, 'requests.tsv'), 'w') as f:
                 f.write(log_text([(PID, [(6, 52, True), (7, 45, False), (8, 50, True),
-                                         ('publish', 'asked', 'r1 refused rewound'), (9, 51, False), (10, 52, True),
+                                         ('publish', 'asked', 'r1 refused rewound', 50, 7), (9, 51, False), (10, 52, True),
                                          (11, 53, True)])]))
         rc, lines = run_course('prewind', change, rows={'r1': (8, 50)})
         self.assertEqual(lines['pin_r1_cut'][0], 'ok')
@@ -559,13 +579,97 @@ class Premises(unittest.TestCase):
     def test_prewind_refused_with_no_cut_that_may_follow_the_rewind_ends_2(self):
         key = 'premise_r1_asked_after_a_rewind_cut'
         # The refusal before any cut after C; and cuts after C above the groups before them.
-        for lines in ([(6, 52, True), (7, 45, False), ('publish', 'asked', 'r1 refused rewound'), (8, 50, False),
+        for lines in ([(6, 52, True), (7, 45, False), ('publish', 'asked', 'r1 refused rewound', 50, 7), (8, 50, False),
                        (9, 51, False), (10, 52, True), (11, 53, True)],
                       [(6, 52, True), (7, 45, False), (8, 60, False), (9, 61, False),
-                       ('publish', 'asked', 'r1 refused rewound'), (10, 62, True), (11, 63, True)]):
+                       ('publish', 'asked', 'r1 refused rewound', 50, 7), (10, 62, True), (11, 63, True)]):
             rc, got = run_course('prewind', self.prewind_log(lines), rows={'r1': (11, 63)})
             self.assertEqual((rc, got[key][0]), (2, 'ERROR'), lines)
             self.assertIn('none', got[key][1])
+
+    def prewindc_log(self, lines):
+        def change(d):
+            with open(os.path.join(d, 'requests.tsv'), 'w') as f:
+                f.write(log_text([(PID, lines)]))
+        return change
+
+    def test_prewindc_ends_1_for_a_daemon_that_ends_c1_at_any_import(self):
+        """#141's review, S1: with no cut marked, c1 ended `refused
+        rewound` is a verdict against the daemon, the premise holding."""
+        log = self.prewindc_log([(8, 52, True), (9, 55, True), (10, 56, True),
+                                 ('publish', 'ended', 'c1 refused rewound'), (11, 57, True),
+                                 ('publish', 'withdraw', 'c1 unknown'), (12, 58, True)])
+
+        def change(d):
+            log(d)
+            answer('c1-end', 'refused rewound a rewind may have been counted after the count asked from')(d)
+            answer('c1-withdraw', 'unknown')(d)
+        rc, lines = run_course('prewindc', change)
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(lines, 'pin_answer_c1-end', 'pin_answer_c1-withdraw',
+                                  'premise_c1_waited_across_a_plain_import'), ['FAILED', 'FAILED', 'ok'])
+        self.assertNotIn('rig_error', lines)
+
+    def test_prewindc_whose_import_was_a_rewind_or_made_no_cut_ends_2(self):
+        key = 'premise_c1_waited_across_a_plain_import'
+        for lines, why in (
+                # a cut after C not above the groups before it: the import was a rewind
+                ([(8, 52, True), (9, 55, True), (10, 55, False), (11, 57, True),
+                  ('publish', 'withdraw', 'c1 withdrawn')], 'cuts not above the groups before them: 10 of group 55'),
+                # no cut once the import returned (ns 1035) and before the withdrawal
+                ([(8, 52, True), (9, 55, True), (10, 56, True), ('publish', 'withdraw', 'c1 withdrawn'),
+                  (11, 57, True)], 'before c1\'s withdrawal: none'),
+                # no line of c1's withdrawal
+                ([(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True)], 'no line of c1\'s withdrawal'),
+                # another name's withdrawal is not c1's
+                ([(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True),
+                  ('publish', 'withdraw', 'c12 withdrawn')], 'no line of c1\'s withdrawal')):
+            rc, got = run_course('prewindc', self.prewindc_log(lines))
+            self.assertEqual((rc, got[key][0]), (2, 'ERROR'), lines)
+            self.assertIn(why, got[key][1])
+        rc, got = run_course('prewindc', write('marks.tsv', '1005\tsession-1-begin\n'))
+        self.assertEqual(rc, 2)
+        self.assertIn('no mark session-2-ready', got['rig_error'][1])
+
+    def test_a_look_that_finds_an_ended_or_withdrawn_name_ends_1(self):
+        for course, label, t in (('prewindf', 'f1-look', 'f1'), ('prewindc', 'c1-look', 'c1'),
+                                 ('pkill', 'tw-look', 'tw')):
+            rc, lines = run_course(course, answer(label, look_of(t, 9, 55)))
+            self.assertEqual((rc, lines[f'pin_answer_{label}'][0]), (1, 'FAILED'), course)
+
+    def test_the_watcher_s_verdict_ends_1(self):
+        """#139's review: the watcher's VERDICT line (node B could not
+        read head's content) is judged, in every course."""
+        for course in pc.COURSES:
+            rc, lines = run_course(course, write('watch.log', '3000\tVERDICT node B could not read cut 4 at head\n',
+                                                 'a'))
+            self.assertEqual((rc, lines['pin_watcher_reads'][0]), (1, 'FAILED'), course)
+            self.assertIn('node B could not read cut 4 at head', lines['pin_watcher_reads'][1])
+            self.assertNotIn('rig_error', lines)
+        rc, lines = run_course('pplain')
+        self.assertEqual((rc, lines['pin_watcher_reads'][0]), (0, 'ok'))
+
+    def test_the_watcher_s_error_or_no_watch_log_ends_2(self):
+        rc, lines = run_course('pplain', write('watch.log', '3000\tERROR node B: exit 3\n', 'a'))
+        self.assertEqual(rc, 2)
+        self.assertIn('the watcher: ERROR node B: exit 3', lines['rig_error'][1])
+
+        def gone(d):
+            os.unlink(os.path.join(d, 'watch.log'))
+        rc, lines = run_course('pplain', gone)
+        self.assertEqual(rc, 2)
+        self.assertIn('no watch.log', lines['rig_error'][1])
+
+    def test_prewind_whose_first_ask_has_no_line_ends_2(self):
+        """Review of #141, N3: the line of r1 asked anew (C 10) does not
+        stand in for the first ask's (C 7), so cuts before it are no
+        ground of the first."""
+        rc, lines = run_course('prewind', self.prewind_log([(6, 52, True), (7, 45, False), (8, 50, False),
+                                                            (9, 51, False), (10, 52, True),
+                                                            ('publish', 'asked', 'r1 accepted', 50, 10),
+                                                            (11, 53, True)]))
+        self.assertEqual((rc, lines['premise_r1_asked_after_a_rewind_cut'][0]), (2, 'ERROR'))
+        self.assertIn("no line of r1's ask", lines['premise_r1_asked_after_a_rewind_cut'][1])
 
     def test_prewind_with_no_line_of_r1_s_ask_ends_2(self):
         rc, lines = run_course('prewind', self.prewind_log([(6, 52, True), (7, 45, False), (8, 50, False),
