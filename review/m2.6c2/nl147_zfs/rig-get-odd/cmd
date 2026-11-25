@@ -1,0 +1,1 @@
+zfs get -H -p -o name\,property\,value\,source skyzfs:utf8\,skyzfs:raw skzq/child

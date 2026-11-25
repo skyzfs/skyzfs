@@ -22,6 +22,12 @@
 //!     command line is never matched.
 //! a6: `zpool get` says `missing pool name.` and `zpool status` hangs
 //!     (killed: an error of the run): the original error, not NoPool.
+//! a7: a drifted program (upper-case hex, 0x7f as a string, hex of a
+//!     space) is refused and its take destroyed.
+//! a8: the program at the head as ZFS ran it (recorder run 45665823917,
+//!     ubuntu-26.04, records `*-snapshot-odd*`, in `nl147_zfs/`, the
+//!     pool renamed `tank`): read by the adapter with no destroy, the
+//!     values beyond ASCII come back as the bytes `zfs set` was given.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -285,5 +291,40 @@ fn a7_a_drifted_program_is_refused_and_its_take_destroyed() {
             Err(ZfsError::Other(why)) => eprintln!("a7 {plant}: {}", &why[..why.len().min(200)]),
             other => panic!("{plant}: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn a8_the_programs_output_on_zfs_reads_back_to_the_bytes_set() {
+    let zdir = PathBuf::from(std::env::var("NL147_ZFS").expect("NL147_ZFS"));
+    let utf8 = "na\u{ef}ve, \u{65e5}\u{672c}, \u{2205}".as_bytes().to_vec();
+    let raw = b"a\xff\xfeb\xc3".to_vec();
+    for (record, pool) in [
+        ("rig-snapshot-odd", "skzq"),
+        ("rig-snapshot-odd-utf8", "skzq"),
+        ("mirror-snapshot-odd", "skzqm"),
+    ] {
+        let text = std::fs::read_to_string(zdir.join(record).join("stdout")).expect("stdout");
+        let text = text.replace(pool, "tank");
+        let (done, words) = run_program(text.as_bytes());
+        assert_eq!(words, [WORDS], "{record}: no destroy");
+        let program = done.unwrap_or_else(|e| panic!("{record}: {e:?}"));
+        let child = program
+            .members
+            .iter()
+            .find(|m| m.name == "tank/child")
+            .expect("tank/child");
+        assert_eq!(child.local.get("skyzfs:utf8"), Some(&utf8), "{record}");
+        assert_eq!(child.local.get("skyzfs:raw"), Some(&raw), "{record}");
+        let manifest = Manifest {
+            pool: "tank".into(),
+            pool_guid: 1,
+            snapshot: "t".into(),
+            createtxg: program.createtxg,
+            members: program.members.clone(),
+        };
+        let bytes = manifest.encode().expect("encoded");
+        assert_eq!(Manifest::decode(&bytes).expect("decoded"), manifest, "{record}");
+        eprintln!("a8 {record}: {} members, manifest {} bytes", program.members.len(), bytes.len());
     }
 }

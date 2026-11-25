@@ -1,0 +1,10 @@
+== merge of 0f709ae into 8f0390f (tree 29dbc09990bb)
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+== cargo clippy -p skyzfs-agent -p skyzfs-control --all-targets -- -D warnings
+== exit 0
+== cargo test -p skyzfs-agent -p skyzfs-control
+test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== exit 0

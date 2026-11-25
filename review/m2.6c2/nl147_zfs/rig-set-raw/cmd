@@ -1,0 +1,1 @@
+zfs set $'skyzfs:raw=a\377\376b\303' skzq/child

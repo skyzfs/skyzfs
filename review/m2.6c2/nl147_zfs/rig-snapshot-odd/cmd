@@ -1,0 +1,1 @@
+zfs program -j -t 100000000 -m 104857600 skzq - skzq o0 skyzfs:assist < snapshot.lua

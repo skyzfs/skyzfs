@@ -1,0 +1,1 @@
+env LC_ALL=C.UTF-8 zfs program -j -t 100000000 -m 104857600 skzq - skzq o2 skyzfs:assist < snapshot.lua

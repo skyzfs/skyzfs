@@ -31,3 +31,12 @@ ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.02s
 
+
+# a8, later, same head and toolchain: the records of recorder run 45665823917
+# (ubuntu-26.04, lua_ref at 0f709ae), in nl147_zfs/
+running 1 test
+a8 rig-snapshot-odd: 3 members, manifest 732 bytes
+a8 rig-snapshot-odd-utf8: 3 members, manifest 732 bytes
+a8 mirror-snapshot-odd: 3 members, manifest 732 bytes
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
