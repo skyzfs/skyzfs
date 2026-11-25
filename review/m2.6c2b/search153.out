@@ -1,0 +1,305 @@
+# search at 65d72ee (scratch fake: scratch153_patch.py; tests: scratch153.rs)
+
+running 3 tests
+S2 (0 s): 4868 runs, 4196 published, given up {}, 3092 with a destroy of the agent's, 0 panics
+  check (committed oracle): 0 runs
+  strict (GUID oracle): 0 runs
+  orphans after the late landing: 0 runs
+test engine::tests::review_scratch::s2_late_landing_with_an_action_and_a_stop_at_every_point ... ok
+S3 (1 s): 7680 runs, 7160 published, given up {"Replaced": 280}, 550 with a destroy of the agent's, 0 panics
+  check (committed oracle): 560 runs
+    560 x # names cut # (group # which does not hold # as its manifest has it
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RenameDs)), stop: None }: snap/skz-20261125T010000Z names cut 5 (group 9), which does not hold tank/db@skz-20261125T010000Z as its manifest has it
+    outcomes [("skz-20261125T010000Z", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RenameDs skz-20261125T010000Z | 0: group 7 (rename): cut 3 group 7 itself true | 0: group 8 (hold): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | snap/skz-20261125T010000Z made on cut 5 | 14000: group 11 (release): cut 7 group 11 itself true
+  strict (GUID oracle): 0 runs
+  orphans after the late landing: 280 runs
+    70 x ["(given up Some(Replaced))"] late=None act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RmDs skz-20261125T010000Z | 0: group 7 (destroy vol): cut 3 group 7 itself true
+    70 x ["(given up Some(Replaced))"] late=Some(0) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    70 x ["(given up Some(Replaced))"] late=Some(2) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((10, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    70 x ["(given up Some(Replaced))"] late=Some(9) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+test engine::tests::review_scratch::s3_failed_take_and_read_by_late_and_action ... ok
+S1 (7 s): 15162 runs, 12428 published, given up {"Destroyed": 294, "ManifestLost": 256, "Premise": 1008, "Replaced": 882, "TooOld": 294}, 128 with a destroy of the agent's, 0 panics
+  check (committed oracle): 764 runs
+    158 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((7, RmDs)), stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RmDs skz-20261125T010000Z | 0: group 7 (destroy vol): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    588 x # names cut # (group # which does not hold # as its manifest has it
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RenameDs)), stop: None }: snap/skz-20261125T010000Z names cut 5 (group 9), which does not hold tank/db@skz-20261125T010000Z as its manifest has it
+    outcomes [("skz-20261125T010000Z", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RenameDs skz-20261125T010000Z | 0: group 7 (rename): cut 3 group 7 itself true | 0: group 8 (hold): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | snap/skz-20261125T010000Z made on cut 5 | 14000: group 11 (release): cut 7 group 11 itself true
+    18 x # neither published nor given up
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((11, Destroy)), stop: None }: skz-20261125T010000Z neither published nor given up
+    outcomes [("skz-20261125T010001Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 26, 72, 123, 250, 66, 192, 26, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user Destroy skz-20261125T010000Z | 1000: group 7 (destroy): cut 3 group 7 itself true | 1000: group 8 (snapshot): cut 4 group 8 itself true | 1000: group 9 (hold): cut 5 group 9 itself true | 5000: group 10 (busy): cut 6 group 10 itself true | cut 1 committed | 10000: group 11 (busy): cut 7 group 11 itself true | cut 6 committed | snap/skz-20261125T010001Z made on cut 6 | 14000: group 12 (release): cut 8 group 12 itself true
+  strict (GUID oracle): 176 runs
+    158 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((7, RmDs)), stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RmDs skz-20261125T010000Z | 0: group 7 (destroy vol): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    18 x # neither published nor given up
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((11, Destroy)), stop: None }: skz-20261125T010000Z neither published nor given up
+    outcomes [("skz-20261125T010001Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 26, 72, 123, 250, 66, 192, 26, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user Destroy skz-20261125T010000Z | 1000: group 7 (destroy): cut 3 group 7 itself true | 1000: group 8 (snapshot): cut 4 group 8 itself true | 1000: group 9 (hold): cut 5 group 9 itself true | 5000: group 10 (busy): cut 6 group 10 itself true | cut 1 committed | 10000: group 11 (busy): cut 7 group 11 itself true | cut 6 committed | snap/skz-20261125T010001Z made on cut 6 | 14000: group 12 (release): cut 8 group 12 itself true
+  orphans after the late landing: 1850 runs
+    2 x ["(given up Some(ManifestLost))"] late=None act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((7, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user DestroyChild skz-20261125T010000Z | 0: group 7 (destroy child): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=None act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=None act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 0: group 6 (rename): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=None act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 0: group 6 (destroy vol): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=None act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(0) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((7, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 0: group 7 (destroy child): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(0) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(0) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 0: group 6 (rename): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(0) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 0: group 6 (destroy vol): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(0) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(1) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(1) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 0: group 6 (rename): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(1) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 0: group 6 (destroy vol): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(1) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    8 x ["(given up Some(ManifestLost))"] late=Some(2) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    8 x ["(given up Some(ManifestLost))"] late=Some(2) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 0: group 6 (rename): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    8 x ["(given up Some(ManifestLost))"] late=Some(2) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 0: group 6 (destroy vol): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    8 x ["(given up Some(ManifestLost))"] late=Some(2) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((6, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(3) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((11, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(3) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 1000: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(3) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 1000: group 6 (rename): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(3) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 1000: group 6 (destroy vol): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(3) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 1000: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(5) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((11, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(5) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 1000: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(5) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 1000: group 6 (rename): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(5) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 1000: group 6 (destroy vol): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(5) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 1000: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(9) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((11, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    2 x ["(given up Some(ManifestLost))"] late=Some(9) act=Some(NewDs)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, NewDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 1000: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(9) act=Some(RenameDs)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RenameDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RenameDs skz-20261125T010000Z | 1000: group 6 (rename): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(9) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user RmDs skz-20261125T010000Z | 1000: group 6 (destroy vol): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    4 x ["(given up Some(ManifestLost))"] late=Some(9) act=Some(SetProperty)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 1, act: Some((10, SetProperty)), stop: None }: skz-20261125T010000Z (given up Some(ManifestLost))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 1000: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | agent destroy -r skz-20261125T010000Z refused: dataset is busy (scratch)
+    108 x ["(given up Some(Premise))"] late=None act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true
+    108 x ["(given up Some(Premise))"] late=Some(0) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    108 x ["(given up Some(Premise))"] late=Some(1) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    120 x ["(given up Some(Premise))"] late=Some(2) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    132 x ["(given up Some(Premise))"] late=Some(3) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    132 x ["(given up Some(Premise))"] late=Some(5) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    132 x ["(given up Some(Premise))"] late=Some(9) act=Some(Attach)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((4, Attach)), stop: None }: skz-20261125T010000Z (given up Some(Premise))
+    outcomes [("skz-20261125T010000Z", Abandoned(Premise))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user Attach skz-20261125T010000Z | 0: group 6 (layout): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(())
+    42 x ["(given up Some(Replaced))"] late=None act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user DestroyChild skz-20261125T010000Z | 0: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=None act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | user RmDs skz-20261125T010000Z | 0: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(0) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(0) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(1) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(1) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((8, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(2) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((10, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(2) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((10, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(3) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(3) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(5) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(5) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(9) act=Some(DestroyChild)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, DestroyChild)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user DestroyChild skz-20261125T010000Z | 1000: group 7 (destroy child): cut 3 group 7 itself true
+    42 x ["(given up Some(Replaced))"] late=Some(9) act=Some(RmDs)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((12, RmDs)), stop: None }: skz-20261125T010000Z (given up Some(Replaced))
+    outcomes [("skz-20261125T010000Z", Abandoned(Replaced))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user RmDs skz-20261125T010000Z | 1000: group 7 (destroy vol): cut 3 group 7 itself true
+    42 x ["(given up Some(TooOld))"] late=None act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((15, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 0: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 0: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: group 37 (busy): cut 33 group 37 itself true | cut 32 committed |
+    42 x ["(given up Some(TooOld))"] late=Some(0) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((15, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: group
+    42 x ["(given up Some(TooOld))"] late=Some(1) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((15, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: gr
+    42 x ["(given up Some(TooOld))"] late=Some(2) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((17, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: gr
+    42 x ["(given up Some(TooOld))"] late=Some(3) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((19, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: gr
+    42 x ["(given up Some(TooOld))"] late=Some(5) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(5), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((19, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 committed | 145000: gr
+    42 x ["(given up Some(TooOld))"] late=Some(9) act=Some(ReleaseChild)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((19, ReleaseChild)), stop: None }: skz-20261125T010000Z (given up Some(TooOld))
+    outcomes [("skz-20261125T010000Z", Abandoned(TooOld))]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (hold): cut 3 group 7 itself true | user ReleaseChild skz-20261125T010000Z | partly released skz-20261125T010000Z | 1000: group 8 (release child): cut 4 group 8 itself true | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 15000: group 11 (busy): cut 7 group 11 itself true | 20000: group 12 (busy): cut 8 group 12 itself true | cut 6 committed | 25000: group 13 (busy): cut 9 group 13 itself true | cut 8 committed | 30000: group 14 (busy): cut 10 group 14 itself true | 35000: group 15 (busy): cut 11 group 15 itself true | cut 9 committed | 40000: group 16 (busy): cut 12 group 16 itself true | cut 11 committed | 45000: group 17 (busy): cut 13 group 17 itself true | cut 12 committed | 50000: group 18 (busy): cut 14 group 18 itself true | 55000: group 19 (busy): cut 15 group 19 itself true | cut 13 committed | 60000: group 20 (busy): cut 16 group 20 itself true | cut 15 committed | 65000: group 21 (busy): cut 17 group 21 itself true | 70000: group 22 (busy): cut 18 group 22 itself true | cut 16 committed | 75000: group 23 (busy): cut 19 group 23 itself true | cut 18 committed | 80000: group 24 (busy): cut 20 group 24 itself true | cut 19 committed | 85000: group 25 (busy): cut 21 group 25 itself true | 90000: group 26 (busy): cut 22 group 26 itself true | cut 20 committed | 95000: group 27 (busy): cut 23 group 27 itself true | cut 22 committed | 100000: group 28 (busy): cut 24 group 28 itself true | 105000: group 29 (busy): cut 25 group 29 itself true | cut 23 committed | 110000: group 30 (busy): cut 26 group 30 itself true | cut 25 committed | 115000: group 31 (busy): cut 27 group 31 itself true | cut 26 committed | 120000: group 32 (busy): cut 28 group 32 itself true | 125000: group 33 (busy): cut 29 group 33 itself true | cut 27 committed | 130000: group 34 (busy): cut 30 group 34 itself true | cut 29 committed | 135000: group 35 (busy): cut 31 group 35 itself true | 140000: group 36 (busy): cut 32 group 36 itself true | cut 30 com
+test engine::tests::review_scratch::s1_take_answers_by_a_persons_action_at_every_point ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 138 filtered out; finished in 6.92s
+
