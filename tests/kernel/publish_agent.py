@@ -15,8 +15,32 @@ of the pool's present history":
    a group at a time when asked (`--sync`: 4 KiB written to
    MOUNTPOINT/publish-nudge, then `zpool sync`; after a rewind import no cut
    opens as itself until the pool's groups have passed the abandoned
-   ones, and an idle pool makes no next cut);
+   ones, and an idle pool makes no next cut), or as the agent's assist
+   does (`--assist`, below);
 5. `zfs release`.
+
+`--assist` stands in for the agent's `Zfs::assist` (M2.6b2, #144) at
+the pace the lead decided on #144: once the publish has waited
+ASSIST_AFTER (`--assist-after-s`, 10 s by default) since it was
+accepted, ASSIST_BURST (3) assists a round (a second) apart, then one
+every ASSIST_AFTER. An assist is `zfs set skyzfs:assist=V` on the
+pool's root with a V not set before (the wall clock's ms, or one above
+the last), then `zpool sync`, with nothing written to the pool. Each assist is a
+line of DIR/assist.tsv: T, the monotonic ns before the set and after
+the sync, V, and the newest group that wrote, by the pool's txgs kstat
+(committed, `nwritten` above 0), before the set, after the set, and
+after the sync (read until it stays put). ZFS 2.4 also commits groups
+that write nothing and no uberblock (the implementation notes, M2.T1):
+those are no cut, and they come every few seconds on an idle pool, so
+they are not counted.
+
+With `--assist`, DIR/accepted.tsv has two lines for T, read from the
+kstat whatever the daemon answered: `T accepted NS W A` once the
+publish is accepted, and `T end NS W VERB` when its end is read (NS the
+monotonic ns, W the newest group that wrote, A the assist's wait in
+seconds, VERB the end's first word: `done`, `pending`, `refused`, ...).
+The check's premises rest on these and on assist.tsv, and not on the
+daemon's answers (#145's review, F1).
 
 A request refused `rewound` (a rewind, or a daemon's start, may have been
 counted after C) is asked anew by the rig's courses with a count read
@@ -30,7 +54,8 @@ reads what was asked and answered from it, and nothing else.
 Usage:
   publish_agent.py flow  SKYZFSD VOL RUN AGENT.tsv POOL T [--sync] [--expiry-s E]
                          [--limit-s S] [--manifest-out FILE] [--no-hold]
-                         [--group-plus K] [--twice]
+                         [--group-plus K] [--twice] [--assist]
+                         [--assist-after-s A]
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv cuts
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw|look T
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv publish T A S C G MANIFEST [E]
@@ -60,6 +85,9 @@ import sys
 import time
 
 HELLO = 'skyzfs-control 2'
+ASSIST_PROP = 'skyzfs:assist'
+ASSIST_AFTER = 10
+ASSIST_BURST = 3
 ENDS = ('done', 'expired', 'withdrawn', 'unknown')
 
 
@@ -287,8 +315,56 @@ def sh(cmd, timeout=120):
     return p.stdout
 
 
+def written_txg(pool, root='/proc/spl/kstat/zfs'):
+    """The newest group the pool's txgs kstat says it committed (state C)
+    with something written (`nwritten`, the sixth column, above 0)."""
+    path = os.path.join(root, pool, 'txgs')
+    try:
+        with open(path) as f:
+            rows = f.read().splitlines()
+    except OSError as e:
+        raise RigError(f'{path}: {e}') from e
+    best = None
+    for ln in rows[1:]:
+        f = ln.split()
+        if len(f) >= 6 and f[0].isdigit() and f[2] == 'C' and f[5].isdigit() and int(f[5]) > 0:
+            best = max(best or 0, int(f[0]))
+    if best is None:
+        raise RigError(f'{path}: no group that wrote in its history')
+    return best
+
+
+def settled(pool, synced, sleep, tries=10):
+    """The pool's newest group that wrote, once two reads 0.1 s apart
+    agree (the kstat may lag the command that waited for the group)."""
+    prev = synced(pool)
+    for _ in range(tries):
+        sleep(0.1)
+        cur = synced(pool)
+        if cur == prev:
+            return cur
+        prev = cur
+    return prev
+
+
+def assist(pool, name, out_dir, last, shell, synced, wall, mono, sleep):
+    """One assist, as the agent's `Zfs::assist` makes it -> the value set."""
+    value = max(wall() // 1_000_000, last + 1)
+    before = synced(pool)
+    t0 = mono()
+    shell(['zfs', 'set', f'{ASSIST_PROP}={value}', pool])
+    mid = synced(pool)
+    shell(['zpool', 'sync', pool])
+    t1 = mono()
+    after = settled(pool, synced, sleep)
+    with open(os.path.join(out_dir, 'assist.tsv'), 'a') as f:
+        f.write(f'{name}\t{t0}\t{t1}\t{value}\t{before}\t{mid}\t{after}\n')
+    return value
+
+
 def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=None, hold=True, sleep=time.sleep,
-         shell=None, files=manifest_of, now=time.monotonic, group_plus=0, twice=False, nudge=None):
+         shell=None, files=manifest_of, now=time.monotonic, group_plus=0, twice=False, nudge=None,
+         assist_after=None, synced=written_txg, wall=time.time_ns, mono=time.monotonic_ns):
     """One publish, as design §5.2 has the agent make it -> its end line."""
     sh_ = shell or sh
     verb, cuts, code, text = agent.cuts()
@@ -314,20 +390,40 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
                                                 expiry)
             if verb == 'refused':
                 return f'refused {code} {text}'
+        out_dir = os.path.dirname(agent.log)
+
+        def mark(what, last):
+            # The pool as the kstat has it, whatever the daemon answers
+            # (#145's F1): the check's premises read this, not the answers.
+            if assist_after is not None:
+                with open(os.path.join(out_dir, 'accepted.tsv'), 'a') as f:
+                    f.write(f'{name}\t{what}\t{mono()}\t{synced(pool)}\t{last}\n')
+
+        def ended(end):
+            mark('end', end.split(' ', 1)[0])
+            return end
+        mark('accepted', assist_after)
         t0 = now()
+        last = 0
+        assists, assisted_at = 0, 0
         while True:
             verb, fields, code, text = agent.progress(name)
             if verb == 'refused':
-                return f'refused {code} {text}'
+                return ended(f'refused {code} {text}')
             if verb in ENDS:
-                return verb + ''.join(f' {k}={v}' for k, v in fields.items())
-            if now() - t0 > limit:
-                return f'pending after {limit} s'
+                return ended(verb + ''.join(f' {k}={v}' for k, v in fields.items()))
+            waited = now() - t0
+            if waited > limit:
+                return ended(f'pending after {limit} s')
             if sync:
                 # A group with something in it: an idle pool's sync makes
                 # no cut.
                 (nudge or write_nudge)(os.path.join(mnt, 'publish-nudge'))
                 sh_(['zpool', 'sync', pool])
+            if assist_after is not None and waited >= assist_after and \
+                    (assists < ASSIST_BURST or waited - assisted_at >= assist_after):
+                last = assist(pool, name, out_dir, last, sh_, synced, wall, mono, sleep)
+                assists, assisted_at = assists + 1, waited
             sleep(1)
     finally:
         if hold:
@@ -353,7 +449,9 @@ def main(argv):
                        expiry=int(val('--expiry-s')) if val('--expiry-s') else None,
                        limit=int(val('--limit-s') or 300), manifest_out=val('--manifest-out'),
                        hold='--no-hold' not in opts, group_plus=int(val('--group-plus') or 0),
-                       twice='--twice' in opts)
+                       twice='--twice' in opts,
+                       assist_after=(float(val('--assist-after-s') or ASSIST_AFTER) if '--assist' in opts
+                                     else None))
             print(end)
             return 1 if end.startswith('refused ') else 0
         if what == 'ask':

@@ -102,7 +102,7 @@
 # upload courses, below rec_failed).
 # The publish courses (the channel rig, skyzfs-publish-rig.yml; below
 # rec_ufailed) are made then too, by name only: pplain, prewind,
-# prewindf, prewindc, pkill, pkillman, pkillpub and pchannel. An agent
+# prewindf, prewindc, pkill, pkillman, pkillpub, pchannel and passist. An agent
 # (publish_agent.py) asks the daemon through its channel to publish
 # snapshots of the pool, and
 # DIR/ends.tsv gets each answer under the course's label for it, for
@@ -178,7 +178,7 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
-PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel"
+PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist"
 KNOWN=$ALL
 [ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED"; }
 RECS=${*:-$ALL}
@@ -1541,6 +1541,23 @@ past_top() {
         sleep 0.5
     done
 }
+# SECONDS: until no group that wrote has been committed for 12 s (the
+# txgs kstat, `nwritten` above 0), for up to SECONDS: the idle pool the
+# assist's course needs. ZFS 2.4 commits groups that write nothing (no
+# uberblock, no cut) every few seconds even on an idle pool; those are
+# not counted.
+pidle() {
+    local t0=$SECONDS since=$SECONDS last="" now
+    while :; do
+        now=$(awk '$3 == "C" && $1 ~ /^[0-9]+$/ && $6 + 0 > 0 && $1 + 0 > t { t = $1 + 0 } END { print t }' \
+            "/proc/spl/kstat/zfs/$POOL/txgs")
+        [ -n "$now" ] || rig_error "no group that wrote in $POOL's txgs kstat"
+        [ "$now" = "$last" ] || { last=$now; since=$SECONDS; }
+        [ $((SECONDS - since)) -lt 12 ] || { log "$NAME: the pool idle at group $last"; return 0; }
+        [ $((SECONDS - t0)) -lt "$1" ] || rig_error "the pool wrote a group within every 12 s for $1 s (now $last)"
+        sleep 1
+    done
+}
 # LABEL T SECONDS [sync]: how T stands, asked until it no longer pends
 # (`pending after N s` when it still does); with sync, 4 KiB written and
 # the pool synced between two looks, so that the pool cuts.
@@ -1811,6 +1828,36 @@ rec_pkillat() {
 }
 rec_pkillman() { rec_pkillat m1; }
 rec_pkillpub() { rec_pkillat p1; }
+
+# passist (M2.T5's stage 0; M2.6b2's `Zfs::assist`, #144): on an idle
+# pool, a publish carried only by the groups the agent's assist writes:
+# `zfs set skyzfs:assist=V` with a V not set before, then `zpool sync`
+# (publish_agent.py --assist), at the pace the lead decided on #144:
+# from 10 s after the acceptance three a second apart, then one every
+# 10 s, with nothing written to the pool. a1 is asked with G five above its snapshot's, so
+# that the groups of the snapshot and its hold do not carry it, and must
+# be done on a cut of a group an assist wrote. a2 can never be carried
+# (G far above): the assist goes on for 70 s, and the groups it
+# wrote, the cuts the daemon counted and the uploads it made meanwhile
+# are the pace's figures (the status before and after,
+# DIR/a2-status-before.txt and a2-status-after.txt); then a2 is withdrawn
+# and looked at. Each assist is a line of DIR/assist.tsv; the txgs kstat
+# after a2 is DIR/a2-txgs.txt, from which the groups that wrote are
+# counted.
+rec_passist() {
+    create_pool
+    load 1
+    pidle 120
+    pflow a1 a1 --group-plus 5 --assist --limit-s 300
+    pidle 120
+    ustatus a2-status-before.txt
+    pflow a2 a2 --group-plus 1000000 --expiry-s 900 --assist --limit-s 70
+    ustatus a2-status-after.txt
+    cat "/proc/spl/kstat/zfs/$POOL/txgs" > "$RDIR/a2-txgs.txt"
+    pask a2-withdraw withdraw a2
+    pask a2-look look a2
+    export_pool
+}
 
 # pchannel (P4): the channel itself. First served while another holder
 # has the lease (ulease_other, --serve-without-upload): `cuts` is refused

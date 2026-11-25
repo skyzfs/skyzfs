@@ -56,6 +56,8 @@ multihost=on a multihost write of an older state applied after a newer
 cut) is held to its own rule: the pool opens at its group or a later
 one, never an earlier one, and it is left out of the session check and
 counted (obs_stale_cuts), a measurement the lead asked for.
+An export after an import that the kernel calls busy is tried again
+(export_after_import); obs_export_refusals counts such refusals.
 
 A control is `caught` when a check fails on it, `missed` when every
 check passes, `same` (the two rules) when its cuts equal the design's,
@@ -234,6 +236,31 @@ def session_verdicts(cs, records, kstats):
 LOADED_RE = re.compile(r'spa_load\(' + POOL + r', [^)]*\): using uberblock with txg=(\d+)')
 DBGMSG = '/proc/spl/kstat/zfs/dbgmsg'
 DBGMSG_ON = '/sys/module/zfs/parameters/zfs_dbgmsg_enable'
+
+
+def export_after_import(pool, run=run, sleep=time.sleep):
+    """Export POOL after a check's import -> (exit code, what zpool said,
+    the refusals). An export the kernel calls busy is tried again after
+    each of replay_check.EXPORT_WAITS, as the replay rig does (#33), with
+    the ZFS commands running recorded at each refusal: the cut rig's
+    check of the recording `full` on ubuntu-24.04 had one such refusal
+    right after a read-only import (run 45600485861). Any other failure,
+    or one still busy after the last wait, is returned as it is; the
+    caller makes it the rig's error."""
+    refused = []
+    for wait in replay_check.EXPORT_WAITS + (None,):
+        rc, out, _ = run(['zpool', 'export', pool], 120)
+        if rc == 0 or 'busy' not in out:
+            return rc, out, refused
+        _, ps, _ = run(['ps', '-eo', 'pid=,etimes=,comm=,args='], 30)
+        procs = replay_check.zfs_processes(ps)
+        refused.append(f'busy{f", tried again in {wait} s" if wait else ""}; ZFS commands running: '
+                       + (', '.join(procs) if procs else 'none'))
+        print(f'cut_check: zpool export {pool}: {refused[-1]}', flush=True)
+        if wait is None:
+            return rc, out, refused
+        sleep(wait)
+    return rc, out, refused
 
 
 def loaded_txg(dbgmsg):
@@ -450,6 +477,7 @@ class Check:
         self.multihost = False
         # zfs_dbgmsg_enable as it was before a -T import turned it on.
         self.dbgmsg_was = None
+        self.export_refusals = 0     # busy exports after an import, all told (#145's S3)
         self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
@@ -567,9 +595,11 @@ class Check:
                 _, st, _ = run(['zpool', 'status', '-v', POOL], 60)
                 self.last_import = (out.strip(), st.strip())
             if rc == 0:
-                erc, eout, _ = run(['zpool', 'export', POOL], 120)
+                erc, eout, refused = export_after_import(POOL)
+                self.export_refusals += len(refused)
                 if erc:
-                    raise RigError(f'zpool export after the import: {eout.strip()[-300:]}')
+                    raise RigError(f'zpool export after the import: {eout.strip()[-300:]}'
+                                   + (f' (busy at {len(refused)} tries: {"; ".join(refused)[-600:]})' if refused else ''))
             if rc == 0 and txg:
                 with open(DBGMSG) as f:
                     at = loaded_txg(f.read())
@@ -760,6 +790,8 @@ def main():
             '; '.join(d for _, _, d in sb) if not none else '; '.join(none))
         if none:
             rc = 1
+        put('obs_export_refusals', 'INFO', f'{ck.export_refusals} busy exports after an import, each tried again '
+            '(the job\'s log has what ran at each)')
         # The controls.
         got = {}
         if mid in failures or not bps_at.get('mid'):
