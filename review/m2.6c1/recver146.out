@@ -1,0 +1,11 @@
+## at 4ff4549 (the head), exit 0
+test record::tests::recver_new_bytes ... RECVER new golden read here: Ok(10)
+test record::tests::recver_old_bytes ... RECVER base golden read here: ok true, equal to golden() less Some(Stopped): true
+test record::tests::recver_one_stopped ... RECVER one Stopped bytes: 535a4147020000001f0000000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081018201000102773909f1074f8411882720f1e13ae54dfc869a5780c303cd3300b146d9d93c8c148f68cf24
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out; finished in 0.00s
+## at 8663cd7 (the base: an agent before the variant), exit 0
+test record::tests::recver_new_bytes ... RECVER new golden read here: Err(Body("Serde Deserialization Error"))
+RECVER one Stopped read here: Err(Body("Serde Deserialization Error"))
+test record::tests::recver_old_bytes ... RECVER base golden read here: ok true, equal to golden() less Some(TooOld): false
+test record::tests::recver_one_stopped ... RECVER one Stopped: no such variant here
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.00s

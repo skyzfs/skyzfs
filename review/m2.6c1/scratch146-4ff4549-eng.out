@@ -1,0 +1,112 @@
+
+running 7 tests
+test engine::tests::review6_a_publish_asked_anew_after_the_stop ... R6e asked anew after the stop: Err("a livelock: 2000 questions at 600000 ms with no time passing") at 600 s, outcomes [], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 70, withdraws 0, Did { holds: 69, releases: 69, looks: 207, saves: 209 }
+ok
+test engine::tests::review6_a_publish_begun_after_the_uploader_stopped ... R6d begun after the stop: Err("a livelock: 2000 questions at 0 ms with no time passing") at 0 s, outcomes [], reports [("skz-20261125T010000Z", Refused(Stopped))], holds ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"], asks 124, withdraws 0, Did { holds: 125, releases: 124, looks: 124, saves: 250 }
+ok
+test engine::tests::review6_a_restart_between_the_release_and_the_give_up ... R6g a restart after the release: settled Ok(()) at 14 s, outcomes [("skz-20261125T010000Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 2
+ok
+test engine::tests::review6_stopped_asked_is_given_up_at_once ... R6b stopped, asked, not too old: settled Ok(()) at 0 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 1, withdraws 0, Did { holds: 1, releases: 1, looks: 2, saves: 4 }
+ok
+test engine::tests::review6_stopped_held_is_given_up_at_once ... R6c stopped, held, not too old: settled Ok(()) at 0 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 0, withdraws 0
+ok
+test engine::tests::review6_stopped_too_old_is_given_up_and_reported ... R6a stopped, too old: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], withdraws 1, at 60 s
+ok
+test engine::tests::review6_two_publishes_ended_by_one_stop_are_each_given_up ... R6f two, one stop, not too old: settled Ok(()) at 1 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped)), ("skz-20261125T010001Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped)), ("skz-20261125T010001Z", Refused(Stopped))], holds []
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.08s
+
+   Compiling skyzfs-agent v0.0.1 (<scratch>/wt146s/crates/skyzfs-agent)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.70s
+     Running unittests src/lib.rs (<scratch>/target-146s/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)
+
+thread 'engine::tests::review6_a_publish_asked_anew_after_the_stop' (13125) panicked at crates/skyzfs-agent/src/engine/fake.rs:869:9:
+a livelock: 2000 questions at 600000 ms with no time passing
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: <skyzfs_agent::engine::fake::World>::asked_still
+             at ./src/engine/fake.rs:869:9
+   3: <skyzfs_agent::engine::fake::World>::answer
+             at ./src/engine/fake.rs:1003:14
+   4: <skyzfs_agent::engine::fake::FakeDaemon as skyzfs_agent::engine::Daemon>::ask
+             at ./src/engine/fake.rs:1303:29
+   5: <skyzfs_agent::engine::tests::Counting6 as skyzfs_agent::engine::Daemon>::ask
+             at ./src/engine/tests.rs:2004:19
+   6: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::see
+             at ./src/engine.rs:564:46
+   7: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::round
+             at ./src/engine.rs:518:31
+   8: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::settle
+             at ./src/engine.rs:467:25
+   9: skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}
+             at ./src/engine/tests.rs:2207:78
+  10: <skyzfs_agent::engine::tests::settle_or_livelock::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+  11: <core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panic/unwind_safe.rs:275:9
+  12: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>, core::result::Result<(), skyzfs_agent::engine::Error>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:573:43
+  13: std::panicking::catch_unwind::<core::result::Result<(), skyzfs_agent::engine::Error>, core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:541:19
+  14: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>, core::result::Result<(), skyzfs_agent::engine::Error>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panic.rs:359:14
+  15: skyzfs_agent::engine::tests::settle_or_livelock
+             at ./src/engine/tests.rs:2207:15
+  16: skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop
+             at ./src/engine/tests.rs:2285:15
+  17: skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop::{closure#0}
+             at ./src/engine/tests.rs:2263:49
+  18: <skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'engine::tests::review6_a_publish_begun_after_the_uploader_stopped' (13126) panicked at crates/skyzfs-agent/src/engine/fake.rs:869:9:
+a livelock: 2000 questions at 0 ms with no time passing
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: <skyzfs_agent::engine::fake::World>::asked_still
+             at ./src/engine/fake.rs:869:9
+   3: <skyzfs_agent::engine::fake::World>::answer
+             at ./src/engine/fake.rs:1003:14
+   4: <skyzfs_agent::engine::fake::FakeDaemon as skyzfs_agent::engine::Daemon>::ask
+             at ./src/engine/fake.rs:1303:29
+   5: <skyzfs_agent::engine::tests::Counting6 as skyzfs_agent::engine::Daemon>::ask
+             at ./src/engine/tests.rs:2004:19
+   6: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::see
+             at ./src/engine.rs:564:46
+   7: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::round
+             at ./src/engine.rs:518:31
+   8: <skyzfs_agent::engine::Agent<skyzfs_agent::engine::fake::FakeZfs, skyzfs_agent::engine::tests::Counting6, skyzfs_agent::engine::fake::MemKeep, skyzfs_agent::engine::fake::FakeClock>>::settle
+             at ./src/engine.rs:467:25
+   9: skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}
+             at ./src/engine/tests.rs:2207:78
+  10: <skyzfs_agent::engine::tests::settle_or_livelock::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+  11: <core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panic/unwind_safe.rs:275:9
+  12: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>, core::result::Result<(), skyzfs_agent::engine::Error>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:573:43
+  13: std::panicking::catch_unwind::<core::result::Result<(), skyzfs_agent::engine::Error>, core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:541:19
+  14: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<skyzfs_agent::engine::tests::settle_or_livelock::{closure#0}>, core::result::Result<(), skyzfs_agent::engine::Error>>
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panic.rs:359:14
+  15: skyzfs_agent::engine::tests::settle_or_livelock
+             at ./src/engine/tests.rs:2207:15
+  16: skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped
+             at ./src/engine/tests.rs:2233:15
+  17: skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped::{closure#0}
+             at ./src/engine/tests.rs:2224:56
+  18: <skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+  19: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

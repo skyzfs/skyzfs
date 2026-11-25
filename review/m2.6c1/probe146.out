@@ -1,0 +1,64 @@
+
+running 7 tests
+test engine::tests::review6_a_publish_asked_anew_after_the_stop ... R6e asked anew after the stop: Ok(Ok(())) at 600 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 2, withdraws 0, Did { holds: 1, releases: 1, looks: 2, saves: 5 }
+FAILED
+test engine::tests::review6_a_publish_begun_after_the_uploader_stopped ... R6d begun after the stop: Ok(Ok(())) at 0 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 1, withdraws 0, Did { holds: 1, releases: 1, looks: 1, saves: 3 }
+FAILED
+test engine::tests::review6_a_restart_between_the_release_and_the_give_up ... R6g a restart after the release: settled Ok(()) at 14 s, outcomes [("skz-20261125T010000Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 2
+ok
+test engine::tests::review6_stopped_asked_is_given_up_at_once ... R6b stopped, asked, not too old: settled Ok(()) at 0 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 1, withdraws 0, Did { holds: 1, releases: 1, looks: 1, saves: 4 }
+ok
+test engine::tests::review6_stopped_held_is_given_up_at_once ... R6c stopped, held, not too old: settled Ok(()) at 0 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], asks 0, withdraws 0
+ok
+test engine::tests::review6_stopped_too_old_is_given_up_and_reported ... R6a stopped, too old: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Stopped))], holds [], withdraws 1, at 60 s
+ok
+test engine::tests::review6_two_publishes_ended_by_one_stop_are_each_given_up ... R6f two, one stop, not too old: settled Ok(()) at 1 s, outcomes [("skz-20261125T010000Z", Abandoned(Stopped)), ("skz-20261125T010001Z", Abandoned(Stopped))], reports [("skz-20261125T010000Z", Refused(Stopped)), ("skz-20261125T010001Z", Refused(Stopped))], holds []
+ok
+
+failures:
+
+failures:
+    engine::tests::review6_a_publish_asked_anew_after_the_stop
+    engine::tests::review6_a_publish_begun_after_the_uploader_stopped
+
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.07s
+
+   Compiling skyzfs-agent v0.0.1 (<scratch>/wt146s/crates/skyzfs-agent)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.63s
+     Running unittests src/lib.rs (<scratch>/target-146s/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)
+
+thread 'engine::tests::review6_a_publish_asked_anew_after_the_stop' (32701) panicked at crates/skyzfs-agent/src/engine/tests.rs:2299:9:
+not a livelock: Ok(Ok(()))
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop
+             at ./src/engine/tests.rs:2299:9
+   3: skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop::{closure#0}
+             at ./src/engine/tests.rs:2263:49
+   4: <skyzfs_agent::engine::tests::review6_a_publish_asked_anew_after_the_stop::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'engine::tests::review6_a_publish_begun_after_the_uploader_stopped' (32702) panicked at crates/skyzfs-agent/src/engine/tests.rs:2249:9:
+not a livelock: Ok(Ok(()))
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/panicking.rs:80:14
+   2: skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped
+             at ./src/engine/tests.rs:2249:9
+   3: skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped::{closure#0}
+             at ./src/engine/tests.rs:2224:56
+   4: <skyzfs_agent::engine::tests::review6_a_publish_begun_after_the_uploader_stopped::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.84s

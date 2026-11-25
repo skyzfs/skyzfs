@@ -1,0 +1,12 @@
+
+running 1 test
+test plan::tests::review5_the_ended_arm_in_full ... TABLE	ended	phase	time	pool	withdrawn	snap	answer	action	report
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.02s
+
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling skyzfs-agent v0.0.1 (<scratch>/wt146s/crates/skyzfs-agent)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.79s
+     Running unittests src/lib.rs (<scratch>/target-146s/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)

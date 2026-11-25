@@ -1,0 +1,77 @@
+cells: 12096 at 4ff4549, 12096 at cd3a67c; missing at either: 0
+
+1. Cells that differ (action or report)
+  144 cells
+       2  young    refused stopped  Release        -> Done { commit: [COMMIT], report: None } report None
+       2  young    refused stopped  Release        -> Done { commit: [OTHER], report: None } report None
+       2  young    refused stopped  Release        -> Look                           report None
+       6  young    refused stopped  Release        -> Release                        report Some(Refused(Stopped))
+       8  young    refused stopped  Wait           -> Abandon(Destroyed)             report Some(Refused(Stopped))
+      32  young    refused stopped  Wait           -> Abandon(NameTaken)             report Some(Refused(Stopped))
+       8  young    refused stopped  Wait           -> Abandon(Stopped)               report Some(Refused(Stopped))
+      14  young    refused stopped  Wait           -> Done { commit: [COMMIT], report: None } report None
+       8  young    refused stopped  Wait           -> Done { commit: [COMMIT], report: Some(SnapshotGone) } report None
+      14  young    refused stopped  Wait           -> Done { commit: [OTHER], report: None } report None
+       8  young    refused stopped  Wait           -> Done { commit: [OTHER], report: Some(SnapshotGone) } report None
+      22  young    refused stopped  Wait           -> Look                           report None
+      18  young    refused stopped  Wait           -> Release                        report Some(Refused(Stopped))
+  states among them: ['young'] ['refused stopped']
+
+2. refused stopped, not too old (time and flag folded)
+  phase  pool          look saw           action / report
+  asked  gone          -                  Look / None
+  asked  gone          absent             Abandon(Destroyed) / Some(Refused(Stopped))
+  asked  gone          not-ours           Abandon(NameTaken) / Some(Refused(Stopped))
+  asked  gone          ours               Done { commit: [COMMIT], report: Some(SnapshotGone) } / None
+  asked  gone          ours-other-commit  Done { commit: [OTHER], report: Some(SnapshotGone) } / None
+  asked  gone          unreadable         Abandon(NameTaken) / Some(Refused(Stopped))
+  asked  whole-held    -                  Look / None
+  asked  whole-held    absent             Release / Some(Refused(Stopped))
+  asked  whole-held    not-ours           Release / Some(Refused(Stopped))
+  asked  whole-held    ours               Done { commit: [COMMIT], report: None } / None
+  asked  whole-held    ours-other-commit  Done { commit: [OTHER], report: None } / None
+  asked  whole-held    unreadable         Release / Some(Refused(Stopped))
+  asked  whole-unheld  -                  Look / None
+  asked  whole-unheld  absent             Abandon(Stopped) / Some(Refused(Stopped))
+  asked  whole-unheld  not-ours           Abandon(NameTaken) / Some(Refused(Stopped))
+  asked  whole-unheld  ours               Done { commit: [COMMIT], report: None } / None
+  asked  whole-unheld  ours-other-commit  Done { commit: [OTHER], report: None } / None
+  asked  whole-unheld  unreadable         Abandon(NameTaken) / Some(Refused(Stopped))
+  held   gone          -                  Look / None
+  held   gone          absent             Abandon(Destroyed) / Some(Refused(Stopped))
+  held   gone          not-ours           Abandon(NameTaken) / Some(Refused(Stopped))
+  held   gone          ours               Done { commit: [COMMIT], report: Some(SnapshotGone) } / None
+  held   gone          ours-other-commit  Done { commit: [OTHER], report: Some(SnapshotGone) } / None
+  held   gone          unreadable         Abandon(NameTaken) / Some(Refused(Stopped))
+  held   whole-held    -                  Look / None
+  held   whole-held    absent             Release / Some(Refused(Stopped))
+  held   whole-held    not-ours           Release / Some(Refused(Stopped))
+  held   whole-held    ours               Done { commit: [COMMIT], report: None } / None
+  held   whole-held    ours-other-commit  Done { commit: [OTHER], report: None } / None
+  held   whole-held    unreadable         Release / Some(Refused(Stopped))
+  held   whole-unheld  -                  Look / None
+  held   whole-unheld  absent             Abandon(Stopped) / Some(Refused(Stopped))
+  held   whole-unheld  not-ours           Abandon(NameTaken) / Some(Refused(Stopped))
+  held   whole-unheld  ours               Done { commit: [COMMIT], report: None } / None
+  held   whole-unheld  ours-other-commit  Done { commit: [OTHER], report: None } / None
+  held   whole-unheld  unreadable         Abandon(NameTaken) / Some(Refused(Stopped))
+  against refused rewound at the same cell: same 40, differs 104
+
+3. Released or given up, not too old, by answer
+    (none: away)         cd3a67c   12  4ff4549   12
+    expired              cd3a67c   56  4ff4549   56
+    refused attachment   cd3a67c   56  4ff4549   56
+    refused ended        cd3a67c   12  4ff4549   12
+    refused no-answer    cd3a67c   12  4ff4549   12
+    refused no-upload    cd3a67c   12  4ff4549   12
+    refused rewound      cd3a67c   24  4ff4549   24
+    refused state        cd3a67c   56  4ff4549   56
+    refused stopped      cd3a67c   12  4ff4549   72   <- new
+    refused taken        cd3a67c   56  4ff4549   56
+    unknown              cd3a67c   24  4ff4549   24
+    withdrawn            cd3a67c   56  4ff4549   56
+
+4. The report
+  cells where the report is not as L7 and the ruling say: 0
+  cells with a report: 1800; not too old: 72
+      72  young / refused stopped / Some(Refused(Stopped))

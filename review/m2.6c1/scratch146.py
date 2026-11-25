@@ -1,14 +1,17 @@
 """Sets up the scratch tests of the look at #146 in a clean worktree of
-the head and runs them: python3 -I scratch146.py <worktree> <out> [filter]
+the head and runs them:
+python3 -I scratch146.py <worktree> <out> [filter [engine-tests]]
 
 - the fake (`engine/fake.rs`) gets an uploader that stops as skyzfsd's
   does (`Publishing::stop`): every publish pending ends `refused
   stopped`, kept for its name; every `publish` after is refused
   `stopped` at once and not kept;
-- `plan146.rs` is appended to `plan/tests.rs`, `rec146.rs` to
-  `engine/tests.rs`;
+- `plan146.rs` is appended to `plan/tests.rs`, and `rec146.rs` (the
+  tests of cd3a67c) or the file named (`rec146b.rs`, those of 4ff4549)
+  to `engine/tests.rs`;
 - `cargo test -p skyzfs-agent --lib <filter> -- --nocapture
-  --test-threads=1` (the filter `review5` by default); the output goes to <out>, the table's rows to
+  --test-threads=1` (the filter `review5` by default; `review` runs the
+  grid and the file's tests at 4ff4549); the output goes to <out>, the table's rows to
   <out>.tsv.
 
 The worktree is left changed; use a scratch one."""
@@ -16,6 +19,7 @@ import os, subprocess, sys
 
 W, OUT = sys.argv[1], sys.argv[2]
 FILTER = sys.argv[3] if len(sys.argv) > 3 else "review5"
+REC = sys.argv[4] if len(sys.argv) > 4 else "rec146.rs"
 HERE = os.path.dirname(os.path.abspath(__file__))
 FK = os.path.join(W, "crates/skyzfs-agent/src/engine/fake.rs")
 
@@ -46,7 +50,7 @@ edit(FK, "        let refused = |code| Ok(Reply::Refused(code, String::new()));\
      "        if self.uploader_stopped {\n            return refused(Code::Stopped);\n        }\n"
      "        let daemon = &mut self.daemon;\n")
 for src, dst in [("plan146.rs", "crates/skyzfs-agent/src/plan/tests.rs"),
-                 ("rec146.rs", "crates/skyzfs-agent/src/engine/tests.rs")]:
+                 (REC, "crates/skyzfs-agent/src/engine/tests.rs")]:
     with open(os.path.join(W, dst), "a") as h:
         h.write("\n" + open(os.path.join(HERE, src)).read())
 r = subprocess.run(["cargo", "test", "-p", "skyzfs-agent", "--lib", FILTER, "--",
