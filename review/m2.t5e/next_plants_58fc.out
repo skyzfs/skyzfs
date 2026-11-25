@@ -1,0 +1,57 @@
+baseline {'tests/kernel/cut_check.py': [], 'tests/kernel/publish_agent.py': [], 'tests/kernel/publish_check.py': []}
+E1   KILLED    no retry: one export, as before aabde27  by test_cut_check.py
+E2   KILLED    unbounded: a wait of 1 s for ever  by test_cut_check.py
+E3   KILLED    one wait more (16 s)  by test_cut_check.py
+E4   KILLED    every failure tried again, not only a busy one  by test_cut_check.py
+E5   KILLED    a busy export not tried again, any other failure is  by test_cut_check.py
+E6   KILLED    no wait between tries  by test_cut_check.py
+E7   KILLED    a wait of 1 s every time  by test_cut_check.py
+E8   KILLED    no refusal recorded  by test_cut_check.py
+E9   KILLED    no try after the last wait  by test_cut_check.py
+E10  KILLED    still busy after the last wait returned as exported  by test_cut_check.py
+E11  KILLED    kimport: a failed export no longer the rig's error  by test_cut_check.py
+E12  KILLED    kimport: the retry bypassed (one export, as before)  by test_cut_check.py
+E13  KILLED    kimport: a busy export after all waits passes as exported  by test_cut_check.py
+N1   KILLED    no accepted.tsv  by test_publish_agent.py
+N2   KILLED    the acceptance mark's A not the wait  by test_publish_agent.py
+N3   KILLED    no end mark for a refusal  by test_publish_agent.py
+N4   KILLED    no end mark for an end  by test_publish_agent.py
+N5   KILLED    no end mark for pending after  by test_publish_agent.py
+N6   KILLED    the end mark with the whole end line  by test_publish_agent.py
+N7   KILLED    the mark's W not read from the kstat  by test_publish_agent.py
+N8   KILLED    the mark's time 0  by test_publish_agent.py
+N10  KILLED    read_marks takes a mark twice  by test_publish_check.py, test_publish_check_main.py
+N11  KILLED    read_marks takes a wait of 0  by test_publish_check.py
+N12  KILLED    a1_premise: no end mark holds  by test_publish_check.py, test_publish_check_main.py
+N13  KILLED    a1_premise: top from the end mark alone  by test_publish_check.py
+N14  KILLED    a1_premise: top from the assists alone  by test_publish_check.py, test_publish_check_main.py
+N15  KILLED    a1_premise: G at the acceptance allowed  by test_publish_check.py, test_publish_check_main.py
+N16  KILLED    a1_premise: G reached read as below  by test_publish_check.py
+N17  KILLED    a1_premise: below G, pending holds  by test_publish_check.py, test_publish_check_main.py
+N18  KILLED    a1_premise: below G, any end the rig's  by test_publish_check.py, test_publish_check_main.py
+N19  KILLED    a1_premise: crossing with <= at before  by test_publish_check.py
+N20  KILLED    a1_premise: no crossing needed  by test_publish_check.py, test_publish_check_main.py
+N21  KILLED    a1_premise: strays not judged  by test_publish_check.py, test_publish_check_main.py
+N22  KILLED    a1_premise: an assist's range from its before  by test_publish_check.py
+N23  NOT APPLIED (0 matches of '    stray = sorted(written_groups(txgs, w_acc, top') a1_premise: strays only at or above G (B1's sketch)
+N23b NOT APPLIED (0 matches of '    stray = sorted(written_groups(txgs, w_acc, top') a1_premise: strays from the first assist on (B1's fix, the smaller form)
+N40  SURVIVED  b3bb916: a stray at G itself not counted
+N41  KILLED    b3bb916 undone: every stray counted, as at 9bac3dd  by test_publish_check.py, test_publish_check_main.py
+N42  KILLED    b3bb916: only strays below G counted  by test_publish_check.py, test_publish_check_main.py
+N43  KILLED    b3bb916 as the form 'first': strays from the first assist on  by test_publish_check.py
+N44  KILLED    b3bb916: only a stray at the top counted  by test_publish_check.py
+N24  NOT APPLIED (0 matches of "    if rows and rows[0]['t0'] - accepted_ns < afte") pace: no first-assist check
+N25  NOT APPLIED (0 matches of 'gap >= after / 2:') pace: the burst's bound 2 A
+N26  NOT APPLIED (0 matches of 'gap < after * 0.95:') pace: the spaced bound A / 2
+N27  NOT APPLIED (0 matches of '        if k < publish_agent.ASSIST_BURST and gap') pace: a burst of two
+N28  NOT APPLIED (0 matches of '        if k < publish_agent.ASSIST_BURST and gap') pace: a burst of four
+N29  NOT APPLIED (0 matches of "                                       marks[t]['a") pace: the decided A for the mark's
+N30  KILLED    a2's pace not judged  by test_publish_check_main.py
+N31  KILLED    a1 never accepted holds whatever its end  by test_publish_check_main.py
+N32  KILLED    the NA branch never taken  by test_publish_check_main.py
+N33  KILLED    the NA branch always taken  by test_publish_check_main.py
+N34  KILLED    premise_a2 with >= 1  by test_publish_check_main.py
+N35  KILLED    accepted.tsv required  by test_publish_check_main.py
+N36  KILLED    the statuses required  by test_publish_check_main.py
+N37  KILLED    lacks: only a missing key  by test_publish_check.py, test_publish_check_main.py
+restored {'tests/kernel/cut_check.py': [], 'tests/kernel/publish_agent.py': [], 'tests/kernel/publish_check.py': []}

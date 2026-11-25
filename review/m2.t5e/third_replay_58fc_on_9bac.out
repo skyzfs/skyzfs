@@ -1,0 +1,454 @@
+recording art_9bac: a1 accepted at 417.764 s, a2 at 448.211 s; shifts from the 9bac3dd recording's clock 0.000 s and 0.000 s; a1 carried by cut 12 of group 22
+== P0 passist as run
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D1 a1 never carried although the assists wrote 22 and 23 (at or past G 20): pending after 300 s
+   exit 1, want 1 (right)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (pending), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a1 ended pending 289.1 s after its last assist
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D2 a1 published on cut 11 of group 19 (below G) right after assist 1
+   exit 1, want 1 (right)
+   pin_a1_row	FAILED	[server] the row's cut is of group 19, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 19 by its end (done), over 1 assists: below G at the end, so the end was the daemon's alone (the pins judge it)
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 11 of group 19 carried a1: a group assist 1 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D3 a1 published on cut 9 of group 17 (the hold's history, below G) before any assist
+   exit 1, want 1 (right)
+   pin_a1_row	FAILED	[server] the row's cut is of group 17, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 17 by its end (done), over 0 assists: below G at the end, so the end was the daemon's alone (the pins judge it)
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 9 of group 17 carried a1: a group no assist wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D4 G ignored: a1 done on cut 8 (group 16), a2 on cut 17 (group 31), before any assist
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=17 group=31 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a1_row	FAILED	[server] the row's cut is of group 16, below G = 20
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 16 by its end (done), over 0 assists: below G at the end, so the end was the daemon's alone (the pins judge it)
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 8 of group 16 carried a1: a group no assist wrote
+   obs_assist_pace	NA	[server] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D5 a2 published on cut 21 (group 37) after its second assist
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=21 group=37 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D6 a2 published on cut 19 (group 33) after its first assist
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=19 group=33 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D7 a2 expired by the daemon after 5 s (900 asked): no assist of a2
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'expired', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'expired', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'expired', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D8 a2 refused at its publish (no acceptance, so no marks)
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'refused name x', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'unknown', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'refused name x', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D8a a1 refused at its publish (no acceptance, so no marks)
+   exit 1, want 1 (right)
+   pin_answer_a1	FAILED	[server] answered 'refused stale x', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'refused stale x'
+   premise_a1_needed_the_assist	ok	[rig] a1 was never accepted (it ended 'refused stale x'): no case to make, and pin_answer_a1 judges the refusal
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D9 a2's withdrawal ignored (pending)
+   exit 1, want 1 (right)
+   pin_answer_a2-withdraw	FAILED	[server] answered 'pending', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D10 a2-look answers a snap with nothing published
+   exit 1, want 1 (right)
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=20 group=34 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D11 no cut counted for the assists' groups (cuts of 18 to 67 dropped): a1 pending
+   exit 1, want 1 (right)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (pending), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a1 ended pending 289.1 s after its last assist
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 0 cuts between the first and the last (0.0 a 
+== D12 the carrying cut opens only as a rewind
+   exit 1, want 1 (right)
+   pin_a1_cut	FAILED	[server] cut 12 (group 22) opens only with a rewind
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D13 the status after a2 lacks upload_blocks (F2: an INFO line, no verdict)
+   exit 0, want 0 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D13b the status after a2 lacks uploaded and the one before is missing
+   exit 0, want 0 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D14 a1 expired by the daemon after one assist (W 19)
+   exit 1, want 1 (right)
+   pin_answer_a1	FAILED	[server] answered 'expired', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'expired'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 19 by its end (expired), over 1 assists: below G at the end, so the end was the daemon's alone (the pins judge it)
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D15 a1 refused by the daemon after both assists took the pool across G
+   exit 1, want 1 (right)
+   pin_answer_a1	FAILED	[server] answered 'refused rewound x', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'refused rewound x'
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (refused), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D16 a2 pending 20 s, then expired (its burst done)
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'expired', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'expired', not withdrawn
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'expired', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D17 a2 published on cut 27 (group 51) after five assists
+   exit 1, want 1 (right)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=27 group=51 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== D18 a1 published on cut 11 of group 19 (below G), answered after both assists took the pool to 23
+   exit 1, want 1 (right)
+   pin_a1_row	FAILED	[server] the row's cut is of group 19, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 11 of group 19 carried a1: a group assist 1 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D19 a1 published on cut 9 of group 17 (the hold's history, below G), answered after both assists
+   exit 1, want 1 (right)
+   pin_a1_row	FAILED	[server] the row's cut is of group 17, below G = 20
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 9 of group 17 carried a1: a group no assist wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== D20 a slow daemon (each progress 3 s: a2's gaps 4.1 s in the burst, 13 s spaced) that publishes a2
+   exit 1, want 1; a gap over 3x named: True, want True (right)
+   pin_answer_a2	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not pending after
+   pin_answer_a2-withdraw	FAILED	[server] answered 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not withdrawn
+   pin_answer_a2-look	FAILED	[server] answered 'snap commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef state=eac9d616a3f300a360934009b34edb7d number=27 group=51 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_a2_absent	FAILED	[server] a ref snap/T; a row
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2's assist 2 4.1 s after the end of the one before, in the burst; a2's assist 3 4.1 s after the end of the one before, in the burst
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   obs_assist_pace	NA	[server] a2 ended 'done commit=efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef', not `pending after`: pin_answer_a2 judges that, and there is no pace to read
+== S1 a1 carried later: a third assist (23, 26, 27) 1.1 s after the second, then done
+   exit 0, want 0 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 27 by its end (done), over 3 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 53.0 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.1 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 16 cuts between the first and the last (18.1 
+== R1 the stand-in never assisted a1, which pends
+   exit 2, want 2 (right)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 17 by its end (pending), over 0 assists: the assists never took the pool to G, so nothing could carry a1
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 17 by its end (pending), over 0 assists: the assists never took the pool to G, so nothing could carry a1
+== R2 the pool not idle: at G when a1 was accepted
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 20 when it was accepted and 23 by its end (done), over 2 assists: G was written before any assist
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 20 when it was accepted and 23 by its end (done), over 2 assists: G was written before any assist
+== R3 the assists wrote nothing on the kernel (after = before for a1), a1 pending
+   exit 2, want 2 (right)
+   pin_answer_a1	FAILED	[server] answered 'pending after 300 s', not done
+   pin_a1	FAILED	[server] not published: a1 answered 'pending after 300 s'
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 19 by its end (pending), over 2 assists: the assists never took the pool to G, so nothing could carry a1
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 19 by its end (pending), over 2 assists: the assists never took the pool to G, so nothing could carry a1
+== R4 no assist.tsv (the ends as recorded)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 0 assists: no assist took the pool across G
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 0 assists: no assist took the pool across G
+== R5 no a2-txgs.txt
+   exit 2, want 2 (right)
+   rig_error	ERROR	[rig] no a2-txgs.txt
+== R6 a2-txgs.txt short (groups up to 40 out of its history)
+   exit 2, want 2 (right)
+   rig_error	ERROR	[rig] the txgs kstat lacks 7 of the groups 17 to 23 (first 17)
+== R7 a2 assisted once by the stand-in, a2 pending
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2 ended pending 60.1 s after its last assist
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ERROR	[rig] a2 was assisted 1 times
+   rig_error	ERROR	[rig] premise_a2_assisted: a2 was assisted 1 times
+== R8 an assist line torn
+   exit 2, want 2 (right)
+   rig_error	ERROR	[rig] assist.tsv line 11: not `T ns ns value before mid after`: 'a2\t1\t2'
+== R9 no accepted.tsv
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 was never accepted (it ended 'done commit=489296637e72095aa63488248261b822a87a0399f3dbcf355650d892d5f07187'): and was not refused
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 was never accepted (it ended 'done commit=489296637e72095aa63488248261b822a87a0399f3dbcf355650d892d5f07187'): and was not refused
+== R10 accepted.tsv torn
+   exit 2, want 2 (right)
+   rig_error	ERROR	[rig] accepted.tsv line 5: not `T accepted|end ns group A|verb`, or a mark twice: 'a2\tend\t5'
+== R11 a1 accepted and no end mark
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 was accepted and has no end mark
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 was accepted and has no end mark
+== V1 a1 carried by group 22 that no assist wrote (assist 2 read 23 before its set)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 25 by its end (done), over 2 assists: no assist took the pool across G
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 25 by its end (done), over 2 assists: no assist took the pool across G
+== V1b a group at or above G written after the last assist, before the end (W 26 at the end)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 26 by its end (done), over 2 assists: groups no assist wrote: 26
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 26 by its end (done), over 2 assists: groups no assist wrote: 26
+== V4 a1 carried before any assist by group 20 that something else wrote
+   exit 2, want 2 (right)
+   pin_a1_cut	FAILED	[server] cut 10 is of group 18 in the request log, the row says 20
+   premise_a1_needed_the_assist	ERROR	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 20 by its end (done), over 0 assists: no assist took the pool across G
+   rig_error	ERROR	[rig] premise_a1_needed_the_assist: a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 20 by its end (done), over 0 assists: no assist took the pool across G
+== V2 an assist storm: a2 assisted every second (35 rows)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's assist 2 0.98 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.98 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 4 1.0 s after the one before, past the burst; a2's assist 5 1.0 s after the one b
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's assist 2 0.98 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.98 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 4 1.0 s after the one before, past the burst; a2's assist 5 1.0 s afte
+== V3 a1 assisted from 1 s after the acceptance
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ERROR	[rig] a1's first assist 1.0 s after its acceptance, before 10.0 s
+   rig_error	ERROR	[rig] premise_a1_assists_at_the_decided_pace: a1's first assist 1.0 s after its acceptance, before 10.0 s
+== V9 the burst's pause 0.6 s after a set and sync of 0.5 s (1.1 s start to start)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's assist 2 0.60 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.60 s after the end of the one before, in the burst, before the pause of 1 s
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's assist 2 0.60 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.60 s after the end of the one before, in the burst, before the pause of 1 s
+== V10 the burst's pause 0.88 s (a quick set and sync)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's assist 2 0.88 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.88 s after the end of the one before, in the burst, before the pause of 1 s
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's assist 2 0.88 s after the end of the one before, in the burst, before the pause of 1 s; a2's assist 3 0.88 s after the end of the one before, in the burst, before the pause of 1 s
+== V11 a spaced gap of 9.4 s
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's assist 4 9.4 s after the one before, past the burst
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's assist 4 9.4 s after the one before, past the burst
+== V12 a2's first assist 9.9 s after its acceptance
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's first assist 9.9 s after its acceptance, before 10.0 s
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's first assist 9.9 s after its acceptance, before 10.0 s
+== V13 a third assist in the burst 0.95 s after the second's end (the first pause right)
+   exit 2, want 2 (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ERROR	[rig] a2's assist 3 0.95 s after the end of the one before, in the burst, before the pause of 1 s
+   rig_error	ERROR	[rig] premise_a2_assists_at_the_decided_pace: a2's assist 3 0.95 s after the end of the one before, in the burst, before the pause of 1 s
+== V5 a2 assisted only in its burst (3 rows), then never again for 58 s; pending
+   exit 0, want 0; a gap over 3x named: True, want True (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2 ended pending 57.8 s after its last assist
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 3 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 3 assists in 2.3 s (79.9 a minute); the pool committed 6 groups that wrote over them (159.8 a minute) and 4 that wrote nothing; the `zfs set` wrote a group in 3 of them and the `zpool sync` after it in 3; the daemon counted 6 cuts between the first and the last (159.8 a
+== V6 a2 spaced at 20 s after its burst (twice ASSIST_AFTER: not over 3x)
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 5 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 5 assists in 42.5 s (7.1 a minute); the pool committed 10 groups that wrote over them (14.1 a minute) and 10 that wrote nothing; the `zfs set` wrote a group in 5 of them and the `zpool sync` after it in 5; the daemon counted 12 cuts between the first and the last (16.9 
+== V6b a2 spaced at 31 s after its burst
+   exit 0, want 0; a gap over 3x named: True, want True (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2's assist 4 31.1 s after the one before
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 4 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 4 assists in 33.4 s (7.2 a minute); the pool committed 8 groups that wrote over them (14.4 a minute) and 7 that wrote nothing; the `zfs set` wrote a group in 4 of them and the `zpool sync` after it in 4; the daemon counted 12 cuts between the first and the last (21.6 a 
+== V7 a2's first assist 30.02 s after its acceptance, not 10
+   exit 0, want 0; a gap over 3x named: True, want True (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2's first assist 30.0 s after its acceptance
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 6 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 6 assists in 32.6 s (11.0 a minute); the pool committed 12 groups that wrote over them (22.1 a minute) and 13 that wrote nothing; the `zfs set` wrote a group in 6 of them and the `zpool sync` after it in 6; the daemon counted 6 cuts between the first and the last (11.0 
+== V8 the stand-in run with A 5 s, at its own pace (the marks say 5.0; a2 pending 38 s)
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 5.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 5.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 27.7 s (17.3 a minute); the pool committed 16 groups that wrote over them (34.6 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 11 cuts between the first and the last (23.8
+== V8b the stand-in run with A 20 s at its own pace (a pause of 1.1 s in the burst, 20.1 s spaced)
+   exit 2, want 0; a gap over 3x named: None, want False (NOT RIGHT)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ERROR	[rig] a1's assist 2 1.10 s after the end of the one before, in the burst, before the pause of 2 s
+   rig_error	ERROR	[rig] premise_a1_assists_at_the_decided_pace: a1's assist 2 1.10 s after the end of the one before, in the burst, before the pause of 2 s
+== F1 burst gaps of 3.5 s start to start (quick sets: a pause of 3.5 s, over 3 pauses)
+   exit 0, want 0; a gap over 3x named: True, want True (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2's assist 2 3.5 s after the end of the one before, in the burst; a2's assist 3 3.5 s after the end of the one before, in the burst
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 7 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 7 assists in 47.4 s (8.9 a minute); the pool committed 14 groups that wrote over them (17.7 a minute) and 16 that wrote nothing; the `zfs set` wrote a group in 7 of them and the `zpool sync` after it in 7; the daemon counted 14 cuts between the first and the last (17.7 
+== F2 burst gaps of 5.2 s (each set and sync 4.1 s): the pace of #144 and of the stand-in
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 7 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 7 assists in 54.9 s (7.7 a minute); the pool committed 14 groups that wrote over them (15.3 a minute) and 16 that wrote nothing; the `zfs set` wrote a group in 7 of them and the `zpool sync` after it in 7; the daemon counted 16 cuts between the first and the last (17.5 
+== F3 spaced gaps of 11.8 s (progress answered slowly)
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 7 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 7 assists in 49.5 s (8.5 a minute); the pool committed 14 groups that wrote over them (17.0 a minute) and 16 that wrote nothing; the `zfs set` wrote a group in 7 of them and the `zpool sync` after it in 7; the daemon counted 14 cuts between the first and the last (17.0 
+== F4 a spaced gap of 9.6 s (the kstat read before the set 0.4 s slow at the assist before)
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 8 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 8 assists in 52.6 s (9.1 a minute); the pool committed 16 groups that wrote over them (18.3 a minute) and 19 that wrote nothing; the `zfs set` wrote a group in 8 of them and the `zpool sync` after it in 8; the daemon counted 14 cuts between the first and the last (16.0 
+== F5 the burst's pause 1.05 s after a set and sync of 12 s (a stalled sync; 13.05 s start to start)
+   exit 0, want 0; a gap over 3x named: False, want False (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] no gap of the assists over 3 times its decided value (first, burst, spaced, end)
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 5 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 5 assists in 58.3 s (5.1 a minute); the pool committed 10 groups that wrote over them (10.3 a minute) and 10 that wrote nothing; the `zfs set` wrote a group in 5 of them and the `zpool sync` after it in 5; the daemon counted 16 cuts between the first and the last (16.5 
+== F6 every gap three times slower (a runner under load): first 30.02 s, pauses 3.3 s, spaced 30.3 s
+   exit 0, want 0; a gap over 3x named: True, want True (right)
+   premise_a1_needed_the_assist	ok	[rig] a1 asked with G 20: the newest group that wrote was 16 when it was accepted and 23 by its end (done), over 2 assists: assist 2 took it across G, and every group from G on that wrote was an assist's
+   premise_a1_assists_at_the_decided_pace	ok	[rig] a1's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   premise_a2_assists_at_the_decided_pace	ok	[rig] a2's assists from 10.0 s after its acceptance, 3 at first, then spaced, none early
+   obs_assist_gap_over_3x	INFO	[rig] a2's first assist 30.0 s after its acceptance; a2's assist 2 3.3 s after the end of the one before, in the burst; a2's assist 3 3.3 s after the end of the one before, in the burst; a2's assist 4 30.3 s after the one before; a2's assist 5 30.3 s after the one before; a2 ended pending 54.5 s after
+   obs_a1_cut	INFO	[server] cut 12 of group 22 carried a1: a group assist 2 wrote
+   premise_a2_assisted	ok	[rig] a2 was assisted 5 times
+   obs_assist_pace	INFO	[kernel and server] a2, never carried: 5 assists in 67.3 s (4.5 a minute); the pool committed 10 groups that wrote over them (8.9 a minute) and 10 that wrote nothing; the `zfs set` wrote a group in 5 of them and the `zpool sync` after it in 5; the daemon counted 12 cuts between the first and the last (10.7 a
+58fc660 on art_9bac: exit right in 56 of 57 cases (not: V8b); exit and obs_assist_gap_over_3x right in 56 (not: V8b)

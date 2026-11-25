@@ -1,0 +1,414 @@
+[
+ {
+  "id": "F1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "no first-assist floor",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(9.9, 11.0)) | AssertionError: Tuples differ: (0, []) != (1, []))",
+   "test_publish_check_main.py (KeyError: 'rig_error' | FAILED (errors=1))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the first-assist floor at A / 2",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(9.9, 11.0)) | AssertionError: Tuples differ: (0, []) != (1, []))",
+   "test_publish_check_main.py (KeyError: 'rig_error' | FAILED (errors=1))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "S2 undone: the burst's pause from the start of the assist before",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(10.0, 10.9)) | AssertionError: 'assist 2 0.88 s after the end of the one before, in the burst' not found in \"a2's assist 2 0.90 s after the end of the one before, in the burst, before the pause of 1 s\")",
+   "test_publish_check_main.py (KeyError: 'rig_error' | FAIL: test_a_slow_gap_is_observed_and_judges_nothing (__main__.Assist.test_a_slow_gap_is_observed_and_judges_nothing))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "no floor in the burst",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(10.0, 10.9)) | AssertionError: Tuples differ: (0, []) != (1, []))",
+   "test_publish_check_main.py (KeyError: 'rig_error' | FAILED (errors=1))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the burst's floor not scaled: 1 s on every clock",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 2 0.50 s after the end of th[148 chars], []) != ([], []))",
+   "test_publish_check_main.py (KeyError: 'obs_a1_cut' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the burst's floor half the agent's pause",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(10.0, 10.9)) | AssertionError: Tuples differ: (0, []) != (1, []))",
+   "test_publish_check_main.py (FAIL: test_a_slow_gap_is_observed_and_judges_nothing (__main__.Assist.test_a_slow_gap_is_observed_and_judges_nothing) | AssertionError: 'no gap' not found in \"[rig] a1's assist 2 0.0 s after the end of the one before, in the burst; a1's assist 3 0.0 s after the end of the one before, in the burst; a)"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the burst's floor A / 2 (the old ceiling's value)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 2 1.08 s after the end of th[148 chars], []) != ([], []))",
+   "test_publish_check_main.py (KeyError: 'obs_a1_cut' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the spaced floor 0.9 A",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(10.0, 11.1, 12.2, 21.6)) | AssertionError: Tuples differ: (0, []) != (1, []))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the spaced floor A exactly (no tolerance for the kstat read before the set)",
+  "result": "SURVIVED",
+  "by": [],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the spaced floor 1.04 A",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 4 10.1 s after the one befor[80 chars], []) != ([], []))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the spaced gap from the end of the assist before",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 4 3.5 s after the one before[78 chars], []) != ([], []))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a burst of two",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 3 1.1 s after the one before, past the burst\"], []) != ([], []))",
+   "test_publish_check_main.py (KeyError: 'obs_a1_cut' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a burst of four",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([\"a2's assist 3 1.1 s after the one before, past the burst\"], []) != ([], []))",
+   "test_publish_check_main.py (KeyError: 'obs_a1_cut' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.5,
+  "clean_after": true
+ },
+ {
+  "id": "F14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the ceilings made verdicts",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py (KeyError: 'obs_assist_gap_over_3x' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.5,
+  "clean_after": true
+ },
+ {
+  "id": "F15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a slow first over 2 A",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([], [\"a2's first assist 30.0 s after its acceptance\"]) != ([], []))"
+  ],
+  "seconds": 0.5,
+  "clean_after": true
+ },
+ {
+  "id": "F16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a slow pending end from the start of the last assist",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([], ['a2 ended pending 30.0 s after its last assist']) != ([], []))",
+   "test_publish_check_main.py (FAIL: test_a_slow_gap_is_observed_and_judges_nothing (__main__.Assist.test_a_slow_gap_is_observed_and_judges_nothing) | AssertionError: 'no gap' not found in '[rig] a2 ended pending 0.0 s after its last assist')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F17",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a slow end of any verb",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([], ['a2 ended pending 89.0 s after its last assist']) != ([], []))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F18",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the end mark not passed",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py (FAIL: test_a_slow_gap_is_observed_and_judges_nothing (__main__.Assist.test_a_slow_gap_is_observed_and_judges_nothing) (said='a2 ended pending 0.0 s after its last assist') | AssertionError: 'a2 ended pending 0.0 s after its last assist' not found in '[rig] no gap of the assists over 3 times its deci)"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F19",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1's slow gaps lost (a2's replace them)",
+  "result": "SURVIVED",
+  "by": [],
+  "seconds": 0.5,
+  "clean_after": true
+ },
+ {
+  "id": "F20",
+  "file": "tests/kernel/publish_check.py",
+  "what": "no line obs_assist_gap_over_3x",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py (KeyError: 'obs_assist_gap_over_3x' | FAILED (errors=1))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F21",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the decided ASSIST_AFTER for the mark's A",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py (KeyError: 'obs_a1_cut' | KeyError: 'obs_assist_gap_over_3x')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F22",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a pace fault the daemon's (exit 1), the line ok",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py (KeyError: 'rig_error' | KeyError: 'rig_error')"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F23",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a slow burst over 2 pauses",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) | AssertionError: Tuples differ: ([], [\"a2's assist 2 3.0 s after the end of the[92 chars]st\"]) != ([], []))"
+  ],
+  "seconds": 0.4,
+  "clean_after": true
+ },
+ {
+  "id": "F24",
+  "file": "tests/kernel/publish_check.py",
+  "what": "no slow spaced gap",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py (FAIL: test_the_decided_pace (__main__.Assist.test_the_decided_pace) (t0=(10.0, 11.1, 12.2, 42.3), end=None) | AssertionError: Tuples differ: ([], 0) != ([], 1))"
+  ],
+  "seconds": 0.5,
+  "clean_after": true
+ },
+ {
+  "id": "C1",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the refusals not counted",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py (FAIL: test_busy_then_exported (__main__.Kimport.test_busy_then_exported) | AssertionError: Tuples differ: (2, [1], 0) != (2, [1], 1))"
+  ],
+  "seconds": 0.1,
+  "clean_after": true
+ },
+ {
+  "id": "C2",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the refusals counted only when the export failed",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py (FAIL: test_busy_then_exported (__main__.Kimport.test_busy_then_exported) | AssertionError: Tuples differ: (2, [1], 0) != (2, [1], 1))"
+  ],
+  "seconds": 0.1,
+  "clean_after": true
+ },
+ {
+  "id": "C3",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the count reset at each import",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py (FAIL: test_another_export_failure_is_the_rig_s_at_once (__main__.Kimport.test_another_export_failure_is_the_rig_s_at_once) | AssertionError: Tuples differ: (1, [], 'losetup -d', -3) != (1, [], 'losetup -d', 0))"
+  ],
+  "seconds": 0.2,
+  "clean_after": true
+ },
+ {
+  "id": "C4",
+  "file": "tests/kernel/cut_check.py",
+  "what": "no line obs_export_refusals",
+  "result": "SURVIVED",
+  "by": [],
+  "seconds": 0.1,
+  "clean_after": true
+ },
+ {
+  "id": "C5",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the line says 0",
+  "result": "SURVIVED",
+  "by": [],
+  "seconds": 0.1,
+  "clean_after": true
+ },
+ {
+  "id": "P1",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle never sleeps (it loops reading the kstat)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'no end in 20 s', want 'idle after 12 s, 12 sleeps' | FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'no end in 20 s', want 'error after 30 s, 30 sleeps')"
+  ],
+  "seconds": 65.2,
+  "clean_after": true
+ },
+ {
+  "id": "P2",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle sleeps 0 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'no end in 20 s', want 'idle after 12 s, 12 sleeps' | FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'no end in 20 s', want 'error after 30 s, 30 sleeps')"
+  ],
+  "seconds": 64.2,
+  "clean_after": true
+ },
+ {
+  "id": "P3",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle idle after 1 s (S2 of the first look)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after 1 s, 1 sleeps', want 'idle after 12 s, 12 sleeps')"
+  ],
+  "seconds": 24.4,
+  "clean_after": true
+ },
+ {
+  "id": "P4",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle idle after 11 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after 11 s, 11 sleeps', want 'idle after 12 s, 12 sleeps')"
+  ],
+  "seconds": 25.5,
+  "clean_after": true
+ },
+ {
+  "id": "P5",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle idle after 13 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after 13 s, 13 sleeps', want 'idle after 12 s, 12 sleeps')"
+  ],
+  "seconds": 25.4,
+  "clean_after": true
+ },
+ {
+  "id": "P6",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle's limit one second late",
+  "result": "NOT APPLIED (2 matches of '[ $((SECONDS - t0)) -lt \"$1\" ] ||')",
+  "clean_after": true
+ },
+ {
+  "id": "P7",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle never waits (S3 of the first look)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after 0 s, 0 sleeps', want 'idle after 12 s, 12 sleeps' | FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'idle after 0 s, 0 sleeps', want 'error after 30 s, )"
+  ],
+  "seconds": 26.0,
+  "clean_after": true
+ },
+ {
+  "id": "P8",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle's limit never an error",
+  "result": "NOT APPLIED (2 matches of '[ $((SECONDS - t0)) -lt \"$1\" ] ||')",
+  "clean_after": true
+ },
+ {
+  "id": "P9",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pidle sleeps 2 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh (FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after 12 s, 6 sleeps', want 'idle after 12 s, 12 sleeps' | FAIL pidle: a pool that writes a group every second is the rig's error at its limit: got 'error after 30 s, 15 sleeps', want 'error after 30)"
+  ],
+  "seconds": 22.9,
+  "clean_after": true
+ }
+]
