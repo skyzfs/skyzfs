@@ -1,0 +1,68 @@
+baseline {'tests/kernel/publish_check.py': [], 'tests/kernel/publish_agent.py': [], 'tests/kernel/cut_check.py': [], 'tests/kernel/nodeb_check.py': []} []
+E1   SURVIVED  driver KILLED    t1-other-end may end done
+E2   KILLED    driver KILLED    tw-after may end done
+E3   SURVIVED  driver SURVIVED  tw-last may end done
+E4   SURVIVED  driver KILLED    tk-after may read pending (the next instance knew it)
+E5   SURVIVED  driver SURVIVED  att: any refusal
+E6   SURVIVED  driver SURVIVED  t5 may end done
+E7   SURVIVED  driver SURVIVED  peer: any refusal
+E8   SURVIVED  driver SURVIVED  m1-after may be done
+E9   SURVIVED  driver SURVIVED  t7-withdraw may still pend
+E10  SURVIVED  driver SURVIVED  t7-other accepted
+E11  SURVIVED  driver SURVIVED  nu may answer cuts
+E12  SURVIVED  driver SURVIVED  t1-again-end may be refused
+E13  SURVIVED  driver KILLED    ABSENT drops tw
+E14  SURVIVED  driver KILLED    ABSENT drops t5
+E15  SURVIVED  driver KILLED    PUBLISHED drops t4
+E16  SURVIVED  driver KILLED    BETWEEN: m1 judged as a premise that it landed
+E17  SURVIVED  driver KILLED    COUNTS: peer at least 0
+J1   KILLED    driver KILLED    judge_row: no check of G
+J2   KILLED    driver SURVIVED  judge_row: a cut counted at C passes
+J3   KILLED    driver KILLED    judge_row: no check of the state
+J4   KILLED    driver KILLED    judge_row: no check of the ref against done
+J5   KILLED    driver KILLED    judge_row: no check of the row's commit against the ref
+J6   KILLED    driver SURVIVED  judge_row: no ref passes
+J7   KILLED    driver KILLED    judge_manifest: the bytes sent not compared
+J8   KILLED    driver KILLED    judge_manifest: node B's matches not read
+J9   KILLED    driver KILLED    judge_cut: rewind passes
+J10  KILLED    driver SURVIVED  judge_cut: the cut's group not compared
+J11  KILLED    driver KILLED    counted_between: the upper bound inclusive
+J12  KILLED    driver KILLED    counted_between: C ignored
+J13  SURVIVED  driver SURVIVED  judge_ends: a prefix anywhere in the answer
+J14  KILLED    driver SURVIVED  judge_ends: a missing label is skipped
+J15  KILLED    driver SURVIVED  done_commit: any done
+J16  KILLED    driver KILLED    read_snap_row: ref none read as there
+M1   SURVIVED  driver KILLED    premise t4 always holds
+M2   SURVIVED  driver KILLED    ctl_below put at the row's own group (cannot fail)
+M3   SURVIVED  driver SURVIVED  a MISSED control does not fail the run
+M4   SURVIVED  driver KILLED    ctl_files run with the right digests
+M5   SURVIVED  driver KILLED    ABSENT judged by the ref alone
+M6   SURVIVED  driver KILLED    pin_m1 inverted
+M7   SURVIVED  driver KILLED    premise prewind held: any status
+M8   SURVIVED  driver KILLED    premise abandoned: none needed
+M9   SURVIVED  driver KILLED    premise tw past G: none needed
+M10  SURVIVED  driver KILLED    asking twice compared with the first done itself
+M11  SURVIVED  driver KILLED    node B stages not judged
+M12  SURVIVED  driver KILLED    pin_T_cut not judged
+M13  SURVIVED  driver KILLED    the controls run on no name
+M14  SURVIVED  driver SURVIVED  ctl_files: any catch counts
+A1   KILLED    driver -         cuts read after the snapshot (C after pool@T)
+A2   KILLED    driver -         the hold placed after the publish
+A3   KILLED    driver -         G+K ignored
+A4   KILLED    driver -         published.tsv records createtxg as G
+A5   KILLED    driver -         --twice asks once
+A6   KILLED    driver -         sync without a write
+A7   KILLED    driver -         the hold released only on success
+A8   KILLED    driver -         raw: the greeting taken as the answer
+A9   KILLED    driver -         a done commit of any length
+A10  KILLED    driver -         a refusal with exit 0 accepted
+A11  KILLED    driver -         the limit never ends the wait
+A12  KILLED    driver -         a publish refused goes on to progress
+W1   KILLED    driver -         withheld_pick without differs (R10/R12 inside it)
+W2   KILLED    driver -         withheld_pick reads the base as zeros (R11b)
+W3   KILLED    driver -         withheld_pick names nothing passed over
+W4   KILLED    driver -         passed_over says nothing
+W5   SURVIVED  driver -         the cut rig's main bypasses withheld_pick (R10 at the call site)
+W6   SURVIVED  driver SURVIVED  node B bypasses withheld_pick (R12 at the call site)
+W7   SURVIVED  driver SURVIVED  node B's lacks line does not name what was passed over (D10)
+W8   KILLED    driver KILLED    node B's files stage ignores a digest that differs (what ctl_files catches)

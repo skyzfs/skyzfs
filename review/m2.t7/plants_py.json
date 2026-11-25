@@ -1,0 +1,800 @@
+[
+ {
+  "id": "E1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t1-other-end may end done",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.079s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tw-after may end done",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_withdrawn_before_a_kill_may_not_end_done (__main__.Ends.test_withdrawn_before_a_kill_may_not_end_done)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "ent': ('ok', '[server] no snap/tw and no row'), 'premise_tw_cuts_past_g': ('ok', '[rig] 90 cuts of group 40 or later counted: tw would have qualified'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.075s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tw-last may end done",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tk-after may read pending (the next instance knew it)",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "ent': ('ok', '[server] no snap/tw and no row'), 'premise_tw_cuts_past_g': ('ok', '[rig] 90 cuts of group 40 or later counted: tw would have qualified'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.080s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "att: any refusal",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t5 may end done",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "peer: any refusal",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "m1-after may be done",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t7-withdraw may still pend",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t7-other accepted",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "nu may answer cuts",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t1-again-end may be refused",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "E13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT drops tw",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "rce held it; copies ok: 10 blocks, 20 copies'), 'premise_tw_cuts_past_g': ('ok', '[rig] 90 cuts of group 40 or later counted: tw would have qualified'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.079s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT drops t5",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   " ok: mount; files ok: 2 files, each as the source held it; copies ok: 10 blocks, 20 copies'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.081s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "PUBLISHED drops t4",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.232s\n\nFAILED (failures=3)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "BETWEEN: m1 judged as a premise that it landed",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_m1_there_between (__main__.TheDaemonWrong.test_m1_there_between)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E17",
+  "file": "tests/kernel/publish_check.py",
+  "what": "COUNTS: peer at least 0",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_channel_counts (__main__.TheDaemonWrong.test_channel_counts)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: no check of G",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_a_cut_below_g_is_never_what_snap_t_names (__main__.Rows.test_a_cut_below_g_is_never_what_snap_t_names)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_t4_published_by_a_cut_below_g (__main__.TheDaemonWrong.test_t4_published_by_a_cut_below_g)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: a cut counted at C passes",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong)"
+  ],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: no check of the state",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.167s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: no check of the ref against done",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.076s\n\nFAILED (failures=3)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: no check of the row's commit against the ref",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.147s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_row: no ref passes",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong)"
+  ],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_manifest: the bytes sent not compared",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_the_manifest (__main__.Rows.test_the_manifest)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.050s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_manifest: node B's matches not read",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_the_manifest (__main__.Rows.test_the_manifest)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.050s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_cut: rewind passes",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: ERROR: test_cut_lines_and_the_row_s_cut (__main__.Cuts.test_cut_lines_and_the_row_s_cut)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.059s\n\nFAILED (failures=2)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_cut: the cut's group not compared",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_cut_lines_and_the_row_s_cut (__main__.Cuts.test_cut_lines_and_the_row_s_cut)"
+  ],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "counted_between: the upper bound inclusive",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_cut_lines_and_the_row_s_cut (__main__.Cuts.test_cut_lines_and_the_row_s_cut)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.050s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "counted_between: C ignored",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_cut_lines_and_the_row_s_cut (__main__.Cuts.test_cut_lines_and_the_row_s_cut)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.050s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "J13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_ends: a prefix anywhere in the answer",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "judge_ends: a missing label is skipped",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: ERROR: test_judged_by_the_table_and_a_missing_label_is_the_rigs_error (__main__.Ends.test_judged_by_the_table_and_a_missing_label_is_the_rigs_error)"
+  ],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "done_commit: any done",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_done_commit (__main__.Ends.test_done_commit)"
+  ],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "J16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "read_snap_row: ref none read as there",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_check.py: FAIL: test_each_way_it_can_be_wrong (__main__.Rows.test_each_way_it_can_be_wrong) | FAIL: test_read (__main__.Rows.test_read)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   " held it; copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('FAILED', '[server] a ref snap/T'), 'pin_t3_absent': ('FAILED', '[server] a ref snap/T'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.043s\n\nFAILED (failures=4)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise t4 always holds",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.086s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_below put at the row's own group (cannot fail)",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.047s\n\nFAILED (failures=3)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a MISSED control does not fail the run",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "M4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_files run with the right digests",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.043s\n\nFAILED (failures=3)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT judged by the ref alone",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.059s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_m1 inverted",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_m1_there_between (__main__.TheDaemonWrong.test_m1_there_between)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise prewind held: any status",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_nothing_held_at_the_rewind (__main__.APremiseThatDoesNotHold.test_nothing_held_at_the_rewind)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise abandoned: none needed",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_no_abandoned_cut_at_g (__main__.APremiseThatDoesNotHold.test_no_abandoned_cut_at_g)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise tw past G: none needed",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "sent': ('ok', '[server] no snap/tw and no row'), 'premise_tw_cuts_past_g': ('ok', '[rig] 0 cuts of group 40 or later counted: tw would have qualified'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.045s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "asking twice compared with the first done itself",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.051s\n\nFAILED (failures=1)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "node B stages not judged",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_t1_snapshot_missing (__main__.TheDaemonWrong.test_t1_snapshot_missing)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_T_cut not judged",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "copies ok: 10 blocks, 20 copies'), 'pin_t5_absent': ('ok', '[server] no snap/t5 and no row'), 'pin_t3_absent': ('ok', '[server] no snap/t3 and no row'), 'time': ('INFO', '[rig] 0 s')}\n\n----------------------------------------------------------------------\nRan 34 tests in 0.048s\n\nFAILED (failures=3)\n"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the controls run on no name",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "KILLED",
+  "driver_failed": [
+   "ERROR: test_the_controls_are_caught_where_they_are_put (__main__.AsIs.test_the_controls_are_caught_where_they_are_put)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_files: any catch counts",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A1",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "cuts read after the snapshot (C after pool@T)",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_a_refusal_ends_it_and_the_hold_is_released (__main__.AFlow.test_a_refusal_ends_it_and_the_hold_is_released)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A2",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the hold placed after the publish",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_the_order_and_the_request (__main__.AFlow.test_the_order_and_the_request)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A3",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "G+K ignored",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_a_group_above_the_snapshots_and_asking_twice (__main__.AFlow.test_a_group_above_the_snapshots_and_asking_twice)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A4",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "published.tsv records createtxg as G",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_a_group_above_the_snapshots_and_asking_twice (__main__.AFlow.test_a_group_above_the_snapshots_and_asking_twice)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A5",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "--twice asks once",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_a_group_above_the_snapshots_and_asking_twice (__main__.AFlow.test_a_group_above_the_snapshots_and_asking_twice)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A6",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "sync without a write",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_the_order_and_the_request (__main__.AFlow.test_the_order_and_the_request)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A7",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the hold released only on success",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_the_order_and_the_request (__main__.AFlow.test_the_order_and_the_request)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A8",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "raw: the greeting taken as the answer",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_the_bytes_go_as_given_and_the_answer_comes_back (__main__.Raw.test_the_bytes_go_as_given_and_the_answer_comes_back)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A9",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "a done commit of any length",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_what_is_not_an_answer_is_the_rigs_error (__main__.Answers.test_what_is_not_an_answer_is_the_rigs_error)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A10",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "a refusal with exit 0 accepted",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: FAIL: test_no_answer_or_an_exit_that_disagrees_is_the_rigs_error (__main__.AnAgent.test_no_answer_or_an_exit_that_disagrees_is_the_rigs_error)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A11",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the limit never ends the wait",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: "
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "A12",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "a publish refused goes on to progress",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_publish_agent.py: "
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W1",
+  "file": "tests/kernel/cut_check.py",
+  "what": "withheld_pick without differs (R10/R12 inside it)",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_cut_check.py: FAIL: test_the_rigs_pick_through_the_checkers_log_and_base (__main__.Picks.test_the_rigs_pick_through_the_checkers_log_and_base)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W2",
+  "file": "tests/kernel/cut_check.py",
+  "what": "withheld_pick reads the base as zeros (R11b)",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_cut_check.py: FAIL: test_the_rigs_pick_through_the_checkers_log_and_base (__main__.Picks.test_the_rigs_pick_through_the_checkers_log_and_base)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W3",
+  "file": "tests/kernel/cut_check.py",
+  "what": "withheld_pick names nothing passed over",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_cut_check.py: FAIL: test_the_rigs_pick_through_the_checkers_log_and_base (__main__.Picks.test_the_rigs_pick_through_the_checkers_log_and_base)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W4",
+  "file": "tests/kernel/cut_check.py",
+  "what": "passed_over says nothing",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_cut_check.py: FAIL: test_the_writes_passed_over_are_named (__main__.Picks.test_the_writes_passed_over_are_named)"
+  ],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W5",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the cut rig's main bypasses withheld_pick (R10 at the call site)",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "-",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W6",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "node B bypasses withheld_pick (R12 at the call site)",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W7",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "node B's lacks line does not name what was passed over (D10)",
+  "pr_tests": "SURVIVED",
+  "pr_failed": [],
+  "driver": "SURVIVED",
+  "driver_failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "W8",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "node B's files stage ignores a digest that differs (what ctl_files catches)",
+  "pr_tests": "KILLED",
+  "pr_failed": [
+   "test_nodeb_check.py: FAIL: test_each_difference (__main__.Compare.test_each_difference)"
+  ],
+  "driver": "KILLED",
+  "driver_failed": [
+   "FAIL: test_t1_snapshot_files_differ (__main__.TheDaemonWrong.test_t1_snapshot_files_differ)"
+  ],
+  "clean_after": true
+ }
+]

@@ -1,0 +1,356 @@
+[
+ {
+  "id": "SR1",
+  "what": "the state read one byte late",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "25 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR2",
+  "what": "number and group swapped",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "25 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR3",
+  "what": "the u64 fields read big endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "25 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR4",
+  "what": "the commit read from 33..65",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "25 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR5",
+  "what": "the snapshot id read little endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "25 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR6",
+  "what": "the manifest's length read big endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_manifest_against_the_uploaders_row",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "24 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR7",
+  "what": "the hash read from 85..117",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_manifest_against_the_uploaders_row",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "24 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR8",
+  "what": "any version read at 118 bytes",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_refusals_agree",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "27 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR9",
+  "what": "a longer row read by its first 118 bytes",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_refusals_agree",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "27 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR10",
+  "what": "the version compared big endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_golden_bytes_by_hand",
+   "review_xcheck_snaprow::x_random_bytes_read_by_both",
+   "review_xcheck_snaprow::x_manifest_against_the_uploaders_row",
+   "review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader",
+   "review_xcheck_snaprow::x_refusals_agree",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "23 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR11",
+  "what": "the version read by its low byte alone",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "23 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_refusals_agree"
+  ],
+  "xnote": "28 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR12",
+  "what": "the manifest's hash not compared",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_manifest_is_checked_against_the_row"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_manifest_against_the_uploaders_row",
+   "tests::the_manifest_is_checked_against_the_row"
+  ],
+  "xnote": "27 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR13",
+  "what": "the manifest's length not compared",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_manifest_is_checked_against_the_row"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "tests::the_manifest_is_checked_against_the_row"
+  ],
+  "xnote": "28 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR14",
+  "what": "the row read at the key snap/T (not skyzfs/snap/T)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "23 passed",
+  "with_xcheck": "SURVIVED",
+  "xfailed": [],
+  "xnote": "29 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR15",
+  "what": "the ref read as snaps/T",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "23 passed",
+  "with_xcheck": "SURVIVED",
+  "xfailed": [],
+  "xnote": "29 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR16",
+  "what": "the manifest fetched from skyzfs/manifests/",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "23 passed",
+  "with_xcheck": "SURVIVED",
+  "xfailed": [],
+  "xnote": "29 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR17",
+  "what": "the prefix constant skyzfs/snaps/",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "with_xcheck": "KILLED",
+  "xfailed": [
+   "review_xcheck_snaprow::x_constants_and_keys_agree",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "xnote": "27 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7",
+  "what": "call site: an unguarded --row counts as guarded (the behaviour before N2)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_through_move_head"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7t",
+  "what": "call site: guarded = true",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_through_move_head"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7f",
+  "what": "call site: guarded = false",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_through_move_head"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7r",
+  "what": "call site: guarded = row.is_some()",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_through_move_head"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MHS",
+  "what": "the test store never moves head (its trigger misses the commit's key)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_lost_swap_of_head_through_move_head"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MHA",
+  "what": "the test store moves head after the PUT of the commit object (still before the swap)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "23 passed",
+  "clean_after": true
+ }
+]

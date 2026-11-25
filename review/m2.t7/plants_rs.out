@@ -1,0 +1,25 @@
+baseline 0 [] 29 passed
+baseline with the cross-check 0 [] 29 passed
+SR1 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR2 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR3 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR4 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR5 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR6 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_manifest_against_the_uploaders_row', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'review_xcheck_snaprow::x_golden_bytes_by_hand', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR7 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_manifest_against_the_uploaders_row', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR8 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_refusals_agree', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR9 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_refusals_agree', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR10 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_golden_bytes_by_hand', 'review_xcheck_snaprow::x_random_bytes_read_by_both', 'review_xcheck_snaprow::x_manifest_against_the_uploaders_row', 'review_xcheck_snaprow::x_random_rows_encoded_by_the_uploader', 'review_xcheck_snaprow::x_refusals_agree', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+SR11 SURVIVED [] 23 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_refusals_agree']
+SR12 KILLED ['tests::the_manifest_is_checked_against_the_row'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_manifest_against_the_uploaders_row', 'tests::the_manifest_is_checked_against_the_row']
+SR13 KILLED ['tests::the_manifest_is_checked_against_the_row'] 22 passed | with the cross-check: KILLED ['tests::the_manifest_is_checked_against_the_row']
+SR14 SURVIVED [] 23 passed | with the cross-check: SURVIVED []
+SR15 SURVIVED [] 23 passed | with the cross-check: SURVIVED []
+SR16 SURVIVED [] 23 passed | with the cross-check: SURVIVED []
+SR17 KILLED ['tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed | with the cross-check: KILLED ['review_xcheck_snaprow::x_constants_and_keys_agree', 'tests::the_snap_row_is_read_as_the_daemon_writes_it']
+MH7 KILLED ['tests::a_lost_swap_of_head_through_move_head'] 22 passed | with the cross-check: - 
+MH7t KILLED ['tests::a_lost_swap_of_head_through_move_head'] 22 passed | with the cross-check: - 
+MH7f KILLED ['tests::a_lost_swap_of_head_through_move_head'] 22 passed | with the cross-check: - 
+MH7r KILLED ['tests::a_lost_swap_of_head_through_move_head'] 22 passed | with the cross-check: - 
+MHS KILLED ['tests::a_lost_swap_of_head_through_move_head'] 22 passed | with the cross-check: - 
+MHA SURVIVED [] 23 passed | with the cross-check: - 
