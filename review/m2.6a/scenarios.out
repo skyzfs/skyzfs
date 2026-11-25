@@ -1,0 +1,32 @@
+test review_f1_checkpoint_rewind_marks_nothing ... F1 store: count 3 rewound 0
+F1 held: [(1, 30, true), (3, 46, true)]
+F1 snap/t on group: Some(46)
+thread 'review_f1_checkpoint_rewind_marks_nothing' panicked at crates/skyzfs-upload/tests/review140.rs:155:5:
+assertion `left == right` failed: snap/t published on the checkpoint's state
+test review_f2a_stale_mark_known_cut_of_the_old_history ... F2a store: count 3 rewound 3
+F2a answer: Accepted
+F2a steps: [PublishLooked { name: "t" }, Published { name: "t", number: 2, commit: [..], found: false }, Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+F2a snap/t on group: Some(51)
+thread 'review_f2a_stale_mark_known_cut_of_the_old_history' panicked at crates/skyzfs-upload/tests/review140.rs:77:5:
+assertion `left == right` failed: snap/t published on a cut of the abandoned history (group 51)
+test review_f2b_stale_mark_cut_being_uploaded ... F2b store: count 3 rewound 3
+F2b answer: Accepted
+F2b steps: [PublishLooked { name: "t" }, Read { number: 2, blocks: 5, zeroes: 0 }, Uploaded { number: 2, rule: Delta, blocks: 5 }, Published { name: "t", number: 2, commit: [..], found: false }, Began { number: 3, rule: Delta }, Read { number: 3, blocks: 5, zeroes: 0 }, Uploaded { number: 3, rule: Delta, blocks: 5 }]
+F2b snap/t on group: Some(51)
+thread 'review_f2b_stale_mark_cut_being_uploaded' panicked at crates/skyzfs-upload/tests/review140.rs:110:5:
+assertion `left == right` failed: snap/t published on a cut of the abandoned history (group 51)
+test review_table_of_rule_r ... TABLE rising: (count, rewound) = (3, 0), want (3, 0)
+TABLE -F: equal group, new root: (count, rewound) = (3, 3), want (3, 3)
+TABLE -T: lower group: (count, rewound) = (3, 3), want (3, 3)
+TABLE same uberblock again: a repeat: (count, rewound) = (2, 0), want (2, 0)
+TABLE one lower (errs low): (count, rewound) = (3, 3), want (3, 3)
+TABLE two rewinds: (count, rewound) = (5, 5), want (5, 5)
+TABLE rewind then rising: (count, rewound) = (5, 3), want (5, 3)
+TABLE take-over: (count, rewound) = (2, 2), want (2, 2)
+TABLE take-over then rising: (count, rewound) = (3, 2), want (3, 2)
+TABLE take-over after a rewind: (count, rewound) = (4, 4), want (4, 4)
+TABLE reboot: new state: (count, rewound) = (0, 0), want (0, 0)
+TABLE reboot then lower: (count, rewound) = (1, 0), want (1, 0)
+TABLE reboot then lower twice: (count, rewound) = (2, 2), want (2, 2)
+TABLE checkpoint rewind: higher group, new root: (count, rewound) = (3, 0), want (3, 0)
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
