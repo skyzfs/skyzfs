@@ -138,7 +138,7 @@ const WORDS_PER_PAGE: usize = (PER_PAGE as usize).div_ceil(64);
 /// named hold as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Base {
-    /// The cut state that made the cut ([`super::state::CutState::id`]):
+    /// The cut state that made the cut (`super::state::CutState::id`):
     /// the numbers of cuts begin again with each state.
     pub state: [u8; 16],
     /// The cut's number, in the cut state that made it.

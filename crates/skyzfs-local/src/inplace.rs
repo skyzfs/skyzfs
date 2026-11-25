@@ -3073,7 +3073,7 @@ impl<D: Dir> InPlace<D> {
     /// Read the blocks of held cut `number`'s map from block `from` on,
     /// as they were at the cut's instant, as many as `buf` has whole
     /// blocks: what the upload reads, a slice a turn of the queue's
-    /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
+    /// thread (M2.4). Each block reads as `InPlace::read_cut` reads it,
     /// and each run of blocks the image holds, or of copies in adjacent
     /// slots, in one read. A cut that is not held, and a buffer of no
     /// block, are refused. The buffer is a [`Buf`], whole blocks aligned

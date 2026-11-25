@@ -6,7 +6,10 @@
 //! REST API arrives with M5+.
 //!
 //! Usage:
-//!   skynbdctl fsck <config.toml> <volume> [--rebuild-refs]
+//!
+//! ```text
+//! skynbdctl fsck <config.toml> <volume> [--rebuild-refs]
+//! ```
 
 use std::sync::Arc;
 
