@@ -27,9 +27,13 @@
 //! not write over it: what it held (which snapshots are held, and by
 //! whom) is for a person to judge. A record of another version is
 //! corrupt to this agent, as the plan says (no reader of other versions
-//! yet). Version 2 (M2.6b2) added a publish's stalls and
-//! [`Why::NoProgress`]; version 1 (M2.6b1) is not read, since no agent
-//! that wrote it ever ran: the crate had no engine and no program then.
+//! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
+//! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; version 1
+//! (M2.6b1) is not read, since no agent that wrote it ever ran: the
+//! crate had no engine and no program then. No agent has run version 2
+//! either; from the first run of the program (M2.6c), any change to the
+//! record takes a new version and a test that decodes the version
+//! before it (the lead's decision on #144).
 //!
 //! # The manifests
 //!
@@ -115,6 +119,9 @@ pub struct Publish {
     /// The requests in a row that ended with no cut counted after their
     /// count ([`crate::plan::stalls`]).
     pub stalls: u32,
+    /// When it was begun (the wall clock, in ms since 1970): its age
+    /// bounds it ([`crate::plan::AGE_MAX`]).
+    pub begun_ms: u64,
 }
 
 /// The daemon's count of cuts that a publish is asked after, read before
@@ -222,6 +229,9 @@ pub enum Why {
     /// It was asked anew [`crate::plan::STALLS_ABANDONED`] times in a row
     /// with no cut counted (the lead's decision for M2.6b2).
     NoProgress,
+    /// It was older than its bound ([`crate::plan::AGE_MAX`]), whatever
+    /// the daemon said (L2 of #144's review).
+    TooOld,
 }
 
 /// Why a record's bytes are not read.

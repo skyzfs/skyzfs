@@ -55,6 +55,25 @@
 //!   first because the agent's own release writes a group, which the
 //!   daemon counts as a cut: decided from the count, the release would
 //!   undo the decision.
+//! - **Too old** (L2 of #144's review): a publish older than its bound
+//!   ([`AGE_MAX`], [`Seen::too_old`]) is given up ([`Why::TooOld`]),
+//!   whatever the daemon says, unless its snapshot is broken (its own
+//!   reason first) or it has stalled [`STALLS_ABANDONED`] times
+//!   ([`Why::NoProgress`]). At Intent nothing was taken: given up at
+//!   once, the daemon here or not. At Taken nothing was asked: the hold
+//!   released, then given up. Held or asked with the daemon here: as at
+//!   the last stall, a request that pends withdrawn, `snap/t` looked up
+//!   (a publish made is done, not given up), the hold released. With the
+//!   daemon away, a publish asked keeps its hold until `held_until`, as
+//!   below, and one held and not asked keeps it; both are given up once
+//!   the daemon answers and `look` has not found them published. A
+//!   request may have landed while the daemon was away, or been accepted
+//!   and not recorded (step 8 of the engine records it after the
+//!   answer), and only `look` tells; while the daemon is away no publish
+//!   can be begun ([`crate::record::UNDER_WAY_MAX`] does not fill). This
+//!   is this module's reading of "whatever the daemon says", the
+//!   conservative one: the bound overrides every answer of the daemon,
+//!   but not its silence.
 //! - **What the daemon answers.** `done`, `expired`, `withdrawn`,
 //!   `refused attachment`, `refused state` and `refused taken` are read
 //!   with `look` first: `snap/t` that is this publish's is
@@ -144,6 +163,20 @@ pub const STALLS_REPORTED: u32 = 3;
 /// ([`Why::NoProgress`]) instead of being asked anew.
 pub const STALLS_ABANDONED: u32 = 8;
 
+/// The age past which a publish is given up ([`Why::TooOld`]), whatever
+/// the daemon says (L2 of #144's review): measured from when it was
+/// begun ([`Publish::begun_ms`]). Two hours, the lead's figure, which
+/// is longer than [`STALLS_ABANDONED`] requests that run to the default
+/// expiry (about 81 minutes), so that a publish that stalls is given up
+/// as [`Why::NoProgress`] first. This bound is for a publish that does
+/// not stall and does not end: a daemon that answers `refused busy`
+/// without end, or whose cuts are counted and none carries the request
+/// (each abandoned, or never uploaded), so that each request expires
+/// with the count moved. It keeps [`crate::record::UNDER_WAY_MAX`] from
+/// filling with publishes nobody can finish. The engine takes another
+/// for its tests and the rigs' (`Agent::with_age_max`).
+pub const AGE_MAX: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// The margin past a publish's expiry for which the agent keeps its
 /// hold while the daemon does not answer: the channel's own wait
 /// ([`ASK_LIMIT`], 40 s; the lead's Q8).
@@ -209,6 +242,8 @@ pub struct Seen {
     /// this process (none after a restart: the conservative reading, as a
     /// restart is rare and gives at most [`ASSIST_QUICK`] syncs more).
     pub assists: u32,
+    /// Whether the publish is older than its bound ([`too_old`]).
+    pub too_old: bool,
 }
 
 /// The one thing to do next.
@@ -312,6 +347,7 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
     let pool = &seen.pool;
     match &publish.phase {
         Phase::Intent => match (&pool.snapshot, &seen.daemon) {
+            (None, _) if seen.too_old => Action::Abandon(Why::TooOld),
             (None, DaemonSeen::Away) => Action::Wait,
             (None, DaemonSeen::Here { .. }) if !pool.premise => Action::Abandon(Why::Premise),
             (None, DaemonSeen::Here { .. }) => Action::Take,
@@ -320,6 +356,9 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
         Phase::Taken(taken) => {
             if let Some(why) = broken(pool, taken) {
                 return give_up(pool, why);
+            }
+            if seen.too_old {
+                return give_up(pool, Why::TooOld);
             }
             if !pool.held {
                 return Action::Hold;
@@ -403,6 +442,14 @@ fn same_place(a: &Count, b: &Count) -> bool {
 /// a restart makes it again (at least once, not exactly once).
 pub fn stalls_report(stalls: u32) -> Option<Report> {
     (stalls >= STALLS_REPORTED).then_some(Report::NoProgress(stalls))
+}
+
+/// Whether a publish begun at `begun_ms` is older than `age_max` at
+/// `now_ms`. A time begun later than now (the clock stepped back) is an
+/// age of none: the bound comes later, not sooner.
+pub fn too_old(begun_ms: u64, now_ms: u64, age_max: Duration) -> bool {
+    let age_max = u64::try_from(age_max.as_millis()).unwrap_or(u64::MAX);
+    now_ms.saturating_sub(begun_ms) >= age_max
 }
 
 /// Give the publish up for `why`, the hold released first.
@@ -516,10 +563,17 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         }
         Action::AskAnew
     };
-    if publish.stalls >= STALLS_ABANDONED {
+    let ended = if publish.stalls >= STALLS_ABANDONED {
+        Some(Why::NoProgress)
+    } else if seen.too_old {
+        Some(Why::TooOld)
+    } else {
+        None
+    };
+    if let Some(why) = ended {
         return match answer {
             Reply::Pending => Action::Withdraw,
-            _ => look(&|| give_up(pool, broken.unwrap_or(Why::NoProgress))),
+            _ => look(&|| give_up(pool, broken.unwrap_or(why))),
         };
     }
     match answer {

@@ -315,7 +315,7 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::Premise => !premise,
             // The world always cuts again in time: a publish that makes
             // no progress here is a defect of the engine.
-            Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress => false,
+            Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress | Why::TooOld => false,
         };
         if !confirmed {
             return Err(format!(
@@ -482,7 +482,8 @@ fn on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request() {
 }
 
 /// Mutant: the sync task's value set again (the fake writes no group for
-/// a property set to the value it holds, the conservative reading). Two
+/// a property set to the value it holds, more conservative than the
+/// kernel probe of #145 found on ZFS 2.4.1). Two
 /// publishes in a row on an idle pool, the daemon rebooted as each is
 /// first accepted, each need a sync task (a request asked anew is carried
 /// by no other group), and the agent's clock steps back between them:
@@ -816,6 +817,169 @@ fn a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs() {
         2 * after,
         2 * after + 5
     );
+}
+
+/// What a run whose publish is older than `age_max` left, with `hook`
+/// at the agent's points: the world, the agent, and the publish's name.
+fn aged_run(
+    world: &Rc<RefCell<World>>,
+    age_max: Duration,
+    hook: impl FnMut(Point) -> bool + 'static,
+) -> (FakeAgent, String) {
+    let keep = MemKeep::default();
+    let mut agent = agent(world, &keep)
+        .with_age_max(age_max)
+        .with_points(Box::new(hook));
+    let t = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    (agent, t)
+}
+
+/// Checks that `t` was given up as too old, with no hold left and
+/// nothing published, no sooner than `least` after the world began.
+fn given_up_too_old(world: &Rc<RefCell<World>>, agent: &FakeAgent, t: &str, least: Duration) {
+    assert_eq!(
+        agent.outcomes(),
+        [(t.to_string(), Outcome::Abandoned(Why::TooOld))]
+    );
+    assert_eq!(
+        agent.record().abandoned.last().map(|a| a.why),
+        Some(Why::TooOld)
+    );
+    assert!(agent.record().under_way.is_empty());
+    let world = world.borrow();
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+    assert!(world.refs.is_empty());
+    let took = Duration::from_millis(world.now_ms - fake::EPOCH_MS);
+    assert!(took >= least, "{took:?}, less than {least:?}");
+}
+
+/// L2 of #144's review: a publish older than its bound is given up,
+/// whatever the daemon says, and its hold released.
+///
+/// Mutant: the bound not applied, or applied from the wrong time; the
+/// hold kept; or a publish given up while the daemon is away (it may
+/// have landed meanwhile).
+#[test]
+fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
+    // The stalling run of `a_publish_no_cut_carries_is_reported_then_given_up`
+    // (an idle pool rebooted after the first request, and syncs that
+    // write no group): given up at half an hour, before its eighth stall.
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = true;
+    let hook = {
+        let world = world.clone();
+        let rebooted = Cell::new(false);
+        move |point: Point| {
+            if point == ASKED && !rebooted.replace(true) {
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            false
+        }
+    };
+    let half = Duration::from_secs(1800);
+    let (agent, t) = aged_run(&world, half, hook);
+    given_up_too_old(&world, &agent, &t, half);
+    let took = Duration::from_millis(world.borrow().now_ms - fake::EPOCH_MS);
+    assert!(took < half + EXPIRY_DEFAULT, "{took:?}");
+
+    // L2 of #144's review: a daemon that counts cuts and uploads none
+    // (an uplink too slow, an uploader stuck). Each request expires
+    // with a cut counted, so none is a stall; at the default bound the
+    // publish is given up two hours after it was begun.
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let keep = MemKeep::default();
+    let mut stuck = self::agent(&world, &keep);
+    let t = stuck.begin().expect("begun");
+    stuck.settle(LIMIT).expect("settled");
+    given_up_too_old(&world, &stuck, &t, plan::AGE_MAX);
+    assert!(stuck.reports().is_empty(), "{:?}", stuck.reports());
+    let took = Duration::from_millis(world.borrow().now_ms - fake::EPOCH_MS);
+    assert!(took < plan::AGE_MAX + EXPIRY_DEFAULT, "{took:?}");
+
+    // The daemon away for twenty minutes from just after it accepted
+    // the request, which lands meanwhile, and a bound of a minute: the
+    // publish is not given up while the daemon is away, and is found
+    // published when it answers again.
+    let world = World::new(Mode::Busy);
+    let away = Duration::from_secs(1200);
+    let hook = {
+        let world = world.clone();
+        move |point: Point| {
+            if point == ASKED {
+                let mut world = world.borrow_mut();
+                world.away_until = world.now_ms + 1_200_000;
+            }
+            false
+        }
+    };
+    let (agent, _) = aged_run(&world, Duration::from_secs(60), hook);
+    assert!(
+        matches!(agent.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        agent.outcomes()
+    );
+    let world = world.borrow();
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+    let took = Duration::from_millis(world.now_ms - fake::EPOCH_MS);
+    assert!(took >= away, "{took:?}");
+    drop(world);
+
+    // The daemon away from just after the intent: given up with nothing
+    // taken.
+    let world = World::new(Mode::Busy);
+    let hook = {
+        let world = world.clone();
+        move |point: Point| {
+            if point.effect == Effect::Intent && point.after {
+                world.borrow_mut().away_until = u64::MAX;
+            }
+            false
+        }
+    };
+    let minute = Duration::from_secs(60);
+    let (agent, t) = aged_run(&world, minute, hook);
+    given_up_too_old(&world, &agent, &t, minute);
+    assert!(world.borrow().programs.is_empty());
+}
+
+/// Mutant: the age read on the wall clock for a publish begun in this
+/// process, or on the clock that does not step after a restart (which
+/// starts it again). The wall clock steps three hours forward just
+/// after the intent: the publish goes on and is published; an agent
+/// started after the step reads the wall clock and gives it up.
+#[test]
+fn a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process() {
+    let step = |world: &Rc<RefCell<World>>| {
+        let world = world.clone();
+        move |point: Point| {
+            if point.effect == Effect::Intent && point.after {
+                world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
+            }
+            false
+        }
+    };
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let mut stepped = agent(&world, &keep).with_points(Box::new(step(&world)));
+    stepped.begin().expect("begun");
+    stepped.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(stepped.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        stepped.outcomes()
+    );
+
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let t = {
+        let mut first = agent(&world, &keep).with_points(Box::new(step(&world)));
+        first.begin().expect("begun")
+    };
+    let mut next = agent(&world, &keep);
+    next.settle(LIMIT).expect("settled");
+    given_up_too_old(&world, &next, &t, Duration::ZERO);
 }
 
 /// A refused premise takes nothing and publishes nothing.

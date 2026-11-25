@@ -21,6 +21,7 @@ const UNTIL: u64 = ASKED + 640_000;
 const COMMIT: [u8; 32] = [0xc0; 32];
 const HASH: [u8; 32] = [0x4d; 32];
 const SECOND: u64 = 1_000;
+const BEGUN: u64 = ASKED - 30 * SECOND;
 
 fn members() -> Vec<Member> {
     vec![
@@ -61,6 +62,7 @@ fn publish(phase: Phase) -> Publish {
         phase,
         attempts: 0,
         stalls: 0,
+        begun_ms: BEGUN,
     }
 }
 
@@ -128,6 +130,7 @@ fn seen() -> Seen {
         now_ms: ASKED + SECOND,
         assisted_ms: None,
         assists: 0,
+        too_old: false,
     }
 }
 
@@ -184,6 +187,9 @@ trait With: Sized {
     }
     fn assists(self, n: u32) -> Seen {
         self.with(|s| s.assists = n)
+    }
+    fn too_old(self) -> Seen {
+        self.with(|s| s.too_old = true)
     }
 }
 
@@ -1243,6 +1249,173 @@ fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// L2 of #144's review: a publish older than its bound is given up,
+/// whatever the daemon says, as at its last stall.
+///
+/// Mutant: the bound not applied at some phase, or applied with the
+/// hold kept, a request left pending, no look (a publish made given
+/// up), its own reason over the snapshot's, the hold released before
+/// `held_until` while the daemon is away, or a publish asked or held
+/// given up while the daemon is away (a request may have landed, or
+/// been accepted and not recorded, and only `look` tells); or the age
+/// measured from the wrong end, or a clock stepped back read as old.
+#[test]
+fn a_publish_older_than_its_bound_is_given_up_whatever_the_daemon_says() {
+    let ms = |d: Duration| u64::try_from(d.as_millis()).expect("ms");
+    assert_eq!(AGE_MAX, Duration::from_secs(7200));
+    assert!(!too_old(BEGUN, BEGUN + ms(AGE_MAX) - 1, AGE_MAX));
+    assert!(too_old(BEGUN, BEGUN + ms(AGE_MAX), AGE_MAX));
+    assert!(too_old(BEGUN, BEGUN + ms(AGE_MAX) + 1, AGE_MAX));
+    assert!(!too_old(BEGUN, BEGUN - 1, AGE_MAX));
+    assert!(!too_old(BEGUN, BEGUN + 4, Duration::from_millis(5)));
+    assert!(too_old(BEGUN, BEGUN + 5, Duration::from_millis(5)));
+    assert!(!too_old(0, u64::MAX - 1, Duration::MAX));
+
+    let old = || seen().too_old();
+    let none = || old().with(|s| s.pool.snapshot = None).unheld();
+    let expired = || old().answer(Reply::Expired).looked(SnapSeen::Absent);
+    let gave_up = || Action::Abandon(Why::TooOld);
+    check(vec![
+        ("intent", intent(), none(), gave_up()),
+        ("intent, away", intent(), none().away(), gave_up()),
+        (
+            "intent, a snapshot with no manifest",
+            intent(),
+            old().unheld(),
+            Action::Abandon(Why::ManifestLost),
+        ),
+        ("taken", taken_phase(), old(), Action::Release),
+        (
+            "taken, moved",
+            taken_phase(),
+            old().moved(),
+            Action::Release,
+        ),
+        ("taken, released", taken_phase(), old().unheld(), gave_up()),
+        (
+            "taken, released, away",
+            taken_phase(),
+            old().unheld().away(),
+            gave_up(),
+        ),
+        (
+            "taken, gone",
+            taken_phase(),
+            old().gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        // A request accepted and not recorded pends: withdrawn, not asked.
+        ("held, pending", held(), old(), Action::Withdraw),
+        (
+            "held, unknown",
+            held(),
+            old().answer(Reply::Unknown),
+            Action::Look,
+        ),
+        ("held, absent", held(), expired(), Action::Release),
+        (
+            "held, absent, released",
+            held(),
+            expired().unheld(),
+            gave_up(),
+        ),
+        (
+            "held, ours",
+            held(),
+            old().answer(Reply::Unknown).looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        ("held, away", held(), old().away(), Action::Wait),
+        (
+            "held, away, released",
+            held(),
+            old().unheld().away(),
+            Action::Wait,
+        ),
+        ("asked, pending", asked(), old(), Action::Withdraw),
+        (
+            "asked, pending, a sync due",
+            asked(),
+            old().at(ASKED + 60 * SECOND),
+            Action::Withdraw,
+        ),
+        (
+            "asked, refused busy",
+            asked(),
+            old().refused(Code::Busy),
+            Action::Look,
+        ),
+        (
+            "asked, expired, absent",
+            asked(),
+            expired(),
+            Action::Release,
+        ),
+        (
+            "asked, expired, absent, released",
+            asked(),
+            expired().unheld(),
+            gave_up(),
+        ),
+        (
+            "asked, expired, absent, released, a cut counted",
+            asked(),
+            expired().unheld().cuts(carrying()),
+            gave_up(),
+        ),
+        (
+            "asked, withdrawn, ours",
+            asked(),
+            old()
+                .answer(Reply::Withdrawn)
+                .looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        (
+            "asked, expired, absent, gone",
+            asked(),
+            expired().gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        ("asked, away", asked(), old().away(), Action::Wait),
+        (
+            "asked, away, at held_until",
+            asked(),
+            old().away().at(UNTIL),
+            Action::Release,
+        ),
+        (
+            "asked, away, a ms before held_until",
+            asked(),
+            old().away().at(UNTIL - 1),
+            Action::Wait,
+        ),
+        (
+            "asked, away, released at held_until",
+            asked(),
+            old().away().unheld().at(UNTIL),
+            Action::Wait,
+        ),
+        (
+            "asked, here again, released, absent",
+            asked(),
+            expired().unheld().at(UNTIL),
+            gave_up(),
+        ),
+        ("done", done(), old(), Action::Release),
+        ("done, released", done(), old().unheld(), Action::Forget),
+    ]);
+    // Eight stalls are given up as such, too old or not.
+    let stalled = Publish {
+        stalls: STALLS_ABANDONED,
+        ..publish(held())
+    };
+    assert_eq!(
+        plan(&stalled, &expired().unheld()),
+        Action::Abandon(Why::NoProgress)
+    );
 }
 
 fn row(group: u64) -> SnapReply {

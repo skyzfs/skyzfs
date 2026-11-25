@@ -1257,9 +1257,10 @@ impl Zfs for FakeZfs {
         // `zfs set` is a sync task: its own group. The `zpool sync` after
         // it writes nothing more, since every change here is written as
         // it is made: a plain sync of an idle pool writes no group.
-        // A property set to the value it holds may write nothing: the
-        // conservative model, as `zfs set` is not known to write a group
-        // then (M2.T5 checks the agent's values on a kernel).
+        // A property set to the value it holds writes nothing here: more
+        // conservative than ZFS 2.4.1, where the kernel probe of #145
+        // (one run on each of Ubuntu 24.04 and 26.04) saw such a set,
+        // then `zpool sync`, write groups.
         if world.plain_sync {
             world
                 .log

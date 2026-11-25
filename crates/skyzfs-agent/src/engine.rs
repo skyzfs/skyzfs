@@ -44,7 +44,9 @@
 //! time as `accepted` plus what the clock that does not step has run
 //! since ([`Clock::mono_ms`]): a step of the wall clock neither releases
 //! its hold before `held_until` nor holds back its syncs (S4 and S11 of
-//! #142's review). After a restart the wall clock is all there is: a
+//! #142's review). A publish's age ([`plan::AGE_MAX`]) is measured the
+//! same way from `begun_ms`, for a publish begun in this process. After
+//! a restart the wall clock is all there is: a
 //! step forward while the agent was down may release a hold early (the
 //! request may still land; its cut holds the snapshot all the same), and
 //! a step back keeps it longer.
@@ -273,6 +275,9 @@ struct Memory {
     assists: u32,
     /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
     accepted: Option<(u64, u64)>,
+    /// `begun_ms` as recorded, and [`Clock::mono_ms`] then, for a publish
+    /// begun in this process.
+    begun: Option<(u64, u64)>,
 }
 
 /// Whether a round changed anything.
@@ -290,6 +295,7 @@ pub struct Agent<Z, D, K, C> {
     clock: C,
     pool: String,
     expiry: Duration,
+    age_max: Duration,
     record: Record,
     device: Option<u64>,
     memory: BTreeMap<String, Memory>,
@@ -334,6 +340,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             clock,
             pool: pool.to_string(),
             expiry: EXPIRY_DEFAULT,
+            age_max: plan::AGE_MAX,
             record,
             device: None,
             memory: BTreeMap::new(),
@@ -350,6 +357,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Stop at the points `points` chooses (the engine's tests).
     pub fn with_points(mut self, points: Points) -> Self {
         self.points = Some(points);
+        self
+    }
+
+    /// Give a publish up once it is older than `age_max` instead of
+    /// [`plan::AGE_MAX`] (the engine's tests, and the rigs' test hooks).
+    pub fn with_age_max(mut self, age_max: Duration) -> Self {
+        self.age_max = age_max;
         self
     }
 
@@ -400,6 +414,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(why) => return Err(Error::Daemon(why)),
         };
         let name = self.fresh_name()?;
+        let begun_ms = self.clock.now_ms();
+        let mono = self.clock.mono_ms();
         let publish = Publish {
             name: name.clone(),
             count,
@@ -407,8 +423,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             held: false,
             attempts: 0,
             stalls: 0,
+            begun_ms,
         };
         self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
+        self.memory.entry(name.clone()).or_default().begun = Some((begun_ms, mono));
         Ok(name)
     }
 
@@ -513,6 +531,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let snapshot = self.zfs.members(pool, name)?;
         let held = self.zfs.held(pool, name, HOLD_TAG)?;
         let now_ms = self.now_for(publish);
+        let too_old = plan::too_old(publish.begun_ms, self.age_now(publish), self.age_max);
         let memory = self.memory.entry(name.clone()).or_default();
         let kept = memory.answer.clone();
         let snap = memory.snap;
@@ -544,7 +563,21 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             now_ms,
             assisted_ms,
             assists,
+            too_old,
         }))
+    }
+
+    /// The time against which `publish`'s age is measured: `begun_ms`
+    /// plus what the clock that does not step has run since, for a
+    /// publish begun in this process, else the wall clock ([module
+    /// docs](self), "Time").
+    fn age_now(&mut self, publish: &Publish) -> u64 {
+        match self.memory.get(&publish.name).and_then(|m| m.begun) {
+            Some((at, mono)) if at == publish.begun_ms => {
+                at.saturating_add(self.clock.mono_ms().saturating_sub(mono))
+            }
+            _ => self.clock.now_ms(),
+        }
     }
 
     /// The time the planner reads for `publish` ([module docs](self),
