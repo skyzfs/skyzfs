@@ -1477,11 +1477,6 @@ mod tests {
             .is_err());
     }
 
-    /// move-head with --row: head moves and the row is written in one
-    /// transaction (the cut rig's uv1 courses: a row of version 1 left
-    /// with head moved by another writer). Under a guard that no longer
-    /// holds, neither moves. The forms that name the head being written
-    /// are refused.
     #[test]
     fn move_head_takes_the_row_forms_known_before_the_commit() {
         let s = "cd".repeat(16);
@@ -1562,6 +1557,125 @@ mod tests {
         assert_eq!(fresh.meta_get(vol, ROW_KEY).await.expect("meta_get"), v1);
     }
 
+    /// A store that, at the first PUT of a commit object, runs another
+    /// node B's move-head on the same bucket: the engine PUTs its commit
+    /// object before it swaps head, so the swap that follows loses.
+    #[derive(Clone)]
+    struct MovesHead {
+        inner: skynbd_store::MemoryStore,
+        vol: VolumeId,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for MovesHead {
+        async fn put(&self, key: &str, data: bytes::Bytes) -> skynbd_store::Result<()> {
+            let fire = key.contains("commit/")
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst);
+            if fire {
+                let refs = Arc::new(ObjectRefStore::new(self.inner.clone()));
+                move_head_on(
+                    self.inner.clone(),
+                    refs,
+                    self.vol,
+                    BLOCK as u64,
+                    Some(7),
+                    None,
+                    None,
+                )
+                .await
+                .expect("the other node B's move")
+                .expect("its head");
+            }
+            self.inner.put(key, data).await
+        }
+        async fn get(
+            &self,
+            key: &str,
+            range: Option<std::ops::Range<u64>>,
+        ) -> skynbd_store::Result<bytes::Bytes> {
+            self.inner.get(key, range).await
+        }
+        async fn exists(&self, key: &str) -> skynbd_store::Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> skynbd_store::Result<Vec<String>> {
+            self.inner.list(prefix).await
+        }
+        async fn delete(&self, key: &str) -> skynbd_store::Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_with_mtime(
+            &self,
+            prefix: &str,
+        ) -> skynbd_store::Result<Vec<(String, Option<u64>)>> {
+            self.inner.list_with_mtime(prefix).await
+        }
+        async fn get_versioned(&self, key: &str) -> skynbd_store::Result<(bytes::Bytes, String)> {
+            self.inner.get_versioned(key).await
+        }
+        async fn put_if(
+            &self,
+            key: &str,
+            data: bytes::Bytes,
+            pre: skynbd_store::Precondition,
+        ) -> skynbd_store::Result<String> {
+            self.inner.put_if(key, data, pre).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_swap_of_head_through_move_head() {
+        // The guard's call site (the review of #137, N2 and L1): another
+        // writer moves head between node B's open and its swap. With
+        // --expect-row the swap's loss is "row moved"; with --row alone
+        // it is an error.
+        let (store, _, vol, _) = put_small("move-lost").await;
+        let s = "cd".repeat(16);
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1");
+        let moves = MovesHead {
+            inner: store,
+            vol,
+            armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let refs = Arc::new(ObjectRefStore::new(moves.clone()));
+        assert_eq!(set_row_on(&refs, vol, v1.clone(), None).await, Ok(true));
+        let head = || async {
+            refs.get(vol, "head")
+                .await
+                .expect("get")
+                .expect("head")
+                .commit
+        };
+        let before = head().await;
+        moves.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let guarded = move_head_on(
+            moves.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(40),
+            Some(v1.clone()),
+            v1.clone(),
+        )
+        .await
+        .expect("a lost swap under a guard is no error");
+        assert_eq!(guarded, None);
+        let other = head().await;
+        assert_ne!(other, before, "the other writer's move landed");
+        moves.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = move_head_on(moves.clone(), Arc::clone(&refs), vol, 0, Some(40), None, v1)
+            .await
+            .expect_err("a lost swap without a guard is an error");
+        assert!(err.starts_with("commit: "), "{err}");
+        assert_ne!(head().await, other, "the second other writer's move landed");
+    }
+
+    /// move-head with --row: head moves and the row is written in one
+    /// transaction (the cut rig's uv1 courses: a row of version 1 left
+    /// with head moved by another writer). Under a guard that no longer
+    /// holds, neither moves. The forms that name the head being written
+    /// are refused.
     #[tokio::test]
     async fn move_head_writes_the_row_in_the_same_commit() {
         let (store, refs, vol, _) = put_small("move-row").await;

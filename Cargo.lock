@@ -4240,7 +4240,9 @@ dependencies = [
 name = "skyzfs-nodeb"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "blake3",
+ "bytes",
  "skynbd-engine",
  "skynbd-format",
  "skynbd-refs",

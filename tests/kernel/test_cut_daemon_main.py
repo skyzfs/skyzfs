@@ -1086,7 +1086,7 @@ class Courses(unittest.TestCase):
             self.assertEqual((wrong, bad), ([], []))
             # The line says that this step's own word was not seen (the
             # review of #137, N1).
-            seen = [n for n in notes if "own word (row_v1) was not seen" in n]
+            seen = [n for n in notes if "own word was not seen, whatever it was" in n]
             self.assertEqual(len(seen), 1, notes)
             self.assertTrue(seen[0].startswith(fn.split('-')[0] + ':'), seen)
             for kind in ('upload_checked head_moved\n', 'upload_checked not_the_base\n', ''):
