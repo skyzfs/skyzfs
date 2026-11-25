@@ -158,7 +158,12 @@ cat > "$T/bin/zpool" << 'FAKE'
 printf '%s %s\n' "${LC_ALL:-unset}" "$*"
 echo "scrub in progress"
 FAKE
-chmod +x "$T/bin/zfs" "$T/bin/zpool"
+# The scale pool's root is mounted only when FAKE_MOUNTED is set.
+cat > "$T/bin/mountpoint" << 'FAKE'
+#!/bin/sh
+[ -n "${FAKE_MOUNTED:-}" ]
+FAKE
+chmod +x "$T/bin/zfs" "$T/bin/zpool" "$T/bin/mountpoint"
 adapter_env
 OUT=$T/pins
 mkdir -p "$OUT"
@@ -171,8 +176,10 @@ SCALE_END=$(($(date +%s) + 600))
 record_pool rig skzq > /dev/null 2> "$T/pins.err"
 record_none none skznone > /dev/null 2>> "$T/pins.err"
 export FAKE_LIST_RC=1 # the program took no @t: the CLI's
+export FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3
+mkdir -p "$WORK/mnt/skzqs"
 ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/pins.err"
-unset FAKE_LIST_RC
+unset FAKE_LIST_RC FAKE_MOUNTED
 check "pins: no name twice" "$(grep -c twice "$T/pins.err")" 0
 words() { tr '\0' ' ' < "$OUT/$1/argv"; }
 P="-j -t 100000000 -m 104857600"
@@ -200,6 +207,19 @@ check "pin scale snapshot" "$(words scale-3-snapshot)" "zfs program $P skzqs - s
 check "pin scale's own snapshot" "$(words scale-3-snapshot-cli)" "zfs snapshot -r skzqs@t "
 check "pin scale hold" "$(words scale-3-hold)" "zfs hold -r skyzfs-publish skzqs@t "
 check "pin scale release" "$(words scale-3-release)" "zfs release -r skyzfs-publish skzqs@t "
+check "pin scale destroy" "$(words scale-3-destroy)" "zfs destroy -r skzqs@t "
+check "pin scale's take by the CLI" "$(words scale-3-take-cli)" "zfs snapshot -r skzqs@c "
+check "pin scale's members after it" "$(words scale-3-take-cli-members)" "zfs program -n $P skzqs - skzqs c "
+# The writer beside each take: its log and its stall, in the record
+# and in about.txt.
+for r in snapshot take-cli; do
+    check "writer beside $r: its log" "$(head -n 1 "$OUT/scale-3-$r/writer.tsv" | cut -f1)" start
+    check "writer beside $r: its stall" "$(cut -c1-8 "$OUT/scale-3-$r/stall")" "longest="
+    check "writer beside $r: said" "$(grep -c "^scale: writer beside scale-3-$r: longest=" "$OUT/about.txt")" 1
+done
+check "writer: its file in the root" "$([ -s "$WORK/mnt/skzqs/writer.dat" ] && echo yes || echo no)" yes
+check "writer: nothing left behind" "$(find "$OUT" -maxdepth 1 -name '.writer-*' | wc -l)" 0
+check "writer: none beside the others" "$(find "$OUT" -name writer.tsv | wc -l)" 2
 check "scale's limit is its own" "$LIMIT" 5
 check "scale's image removed" "$([ -e "$WORK/scale.img" ] && echo yes || echo no)" no
 check "scale's df" "$(grep -c '^scale 3: df: ' "$OUT/about.txt")" 2
@@ -286,6 +306,7 @@ unset FAKE_SLEEP
 scale 8 > /dev/null 2>> "$T/pins.err"
 check "budget spent: not run" "$(grep -c '^scale 8: not run' "$OUT/about.txt")" 1
 check "budget spent: no pool" "$(find "$OUT" -maxdepth 1 -name 'scale-8-*' | wc -l)" 0
+check "not mounted: no writer, said" "$(grep -c '^scale 4: the root is not mounted; no writer' "$OUT/about.txt")" 1
 LIMIT=5
 
 # during: the command in the background under its own limit, watched;

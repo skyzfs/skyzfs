@@ -45,14 +45,26 @@
 #   remove  skzqr: two files, one of them removed (the removal's states)
 #   none    skznone, a pool that does not exist
 #   scale-N skzqs, made only when ZCR_SCALE names N: N file systems
-#           under the root (not mounted), and the snapshot program,
-#           snapshot-cli (zfs snapshot -r, only if the program did not
-#           take @t), members, hold -r, tagged and release -r on it,
-#           each with its wall time in secs. At most three counts, each
-#           at most 100000 and each once. Each command's limit is
-#           ZCR_SCALE_LIMIT seconds (default 1800), or what is left of
-#           ZCR_SCALE_BUDGET (default 4800 s, for all counts together)
-#           if less; once the budget is spent no command is started,
+#           under the root (made with -u, not mounted; the root is),
+#           and on it, each with its wall time in secs:
+#             snapshot          the snapshot program at @t
+#             snapshot-cli      zfs snapshot -r P@t, only if the program
+#                               did not take @t
+#             members, hold, tagged, release
+#                               at @t, hold and release with -r
+#             destroy           zfs destroy -r P@t
+#             take-cli          zfs snapshot -r P@c, the take by the CLI
+#             take-cli-members  members.lua at @c
+#           Beside the two takes (snapshot, take-cli) a writer makes
+#           4 KiB O_DSYNC writes to a file in the root, from 2 s before
+#           the take to 2 s after (dsync_writer.py). The take's record
+#           gets writer.tsv, its log, and stall, the longest write that
+#           overlapped the take; about.txt the same line. At most
+#           three counts, each at most 100000 and each once. Each
+#           command's limit is ZCR_SCALE_LIMIT seconds (default 1800),
+#           or what is left of ZCR_SCALE_BUDGET (default 4800 s, for all
+#           counts together) if less; once the budget is spent no
+#           command is started,
 #           and about.txt says where it stopped. about.txt also has df
 #           of WORK before each pool and how long the file systems took
 #           to make
@@ -456,10 +468,51 @@ scale_limit() {
     return 0
 }
 
+# writing NAME DIR COMMAND...: the record NAME, made by COMMAND (rec or
+# program), with a writer of 4 KiB O_DSYNC writes to DIR/writer.dat
+# beside it from ZCR_WRITER_MARGIN seconds (default 2) before COMMAND
+# to as long after. The record gets writer.tsv (the writer's log) and
+# stall (its longest write that overlapped COMMAND, dsync_writer.py),
+# and about.txt the same line. With DIR empty, COMMAND alone.
+writing() {
+    local name=$1 dir=$2 margin=${ZCR_WRITER_MARGIN:-2} wpid t0 t1 log i line
+    shift 2
+    if [ -z "$dir" ]; then
+        "$@"
+        return
+    fi
+    log=$OUT/.writer-$name
+    python3 "$HERE/dsync_writer.py" write "$dir/writer.dat" "$log.tsv" 2> "$log.err" &
+    wpid=$!
+    sleep "$margin"
+    t0=$(date +%s.%N)
+    "$@"
+    t1=$(date +%s.%N)
+    sleep "$margin"
+    kill -TERM "$wpid" 2> /dev/null
+    for ((i = 0; i < 600; i++)); do
+        kill -0 "$wpid" 2> /dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$wpid" 2> /dev/null; then
+        # Not waited for: it may be in the kernel's wait.
+        kill -9 "$wpid" 2> /dev/null
+        line="the writer did not stop within 60 s"
+    else
+        wait "$wpid"
+        line=$(python3 "$HERE/dsync_writer.py" stall "$log.tsv" "$t0" "$t1" 2>&1)
+    fi
+    mkdir -p "$OUT/$name"
+    mv "$log.tsv" "$OUT/$name/writer.tsv" 2> /dev/null
+    mv "$log.err" "$OUT/$name/writer.err" 2> /dev/null
+    printf '%s\n' "$line" > "$OUT/$name/stall"
+    echo "scale: writer beside $name: $line" >> "$OUT/about.txt"
+}
+
 # scale N: a pool with N file systems under its root, and the adapter's
 # programs and holds on it, each timed (the secs of its record).
 scale() {
-    local n=$1 p=skzqs t0 made step cut="" rc
+    local n=$1 p=skzqs t0 made step cut="" rc wdir
     local LIMIT
     if ! scale_limit; then
         echo "scale $n: not run, the budget was spent" >> "$OUT/about.txt"
@@ -467,28 +520,35 @@ scale() {
     fi
     df -h "$WORK" 2>&1 | sed "s/^/scale $n: df: /" >> "$OUT/about.txt"
     truncate -s 16G "$WORK/scale.img"
-    if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint=none -O canmount=off \
+    if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$p" \
         -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$n.log" 2>&1; then
         echo "scale $n: zpool create failed (create-$p-$n.log)" >> "$OUT/about.txt"
         rm -f "$WORK/scale.img"
         return 0
     fi
     zfs set "$ASSIST=1700000000000" "$p" >> "$OUT/create-$p-$n.log" 2>&1
+    # The writer's file is in the root, and only if the root is mounted.
+    wdir=""
+    if mountpoint -q "$WORK/mnt/$p"; then
+        wdir=$WORK/mnt/$p
+    else
+        echo "scale $n: the root is not mounted; no writer" >> "$OUT/about.txt"
+    fi
     t0=$(date +%s)
     if scale_limit; then
         rc=0
-        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
+        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create -u "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
         [ "$rc" = 124 ] && cut=" (stopped at the limit of $LIMIT s)"
         made=$(lim 120 zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
         echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
-    for step in snapshot snapshot-cli members hold tagged release; do
+    for step in snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members; do
         if ! scale_limit; then
             echo "scale $n: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
         fi
         case $step in
-            snapshot) program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST" ;;
+            snapshot) writing "scale-$n-snapshot" "$wdir" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST" ;;
             # Without the program's @t, the CLI's, so that the rest has one.
             snapshot-cli)
                 lim 120 zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "scale-$n-snapshot-cli" zfs snapshot -r "$p@t"
@@ -497,6 +557,9 @@ scale() {
             hold) rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t" ;;
             tagged) program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
             release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
+            destroy) rec "scale-$n-destroy" zfs destroy -r "$p@t" ;;
+            take-cli) writing "scale-$n-take-cli" "$wdir" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
+            take-cli-members) program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c ;;
         esac
     done
     lim 600 zpool destroy -f "$p" > /dev/null 2>&1

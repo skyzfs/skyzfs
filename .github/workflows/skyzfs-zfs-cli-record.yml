@@ -17,7 +17,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program and the holds on a pool with that many, timed, within 80 minutes in all. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with a writer's longest stall during each take, within 80 minutes in all. Empty: none"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
@@ -27,6 +27,8 @@ on:
     paths:
       - tests/kernel/zfs-cli-record.sh
       - tests/kernel/test_zfs_cli_record.sh
+      - tests/kernel/dsync_writer.py
+      - tests/kernel/test_dsync_writer.py
       - .github/workflows/skyzfs-zfs-cli-record.yml
 
 concurrency:
@@ -45,6 +47,7 @@ jobs:
         with:
           persist-credentials: false
       - run: bash tests/kernel/test_zfs_cli_record.sh
+      - run: python3 tests/kernel/test_dsync_writer.py
 
   # The Lua's commit, resolved once, so that every image runs the same.
   lua:
