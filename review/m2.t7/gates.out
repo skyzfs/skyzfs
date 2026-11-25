@@ -1,0 +1,59 @@
+== fmt
+fmt rc=0
+== clippy nodeb
+    Checking skynbd-refs v0.0.1 (<worktree at cabd5a0>/crates/skynbd-refs)
+    Checking skynbd-engine v0.0.1 (<worktree at cabd5a0>/crates/skynbd-engine)
+    Checking skyzfs-upload v0.0.1 (<worktree at cabd5a0>/crates/skyzfs-upload)
+    Checking skyzfs-nodeb v0.0.1 (<worktree at cabd5a0>/bins/skyzfs-nodeb)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 56.43s
+clippy rc=0
+== test nodeb
+   Compiling thiserror v2.0.19
+test tests::a_lost_swap_of_head_is_the_row_moved_only_under_a_guard ... ok
+test tests::a_ref_whose_objects_are_gone_is_unreadable ... ok
+test tests::a_lost_swap_of_head_through_move_head ... ok
+test tests::a_ref_whose_segments_are_gone_is_unreadable ... ok
+test tests::a_row_is_put_as_the_uploader_reads_it ... ok
+test tests::a_store_that_does_not_answer_is_not_about_content ... ok
+test tests::each_command_names_what_it_needs ... ok
+test tests::an_expected_row_holds_for_its_cut_in_either_version ... ok
+test tests::holes_must_be_sector_aligned ... ok
+test tests::exit_codes ... ok
+test tests::move_head_takes_the_row_forms_known_before_the_commit ... ok
+test tests::runs_join_adjacent_blocks_and_skip_zeros ... ok
+test tests::snap_row_needs_its_snapshot ... ok
+test tests::move_head_writes_head_and_the_row_in_one_transaction ... ok
+test tests::the_cut_row_is_read_as_the_uploader_writes_it ... ok
+test tests::move_head_writes_the_row_in_the_same_commit ... ok
+test tests::the_id_is_the_provisioners ... ok
+test tests::the_manifest_is_checked_against_the_row ... ok
+test tests::the_row_codec_is_the_uploaders ... ok
+test tests::the_guard_holds_the_row_as_read_in_either_version ... ok
+test tests::the_snap_row_is_read_as_the_daemon_writes_it ... ok
+test tests::the_other_writer_acts_on_the_row_it_read ... ok
+test tests::a_put_image_reads_back_through_a_second_ref_store ... ok
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+test rc=0
+== at 9a87140
+== rustc: rustc 1.100.0 (0ef1bc386 2026-11-09)
+== shellcheck -S warning (git ls-files '*.sh')
+shellcheck rc=0 lines=0
+== bash tests/kernel/test_cut_record.sh
+test_cut_record rc=0
+ok   rec_bound: paused before the create, the writes, a wait, then the status while paused, then the let-go
+all passed
+== python3 -m unittest discover -p 'test_*.py' (tests/kernel)
+FAILED prefix 18 (fsync): fsync: files: f.1 checksum differs
+FAILED prefix 11 (fsync): fsync: files: f.1 checksum differs
+FAILED prefix 11 (fsync): rig: losetup: no free loop device
+Ran 562 tests in 60.416s
+OK
+== at d169139
+shellcheck -S warning rc=0 lines=0
+test_cut_record rc=0
+ok   status_until is in the script
+ok   status_until: the count shows at the third look
+ok   status_until: a count already there is one look
+ok   status_until: a count that never shows is 1, said, after the last look
+ok   pchannel waits for the peer's count before it reads the channel's status
+all passed

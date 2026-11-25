@@ -1,0 +1,5 @@
+X1: SURVIVED []: a write that fails with EPIPE is the rig's error again (only ECONNRESET kept)
+X2: KILLED ['test_a_reset_with_no_answer_is_the_rigs_error']: a reset with no answer read is not raised (returns an empty answer)
+X3: KILLED ['test_a_reset_with_no_answer_is_the_rigs_error']: a reset on the read forgets its error (breaks only)
+X4: KILLED ['test_an_answer_before_a_reset_is_the_answer']: the fix reverted on the read (a reset after the answer raises)
+X5: SURVIVED []: any OSError on the write is kept, not only EPIPE and ECONNRESET

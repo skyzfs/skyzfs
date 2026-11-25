@@ -1,0 +1,5 @@
+U1: KILLED ["FAIL pchannel waits for the peer's count before it reads the channel's status: got '0', wa"]: pchannel reads the status once, as before
+U2: KILLED ["FAIL status_until: the count shows at the third look: got '0 looks=1 file=control_peer 0',", "FAIL status_until: a count that never shows is 1, said, after the last look: got '0 looks="]: status_until returns 0 at once, whatever the count
+U3: KILLED ["FAIL status_until: the count shows at the third look: got 'log pchannel: the status's cont"]: status_until wants more than N (gt for ge)
+U4: KILLED (timeout) ['the test did not end in 120 s']: status_until never gives up (no limit)
+U5: KILLED ["FAIL pchannel waits for the peer's count before it reads the channel's status: got '0', wa"]: pchannel waits for control_malformed instead of control_peer

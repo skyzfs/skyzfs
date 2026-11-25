@@ -1,0 +1,22 @@
+== at 9a87140 (the fix)
+the answer, request unread: 20/20: answer 'refused peer this daemon answers its own user' -> ok
+the answer, daemon closed before the client wrote: 20/20: answer 'refused peer this daemon answers its own user' -> ok
+the answer, request read (EOF): 20/20: answer 'refused peer this daemon answers its own user' -> ok
+half the answer line, request unread: 20/20: answer 'refused peer this daem' -> ok
+half the answer line, request read (EOF): 20/20: answer 'refused peer this daem' -> ok
+the greeting only, request unread: 20/20: answer 'skyzfs-control 1' -> FAILED (a verdict against the daemon)
+the greeting only, request read (EOF): 20/20: answer 'skyzfs-control 1' -> FAILED (a verdict against the daemon)
+nothing, request unread (reset, no answer): 20/20: raised '[Errno 104] Connection reset by peer' -> exit 2 (the rig's error)
+nothing, daemon closed before the client wrote: 20/20: raised '[Errno 32] Broken pipe' -> exit 2 (the rig's error)
+nothing, request read (EOF, no answer): 20/20: answer '' -> FAILED (a verdict against the daemon)
+== with cabd5a0's publish_agent.py (the fix reverted)
+the answer, request unread: 20/20: raised '[Errno 104] Connection reset by peer' -> exit 2 (the rig's error)
+the answer, daemon closed before the client wrote: 20/20: raised '[Errno 32] Broken pipe' -> exit 2 (the rig's error)
+the answer, request read (EOF): 20/20: answer 'refused peer this daemon answers its own user' -> ok
+half the answer line, request unread: 20/20: raised '[Errno 104] Connection reset by peer' -> exit 2 (the rig's error)
+half the answer line, request read (EOF): 20/20: answer 'refused peer this daem' -> ok
+the greeting only, request unread: 20/20: raised '[Errno 104] Connection reset by peer' -> exit 2 (the rig's error)
+the greeting only, request read (EOF): 20/20: answer 'skyzfs-control 1' -> FAILED (a verdict against the daemon)
+nothing, request unread (reset, no answer): 20/20: raised '[Errno 104] Connection reset by peer' -> exit 2 (the rig's error)
+nothing, daemon closed before the client wrote: 20/20: raised '[Errno 32] Broken pipe' -> exit 2 (the rig's error)
+nothing, request read (EOF, no answer): 20/20: answer '' -> FAILED (a verdict against the daemon)
