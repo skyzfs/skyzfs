@@ -26,17 +26,27 @@
 
     txg_probe.py report LOG T0 T1
         One line about the window [T0, T1] (seconds since the epoch):
-            txgs=N longest_sync=S longest_gap=G syncs=M sync_longest=X
+            txgs=N longest_sync=S longest_group=TXG:D/W longest_gap=G
+            syncs=M sync_longest=X sync_failed=F before_sync=B
+            before_sync_longest=Y errors=E
         txgs: the groups whose sync ended in the window; longest_sync:
         the longest sync of a group whose sync overlapped the window;
+        longest_group: that group, its dirty and written data in MiB;
         longest_gap: the longest time between two groups' ends that
         overlapped the window (">G" when one side is the probe's start
         or stop, with no group's end there); syncs: the `zpool sync`
         runs that overlapped the window; sync_longest: the longest of
-        them (">X" when it was still open). "-" when there is none.
+        them that did not fail (">X" when it was still open);
+        sync_failed: those that exited nonzero; before_sync and
+        before_sync_longest: the longest group's sync and the longest
+        `zpool sync` that ended between the probe's start and T0, the
+        baseline; errors: the error lines in the whole log. "-" when
+        there is none. A probe that did not begin by T0, or did not
+        read the kstat at or after T1, is said first: "NOT COVERED: the
+        probe ran from A to B, its last read of the kstat at C (or
+        none), the window from T0 to T1; " and then the line.
         Exit 2 when the log has no start.
 """
-import os
 import signal
 import subprocess
 import sys
@@ -124,11 +134,10 @@ def probe(kstat, pool, log, every=2.0):
 def report(lines, t0, t1):
     """The line for the window [t0, t1], or None when the log has no start."""
     start = stop = None
-    ends = []
-    syncs = []  # (t0, seconds, open)
-    txgs = 0
-    longest_sync = None
+    groups = []  # (end, s, txg, ndirty, nwritten)
+    syncs = []  # (t0, seconds, open, rc)
     last_tick = None
+    errors = 0
     for line in lines:
         f = line.rstrip("\n").split("\t")
         try:
@@ -138,24 +147,30 @@ def report(lines, t0, t1):
                 stop = float(f[1])
             elif f[0] == "tick":
                 last_tick = float(f[1])
+            elif f[0] == "error":
+                errors += 1
             elif f[0] == "txg":
-                end, s = float(f[2]), float(f[6])
-                ends.append(end)
-                if t0 <= end <= t1:
-                    txgs += 1
-                if end - s < t1 and end > t0:
-                    longest_sync = max(longest_sync or 0.0, s)
-            elif f[0] in ("sync", "open"):
-                syncs.append((float(f[1]), float(f[2]), f[0] == "open"))
+                groups.append((float(f[2]), float(f[6]), int(f[1]), int(f[7]), int(f[8])))
+            elif f[0] == "sync":
+                syncs.append((float(f[1]), float(f[2]), False, int(f[3])))
+            elif f[0] == "open":
+                syncs.append((float(f[1]), float(f[2]), True, 0))
         except (IndexError, ValueError):
             continue
     if start is None:
         return None
     if stop is None:
         stop = last_tick if last_tick is not None else start
+    txgs = sum(1 for end, *_ in groups if t0 <= end <= t1)
+    # The longest sync of a group whose sync overlapped the window, and that group.
+    longest = None
+    for g in groups:
+        end, secs = g[0], g[1]
+        if end - secs < t1 and end > t0 and (longest is None or secs > longest[1]):
+            longest = g
     # Anchors where no group's end is known: the probe's start, unless
     # the kstat's history held a group that ended before it, and its stop.
-    points = [(e, False) for e in sorted(ends)]
+    points = [(e, False) for e in sorted(g[0] for g in groups)]
     if not points or points[0][0] > start:
         points.insert(0, (start, True))
     points.append((max(stop, points[-1][0]), True))
@@ -163,20 +178,36 @@ def report(lines, t0, t1):
     for (a, ao), (b, bo) in zip(points, points[1:]):
         if a < t1 and b > t0 and (gap is None or b - a > gap):
             gap, gap_open = b - a, ao or bo
-    n, longest, longest_open = 0, None, False
-    for s0, secs, is_open in syncs:
+    # `zpool sync` runs: a failed one is counted apart and is no time.
+    n, failed, sync_longest, sync_open = 0, 0, None, False
+    for s0, secs, is_open, rc in syncs:
         if s0 < t1 and s0 + secs > t0:
             n += 1
-            if longest is None or secs > longest:
-                longest, longest_open = secs, is_open
+            if rc != 0:
+                failed += 1
+            elif sync_longest is None or secs > sync_longest:
+                sync_longest, sync_open = secs, is_open
+    # The baseline: the margin from the probe's start to t0.
+    before = [g[1] for g in groups if start <= g[0] <= t0]
+    before_syncs = [secs for s0, secs, is_open, rc in syncs if not is_open and rc == 0 and s0 + secs <= t0]
 
     def shown(v, is_open=False):
         if v is None:
             return "-"
         return (">" if is_open else "") + "%.3f" % v
 
-    return "txgs=%d longest_sync=%s longest_gap=%s syncs=%d sync_longest=%s" % (
-        txgs, shown(longest_sync), shown(gap, gap_open), n, shown(longest, longest_open))
+    mib = 1 << 20
+    line = ("txgs=%d longest_sync=%s longest_group=%s longest_gap=%s syncs=%d sync_longest=%s "
+            "sync_failed=%d before_sync=%s before_sync_longest=%s errors=%d") % (
+        txgs, shown(longest[1] if longest else None),
+        "%d:%.0f/%.0f" % (longest[2], longest[3] / mib, longest[4] / mib) if longest else "-",
+        shown(gap, gap_open), n, shown(sync_longest, sync_open), failed,
+        shown(max(before) if before else None), shown(max(before_syncs) if before_syncs else None), errors)
+    # Covered: the probe began by t0 and read the kstat at or after t1.
+    if start > t0 or last_tick is None or last_tick < t1:
+        line = "NOT COVERED: the probe ran from %.3f to %.3f, its last read of the kstat %s, the window from %.3f to %.3f; %s" % (
+            start, stop, "at %.3f" % last_tick if last_tick is not None else "none", t0, t1, line)
+    return line
 
 
 def main(argv):

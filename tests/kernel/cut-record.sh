@@ -1043,6 +1043,28 @@ ustatus() {
 skey() { sed -n "s/^$2 //p" "$RDIR/$1" | head -n 1; }
 # Node B's row of the volume (head, the cut's row, the lease) into DIR/FILE.
 nbrow() { nodeb row > "$RDIR/$1" 2> "$RDIR/$1.err" || rig_error "node B row failed: $(tail -n 2 "$RDIR/$1.err")"; }
+# The row at a course's end, DIR/end-row.txt: once the uploader is at
+# rest (drain, DIR/end-drain.txt: an upload after the export can still
+# be going), node B's row read until two reads in a row agree, at most
+# ten reads a second apart (each in DIR/end-rows.txt). Node B reads head
+# and the row in two requests, so a read across a commit names the head
+# of one and the row of the other (run 45690023761, uv1: commit and
+# head differed). The lease's expiry, which a holder renews, is not
+# compared. A row that did not settle is the rig's error.
+end_row() {
+    local _i prev="" cur
+    drain end-drain.txt
+    : > "$RDIR/end-rows.txt"
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+        nbrow end-row.txt
+        cur=$(awk -F '\t' '$1 == "lease" { print $1 "\t" $2 "\t" $3; next } { print }' "$RDIR/end-row.txt")
+        { echo "read $_i"; cat "$RDIR/end-row.txt"; } >> "$RDIR/end-rows.txt"
+        [ "$_i" -gt 1 ] && [ "$cur" = "$prev" ] && return 0
+        prev=$cur
+        sleep 1
+    done
+    rig_error "node B's row at the end did not read the same twice in a row in ten reads (end-rows.txt)"
+}
 # The cut the row in DIR/FILE names: `STATE NUMBER GROUP`, or nothing.
 rowcut() { awk -F '\t' '$1 == "row" && NF == 4 && $3 ~ /^[0-9]+$/ { print $2, $3, $4 }' "$RDIR/$1"; }
 # FILE KEY N SECONDS: write 1 MiB and sync the pool, so that it cuts,
@@ -1174,7 +1196,7 @@ rec_umoved() {
     nudge_until moved-after.txt upload_mismatches 1 120 || true
     load 2
     export_pool
-    nbrow end-row.txt
+    end_row
 }
 
 # urow (b): another writer puts a row of another state on head's group,
@@ -1193,7 +1215,7 @@ rec_urow() {
     nudge_until row2-whole.txt uploaded_whole 3 120 || true
     load 1
     export_pool
-    nbrow end-row.txt
+    end_row
 }
 # uv1: another writer writes the daemon's row again in version 1 (F1):
 # the same cut, no commit, head left alone. A row of version 1 does not
@@ -1217,7 +1239,7 @@ rec_uv1() {
     nudge_until v1in-whole.txt uploaded_whole 3 120 || true
     load 1
     export_pool
-    nbrow end-row.txt
+    end_row
 }
 # uv1moved: as uv1's second act, but head moves to a commit of another
 # group. That a row of version 1 can show: the mismatch is head_moved,
@@ -1230,7 +1252,7 @@ rec_uv1moved() {
     nudge_until v1moved-after.txt upload_mismatches 1 120 || true
     load 2
     export_pool
-    nbrow end-row.txt
+    end_row
 }
 # STEP ACT: the other writer's act on the row it read. before_other STEP
 # reads the row once the daemon is at rest; ACT STATE NUMBER GROUP acts
@@ -1407,7 +1429,7 @@ rec_ulost() {
     import_pool
     load 2
     export_pool
-    nbrow end-row.txt
+    end_row
 }
 
 # unostore (e, by name): object storage is down (CUT_S3_DOWN) when the
