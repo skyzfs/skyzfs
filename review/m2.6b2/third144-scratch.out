@@ -1,0 +1,218 @@
+# Scratch tests of the third look at #144, at 1b5e5f9
+# third144rec.rs appended to engine/tests.rs, third144plan.rs to plan/tests.rs,
+# in a scratch worktree of the head; cargo test -p skyzfs-agent --lib review3 -- --nocapture --test-threads 1
+
+## At the head (1b5e5f9): 4 passed
+running 4 tests
+test engine::tests::review3_flag_lost_at_a_restart_withdraws_again ... flag lost at a restart: withdraws before 1, after 2
+  settled: Ok(())
+  outcomes: [("skz-20261125T010000Z", Abandoned(TooOld))]
+  reports: []
+  under way: []
+  holds: []
+  progress now: Ok(Withdrawn)
+  world time: 60 s
+ok
+test engine::tests::review3_n4_a_too_old_publish_whose_request_ended_rewound_never_ends ... N4, too old, pool@t lost by the rewind:
+  settled: Err("still under way: skz-20261125T010000Z")
+  outcomes: []
+  reports: []
+  under way: [("skz-20261125T010000Z", "Asked", true)]
+  holds: []
+  progress now: Ok(Refused(Rewound, ""))
+  world time: 10800 s
+  log: import -F to 5 from 27; lost ["skz-20261125T010000Z"]
+  log: 60000: group 27 (import): cut 24 group 27 itself true
+N4, too old, pool@t kept by the rewind:
+  settled: Err("still under way: skz-20261125T010000Z")
+  outcomes: []
+  reports: []
+  under way: [("skz-20261125T010000Z", "Asked", false)]
+  holds: []
+  progress now: Ok(Refused(Rewound, ""))
+  world time: 10800 s
+  log: import -F to 26 from 27; lost []
+  log: 60000: group 27 (import): cut 24 group 27 itself true
+N4 control, not too old, pool@t lost by the rewind:
+  settled: Ok(())
+  outcomes: [("skz-20261125T010000Z", Abandoned(Rewound))]
+  reports: []
+  under way: []
+  holds: []
+  progress now: Ok(Refused(Rewound, ""))
+  world time: 0 s
+  log: import -F to 5 from 7; lost ["skz-20261125T010000Z"]
+  log: 0: group 7 (import): cut 4 group 7 itself true
+ok
+test engine::tests::review3_n4_held_keeps_its_hold_without_end ... N4 at Held:
+  settled: Err("still under way: skz-20261125T010000Z")
+  outcomes: []
+  reports: []
+  under way: [("skz-20261125T010000Z", "Held(", true)]
+  holds: ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"]
+  progress now: Ok(Refused(Rewound, ""))
+  world time: 10920 s
+  log: import -F to 30 from 31; lost []
+  log: 120000: group 31 (import): cut 28 group 31 itself true
+ok
+test plan::tests::review3_the_ended_arm_in_full ... TABLE	ended	phase	time	pool	withdrawn	snap	answer	action
+ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.05s
+
+## The ended arm in full: python3 third144table.py on the rows review3_the_ended_arm_in_full prints
+8064 cells
+
+1. Actions by answer (all states)
+  (none: away)           Release x24, Wait x264
+  pending                Withdraw x288
+  done                   Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Look x48, Stop(DoneNotSeen) x192
+  expired                Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  withdrawn              Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  unknown                Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  absent                 Withdraw x288
+  accepted               Release x24, Wait x264
+  cuts                   Release x24, Wait x264
+  snap                   Release x24, Wait x264
+  unreadable             Release x24, Wait x264
+  refused name           Release x24, Wait x264
+  refused attachment     Release x24, Wait x264
+  refused state          Release x24, Wait x264
+  refused manifest       Release x24, Wait x264
+  refused expiry         Release x24, Wait x264
+  refused asked          Withdraw x288
+  refused busy           Release x24, Wait x264
+  refused taken          Abandon(NameTaken) x64, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x36, Wait x44
+  refused stopped        Release x24, Wait x264
+  refused rewound        Release x24, Wait x264
+  refused version        Release x24, Wait x264
+  refused malformed      Release x24, Wait x264
+  refused peer           Release x24, Wait x264
+  refused no-upload      Release x24, Wait x264
+  refused ended          Release x24, Wait x264
+  refused no-answer      Release x24, Wait x264
+  refused store          Release x24, Wait x264
+
+2. Release or give-up cells, by what allows them
+     96  refused taken, and look sees another's snap/t (NameTaken)
+    216  a withdraw answered withdrawn/unknown/expired, then look
+    484  asked, at held_until, an answer that cannot tell (L5)
+      0  anything else
+
+3. Waits on an answer that says the request ended (kept by the uploader)
+    24  refused rewound / asked / at-until / gone / no hold
+    24  refused rewound / asked / at-until / whole-unheld / no hold
+    24  refused rewound / asked / before-until / gone / no hold
+    24  refused rewound / asked / before-until / whole-held / hold kept
+    24  refused rewound / asked / before-until / whole-unheld / no hold
+    24  refused rewound / held / at-until / gone / no hold
+    24  refused rewound / held / at-until / whole-held / hold kept
+    24  refused rewound / held / at-until / whole-unheld / no hold
+    24  refused rewound / held / before-until / gone / no hold
+    24  refused rewound / held / before-until / whole-held / hold kept
+    24  refused rewound / held / before-until / whole-unheld / no hold
+    24  refused state / asked / at-until / gone / no hold
+    24  refused state / asked / at-until / whole-unheld / no hold
+    24  refused state / asked / before-until / gone / no hold
+    24  refused state / asked / before-until / whole-held / hold kept
+    24  refused state / asked / before-until / whole-unheld / no hold
+    24  refused state / held / at-until / gone / no hold
+    24  refused state / held / at-until / whole-held / hold kept
+    24  refused state / held / at-until / whole-unheld / no hold
+    24  refused state / held / before-until / gone / no hold
+    24  refused state / held / before-until / whole-held / hold kept
+    24  refused state / held / before-until / whole-unheld / no hold
+     4  refused taken / asked / at-until / gone / no hold
+     4  refused taken / asked / at-until / whole-unheld / no hold
+     4  refused taken / asked / before-until / gone / no hold
+     4  refused taken / asked / before-until / whole-held / hold kept
+     4  refused taken / asked / before-until / whole-unheld / no hold
+     4  refused taken / held / at-until / gone / no hold
+     4  refused taken / held / at-until / whole-held / hold kept
+     4  refused taken / held / at-until / whole-unheld / no hold
+     4  refused taken / held / before-until / gone / no hold
+     4  refused taken / held / before-until / whole-held / hold kept
+     4  refused taken / held / before-until / whole-unheld / no hold
+
+   ... and where those answers lead elsewhere:
+    24  refused rewound -> Release
+    24  refused state -> Release
+    64  refused taken -> Abandon(NameTaken)
+    32  refused taken -> Done { commit: [COMMIT], report: None }
+    16  refused taken -> Done { commit: [COMMIT], report: Some(SnapshotGone) }
+    32  refused taken -> Done { commit: [OTHER], report: None }
+    16  refused taken -> Done { commit: [OTHER], report: Some(SnapshotGone) }
+    48  refused taken -> Look
+    36  refused taken -> Release
+
+4. Answers of a daemon away (and none) at Held, whole and held: always Wait?
+  (none: away)           ['Wait']
+  refused ended          ['Wait']
+  refused no-answer      ['Wait']
+  refused no-upload      ['Wait']
+  refused stopped        ['Wait']
+
+5. done, by what look saw
+  -                  {'Look': 48}
+  absent             {'Stop(DoneNotSeen)': 48}
+  ours               {'Done { commit: [COMMIT], report: None }': 32, 'Done { commit: [COMMIT], report: Some(SnapshotGone) }': 16}
+  ours-other-commit  {'Stop(DoneNotSeen)': 48}
+  not-ours           {'Stop(DoneNotSeen)': 48}
+  unreadable         {'Stop(DoneNotSeen)': 48}
+
+## The candidate fix of N4 (scratch only), and the whole suite with it
+diff --git a/crates/skyzfs-agent/src/plan.rs b/crates/skyzfs-agent/src/plan.rs
+index eb371fc..c57e67d 100644
+--- a/crates/skyzfs-agent/src/plan.rs
++++ b/crates/skyzfs-agent/src/plan.rs
+@@ -618,6 +618,16 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
+                 look(&|| give_up(pool, broken.unwrap_or(why)))
+             }
+             Reply::Withdrawn | Reply::Unknown | Reply::Expired => Action::Withdraw,
++            // The uploader's own end of the request, nothing published:
++            // no request of it pends, as after a withdraw answered so.
++            Reply::Refused(code @ (Code::Rewound | Code::State), _) => look(&|| {
++                let why = match broken {
++                    Some(Why::Destroyed) if *code == Code::Rewound => Why::Rewound,
++                    Some(broken) => broken,
++                    None => why,
++                };
++                give_up(pool, why)
++            }),
+             _ => away(),
+         };
+     }
+
+### cargo test -p skyzfs-agent --lib, with the fix and the scratch tests (failures and the N4 runs)
+test engine::tests::review3_flag_lost_at_a_restart_withdraws_again ... flag lost at a restart: withdraws before 1, after 2
+  settled: Ok(())
+  outcomes: [("skz-20261125T010000Z", Abandoned(TooOld))]
+  under way: []
+  holds: []
+  world time: 60 s
+test engine::tests::review3_n4_a_too_old_publish_whose_request_ended_rewound_never_ends ... N4, too old, pool@t lost by the rewind:
+  settled: Ok(())
+  outcomes: [("skz-20261125T010000Z", Abandoned(Rewound))]
+  under way: []
+  holds: []
+  world time: 60 s
+assertion failed: matches!(settled, Err(Error::Unsettled(_)))
+FAILED
+test engine::tests::review3_n4_held_keeps_its_hold_without_end ... N4 at Held:
+  settled: Ok(())
+  outcomes: [("skz-20261125T010000Z", Abandoned(TooOld))]
+  under way: []
+  holds: []
+  world time: 120 s
+assertion failed: matches!(settled, Err(Error::Unsettled(_)))
+FAILED
+Refused(State, ""), asked: Look, not Wait
+Refused(State, ""), asked, at held_until: Look, not Release
+Refused(State, ""), asked, withdrawn, absent: Release, not Wait
+Refused(State, ""), held, an hour after: Look, not Wait
+Refused(Rewound, ""), asked: Look, not Wait
+Refused(Rewound, ""), asked, at held_until: Look, not Release
+Refused(Rewound, ""), asked, withdrawn, absent: Release, not Wait
+Refused(Rewound, ""), held, an hour after: Look, not Wait
+FAILED
+test plan::tests::review3_the_ended_arm_in_full ... TABLE	ended	phase	time	pool	withdrawn	snap	answer	action
+test result: FAILED. 70 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
