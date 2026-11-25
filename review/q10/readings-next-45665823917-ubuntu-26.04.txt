@@ -1,0 +1,141 @@
+# q10n_scratch.rs: #147 at 0f709ae fed run 45665823917-ubuntu-26.04's records (#148 at 0b394b2, lua 0f709ae) under their own argv (review of #148, next look)
+layout rig-status + rig-status-g: Ok(Layout { data: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }], special: 0, dedup: 0, other: 1, busy: None, removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-scrub-status + rig-scrub-status-g: Ok(Layout { data: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }], special: 0, dedup: 0, other: 1, busy: None, removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-scrub-paused + rig-scrub-paused-g: Ok(Layout { data: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }], special: 0, dedup: 0, other: 1, busy: None, removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-scrub-canceled + rig-scrub-canceled-g: Ok(Layout { data: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }], special: 0, dedup: 0, other: 1, busy: None, removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-resilver-status + rig-resilver-status-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 4086546796313620584, rdev: None, children: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }, Vdev { kind: Disk, guid: 10772569316272697058, rdev: Some(4096), children: [] }] }], special: 0, dedup: 0, other: 1, busy: Some("scan: resilver in progress since Wed Nov 25 17:54:28 2026"), removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-resilvered + rig-resilvered-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 4086546796313620584, rdev: None, children: [Vdev { kind: Disk, guid: 165473202866341814, rdev: Some(4096), children: [] }, Vdev { kind: Disk, guid: 10772569316272697058, rdev: Some(4096), children: [] }] }], special: 0, dedup: 0, other: 1, busy: None, removed: None })
+    ran: zpool status -P skzq | zpool status -P -g skzq
+layout rig-rebuild-status + rig-rebuild-status-g: (not recorded)
+layout rig-rebuilt + rig-rebuilt-g: (not recorded)
+props rig-get: Ok(Props { guid: 16072942189658766249, load_guid: 16409957771215199130, multihost: false, checkpoint: false, readonly: false })
+    ran: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skzq
+props rig-get-checkpoint: Ok(Props { guid: 16072942189658766249, load_guid: 16409957771215199130, multihost: false, checkpoint: true, readonly: false })
+    ran: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skzq
+assist rig-assist-set + rig-assist-sync: Ok(())
+    ran: zfs set skyzfs:assist=1700000000001 skzq | zpool sync skzq
+snapshot rig-snapshot-1 at @t: Ok(Program { createtxg: 32, members: [Member { name: "skzq", kind: Filesystem, guid: 17454032949153124778, snapshot_guid: 10970501189631903900, local: {"compression": [111, 102, 102], "mountpoint": [47, 109, 110, 116, 47, 115, 107, 122, 45, 99, 108, 105, 45, 114, 101, 99, 111, 114, 100, 47, 109, 110, 116, 47, 115, 107, 122, 113]} }, Member { name: "skzq/child", kind: Filesystem, guid: 6124773266608148316, snapshot_guid: 18136387328957497091, local: {"skyzfs:note": [108, 111, 99, 97, 108]} }, Member { name: "skzq/vol", kind: Volume, guid: 5506935661920824334, snapshot_guid: 17729680530791962931, local: {"refreservation": [50, 55, 52, 55, 50, 54, 57, 49, 50], "volsize": [50, 54, 56, 52, 51, 53, 52, 53, 54]} }] })
+    ran: zfs program -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:assist
+snapshot rig-snapshot-2 at @t: Err(Exists)
+    ran: zfs program -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:assist
+snapshot rig-snapshot-odd at @o0: Ok(Program { createtxg: 44, members: [Member { name: "skzq", kind: Filesystem, guid: 17454032949153124778, snapshot_guid: 4992625013830346890, local: {"compression": [111, 102, 102], "mountpoint": [47, 109, 110, 116, 47, 115, 107, 122, 45, 99, 108, 105, 45, 114, 101, 99, 111, 114, 100, 47, 109, 110, 116, 47, 115, 107, 122, 113]} }, Member { name: "skzq/child", kind: Filesystem, guid: 6124773266608148316, snapshot_guid: 10553226777290871241, local: {"skyzfs:note": [108, 111, 99, 97, 108], "skyzfs:raw": [97, 255, 254, 98, 195], "skyzfs:utf8": [110, 97, 195, 175, 118, 101, 44, 32, 230, 151, 165, 230, 156, 172, 44, 32, 226, 136, 133]} }, Member { name: "skzq/vol", kind: Volume, guid: 5506935661920824334, snapshot_guid: 17608864292813656733, local: {"refreservation": [50, 55, 52, 55, 50, 54, 57, 49, 50], "volsize": [50, 54, 56, 52, 51, 53, 52, 53, 54]} }] })
+    ran: zfs program -j -t 100000000 -m 104857600 skzq - skzq o0 skyzfs:assist
+snapshot rig-snapshot-exists-child at @p: Err(Exists)
+    ran: zfs program -j -t 100000000 -m 104857600 skzq - skzq p skyzfs:assist
+members rig-members: Ok(Some([Member { name: "skzq", snapshot_guid: 10970501189631903900 }, Member { name: "skzq/child", snapshot_guid: 18136387328957497091 }, Member { name: "skzq/vol", snapshot_guid: 17729680530791962931 }]))
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t
+members rig-members-absent: Ok(None)
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzq - skzq absent
+tagged rig-tagged (HOLD_TAG): Ok({})
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzq - skzq skyzfs-publish
+tagged rig-tagged-held (HOLD_TAG): Ok({"t"})
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzq - skzq skyzfs-publish
+held rig-holds (HOLD_TAG): Ok(true)
+    ran: zfs holds -H skzq@t
+held rig-holds-absent at @absent: Ok(false)
+    ran: zfs holds -H skzq@absent
+hold rig-hold-1: Ok(())
+    ran: zfs hold -r skyzfs-publish skzq@t
+hold rig-hold-2 + rig-members + rig-holds-r (all held): Ok(())
+    ran: zfs hold -r skyzfs-publish skzq@t | zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t | zfs holds -H -r skzq@t
+hold rig-hold-r-partial + rig-members + rig-holds-r-partial (root only): Err(Other("zfs hold -r skyzfs-publish skzq@t: the tag is on some members and not on skzq/child@t, skzq/vol@t"))
+    ran: zfs hold -r skyzfs-publish skzq@t | zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t | zfs holds -H -r skzq@t
+hold rig-hold-absent at @absent: Err(NoSnapshot)
+    ran: zfs hold -r skyzfs-publish skzq@absent
+release rig-release-1: Ok(())
+    ran: zfs release -r skyzfs-publish skzq@t
+release rig-release-2 + rig-holds-r-released: Ok(())
+    ran: zfs release -r skyzfs-publish skzq@t | zfs holds -H -r skzq@t
+release rig-release-r-partial (child only had it): Ok(())
+    ran: zfs release -r skyzfs-publish skzq@t
+release rig-release-absent at @absent: Ok(())
+    ran: zfs release -r skyzfs-publish skzq@absent
+layout mirror-status + mirror-status-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-scrub-status + mirror-scrub-status-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-scrub-paused + mirror-scrub-paused-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-scrub-canceled + mirror-scrub-canceled-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-resilver-status + mirror-resilver-status-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: Some("scan: resilver in progress since Wed Nov 25 17:54:37 2026"), removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-resilvered + mirror-resilvered-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-rebuild-status + mirror-rebuild-status-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }, Vdev { kind: File, guid: 2902644832040816996, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+layout mirror-rebuilt + mirror-rebuilt-g: Ok(Layout { data: [Vdev { kind: Mirror, guid: 2826463950479917718, rdev: None, children: [Vdev { kind: File, guid: 13750437431559522491, rdev: None, children: [] }, Vdev { kind: File, guid: 11935260055128920685, rdev: None, children: [] }, Vdev { kind: File, guid: 2902644832040816996, rdev: None, children: [] }] }], special: 1, dedup: 1, other: 2, busy: None, removed: None })
+    ran: zpool status -P skzqm | zpool status -P -g skzqm
+props mirror-get: Ok(Props { guid: 18234174824431236811, load_guid: 9787084004473154032, multihost: false, checkpoint: false, readonly: false })
+    ran: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skzqm
+props mirror-get-checkpoint: Ok(Props { guid: 18234174824431236811, load_guid: 9787084004473154032, multihost: false, checkpoint: true, readonly: false })
+    ran: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skzqm
+assist mirror-assist-set + mirror-assist-sync: Ok(())
+    ran: zfs set skyzfs:assist=1700000000001 skzqm | zpool sync skzqm
+snapshot mirror-snapshot-1 at @t: Ok(Program { createtxg: 32, members: [Member { name: "skzqm", kind: Filesystem, guid: 2106343772273111084, snapshot_guid: 18166389967918108237, local: {"compression": [111, 102, 102], "mountpoint": [47, 109, 110, 116, 47, 115, 107, 122, 45, 99, 108, 105, 45, 114, 101, 99, 111, 114, 100, 47, 109, 110, 116, 47, 115, 107, 122, 113, 109]} }, Member { name: "skzqm/child", kind: Filesystem, guid: 15173196544749924484, snapshot_guid: 16148349386957498057, local: {"skyzfs:note": [108, 111, 99, 97, 108]} }, Member { name: "skzqm/vol", kind: Volume, guid: 17026390813918752731, snapshot_guid: 4054422069899703425, local: {"refreservation": [50, 55, 52, 55, 50, 54, 57, 49, 50], "volsize": [50, 54, 56, 52, 51, 53, 52, 53, 54]} }] })
+    ran: zfs program -j -t 100000000 -m 104857600 skzqm - skzqm t skyzfs:assist
+snapshot mirror-snapshot-2 at @t: Err(Exists)
+    ran: zfs program -j -t 100000000 -m 104857600 skzqm - skzqm t skyzfs:assist
+snapshot mirror-snapshot-odd at @o0: Ok(Program { createtxg: 44, members: [Member { name: "skzqm", kind: Filesystem, guid: 2106343772273111084, snapshot_guid: 4850801372680556851, local: {"compression": [111, 102, 102], "mountpoint": [47, 109, 110, 116, 47, 115, 107, 122, 45, 99, 108, 105, 45, 114, 101, 99, 111, 114, 100, 47, 109, 110, 116, 47, 115, 107, 122, 113, 109]} }, Member { name: "skzqm/child", kind: Filesystem, guid: 15173196544749924484, snapshot_guid: 1868347441219429473, local: {"skyzfs:note": [108, 111, 99, 97, 108], "skyzfs:raw": [97, 255, 254, 98, 195], "skyzfs:utf8": [110, 97, 195, 175, 118, 101, 44, 32, 230, 151, 165, 230, 156, 172, 44, 32, 226, 136, 133]} }, Member { name: "skzqm/vol", kind: Volume, guid: 17026390813918752731, snapshot_guid: 11506009124876508313, local: {"refreservation": [50, 55, 52, 55, 50, 54, 57, 49, 50], "volsize": [50, 54, 56, 52, 51, 53, 52, 53, 54]} }] })
+    ran: zfs program -j -t 100000000 -m 104857600 skzqm - skzqm o0 skyzfs:assist
+snapshot mirror-snapshot-exists-child at @p: Err(Exists)
+    ran: zfs program -j -t 100000000 -m 104857600 skzqm - skzqm p skyzfs:assist
+members mirror-members: Ok(Some([Member { name: "skzqm", snapshot_guid: 18166389967918108237 }, Member { name: "skzqm/child", snapshot_guid: 16148349386957498057 }, Member { name: "skzqm/vol", snapshot_guid: 4054422069899703425 }]))
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm t
+members mirror-members-absent: Ok(None)
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm absent
+tagged mirror-tagged (HOLD_TAG): Ok({})
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm skyzfs-publish
+tagged mirror-tagged-held (HOLD_TAG): Ok({"t"})
+    ran: zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm skyzfs-publish
+held mirror-holds (HOLD_TAG): Ok(true)
+    ran: zfs holds -H skzqm@t
+held mirror-holds-absent at @absent: Ok(false)
+    ran: zfs holds -H skzqm@absent
+hold mirror-hold-1: Ok(())
+    ran: zfs hold -r skyzfs-publish skzqm@t
+hold mirror-hold-2 + mirror-members + mirror-holds-r (all held): Ok(())
+    ran: zfs hold -r skyzfs-publish skzqm@t | zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm t | zfs holds -H -r skzqm@t
+hold mirror-hold-r-partial + mirror-members + mirror-holds-r-partial (root only): Err(Other("zfs hold -r skyzfs-publish skzqm@t: the tag is on some members and not on skzqm/child@t, skzqm/vol@t"))
+    ran: zfs hold -r skyzfs-publish skzqm@t | zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm t | zfs holds -H -r skzqm@t
+hold mirror-hold-absent at @absent: Err(NoSnapshot)
+    ran: zfs hold -r skyzfs-publish skzqm@absent
+release mirror-release-1: Ok(())
+    ran: zfs release -r skyzfs-publish skzqm@t
+release mirror-release-2 + mirror-holds-r-released: Ok(())
+    ran: zfs release -r skyzfs-publish skzqm@t | zfs holds -H -r skzqm@t
+release mirror-release-r-partial (child only had it): Ok(())
+    ran: zfs release -r skyzfs-publish skzqm@t
+release mirror-release-absent at @absent: Ok(())
+    ran: zfs release -r skyzfs-publish skzqm@absent
+layout remove-status + remove-status-g: Ok(Layout { data: [Vdev { kind: File, guid: 15566128980896667499, rdev: None, children: [] }, Vdev { kind: File, guid: 9594193050309743229, rdev: None, children: [] }], special: 0, dedup: 0, other: 0, busy: None, removed: None })
+    ran: zpool status -P skzqr | zpool status -P -g skzqr
+layout remove-in-progress + remove-in-progress-g: Ok(Layout { data: [Vdev { kind: File, guid: 15566128980896667499, rdev: None, children: [] }, Vdev { kind: File, guid: 9594193050309743229, rdev: None, children: [] }], special: 0, dedup: 0, other: 0, busy: Some("remove: Evacuation of /mnt/skz-cli-record/r1.img in progress since Wed Nov 25 17:59:02 2026"), removed: Some("remove: Evacuation of /mnt/skz-cli-record/r1.img in progress since Wed Nov 25 17:59:02 2026") })
+    ran: zpool status -P skzqr | zpool status -P -g skzqr
+layout remove-done + remove-done-g: Ok(Layout { data: [Vdev { kind: File, guid: 15566128980896667499, rdev: None, children: [] }], special: 0, dedup: 0, other: 0, busy: None, removed: Some("remove: Removal of vdev 1 copied 387M in 0h0m, completed on Wed Nov 25 17:59:02 2026") })
+    ran: zpool status -P skzqr | zpool status -P -g skzqr
+layout none: Err(NoPool)
+    ran: zpool status -P skznone
+props none (+ none-status): Err(NoPool)
+    ran: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint skznone
+assist none: Err(Other("zfs set skyzfs:assist=1700000000001 skznone: exit 1: cannot open 'skznone': dataset does not exist"))
+    ran: zfs set skyzfs:assist=1700000000001 skznone
+snapshot none: Err(NoPool)
+    ran: zfs program -j -t 100000000 -m 104857600 skznone - skznone t skyzfs:assist
+members none: Err(NoPool)
+    ran: zfs program -n -j -t 100000000 -m 104857600 skznone - skznone t
+tagged none: Err(NoPool)
+    ran: zfs program -n -j -t 100000000 -m 104857600 skznone - skznone skyzfs-publish
+held none: Ok(false)
+    ran: zfs holds -H skznone@t
+hold none: Err(NoSnapshot)
+    ran: zfs hold -r skyzfs-publish skznone@t
+release none: Ok(())
+    ran: zfs release -r skyzfs-publish skznone@t
+nocacheflush: Ok(false)
+    ran: 
