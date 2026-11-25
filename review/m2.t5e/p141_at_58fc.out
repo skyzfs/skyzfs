@@ -46,3 +46,4 @@ R35	KILLED	parse: manifest-len unchecked (A5)	test_publish_agent.py
 R36	KILLED	ask look sends publish-progress (A4)	test_publish_agent.py
 R40	SURVIVED	pplain: t3's look before t5's	
 R41	KILLED	prewindf: f1 expires in 5 s	test_cut_record.sh
+R42	SURVIVED	prewindf: f1's end read within 3 s	
