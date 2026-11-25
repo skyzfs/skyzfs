@@ -2304,7 +2304,7 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
     let hook = {
         let (world, stopped_at, counts) = (world.clone(), stopped_at.clone(), counts.clone());
         let reached = Cell::new(0_u32);
-        move |point: Point| {
+        move |point: Point, _: &str| {
             let (mut holds, mut asks, mut releases) = counts.get();
             match (point.effect, point.after) {
                 (Effect::Hold, true) => holds += 1,

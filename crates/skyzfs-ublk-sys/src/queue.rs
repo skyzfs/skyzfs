@@ -370,8 +370,9 @@ impl Device {
     /// makes one only for the thread that made the control object: from
     /// any other thread the start panicked in the library ("Control ring
     /// not initialized"). So the calling thread's ring is made first, if
-    /// it has none ([`own_control_ring`]). The end of a recovery is sent
-    /// by the binding itself, on a ring of its own, and needs none.
+    /// it has none (`own_control_ring`, private to this module). The end
+    /// of a recovery is sent by the binding itself, on a ring of its own,
+    /// and needs none.
     pub fn start(&self) -> io::Result<()> {
         if self.take_over {
             // What the library's start does before its command: wait
