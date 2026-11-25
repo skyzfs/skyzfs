@@ -1,0 +1,16 @@
+[
+ {
+  "id": "N2",
+  "file": "publish_check.py",
+  "what": "a no-op (the harness itself)",
+  "verdict": "SURVIVED",
+  "by": []
+ },
+ {
+  "id": "N21",
+  "file": "cut-record.sh",
+  "what": "import_rewind_f: no ready mark",
+  "verdict": "SURVIVED",
+  "by": []
+ }
+]
