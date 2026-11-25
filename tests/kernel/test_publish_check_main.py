@@ -453,7 +453,11 @@ class Pins(unittest.TestCase):
                                                  ('publish', 'ended', 'f1 refused rewound')]))):
             rc, lines = run_course('prewindf', change)
             self.assertEqual((rc, lines['premise_f1_ended_by_a_rewind_cut'][0]), (2, 'ERROR'), why)
+        rc, lines = run_course('prewindf', write('rewind-f.txt', 'zeroed 3 copies of x\n== zpool import -FX\n'
+                                                                 'imported with -FX\n'))
+        self.assertEqual((rc, lines['premise_f1_import_f'][0]), (0, 'ok'))
         for text in ('zeroed 3 copies of the root block of group 55: x\n',
+                     'zeroed 3 copies of x\ncannot import: imported with -F was not\n',
                      'zeroed 0 copies of the root block of group 55: \nimported with -F\n', ''):
             rc, lines = run_course('prewindf', write('rewind-f.txt', text))
             self.assertEqual((rc, lines['premise_f1_import_f'][0]), (2, 'ERROR'), text)

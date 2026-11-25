@@ -652,14 +652,15 @@ zero_newest_root() {
     done
     printf 'zeroed %s copies of the root block of group %s: %s\n' "$n" "$(awk '$1 == "txg" { print $3; exit }' <<< "$ub")" "${dvas[*]}" > "$RDIR/rewind-f.txt"
 }
-rec_rewindf() {
-    create_pool
-    load 6
-    export_pool
-    zero_newest_root
-    # What zpool import sees, and the kernel's account of each attempt
-    # (run 43638676548: -F refused the pool as "one or more devices is
-    # currently unavailable" and nothing said why): -F, then -FX.
+# The import after zero_newest_root, a session of its own: what zpool
+# import sees, and the kernel's account of each attempt (run
+# 43638676548: -F refused the pool as "one or more devices is currently
+# unavailable" and nothing said why; the labels' config is of the
+# damaged group, newer than the best uberblock -F may go back to, and
+# -FX takes it): -F, then -FX. DIR/rewind-f.txt gets `imported with`
+# the option that imported, DIR/dbgmsg-F.txt and dbgmsg-FX.txt the
+# kernel's account (rewindf, prewindf).
+import_rewind_f() {
     { echo "== zpool import -d (the listing)"; timeout 120 zpool import -d "$DEV" 2>&1; } >> "$RDIR/rewind-f.txt"
     echo 1 > /sys/module/zfs/parameters/zfs_dbgmsg_enable
     session_begin
@@ -675,6 +676,13 @@ rec_rewindf() {
     [ -n "$how" ] || rig_error "zpool import -F and -FX failed: $(grep -v '^==' "$RDIR/rewind-f.txt" | tail -n 3 | tr '\n' ' ')"
     echo "imported with $how" >> "$RDIR/rewind-f.txt"
     mark "session-$SESSION-ready"
+}
+rec_rewindf() {
+    create_pool
+    load 6
+    export_pool
+    zero_newest_root
+    import_rewind_f
     committed | tail -n 3 | tr '\n' ' ' | sed 's/^/groups committed after the import: /' >> "$RDIR/rewind-f.txt"
     load 3
     export_pool
@@ -1670,10 +1678,12 @@ rec_prewind() {
 # cut (the lead's addition to M2.6a's rig; design §5.2). f1 is asked
 # with G far above its snapshot's, so that it pends. The pool is
 # exported, every copy of the newest group's root block is zeroed
-# (zero_newest_root, as rewindf), and the import with -F goes back past
-# it. The groups the import and the nudges then sync are not above the
-# highest the daemon saw before the export: rule (R) marks each such cut,
-# and the mark ends f1, waiting with a count below it. Its progress must
+# (zero_newest_root, as rewindf), and the import goes back past it
+# (import_rewind_f: -F, which the labels' config of the damaged group
+# refuses on the daemon, then -FX, as rewindf). The groups the import
+# and the nudges then sync are not above the highest the daemon saw
+# before the export: rule (R) marks each such cut, and the mark ends f1,
+# waiting with a count below it. Its progress must
 # read `refused rewound`, and f1 is never published (the check's
 # premise: the request log's `f1 refused rewound` as an end, after cuts
 # counted after f1's C whose group is not above the highest before).
@@ -1683,8 +1693,7 @@ rec_prewindf() {
     pflow f1 f1 --group-plus 1000000 --expiry-s 900 --limit-s 3
     export_pool
     zero_newest_root
-    import_pool -F
-    echo "imported with -F" >> "$RDIR/rewind-f.txt"
+    import_rewind_f
     pwait f1-end f1 300 sync
     load 1
     export_pool

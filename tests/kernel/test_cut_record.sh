@@ -477,15 +477,19 @@ is "pkillat: asking again records nothing (the take-over's request is refused)" 
 # prewindf: f1 pends, then the pool is exported, its newest root block
 # zeroed and imported with -F; f1's end is read after that, with the
 # pool synced between looks (the lead's addition to M2.6a's rig).
-is "prewindf: f1 pends, export, the root block zeroed, import -F, then f1's end" \
-    "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_pool -F|echo "imported with -F"|pwait f1-end)')" \
-    "pflow export_pool zero_newest_root import_pool echo pwait export_pool "
+is "prewindf: f1 pends, export, the root block zeroed, import -F (or -FX), then f1's end" \
+    "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_rewind_f|import_pool|pwait f1-end)')" \
+    "pflow export_pool zero_newest_root import_rewind_f pwait export_pool "
 is "prewindf: f1 is asked with G far above, so that it waits" \
     "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pflow f1 f1 --group-plus 1000000 ')" 1
 is "prewindf: f1's end is read with the pool synced between looks" \
     "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pwait f1-end f1 [0-9]* sync$')" 1
-is "rewindf zeroes the root block as prewindf does" \
-    "$(order_of rec_rewindf '^    (export_pool|zero_newest_root|session_begin)')" "export_pool zero_newest_root session_begin export_pool "
+is "rewindf zeroes the root block and imports as prewindf does" \
+    "$(order_of rec_rewindf '^    (export_pool|zero_newest_root|import_rewind_f|committed)')" \
+    "export_pool zero_newest_root import_rewind_f committed export_pool "
+ir_fn=$(sed -n '/^import_rewind_f() {$/,/^}$/p' "$SCRIPT")
+is "import_rewind_f tries -F, then -FX, and says which imported" \
+    "$(grep -cE '^    for opt in -F -FX; do$|^    echo "imported with \$how" >> "\$RDIR/rewind-f.txt"$' <<< "$ir_fn")" 2
 is "prewindf is a publish course by name" \
     "$(grep -c '^PUBLISH_NAMED=".* prewindf .*"$' "$SCRIPT")" 1
 

@@ -31,7 +31,8 @@ What the course left in DIR:
 - rewind-top.txt (prewind): the group of the daemon's newest cut before
   the rewind, from `cuts` (the abandoned history's top);
 - rewind-f.txt (prewindf): what was zeroed of the newest group's root
-  block, and `imported with -F`;
+  block, and `imported with -F` or `-FX` (on the daemon -F alone is
+  refused: the labels' config is of the damaged group);
 - channel-status.txt and socket-mode.txt (pchannel): the status after
   the channel's requests, whose counts (COUNTS) must be exact, and the
   socket's mode before the rig widened it for the peer, which must be
@@ -98,8 +99,8 @@ of #139):
   waiting: that rests on the unit tests of skyzfs-upload's publish and
   on the cut rig, which judges each cut's opening against the kernel
   (#140's review, N1).
-- prewindf: the import was made with -F after the newest group's root
-  block was zeroed (DIR/rewind-f.txt), and the request log ends f1
+- prewindf: the import was made with -F or -FX after the newest
+  group's root block was zeroed (DIR/rewind-f.txt), and the request log ends f1
   `refused rewound` (a `publish ended` line) after a cut counted after
   f1's C whose group is not above the groups of the instance's cuts
   before it.
@@ -686,7 +687,8 @@ def main():
                 raise RigError('no request of f1 in published.tsv')
             damage = text_of('rewind-f.txt')
             zeroed = damage.split()[1] if damage.startswith('zeroed ') and len(damage.split()) > 1 else ''
-            premise('premise_f1_import_f', zeroed.isdigit() and int(zeroed) > 0 and 'imported with -F' in damage,
+            premise('premise_f1_import_f', zeroed.isdigit() and int(zeroed) > 0 and
+                    any(ln in ('imported with -F', 'imported with -FX') for ln in damage.splitlines()),
                     flat(damage)[:300] or 'rewind-f.txt is empty')
             found, grounds = rewound_grounds(instances, 'f1', f1['after'], 'ended')
             premise('premise_f1_ended_by_a_rewind_cut', found and bool(grounds),
