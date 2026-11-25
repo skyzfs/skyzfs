@@ -2,8 +2,8 @@
 """The agent's side of a publish, stood in for (M2.T3, the channel rig).
 
 The agent proper is M2.6's. This stand-in follows the daemon's channel
-as `bins/skyzfsd/src/control.rs`'s module documentation gives it
-(protocol version 1) and design §5.2, "A snapshot is published by a cut
+as `crates/skyzfs-control/src/lib.rs`'s crate documentation gives it
+(protocol version 2) and design §5.2, "A snapshot is published by a cut
 of the pool's present history":
 
 1. `cuts`: the attachment A, the cut state S and the count C;
@@ -52,7 +52,7 @@ import subprocess
 import sys
 import time
 
-HELLO = 'skyzfs-control 1'
+HELLO = 'skyzfs-control 2'
 ENDS = ('done', 'expired', 'withdrawn', 'unknown')
 
 

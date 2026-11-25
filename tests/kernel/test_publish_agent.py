@@ -210,19 +210,19 @@ class Raw(unittest.TestCase):
                         break
                     data += b
                 got.append(data)
-                c.sendall(b'skyzfs-control 1\nrefused version not 1\n')
+                c.sendall(b'skyzfs-control 2\nrefused version not 2\n')
                 c.close()
             th = threading.Thread(target=serve)
             th.start()
             log = os.path.join(d, 'agent.tsv')
-            self.assertEqual(pa.raw(d, log, 'version', b'skyzfs-control 9\ncuts\n'), 'refused version not 1')
+            self.assertEqual(pa.raw(d, log, 'version', b'skyzfs-control 9\ncuts\n'), 'refused version not 2')
             th.join(10)
             srv.close()
             self.assertEqual(got, [b'skyzfs-control 9\ncuts\n'])
             with open(log) as f:
-                self.assertEqual(f.read().split('\t')[2:], ['raw version', '1', 'refused version not 1\n'])
+                self.assertEqual(f.read().split('\t')[2:], ['raw version', '1', 'refused version not 2\n'])
 
-    REQUEST = b'skyzfs-control 1\ncuts\n'
+    REQUEST = b'skyzfs-control 2\ncuts\n'
 
     def serve_unread(self, d, answer):
         """A daemon that answers and closes without reading the request,
@@ -253,7 +253,7 @@ class Raw(unittest.TestCase):
 
     def test_an_answer_before_a_reset_is_the_answer(self):
         with tempfile.TemporaryDirectory() as d:
-            th = self.serve_unread(d, b'skyzfs-control 1\nrefused peer this daemon answers its own user\n')
+            th = self.serve_unread(d, b'skyzfs-control 2\nrefused peer this daemon answers its own user\n')
             log = os.path.join(d, 'agent.tsv')
             answer = pa.raw(d, log, 'peer', self.REQUEST)
             th.join(10)
@@ -328,7 +328,7 @@ class Raw(unittest.TestCase):
     def test_an_answer_before_the_client_writes_is_the_answer(self):
         with tempfile.TemporaryDirectory() as d:
             closed = threading.Event()
-            th = self.serve_first(d, b'skyzfs-control 1\nrefused peer this daemon answers its own user\n', closed)
+            th = self.serve_first(d, b'skyzfs-control 2\nrefused peer this daemon answers its own user\n', closed)
             log = os.path.join(d, 'agent.tsv')
             with self.late_writer(closed):
                 answer = pa.raw(d, log, 'peer', self.REQUEST)
@@ -351,23 +351,26 @@ class Raw(unittest.TestCase):
         """As skyzfsd's own `ask` takes it (#139's review, N5)."""
         cases = [
             (b'', ''),
-            (b'skyzfs-control 1\nrefused peer x\n', 'refused peer x'),
-            (b'skyzfs-control 1\nrefused peer x\nmore\n', 'refused peer x'),
+            (b'skyzfs-control 2\nrefused peer x\n', 'refused peer x'),
+            # A greeting of another version is not the greeting: its line is
+            # the answer, which the check takes for no answer it expects.
+            (b'skyzfs-control 1\nrefused peer x\n', 'skyzfs-control 1'),
+            (b'skyzfs-control 2\nrefused peer x\nmore\n', 'refused peer x'),
             (b'cuts 1\n', 'cuts 1'),
-            (b'skyzfs-control 1\nrefused peer this daem', 'no answer line: skyzfs-control 1\\nrefused peer this daem'),
+            (b'skyzfs-control 2\nrefused peer this daem', 'no answer line: skyzfs-control 2\\nrefused peer this daem'),
             (b'refused peer this daem', 'no answer line: refused peer this daem'),
-            (b'skyzfs-control 1\n', 'no answer line: skyzfs-control 1\\n'),
-            (b'skyzfs-control 1\na\tb', 'no answer line: skyzfs-control 1\\na\\tb'),
+            (b'skyzfs-control 2\n', 'no answer line: skyzfs-control 2\\n'),
+            (b'skyzfs-control 2\na\tb', 'no answer line: skyzfs-control 2\\na\\tb'),
         ]
         for got, want in cases:
             self.assertEqual(pa.answer_of(got), want, got)
 
     def test_a_cut_short_answer_is_served_as_no_answer_line(self):
         with tempfile.TemporaryDirectory() as d:
-            th = self.serve_unread(d, b'skyzfs-control 1\nrefused peer this daem')
+            th = self.serve_unread(d, b'skyzfs-control 2\nrefused peer this daem')
             log = os.path.join(d, 'agent.tsv')
             self.assertEqual(pa.raw(d, log, 'peer', self.REQUEST),
-                             'no answer line: skyzfs-control 1\\nrefused peer this daem')
+                             'no answer line: skyzfs-control 2\\nrefused peer this daem')
             th.join(10)
 
     def test_not_one_socket_is_the_rigs_error(self):

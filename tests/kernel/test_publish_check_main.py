@@ -155,7 +155,7 @@ COURSES = {
                   'm1-between.txt': 'ref\tnone\nsnaprow\tnone\n'},
     },
     'pchannel': {
-        'ends': {'nu': 'refused no-upload', 'version': 'refused version not 1',
+        'ends': {'nu': 'refused no-upload', 'version': 'refused version not 2',
                  'malformed': 'refused malformed', 'name': 'refused name', 'peer': 'refused peer its own user',
                  'cuts': 'cuts 3'},
         'requests': {},

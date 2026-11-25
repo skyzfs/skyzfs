@@ -1696,7 +1696,7 @@ ppeer() {
     tmp=$(mktemp -d)
     cp "$HERE/publish_agent.py" "$tmp/"
     chmod 0755 "$tmp"; chmod 0644 "$tmp/publish_agent.py"; chown nobody "$tmp"
-    out=$(printf 'skyzfs-control 1\ncuts\n' | runuser -u nobody -- python3 -I "$tmp/publish_agent.py" raw "$sock" \
+    out=$(printf 'skyzfs-control 2\ncuts\n' | runuser -u nobody -- python3 -I "$tmp/publish_agent.py" raw "$sock" \
         "$tmp/agent.tsv" peer 2>> "$RDIR/agent.err") || rc=$?
     cat "$tmp/agent.tsv" >> "$RDIR/agent.tsv" 2>/dev/null || true
     rm -rf "${tmp:?}"
@@ -1722,9 +1722,9 @@ rec_pchannel() {
     drain balance-start.txt idle 1
     import_pool
     praw version 'skyzfs-control 9\ncuts\n'
-    praw malformed 'skyzfs-control 1\ncuts extra=1\n'
-    praw name 'skyzfs-control 1\nprogress name=a/b\n'
-    praw cuts 'skyzfs-control 1\ncuts\n'
+    praw malformed 'skyzfs-control 2\ncuts extra=1\n'
+    praw name 'skyzfs-control 2\nprogress name=a/b\n'
+    praw cuts 'skyzfs-control 2\ncuts\n'
     ppeer
     # The peer is the last connection counted, and each post holds every
     # count so far: once it shows, the malformed ones do too.
