@@ -19,7 +19,7 @@
 //! name.
 //!
 //! Where there is no head, the create first writes the superblock with
-//! the condition that there is none ([`reserve`]), and goes on to make
+//! the condition that there is none (`reserve`), and goes on to make
 //! the volume only where it wrote it or the one there is of its size
 //! and shards. Of two creates of the name at once, of two sizes, one is
 //! refused before it writes anything, and the superblock is the
@@ -30,7 +30,7 @@
 //! between its superblock and its head leaves the superblock: the next
 //! create of that size goes on, and one of another size is refused, as
 //! for a volume of that size, with the object to delete to free the name
-//! in its message ([`refused_over`]). This module's reading, which the
+//! in its message (`refused_over`). This module's reading, which the
 //! lead accepted: the design does not say how two creates of a name
 //! meet. A `create --replace` that would delete it is for later.
 //!
@@ -64,7 +64,7 @@
 //! uploader. The store stays on the queue's thread: the uploader's calls
 //! go through a desk (`skyzfs_upload::Desk`) that the queue's thread
 //! answers after each turn. After each turn the uploader posts what the
-//! status shows ([`shown`]).
+//! status shows (`shown`).
 //!
 //! Between its turns it answers the daemon's channel ([`crate::control`],
 //! M2.5-2) through an inbox ([`Publishes`]): the count of cuts, and the
@@ -781,7 +781,7 @@ impl Uploads {
     /// epoch the lease holds when its first turn makes it.
     ///
     /// `kill` is `serve --kill-at-upload`, which only a build with the
-    /// test hooks takes ([`crate::kill`]); a default build has none.
+    /// test hooks takes (`crate::kill`); a default build has none.
     pub fn begin(
         self,
         desk: Arc<Desk>,
@@ -804,7 +804,7 @@ impl Uploads {
 
 /// What is told of each publish that ends, after its line on standard
 /// error: the request log's `ended` line in a build with the test hooks
-/// ([`crate::record`]), nothing otherwise.
+/// (`crate::record`), nothing otherwise.
 pub type Told = Box<dyn FnMut(&str, &Progress) + Send>;
 
 /// What the uploader's thread publishes from: the attachment the daemon

@@ -3,6 +3,7 @@
 //! with bpaf — run `skynbd-agent --help` (or `<command> --help`) for
 //! the full usage; the shapes are:
 //!
+//! ```text
 //! Snapshot cycle (config-driven):
 //!   run | once | status | state-dump | abort | preflight | debug-delta
 //!     | debug-reclaim | debug-enumerate | debug-swing | debug-sweep
@@ -16,8 +17,9 @@
 //!             [--api URL] [--nbd HOST[:PORT]] [--fstype FS] [--tls]
 //!             [--tls-hostname H] [--token-file F] [--state-dir D]
 //!   unmount   <dir> [--state-dir D]
+//! ```
 //!
-//! `--thin` delegates to the resident agent's [mounts] control socket
+//! `--thin` delegates to the resident agent's `[mounts]` control socket
 //! (`<state-dir>/ctl.sock`): the daemon stages the CSI-parity
 //! publish-only stack and owns its embedded publish cycle.
 
@@ -361,7 +363,7 @@ struct MountArgs {
     clone_new: Option<String>,
     /// Stage a publish-only thin stack (origin-advance §5) via the
     /// resident agent's control socket — requires `skynbd-agent run`
-    /// with a [mounts] config section; the daemon owns the stack and
+    /// with a `[mounts]` config section; the daemon owns the stack and
     /// its publish cycle, so the mount survives this terminal
     #[bpaf(long)]
     thin: bool,
@@ -382,7 +384,7 @@ struct MountArgs {
     )]
     state_dir: PathBuf,
     /// Resident agent control socket for `--thin` (default
-    /// <state-dir>/ctl.sock; match the daemon's `[mounts].socket`
+    /// `<state-dir>/ctl.sock`; match the daemon's `[mounts].socket`
     /// when it is set)
     #[bpaf(long, argument("PATH"))]
     socket: Option<PathBuf>,
@@ -480,7 +482,7 @@ enum Cmd {
         #[bpaf(positional("SNAPSHOT"))]
         snapshot: String,
     },
-    /// Recover a crashed debug-swing: the <state_dir>/<volume>.flip
+    /// Recover a crashed debug-swing: the `<state_dir>/<volume>.flip`
     /// marker is the §7 durable discriminator — present, slot A is
     /// garbage and B is finished; absent, slot B is garbage
     #[bpaf(command("debug-sweep"))]
@@ -545,7 +547,7 @@ enum Cmd {
             fallback(PathBuf::from("/var/lib/skynbd-agent"))
         )]
         state_dir: PathBuf,
-        /// Resident agent control socket (default <state-dir>/ctl.sock;
+        /// Resident agent control socket (default `<state-dir>/ctl.sock`;
         /// match the daemon's `[mounts].socket` when it is set)
         #[bpaf(long, argument("PATH"))]
         socket: Option<PathBuf>,

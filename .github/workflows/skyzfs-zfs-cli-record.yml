@@ -1,0 +1,148 @@
+name: skyzfs-zfs-cli-record
+
+# Recorded outputs of the ZFS commands the agent's ZFS adapter runs, for
+# its fixtures (the M2.6 plan's Q10): zpool status and get, the holds,
+# the three `zfs program` scripts, on a pool on a ublk device with a log,
+# a mirror of files, and a pool that does not exist. Records only: the
+# job is green unless the script could not set up. All the logic is
+# tests/kernel/zfs-cli-record.sh; the artifact is a tarball of its
+# records. Dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      lua_ref:
+        description: "a full commit id or a branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run, resolved once for every image. Empty: 0f709ae (#147)"
+        default: ""
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04"]'
+      scale:
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs, within 80 minutes in all. Empty: none"
+        default: ""
+      scale_lua_max:
+        description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
+        default: ""
+  # A dispatch from a branch needs the workflow to have run once: a push
+  # runs the unit tests only, and records nothing (the record job is
+  # dispatch only). ci.yml runs the unit tests on a pull request.
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/zfs-cli-record.sh
+      - tests/kernel/test_zfs_cli_record.sh
+      - tests/kernel/dsync_writer.py
+      - tests/kernel/test_dsync_writer.py
+      - tests/kernel/txg_probe.py
+      - tests/kernel/test_txg_probe.py
+      - .github/workflows/skyzfs-zfs-cli-record.yml
+
+concurrency:
+  group: zfs-cli-record-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: bash tests/kernel/test_zfs_cli_record.sh
+      - run: python3 tests/kernel/test_dsync_writer.py
+      - run: python3 tests/kernel/test_txg_probe.py
+
+  # The Lua's commit, resolved once, so that every image runs the same.
+  lua:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: resolve
+        env:
+          LUA_REF: ${{ inputs.lua_ref || '0f709ae015eae55b116ec9cc3bb9ffe340973d0c' }}
+        run: |
+          case $LUA_REF in
+            -*|*[!A-Za-z0-9._/-]*|'') echo "::error::lua_ref is a full commit id or a branch: $LUA_REF"; exit 64 ;;
+          esac
+          git fetch --quiet --depth=1 origin "$LUA_REF"
+          echo "commit=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+
+  record:
+    name: ${{ matrix.image }}
+    needs: [unit, lua]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
+    env:
+      IMAGE: ${{ matrix.image }}
+      LUA_REF: ${{ needs.lua.outputs.commit }}
+      ZCR_SCALE: ${{ inputs.scale }}
+      ZCR_SCALE_LUA_MAX: ${{ inputs.scale_lua_max }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: The adapter's programs
+        run: |
+          case $LUA_REF in
+            *[!0-9a-f]*|'') echo "::error::not a commit id: $LUA_REF"; exit 64 ;;
+          esac
+          git fetch --quiet --depth=1 origin "$LUA_REF"
+          mkdir -p lua
+          for f in snapshot members tagged; do
+            git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
+          done
+      - name: Record
+        run: |
+          case $ZCR_SCALE in
+            *[!0-9\ ]*) echo "::error::scale is counts separated by spaces: $ZCR_SCALE"; exit 64 ;;
+          esac
+          read -ra counts <<< "$ZCR_SCALE"
+          [ "${#counts[@]}" -le 3 ] || { echo "::error::scale: at most three counts"; exit 64; }
+          for n in "${counts[@]}"; do
+            case $n in 0*) echo "::error::scale: not a count: $n"; exit 64 ;; esac
+            if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then echo "::error::scale: $n is more than 100000"; exit 64; fi
+          done
+          case $ZCR_SCALE_LUA_MAX in
+            *[!0-9]*|0?*) echo "::error::scale_lua_max is a count: $ZCR_SCALE_LUA_MAX"; exit 64 ;;
+          esac
+          if [ "${#ZCR_SCALE_LUA_MAX}" -gt 6 ]; then echo "::error::scale_lua_max: at most 999999"; exit 64; fi
+          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+      - name: Tarball and summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX zfs-cli 2>/dev/null || true
+          tar -czf "zfs-cli-$IMAGE.tar.gz" zfs-cli 2>/dev/null || true
+          {
+            echo "## ZFS command outputs, $IMAGE"
+            echo
+            sed 's/^/    /' zfs-cli/about.txt 2>/dev/null
+            [ -e zfs-cli/setup-failed.txt ] && echo "**Setup failed:** $(cat zfs-cli/setup-failed.txt)"
+            echo
+            echo "| record | rc | note |"
+            echo "|---|---|---|"
+            cut -f1-3 zfs-cli/index.tsv 2>/dev/null | sed 's/|/\//g; s/\t/ | /g; s/^/| /; s/$/ |/'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: zfs-cli-${{ matrix.image }}
+          path: zfs-cli-${{ matrix.image }}.tar.gz
+          retention-days: 90
