@@ -455,6 +455,7 @@ impl World {
                 dedup: 0,
                 other: 0,
                 busy: None,
+                removed: None,
             },
             next_txg: None,
         });
@@ -971,7 +972,7 @@ impl World {
                 );
             }
             let local = if kind == Kind::Volume {
-                BTreeMap::from([("volsize".to_string(), "1073741824".to_string())])
+                BTreeMap::from([("volsize".to_string(), b"1073741824".to_vec())])
             } else {
                 BTreeMap::new()
             };

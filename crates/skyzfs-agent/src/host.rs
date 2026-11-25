@@ -9,18 +9,46 @@
 //! A command on a suspended pool may never return, and cannot be killed
 //! while it waits in the kernel (CLAUDE.md, "A command on a suspended
 //! pool"). So [`System::run`] never waits for a child without a limit:
-//! past it, the child is sent `SIGKILL` and left to a thread that reaps
-//! it whenever it ends, and its output is left to the threads that read
-//! it; the call returns `TimedOut` at once. Such a child holds a process
-//! slot and two threads until it ends. `timeout(1)` would not do: it
-//! waits for its child.
+//! past it, the child's process group (the child leads one of its own,
+//! so that what it started goes too) is sent `SIGKILL`, the child is
+//! left to a thread that reaps it whenever it ends, and its output is
+//! left to the threads that read it; the call returns `TimedOut` at once.
+//! The same is done when the look at the child fails. Such a child holds
+//! a process slot and three threads until it ends (the reaper and the
+//! two readers), four while its standard input is not all written.
+//! `timeout(1)` would not do: it waits for its child.
+//!
+//! Children left so are counted while they run. At [`STUCK_MAX`] of
+//! them, [`System::run`] refuses to start another with the error
+//! [`STUCK`] (kind `WouldBlock`), so that a pool that holds every
+//! command does not take a slot and threads per call without end; the
+//! agent reports it as a failed call, and a later run tries again (the
+//! lead's L3 on #147). The cap is small and fixed: the agent runs one
+//! command at a time, so four held means the pool is not answering.
 
 use std::io::{self, Read, Write};
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// The most children left running past their limit before
+/// [`System::run`] refuses to start another ([module docs](self)).
+pub const STUCK_MAX: usize = 4;
+
+/// The words of the error [`System::run`] gives at [`STUCK_MAX`].
+pub const STUCK: &str = "commands that did not end are still running";
+
+/// The children left running past their limit ([module docs](self)).
+static STUCK_NOW: AtomicUsize = AtomicUsize::new(0);
+
+/// The children left running past their limit, now.
+pub fn stuck() -> usize {
+    STUCK_NOW.load(Ordering::SeqCst)
+}
 
 /// The most of a program's standard output, or of its standard error,
 /// that is read: more is an error.
@@ -82,10 +110,23 @@ impl Host for System {
         stdin: &[u8],
         limit: Duration,
     ) -> io::Result<Output> {
-        let until = Instant::now() + limit;
+        let until = Instant::now().checked_add(limit).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a limit of {} s is too long", limit.as_secs_f64()),
+            )
+        })?;
+        let held = stuck();
+        if held >= STUCK_MAX {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("{STUCK}: {held}, the most there may be"),
+            ));
+        }
         let mut child = Command::new(program)
             .args(args)
             .env("LC_ALL", "C")
+            .process_group(0)
             .stdin(if stdin.is_empty() {
                 Stdio::null()
             } else {
@@ -109,8 +150,13 @@ impl Host for System {
         let stderr = drain(child.stderr.take());
         let mut pause = Duration::from_millis(1);
         let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => {
+                    abandon(child);
+                    return Err(e);
+                }
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -193,14 +239,26 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<io::Result<
     receive
 }
 
-/// Kill `child` and leave it to a thread that reaps it when it ends,
-/// which a child in the kernel's wait may never do ([module
-/// docs](self)).
+/// Kill `child`'s process group and leave the child to a thread that
+/// reaps it when it ends, which a child in the kernel's wait may never
+/// do; it is counted in [`stuck`] until then ([module docs](self)).
 fn abandon(mut child: Child) {
+    let group = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw);
+    if let Some(group) = group {
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+    }
+    // The child itself, should the group's kill have failed.
     let _ = child.kill();
-    thread::spawn(move || {
+    STUCK_NOW.fetch_add(1, Ordering::SeqCst);
+    let reaper = thread::Builder::new().spawn(move || {
         let _ = child.wait();
+        STUCK_NOW.fetch_sub(1, Ordering::SeqCst);
     });
+    if reaper.is_err() {
+        // No thread to reap it: it stays counted, as it may never end.
+    }
 }
 
 #[cfg(test)]

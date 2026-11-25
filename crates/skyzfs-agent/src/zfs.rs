@@ -13,8 +13,9 @@
 //!   device is the volume's (its device number, `st_rdev`, is the one
 //!   of the daemon's `/dev/ublkbN`);
 //! - there is no special or dedup vdev;
-//! - no resilver, rebuild or removal is under way, and no vdev was
-//!   removed (no indirect vdev: conservative);
+//! - no resilver or rebuild is under way, and `zpool status` shows no
+//!   `remove:` line: no vdev is being removed or was ever removed (the
+//!   lead's L4 on #147; `zpool status` never shows an indirect vdev);
 //! - the pool and the leaf are the ones the agent enrolled, where it
 //!   has enrolled one (the lead's Q4);
 //! - `multihost=off`, there is no checkpoint, the pool is not read-only,
@@ -51,6 +52,9 @@ pub struct Layout {
     /// A resilver, rebuild or removal under way, in words; `None` where
     /// there is none.
     pub busy: Option<String>,
+    /// The `remove:` line of a vdev removal, under way or done; `None`
+    /// where there is none.
+    pub removed: Option<String>,
 }
 
 /// A vdev.
@@ -119,8 +123,10 @@ pub enum Refusal {
     },
     /// A special or dedup vdev.
     Class,
-    /// A resilver, rebuild or removal under way, or a vdev removed.
+    /// A resilver, rebuild or removal under way.
     Busy(String),
+    /// A vdev removed, or being removed (its `remove:` line).
+    Removed(String),
     /// Another pool or leaf than the one enrolled.
     Enrolled,
     /// `multihost=on`.
@@ -143,6 +149,7 @@ impl fmt::Display for Refusal {
             },
             Refusal::Class => write!(f, "the pool has a special or dedup vdev"),
             Refusal::Busy(what) => write!(f, "{what}"),
+            Refusal::Removed(what) => write!(f, "a vdev was removed: {what}"),
             Refusal::Enrolled => write!(f, "not the pool and leaf the agent enrolled"),
             Refusal::Multihost => write!(f, "multihost is on"),
             Refusal::Checkpoint => write!(f, "the pool has a checkpoint"),
@@ -181,6 +188,9 @@ pub fn premise(
     }
     if let Some(what) = &layout.busy {
         return Err(Refusal::Busy(what.clone()));
+    }
+    if let Some(what) = &layout.removed {
+        return Err(Refusal::Removed(what.clone()));
     }
     if let Some(enrolled) = enrolled {
         if enrolled.pool != pool
