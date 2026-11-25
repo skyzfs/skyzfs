@@ -600,19 +600,7 @@ async fn move_head(a: &Args) -> Result<u8, String> {
         "none" => None,
         g => Some(number("--group", g)?),
     };
-    let row = match a.row.as_str() {
-        "" => None,
-        r => match row_spec(r)? {
-            spec @ (RowSpec::V1(_) | RowSpec::Bytes(_) | RowSpec::WithCommit(_)) => {
-                row_value(&spec, None)?
-            }
-            _ => {
-                return Err(format!(
-                    "move-head --row {r}: only v1:, hex: and STATE:NUMBER:GROUP:COMMIT, which do not name the head being written"
-                ))
-            }
-        },
-    };
+    let row = move_head_row(&a.row)?;
     let commit = row
         .as_deref()
         .and_then(decode_row)
@@ -636,6 +624,25 @@ async fn move_head(a: &Args) -> Result<u8, String> {
             println!("row\tset\t{}\nrow_commit\t{commit}", a.row);
         }
     }))
+}
+
+/// move-head's `--row` -> the row's bytes to write with the commit, or
+/// None for no `--row`. Only the forms whose bytes are known before the
+/// commit: `v1:`, `hex:` and `STATE:NUMBER:GROUP:COMMIT`.
+/// `STATE:NUMBER:GROUP` names the head being written, and `none` would
+/// delete the row: both are refused.
+fn move_head_row(r: &str) -> Result<Option<Vec<u8>>, String> {
+    if r.is_empty() {
+        return Ok(None);
+    }
+    match row_spec(r)? {
+        spec @ (RowSpec::V1(_) | RowSpec::Bytes(_) | RowSpec::WithCommit(_)) => row_value(&spec, None),
+        _ => Err(format!(
+            "move-head --row {r}: only v1:, hex: and STATE:NUMBER:GROUP:COMMIT, whose bytes are known \
+             before the commit (STATE:NUMBER:GROUP would name the head being written, and none would \
+             delete the row)"
+        )),
+    }
 }
 
 /// `Some(x)` -> print it and 0; `None` (the expected row did not hold)
@@ -687,6 +694,9 @@ async fn move_head_on<S: ObjectStore + Clone + 'static>(
     expect: Option<Option<Vec<u8>>>,
     row: Option<Vec<u8>>,
 ) -> Result<Option<[u8; 32]>, String> {
+    // Only a guard turns a lost swap of head into "the row moved": an
+    // unguarded --row also makes an op, and its lost swap is an error.
+    let guarded = expect.is_some();
     let ops = row_op(expect, row)?;
     let mut eng = Engine::open(store, refs, vol, EngineConfig::default())
         .await
@@ -694,11 +704,20 @@ async fn move_head_on<S: ObjectStore + Clone + 'static>(
     eng.write(at, &[0x5a; BLOCK])
         .map_err(|e| format!("write at {at}: {e}"))?;
     eng.set_group(group);
-    let guarded = ops.is_some();
     let done = match ops {
         Some(op) => eng.commit_with(CommitKind::Flush, vec![op]).await,
         None => eng.commit(CommitKind::Flush).await,
     };
+    commit_outcome(done, guarded)
+}
+
+/// What move-head's commit came to: head's new commit; None where the
+/// guard did not hold (the row moved, or head with it); an error for
+/// any other failure, a lost swap of head without a guard included.
+fn commit_outcome(
+    done: Result<[u8; 32], EngineError>,
+    guarded: bool,
+) -> Result<Option<[u8; 32]>, String> {
     match done {
         Ok(head) => Ok(Some(head)),
         // The row, or head with it (a daemon's commit moves both): what
@@ -968,7 +987,10 @@ mod tests {
             let named = row::decode(&v1).expect("the uploader reads a row of version 1");
             assert_eq!((named.cut, named.commit), (cut, None));
             let read = decode_row(&v1).expect("node B reads a row of version 1");
-            assert_eq!(read.commit, None);
+            assert_eq!(
+                (read.state, read.number, read.group, read.commit),
+                (state, number, group, None)
+            );
         }
         assert_eq!(row::ROW_LEN, ROW_LEN_V2);
         assert_eq!(row::ROW_V1_LEN, ROW_LEN_V1);
@@ -1247,6 +1269,86 @@ mod tests {
     /// with head moved by another writer). Under a guard that no longer
     /// holds, neither moves. The forms that name the head being written
     /// are refused.
+    #[test]
+    fn move_head_takes_the_row_forms_known_before_the_commit() {
+        let s = "cd".repeat(16);
+        let c = "ef".repeat(32);
+        assert_eq!(move_head_row(""), Ok(None));
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1: is taken");
+        assert_eq!(v1.as_ref().map(Vec::len), Some(ROW_LEN_V1));
+        assert_eq!(move_head_row("hex:0102"), Ok(Some(vec![1, 2])));
+        let v2 = move_head_row(&format!("{s}:3:40:{c}")).expect("a named commit is taken");
+        assert_eq!(
+            v2.as_deref().and_then(decode_row).and_then(|r| r.commit),
+            Some([0xef; 32])
+        );
+        for r in [format!("{s}:3:40"), "none".to_string()] {
+            let err = move_head_row(&r).expect_err("refused");
+            assert!(err.contains("only v1:"), "{err}");
+        }
+        assert!(move_head_row("none")
+            .unwrap_err()
+            .contains("none would delete the row"));
+    }
+
+    #[test]
+    fn a_lost_swap_of_head_is_the_row_moved_only_under_a_guard() {
+        let h = [7u8; 32];
+        assert_eq!(commit_outcome(Ok(h), false), Ok(Some(h)));
+        assert_eq!(commit_outcome(Ok(h), true), Ok(Some(h)));
+        for guarded in [false, true] {
+            let op = Err(EngineError::OpConflict { op_index: 0 });
+            assert_eq!(commit_outcome(op, guarded), Ok(None));
+        }
+        assert_eq!(commit_outcome(Err(EngineError::Conflict), true), Ok(None));
+        // Without a guard, --row still makes an op (a put): its lost swap
+        // of head is an error, not "the expected row did not hold" (the
+        // review of #137, N2).
+        assert!(commit_outcome(Err(EngineError::Conflict), false).is_err());
+    }
+
+    #[tokio::test]
+    async fn move_head_writes_head_and_the_row_in_one_transaction() {
+        let (store, _, vol, _) = put_small("move-row-one").await;
+        let faults = skynbd_store::FaultStore::new(store);
+        let refs = Arc::new(ObjectRefStore::new(faults.clone()));
+        let s = "cd".repeat(16);
+        let before = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        let v2 = row_value(&row_spec(&format!("{s}:3:40")).unwrap(), Some(before)).unwrap();
+        assert_eq!(set_row_on(&refs, vol, v2.clone(), None).await, Ok(true));
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1");
+        // One write of the refs object is allowed; a second fails.
+        faults
+            .arm(skynbd_store::FaultOp::Put, &skynbd_refs::refs_key(vol), 1)
+            .await;
+        let moved = move_head_on(
+            faults.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(40),
+            Some(v2),
+            v1.clone(),
+        )
+        .await
+        .expect("head and the row in one write of the refs object");
+        faults.disarm().await;
+        let fresh = ObjectRefStore::new(faults.inner().clone());
+        let now = fresh
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        assert!(moved.is_some_and(|h| h == now) && now != before);
+        assert_eq!(fresh.meta_get(vol, ROW_KEY).await.expect("meta_get"), v1);
+    }
+
     #[tokio::test]
     async fn move_head_writes_the_row_in_the_same_commit() {
         let (store, refs, vol, _) = put_small("move-row").await;
