@@ -23,25 +23,24 @@
 | 45660525287 | `51fe64e` | 24.04, 26.04 | 366b217 | no delay yet |
 | 45661959490 | `b2166b9` | 24.04 (AWS kernel), 26.04 | 366b217 | delay refused (no `zinject`) |
 | 45663170240 | `3281028` | 26.04 | 366b217 | delay took |
-| 45665823917 | `0b394b2` | 26.04 (24.04 still running) | **0f709ae** | delay took; arrived during the look |
+| 45665823917 | `0b394b2` | 24.04, 26.04 | **0f709ae** | delay took; arrived during the look |
 
 - In the first three runs the `.lua` copies are byte-identical to `366b217`'s.
 - **A fourth run came in during the look.** Dispatch 45665823917 ran at `0b394b2`, with `lua_ref` `skyzfs-coding-m2.6c-2`.
-  - The `lua` job resolved that to `0f709ae`, and `about.txt` says `lua from 0f709ae…`.
-  - Its 26.04 job is green (17:50-17:59Z) and is judged below as the fourth recording. **It is the first run of #147's current `snapshot.lua` on ZFS.**
-  - Its 24.04 job was still running at 18:05Z, so that half is not judged.
-- Dispatch 45666280714 at `dd75e16` was queued behind it, so no recording at `dd75e16` exists yet.
+  - The `lua` job resolved that to `0f709ae`, and `about.txt` says `lua from 0f709ae…`. The `.lua` copies in both artifacts are byte-identical to `0f709ae`'s.
+  - Both image jobs are green (26.04 17:50-17:59Z, 24.04 17:54-18:06Z), and both are judged below. **It is the first run of #147's current `snapshot.lua` on ZFS.**
+- Dispatch 45666280714 at `dd75e16` was queued behind it and started at 18:06Z. No recording at `dd75e16` existed when this was written.
 
 ## Verdict
 
 **No finding blocks the merge. It can merge once three things hold:**
 
-1. CI is green on `dd75e16`. Everything but the daemon and replay rigs is green; those were still running at 18:04Z.
-2. One recording dispatch at `dd75e16` is green. `dd75e16` changes `rec`, which every record goes through, and no dispatch has run at it yet; 45666280714 is queued.
+1. CI is green on `dd75e16`. Everything but the daemon and replay rigs is green; those were still running at 18:07Z.
+2. One recording dispatch at `dd75e16` is green. `dd75e16` changes `rec`, which every record goes through, and no dispatch had run at it when this was written; 45666280714 started at 18:06Z.
 3. The description is brought up to `dd75e16`: the commit range, 63 unit tests, `secs`, `scale`, the 120-minute timeout, and #147's head.
 
 **D1 is fixed and verified.**
-- Every record's own `argv` was fed to #147's adapter at `0f709ae`, on all six recordings (five with `366b217`'s Lua, the newest with `0f709ae`'s). Every command the adapter asked for was there under exactly those words: no "no output given".
+- Every record's own `argv` was fed to #147's adapter at `0f709ae`, on all seven recordings (five with `366b217`'s Lua, two with `0f709ae`'s). Every command the adapter asked for was there under exactly those words: no "no output given".
 - `held()` called with `HOLD_TAG` reads the recorded `zfs holds` as held: `Ok(true)` on both pools, on every image and run.
 - D2 to D6, G1, G2, G6 and S1 to S8 are fixed as the author says, with the exceptions below. G3 is mostly fixed. G4 is in the description. G5 is recorded, and #147 now reads it correctly.
 
@@ -72,12 +71,12 @@
 - **Header and description.** The recorder does not run `destroy`. Its header (`zfs-cli-record.sh:127-130`) and the description ("On `none`: every command the adapter runs") again claim more than is recorded. That is D2's case with a new command.
 - **`lua_ref` default.** The default is still `366b217` (`skyzfs-zfs-cli-record.yml:14`, `:62`), and the description calls it "#147's head". It is not.
   - With the default, every `snapshot-*` record shows the `pcall` failure, and `scale` (N2) measures nothing.
-  - Every recording but the newest ran `366b217`'s Lua. The newest (45665823917, 26.04, with `lua_ref` set by hand) is the first in which #147's program ran on ZFS, and it took the snapshot (section 4, "For the lead", item 2).
-  - #147's own docs (`cli.rs:105-107`: "the program as it is now has not run on ZFS") are therefore out of date for 26.04. On 24.04 it has still not run.
+  - Every recording but the newest ran `366b217`'s Lua. The newest (45665823917, both images, with `lua_ref` set by hand) is the first in which #147's program ran on ZFS, and it took the snapshot (section 4, "For the lead", item 2).
+  - #147's own docs (`cli.rs:105-107`: "the program as it is now has not run on ZFS") are therefore out of date.
 - **Fix:**
   - Record `destroy -r`: on each live pool, on a `@t` the program or the CLI took (after the holds are released), on `@absent`, and on `none`.
   - Make the default `lua_ref` #147's branch, or require the input.
-  - Dispatch with `lua_ref` at `0f709ae` or later. Dispatch 45665823917 did that at `0b394b2`: 26.04 is green, and 24.04 was still running at the time of writing. It does not record `destroy -r` either.
+  - Dispatch with `lua_ref` at `0f709ae` or later. Dispatch 45665823917 did that at `0b394b2`, green on both images. It does not record `destroy -r` either.
 
 **N2. `scale` (new at `dd75e16`): checked for characters but not bounded. Its file systems are made with no time limit. With the default Lua it measures nothing.** Certainty: high on the first three points (probe `scale_probe.sh`); medium on what a job timeout keeps.
 
@@ -133,7 +132,7 @@
   - But the rebuild was not slowed at all. It copied 2 GiB in 6 s, against 3 to 11 s in the runs without the delay, while the resilver was slowed from about 3-9 s to 85 s.
   - Most likely the delay is only on `m0`, and a rebuild from a two-way mirror reads mostly from the undelayed `m1`. The resilver of `m1` had to read `m0`.
   - So the rebuild ended before the attach returned. With the delay on `m1` as well (or on both), the rebuild would most likely outlast the attach, as the resilver outlasted `online`, and `resilver (mirror-0) in progress` could be caught.
-  - Run 45665823917 again: a rebuild of "2G in 00:00:10", ending at 17:56:10, against a resilver of 83 s and a scrub after it of 2:46. The attach returned at 17:56:15, and its line in the index comes before the catch's records. With `0b394b2`'s narrower pattern, the 100 tries saw only the scrub, and both notes now say "not caught", correctly.
+  - Run 45665823917 again: a rebuild of "2G in 00:00:10", ending at 17:56:10, against a resilver of 83 s and a scrub after it of 2:46. The attach returned at 17:56:15, and its line in the index comes before the catch's records. With `0b394b2`'s narrower pattern, the 100 tries saw only the scrub, and both notes now say "not caught", correctly. Its 24.04 job is alike: `online` returned at 18:01:45 and the resilver ended at 18:03:10; a rebuild of "2G in 00:00:12" ended at 18:03:23, and the attach returned at 18:03:27.
   - The adapter's reading of a rebuild under way is still on #147's list of readings not checked on ZFS (`cli.rs:124-126`).
 
 **N5. A `catch` record has no `secs`.** Certainty: high.
@@ -222,8 +221,8 @@
 
 - A rebuild in progress (see N4 for how it might be caught).
 - A checkpoint of `0`.
-- On 24.04: the snapshot program's success shape, `createtxg`, and the values beyond ASCII. On 26.04 they are now recorded (run 45665823917; section 4, "For the lead", item 2).
-- On both images:
+- (Now recorded on both images, in run 45665823917: the snapshot program's success shape, `createtxg`, and the values beyond ASCII. See section 4, "For the lead", item 2.)
+- On both images, still missing:
   - a program that reaches its instruction limit (N2);
   - output from the program that cannot be read, which is the case that runs `destroy -r` (N1).
 - **Warning for fixture authors.** Run 45663170240's `mirror-rebuild-status` and `-g` carry the note "caught at try 2/1", but they show the scrub that follows the rebuild ("scan: scrub in progress" over "scan: resilvered (mirror-0) …"). Taken from that run, they are not a rebuild under way. From `0b394b2` on, the pattern no longer accepts them: run 45665823917 keeps the same kind of scrub under "not caught: no output of 100 matched …".
@@ -252,7 +251,7 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 | `zfs hold`, `zfs release` | `-r skyzfs-publish POOL@T` | same, `TAG` (`:148`) | `rig-hold-1`, `rig-release-1`, `scale-3-hold`, `scale-3-release` (not `hold-2`, `release-2`, `none-*`) |
 | assist | `zfs set skyzfs:assist=V POOL`; `zpool sync POOL` | same | `rig-assist-*`, `none-assist-set` |
 | **`zfs destroy -r POOL@T`** | **new** (`cli.rs:276-296`) | **not recorded** | none (N1) |
-| locale | `LC_ALL=C` (`host.rs:128`) | `export LC_ALL=C` (`:402`); the `locale` record shows `LC_ALL=C` in all six recordings | a grep of the line (T1) |
+| locale | `LC_ALL=C` (`host.rs:128`) | `export LC_ALL=C` (`:402`); the `locale` record shows `LC_ALL=C` in all seven recordings | a grep of the line (T1) |
 | stdin | the Lua through a pipe | `< file.lua` | `rig-snapshot-1`'s `cmd` |
 
 - The pins are derived from neither side. They are written out by hand, and the test says nothing about the adapter changing (T2).
@@ -267,7 +266,7 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 - **Two records writing the same file.**
   - The background `rec` writes `OUT/mirror-online/` (or `mirror-rebuild/`).
   - `catch` writes `OUT/.catch` and moves it to its own name.
-  - They share only `index.tsv` and stdout, each line appended by one `printf`. The index lines of all six recordings are whole.
+  - They share only `index.tsv` and stdout, each line appended by one `printf`. The index lines of all seven recordings are whole.
   - The `EXIT` trap does not run in the background subshell (bash resets it there; checked), so a background record ending cannot destroy the pools.
 - **A record that ends before `catch` starts.**
   - `catch` keeps the state after, with "not caught …", and returns 1 (probe W3).
@@ -321,15 +320,15 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 
 | Item | State at `dd75e16` | Evidence |
 |---|---|---|
-| D1 | fixed | `TAG=skyzfs-publish` (`:148`); hold, release, holds and `tagged.lua` under the adapter's words. `held(…, HOLD_TAG)` on `*-holds` → `Ok(true)`; `tagged` → `{}` then `{"t"}`; all six recordings |
+| D1 | fixed | `TAG=skyzfs-publish` (`:148`); hold, release, holds and `tagged.lua` under the adapter's words. `held(…, HOLD_TAG)` on `*-holds` → `Ok(true)`; `tagged` → `{}` then `{"t"}`; all seven recordings |
 | D2 | fixed | `assist-set`, `assist-sync` on `rig`, `mirror` and `none` (`:276-277`). `assist()` → `Ok(())` on live pools; on `none`, `Other("… dataset does not exist")` |
 | D3 | settled on both images | `snapshot-exists-child` → `Err(Exists)` on 24.04 and 26.04, nothing taken (`exists-child-after`). `snapshot-2` → `Err(Exists)` after the CLI fallback took `@t` |
 | D4 | fixed | `rec --expect` (`:154-190`) on five records; "seen" 10 of 10 in every recording, none "NOT SEEN". V27, V28 caught; V29 survives (T1) |
-| D5 | fixed | `export LC_ALL=C` (`:402`); the `locale` record shows `LC_ALL=C` and every `LC_*` `"C"` in all six. Pin weak (T1) |
+| D5 | fixed | `export LC_ALL=C` (`:402`); the `locale` record shows `LC_ALL=C` and every `LC_*` `"C"` in all seven. Pin weak (T1) |
 | D6 | fixed | every status is a pair, including `*-resilvered`, `mirror-rebuilt` and `remove-*`; all present in every index |
 | G1 | fixed | `holds-r-released`: empty, rc 0. `release-2` + it → `Ok(())` |
 | G2 | fixed | `holds-absent`, `hold-absent`, `release-absent`: "dataset does not exist", rc 1 → `held` false, `hold` `NoSnapshot`, `release` `Ok(())` |
-| G3 | mostly | Headers recorded and read: special 1, dedup 1, other 2 (cache + spares). Removal: in progress → busy and removed; done → removed only. Rebuild in progress and checkpoint 0 not recorded; the program's readings are recorded on 26.04 only (T3, N4) |
+| G3 | mostly | Headers recorded and read: special 1, dedup 1, other 2 (cache + spares). Removal: in progress → busy and removed; done → removed only. Rebuild in progress and checkpoint 0 not recorded; the program's readings are recorded on both images in run 45665823917 (T3, N4) |
 | G4 | in the description | 24.04 is the 2.2.2 userland over a 2.4.1 module (`about.txt`) |
 | G5 | recorded; #147 now right | `hold-r-partial`: exit 1, "tag already exists", root only held. #147 → `Err(Other("… not on skzq/child@t, skzq/vol@t"))`. `release-r-partial`: exit 0, child released → `Ok(())` |
 | G6 | partly | pins exist; 32 of 47 plants caught (T1) |
@@ -345,10 +344,10 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 1. **`zpool get` on a pool that does not exist.**
    - 24.04's 2.2.2 userland exits 2 with "missing pool name." and its usage.
    - 26.04 exits 1 with "Cannot get properties of skznone: no such pool available."
-   - #147 at `0f709ae` asks `zpool status -P` after the first. It reads `NoPool` on all six recordings.
+   - #147 at `0f709ae` asks `zpool status -P` after the first. It reads `NoPool` on all seven recordings.
 2. **`pcall`.** The sandbox has none: "attempt to call global 'pcall' (a nil value)" at line 42, on both images.
    - #147 removed it at `0f709ae`.
-   - **#147's current `snapshot.lua` has now run on ZFS, on 26.04 only** (run 45665823917; `readings-next-45665823917-ubuntu-26.04.txt`). What it gave:
+   - **#147's current `snapshot.lua` has now run on ZFS, on both images** (run 45665823917; `readings-next-45665823917-ubuntu-{24.04,26.04}.txt`). 24.04's 2.2.2 userland gives the same shapes as 26.04. What it gave:
      - **The live pools.** Exit 0 and `{"return":{"createtxg":"32","members":{NAME:{"guid":…,"snapshot_guid":…,"type":"filesystem"|"volume","local":{…}}}}}`.
        - `createtxg` and every GUID are decimal strings.
        - A GUID above 2^63 comes as a negative number (`"guid":"-992711124556426838"`).
@@ -368,7 +367,7 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
    - `zpool status`, `zpool sync` and the programs say "no such pool", read as `NoPool`.
 
    #147 documents this; the engine ignores the assist's result.
-5. **#147's fixtures are not these recordings.** `recorded/*.json` come from run 45652653655 at `bd37422`: the old tag `skyzfs`, `-g` borrowed between states (`GUIDED`), and records made in `C.UTF-8`. They should be refreshed from a run at `0b394b2` or later with `0f709ae`'s Lua, with `TAG = HOLD_TAG`, and `GUIDED` dropped. Run 45665823917 would do once its 24.04 half is green; a run at `dd75e16` adds `secs`.
+5. **#147's fixtures are not these recordings.** `recorded/*.json` come from run 45652653655 at `bd37422`: the old tag `skyzfs`, `-g` borrowed between states (`GUIDED`), and records made in `C.UTF-8`. They should be refreshed from a run at `0b394b2` or later with `0f709ae`'s Lua, with `TAG = HOLD_TAG`, and `GUIDED` dropped. Run 45665823917 would do; a run at `dd75e16` adds `secs`.
 6. **The new `zfs destroy -r`** is not recorded (N1).
 
 ## 5. Gates and CI
@@ -389,8 +388,8 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 | `e2e` 45666281758 | green |
 | `skyzfs-kernel-probe` 45666282115 | green |
 | `coverage` 45666281818 | green |
-| `skyzfs-daemon-rig` 45666281924, `skyzfs-replay-rig` 45666281748 | running (18:04Z) |
-| recording dispatch 45666280714 | queued |
+| `skyzfs-daemon-rig` 45666281924, `skyzfs-replay-rig` 45666281748 | running (18:07Z) |
+| recording dispatch 45666280714 | started 18:06Z |
 
 - On `0b394b2`, `ci`, `coverage`, `e2e` and the kernel probe were green; the rigs were cancelled by the newer push.
 - **Codex** posted a failed-review notice and a usage-limit notice on `bd37422`, and nothing since.
@@ -398,7 +397,7 @@ The adapter at `0f709ae`, against the recorder at `dd75e16` and its unit test:
 ## Files beside this note
 
 - `q10n_scratch.rs`: #147 at `0f709ae` fed the records under their own `argv`. Its header says how to run it.
-- `readings-next-<run>-<image>.txt`: its output on the six recordings.
+- `readings-next-<run>-<image>.txt`: its output on the seven recordings.
 - `plants_next.sh`: the plants (`bash review/q10/plants_next.sh HEAD WORKDIR`). Output: `plants-next-dd75e16.out`.
 - `wait_probe.sh`: the background, `catch` and `wait` probes (`bash review/q10/wait_probe.sh HEAD WORKDIR`). Output: `wait_probe-dd75e16.out`.
 - `scale_probe.sh`: the `scale` checks, taken from the head's files (`bash review/q10/scale_probe.sh HEAD`). Output: `scale_probe-dd75e16.out`.
