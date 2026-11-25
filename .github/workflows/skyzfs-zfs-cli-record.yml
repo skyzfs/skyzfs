@@ -17,7 +17,10 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with a writer's longest stall during each take, within 80 minutes in all. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs, within 80 minutes in all. Empty: none"
+        default: ""
+      scale_lua_max:
+        description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
@@ -29,6 +32,8 @@ on:
       - tests/kernel/test_zfs_cli_record.sh
       - tests/kernel/dsync_writer.py
       - tests/kernel/test_dsync_writer.py
+      - tests/kernel/txg_probe.py
+      - tests/kernel/test_txg_probe.py
       - .github/workflows/skyzfs-zfs-cli-record.yml
 
 concurrency:
@@ -48,6 +53,7 @@ jobs:
           persist-credentials: false
       - run: bash tests/kernel/test_zfs_cli_record.sh
       - run: python3 tests/kernel/test_dsync_writer.py
+      - run: python3 tests/kernel/test_txg_probe.py
 
   # The Lua's commit, resolved once, so that every image runs the same.
   lua:
@@ -84,6 +90,7 @@ jobs:
       IMAGE: ${{ matrix.image }}
       LUA_REF: ${{ needs.lua.outputs.commit }}
       ZCR_SCALE: ${{ inputs.scale }}
+      ZCR_SCALE_LUA_MAX: ${{ inputs.scale_lua_max }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -113,7 +120,11 @@ jobs:
             case $n in 0*) echo "::error::scale: not a count: $n"; exit 64 ;; esac
             if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then echo "::error::scale: $n is more than 100000"; exit 64; fi
           done
-          sudo --preserve-env=LUA_REF,ZCR_SCALE tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+          case $ZCR_SCALE_LUA_MAX in
+            *[!0-9]*|0?*) echo "::error::scale_lua_max is a count: $ZCR_SCALE_LUA_MAX"; exit 64 ;;
+          esac
+          if [ "${#ZCR_SCALE_LUA_MAX}" -gt 6 ]; then echo "::error::scale_lua_max: at most 999999"; exit 64; fi
+          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |

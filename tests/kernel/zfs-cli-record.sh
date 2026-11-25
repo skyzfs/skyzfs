@@ -55,11 +55,17 @@
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
-#           Beside the two takes (snapshot, take-cli) a writer makes
-#           4 KiB O_DSYNC writes to a file in the root, from 2 s before
-#           the take to 2 s after (dsync_writer.py). The take's record
-#           gets writer.tsv, its log, and stall, the longest write that
-#           overlapped the take; about.txt the same line. At most
+#           The snapshot program is not run at a count above
+#           ZCR_SCALE_LUA_MAX, when set; snapshot-cli takes @t there.
+#           Beside the two takes (snapshot, take-cli), from 2 s before
+#           the take to 2 s after (writing, below): a writer of 4 KiB
+#           O_DSYNC writes, a writer of new data past the pool's dirty
+#           data limit, and the pool's transaction groups and timed
+#           `zpool sync` runs. The take's record gets their logs
+#           (writer.tsv, fill.tsv, txg.tsv) and a line for each (stall,
+#           fill, txg); about.txt the same lines, and the dirty data
+#           limit and txg history. The takes' secs are under that
+#           load. At most
 #           three counts, each at most 100000 and each once. Each
 #           command's limit is ZCR_SCALE_LIMIT seconds (default 1800),
 #           or what is left of ZCR_SCALE_BUDGET (default 4800 s, for all
@@ -441,6 +447,14 @@ SCALE_END=0
 scale_all() {
     local n seen=" " k=0
     SCALE_END=$(($(date +%s) + ${ZCR_SCALE_BUDGET:-4800}))
+    ZCR_SCALE_LUA_MAX=${ZCR_SCALE_LUA_MAX:-}
+    case $ZCR_SCALE_LUA_MAX in
+        *[!0-9]* | 0?*)
+            echo "scale: ZCR_SCALE_LUA_MAX is not a count: $ZCR_SCALE_LUA_MAX; the program runs at every count" >> "$OUT/about.txt"
+            ZCR_SCALE_LUA_MAX=""
+            ;;
+    esac
+    [ "${#ZCR_SCALE_LUA_MAX}" -gt 6 ] && ZCR_SCALE_LUA_MAX=999999
     for n in "$@"; do
         case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
         if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then
@@ -468,15 +482,42 @@ scale_limit() {
     return 0
 }
 
-# writing NAME DIR COMMAND...: the record NAME, made by COMMAND (rec or
-# program), with a writer of 4 KiB O_DSYNC writes to DIR/writer.dat
-# beside it from ZCR_WRITER_MARGIN seconds (default 2) before COMMAND
-# to as long after. The record gets writer.tsv (the writer's log) and
-# stall (its longest write that overlapped COMMAND, dsync_writer.py),
-# and about.txt the same line. With DIR empty, COMMAND alone.
+# stop_bg PID: SIGTERM, then up to 60 s for PID to end. Fails, after a
+# SIGKILL that is not waited for (it may be in the kernel's wait), when
+# it did not end.
+stop_bg() {
+    local i
+    kill -TERM "$1" 2> /dev/null
+    for ((i = 0; i < 600; i++)); do
+        kill -0 "$1" 2> /dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$1" 2> /dev/null; then
+        kill -9 "$1" 2> /dev/null
+        return 1
+    fi
+    wait "$1"
+    return 0
+}
+
+# writing NAME DIR POOL COMMAND...: the record NAME, made by COMMAND (rec
+# or program), with three things beside it, from ZCR_WRITER_MARGIN
+# seconds (default 2) before COMMAND to as long after:
+#   a writer of 4 KiB O_DSYNC writes to DIR/writer.dat (dsync_writer.py
+#     write): the record's writer.tsv, and stall, its longest write that
+#     overlapped COMMAND;
+#   a writer of new data, 1 MiB buffered writes over FILL_SPAN bytes of
+#     DIR/fill.dat (dsync_writer.py fill), only when FILL_SPAN is set:
+#     fill.tsv and fill, the same line for it (writes are MiB);
+#   POOL's transaction groups, read once a second from its txgs kstat
+#     under ZCR_KSTAT_DIR (/proc/spl/kstat/zfs), and `zpool sync POOL`
+#     every 2 s, timed (txg_probe.py probe): txg.tsv and txg, the
+#     groups committed in COMMAND's window, the longest sync, the
+#     longest time between two commits, and the syncs' longest.
+# about.txt gets the three lines. With DIR empty, COMMAND alone.
 writing() {
-    local name=$1 dir=$2 margin=${ZCR_WRITER_MARGIN:-2} wpid t0 t1 log i line
-    shift 2
+    local name=$1 dir=$2 pool=$3 margin=${ZCR_WRITER_MARGIN:-2} wpid fpid="" qpid t0 t1 log line fline pline
+    shift 3
     if [ -z "$dir" ]; then
         "$@"
         return
@@ -484,36 +525,80 @@ writing() {
     log=$OUT/.writer-$name
     python3 "$HERE/dsync_writer.py" write "$dir/writer.dat" "$log.tsv" 2> "$log.err" &
     wpid=$!
+    if [ -n "${FILL_SPAN:-}" ]; then
+        python3 "$HERE/dsync_writer.py" fill "$dir/fill.dat" "$log.fill.tsv" "$FILL_SPAN" 2> "$log.fill.err" &
+        fpid=$!
+    fi
+    python3 "$HERE/txg_probe.py" probe "${ZCR_KSTAT_DIR:-/proc/spl/kstat/zfs}/$pool/txgs" "$pool" "$log.txg.tsv" 2> "$log.txg.err" &
+    qpid=$!
     sleep "$margin"
     t0=$(date +%s.%N)
     "$@"
     t1=$(date +%s.%N)
     sleep "$margin"
-    kill -TERM "$wpid" 2> /dev/null
-    for ((i = 0; i < 600; i++)); do
-        kill -0 "$wpid" 2> /dev/null || break
-        sleep 0.1
-    done
-    if kill -0 "$wpid" 2> /dev/null; then
-        # Not waited for: it may be in the kernel's wait.
-        kill -9 "$wpid" 2> /dev/null
-        line="the writer did not stop within 60 s"
-    else
-        wait "$wpid"
+    if stop_bg "$wpid"; then
         line=$(python3 "$HERE/dsync_writer.py" stall "$log.tsv" "$t0" "$t1" 2>&1)
+    else
+        line="the writer did not stop within 60 s"
+    fi
+    fline="no writer of new data: zfs_dirty_data_max was not read"
+    if [ -n "$fpid" ]; then
+        if stop_bg "$fpid"; then
+            fline=$(python3 "$HERE/dsync_writer.py" stall "$log.fill.tsv" "$t0" "$t1" 2>&1)
+        else
+            fline="the writer of new data did not stop within 60 s"
+        fi
+    fi
+    if stop_bg "$qpid"; then
+        pline=$(python3 "$HERE/txg_probe.py" report "$log.txg.tsv" "$t0" "$t1" 2>&1)
+    else
+        pline="the probe did not stop within 60 s"
     fi
     mkdir -p "$OUT/$name"
     mv "$log.tsv" "$OUT/$name/writer.tsv" 2> /dev/null
     mv "$log.err" "$OUT/$name/writer.err" 2> /dev/null
+    mv "$log.fill.tsv" "$OUT/$name/fill.tsv" 2> /dev/null
+    mv "$log.fill.err" "$OUT/$name/fill.err" 2> /dev/null
+    mv "$log.txg.tsv" "$OUT/$name/txg.tsv" 2> /dev/null
+    mv "$log.txg.err" "$OUT/$name/txg.err" 2> /dev/null
     printf '%s\n' "$line" > "$OUT/$name/stall"
-    echo "scale: writer beside $name: $line" >> "$OUT/about.txt"
+    printf '%s\n' "$fline" > "$OUT/$name/fill"
+    printf '%s\n' "$pline" > "$OUT/$name/txg"
+    {
+        echo "scale: writer beside $name: $line"
+        echo "scale: new data beside $name: $fline"
+        echo "scale: txgs beside $name: $pline"
+    } >> "$OUT/about.txt"
+}
+
+# fill_span N: FILL_SPAN, twice zfs_dirty_data_max (under ZCR_ZFS_PARAMS,
+# /sys/module/zfs/parameters) and at most 4 GiB, or empty when it cannot
+# be read; and the txg history on, as about.txt says.
+fill_span() {
+    local n=$1 params=${ZCR_ZFS_PARAMS:-/sys/module/zfs/parameters} dirty hist
+    FILL_SPAN=""
+    dirty=$(cat "$params/zfs_dirty_data_max" 2> /dev/null)
+    case $dirty in
+        '' | *[!0-9]*) echo "scale $n: zfs_dirty_data_max not read; no writer of new data" >> "$OUT/about.txt" ;;
+        *)
+            FILL_SPAN=$((dirty * 2))
+            [ "$FILL_SPAN" -gt 4294967296 ] && FILL_SPAN=4294967296
+            echo "scale $n: zfs_dirty_data_max $dirty; the writer of new data writes over $FILL_SPAN bytes" >> "$OUT/about.txt"
+            ;;
+    esac
+    hist=$(cat "$params/zfs_txg_history" 2> /dev/null)
+    if [ "$hist" = 0 ]; then
+        echo 100 > "$params/zfs_txg_history" 2> /dev/null
+        hist="0, set to $(cat "$params/zfs_txg_history" 2> /dev/null)"
+    fi
+    echo "scale $n: zfs_txg_history ${hist:-not read}" >> "$OUT/about.txt"
 }
 
 # scale N: a pool with N file systems under its root, and the adapter's
 # programs and holds on it, each timed (the secs of its record).
 scale() {
     local n=$1 p=skzqs t0 made step cut="" rc wdir
-    local LIMIT
+    local LIMIT FILL_SPAN=""
     if ! scale_limit; then
         echo "scale $n: not run, the budget was spent" >> "$OUT/about.txt"
         return 0
@@ -531,6 +616,7 @@ scale() {
     wdir=""
     if mountpoint -q "$WORK/mnt/$p"; then
         wdir=$WORK/mnt/$p
+        fill_span "$n"
     else
         echo "scale $n: the root is not mounted; no writer" >> "$OUT/about.txt"
     fi
@@ -548,7 +634,13 @@ scale() {
             break
         fi
         case $step in
-            snapshot) writing "scale-$n-snapshot" "$wdir" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST" ;;
+            snapshot)
+                if [ -n "${ZCR_SCALE_LUA_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_LUA_MAX" ]; then
+                    echo "scale $n: the snapshot program not run: $n is more than ZCR_SCALE_LUA_MAX ($ZCR_SCALE_LUA_MAX)" >> "$OUT/about.txt"
+                else
+                    writing "scale-$n-snapshot" "$wdir" "$p" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
+                fi
+                ;;
             # Without the program's @t, the CLI's, so that the rest has one.
             snapshot-cli)
                 lim 120 zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "scale-$n-snapshot-cli" zfs snapshot -r "$p@t"
@@ -558,7 +650,7 @@ scale() {
             tagged) program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
             release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
             destroy) rec "scale-$n-destroy" zfs destroy -r "$p@t" ;;
-            take-cli) writing "scale-$n-take-cli" "$wdir" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
+            take-cli) writing "scale-$n-take-cli" "$wdir" "$p" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
             take-cli-members) program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c ;;
         esac
     done

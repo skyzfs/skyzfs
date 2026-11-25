@@ -52,12 +52,28 @@ class Stall(unittest.TestCase):
         self.assertEqual(dsync_writer.stall(lines, 100.0, 110.0).split()[0], "longest=1.500")
 
 
+def open_flags(pid, path):
+    """The flags PID opened PATH with, from /proc."""
+    fds = "/proc/%d/fd" % pid
+    for fd in os.listdir(fds):
+        try:
+            if os.readlink(os.path.join(fds, fd)) == path:
+                with open("/proc/%d/fdinfo/%s" % (pid, fd)) as f:
+                    for line in f:
+                        if line.startswith("flags:"):
+                            return int(line.split()[1], 8)
+        except OSError:
+            continue
+    raise AssertionError("%s is not open in %d" % (path, pid))
+
+
 class Writer(unittest.TestCase):
     def test_writes_until_told_and_logs_its_end(self):
         with tempfile.TemporaryDirectory() as d:
             data, out = os.path.join(d, "w.dat"), os.path.join(d, "w.tsv")
             p = subprocess.Popen([sys.executable, os.path.join(HERE, "dsync_writer.py"), "write", data, out, "0"])
             time.sleep(0.5)
+            self.assertEqual(open_flags(p.pid, data) & os.O_DSYNC, os.O_DSYNC)
             t0 = time.time()
             time.sleep(1.2)
             t1 = time.time()
@@ -76,6 +92,24 @@ class Writer(unittest.TestCase):
             line = dsync_writer.stall(lines, t0, t1, slow=0)
             self.assertTrue(line.startswith("longest="), line)
             self.assertNotIn("<", line)
+
+    def test_fill_writes_new_data_over_its_span(self):
+        with tempfile.TemporaryDirectory() as d:
+            data, out = os.path.join(d, "f.dat"), os.path.join(d, "f.tsv")
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "dsync_writer.py"), "fill", data, out,
+                                  str(3 * 1024 * 1024 + 5)])
+            time.sleep(1.0)
+            flags = open_flags(p.pid, data)
+            p.send_signal(signal.SIGTERM)
+            self.assertEqual(p.wait(timeout=30), 0)
+            # Buffered: the file is open without O_DSYNC.
+            self.assertEqual(flags & os.O_DSYNC, 0)
+            with open(out) as f:
+                lines = f.readlines()
+            self.assertEqual((lines[0].split("\t")[0], lines[-1].split("\t")[0]), ("start", "end"))
+            # 1 MiB writes over the span's whole MiB, round and round.
+            self.assertEqual(os.path.getsize(data), 3 * 1024 * 1024)
+            self.assertGreater(int(lines[-1].split("\t")[2]), 3)
 
     def test_the_command_line(self):
         with tempfile.TemporaryDirectory() as d:

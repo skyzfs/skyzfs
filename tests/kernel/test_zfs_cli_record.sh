@@ -178,6 +178,15 @@ record_none none skznone > /dev/null 2>> "$T/pins.err"
 export FAKE_LIST_RC=1 # the program took no @t: the CLI's
 export FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3
 mkdir -p "$WORK/mnt/skzqs"
+# The pool's txgs kstat and the module's parameters, as files: a
+# dirty-data limit of 1 MiB (a span of 2 MiB) and the history off.
+export ZCR_KSTAT_DIR=$T/kstat ZCR_ZFS_PARAMS=$T/params
+mkdir -p "$ZCR_KSTAT_DIR/skzqs" "$ZCR_ZFS_PARAMS"
+printf 'txg      birth            state ndirty       nread        nwritten     reads    writes   otime        qtime        wtime        stime\n' > "$ZCR_KSTAT_DIR/skzqs/txgs"
+printf '7        %s     C     4096         0            8192         0        2        1000000000   1000         2000         300000000\n' \
+    "$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) - 5 * 10**9)')" >> "$ZCR_KSTAT_DIR/skzqs/txgs"
+echo 1048576 > "$ZCR_ZFS_PARAMS/zfs_dirty_data_max"
+echo 0 > "$ZCR_ZFS_PARAMS/zfs_txg_history"
 ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/pins.err"
 unset FAKE_LIST_RC FAKE_MOUNTED
 check "pins: no name twice" "$(grep -c twice "$T/pins.err")" 0
@@ -217,6 +226,19 @@ for r in snapshot take-cli; do
     check "writer beside $r: its stall" "$(cut -c1-8 "$OUT/scale-3-$r/stall")" "longest="
     check "writer beside $r: said" "$(grep -c "^scale: writer beside scale-3-$r: longest=" "$OUT/about.txt")" 1
 done
+for r in snapshot take-cli; do
+    check "new data beside $r: its log" "$(head -n 1 "$OUT/scale-3-$r/fill.tsv" | cut -f1)" start
+    check "new data beside $r: its line" "$(cut -c1-8 "$OUT/scale-3-$r/fill")" "longest="
+    check "new data beside $r: said" "$(grep -c "^scale: new data beside scale-3-$r: longest=" "$OUT/about.txt")" 1
+    check "txgs beside $r: the probe's log" "$(head -n 1 "$OUT/scale-3-$r/txg.tsv" | cut -f1)" start
+    check "txgs beside $r: the committed group" "$(grep -c '^txg	7	' "$OUT/scale-3-$r/txg.tsv")" 1
+    check "txgs beside $r: zpool sync timed" "$(grep -c '^sync	' "$OUT/scale-3-$r/txg.tsv" | sed 's/^[1-9][0-9]*$/some/')" some
+    check "txgs beside $r: its line" "$(cut -c1-5 "$OUT/scale-3-$r/txg")" "txgs="
+    check "txgs beside $r: said" "$(grep -c "^scale: txgs beside scale-3-$r: txgs=" "$OUT/about.txt")" 1
+done
+check "new data: over twice the limit" "$(stat -c %s "$WORK/mnt/skzqs/fill.dat")" 2097152
+check "new data: the span said" "$(grep -c '^scale 3: zfs_dirty_data_max 1048576; the writer of new data writes over 2097152 bytes' "$OUT/about.txt")" 1
+check "txg history: turned on, said" "$(cat "$ZCR_ZFS_PARAMS/zfs_txg_history"; grep -c '^scale 3: zfs_txg_history 0, set to 100' "$OUT/about.txt")" $'100\n1'
 check "writer: its file in the root" "$([ -s "$WORK/mnt/skzqs/writer.dat" ] && echo yes || echo no)" yes
 check "writer: nothing left behind" "$(find "$OUT" -maxdepth 1 -name '.writer-*' | wc -l)" 0
 check "writer: none beside the others" "$(find "$OUT" -name writer.tsv | wc -l)" 2
@@ -303,6 +325,19 @@ check "budget: the hold cut at what was left" "$(cat "$OUT/scale-6-hold/rc")" 12
 check "budget: nothing after it" "$([ -e "$OUT/scale-6-tagged" ] && echo yes || echo no)" no
 check "budget: said" "$(grep -c '^scale 6: the budget was spent before tagged' "$OUT/about.txt")" 1
 unset FAKE_SLEEP
+# Above ZCR_SCALE_LUA_MAX, no program: the CLI takes @t, and the rest
+# runs on it.
+SCALE_END=$(($(date +%s) + 600))
+export FAKE_LIST_RC=1
+ZCR_SCALE_LUA_MAX=4 scale 5 > /dev/null 2>> "$T/pins.err"
+unset FAKE_LIST_RC
+check "lua max: not run, said" "$(grep -c '^scale 5: the snapshot program not run: 5 is more than ZCR_SCALE_LUA_MAX (4)' "$OUT/about.txt")" 1
+check "lua max: no program" "$([ -e "$OUT/scale-5-snapshot" ] && echo yes || echo no)" no
+check "lua max: the CLI's @t" "$(words scale-5-snapshot-cli)" "zfs snapshot -r skzqs@t "
+check "lua max: the rest on it" "$(words scale-5-members)" "zfs program -n $P skzqs - skzqs t "
+ZCR_SCALE_LUA_MAX=9 scale 9 > /dev/null 2>> "$T/pins.err"
+check "lua max: at the count itself, run" "$(words scale-9-snapshot)" "zfs program $P skzqs - skzqs t skyzfs:assist "
+SCALE_END=$(($(date +%s) - 1))
 scale 8 > /dev/null 2>> "$T/pins.err"
 check "budget spent: not run" "$(grep -c '^scale 8: not run' "$OUT/about.txt")" 1
 check "budget spent: no pool" "$(find "$OUT" -maxdepth 1 -name 'scale-8-*' | wc -l)" 0
@@ -326,5 +361,17 @@ scale() { echo "$1" >> "$T/scaled"; }
 scale_all 5 100001 99999999999999999999 5 abc 012 7 8 9 > /dev/null
 check "scale_all: the counts run" "$(tr '\n' ' ' < "$T/scaled")" "5 7 8 "
 check "scale_all: what was not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
+for v in abc 012 -1; do
+    ZCR_SCALE_LUA_MAX=$v
+    scale_all 5 > /dev/null
+    check "scale_all: ZCR_SCALE_LUA_MAX $v refused" "$ZCR_SCALE_LUA_MAX" ""
+done
+check "scale_all: the refusals said" "$(grep -c '^scale: ZCR_SCALE_LUA_MAX is not a count' "$OUT/about.txt")" 3
+ZCR_SCALE_LUA_MAX=99999999999999999999
+scale_all 5 > /dev/null
+check "scale_all: a long ZCR_SCALE_LUA_MAX capped" "$ZCR_SCALE_LUA_MAX" 999999
+ZCR_SCALE_LUA_MAX=0
+scale_all 5 > /dev/null
+check "scale_all: ZCR_SCALE_LUA_MAX 0 kept" "$ZCR_SCALE_LUA_MAX" 0
 
 exit "$fail"

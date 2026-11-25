@@ -12,6 +12,14 @@
                                         second S: how many, the longest
             end     T  WRITES           when it stopped, writes in all
 
+    dsync_writer.py fill PATH LOG SPAN
+        The same with 1 MiB buffered writes (no O_DSYNC) over the first
+        SPAN bytes of PATH, a SLOW of 0.05: new data faster than a pool
+        syncs it, so that its dirty data reaches the pool's limit and a
+        write waits for a transaction group. SPAN should be more than
+        zfs_dirty_data_max: a write over a block still dirty in the
+        open group adds nothing. In stall's line, writes are MiB.
+
     dsync_writer.py stall LOG T0 T1
         One line about the window [T0, T1] (seconds since the epoch):
             longest=SECONDS writes=N before=SECONDS
@@ -30,21 +38,22 @@ import time
 BLOCK = 4096
 SPAN = 64 * 1024 * 1024 // BLOCK
 SLOW = 0.01
+FILL_BLOCK = 1024 * 1024
 
 
-def write(path, log, slow=SLOW):
+def write(path, log, slow=SLOW, block=BLOCK, span=SPAN, flags=os.O_DSYNC):
     stop = []
     for s in (signal.SIGTERM, signal.SIGINT):
         signal.signal(s, lambda *_: stop.append(1))
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_DSYNC, 0o644)
-    buf = os.urandom(BLOCK)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | flags, 0o644)
+    buf = os.urandom(block)
     n = 0
     sec, count, longest = None, 0, 0.0
     with open(log, "w", buffering=1) as out:
         out.write("start\t%.6f\n" % time.time())
         while not stop:
             t0 = time.time()
-            os.pwrite(fd, buf, (n % SPAN) * BLOCK)
+            os.pwrite(fd, buf, (n % span) * block)
             t1 = time.time()
             n += 1
             lat = t1 - t0
@@ -97,6 +106,9 @@ def stall(lines, t0, t1, slow=SLOW):
 def main(argv):
     if len(argv) >= 3 and argv[0] == "write":
         write(argv[1], argv[2], float(argv[3]) if len(argv) > 3 else SLOW)
+        return 0
+    if len(argv) == 4 and argv[0] == "fill":
+        write(argv[1], argv[2], 0.05, FILL_BLOCK, max(1, int(argv[3]) // FILL_BLOCK), 0)
         return 0
     if len(argv) == 4 and argv[0] == "stall":
         with open(argv[1], encoding="utf-8", errors="replace") as f:
