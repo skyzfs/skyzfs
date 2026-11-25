@@ -18,6 +18,15 @@
 //! two readers), four while its standard input is not all written.
 //! `timeout(1)` would not do: it waits for its child.
 //!
+//! Two cases are not killed (NL-F2 of #147's review). A child that has
+//! ended while a process it started still holds its output: the ends
+//! are waited for within the limit and the call returns `TimedOut`, but
+//! that process is neither killed nor counted, since the group's leader
+//! has been reaped and its id is not ours to signal any more. And a
+//! process that leaves the group (`setsid`) escapes the kill in either
+//! case; only a cgroup would hold it. `zfs` and `zpool` start no helper
+//! that outlives them.
+//!
 //! Children left so are counted while they run. At [`STUCK_MAX`] of
 //! them, [`System::run`] refuses to start another with the error
 //! [`STUCK`] (kind `WouldBlock`), so that a pool that holds every

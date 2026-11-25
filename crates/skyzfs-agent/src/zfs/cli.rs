@@ -64,10 +64,17 @@
 //! check and take counting its own) or on a snapshot limit (`EDQUOT`),
 //! a take that raises (`EIO`), the instruction limit reached in the take
 //! loop or in the reads after it, and a returned value larger than the
-//! memory limit. The program says so where it can (`taken`); each is
-//! [`ZfsError::Other`], and the engine's next round finds `pool@t` and
-//! gives the publish up as `ManifestLost`, the snapshots kept (F9 of the
-//! review of #147).
+//! memory limit. The program says so where it can (`taken`), and each
+//! is [`ZfsError::Other`]. Where it says it took some (`taken` above 0)
+//! and failed on any errno but `EEXIST`, `pool@t` is destroyed with what
+//! it took, as for an output that cannot be read, and the error says
+//! what became of it (the lead's decision on testing's scale run, where
+//! 10000 file systems failed on `ENOSPC` after 4563 were taken; it
+//! withdraws F9 of #147's first review for this case): a partial take
+//! is never published, so nothing relies on it. Where it could not say
+//! (an instruction or memory limit), the engine's next round finds
+//! `pool@t` and gives the publish up as `ManifestLost`, the snapshots
+//! kept for a person.
 //!
 //! The program's values are all strings (`tostring`), and its tables
 //! are keyed by name: `zfs program -j` writes a Lua number as a signed
@@ -272,24 +279,49 @@ impl<H: Host> ZfsCli<H> {
     /// the snapshots. `zfs destroy -r` of a snapshot that is not there
     /// says `could not find any snapshots to destroy` (`zfs_main.c`; not
     /// recorded on ZFS), or `dataset does not exist` of a pool that is
-    /// not.
+    /// not; the second can also be a pool exported in between, so it
+    /// reads "was not found". `zfs destroy` takes `%` ranges and `,`
+    /// lists after the `@`: a `t` that is not a snapshot's name
+    /// ([`skyzfs_control::valid_name`]) is not destroyed at all.
     fn destroy_taken(&mut self, pool: &str, t: &str, why: &str) -> ZfsError {
+        let gone = self.destroy(pool, t);
+        ZfsError::Other(format!(
+            "zfs program (snapshot) exited 0 and its output cannot be read: {why}; {gone}"
+        ))
+    }
+
+    /// `pool@t` destroyed with what a take that failed part way took
+    /// (the lead's decision on testing's scale run for #147): `said` is
+    /// what the program said, and the error says what became of it.
+    fn destroy_partial(&mut self, pool: &str, t: &str, said: &str) -> ZfsError {
+        let gone = self.destroy(pool, t);
+        ZfsError::Other(format!("{said}; {gone}"))
+    }
+
+    /// `zfs destroy -r pool@t`, and what became of it, in words.
+    fn destroy(&mut self, pool: &str, t: &str) -> String {
         let snapshot = format!("{pool}@{t}");
         let args = ["destroy", "-r", snapshot.as_str()];
-        let gone = match self.exec("zfs", &args, &[], self.limits.change) {
+        if !skyzfs_control::valid_name(t) {
+            format!("{snapshot} was not destroyed: `{t}` is not a snapshot's name")
+        } else {
+            self.destroyed(&snapshot, &args)
+        }
+    }
+
+    /// What became of `snapshot` by `zfs destroy -r` ([`Self::destroy_taken`]).
+    fn destroyed(&mut self, snapshot: &str, args: &[&str]) -> String {
+        match self.exec("zfs", args, &[], self.limits.change) {
             Ok(output) if output.code == Some(0) => format!("{snapshot} destroyed"),
             Ok(output) if says(&output.stderr, "could not find any snapshots to destroy") => {
                 format!("{snapshot} was not taken")
             }
-            Ok(output) => match failure("zfs", &args, &output, true) {
-                ZfsError::NoSnapshot => format!("{snapshot} was not taken"),
+            Ok(output) => match failure("zfs", args, &output, true) {
+                ZfsError::NoSnapshot => format!("{snapshot} was not found"),
                 e => format!("{snapshot} could not be destroyed: {e}"),
             },
             Err(e) => format!("{snapshot} could not be destroyed: {e}"),
-        };
-        ZfsError::Other(format!(
-            "zfs program (snapshot) exited 0 and its output cannot be read: {why}; {gone}"
-        ))
+        }
     }
 
     /// The snapshots under `snapshot` (`pool@t` and its members' `@t`)
@@ -481,7 +513,12 @@ impl<H: Host> Zfs for ZfsCli<H> {
         };
         match parse_program(&returned, pool) {
             Err(ZfsError::Other(why)) if !returned.contains_key("failed") => {
-                Err(self.destroy_taken(pool, t, &why))
+                // The error already names the program once.
+                let why = why.strip_prefix(PROGRAM_SAYS).unwrap_or(&why);
+                Err(self.destroy_taken(pool, t, why))
+            }
+            Err(ZfsError::Other(said)) if partly_taken(&returned) => {
+                Err(self.destroy_partial(pool, t, &said))
             }
             done => done,
         }
@@ -920,12 +957,34 @@ fn member_order(pool: &str, a: &str, b: &str) -> std::cmp::Ordering {
     (a != pool, a).cmp(&(b != pool, b))
 }
 
+/// Whether the snapshot program failed after it took some members' `@t`
+/// (`taken` above 0), on any errno but `EEXIST`: what it took is
+/// destroyed ([module docs](self)). After `EEXIST` a snapshot of that
+/// name exists that the program did not take, and `zfs destroy -r`
+/// would destroy it too; the program checks every member before it
+/// takes any, so this cannot come from the program as written, and is
+/// kept for a person (the conservative reading).
+fn partly_taken(returned: &serde_json::Map<String, Value>) -> bool {
+    let taken = returned
+        .get("taken")
+        .and_then(Value::as_str)
+        .and_then(|n| n.parse::<u64>().ok());
+    let errno = returned
+        .get("errno")
+        .and_then(Value::as_str)
+        .and_then(|e| e.parse::<i64>().ok());
+    returned.contains_key("failed") && taken.is_some_and(|n| n > 0) && errno != Some(EEXIST)
+}
+
+/// The start of an error about what the snapshot program returned.
+const PROGRAM_SAYS: &str = "zfs program (snapshot): ";
+
 /// What the snapshot program returned ([module docs](self)).
 pub(crate) fn parse_program(
     returned: &serde_json::Map<String, Value>,
     pool: &str,
 ) -> Result<Program, ZfsError> {
-    let other = |why: String| ZfsError::Other(format!("zfs program (snapshot): {why}"));
+    let other = |why: String| ZfsError::Other(format!("{PROGRAM_SAYS}{why}"));
     if let Some(failed) = returned.get("failed").and_then(Value::as_str) {
         if let Some(errno) = returned.get("errno").and_then(Value::as_str) {
             if errno.parse::<i64>() == Ok(EEXIST) && !returned.contains_key("taken") {

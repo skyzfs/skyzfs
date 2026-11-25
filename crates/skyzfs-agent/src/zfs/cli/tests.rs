@@ -566,15 +566,23 @@ fn output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took() {
             panic!("{shown}: {done:?}");
         };
         assert!(why.contains("tank@skz-1 destroyed"), "{shown}: {why}");
+        // The program is named once (NL-S4).
+        assert_eq!(why.matches("zfs program").count(), 1, "{shown}: {why}");
     }
-    for gone in [
-        "could not find any snapshots to destroy; check snapshot names.\n",
-        "cannot open 'tank': dataset does not exist\n",
+    for (gone, became) in [
+        (
+            "could not find any snapshots to destroy; check snapshot names.\n",
+            "tank@skz-1 was not taken",
+        ),
+        (
+            "cannot open 'tank': dataset does not exist\n",
+            "tank@skz-1 was not found",
+        ),
     ] {
         let (done, _) = taken_unread(cut, Err(gone));
         assert!(
             matches!(&done, Err(ZfsError::Other(why))
-                if why.contains("cannot be read") && why.contains("tank@skz-1 was not taken")),
+                if why.contains("cannot be read") && why.contains(became)),
             "{gone}: {done:?}"
         );
     }
@@ -586,14 +594,88 @@ fn output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took() {
         matches!(&done, Err(ZfsError::Other(why)) if why.contains("could not be destroyed")),
         "{done:?}"
     );
-    // A failure the program reported is not destroyed: it says what it
-    // took.
+    // A failure the program reported before it took any is not
+    // destroyed (one after it took some is:
+    // `a_take_that_failed_part_way_is_destroyed`).
     let (done, words) = taken_unread(
         br#"{"return":{"failed":"tank/db@skz-1","errno":"28"}}"#,
         Ok(""),
     );
     assert_eq!(words, [SNAPSHOT_WORDS]);
     assert!(matches!(done, Err(ZfsError::Other(_))));
+}
+
+/// A take the program says failed after it took some members' `@t`, on
+/// any errno but `EEXIST`, is destroyed, and the error says what was
+/// taken and what became of it (the lead's decision on testing's scale
+/// run: 10000 file systems, `ENOSPC` after 4563). Nothing taken, or
+/// `EEXIST`, destroys nothing. Mutants: the destroy left out; run with
+/// nothing taken; run after `EEXIST`; its failure lost.
+#[test]
+fn a_take_that_failed_part_way_is_destroyed() {
+    // ENOSPC, EDQUOT (Linux), EIO; the first as the scale run recorded it.
+    for (errno, stdout) in [
+        (
+            "28",
+            r#"{"return":{"errno":"28","taken":"4563","failed":"skzqs/d5199@t"}}"#,
+        ),
+        (
+            "122",
+            r#"{"return":{"failed":"tank/db@skz-1","errno":"122","taken":"2"}}"#,
+        ),
+        (
+            "5",
+            r#"{"return":{"failed":"tank/db@skz-1","errno":"5","taken":"1"}}"#,
+        ),
+    ] {
+        let (done, words) = taken_unread(stdout.as_bytes(), Ok(""));
+        assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{errno}");
+        let Err(ZfsError::Other(why)) = done else {
+            panic!("{errno}: {done:?}");
+        };
+        assert!(why.contains(&format!("errno {errno}, after ")), "{why}");
+        assert!(why.ends_with("; tank@skz-1 destroyed"), "{why}");
+        assert_eq!(why.matches("zfs program").count(), 1, "{why}");
+    }
+    // The destroy itself fails: the error says so, and what was taken.
+    let (done, words) = taken_unread(
+        br#"{"return":{"failed":"tank/db@skz-1","errno":"28","taken":"3"}}"#,
+        Err("cannot destroy snapshot tank@skz-1: pool I/O is currently suspended\n"),
+    );
+    assert_eq!(words, [SNAPSHOT_WORDS, DESTROY]);
+    assert!(
+        matches!(&done, Err(ZfsError::Other(why))
+            if why.contains("after 3 were taken") && why.contains("tank@skz-1 could not be destroyed")),
+        "{done:?}"
+    );
+    // Nothing taken, or a name that exists: nothing destroyed.
+    for stdout in [
+        r#"{"return":{"failed":"tank/db@skz-1","errno":"28","taken":"0"}}"#,
+        r#"{"return":{"failed":"tank/db@skz-1","errno":"28"}}"#,
+        r#"{"return":{"failed":"tank/db@skz-1","errno":"17","taken":"1"}}"#,
+    ] {
+        let (done, words) = taken_unread(stdout.as_bytes(), Ok(""));
+        assert_eq!(words, [SNAPSHOT_WORDS], "{stdout}");
+        assert!(
+            matches!(done, Err(ZfsError::Other(_))),
+            "{stdout}: {done:?}"
+        );
+    }
+}
+
+/// `zfs destroy` reads `%` ranges and `,` lists after the `@`: a name
+/// that is not a snapshot's name is not destroyed (NL-S1). Mutant: the
+/// guard left out.
+#[test]
+fn what_is_not_a_snapshots_name_is_not_destroyed() {
+    for t in ["a%z", "a,b", ""] {
+        let mut zfs = cli(Fake::default());
+        let ZfsError::Other(why) = zfs.destroy_taken("tank", t, "cut off") else {
+            panic!("{t}");
+        };
+        assert!(why.contains("was not destroyed"), "{t}: {why}");
+        assert!(zfs.host().words().is_empty(), "{t}");
+    }
 }
 
 /// A local property's value comes as it is when it is printable ASCII
@@ -614,7 +696,7 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
     fake.ok(
         SNAPSHOT_WORDS,
         &with(
-            r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~"}"#,
+            r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~","a:del":{"encoding":"hex","value":"7f"},"a:us":{"encoding":"hex","value":"1f"},"a:space":" "}"#,
         ),
     );
     let program = cli(fake).snapshot("tank", "skz-1").expect("taken");
@@ -623,6 +705,11 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
     assert_eq!(local["a:bad"], [0xff, 0x00, 0xfe]);
     assert_eq!(local["a:tab"], b"\ta");
     assert_eq!(local["a:plain"], b"x y~");
+    // The edges of printable, where the program and the adapter must
+    // agree (NL-F3): 0x1f and 0x7f in hex, 0x20 as it is.
+    assert_eq!(local["a:del"], [0x7f]);
+    assert_eq!(local["a:us"], [0x1f]);
+    assert_eq!(local["a:space"], b" ");
     for bad in [
         r#"{"a":"caf\u00e9"}"#,
         r#"{"a":"a\tb"}"#,
@@ -630,6 +717,10 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
         r#"{"a":{"encoding":"hex","value":"e"}}"#,
         r#"{"a":{"encoding":"hex","value":"+e"}}"#,
         r#"{"a":{"encoding":"hex","value":"61"}}"#,
+        r#"{"a":{"encoding":"hex","value":"20"}}"#,
+        r#"{"a":{"encoding":"hex","value":"7e"}}"#,
+        r#"{"a":"\u007f"}"#,
+        r#"{"a":"\u001f"}"#,
         r#"{"a":{"encoding":"hex","value":"zz"}}"#,
         r#"{"a":{"encoding":"base64","value":"6Q=="}}"#,
         r#"{"a":{"encoding":"hex","value":"e9","x":"1"}}"#,
@@ -639,6 +730,33 @@ fn a_value_that_is_not_printable_ascii_comes_in_hex() {
         assert!(matches!(done, Err(ZfsError::Other(_))), "{bad}: {done:?}");
         assert_eq!(words, [SNAPSHOT_WORDS, DESTROY], "{bad}");
     }
+}
+
+/// The program and the manifest decide what is printable in the same
+/// place (NL-F3): the program's pattern is `[^\32-\126]`, and
+/// `manifest::plain` takes 0x20 to 0x7e. Mutant: `plain` widened to 0x7f.
+#[test]
+fn the_program_and_the_manifest_agree_on_what_is_printable() {
+    assert!(SNAPSHOT_PROGRAM.contains(r#"string.find(v, "[^\32-\126]")"#));
+    for b in 0..=u8::MAX {
+        assert_eq!(manifest::plain(&[b]), (32..=126).contains(&b), "{b:#04x}");
+    }
+}
+
+/// A message is read after the line's last `": "`, so that a name
+/// holding `": "` and the words looked for cannot say them (NL-T3).
+/// Mutant: the first `": "` taken.
+#[test]
+fn a_name_that_holds_the_words_does_not_say_them() {
+    let line = b"cannot hold 'tank/x: no such pool@skz-1': tag already exists\n";
+    assert!(says(line, "tag already exists"));
+    assert!(!says(line, "no such pool"));
+    let line = b"cannot open 'tank/a: b': dataset does not exist\n";
+    assert!(says(line, "dataset does not exist"));
+    assert!(!says(
+        b"cannot open 'tank/dataset does not exist: x': permission denied\n",
+        "dataset does not exist"
+    ));
 }
 
 const MEMBERS_WORDS: &str = "zfs program -n -j -t 100000000 -m 104857600 tank - tank skz-1";
@@ -836,7 +954,10 @@ fn held_is_the_tag_on_every_members_snapshot() {
     let every = format!("{ROOT}{DB}");
     assert_eq!(
         held(Ok(&every), Some(BOTH)),
-        (Ok(true), vec![HOLDS_R.to_string(), MEMBERS_WORDS.to_string()])
+        (
+            Ok(true),
+            vec![HOLDS_R.to_string(), MEMBERS_WORDS.to_string()]
+        )
     );
     assert_eq!(
         held(Ok(ROOT), Some(BOTH)).0,
@@ -850,7 +971,11 @@ fn held_is_the_tag_on_every_members_snapshot() {
     );
     assert_eq!(held(Ok(""), None).0, Ok(false));
     assert_eq!(
-        held(Err("cannot open 'tank@skz-1': dataset does not exist\n"), None).0,
+        held(
+            Err("cannot open 'tank@skz-1': dataset does not exist\n"),
+            None
+        )
+        .0,
         Ok(false)
     );
     assert_eq!(
