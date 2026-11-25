@@ -192,6 +192,7 @@ fn sample() -> Status {
         shown: StoreShown {
             cuts: Some(Cuts {
                 count: 3,
+                rewound: 0,
                 newest: Some(Cut {
                     number: 3,
                     group: 12,

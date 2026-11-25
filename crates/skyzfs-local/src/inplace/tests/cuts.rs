@@ -874,6 +874,139 @@ fn bytes_zfs_would_pass_over_make_no_cut() {
     }
 }
 
+// ---- The rewind mark (M2.6a, rule (R)) ----
+
+/// The count and the rewind mark.
+fn rewound(store: &InPlace<SimDisk>) -> (u64, u64) {
+    let cuts = store.cuts();
+    (cuts.count, cuts.rewound)
+}
+
+/// A cut whose group is not above the group of the cut before it may
+/// follow a rewind, and moves the rewind mark to its number: another
+/// state under the same group, as the first group of an import by `-F`
+/// writes it, and a lower group, as an import by `-T` or a stale write
+/// makes it. A higher group does not move it; the first cut of a store,
+/// with no cut before it, does not either. A cut that does not move the
+/// mark (the defect `REWIND_UNSEEN`) is noticed.
+#[test]
+fn a_cut_whose_group_is_not_above_the_one_before_marks_a_rewind() {
+    let marks = |mutants: u128| {
+        let disk = created(19, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut seen = Vec::new();
+        for (step, (txg, root)) in [(10, 1), (11, 2), (11, 3), (12, 4), (9, 5), (13, 6)]
+            .into_iter()
+            .enumerate()
+        {
+            group(&mut store, 10 * step as u64 + 1, txg, root);
+            seen.push(rewound(&store));
+        }
+        seen
+    };
+    let wanted = [(1, 0), (2, 0), (3, 3), (4, 3), (5, 5), (6, 5)];
+    assert_eq!(marks(0), wanted);
+    assert_eq!(
+        marks(Mutants::REWIND_UNSEEN),
+        [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)],
+        "a rewind's cut not marked is not noticed"
+    );
+}
+
+/// The rewind of the plan's §0, pinned: after `zpool import -F` the
+/// first group of the new history has the abandoned best's group number,
+/// another root and a later time. Its cut, number 2, is above a publish
+/// asked at count 1 for group 12, of a group not below 12, and opens as
+/// itself: all that carries that publish (M2.5), though the history it
+/// opens may lack the publish's snapshot. Its group is not above the cut
+/// before it, so the rewind mark is 2 and the publish is refused
+/// `rewound` (the lead's answer to the plan's Q1). The repeats after it
+/// change nothing.
+#[test]
+fn a_rewind_by_f_marks_its_first_cut_though_it_opens_as_itself() {
+    let seen = |mutants: u128| {
+        let disk = created(20, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let write = |label: usize, root: u64, at: u64| {
+            slot_write(ring(label) + 12 * SLOT, stamped(12, root, at))
+        };
+        let mut seen = Vec::new();
+        for label in 0..LABELS {
+            step(&mut store, write(label, 1, 100));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((rewound(&store), newest(&store)));
+        // The import by -F: group 12 again, another root, later.
+        for label in 0..2 {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((rewound(&store), newest(&store)));
+        for label in 2..LABELS {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((rewound(&store), newest(&store)));
+        seen
+    };
+    assert_eq!(
+        seen(0),
+        [
+            ((1, 0), Some((12, true))),
+            ((2, 2), Some((12, true))),
+            ((2, 2), Some((12, true)))
+        ]
+    );
+    assert_eq!(
+        seen(Mutants::REWIND_UNSEEN),
+        [
+            ((1, 0), Some((12, true))),
+            ((2, 0), Some((12, true))),
+            ((2, 0), Some((12, true)))
+        ],
+        "the -F rewind's first cut not marked is not noticed"
+    );
+}
+
+/// A start that takes up a count takes it as the rewind mark: the mark
+/// is in memory, and what the instance before saw between its last
+/// answer and its death is not known (the lead's answer to the plan's
+/// Q1). Cuts after the start move the mark as before. A start that
+/// forgets it (the defect `REWIND_START_FORGOTTEN`) is noticed.
+#[test]
+fn a_take_over_takes_the_count_it_starts_with_as_a_rewind() {
+    let marks = |mutants: u128| {
+        let disk = created(21, 0);
+        let region = region();
+        let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+        let mut seen = vec![rewound(&store)];
+        group(&mut store, 1, 20, 1);
+        group(&mut store, 11, 21, 2);
+        seen.push(rewound(&store));
+        drop(store);
+        disk.kill();
+        let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+        assert_eq!(store.cuts_at_start(), Some(&CutsTakenUp::TakenUp));
+        seen.push(rewound(&store));
+        group(&mut store, 21, 22, 3);
+        seen.push(rewound(&store));
+        group(&mut store, 31, 22, 4);
+        seen.push(rewound(&store));
+        seen
+    };
+    assert_eq!(marks(0), [(0, 0), (2, 0), (2, 2), (3, 2), (4, 4)]);
+    assert_eq!(
+        marks(Mutants::REWIND_START_FORGOTTEN),
+        [(0, 0), (2, 0), (2, 0), (3, 0), (4, 4)],
+        "a start that forgets its count is not noticed"
+    );
+}
+
 // ---- Held cuts (M2.2): the cut state through the store ----
 
 /// The tests' volume, in blocks.

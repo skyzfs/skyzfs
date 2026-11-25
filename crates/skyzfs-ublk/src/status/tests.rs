@@ -54,6 +54,7 @@ fn sample() -> Status {
             }),
             cuts: Some(Cuts {
                 count: 29,
+                rewound: 0,
                 newest: Some(Cut {
                     number: 29,
                     group: 30,
@@ -1480,6 +1481,7 @@ fn a_change_of_the_store_alone_is_written() {
     let cut = StoreShown {
         cuts: Some(Cuts {
             count: 1,
+            rewound: 0,
             newest: Some(Cut {
                 number: 1,
                 group: 9,

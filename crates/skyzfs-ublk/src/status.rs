@@ -1275,6 +1275,9 @@ fn decode(bytes: &[u8]) -> Option<Status> {
                 group: field(after(296)),
                 itself: version >= 12 && field(304) == 1,
             }),
+            // The status file does not carry the rewind mark (M2.6a):
+            // the uploader reads it from the store, not from here.
+            rewound: 0,
         };
         let held = (version >= 13).then(|| HeldShown {
             state: CutStateShown::of(field(312)),
