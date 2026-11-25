@@ -74,3 +74,75 @@ test engine::tests::review_n1_a_too_old_publish_lets_its_hold_go_while_its_reque
 test engine::tests::review_d1_a_publish_whose_cuts_never_upload_is_never_bounded ... FAILED
 test plan::tests::review_n1_too_old_with_an_answer_of_a_daemon_away ... FAILED
 test result: FAILED. 71 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+## At 6b05991, the same scratch tests appended (the same command; stack backtraces left out). Each line as at 45648ab. The record test's text names 45648ab: `record.rs` is unchanged by 6b05991.
+
+running 8 tests
+test engine::tests::review_d1_a_publish_whose_cuts_never_upload_is_never_bounded ... 
+thread 'engine::tests::review_d1_a_publish_whose_cuts_never_upload_is_never_bounded' (5378) panicked at crates/skyzfs-agent/src/engine/tests.rs:1665:5:
+settled
+FAILED
+test engine::tests::review_f1_a_snapshot_gone_report_is_lost_to_a_stop_after_the_done_commit ... 
+thread 'engine::tests::review_f1_a_snapshot_gone_report_is_lost_to_a_stop_after_the_done_commit' (5380) panicked at crates/skyzfs-agent/src/engine/tests.rs:1645:13:
+stopped: [("skz-20261125T010000Z", SnapshotGone)]
+FAILED
+test engine::tests::review_n1_a_too_old_publish_lets_its_hold_go_while_its_request_pends ... age_max 60s: given up at 63 s with the daemon saying Pending; snap/skz-20261125T010003Z on (cut, holds pool@t): Some((6, false))
+0: group 5 (created): cut 1 group 5 itself true
+cut 1 committed
+3000: group 6 (before the publish): cut 2 group 6 itself true
+3000: group 7 (snapshot): cut 3 group 7 itself true
+3000: group 8 (hold): cut 4 group 8 itself true
+63000: group 9 (release): cut 5 group 9 itself true
+user Destroy skz-20261125T010003Z
+63000: group 10 (destroy): cut 6 group 10 itself true
+cut 2 committed
+cut 6 committed
+snap/skz-20261125T010003Z made on cut 6
+age_max 7200s: [("skz-20261125T010003Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]; snap/skz-20261125T010003Z on (cut, holds pool@t): Some((4, true))
+ok
+test engine::tests::review_n2_take_overs_with_no_cut_count_as_stalls ... review_n2: given up after 0 s
+ok
+test engine::tests::review_n3_a_publish_renamed_at_its_program_is_aged_on_the_wall_clock ... rename false: [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]
+rename true: [("skz-20261125T040000Z", Abandoned(TooOld))]
+ok
+test plan::tests::review_n1_too_old_with_an_answer_of_a_daemon_away ... asked, no-answer, before held_until: planned Release; the docs: Wait
+asked, stopped, before held_until: planned Release; the docs: Wait
+asked, ended, before held_until: planned Release; the docs: Wait
+asked, no-upload, before held_until: planned Release; the docs: Wait
+held, no-answer (to a publish: 'a publish may have been taken'): planned Release; the docs: Wait
+asked, refused asked (another request of the name pends): planned Release; the docs: Withdraw
+asked, no-answer, not yet looked: planned Look; the docs: Wait
+ok
+test plan::tests::review_n4_too_old_done_not_seen_is_given_up ... ok
+test record::tests::review_v2_before_begun_ms_is_read_as ... b5063b2's golden record read at 45648ab: Err(Body("Tried to parse invalid utf-8"))
+ok
+
+failures:
+
+failures:
+    engine::tests::review_d1_a_publish_whose_cuts_never_upload_is_never_bounded
+    engine::tests::review_f1_a_snapshot_gone_report_is_lost_to_a_stop_after_the_done_commit
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.12s
+
+## At 6b05991 with the candidate fix of N1 (the same diff, applied cleanly), the whole suite (cargo test -p skyzfs-agent --lib)
+test engine::tests::review_f1_a_snapshot_gone_report_is_lost_to_a_stop_after_the_done_commit ... FAILED
+test engine::tests::review_n1_a_too_old_publish_lets_its_hold_go_while_its_request_pends ... FAILED
+test engine::tests::review_d1_a_publish_whose_cuts_never_upload_is_never_bounded ... FAILED
+test plan::tests::review_n1_too_old_with_an_answer_of_a_daemon_away ... FAILED
+test result: FAILED. 71 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+## At 6b05991: plant G4 (`self.clock.now_ms().max(self.assists)` in engine.rs) in `each_sync_task_sets_a_value_of_its_own`, traced (cargo test -p skyzfs-agent --lib each_sync_task_sets_a_value_of_its_own -- --nocapture, with an eprintln of world.assists and the log's assist lines added to the test)
+After the agent's clock steps back an hour, the second publish's sync task sets the first publish's value again, hundreds of times:
+zpool sync alone (value 1795568410000 again): no group
+... (the same line repeated)
+3623000: group 15 (zfs set skyzfs:assist): cut 2 group 15 itself true
+snap/skz-20261125T000013Z made on cut 2
+test engine::tests::each_sync_task_sets_a_value_of_its_own ... ok
+(The stepped-back clock passes the last value after about an hour, a new value writes a group, and the publish is published before its eighth stall at about 80 minutes. `world.assists` holds only the values that wrote, so the test's check that the values differ sees none of the repeats.)
+
+## At 6b05991: the same test with one check added, that no set repeated a value (the fake's log line "again")
+    let again: Vec<_> = world.log.iter().filter(|l| l.contains("again")).collect();
+    assert!(again.is_empty(), "{} sets of a value held", again.len());
+At the head: test result: ok. 1 passed
+With plant G4: panicked at crates/skyzfs-agent/src/engine/tests.rs:523:5: 366 sets of a value held; test result: FAILED

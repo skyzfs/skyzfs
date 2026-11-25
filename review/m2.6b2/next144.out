@@ -1,3 +1,4 @@
+# At 45648ab: python3 next144.py (the plants F*, T*, A*, Q*; the G* plants were written for 6b05991)
 F1a the report after the save of Done (the order at b5063b2): KILLED: engine::tests::a_snapshot_gone_report_is_made_however_the_agent_stops_after_the_loss (7s)
 F1b the report of Done dropped (the first look's V22): KILLED: engine::tests::a_restart_as_the_cuts_are_read_is_met, engine::tests::a_restart_as_the_cuts_are_read_is_met_with_the_agent_down_after_it_asks, engine::tests::a_restart_under_a_running_agent_at_any_point_is_met, engine::tests::a_snapshot_gone_report_is_made_however_the_agent_stops_after_the_loss and 3 more (7s)
 F1c the report of Done made each time it is planned (no de-duplication): SURVIVED (6s)

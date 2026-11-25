@@ -1,4 +1,5 @@
-"""Textual plants for the next look at #144 (M2.6b2) at 45648ab, one at a
+"""Textual plants for the next look at #144 (M2.6b2), at 45648ab and again
+at 6b05991, one at a
 time, each file restored from its saved text in `finally`, 600 s each.
 A plant is a list of edits (file, old, new); each old text must occur
 once, or the plant is NOT APPLIED. Run from a clean worktree of the
@@ -7,7 +8,12 @@ head: WORKTREE=<path> OUT=<json> python3 next144.py [name prefixes...]
 F*: F1's fix (28d1d64) and T1's check. T2*: D5's re-checks (the first
 look's V15 to V17). T3*: `Disk` (the first look's V9 to V11, and the
 author's T3b to T3d as their names read). A*: the age bound (45648ab).
-Q*: the pace (f6ef194)."""
+Q*: the pace (f6ef194). G*: the fake's assist (6b05991): G1 the second
+group removed, G2 the agent's value set again with the fake writing
+groups for a value it holds (as ZFS 2.4.1 does), G3 the agent's value
+set again alone (the control of G2), G4 the value not above the last
+(the mutant a clock stepped back makes), G5 G4 with G2's fake. The A*, F*, T*, Q* plants apply at
+both heads; the G* plants only at 6b05991."""
 import json, os, subprocess, sys, time
 
 W = os.environ.get("WORKTREE", ".")
@@ -17,6 +23,9 @@ SUITE = ["cargo", "test", "-p", "skyzfs-agent", "--lib", "--", "--skip", "review
 PL = "crates/skyzfs-agent/src/plan.rs"
 EN = "crates/skyzfs-agent/src/engine.rs"
 FS = "crates/skyzfs-agent/src/fs.rs"
+FK = "crates/skyzfs-agent/src/engine/fake.rs"
+VALUE_MAX = (EN, "                let value = self.clock.now_ms().max(self.assists.saturating_add(1));\n",
+             "                let value = self.clock.now_ms().max(self.assists);\n")
 
 REPORT = ("                if let Some(report) = report {\n"
           "                    let made = (name.clone(), report);\n"
@@ -121,6 +130,22 @@ P = [
     ("Q4 every sync a pause apart (no spacing)", [(PL,
         "        let pause = if assists < ASSIST_QUICK {\n            ASSIST_PAUSE\n        } else {\n            ASSIST_AFTER\n        };\n",
         "        let _ = assists;\n        let pause = ASSIST_PAUSE;\n")]),
+    # The fake's assist (6b05991).
+    ("G1 the fake's assist writes one group (the history record's removed)", [(FK,
+        "            world.sync(\"zfs set skyzfs:assist\");\n            world.sync(\"zpool sync: the set's history record\");\n",
+        "            world.sync(\"zfs set skyzfs:assist\");\n")]),
+    ("G2 the agent's value set again, the fake writing groups for a value it holds", [(FK,
+        "                .push(format!(\"zpool sync alone (value {value} again): no group\"));\n",
+        "                .push(format!(\"zpool sync alone (value {value} again): no group\"));\n            world.sync(\"zfs set skyzfs:assist (the value it holds)\");\n            world.sync(\"zpool sync: the set's history record\");\n"),
+    (EN, "                let value = self.clock.now_ms().max(self.assists.saturating_add(1));\n",
+         "                let value = self.assists.max(1);\n")]),
+    ("G3 the agent's value set again (the control of G2)", [(EN, "                let value = self.clock.now_ms().max(self.assists.saturating_add(1));\n",
+         "                let value = self.assists.max(1);\n")]),
+    ("G4 the agent's value not above the last one (max without + 1)", [VALUE_MAX]),
+    ("G5 G4, the fake writing groups for a value it holds", [(FK,
+        "                .push(format!(\"zpool sync alone (value {value} again): no group\"));\n",
+        "                .push(format!(\"zpool sync alone (value {value} again): no group\"));\n            world.sync(\"zfs set skyzfs:assist (the value it holds)\");\n            world.sync(\"zpool sync: the set's history record\");\n"),
+        VALUE_MAX]),
 ]
 
 want = sys.argv[1:]
