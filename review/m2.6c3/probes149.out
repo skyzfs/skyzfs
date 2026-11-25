@@ -1,0 +1,88 @@
+== usage
+
+  exit 2 | out:  | err: skyzfs-agent: no command
+--help
+  exit 0 | out: usage: | err: 
+publish --help
+  exit 2 | out:  | err: skyzfs-agent: --help needs a value
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --help
+  exit 2 | out:  | err: skyzfs-agent: --help needs a value
+frobnicate
+  exit 2 | out:  | err: skyzfs-agent: no command "frobnicate"
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --nope 1
+  exit 2 | out:  | err: skyzfs-agent: publish takes no option --nope
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --pool tank2
+  exit 2 | out:  | err: skyzfs-agent: --pool is given twice
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --limit-s
+  exit 2 | out:  | err: skyzfs-agent: --limit-s needs a value
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir word
+  exit 2 | out:  | err: skyzfs-agent: "word" is not an option
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --limit-s 0
+  exit 2 | out:  | err: skyzfs-agent: --limit-s: "0" is not a whole number of seconds, at least 1
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --limit-s 1.5
+  exit 2 | out:  | err: skyzfs-agent: --limit-s: "1.5" is not a whole number of seconds, at least 1
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --expiry-s 100000000
+  exit 2 | out:  | err: skyzfs-agent: --expiry-s: at most 3600 s
+settle --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --expiry-s 60
+  exit 2 | out:  | err: skyzfs-agent: settle takes no option --expiry-s
+recover --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --name t
+  exit 2 | out:  | err: skyzfs-agent: recover takes one of --give-up and --retry
+recover --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --name t --give-up --retry
+  exit 2 | out:  | err: skyzfs-agent: recover takes one of --give-up and --retry
+recover --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --name t --retry=yes
+  exit 2 | out:  | err: skyzfs-agent: --retry takes no value
+record
+  exit 2 | out:  | err: skyzfs-agent: --dir is needed
+record --dir <tmp>/dir --pool tank
+  exit 2 | out:  | err: skyzfs-agent: record takes no option --pool
+== a value option takes the next option as its value (S3)
+recover --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --name --give-up --retry
+  exit 1 | out:  | err: skyzfs-agent: no publish --give-up is under way
+publish --volume --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir
+  exit 2 | out:  | err: skyzfs-agent: "<tmp>/run" is not an option
+== the test hooks, refused without the feature
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --kill-at take:before
+  exit 2 | out:  | err: skyzfs-agent: --kill-at is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --kill-at=take:before
+  exit 2 | out:  | err: skyzfs-agent: --kill-at is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --trace-points f
+  exit 2 | out:  | err: skyzfs-agent: --trace-points is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --trace-points=f
+  exit 2 | out:  | err: skyzfs-agent: --trace-points is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --assist-after-s 5
+  exit 2 | out:  | err: skyzfs-agent: --assist-after-s is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --assist-after-s=5
+  exit 2 | out:  | err: skyzfs-agent: --assist-after-s is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --age-max-s 5
+  exit 2 | out:  | err: skyzfs-agent: --age-max-s is a test hook: this build has no feature test-hooks
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --age-max-s=5
+  exit 2 | out:  | err: skyzfs-agent: --age-max-s is a test hook: this build has no feature test-hooks
+record --dir <tmp>/dir --kill-at take:before
+  exit 2 | out:  | err: skyzfs-agent: record takes no option --kill-at
+== an argument not UTF-8
+publish --volume <tmp>/vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir --name aÿ
+  exit 2 | out:  | err: skyzfs-agent: "a\xFF" is not UTF-8
+== record
+record --dir <tmp>/dir
+  exit 0 | out: absent | err: 
+record --dir <tmp>/no-such-directory
+  exit 0 | out: absent | err: 
+record --dir <tmp>/dir-with-a-dir
+  exit 1 | out:  | err: skyzfs-agent: <tmp>/dir-with-a-dir: Is a directory (os error 21)
+record --dir <tmp>/dir-corrupt
+  exit 6 | out:  | err: skyzfs-agent: <tmp>/dir-corrupt: the record is corrupt: 12 bytes: shorter than any record
+== record into a closed pipe (S4; a record this small may fit the pipe)
+
+thread 'main' (2216) panicked at /rustc/0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/io/stdio.rs:1209:9:
+failed printing to stdout: Broken pipe (os error 32)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: std::io::stdio::_print
+   3: skyzfs_agent::run
+   4: skyzfs_agent::main
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+  exit 101
+== volume's remote missing
+settle --volume <tmp>/no-vol --run <tmp>/run --device /dev/ublkb0 --pool tank --dir <tmp>/dir
+  exit 1 | out:  | err: skyzfs-agent: <tmp>/no-vol/remote: No such file or directory (os error 2) (a volume with no place in object storage publishes nothing)

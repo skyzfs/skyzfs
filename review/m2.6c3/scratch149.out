@@ -1,0 +1,127 @@
+# scratch149.rs at af50814: cargo test -p skyzfs-agent --lib review_scratch -- --nocapture --test-threads=1
+# A FAILED test is a finding (review.md): R1, R2 for B1; R3 for D2; R4 and R5 print readings.
+
+running 5 tests
+R1: settled=Ok(()) outcomes=[("skz-20261125T010000Z", Abandoned(Person))] holds=[] asked=true
+
+thread 'program::review_scratch::r1_person_give_up_keeps_the_hold_while_the_uploader_does_not_answer' (2415) panicked at crates/skyzfs-agent/src/program/review_scratch.rs:107:5:
+the hold was released while the request still pends: [("skz-20261125T010000Z", Abandoned(Person))]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::program::review_scratch::r1_person_give_up_keeps_the_hold_while_the_uploader_does_not_answer::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+program::review_scratch::r1_person_give_up_keeps_the_hold_while_the_uploader_does_not_answer --- FAILED
+R2 Idle: settled=Ok(()) outcomes=[("skz-20261125T010000Z", Abandoned(Person))] destroyed=true snap/t=true cut holds pool@t=Some(false)
+log=["0: group 5 (created): cut 1 group 5 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 8 (release): cut 4 group 8 itself true", "user Destroy skz-20261125T010000Z", "0: group 9 (destroy): cut 5 group 9 itself true", "cut 1 committed", "cut 5 committed", "snap/skz-20261125T010000Z made on cut 5", "150000: group 10 (later): cut 6 group 10 itself true", "cut 6 committed"]
+R2 Abandoned: settled=Ok(()) outcomes=[("skz-20261125T010000Z", Abandoned(Person))] destroyed=true snap/t=true cut holds pool@t=Some(false)
+log=["0: group 5 (created): cut 1 group 5 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 8 (release): cut 4 group 8 itself true", "user Destroy skz-20261125T010000Z", "0: group 9 (destroy): cut 5 group 9 itself true", "cut 1 committed", "cut 5 abandoned", "150000: group 10 (later): cut 6 group 10 itself true", "cut 6 committed", "snap/skz-20261125T010000Z made on cut 6"]
+
+thread 'program::review_scratch::r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapshot' (2416) panicked at crates/skyzfs-agent/src/program/review_scratch.rs:126:5:
+snap/t was published by a cut without pool@t after the person's give-up, in [Idle, Abandoned]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::program::review_scratch::r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapshot::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+program::review_scratch::r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapshot --- FAILED
+R3: code=7 out="snap/skz-20261125T010000Z-1 0400000000000000739ecbdab87fa2da00000000000000000000000000000000\n" err=""
+
+thread 'program::review_scratch::r3_publish_exits_by_its_outcome_after_its_name_moved' (2417) panicked at crates/skyzfs-agent/src/program/review_scratch.rs:214:5:
+assertion `left == right` failed: a publish made exits 7: snap/skz-20261125T010000Z-1 0400000000000000739ecbdab87fa2da00000000000000000000000000000000
+
+  left: 7
+ right: 0
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<i32, i32>
+   4: <skyzfs_agent::program::review_scratch::r3_publish_exits_by_its_outcome_after_its_name_moved::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+program::review_scratch::r3_publish_exits_by_its_outcome_after_its_name_moved --- FAILED
+R4: worst(stopped, unsettled) = 7
+.R5: pending            snap=None withdrawn=false: person Withdraw | too-old Withdraw
+R5: pending            snap=None withdrawn=true: person Look | too-old Withdraw
+R5: pending            snap=Some(Absent) withdrawn=false: person Withdraw | too-old Withdraw
+R5: pending            snap=Some(Absent) withdrawn=true: person Release | too-old Withdraw
+R5: accepted           snap=None withdrawn=false: person Withdraw | too-old Wait
+R5: accepted           snap=None withdrawn=true: person Look | too-old Wait
+R5: accepted           snap=Some(Absent) withdrawn=false: person Withdraw | too-old Wait
+R5: accepted           snap=Some(Absent) withdrawn=true: person Release | too-old Wait
+R5: absent             snap=None withdrawn=false: person Look | too-old Withdraw
+R5: absent             snap=None withdrawn=true: person Look | too-old Withdraw
+R5: absent             snap=Some(Absent) withdrawn=false: person Release | too-old Withdraw
+R5: absent             snap=Some(Absent) withdrawn=true: person Release | too-old Withdraw
+R5: unknown            snap=None withdrawn=false: person Look | too-old Withdraw
+R5: unknown            snap=None withdrawn=true: person Look | too-old Look
+R5: unknown            snap=Some(Absent) withdrawn=false: person Release | too-old Withdraw
+R5: unknown            snap=Some(Absent) withdrawn=true: person Release | too-old Release
+R5: expired            snap=None withdrawn=false: person Look | too-old Withdraw
+R5: expired            snap=None withdrawn=true: person Look | too-old Look
+R5: expired            snap=Some(Absent) withdrawn=false: person Release | too-old Withdraw
+R5: expired            snap=Some(Absent) withdrawn=true: person Release | too-old Release
+R5: withdrawn          snap=None withdrawn=false: person Look | too-old Withdraw
+R5: withdrawn          snap=None withdrawn=true: person Look | too-old Look
+R5: withdrawn          snap=Some(Absent) withdrawn=false: person Release | too-old Withdraw
+R5: withdrawn          snap=Some(Absent) withdrawn=true: person Release | too-old Release
+R5: done               snap=None withdrawn=false: person Look | too-old Look
+R5: done               snap=None withdrawn=true: person Look | too-old Look
+R5: done               snap=Some(Absent) withdrawn=false: person Release | too-old Stop(DoneNotSeen)
+R5: done               snap=Some(Absent) withdrawn=true: person Release | too-old Stop(DoneNotSeen)
+R5: refused asked      snap=None withdrawn=false: person Withdraw | too-old Withdraw
+R5: refused asked      snap=None withdrawn=true: person Look | too-old Withdraw
+R5: refused asked      snap=Some(Absent) withdrawn=false: person Withdraw | too-old Withdraw
+R5: refused asked      snap=Some(Absent) withdrawn=true: person Release | too-old Withdraw
+R5: refused busy       snap=None withdrawn=false: person Look | too-old Wait
+R5: refused busy       snap=None withdrawn=true: person Look | too-old Wait
+R5: refused busy       snap=Some(Absent) withdrawn=false: person Release | too-old Wait
+R5: refused busy       snap=Some(Absent) withdrawn=true: person Release | too-old Wait
+R5: refused no-answer  snap=None withdrawn=false: person Look | too-old Wait
+R5: refused no-answer  snap=None withdrawn=true: person Look | too-old Wait
+R5: refused no-answer  snap=Some(Absent) withdrawn=false: person Release | too-old Wait
+R5: refused no-answer  snap=Some(Absent) withdrawn=true: person Release | too-old Wait
+R5: refused ended      snap=None withdrawn=false: person Look | too-old Wait
+R5: refused ended      snap=None withdrawn=true: person Look | too-old Wait
+R5: refused ended      snap=Some(Absent) withdrawn=false: person Release | too-old Wait
+R5: refused ended      snap=Some(Absent) withdrawn=true: person Release | too-old Wait
+R5: refused no-upload  snap=None withdrawn=false: person Look | too-old Wait
+R5: refused no-upload  snap=None withdrawn=true: person Look | too-old Wait
+R5: refused no-upload  snap=Some(Absent) withdrawn=false: person Release | too-old Wait
+R5: refused no-upload  snap=Some(Absent) withdrawn=true: person Release | too-old Wait
+R5: refused rewound    snap=None withdrawn=false: person Look | too-old Look
+R5: refused rewound    snap=None withdrawn=true: person Look | too-old Look
+R5: refused rewound    snap=Some(Absent) withdrawn=false: person Release | too-old Release
+R5: refused rewound    snap=Some(Absent) withdrawn=true: person Release | too-old Release
+R5: refused stopped    snap=None withdrawn=false: person Look | too-old Look
+R5: refused stopped    snap=None withdrawn=true: person Look | too-old Look
+R5: refused stopped    snap=Some(Absent) withdrawn=false: person Release | too-old Release
+R5: refused stopped    snap=Some(Absent) withdrawn=true: person Release | too-old Release
+R5: refused store      snap=None withdrawn=false: person Look | too-old Look
+R5: refused store      snap=None withdrawn=true: person Look | too-old Look
+R5: refused store      snap=Some(Absent) withdrawn=false: person Release | too-old Release
+R5: refused store      snap=Some(Absent) withdrawn=true: person Release | too-old Release
+
+thread 'program::review_scratch::r5_person_give_up_against_the_age_bound_per_answer' (2419) panicked at crates/skyzfs-agent/src/program/review_scratch.rs:342:5:
+released with a silent uploader: [
+    "refused no-answer snap=Some(Absent) withdrawn=false: Release",
+]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::program::review_scratch::r5_person_give_up_against_the_age_bound_per_answer::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ 4/5
+program::review_scratch::r5_person_give_up_against_the_age_bound_per_answer --- FAILED
+
+failures:
+
+failures:
+    program::review_scratch::r1_person_give_up_keeps_the_hold_while_the_uploader_does_not_answer
+    program::review_scratch::r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapshot
+    program::review_scratch::r3_publish_exits_by_its_outcome_after_its_name_moved
+    program::review_scratch::r5_person_give_up_against_the_age_bound_per_answer
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 143 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`

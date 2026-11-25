@@ -119,7 +119,19 @@ fn r1_person_give_up_keeps_the_hold_while_the_uploader_does_not_answer() {
 /// the agent places a hold").
 #[test]
 fn r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapshot() {
-    let world = World::new(Mode::Abandoned);
+    let wrong: Vec<Mode> = [Mode::Idle, Mode::Abandoned]
+        .into_iter()
+        .filter(|&mode| r2_in(mode))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "snap/t was published by a cut without pool@t after the person's give-up, in {wrong:?}"
+    );
+}
+
+/// Whether `snap/t` was published by a cut without `pool@t`.
+fn r2_in(mode: Mode) -> bool {
+    let world = World::new(mode);
     world.borrow_mut().lag_ms = 60_000;
     let keep = MemKeep::default();
     let t = asked_and_stopped(&world, &keep);
@@ -136,7 +148,11 @@ fn r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapsho
     {
         let mut w = world.borrow_mut();
         w.user(User::Destroy, &t);
-        w.advance(Duration::from_secs(300));
+        w.advance(Duration::from_secs(150));
+        // One more group on the pool (any writer): a cut after the
+        // destroy that can take an abandoned cut's map.
+        w.sync("later");
+        w.advance(Duration::from_secs(150));
     }
     let w = world.borrow();
     let row = w.refs.get(&t).cloned();
@@ -150,15 +166,12 @@ fn r2_person_give_up_under_a_busy_uploader_can_publish_a_cut_without_the_snapsho
         .as_ref()
         .is_some_and(|p| p.snaps.contains_key(&format!("{POOL}@{t}")));
     eprintln!(
-        "R2: settled={settled:?} outcomes={outcomes:?} destroyed={destroyed} \
+        "R2 {mode:?}: settled={settled:?} outcomes={outcomes:?} destroyed={destroyed} \
          snap/t={} cut holds pool@t={cut_holds:?}\nlog={:?}",
         row.is_some(),
         w.log
     );
-    assert!(
-        !(row.is_some() && cut_holds == Some(false)),
-        "snap/{t} was published by a cut without {POOL}@{t} after the person's give-up"
-    );
+    row.is_some() && cut_holds == Some(false)
 }
 
 /// R3. A publish whose name is taken by a child's `@t` between `begin`
@@ -276,7 +289,8 @@ fn seen_with(answer: Reply, snap: Option<SnapSeen>, too_old: bool, withdrawn: bo
 /// R5. The planner's table: a person's give-up against the age bound's
 /// give-up (the order of every give-up), for each answer of the daemon,
 /// before `held_until`, with the hold there. Printed; asserted only for
-/// the answers that say the uploader is silent (a request may pend).
+/// the answer that says the uploader is silent (a request may pend),
+/// with no withdraw of its own answered.
 #[test]
 fn r5_person_give_up_against_the_age_bound_per_answer() {
     let answers: Vec<(&str, Reply)> = vec![
@@ -315,7 +329,11 @@ fn r5_person_give_up_against_the_age_bound_per_answer() {
                     answer,
                     Reply::Refused(Code::NoAnswer, _)
                 );
-                if silent && matches!(person, Action::Release | Action::Abandon(_)) {
+                // With a withdraw of its own answered `withdrawn`,
+                // `unknown` or `expired` (`Seen::withdrawn`), nothing
+                // pends and a release is safe: asserted only without.
+                if silent && !withdrawn && matches!(person, Action::Release | Action::Abandon(_))
+                {
                     wrong.push(format!("{word} snap={snap:?} withdrawn={withdrawn}: {person:?}"));
                 }
             }

@@ -1,0 +1,34 @@
+# gates149.sh at af50814 (toolchain up to date by rustup check), on the touched crates; the workspace-wide gates were not run: the shared disk had under 300 MB free.
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+af50814 Merge fixups: the stop test's hook takes the point's detail; a doc link to a private function
+== cargo fmt --all --check
+exit 0
+== cargo clippy -p skyzfs-agent -p skyzfs-agent-cli --all-targets -- -D warnings
+exit 0
+== cargo clippy -p skyzfs-agent -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks --all-targets -- -D warnings
+exit 0
+== cargo test -p skyzfs-agent -p skyzfs-agent-cli
+      2 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0
+== cargo test -p skyzfs-agent -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks
+      2 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-agent-cli
+      1 warning: output filename collision at <scratch>/m2.6c3/target/doc/skyzfs_agent/index.html
+exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks
+      1 warning: output filename collision at <scratch>/m2.6c3/target/doc/skyzfs_agent/index.html
+exit 0
+== cargo build -p skyzfs-agent-cli --release
+exit 0
+killed at: 0
+trace-points: : 0
+is a test hook: 1
+kill_process symbols: 0
+== cargo tree: who enables skyzfs-agent-cli's features in the workspace
+skyzfs-agent-cli v0.0.1 (<wt>/bins/skyzfs-agent)
+└── skyzfs-agent-cli feature "default" (command-line)
