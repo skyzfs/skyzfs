@@ -118,8 +118,11 @@ PLANTS = [
      'prewindf: the import without -F'),
     ('R44', SH, "    top=$(sed -n 's/.* group=\\([0-9]*\\) .*/\\1/p' <<< \"$out\")",
      "    top=$(sed -n 's/.* count=\\([0-9]*\\) .*/\\1/p' <<< \"$out\")", "prewind's top read from the count"),
-    ('R45', SH, "    export_pool\n    zero_newest_root\n    session_begin\n", "    export_pool\n    session_begin\n",
+    ('R45', SH, "    export_pool\n    zero_newest_root\n    # What zpool import sees", "    export_pool\n    # What zpool import sees",
      'rewindf without the damage'),
+    ('R49', SH, "    pask r1-look look r1\n    bash -c \"$S3_UP\"",
+     "    pask r1-look look r1\n    panew r1-anew r1 record\n    bash -c \"$S3_UP\"",
+     "prewind: r1 asked anew before the store comes back (#140's S12)"),
     ('R46', SH, 'PUBLISH_NAMED="pplain prewind prewindf pkill pkillman pkillpub pchannel"',
      'PUBLISH_NAMED="pplain prewind pkill pkillman pkillpub pchannel"', 'prewindf not a course by name'),
     ('R47', SH, "    echo \"$top\" > \"$RDIR/rewind-top.txt\"\n", "    echo 0 > \"$RDIR/rewind-top.txt\"\n",
@@ -171,7 +174,8 @@ def main():
         out.append({'id': pid, 'file': fn, 'what': what, 'verdict': verdict, 'by': by})
     after = run_suites()
     print(f'restored: {"all pass" if not after else "FAILS " + ", ".join(after)}')
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plants141.json'), 'w') as f:
+    name = 'plants141.json' if not ONLY else 'plants141_rerun.json'
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), 'w') as f:
         json.dump(out, f, indent=1)
 
 

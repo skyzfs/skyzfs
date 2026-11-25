@@ -1,0 +1,4 @@
+unplanted: all pass
+R45	KILLED	rewindf without the damage	test_cut_record.sh
+R49	KILLED	prewind: r1 asked anew before the store comes back (#140's S12)	test_cut_record.sh
+restored: all pass

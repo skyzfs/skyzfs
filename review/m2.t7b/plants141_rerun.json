@@ -1,0 +1,20 @@
+[
+ {
+  "id": "R45",
+  "file": "cut-record.sh",
+  "what": "rewindf without the damage",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ },
+ {
+  "id": "R49",
+  "file": "cut-record.sh",
+  "what": "prewind: r1 asked anew before the store comes back (#140's S12)",
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
+ }
+]

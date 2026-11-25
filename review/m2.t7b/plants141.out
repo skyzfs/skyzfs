@@ -47,3 +47,13 @@ R35	KILLED	parse: manifest-len unchecked (A5)	test_publish_agent.py
 R36	KILLED	ask look sends publish-progress (A4)	test_publish_agent.py
 R40	SURVIVED	pplain: t3's look before t5's	
 R41	SURVIVED	prewindf: f1 expires in 5 s	
+R42	SURVIVED	prewindf: f1's end read within 3 s	
+R43	KILLED	prewindf: the import without -F	test_cut_record.sh
+R44	KILLED	prewind's top read from the count	test_cut_record.sh
+R45	NOT APPLIED	rewindf without the damage	0 matches
+R46	KILLED	prewindf not a course by name	test_cut_record.sh
+R47	KILLED	prewind: the top written as 0	test_cut_record.sh
+R48	KILLED	prewind: r1's look before r1 is asked	test_cut_record.sh
+restored: all pass
+
+[exited with code 0]
