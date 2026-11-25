@@ -27,8 +27,9 @@
 #           whether it was seen
 #
 # and one line "NAME<TAB>rc<TAB>note<TAB>cmd" of OUT/index.tsv, in the
-# order each record ended: a record run in the background (mirror-online,
-# mirror-rebuild) comes after the records that watched it. NAME is
+# order each record ended (a record run in the background, mirror-online
+# or mirror-rebuild, can end before or after the records that watched
+# it). NAME is
 # "<pool>-<what>" with pool
 #
 #   rig     skzq: the data on /dev/ublkb0 of the reference ublk server,
@@ -49,12 +50,16 @@
 #           and on it, each with its wall time in secs:
 #             snapshot          the snapshot program at @t
 #             snapshot-cli      zfs snapshot -r P@t, only if the program
-#                               did not take @t
+#                               did not take the whole @t (as above);
+#                               about.txt then says how many it took
 #             members, hold, tagged, release
 #                               at @t, hold and release with -r
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
+#           about.txt gives the members that members and
+#           take-cli-members counted, which is what hold, tagged,
+#           release and destroy ran on.
 #           The snapshot program is not run at a count above
 #           ZCR_SCALE_LUA_MAX, when set; snapshot-cli takes @t there.
 #           Beside the two takes (snapshot, take-cli), from 2 s before
@@ -62,16 +67,21 @@
 #           O_DSYNC writes, a writer of new data past the pool's dirty
 #           data limit, and the pool's transaction groups and timed
 #           `zpool sync` runs. The take's record gets their logs
-#           (writer.tsv, fill.tsv, txg.tsv) and a line for each (stall,
-#           fill, txg); about.txt the same lines, and the dirty data
-#           limit and txg history. The takes' secs are under that
-#           load. At most
+#           (writer.tsv, fill.tsv, txg.tsv), a line for each (stall,
+#           fill, txg) and the window they were read on (window); about.txt
+#           the same lines, and the dirty data limit and txg history.
+#           The takes' secs are under that load, and so are the lines:
+#           txg's before_sync and before_sync_longest are the load's own
+#           before the take. A bounded zpool sync after each take
+#           syncs what the writer of new data left. At most
 #           three counts, each at most 100000 and each once. Each
 #           command's limit is ZCR_SCALE_LIMIT seconds (default 1800),
 #           or what is left of ZCR_SCALE_BUDGET (default 4800 s, for all
 #           counts together) if less; once the budget is spent no
-#           command is started,
-#           and about.txt says where it stopped. about.txt also has df
+#           step is started, and about.txt says where it stopped.
+#           Steps that are not counts' commands (the pool's create and
+#           destroy, the writers' margins and stops) can run past it by
+#           some minutes. about.txt also has df
 #           of WORK before each pool and how long the file systems took
 #           to make
 #
@@ -88,8 +98,11 @@
 #                          the assist: zfs set skyzfs:assist=V POOL, then
 #                          zpool sync POOL
 #   snapshot-1             snapshot.lua at @t
-#   snapshot-cli           only if snapshot-1 did not take @t: zfs
-#                          snapshot -r, so that what follows has its @t
+#   snapshot-cli           only if snapshot-1 did not take the whole
+#                          @t: zfs snapshot -r, so that what follows has
+#                          its @t (cli_snapshot: where the program failed
+#                          part way, what it took is destroyed first,
+#                          snapshot-cli-destroy-partial)
 #   snapshot-2             snapshot.lua at @t again: EEXIST (expected)
 #   members, members-absent, tagged
 #                          members.lua at t and at a t that is absent;
@@ -122,6 +135,11 @@
 #                          snapshot.lua at @p, which refuses at its check
 #                          before taking anything (EEXIST, expected), then
 #                          the snapshots that are there
+#   cli-exists-child, cli-exists-child-after, cli-exists-root
+#                          zfs snapshot -r, the take, where it fails: at
+#                          @p, which the child has ("dataset already
+#                          exists", expected), then the snapshots there;
+#                          at @t, which the root has (expected)
 #   destroy, destroy-after, destroy-absent
 #                          what the adapter runs when it cannot read the
 #                          snapshot program's output: zfs destroy -r P@T,
@@ -132,6 +150,12 @@
 #   destroy-held-hold, destroy-held, destroy-held-after
 #                          the same on @o2 with a hold on the child's
 #                          @o2 alone, then the snapshots there
+#   cli-limit-set, cli-limit, cli-limit-after
+#                          snapshot_limit=0 on the child, then zfs
+#                          snapshot -r at @q, then the snapshots there:
+#                          whether a limit refuses the take run as root
+#                          (the limit is then lifted and @q destroyed,
+#                          with no record)
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -170,7 +194,8 @@
 # and once: `nocacheflush` (the module parameter), `version` and
 # `locale`. On the pool that does not exist, every command the adapter
 # runs: status, status-g, get, assist-set, assist-sync, the three
-# programs, holds, holds-r, hold, release, destroy.
+# programs, holds, holds-r, hold, release, destroy, and the take by
+# zfs snapshot -r (snapshot-cli).
 #
 # Not recorded: the snapshot program's output that cannot be read (the
 # case that makes the adapter run destroy -r), which cannot be made to
@@ -324,6 +349,39 @@ program() {
     rec "$name" --in "$LUA_DIR/$lua" "${expect[@]}" "${env[@]}" zfs program "${ro[@]}" -j "${PROGRAM_LIMITS[@]}" "$p" - "$@"
 }
 
+# partial RECORD: the snapshot program's RECORD says it failed ("failed"
+# in its output), so it may have taken some members and not all.
+partial() { [ -s "$OUT/$1/stdout" ] && grep -q '"failed"' "$OUT/$1/stdout"; }
+
+# cli_snapshot NAME RECORD POOL: POOL@t by zfs snapshot -r (the record
+# NAME) when the program's RECORD did not take all of it: where it
+# failed, what it took is destroyed first (NAME-destroy-partial) and
+# about.txt says how many it had taken; where it did not fail, only
+# when POOL has no @t.
+cli_snapshot() {
+    local name=$1 r=$2 p=$3 taken
+    if partial "$r"; then
+        taken=$(grep -o '"taken": *"[0-9]*"' "$OUT/$r/stdout" | grep -o '[0-9][0-9]*' | head -n 1)
+        echo "$name: $r failed after taking ${taken:-an unknown number of} snapshots: destroyed, and zfs snapshot -r takes @t" >> "$OUT/about.txt"
+        rec "$name-destroy-partial" zfs destroy -r "$p@t"
+    elif lim 120 zfs list -H -o name "$p@t" > /dev/null 2>&1; then
+        return 0
+    fi
+    rec "$name" zfs snapshot -r "$p@t"
+}
+
+# members_line RECORD: how many members the members program's RECORD
+# listed, in about.txt.
+members_line() {
+    local k
+    k=$(python3 -I -c 'import json, sys
+try:
+    print(len(json.load(open(sys.argv[1]))["return"]["members"]))
+except Exception:
+    print("not read")' "$OUT/$1/stdout" 2> /dev/null)
+    echo "scale: $1: ${k:-not read} members" >> "$OUT/about.txt"
+}
+
 # status NAME POOL: zpool status -P and -P -g, the adapter's pair.
 status() {
     rec "$1" zpool status -P "$2"
@@ -370,7 +428,7 @@ record_pool() { # prefix pool
     local x=$1 p=$2
     agent_commands "$x" "$p"
     # Without the program, a snapshot for what follows all the same.
-    zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
+    cli_snapshot "$x-snapshot-cli" "$x-snapshot-1" "$p"
     program "$x-snapshot-2" "$p" snapshot.lua --expect '"errno": *"17"' "$p" t "$ASSIST"
     program "$x-members" "$p" members.lua -n "$p" t
     program "$x-members-absent" "$p" members.lua --expect '"absent"' -n "$p" absent
@@ -405,6 +463,11 @@ record_pool() { # prefix pool
     rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
     program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
     rec "$x-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    # zfs snapshot -r, the take since e6788b0, where it fails: the
+    # child's @p is there, and the root's @t is there.
+    rec "$x-cli-exists-child" --expect 'dataset already exists' zfs snapshot -r "$p@p"
+    rec "$x-cli-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    rec "$x-cli-exists-root" --expect 'dataset already exists' zfs snapshot -r "$p@t"
     # The adapter's destroy -r of a take it cannot read.
     rec "$x-destroy" zfs destroy -r "$p@o0"
     rec "$x-destroy-after" zfs list -H -t snapshot -o name -r "$p"
@@ -413,6 +476,13 @@ record_pool() { # prefix pool
     rec "$x-destroy-held" zfs destroy -r "$p@o2"
     rec "$x-destroy-held-after" zfs list -H -t snapshot -o name -r "$p"
     release_quietly "$p" o2
+    # A limit on the child's snapshots: root is not held to it where it
+    # may change it, so this records whether the take is refused.
+    rec "$x-cli-limit-set" zfs set snapshot_limit=0 "$p/child"
+    rec "$x-cli-limit" zfs snapshot -r "$p@q"
+    rec "$x-cli-limit-after" zfs list -H -t snapshot -o name -r "$p"
+    lim 120 zfs set snapshot_limit=none "$p/child" > /dev/null 2>&1
+    lim 120 zfs destroy -r "$p@q" > /dev/null 2>&1
     rec "$x-checkpoint" zpool checkpoint "$p"
     rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
@@ -439,6 +509,7 @@ record_none() { # prefix pool
     rec "$x-hold" zfs hold -r "$TAG" "$p@t"
     rec "$x-release" zfs release -r "$TAG" "$p@t"
     rec "$x-destroy" zfs destroy -r "$p@t"
+    rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
 }
 
 # scale_all COUNT...: scale for each count, at most three, each at most
@@ -482,13 +553,16 @@ scale_limit() {
     return 0
 }
 
-# stop_bg PID: SIGTERM, then up to 60 s for PID to end. Fails, after a
-# SIGKILL that is not waited for (it may be in the kernel's wait), when
-# it did not end.
+# stop_bg PID: SIGTERM, then up to ZCR_STOP_TENTHS tenths of a second
+# (600) for PID to end; BG_RC is its exit status. Fails, after a SIGKILL
+# that is not waited for (it may be in the kernel's wait), when it did
+# not end; BG_RC is then empty.
+BG_RC=""
 stop_bg() {
     local i
+    BG_RC=""
     kill -TERM "$1" 2> /dev/null
-    for ((i = 0; i < 600; i++)); do
+    for ((i = 0; i < ${ZCR_STOP_TENTHS:-600}; i++)); do
         kill -0 "$1" 2> /dev/null || break
         sleep 0.1
     done
@@ -497,6 +571,7 @@ stop_bg() {
         return 1
     fi
     wait "$1"
+    BG_RC=$?
     return 0
 }
 
@@ -516,43 +591,45 @@ stop_bg() {
 #     longest time between two commits, and the syncs' longest.
 # about.txt gets the three lines. With DIR empty, COMMAND alone.
 writing() {
-    local name=$1 dir=$2 pool=$3 margin=${ZCR_WRITER_MARGIN:-2} wpid fpid="" qpid t0 t1 log line fline pline
+    local name=$1 dir=$2 pool=$3 margin=${ZCR_WRITER_MARGIN:-2} wpid fpid="" qpid t0 t1 log line fline pline s0 rc
     shift 3
     if [ -z "$dir" ]; then
         "$@"
         return
     fi
     log=$OUT/.writer-$name
-    python3 "$HERE/dsync_writer.py" write "$dir/writer.dat" "$log.tsv" 2> "$log.err" &
+    # Their stdout is not the script's: one left behind after a SIGKILL
+    # must not hold the caller's pipe.
+    python3 "$HERE/dsync_writer.py" write "$dir/writer.dat" "$log.tsv" > /dev/null 2> "$log.err" &
     wpid=$!
     if [ -n "${FILL_SPAN:-}" ]; then
-        python3 "$HERE/dsync_writer.py" fill "$dir/fill.dat" "$log.fill.tsv" "$FILL_SPAN" 2> "$log.fill.err" &
+        python3 "$HERE/dsync_writer.py" fill "$dir/fill.dat" "$log.fill.tsv" "$FILL_SPAN" > /dev/null 2> "$log.fill.err" &
         fpid=$!
     fi
-    python3 "$HERE/txg_probe.py" probe "${ZCR_KSTAT_DIR:-/proc/spl/kstat/zfs}/$pool/txgs" "$pool" "$log.txg.tsv" 2> "$log.txg.err" &
+    python3 "$HERE/txg_probe.py" probe "${ZCR_KSTAT_DIR:-/proc/spl/kstat/zfs}/$pool/txgs" "$pool" "$log.txg.tsv" > /dev/null 2> "$log.txg.err" &
     qpid=$!
     sleep "$margin"
     t0=$(date +%s.%N)
     "$@"
     t1=$(date +%s.%N)
     sleep "$margin"
-    if stop_bg "$wpid"; then
-        line=$(python3 "$HERE/dsync_writer.py" stall "$log.tsv" "$t0" "$t1" 2>&1)
-    else
-        line="the writer did not stop within 60 s"
-    fi
+    # Not in a command substitution: stop_bg waits for its child.
+    stopped "$wpid" "the writer" dsync_writer.py stall "$log.tsv" "$t0" "$t1"
+    line=$STOPPED
     fline="no writer of new data: zfs_dirty_data_max was not read"
     if [ -n "$fpid" ]; then
-        if stop_bg "$fpid"; then
-            fline=$(python3 "$HERE/dsync_writer.py" stall "$log.fill.tsv" "$t0" "$t1" 2>&1)
-        else
-            fline="the writer of new data did not stop within 60 s"
-        fi
+        stopped "$fpid" "the writer of new data" dsync_writer.py stall "$log.fill.tsv" "$t0" "$t1"
+        fline=$STOPPED
     fi
-    if stop_bg "$qpid"; then
-        pline=$(python3 "$HERE/txg_probe.py" report "$log.txg.tsv" "$t0" "$t1" 2>&1)
-    else
-        pline="the probe did not stop within 60 s"
+    stopped "$qpid" "the probe" txg_probe.py report "$log.txg.tsv" "$t0" "$t1"
+    pline=$STOPPED
+    # What the writer of new data left is synced here, not under the
+    # next record.
+    if [ -n "$fpid" ]; then
+        s0=$(date +%s.%N)
+        rc=0
+        lim 120 zpool sync "$pool" > /dev/null 2>&1 || rc=$?
+        fline="$fline settled=$(secs_between "$s0" "$(date +%s.%N)") settle_rc=$rc"
     fi
     mkdir -p "$OUT/$name"
     mv "$log.tsv" "$OUT/$name/writer.tsv" 2> /dev/null
@@ -564,11 +641,28 @@ writing() {
     printf '%s\n' "$line" > "$OUT/$name/stall"
     printf '%s\n' "$fline" > "$OUT/$name/fill"
     printf '%s\n' "$pline" > "$OUT/$name/txg"
+    printf '%s\t%s\n' "$t0" "$t1" > "$OUT/$name/window"
     {
         echo "scale: writer beside $name: $line"
         echo "scale: new data beside $name: $fline"
         echo "scale: txgs beside $name: $pline"
     } >> "$OUT/about.txt"
+}
+
+# stopped PID WHAT SCRIPT COMMAND LOG T0 T1: stop_bg PID, then STOPPED
+# is SCRIPT's line on LOG for the window, with the exit status where it
+# is not 0 (" exit=N"): a process that died reads as such, not as a
+# quiet window.
+STOPPED=""
+stopped() {
+    local pid=$1 what=$2 script=$3
+    shift 3
+    if ! stop_bg "$pid"; then
+        STOPPED="$what did not stop within $((${ZCR_STOP_TENTHS:-600} / 10)) s"
+        return
+    fi
+    STOPPED=$(python3 "$HERE/$script" "$@" 2>&1)
+    [ "$BG_RC" = 0 ] || STOPPED="$STOPPED exit=$BG_RC"
 }
 
 # fill_span N: FILL_SPAN, twice zfs_dirty_data_max (under ZCR_ZFS_PARAMS,
@@ -641,17 +735,22 @@ scale() {
                     writing "scale-$n-snapshot" "$wdir" "$p" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
                 fi
                 ;;
-            # Without the program's @t, the CLI's, so that the rest has one.
-            snapshot-cli)
-                lim 120 zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "scale-$n-snapshot-cli" zfs snapshot -r "$p@t"
+            # Without the program's whole @t, the CLI's, so that the rest
+            # has one.
+            snapshot-cli) cli_snapshot "scale-$n-snapshot-cli" "scale-$n-snapshot" "$p" ;;
+            members)
+                program "scale-$n-members" "$p" members.lua -n "$p" t
+                members_line "scale-$n-members"
                 ;;
-            members) program "scale-$n-members" "$p" members.lua -n "$p" t ;;
             hold) rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t" ;;
             tagged) program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
             release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
             destroy) rec "scale-$n-destroy" zfs destroy -r "$p@t" ;;
             take-cli) writing "scale-$n-take-cli" "$wdir" "$p" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
-            take-cli-members) program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c ;;
+            take-cli-members)
+                program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c
+                members_line "scale-$n-take-cli-members"
+                ;;
         esac
     done
     lim 600 zpool destroy -f "$p" > /dev/null 2>&1

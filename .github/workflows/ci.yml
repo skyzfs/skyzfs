@@ -65,6 +65,7 @@ jobs:
       # tests/fixtures/pools that the daemon's tests read: no kernel.
       - run: python3 tests/kernel/test_dsync_writer.py
       - run: python3 tests/kernel/test_txg_probe.py
+      - run: python3 tests/kernel/test_zfs_cli_json.py
       - run: python3 tests/kernel/test_cut_ref.py
       - run: python3 tests/kernel/test_cut_check.py
       - run: python3 tests/kernel/test_cut_daemon_check.py
@@ -99,6 +100,18 @@ jobs:
       # The daemon's fault hooks, which the rigs build and the workspace
       # line does not.
       - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      # The workspace's documentation, as M2.D1 left it: no rustdoc warning
+      # (broken or private intra-doc links, bad code blocks). Plain and
+      # with each of the two features, as clippy above: code behind a
+      # feature that is off is not documented, so its links are not
+      # checked.
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --workspace --no-deps
+          cargo doc --workspace --no-deps --features skyzfsd/test-hooks
+          cargo doc -p skyzfs-ublk-sys --no-deps --features control-test-program
 
   chart-lint:
     needs: changes
