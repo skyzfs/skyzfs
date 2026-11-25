@@ -12,6 +12,12 @@
 //! refused. Both refusals are `PermissionDenied`, and nothing is written
 //! to a peer refused. The daemon's own check of its peer is the same
 //! rule (`skyzfsd`'s `same_user_or_root`).
+//!
+//! So an agent that runs as root asks only a daemon that runs as root,
+//! and refuses a daemon under any other account. That is as meant
+//! (NL-D2 of #147's review): `skyzfsd` runs as root, since it needs
+//! ublk. An agent under another account asks a daemon of its own user
+//! or root.
 
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;

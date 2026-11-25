@@ -556,15 +556,23 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError> {
+        // Every member's `@t`, not only the root's: a hold on some members
+        // only (made by hand, or by a `hold -r` that a member's snapshot
+        // came after) is not held, so that the planner holds again and
+        // the hold's check refuses it (NL-F1 of #147's review).
         let snapshot = format!("{pool}@{t}");
-        match self.zfs(&["holds", "-H", &snapshot], self.limits.read, true) {
-            Ok(holds) => Ok(holds.lines().any(|line| {
-                let mut fields = line.split('\t');
-                fields.next() == Some(snapshot.as_str()) && fields.next() == Some(tag)
-            })),
-            Err(ZfsError::NoSnapshot) => Ok(false),
-            Err(e) => Err(e),
+        let Some(tagged) = self.tagged_snapshots(&snapshot, tag)? else {
+            return Ok(false);
+        };
+        if !tagged.contains(&snapshot) {
+            return Ok(false);
         }
+        let Some(members) = self.members(pool, t)? else {
+            return Ok(false);
+        };
+        Ok(members
+            .iter()
+            .all(|m| tagged.contains(&format!("{}@{t}", m.name))))
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {

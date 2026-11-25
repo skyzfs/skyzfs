@@ -679,7 +679,6 @@ fn the_members_are_read_by_a_read_only_program() {
 
 const HOLD: &str = "zfs hold -r skyzfs-publish tank@skz-1";
 const RELEASE: &str = "zfs release -r skyzfs-publish tank@skz-1";
-const HOLDS: &str = "zfs holds -H tank@skz-1";
 const HOLDS_R: &str = "zfs holds -H -r tank@skz-1";
 
 /// A hold already there is held only where every member carries the
@@ -811,31 +810,53 @@ fn a_release_without_the_tag_is_released_where_no_member_keeps_it() {
     );
 }
 
-/// `held` reads the tag on `pool@t` itself, and a snapshot that does
-/// not exist is not held. Mutants: any hold taken as the tag, a missing
-/// snapshot an error.
+/// `held` is the tag on every member's `@t`: the root's alone is not
+/// enough (NL-F1 of #147's review), and a snapshot that does not exist
+/// is not held. Mutants: any hold taken as the tag, the root's tag taken
+/// for every member's, a missing snapshot an error.
 #[test]
-fn held_reads_the_tag_on_the_pools_snapshot() {
-    let held = |given: Result<&str, &str>| {
+fn held_is_the_tag_on_every_members_snapshot() {
+    const BOTH: &str = r#"{"return":{"members":{"tank":"11","tank/db":"22"}}}"#;
+    const ROOT: &str = "tank@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n";
+    const DB: &str = "tank/db@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n";
+    let held = |holds: Result<&str, &str>, members: Option<&str>| {
         let mut fake = Fake::default();
-        match given {
-            Ok(out) => fake.ok(HOLDS, out),
-            Err(e) => fake.fails(HOLDS, 1, e),
+        match holds {
+            Ok(out) => fake.ok(HOLDS_R, out),
+            Err(e) => fake.fails(HOLDS_R, 1, e),
         };
-        cli(fake).held("tank", "skz-1", HOLD_TAG)
+        if let Some(members) = members {
+            fake.ok(MEMBERS_WORDS, members);
+        }
+        let mut zfs = cli(fake);
+        let held = zfs.held("tank", "skz-1", HOLD_TAG);
+        let words: Vec<String> = zfs.host().words().iter().map(|w| w.to_string()).collect();
+        (held, words)
     };
+    let every = format!("{ROOT}{DB}");
     assert_eq!(
-        held(Ok("tank@skz-1\tskyzfs-publish\tWed Nov 25 10:00 2026\n")),
-        Ok(true)
+        held(Ok(&every), Some(BOTH)),
+        (Ok(true), vec![HOLDS_R.to_string(), MEMBERS_WORDS.to_string()])
     );
     assert_eq!(
-        held(Ok("tank@skz-1\tother\tWed Nov 25 10:00 2026\n")),
+        held(Ok(ROOT), Some(BOTH)).0,
+        Ok(false),
+        "the root's only: tank/db@skz-1 lacks it"
+    );
+    assert_eq!(held(Ok(DB), None).0, Ok(false), "the root lacks it");
+    assert_eq!(
+        held(Ok("tank@skz-1\tother\tWed Nov 25 10:00 2026\n"), None).0,
         Ok(false)
     );
-    assert_eq!(held(Ok("")), Ok(false));
+    assert_eq!(held(Ok(""), None).0, Ok(false));
     assert_eq!(
-        held(Err("cannot open 'tank@skz-1': dataset does not exist\n")),
+        held(Err("cannot open 'tank@skz-1': dataset does not exist\n"), None).0,
         Ok(false)
+    );
+    assert_eq!(
+        held(Ok(&every), Some(r#"{"return":{"absent":"1"}}"#)).0,
+        Ok(false),
+        "gone between the two reads"
     );
 }
 
