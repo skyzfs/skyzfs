@@ -1,0 +1,44 @@
+N1 D2 split dropped (every end with no pid: status not read): NOT APPLIED (0 matches)
+N2 D2 every end with no pid read as no serving daemon: KILLED by bracket, embedded
+N3 D2 the clock line counted as a field: KILLED by bracket, embedded
+N4 D2 the tables print a gone daemon as two daemons: KILLED by embedded
+N5 seed_row never set: KILLED by bracket, embedded
+N6 seed_row for a row that does not upload: NOT APPLIED (0 matches)
+N7 seed_row from uploaded_whole: NOT APPLIED (0 matches)
+N8 the median counts the seed rows too: KILLED by embedded
+N9 the counts swap at least and below: KILLED by embedded
+N10 a marked BELOW verdict not counted: KILLED by embedded
+N11 the seed rows' line not printed: KILLED by embedded
+N12 seed_in_window ignores released_here: KILLED by bracket
+N13 a row with no released_here taken as released here: KILLED by bracket
+N14 the clause "did not let MinIO go" dropped: NOT APPLIED (0 matches)
+N15 the start rule back to 27fe831's (held at the end's epoch taken): NOT APPLIED (0 matches)
+N16 the start rule refuses only a held lease (lost, missing taken): NOT APPLIED (0 matches)
+N17 the row reads released_here True always: KILLED by embedded
+N18 the window's mark not written: KILLED by copy_limit
+N19 run_workload passes no tag (no mark): KILLED by copy_limit
+N20 the mark written though the unpause fails: KILLED by copy_limit
+N21 an earlier row's mark not removed: KILLED by copy_limit
+N22 D4 the watcher names the first window again: KILLED by copy_limit
+N23 D5 the BEFORE line dropped: KILLED by copy_limit
+N24 D5 the BEFORE line without watch: KILLED by copy_limit
+W7 the release time written after the unpause: KILLED by copy_limit
+W13 the release time not asked to be before the read that saw it: KILLED by copy_limit
+O7 the status column prints n/a for a start with no pid: KILLED by embedded
+S17 the marker judged past a bracket too wide: KILLED by bracket
+S19 the paragraph says nothing of the seed rule: KILLED by embedded
+S19b the paragraph says nothing of the seed rows: KILLED by embedded
+R1 the pick ignores differs: KILLED by cut_check
+R2 the passed-over writes not kept: KILLED by cut_check
+R3 the whole record compared, not the copies: KILLED by cut_check
+R4 a discard leaves the bytes: KILLED by cut_check
+R5 the withheld write applied all the same: KILLED by cut_check
+R6 the base image read as zeros: KILLED by cut_check
+R7 the cut's records counted to its uberblock write, not its prefix: SURVIVED
+R8 differs always true: KILLED by cut_check
+R9 a write's bytes taken from its start, not from the range: KILLED by cut_check
+R10 the cut rig's main picks without differs: NOT APPLIED (0 matches)
+R11 base_read reads zeros: KILLED by cut_check
+R12 node B picks without differs: NOT APPLIED (0 matches)
+tree clean
+exit 0

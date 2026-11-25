@@ -1,0 +1,140 @@
+== prewindc as run: exit 0 (as it should)
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, S1: c1 ended refused rewound at the import (after cut 17): exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, S1, and the faulty daemon writes the import's cuts 17 and 18 as opening only as a rewind: exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, S1 at the import's return (after cut 19), and no `ended` line: exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, c1 ended at the export (after cut 16) as expired: exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'expired', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'expired', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, c1 ended refused store after cut 25: exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'refused store x', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'refused store x', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, c1 published on cut 20 (G not honoured): done, its look a snap, node B finds it: exit 1 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'done commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'done commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd', not withdrawn
+   pin_answer_c1-look	FAILED	[server] answered 'snap commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd state=316a310759130b19788d9c3176cbdb95 number=20 group=43 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   pin_c1_absent	FAILED	[server] a ref snap/T; a row
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, the withdrawal ignored (pending; no ended line): exit 1 (as it should)
+   pin_answer_c1-withdraw	FAILED	[server] answered 'pending', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, the look answers a snap with nothing published: exit 1 (as it should)
+   pin_answer_c1-look	FAILED	[server] answered 'snap commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd state=316a310759130b19788d9c3176cbdb95 number=20 group=43 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, the watcher's VERDICT (cut_watch.py's own line): exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindc, a rewind: the import's first cut 17 of group 34 (the top 34), answers right: exit 2 (as it should)
+   premise_c1_waited_across_a_plain_import	ERROR	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of gro
+   rig_error	ERROR	[rig] premise_c1_waited_across_a_plain_import: cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67
+== prewindc, a rewind: the import's first cut 17 of group 30 (the top 34), answers right: exit 2 (as it should)
+   premise_c1_waited_across_a_plain_import	ERROR	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of gro
+   rig_error	ERROR	[rig] premise_c1_waited_across_a_plain_import: cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67
+== prewindc, a rewind and a right daemon that ended c1 at it: exit 2 (as it should)
+   pin_answer_c1-end	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'refused rewound a rewind may have been counted after the count asked from', not withdrawn
+   premise_c1_waited_across_a_plain_import	ERROR	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of gro
+   rig_error	ERROR	[rig] premise_c1_waited_across_a_plain_import: cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67
+== prewindc, no cut once the import returned (cuts 19 to 74 dropped): exit 2 (as it should)
+   premise_c1_waited_across_a_plain_import	ERROR	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: none; none of them, nor any after C before, a ground of rule (R)
+   rig_error	ERROR	[rig] premise_c1_waited_across_a_plain_import: cuts counted after C = 10 once the import returned and before c1's withdrawal: none; none of them, nor any after C before, a ground of rule (R)
+== prewindc, no line of c1's withdrawal: exit 2 (as it should)
+   premise_c1_waited_across_a_plain_import	ERROR	[rig] no line of c1's withdrawal in the request log
+   rig_error	ERROR	[rig] premise_c1_waited_across_a_plain_import: no line of c1's withdrawal in the request log
+== prewindc, no mark session-2-ready: exit 2 (as it should)
+   rig_error	ERROR	[rig] no mark session-2-ready (the import's return) in marks.tsv
+== prewindc, published.tsv without c1: exit 2 (as it should)
+   rig_error	ERROR	[rig] no request of c1 in published.tsv
+== prewindc, no watch.log: exit 2 (as it should)
+   rig_error	ERROR	[rig] no watch.log
+== prewindc, the watcher's ERROR (cut_watch.py's own lines): exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== prewindc, a cut line that does not read: exit 2 (as it should)
+   rig_error	ERROR	[rig] request log line 6960: a cut line that does not read
+== prewindc, c1 asked after the import (its C 19, the first cut after the return; the asked line moved there): exit 0 (NOT 2)
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 19 once the import returned and before c1's withdrawal: 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 70, 30 of group 
+== prewindc, c1 asked with --expiry-s 30, then (rightly) expired before its end was read: exit 1 (NOT 2)
+   pin_answer_c1-end	FAILED	[server] answered 'expired', not pending after
+   pin_answer_c1-withdraw	FAILED	[server] answered 'expired', not withdrawn
+   premise_c1_waited_across_a_plain_import	ok	[rig] cuts counted after C = 10 once the import returned and before c1's withdrawal: 19 of group 40, 20 of group 43, 21 of group 46, 22 of group 49, 23 of group 52, 24 of group 55, 25 of group 58, 26 of group 61, 27 of group 64, 28 of group 67, 29 of group 
+== prewindf as run: exit 0 (as it should)
+== prewindf, f1-look a snap: exit 1 (as it should)
+   pin_answer_f1-look	FAILED	[server] answered 'snap commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd state=316a310759130b19788d9c3176cbdb95 number=20 group=43 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+== prewindf, a daemon that never ends f1 (no ended line; f1-end pending): exit 1 (as it should)
+   pin_answer_f1-end	FAILED	[server] answered 'pending after 300 s', not refused rewound
+   pin_f1_ended_after_the_rewind_cut	FAILED	[server] the request log never ends f1
+== prewindf, no cut not above the groups before it (cut 17 dropped): exit 2 (as it should)
+   premise_f1_waited_across_a_rewind_cut	ERROR	[rig] cuts counted after C = 10 within f1's expiry, not above the groups before them: none
+   rig_error	ERROR	[rig] premise_f1_waited_across_a_rewind_cut: cuts counted after C = 10 within f1's expiry, not above the groups before them: none
+== prewind as run: exit 0 (as it should)
+== prewind, the daemon's `asked` line of r1's first ask absent (N3: was exit 0 at b76ab97): exit 2 (as it should)
+   premise_r1_asked_after_a_rewind_cut	ERROR	[rig] no line of r1's ask in the request log
+   rig_error	ERROR	[rig] premise_r1_asked_after_a_rewind_cut: no line of r1's ask in the request log
+== prewind, the first ask's line with C written in the G column (31 and 20 swapped): exit 2 (as it should)
+   premise_r1_asked_after_a_rewind_cut	ERROR	[rig] no line of r1's ask in the request log
+   rig_error	ERROR	[rig] premise_r1_asked_after_a_rewind_cut: no line of r1's ask in the request log
+== prewind, a daemon without rule (R) at the ask (r1 accepted; its log line): exit 1 (as it should)
+   pin_answer_r1	FAILED	[server] answered 'pending after 300 s', not refused rewound
+   premise_r1_asked_after_a_rewind_cut	ok	[rig] cuts counted after C = 20 before r1 was asked, not above the groups before them: 21 of group 31 (the top before it 43), 22 of group 32 (the top before it 43)
+== pkill as run: exit 0 (as it should)
+== pkill, tw-look a snap: exit 1 (as it should)
+   pin_answer_tw-look	FAILED	[server] answered 'snap commit=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd state=316a310759130b19788d9c3176cbdb95 number=20 group=43 manifest-len=1 manifest-hash=0000000000000000000000000000000000000000000000000000000000000000', not absent
+== pplain as run: exit 0 (as it should)
+== pplain, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== pplain, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== prewind as run: exit 0 (as it should)
+== prewind, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== prewind, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== prewindf as run: exit 0 (as it should)
+== prewindf, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== prewindf, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== prewindc as run: exit 0 (as it should)
+== prewindc, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== prewindc, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== pkill as run: exit 0 (as it should)
+== pkill, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== pkill, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== pkillman as run: exit 0 (as it should)
+== pkillman, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== pkillman, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== pkillpub as run: exit 0 (as it should)
+== pkillpub, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== pkillpub, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== pchannel as run: exit 0 (as it should)
+== pchannel, the watcher's VERDICT: exit 1 (as it should)
+   pin_watcher_reads	FAILED	[kernel and server] node B could not read head: object blocks/00ff not found
+== pchannel, the watcher's ERROR: exit 2 (as it should)
+   rig_error	ERROR	[rig] the watcher: ERROR node B row failed 3 times in a row: row failed
+== b76ab97's prewind recording through the new check: exit 0 (as it should)
+== b76ab97's prewind, its first ask's line absent (N3): exit 2 (as it should)
+   premise_r1_asked_after_a_rewind_cut	ERROR	[rig] no line of r1's ask in the request log
+   rig_error	ERROR	[rig] premise_r1_asked_after_a_rewind_cut: no line of r1's ask in the request log
+== b76ab97's prewindf recording (no f1-look then) through the new check: exit 2 (as it should)
+   rig_error	ERROR	[rig] the course left no answer for f1-look
+
+57 of 59 cases ended as they should

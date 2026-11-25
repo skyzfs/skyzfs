@@ -1,0 +1,683 @@
+[
+ {
+  "id": "A1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "asked_line without C (N3 undone)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the anchor on the ask anew's C",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "C read from the sector column (G)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "watch.log not read (the state before the PR)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the watcher's VERDICT lines not judged",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a watcher's ERROR line not the rig's error",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "no watch.log taken as no verdict",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pin only in courses that publish",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the VERDICT match without its tab",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "C1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "prewindc's premise without 'no ground' (a rewind passes)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "prewindc's premise without the cuts after the import",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "cuts_since without the mark's time",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "cuts_since without C",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the import's mark taken from the create (session-1-ready)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdraw_line on a name's prefix",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdraw_line on any publish op",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "c1-end may be refused rewound",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "c1-withdraw may be unknown or refused",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT without c1",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "COURSES without prewindc",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "f1-look may find a snapshot",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tw-look may find a snapshot",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "c1-look not in the table",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "prewindc's grounds over the whole log, no stop",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S1",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc imports with import_rewind_f",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S2",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc zeroes the root block (a rewind)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S3",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: no export and import at all",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S4",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: c1 asked after the import",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S5",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: c1's end read with no syncs",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S6",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: c1's end read after 6 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S7",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: c1 expires in 30 s",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S8",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: c1 asked with G a group above (it could be published)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S9",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindc: no withdrawal",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S10",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "PUBLISH_NAMED without prewindc",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S11",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewindf: f1's look dropped",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S12",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pkill: tw's look dropped",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S13",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pkill: tw's look after the kill",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S14",
+  "file": ".github/workflows/skyzfs-publish-rig.yml",
+  "what": "the workflow's default list without prewindc",
+  "result": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W5",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check.main bypasses withheld_pick",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W6",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb_check.main bypasses withheld_pick",
+  "result": "KILLED",
+  "by": [
+   "test_nodeb_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W7",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "node B's lacks line does not name what was passed over",
+  "result": "KILLED",
+  "by": [
+   "test_nodeb_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W7b",
+  "file": "tests/kernel/cut_check.py",
+  "what": "the cut rig's built withheld line does not name it",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W7c",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "node B's not-built lacks line does not name it",
+  "result": "KILLED",
+  "by": [
+   "test_nodeb_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W8",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the call dropped (no pick)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W9",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb: the call dropped (no pick)",
+  "result": "KILLED",
+  "by": [
+   "test_nodeb_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W10",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the early cut passed",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W11",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the arguments reordered",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W12",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb: another list of blocks",
+  "result": "KILLED",
+  "by": [
+   "test_nodeb_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W13",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: passed_over given an empty list",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "W14",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the pick wrapped in dead code (never called)",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W15",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb: the pick wrapped in dead code (never called)",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W16",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: v taken again from pick_later after the pick",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W17",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the schedule keeps the picked write",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W18",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb: the image keeps the picked write",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W19",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: passed_over before the pick (reordered)",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W20",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: passed over the first eight only",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "W21",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the not-built branch taken whenever a write was passed over",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "H1",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: keyword arguments",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "H2",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: `same` renamed `skipped`",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "H3",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: bps read from bps_at",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "H4",
+  "file": "tests/kernel/cut_check.py",
+  "what": "cut_check: the pick's pair unpacked on a line of its own",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "H5",
+  "file": "tests/kernel/nodeb_check.py",
+  "what": "nodeb: withheld_pick imported by name",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "B1",
+  "file": "tests/bench/bracket.py",
+  "what": "seed_row without the found-committed test",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B2",
+  "file": "tests/bench/bracket.py",
+  "what": "a status without the key read as found",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py",
+   "test_embedded_python.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B3",
+  "file": "tests/bench/bracket.py",
+  "what": "a non-number read as none found",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B4",
+  "file": "tests/bench/bracket.py",
+  "what": "found-committed read at the window's end",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B5",
+  "file": "tests/bench/bracket.py",
+  "what": "the clause names the lease held at the start",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B6",
+  "file": "tests/bench/bracket.py",
+  "what": "the clause always says held",
+  "result": "KILLED",
+  "by": [
+   "test_bracket.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "B7",
+  "file": "tests/bench/topology-bench.sh",
+  "what": "the paragraph without the found-committed condition",
+  "result": "KILLED",
+  "by": [
+   "test_embedded_python.py"
+  ],
+  "clean_after": true
+ }
+]

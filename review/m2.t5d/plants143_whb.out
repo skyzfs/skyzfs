@@ -1,0 +1,33 @@
+baseline {'tests/bench/topology-bench.sh': [], 'tests/kernel/cut_check.py': [], 'tests/bench/bracket.py': [], 'tests/kernel/nodeb_check.py': []}
+W5   KILLED    cut_check.main bypasses withheld_pick  by test_cut_check.py
+W6   KILLED    nodeb_check.main bypasses withheld_pick  by test_nodeb_check.py
+W7   KILLED    node B's lacks line does not name what was passed over  by test_nodeb_check.py
+W7b  KILLED    the cut rig's built withheld line does not name it  by test_cut_check.py
+W7c  KILLED    node B's not-built lacks line does not name it  by test_nodeb_check.py
+W8   KILLED    cut_check: the call dropped (no pick)  by test_cut_check.py
+W9   KILLED    nodeb: the call dropped (no pick)  by test_nodeb_check.py
+W10  KILLED    cut_check: the early cut passed  by test_cut_check.py
+W11  KILLED    cut_check: the arguments reordered  by test_cut_check.py
+W12  KILLED    nodeb: another list of blocks  by test_nodeb_check.py
+W13  KILLED    cut_check: passed_over given an empty list  by test_cut_check.py
+W14  SURVIVED  cut_check: the pick wrapped in dead code (never called)
+W15  SURVIVED  nodeb: the pick wrapped in dead code (never called)
+W16  SURVIVED  cut_check: v taken again from pick_later after the pick
+W17  SURVIVED  cut_check: the schedule keeps the picked write
+W18  SURVIVED  nodeb: the image keeps the picked write
+W19  SURVIVED  cut_check: passed_over before the pick (reordered)
+W20  SURVIVED  cut_check: passed over the first eight only
+W21  SURVIVED  cut_check: the not-built branch taken whenever a write was passed over
+H1   KILLED    cut_check: keyword arguments  by test_cut_check.py
+H2   KILLED    cut_check: `same` renamed `skipped`  by test_cut_check.py
+H3   KILLED    cut_check: bps read from bps_at  by test_cut_check.py
+H4   KILLED    cut_check: the pick's pair unpacked on a line of its own  by test_cut_check.py
+H5   SURVIVED  nodeb: withheld_pick imported by name
+B1   KILLED    seed_row without the found-committed test  by test_bracket.py
+B2   KILLED    a status without the key read as found  by test_bracket.py, test_embedded_python.py
+B3   KILLED    a non-number read as none found  by test_bracket.py
+B4   KILLED    found-committed read at the window's end  by test_bracket.py
+B5   KILLED    the clause names the lease held at the start  by test_bracket.py
+B6   KILLED    the clause always says held  by test_bracket.py
+B7   KILLED    the paragraph without the found-committed condition  by test_embedded_python.py
+restored {'tests/bench/topology-bench.sh': [], 'tests/kernel/cut_check.py': [], 'tests/bench/bracket.py': [], 'tests/kernel/nodeb_check.py': []}

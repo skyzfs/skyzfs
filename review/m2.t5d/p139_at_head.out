@@ -1,0 +1,84 @@
+baseline {'tests/kernel/publish_check.py': [], 'tests/kernel/publish_agent.py': [], 'tests/kernel/cut-record.sh': []}
+E1   KILLED    t1-other-end may end done
+E2   KILLED    tw-after may end done
+E3   KILLED    tw-last may end done
+E4   KILLED    tk-after may read pending
+E5   KILLED    att: any refusal
+E6   KILLED    t5 may end done
+E7   KILLED    peer: any refusal
+E8   KILLED    m1-after may be done
+E9   KILLED    t7-withdraw may still pend
+E10  KILLED    t7-other accepted
+E11  KILLED    nu may answer cuts
+E12  KILLED    t1-again-end may be refused
+E13  NOT APPLIED (0 matches of "ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}") ABSENT drops tw
+E14  NOT APPLIED (0 matches of "ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}") ABSENT drops t5
+E15  KILLED    PUBLISHED drops t4
+E16  KILLED    BETWEEN: m1 judged as a premise that it landed
+E17  KILLED    COUNTS: control_peer 0
+E18  KILLED    COUNTS: control_answered not pinned
+E19  KILLED    TW_STATUS: publish_pending not pinned
+E20  KILLED    KILLED_BY: pkillpub's words those of any kill
+M1   KILLED    premise t4 always holds
+M2   KILLED    ctl_below put at the row's own group (cannot fail)
+M3   KILLED    a MISSED row control does not fail the run
+M3f  KILLED    a MISSED ctl_files does not fail the run
+M4   KILLED    ctl_files run with the right digests
+M5   KILLED    ABSENT judged by the ref alone
+M6   KILLED    pin_m1 inverted
+M7   KILLED    premise prewind held: any status
+M8   KILLED    premise_rewind_cut_committed always holds
+M9   KILLED    premise_tw_committed_past_g always holds
+M10  KILLED    asking twice compared with the first done itself
+M11  KILLED    node B stages not judged
+M12  KILLED    pin_T_cut not judged
+M13  KILLED    the controls run on no name
+M14  SURVIVED  ctl_files: any catch counts
+P1   KILLED    rewind_committed: a cut that opens as itself passes
+P2   NOT APPLIED (0 matches of '    if named is not None and named < number:') rewind_committed: r1 made before the cut passes
+P3   NOT APPLIED (0 matches of '    if named is not None and named < number:') rewind_committed: r1 made BY the cut is the rig error (hides the verdict)
+P4   KILLED    rewind_committed: C not checked
+P5   KILLED    rewind_committed: G not checked
+P6   KILLED    rewind_committed: state not checked
+P7   KILLED    rewind_committed: a cut with no line passes
+P8   SURVIVED  rewind_committed: the cut matched by number alone
+P9   KILLED    prewind: named read as the row cut (premise never sees r1)
+Q1   KILLED    withdrawn_past: every instance's cuts after the line (B3 as it was)
+Q2   KILLED    withdrawn_past: cuts before the withdrawal count
+Q3   KILLED    withdrawn_past: rewind cuts count
+Q4   KILLED    withdrawn_past: G not checked
+Q5   KILLED    committed: any cut past G counts, not the committed one
+Q6   SURVIVED  committed: state not checked
+Q7   SURVIVED  committed: C not checked
+Q8   KILLED    pin_tw_withdrawn_status not judged
+Q9   NOT APPLIED (0 matches of "ln['result'] == f'{name} withdrawn':") withdrawn_past: any answer to tw's withdrawal
+Q10  KILLED    withdrawn_past: any op
+K1   KILLED    killed_by: kill.tsv not read
+K2   KILLED    killed_by: serve.log's words not read
+K3   KILLED    pin_p1_found not judged
+K4   KILLED    pin_p1_found: any ref after the kill
+C1   KILLED    counts judged at least
+C2   KILLED    socket mode: any
+C3   KILLED    socket mode: 0666 passes
+C4   KILLED    exact_counts: a key missing passes
+A13  KILLED    answer_of: an unended line is the answer
+A14  NOT APPLIED (0 matches of '    rest = whole[1:] if whole and whole[0] == HELLO else who') answer_of: the greeting alone is the answer
+A15  KILLED    raw: nothing written is the rig's error again
+A16  KILLED    raw: EPIPE on the write is the rig's error (X1)
+A17  KILLED    raw: a reset on the read raises (X4)
+A18  KILLED    answer_of: bytes with no whole line are ''
+A19  NOT APPLIED (0 matches of '    if rest:\n        return rest[0]') answer_of: no whole line after the greeting: the greeting
+A20  SURVIVED  raw: the exit for a refusal is 1 again
+S1   NOT APPLIED (0 matches of '    pflow r1 r1 --limit-s 900 &') prewind: the agent syncs groups again
+S2   NOT APPLIED (0 matches of '    asked r1 120 || rig_error "the agent\'s publish of r1 had') prewind: the store back before the answer
+S3   SURVIVED  prewind: row_past nudges
+S4   SURVIVED  pkill: row_past does not nudge
+S5   KILLED    pkill: no wait for the commit past G
+S6   KILLED    pchannel: the mode recorded after the rig widened it
+S7   KILLED    row_past: a cut at C passes
+S8   KILLED    row_past: G not checked
+S9   KILLED    asked: a line with no answer passes
+S10  SURVIVED  prewind: row_past with the arguments swapped (C and G)
+S11  KILLED    pkill: the status read before the commit past G
+S12  KILLED    pchannel: status_until dropped (B1 back)
+exit 0
