@@ -371,12 +371,12 @@ class Premises(unittest.TestCase):
                                         log_line('cut', 'rewind', '19', '29', 3),
                                         log_line('cut', 'rewind', '20', '31', 4),
                                         log_line('cut', 'rewind', '21', '32', 5),
-                                        log_line('publish', '-', '-', refusal, 6, op=op),
+                                        log_line('publish', '30', '19', refusal, 6, op=op),
                                         log_line('cut', 'rewind', '22', '33', 7),
                                         log_line('cut', 'itself', '26', '48', 8)]}]
 
     def test_the_cuts_rule_r_refused_on(self):
-        ask = pc.asked_line('r1')
+        ask = pc.asked_line('r1', 19)
         self.assertEqual(pc.rewind_cuts(self.rewound_log(), 19, ask), (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]))
         # Cuts after the ask (22) are no ground, nor those at or before C.
         self.assertEqual(pc.rewind_cuts(self.rewound_log(), 21, ask), (True, []))
@@ -384,22 +384,28 @@ class Premises(unittest.TestCase):
     def test_a_cut_above_the_groups_before_it_is_no_ground(self):
         log = self.rewound_log()
         log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '44', 4), log_line('cut', 'itself', '21', '45', 5)]
-        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, []))
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19)), (True, []))
         # The equal group (the first cut of an -FX import) is a ground.
         log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '43', 4)]
-        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1')), (True, [(20, 43, 43, 4000)]))
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19)), (True, [(20, 43, 43, 4000)]))
 
     def test_the_ask_is_the_anchor_whatever_it_was_answered(self):
         """B2 of #141's review: a daemon without rule (R) at the ask, which
         answers r1 `accepted`, fails pin_answer_r1 (exit 1); the premise
         rests on the cut lines and the ask's place only."""
         for answer in ('r1 accepted', 'r1 refused rewound', 'r1 refused store'):
-            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer), 19, pc.asked_line('r1')),
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer), 19, pc.asked_line('r1', 19)),
                              (True, [(20, 31, 43, 4000), (21, 32, 43, 5000)]), answer)
         for answer, op in (('r12 accepted', 'asked'), ('r1 refused rewound', 'ended'),
                            ('r1 withdrawn', 'withdraw')):
-            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer, op), 19, pc.asked_line('r1'))[0], False,
+            self.assertEqual(pc.rewind_cuts(self.rewound_log(answer, op), 19, pc.asked_line('r1', 19))[0], False,
                              (answer, op))
+        # Review of #141, N3: the line of an ask with another C (an ask
+        # anew) is not the first ask's.
+        self.assertEqual(pc.rewind_cuts(self.rewound_log(), 19, pc.asked_line('r1', 27)), (False, []))
+        log = self.rewound_log()
+        log[0]['lines'][5] = log_line('publish', '30', '27', 'r1 accepted', 6, op='asked')
+        self.assertEqual(pc.rewind_cuts(log, 19, pc.asked_line('r1', 19))[0], False)
 
     def test_with_no_stop_every_ground_of_the_first_instance_that_has_one(self):
         """prewindf: the ground needs no end line."""

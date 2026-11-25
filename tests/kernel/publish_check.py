@@ -131,6 +131,11 @@ group; `ctl_commit`, against a done commit with its first digit changed;
 `ctl_files`, node B's stages against the manifest with one digest
 changed, which must be caught at the files.
 
+`pin_watcher_reads`: the watcher beside the daemon (cut_watch.py,
+node B's side of the uploads) ended with no VERDICT line in watch.log:
+node B read the content of every cut it found at head (review of #139).
+A watcher's ERROR line is the rig's error.
+
 Each line says what it rests on: `kernel and server` (node B's import of
 what the daemon published), `server` (the daemon's answers and what it
 put in object storage), `rig` (a premise of the course), or `check`
@@ -493,10 +498,14 @@ def rewind_cuts(instances, after, stop=None):
     return False, []
 
 
-def asked_line(name):
-    """-> a STOP for rewind_cuts: the request log's line of NAME's ask,
-    whatever the daemon answered."""
-    return lambda ln: ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
+def asked_line(name, after):
+    """-> a STOP for rewind_cuts: the request log's line of NAME's ask
+    with C = AFTER, whatever the daemon answered. skyzfsd writes C in
+    the line's sectors column (record.rs). The ask's own line, so that a
+    later ask of NAME cannot stand in for it when its line is missing
+    (review of #141, N3)."""
+    return lambda ln: (ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
+                       and ln['sectors'] == str(after))
 
 
 def ask_deadline(agent_text, name):
@@ -619,6 +628,16 @@ def main():
         cuts = cut_lines(instances)
         put('obs_cuts', 'INFO', 'server', f'{len(cuts)} cut lines in {len(instances)} instances'
             + (f', {len(torn)} line(s) cut short by a kill' if torn else ''))
+        # The watcher's own verdict (cut-record.sh's watcher_end lets the
+        # recording go on to the check): node B could not read head's
+        # content. Every course uploads, so every course has a watcher.
+        watch = text_of('watch.log').splitlines()
+        err = [ln.split('\t', 1)[-1] for ln in watch if '\tERROR ' in ln]
+        if err:
+            raise RigError(f'the watcher: {err[0]}')
+        bad = [ln.split('\tVERDICT ', 1)[1] for ln in watch if '\tVERDICT ' in ln]
+        holds('pin_watcher_reads', bad, 'kernel and server',
+              f'node B read the content of every cut the watcher found at head ({len(watch)} lines)')
 
         def snap_row(t, out=None):
             args = ['snap-row', '--volume', vol, '--snapshot', t] + (['--out', out] if out else [])
@@ -712,14 +731,15 @@ def main():
                   'server', 'after the withdrawal and that commit: ' +
                   ', '.join(f'{k} {v}' for k, v in TW_STATUS.items()))
         if name == 'prewind':
-            # The premise is of the first ask, refused `rewound`; the
-            # request judged is the one asked anew.
+            # The premise is of the first ask, whatever it was answered
+            # (pin_answer_r1 judges the answer); the request judged is the
+            # one asked anew.
             r1 = read_published(text_of('published.tsv'), first=True).get('r1')
             if r1 is None:
                 raise RigError('no request of r1 in published.tsv')
             if published['r1'] == r1:
                 raise RigError('r1 was not asked anew: its last request in published.tsv is its first')
-            found, grounds = rewind_cuts(instances, r1['after'], asked_line('r1'))
+            found, grounds = rewind_cuts(instances, r1['after'], asked_line('r1', r1['after']))
             premise('premise_r1_asked_after_a_rewind_cut', found and bool(grounds),
                     'no line of r1\'s ask in the request log' if not found else
                     f"cuts counted after C = {r1['after']} before r1 was asked, not above the groups before them: "
