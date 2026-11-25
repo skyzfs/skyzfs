@@ -55,7 +55,11 @@ class Answers(unittest.TestCase):
                      f'snap commit={H[:-1]} state={S} number=9 group=51 manifest-len=911 manifest-hash={H}',
                      f'snap commit={H} state={S} number=x group=51 manifest-len=911 manifest-hash={H}',
                      f'snap commit={H} state={S[:-1]} number=9 group=51 manifest-len=911 manifest-hash={H}',
-                     'absent now', f'unreadable commit={H}'):
+                     'absent now', f'unreadable commit={H}',
+                     # #140's review, N7: A3 and A5.
+                     f'unreadable commit={H[:-1]} why=version', f'unreadable commit={H.upper()} why=no-row',
+                     f'snap commit={H} state={S} number=9 group=51 manifest-len=x manifest-hash={H}',
+                     f'snap commit={H} state={S} number=9 group=51 manifest-len=-1 manifest-hash={H}'):
             with self.assertRaises(pa.RigError, msg=line):
                 pa.parse_answer(line)
 
@@ -108,6 +112,19 @@ class AnAgent(unittest.TestCase):
         self.assertEqual(rows[0][:2], ['100', '110'])
         self.assertEqual(rows[2][2:], ['publish-progress --name x y', '1', 'refused name not a name'])
         self.assertEqual(rows[3][4], f'done commit={H}')
+
+    def test_ask_look_through_main(self):
+        """#140's review, N7 (A4): `ask look T` is skyzfsd's look, and
+        prints its answer."""
+        snap = f'snap commit={H} state={S} number=9 group=15 manifest-len=414 manifest-hash={H}'
+        for answer, rc_want, printed in ((0, 0, snap), (1, 1, 'refused store the store did not answer')):
+            fake = Fake((answer, printed + '\n'))
+            real = pa.Agent
+            out = io.StringIO()
+            with mock.patch.object(pa, 'Agent', lambda *a: real(*a, runner=fake)), contextlib.redirect_stdout(out):
+                rc = pa.main(['publish_agent.py', 'ask', 'skyzfsd', 'VOL', 'RUN', self.log, 'look', 'p1'])
+            self.assertEqual((rc, out.getvalue()), (rc_want, printed + '\n'))
+            self.assertEqual(fake.calls, [['skyzfsd', 'look', '--dir', 'VOL', '--run-dir', 'RUN', '--name', 'p1']])
 
     def test_no_answer_or_an_exit_that_disagrees_is_the_rigs_error(self):
         for rc, out in ((1, ''), (2, 'accepted\n'), (0, 'refused peer\n'), (1, 'accepted\n'), (0, '')):
@@ -365,11 +382,12 @@ class Raw(unittest.TestCase):
         cases = [
             (b'', ''),
             (b'skyzfs-control 2\nrefused peer x\n', 'refused peer x'),
-            # A greeting of another version is not the greeting: its line is
-            # the answer, which the check takes for no answer it expects.
-            (b'skyzfs-control 1\nrefused peer x\n', 'skyzfs-control 1'),
             (b'skyzfs-control 2\nrefused peer x\nmore\n', 'refused peer x'),
-            (b'cuts 1\n', 'cuts 1'),
+            # No greeting, or another version's: skyzfsd's own ask refuses
+            # it (#139's second look, D2).
+            (b'cuts 1\n', 'no answer line: cuts 1\\n'),
+            (b'refused peer x\nmore\n', 'no answer line: refused peer x\\nmore\\n'),
+            (b'skyzfs-control 1\nrefused peer x\n', 'no answer line: skyzfs-control 1\\nrefused peer x\\n'),
             (b'skyzfs-control 2\nrefused peer this daem', 'no answer line: skyzfs-control 2\\nrefused peer this daem'),
             (b'refused peer this daem', 'no answer line: refused peer this daem'),
             (b'skyzfs-control 2\n', 'no answer line: skyzfs-control 2\\n'),
@@ -377,6 +395,48 @@ class Raw(unittest.TestCase):
         ]
         for got, want in cases:
             self.assertEqual(pa.answer_of(got), want, got)
+
+    def test_a_daemon_that_never_answers_is_a_verdict(self):
+        """Connected, nothing written and no close within the limit: the
+        answer `no answer within ... s`, not the rig's error (#139's
+        second look, D3)."""
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'vol-x'))
+            path = os.path.join(d, 'vol-x', 'control')
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.listen(1)
+            held = []
+            done = threading.Event()
+
+            def serve():
+                c, _ = srv.accept()
+                held.append(c)
+                done.wait(10)
+                c.close()
+            th = threading.Thread(target=serve, daemon=True)
+            th.start()
+            log = os.path.join(d, 'agent.tsv')
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    answer = pa.raw(d, log, 'peer', self.REQUEST, limit=0.3)
+            finally:
+                done.set()
+                th.join(10)
+                srv.close()
+            self.assertEqual(answer, 'no answer within 0.3 s')
+            self.assertIn('did not close within 0.3 s (0 bytes written)', err.getvalue())
+
+    def test_a_socket_with_no_listener_is_the_rigs_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'vol-x'))
+            path = os.path.join(d, 'vol-x', 'control')
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.close()  # the file stays, with nobody listening: ECONNREFUSED
+            with self.assertRaises(pa.RigError):
+                pa.raw(d, os.path.join(d, 'agent.tsv'), 'peer', self.REQUEST)
 
     def test_a_cut_short_answer_is_served_as_no_answer_line(self):
         with tempfile.TemporaryDirectory() as d:
