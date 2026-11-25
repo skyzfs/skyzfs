@@ -268,8 +268,20 @@ pub struct PublishesShown {
 /// [`Uploader::control`] between two turns of [`Uploader::run_with`].
 #[derive(Debug)]
 pub enum Control {
-    /// Ask for a publish ([`Publishing::ask`]).
-    Ask(Request, oneshot::Sender<Answer>),
+    /// Ask for a publish ([`Publishing::ask`]), with the store's rewind
+    /// mark as the channel read it at the desk just before
+    /// ([`crate::CutsNow::rewound`]). The uploader takes the mark first
+    /// ([`Publishing::set_rewound`]): its own is given at each check of
+    /// a cut, and can be a rewind behind the store's for as long as a
+    /// cut uploads (B3 of the review of #140).
+    Ask {
+        /// The request.
+        request: Request,
+        /// The store's rewind mark, read at the desk.
+        rewound: u64,
+        /// Where the answer goes.
+        reply: oneshot::Sender<Answer>,
+    },
     /// How the publish of a name stands ([`Publishing::progress`]).
     Progress(String, oneshot::Sender<Progress>),
     /// Withdraw the publish of a name ([`Publishing::withdraw`]).
@@ -391,10 +403,15 @@ where
         // before anything is answered.
         self.publishing().expire(Instant::now());
         match control {
-            Control::Ask(request, reply) => {
+            Control::Ask {
+                request,
+                rewound,
+                reply,
+            } => {
                 if reply.is_closed() {
                     return false;
                 }
+                self.publishing().set_rewound(rewound);
                 let answer = self.publishing().ask(request);
                 let accepted = answer == Answer::Accepted;
                 let _ = reply.send(answer);

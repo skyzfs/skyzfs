@@ -67,6 +67,12 @@ pub struct CutsNow {
     pub count: u64,
     /// The newest cut; `None` before the first.
     pub newest: Option<Cut>,
+    /// The store's rewind mark (`skyzfs_local::inplace::Cuts::rewound`)
+    /// now. The channel gives it to the uploader with each `publish`
+    /// (`crate::uploader::Control::Ask`), so that a request asked after
+    /// a lower count is refused at once, whatever cut the uploader is at
+    /// (work package M2.6a, B3 of the review of #140).
+    pub rewound: u64,
 }
 
 /// What [`Local::release`] did with a cut committed in object storage.
@@ -248,6 +254,7 @@ impl<D: Dir> Store for InPlace<D> {
             state: self.cut_state_id(),
             count: cuts.count,
             newest: cuts.newest,
+            rewound: cuts.rewound,
         }
     }
 }

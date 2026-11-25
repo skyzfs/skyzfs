@@ -758,6 +758,7 @@ mod uploader {
             group: 9,
             itself: false,
         }),
+        rewound: 2,
     };
 
     /// A store that holds no cut to upload, and counts [`NOW`].
@@ -832,13 +833,18 @@ mod uploader {
     }
 
     /// Mutant: a field of a request or an answer lost on the way (the
-    /// attachment answered is the daemon's, not the request's), or the
-    /// count of cuts asked of the uploader.
+    /// attachment answered is the daemon's, not the request's), the
+    /// count of cuts asked of the uploader, or the store's rewind mark
+    /// not given with a publish (B3 of the review of #140).
     #[test]
     fn each_request_goes_to_the_uploader_and_its_answer_back() {
         let (mut handler, thread) = uploader_with(|control, seen| match control {
-            Control::Ask(ask, reply) => {
-                seen.push(format!("{ask:?}"));
+            Control::Ask {
+                request: ask,
+                rewound,
+                reply,
+            } => {
+                seen.push(format!("{ask:?} at mark {rewound}"));
                 let _ = reply.send(match ask.name.as_str() {
                     "taken" => Answer::Refused(Refusal::Taken),
                     _ => Answer::Accepted,
@@ -887,7 +893,7 @@ mod uploader {
         let seen = thread.join().expect("the uploader");
         let ask = |name: &str, expiry| {
             format!(
-                "{:?}",
+                "{:?} at mark 2",
                 Ask {
                     name: name.into(),
                     attachment: A,
@@ -929,6 +935,66 @@ mod uploader {
             "{reply:?}"
         );
         drop(rx);
+    }
+
+    /// A `publish` asks the desk for the store's rewind mark, then the
+    /// uploader, and waits for both within the one limit: the agent's
+    /// client waits [`ASK_LIMIT`](skyzfs_control::ASK_LIMIT), the limit
+    /// and a margin for the channel, and not twice the limit (B3 of the
+    /// review of #140). Here the store answers after 0.8 of the limit and
+    /// the uploader never does: `no-answer` comes at the limit.
+    ///
+    /// Mutant: each wait given the whole limit (the answer comes at 1.8
+    /// of it).
+    #[test]
+    fn a_publish_waits_for_the_store_and_the_uploader_within_one_limit() {
+        let limit = Duration::from_secs(1);
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        let desk = Desk::new(move || {
+            let _ = wake.send(());
+        });
+        let weak: Weak<Desk> = Arc::downgrade(&desk);
+        std::thread::spawn(move || {
+            while woken.recv().is_ok() {
+                std::thread::sleep(limit * 4 / 5);
+                let Some(desk) = weak.upgrade() else {
+                    return;
+                };
+                desk.answer(&mut Counting);
+            }
+        });
+        let (tx, rx) = mpsc::channel(handler::INBOX);
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, limit).expect("a handler");
+        let began = std::time::Instant::now();
+        let reply = handler(&publish(None), Vec::new());
+        let took = began.elapsed();
+        let Reply::Refused(Code::NoAnswer, why) = reply else {
+            panic!("{reply:?}");
+        };
+        assert!(why.contains("the uploader did not answer"), "{why}");
+        assert!(
+            took >= limit && took < limit * 8 / 5,
+            "answered after {took:?}, with a limit of {limit:?}"
+        );
+        drop(rx);
+    }
+
+    /// A `publish` to a store no longer served reads `ended`, as `cuts`
+    /// does, and is not given to the uploader: no mark could go with it.
+    ///
+    /// Mutant: the uploader asked with no mark, or a mark of 0.
+    #[test]
+    fn a_publish_to_a_store_no_longer_served_reads_ended() {
+        let (tx, mut rx) = mpsc::channel(handler::INBOX);
+        let desk = answered_desk();
+        desk.close();
+        let mut handler = handler::uploader(A, tx, desk, no_snapshots, LIMIT).expect("a handler");
+        let reply = handler(&publish(None), Vec::new());
+        assert!(
+            matches!(&reply, Reply::Refused(Code::Ended, why) if why.contains("store")),
+            "{reply:?}"
+        );
+        assert!(rx.try_recv().is_err(), "the uploader was asked");
     }
 
     /// A store whose queue takes no turn leaves `cuts` unanswered: the

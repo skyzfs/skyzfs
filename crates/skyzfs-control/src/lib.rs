@@ -65,11 +65,12 @@
 //!   #122).
 //!
 //!   `refused rewound`, to a `publish` or as its `progress` (work
-//!   package M2.6a): a cut that may follow a rewind was counted after C
-//!   (one whose group is not above the group of the cut before it, as
-//!   the first group after `zpool import -F` or `-T` is), or this daemon
-//!   started after C, so a cut that carries the request may be of a
-//!   history without `pool@T`. Nothing is published. The agent checks
+//!   package M2.6a): a cut that may follow a rewind was counted after C,
+//!   before the request or while it waits for its cut (one whose group
+//!   is not above the highest group the daemon has seen since its start,
+//!   as the first groups after `zpool import -F` or `-T` are), or this
+//!   daemon started after C, so a cut that carries the request may be of
+//!   a history without `pool@T`. Nothing is published. The agent checks
 //!   `pool@T` and asks again with a count read anew. A publish that was
 //!   given its cut before the rewind is not ended so
 //!   (`skyzfs_upload::publish`).

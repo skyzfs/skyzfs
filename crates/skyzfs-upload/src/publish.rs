@@ -76,26 +76,41 @@
 //!
 //! **A rewind ends a publish that waits** (work package M2.6a, rule (R)
 //! of its plan). The store counts as a rewind's every cut whose group is
-//! not above the group of the cut before it, and the count it started
-//! with (`skyzfs_local::inplace::Cuts::rewound`): after `zpool import
-//! -F` the first group of the new history has the abandoned best's
-//! number and opens as itself, so without the rule a publish asked
-//! before the rewind would be carried by a cut of a history that may
-//! lack `pool@t`. A request asked after a lower count than the mark is
-//! refused ([`Refusal::Rewound`]), and a publish pending that has no cut
-//! yet (to be looked up, or waiting) ends so once the mark passes its
-//! count ([`Publishing::set_rewound`]). The agent then checks `pool@t`
-//! and asks again with a count read anew (M2.6). The driver gives the
-//! mark at each check of a cut, before that cut can be committed, so no
-//! cut is given to a publish with a rewind counted between the
-//! publish's count and the cut; a publish given its cut before a later
-//! rewind goes on, as that cut was counted on the history it was asked
-//! on. Between two checks the mark here can be behind the store's: a
-//! request asked then is accepted and ends `rewound` at the next check,
-//! before any cut after the rewind is committed. With the mark in memory,
-//! a request asked of the daemon before a restart is refused by the
-//! next (the lead's answer to the plan's Q1, in place of M2.5's new
-//! deadline there).
+//! not above the highest group it has seen since its start, and the
+//! count it started with (`skyzfs_local::inplace::Cuts::rewound`, whose
+//! docs also say what the rule does not see): after `zpool import -F`
+//! the first group of the new history has the abandoned best's number
+//! and opens as itself, so without the rule a publish asked before the
+//! rewind would be carried by a cut of a history that may lack `pool@t`.
+//! A request asked after a lower count than the mark is refused
+//! ([`Refusal::Rewound`]), and a publish pending that has no cut yet (to
+//! be looked up, or waiting) ends so once the mark passes its count
+//! ([`Publishing::set_rewound`]). The agent then checks `pool@t` and asks
+//! again with a count read anew (M2.6).
+//!
+//! The mark comes here at two moments (B3 of the review of #140). The
+//! daemon's channel reads the store's mark at the desk with each
+//! `publish` and gives it with the request
+//! ([`crate::uploader::Control::Ask`]). And the driver gives it at each
+//! check of a cut, before that cut can be committed. Between two checks
+//! the mark here can be a rewind behind the store's, for as long as the
+//! cut under way takes; the mark given with the ask is what keeps a
+//! request asked then, with a count from before the rewind, from a cut
+//! of the abandoned history. A driver used without the channel, as the
+//! tests use it, has only the checks.
+//!
+//! Why that is enough. A snapshot returns once its group is synced, and
+//! the sync's flush counts the cuts of the history it was taken on; so a
+//! rewind before the agent's snapshot has its first cut counted before
+//! the ask, and is in the mark given with it. A request accepted was
+//! therefore asked after a count at or above every rewind counted before
+//! its snapshot, and the cuts counted after that count, up to the next
+//! rewind's first cut, are of its snapshot's history. The check of that
+//! first cut ends the publish if no cut was given to it yet; one given
+//! its cut before goes on, as that cut is of its snapshot's history.
+//! With the mark in memory, a request asked of the daemon before a
+//! restart is refused by the next (the lead's answer to the plan's Q1,
+//! in place of M2.5's new deadline there).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -555,8 +570,9 @@ impl Publishing {
     }
 
     /// The store's rewind mark (`skyzfs_local::inplace::Cuts::rewound`):
-    /// the driver gives it at each check of a cut, and the daemon at the
-    /// uploader's start. The mark never goes back. Each publish pending
+    /// the driver gives it at each check of a cut, the daemon at the
+    /// uploader's start, and the channel with each request
+    /// ([`crate::uploader::Control::Ask`]). The mark never goes back. Each publish pending
     /// that has no cut yet and that was asked after a lower count ends
     /// refused ([`Refusal::Rewound`]); one given its cut goes on ([module
     /// docs](self)).

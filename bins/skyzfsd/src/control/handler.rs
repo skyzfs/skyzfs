@@ -55,7 +55,9 @@ pub struct Lookup<R> {
 /// `Uploader::run_with`), the store's count of cuts at `desk`, and
 /// `look`s of what `lookup` makes, for the daemon that serves
 /// `attachment`. Each answer is waited for at most `limit`
-/// ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the daemon). `lookup` is
+/// ([`ANSWER_LIMIT`](super::ANSWER_LIMIT) in the daemon), and a
+/// `publish`, which asks the desk and then the uploader, waits for both
+/// within it. `lookup` is
 /// made here, on the channel's runtime, and asks nothing of object
 /// storage.
 pub fn uploader<R, F>(
@@ -79,6 +81,7 @@ where
         let waiter = Waiter {
             runtime: &runtime,
             limit,
+            began: std::time::Instant::now(),
         };
         let asked = Asked {
             inbox: &inbox,
@@ -94,14 +97,17 @@ where
 
 struct Waiter<'a> {
     runtime: &'a Runtime,
+    /// How long a request's answer is waited for, all its waits counted.
     limit: Duration,
+    /// When the request began.
+    began: std::time::Instant,
 }
 
 impl Waiter<'_> {
-    /// Run `future` on the runtime, for at most the limit: `None` where
-    /// it did not end in time.
+    /// Run `future` on the runtime, for at most what is left of the
+    /// limit: `None` where it did not end in time.
     fn within<F: Future>(&self, future: F) -> Result<Option<F::Output>, Reply> {
-        let limit = self.limit;
+        let limit = self.limit.saturating_sub(self.began.elapsed());
         // The timeout is made inside the runtime: its timer needs the
         // runtime's context.
         self.runtime
@@ -141,6 +147,13 @@ fn answer<R: RefStore>(
             })
         }
         Request::Publish(p) => {
+            // The store's rewind mark now, read at the desk as for
+            // `cuts`, goes with the request: the uploader's own is given
+            // at its checks of cuts, and can be a rewind behind while a
+            // cut uploads (B3 of the review of #140). A rewind counted
+            // after this read was counted after the agent's snapshot
+            // (`skyzfs_upload::publish`'s module docs).
+            let now = count(waiter, desk)?;
             let ask = Ask {
                 name: p.name.clone(),
                 attachment: p.attachment,
@@ -151,7 +164,14 @@ fn answer<R: RefStore>(
                 expiry: p.expiry.unwrap_or(EXPIRY_DEFAULT),
             };
             let (tx, rx) = oneshot::channel();
-            send(inbox, Control::Ask(ask, tx))?;
+            send(
+                inbox,
+                Control::Ask {
+                    request: ask,
+                    rewound: now.rewound,
+                    reply: tx,
+                },
+            )?;
             match wait(waiter, rx)? {
                 Answer::Accepted => Reply::Accepted,
                 Answer::Refused(why) => Reply::Refused(code_of(&why), why.to_string()),

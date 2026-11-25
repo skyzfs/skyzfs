@@ -1567,14 +1567,22 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     };
     let (reply, answer) = tokio::sync::oneshot::channel();
     requests
-        .blocking_send(Control::Ask(ask([0xa1; 16]), reply))
+        .blocking_send(Control::Ask {
+            request: ask([0xa1; 16]),
+            rewound: 0,
+            reply,
+        })
         .expect("sent");
     assert_eq!(within(answer), Some(Answer::Accepted));
     let (reply, answer) = tokio::sync::oneshot::channel();
     let mut other = ask([0xa2; 16]);
     other.name = "u".into();
     requests
-        .blocking_send(Control::Ask(other, reply))
+        .blocking_send(Control::Ask {
+            request: other,
+            rewound: 0,
+            reply,
+        })
         .expect("sent");
     assert_eq!(within(answer), Some(Answer::Refused(Refusal::Attachment)));
     // Asked after a count below the one the start took up: refused at
@@ -1584,7 +1592,11 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     before.name = "v".into();
     before.after = 1;
     requests
-        .blocking_send(Control::Ask(before, reply))
+        .blocking_send(Control::Ask {
+            request: before,
+            rewound: 0,
+            reply,
+        })
         .expect("sent");
     assert_eq!(within(answer), Some(Answer::Refused(Refusal::Rewound)));
     let (reply, answer) = tokio::sync::oneshot::channel();
