@@ -1,6 +1,6 @@
 use super::*;
 
-fn taken(group: u64) -> Taken {
+pub(super) fn taken(group: u64) -> Taken {
     Taken {
         group,
         members: vec![
@@ -27,7 +27,7 @@ fn count(after: u64) -> Count {
     }
 }
 
-fn publish(name: &str, phase: Phase, held: bool) -> Publish {
+pub(super) fn publish(name: &str, phase: Phase, held: bool) -> Publish {
     Publish {
         name: name.into(),
         count: count(3),
@@ -251,7 +251,7 @@ fn a_name_given_up_leaves_those_under_way_and_the_newest_are_kept() {
 
 fn store() -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().expect("a directory");
-    let store = Store::new(root.path().join("vol"));
+    let store = Store::open(root.path().join("vol")).expect("opened");
     (root, store)
 }
 

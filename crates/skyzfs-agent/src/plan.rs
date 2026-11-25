@@ -35,7 +35,7 @@
 //!   ([`Action::Assist`]), one at a time, [`ASSIST_PAUSE`] apart. With a
 //!   qualifying cut, a sync once [`ASSIST_AFTER`] has passed since the
 //!   last one, and no sooner than twice [`ASSIST_AFTER`] after
-//!   `accepted` ([`assist_due`]): the daemon's `cuts` counts the newest
+//!   `accepted` (`assist_due`): the daemon's `cuts` counts the newest
 //!   cut and does not say whether it was abandoned, and one abandoned on
 //!   an idle pool would otherwise stop every sync until the request
 //!   expires (Codex on #142; the lead's D3). Where the cut lands, the
@@ -111,7 +111,7 @@ use crate::record::{Count, Member, Phase, Publish, Taken, Why};
 /// How long after `accepted` a publish with no qualifying cut is helped
 /// by `zpool sync`: two of ZFS's default transaction group timeouts (the
 /// lead's Q8). With a qualifying cut, also the least time between two
-/// syncs ([`assist_due`]).
+/// syncs (`assist_due`).
 pub const ASSIST_AFTER: Duration = Duration::from_secs(10);
 
 /// The least time between two syncs of one publish. "One at a time" (the

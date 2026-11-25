@@ -9,7 +9,8 @@
 //! ([`record`]), the ZFS manifest ([`manifest`]), the planner, which
 //! says what to do next from what is seen ([`plan`]), what the agent
 //! asks of ZFS and what it must find there ([`zfs`]), and the engine,
-//! which acts on the planner's word and keeps the record ([`engine`]).
+//! which acts on the planner's word and keeps the record ([`engine`]),
+//! on the file system's calls ([`fs`]).
 //! The adapters to the `zfs` command and the daemon's socket, and the
 //! command line, come next (M2.6c). It has no async runtime and links
 //! nothing of the daemon.
@@ -18,6 +19,7 @@
 #![warn(missing_docs)]
 
 pub mod engine;
+pub mod fs;
 pub mod manifest;
 pub mod names;
 pub mod plan;

@@ -413,7 +413,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// stopped, waiting [`TICK`] between rounds where none moved; at most
     /// until `limit` has passed. Each that left or stopped is in
     /// [`Agent::outcomes`]. Each round begins with the sweep
-    /// ([`Agent::sweep`]).
+    /// (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
