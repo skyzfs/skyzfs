@@ -1,0 +1,13 @@
+ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+--- LC_ALL=C
+MB_CUR_MAX=1
+byte 0x63 -> 1 (c=0x63)
+byte 0x61 -> 1 (c=0x61)
+byte 0x66 -> 1 (c=0x66)
+byte 0xc3 -> -1 (c=0x66)
+--- LC_ALL=C.UTF-8
+MB_CUR_MAX=6
+byte 0x63 -> 1 (c=0x63)
+byte 0x61 -> 1 (c=0x61)
+byte 0x66 -> 1 (c=0x66)
+byte 0xc3 -> 2 (c=0xe9)

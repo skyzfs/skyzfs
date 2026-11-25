@@ -222,12 +222,12 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking lru v0.16.4
     Checking aws-smithy-checksums v0.65.0
     Checking sha1 v0.10.7
-    Checking skynbd-types v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-types)
+    Checking skynbd-types v0.0.1 (<scratch>/pr147/crates/skynbd-types)
    Compiling redb v2.6.3
     Checking regex-syntax v0.8.11
-    Checking skynbd-format v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-format)
+    Checking skynbd-format v0.0.1 (<scratch>/pr147/crates/skynbd-format)
     Checking memchr v2.8.3
-    Checking skynbd-tree v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-tree)
+    Checking skynbd-tree v0.0.1 (<scratch>/pr147/crates/skynbd-tree)
    Compiling serde_json v1.0.151
     Checking zmij v1.0.23
    Compiling thiserror v1.0.69
@@ -284,7 +284,7 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking jsonwebtoken v9.3.1
     Checking axum v0.8.9
    Compiling rustc-hash v2.1.3
-    Checking skyzfs-blk v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-blk)
+    Checking skyzfs-blk v0.0.1 (<scratch>/pr147/crates/skyzfs-blk)
     Checking anstyle v1.0.14
     Checking utf8parse v0.2.2
    Compiling cfg_aliases v0.2.2
@@ -324,8 +324,8 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking udev v0.9.3
     Checking quick-xml v0.38.4
     Checking nom v8.0.0
-    Checking skyzfs-mapped v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-mapped)
-    Checking skyzfs-uberblock v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-uberblock)
+    Checking skyzfs-mapped v0.0.1 (<scratch>/pr147/crates/skyzfs-mapped)
+    Checking skyzfs-uberblock v0.0.1 (<scratch>/pr147/crates/skyzfs-uberblock)
    Compiling num-derive v0.4.2
     Checking iovec v0.1.4
     Checking num_cpus v1.17.0
@@ -333,7 +333,7 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking fixedbitset v0.5.7
     Checking rangemap v1.7.1
     Checking parking v2.2.1
-    Checking skyzfs-local v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-local)
+    Checking skyzfs-local v0.0.1 (<scratch>/pr147/crates/skyzfs-local)
    Compiling crossbeam-utils v0.8.23
     Checking futures-io v0.3.34
     Checking concurrent-queue v2.5.0
@@ -347,7 +347,7 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking async-task v4.7.1
     Checking async-channel v2.5.0
     Checking polling v3.11.0
-    Checking skyzfs-control v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-control)
+    Checking skyzfs-control v0.0.1 (<scratch>/pr147/crates/skyzfs-control)
    Compiling bindgen v0.69.5
    Compiling home v0.5.12
     Checking piper v0.2.5
@@ -365,7 +365,7 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking async-fs v2.2.0
     Checking async-net v2.0.0
     Checking async-executor v1.14.1
-    Checking skyzfs-ublk v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-ublk)
+    Checking skyzfs-ublk v0.0.1 (<scratch>/pr147/crates/skyzfs-ublk)
     Checking smol v2.0.2
    Compiling darling_macro v0.21.3
    Compiling prost-derive v0.13.5
@@ -380,7 +380,7 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
    Compiling libublk-rs-sys v0.1.2
     Checking libublk v0.4.8
     Checking toml_edit v0.22.27
-    Checking skyzfs-ublk-sys v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-ublk-sys)
+    Checking skyzfs-ublk-sys v0.0.1 (<scratch>/pr147/crates/skyzfs-ublk-sys)
    Compiling prost v0.13.5
     Checking matchers v0.2.0
     Checking sharded-slab v0.1.7
@@ -414,16 +414,16 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
    Compiling async-stream-impl v0.3.6
     Checking matchit v0.7.3
     Checking async-stream v0.3.6
-   Compiling skynbd-csi-driver v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skynbd-csi-driver)
+   Compiling skynbd-csi-driver v0.0.1 (<scratch>/pr147/bins/skynbd-csi-driver)
     Checking tower v0.4.13
     Checking hyper-timeout v0.5.2
     Checking tokio-stream v0.1.19
    Compiling bpaf_derive v0.5.26
     Checking axum v0.7.9
     Checking bpaf v0.9.26
-    Checking skyzfs-agent v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-agent)
+    Checking skyzfs-agent v0.0.1 (<scratch>/pr147/crates/skyzfs-agent)
     Checking tonic v0.12.3
-    Checking skyzfs-blkcheck v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skyzfs-blkcheck)
+    Checking skyzfs-blkcheck v0.0.1 (<scratch>/pr147/bins/skyzfs-blkcheck)
     Checking rustls-webpki v0.103.13
     Checking tokio-rustls v0.26.4
     Checking hyper-rustls v0.27.9
@@ -436,36 +436,36 @@ rustc 1.100.0 (0ef1bc386 2026-11-09)
     Checking aws-sdk-sts v1.108.0
     Checking aws-sdk-s3 v1.138.1
     Checking aws-config v1.9.0
-    Checking skynbd-store v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-store)
-    Checking skynbd-refs v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-refs)
-    Checking skynbd-engine v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-engine)
-    Checking skynbd-nbd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-nbd)
-    Checking skynbd-stream v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-stream)
-    Checking skynbd-agent v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-agent)
-    Checking skyzfs-upload v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-upload)
-    Checking skyzfsd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skyzfsd)
-    Checking skynbd-api v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skynbd-api)
-    Checking skyzfs-nodeb v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skyzfs-nodeb)
-    Checking skynbdd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skynbdd)
-    Checking skynbdctl v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skynbdctl)
-    Checking skynbd-agent-cli v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skynbd-agent)
+    Checking skynbd-store v0.0.1 (<scratch>/pr147/crates/skynbd-store)
+    Checking skynbd-refs v0.0.1 (<scratch>/pr147/crates/skynbd-refs)
+    Checking skynbd-engine v0.0.1 (<scratch>/pr147/crates/skynbd-engine)
+    Checking skynbd-nbd v0.0.1 (<scratch>/pr147/crates/skynbd-nbd)
+    Checking skynbd-stream v0.0.1 (<scratch>/pr147/crates/skynbd-stream)
+    Checking skynbd-agent v0.0.1 (<scratch>/pr147/crates/skynbd-agent)
+    Checking skyzfs-upload v0.0.1 (<scratch>/pr147/crates/skyzfs-upload)
+    Checking skyzfsd v0.0.1 (<scratch>/pr147/bins/skyzfsd)
+    Checking skynbd-api v0.0.1 (<scratch>/pr147/crates/skynbd-api)
+    Checking skyzfs-nodeb v0.0.1 (<scratch>/pr147/bins/skyzfs-nodeb)
+    Checking skynbdd v0.0.1 (<scratch>/pr147/bins/skynbdd)
+    Checking skynbdctl v0.0.1 (<scratch>/pr147/bins/skynbdctl)
+    Checking skynbd-agent-cli v0.0.1 (<scratch>/pr147/bins/skynbd-agent)
     Finished `dev` profile [optimized + debuginfo] target(s) in 1m 23s
 == exit 0
 == cargo clippy --workspace --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings
-    Checking skyzfs-ublk-sys v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-ublk-sys)
-    Checking skyzfsd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skyzfsd)
-    Checking skyzfs-local v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-local)
+    Checking skyzfs-ublk-sys v0.0.1 (<scratch>/pr147/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (<scratch>/pr147/bins/skyzfsd)
+    Checking skyzfs-local v0.0.1 (<scratch>/pr147/crates/skyzfs-local)
     Finished `dev` profile [optimized + debuginfo] target(s) in 3.00s
 == exit 0
 == cargo clippy --workspace --all-targets --features skyzfs-ublk-sys/control-test-program -- -D warnings
-    Checking skyzfs-ublk-sys v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-ublk-sys)
-    Checking skyzfsd v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/bins/skyzfsd)
-    Checking skyzfs-local v0.0.1 (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr147/crates/skyzfs-local)
+    Checking skyzfs-ublk-sys v0.0.1 (<scratch>/pr147/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (<scratch>/pr147/bins/skyzfsd)
+    Checking skyzfs-local v0.0.1 (<scratch>/pr147/crates/skyzfs-local)
     Finished `dev` profile [optimized + debuginfo] target(s) in 3.65s
 == exit 0
 == cargo test -p skyzfs-agent -p skyzfs-control
     Finished `test` profile [optimized + debuginfo] target(s) in 0.12s
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)
+     Running unittests src/lib.rs (<scratch>/target/debug/build/skyzfs-agent/bf6bfd905b9d79b9/out/skyzfs_agent-bf6bfd905b9d79b9)
 
 running 97 tests
 test daemon::tests::the_device_is_the_block_devices_number ... ok
@@ -568,7 +568,7 @@ test engine::tests::the_matrices_need_the_rule_r_of_the_daemon ... ok
 
 test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
 
-     Running unittests src/lib.rs (/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/skyzfs-control/2bd4546e52e934e5/out/skyzfs_control-2bd4546e52e934e5)
+     Running unittests src/lib.rs (<scratch>/target/debug/build/skyzfs-control/2bd4546e52e934e5/out/skyzfs_control-2bd4546e52e934e5)
 
 running 11 tests
 test tests::a_line_that_is_not_exactly_a_request_does_not_parse ... ok
@@ -711,7 +711,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
    Compiling httpdate v1.0.3
    Compiling ipnet v2.12.0
    Compiling hyper v0.14.32
-error: failed to build archive at `/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls/e97e17a1663ee427/out/librustls-e97e17a1663ee427.rlib`: No space left on device (os error 28)
+error: failed to build archive at `<scratch>/target/debug/build/rustls/e97e17a1663ee427/out/librustls-e97e17a1663ee427.rlib`: No space left on device (os error 28)
 
 error: could not compile `rustls` (lib) due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
@@ -719,37 +719,46 @@ rustc-LLVM ERROR: IO failure on output stream: No space left on device
 error: could not compile `h2` (lib)
 
 Caused by:
-  process didn't exit successfully: `/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name h2 --edition=2018 /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/h2-0.3.27/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat,unused-externs-silent --crate-type lib --emit=dep-info,metadata,link -C opt-level=1 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("stream", "unstable"))' -C metadata=ead29e9673cf39fa -C extra-filename=-4a97340e5a948134 --out-dir /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/h2/4a97340e5a948134/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/bytes/cf64384f70349c1a/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/equivalent/45e00ea2c295adf9/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/errno/64f8e07b60980056/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/fnv/20c10b70e7aa803e/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-core/a05efaef4d1a724b/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-sink/fb4da3810af98ad1/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-task/dfa7aaefd46e3349/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/hashbrown/4d79f6d13c2aa4c0/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/itoa/52f0cbb83287cad4/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/libc/ce527af73bc2b8bf/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/mio/3f354b57bafe1296/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/once_cell/6f2f61d1a3dbdfad/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/pin-project-lite/e99e1fe8ab13372a/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/signal-hook-registry/a350224895f4d933/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/slab/6fae2cd091b68a3c/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/socket2/20a56ae39545947d/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio-macros/e80f8157edad6826/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio/864e946ebf7e4fdb/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing-attributes/f097409e4e91f4aa/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing-core/1e772a6c1a3ea7da/out --extern bytes=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/bytes/cf64384f70349c1a/out/libbytes-cf64384f70349c1a.rmeta --extern fnv=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/fnv/20c10b70e7aa803e/out/libfnv-20c10b70e7aa803e.rmeta --extern futures_core=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-core/a05efaef4d1a724b/out/libfutures_core-a05efaef4d1a724b.rmeta --extern futures_sink=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-sink/fb4da3810af98ad1/out/libfutures_sink-fb4da3810af98ad1.rmeta --extern futures_util=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-util/4f01dd6a8968c360/out/libfutures_util-4f01dd6a8968c360.rmeta --extern http=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/http/5ac6d5026805cba9/out/libhttp-5ac6d5026805cba9.rmeta --extern indexmap=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/indexmap/322a1dcbd7eaac73/out/libindexmap-322a1dcbd7eaac73.rmeta --extern slab=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/slab/6fae2cd091b68a3c/out/libslab-6fae2cd091b68a3c.rmeta --extern tokio=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio/864e946ebf7e4fdb/out/libtokio-864e946ebf7e4fdb.rmeta --extern tokio_util=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio-util/b7c3cac9b37e8f60/out/libtokio_util-b7c3cac9b37e8f60.rmeta --extern tracing=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing/8fdbb4a5cd8d4101/out/libtracing-8fdbb4a5cd8d4101.rmeta --cap-lints allow --force-warn=unused_crate_dependencies` (exit status: 101)
+  (rustc command line cut: the build failed for want of disk space)
 rustc-LLVM ERROR: IO failure on output stream: No space left on device
 error: could not compile `rustls` (lib)
 
 Caused by:
-  process didn't exit successfully: `/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name rustls --edition=2021 /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-0.23.42/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat,unused-externs-silent --crate-type lib --emit=dep-info,metadata,link -C opt-level=1 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="aws-lc-rs"' --cfg 'feature="aws_lc_rs"' --cfg 'feature="prefer-post-quantum"' --cfg 'feature="std"' --cfg 'feature="tls12"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("aws-lc-rs", "aws_lc_rs", "brotli", "custom-provider", "default", "fips", "hashbrown", "log", "logging", "prefer-post-quantum", "read_buf", "ring", "rustversion", "std", "tls12", "zlib"))' -C metadata=dd4893aca42b9b77 -C extra-filename=-c111bb2a64eeaba3 --out-dir /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls/c111bb2a64eeaba3/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/aws-lc-rs/2c123c7940e2b9fa/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/aws-lc-sys/a677ed5ea76f4af0/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls-pki-types/0b9216a93fa2dab1/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/untrusted/e0db5b6909985b6c/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/zeroize/caddffe807b45de8/out --extern aws_lc_rs=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/aws-lc-rs/2c123c7940e2b9fa/out/libaws_lc_rs-2c123c7940e2b9fa.rmeta --extern once_cell=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/once_cell/6f2f61d1a3dbdfad/out/libonce_cell-6f2f61d1a3dbdfad.rmeta --extern pki_types=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls-pki-types/0b9216a93fa2dab1/out/librustls_pki_types-0b9216a93fa2dab1.rmeta --extern webpki=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls-webpki/4c1003bcf6ee5243/out/libwebpki-4c1003bcf6ee5243.rmeta --extern subtle=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/subtle/9a1ab6b11c8ffc4d/out/libsubtle-9a1ab6b11c8ffc4d.rmeta --extern zeroize=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/zeroize/caddffe807b45de8/out/libzeroize-caddffe807b45de8.rmeta --cap-lints allow --force-warn=unused_crate_dependencies -L native=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/aws-lc-sys/d1aff42f4a612046/out` (exit status: 101)
+  (rustc command line cut: the build failed for want of disk space)
 rustc-LLVM ERROR: IO failure on output stream: No space left on device
 error: could not compile `hyper` (lib)
 
 Caused by:
-  process didn't exit successfully: `/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name hyper --edition=2018 /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-0.14.32/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat,unused-externs-silent --crate-type lib --emit=dep-info,metadata,link -C opt-level=1 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="client"' --cfg 'feature="h2"' --cfg 'feature="http1"' --cfg 'feature="http2"' --cfg 'feature="runtime"' --cfg 'feature="server"' --cfg 'feature="socket2"' --cfg 'feature="stream"' --cfg 'feature="tcp"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("__internal_happy_eyeballs_tests", "backports", "client", "default", "deprecated", "ffi", "full", "h2", "http1", "http2", "libc", "nightly", "runtime", "server", "socket2", "stream", "tcp"))' -C metadata=22a57f3c2b07cdec -C extra-filename=-50311d97268a3fe0 --out-dir /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/hyper/50311d97268a3fe0/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/bytes/cf64384f70349c1a/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/equivalent/45e00ea2c295adf9/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/errno/64f8e07b60980056/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/fnv/20c10b70e7aa803e/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-core/a05efaef4d1a724b/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-sink/fb4da3810af98ad1/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-task/dfa7aaefd46e3349/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-util/4f01dd6a8968c360/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/hashbrown/4d79f6d13c2aa4c0/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/http/5ac6d5026805cba9/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/indexmap/322a1dcbd7eaac73/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/itoa/52f0cbb83287cad4/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/libc/ce527af73bc2b8bf/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/mio/3f354b57bafe1296/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/once_cell/6f2f61d1a3dbdfad/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/pin-project-lite/e99e1fe8ab13372a/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/signal-hook-registry/a350224895f4d933/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/slab/6fae2cd091b68a3c/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/socket2/20a56ae39545947d/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio-macros/e80f8157edad6826/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio-util/b7c3cac9b37e8f60/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio/864e946ebf7e4fdb/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing-attributes/f097409e4e91f4aa/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing-core/1e772a6c1a3ea7da/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing/8fdbb4a5cd8d4101/out -L dependency=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/try-lock/1c4723033a1ed2c3/out --extern bytes=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/bytes/cf64384f70349c1a/out/libbytes-cf64384f70349c1a.rmeta --extern futures_channel=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-channel/93d07c44e3852a7a/out/libfutures_channel-93d07c44e3852a7a.rmeta --extern futures_core=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-core/a05efaef4d1a724b/out/libfutures_core-a05efaef4d1a724b.rmeta --extern futures_util=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/futures-util/4f01dd6a8968c360/out/libfutures_util-4f01dd6a8968c360.rmeta --extern h2=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/h2/4a97340e5a948134/out/libh2-4a97340e5a948134.rmeta --extern http=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/http/5ac6d5026805cba9/out/libhttp-5ac6d5026805cba9.rmeta --extern http_body=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/http-body/79a71e938b9fc3bf/out/libhttp_body-79a71e938b9fc3bf.rmeta --extern httparse=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/httparse/8b7d9ee21216b99b/out/libhttparse-8b7d9ee21216b99b.rmeta --extern httpdate=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/httpdate/e9af6744f746406a/out/libhttpdate-e9af6744f746406a.rmeta --extern itoa=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/itoa/52f0cbb83287cad4/out/libitoa-52f0cbb83287cad4.rmeta --extern pin_project_lite=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/pin-project-lite/e99e1fe8ab13372a/out/libpin_project_lite-e99e1fe8ab13372a.rmeta --extern socket2=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/socket2/384f2f66ca4fcdd2/out/libsocket2-384f2f66ca4fcdd2.rmeta --extern tokio=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tokio/864e946ebf7e4fdb/out/libtokio-864e946ebf7e4fdb.rmeta --extern tower_service=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tower-service/4800b98fb81b928b/out/libtower_service-4800b98fb81b928b.rmeta --extern tracing=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/tracing/8fdbb4a5cd8d4101/out/libtracing-8fdbb4a5cd8d4101.rmeta --extern want=/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/want/7dbf00be866a9f6b/out/libwant-7dbf00be866a9f6b.rmeta --cap-lints allow --force-warn=unused_crate_dependencies` (exit status: 101)
+  (rustc command line cut: the build failed for want of disk space)
 == exit 101
 == cargo test -p skyzfsd --features test-hooks
    Compiling rustls v0.21.12
    Compiling rustls v0.23.42
    Compiling h2 v0.3.27
    Compiling hyper-util v0.1.20
-error: failed to write to `/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/hyper-util/0c8525aa34ff7c8e/out/rmetaK6ouMo/full.rmeta`: No space left on device (os error 28)
+error: failed to write to `<scratch>/target/debug/build/hyper-util/0c8525aa34ff7c8e/out/rmetaK6ouMo/full.rmeta`: No space left on device (os error 28)
 
 error: could not compile `hyper-util` (lib) due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
-error: couldn't create a temp dir: No space left on device (os error 28) at path "/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/h2/4a97340e5a948134/oerror: failed to write to `/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls/e97e17a1663ee427/out/rmetacM9qJP/full.rmeta`: No space left on device (os error 28)
+error: couldn't create a temp dir: No space left on device (os error 28) at path "<scratch>/target/debug/build/h2/4a97340e5a948134/oerror: failed to write to `<scratch>/target/debug/build/rustls/e97e17a1663ee427/out/rmetacM9qJP/full.rmeta`: No space left on device (os error 28)
 
 error: could not compile `rustls` (lib) due to 1 previous error
-error: failed to write to `/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/rustls/c111bb2a64eeaba3/out/rmetazVgjPB/full.rmeta`: No space left on device (os error 28)
+error: failed to write to `<scratch>/target/debug/build/rustls/c111bb2a64eeaba3/out/rmetazVgjPB/full.rmeta`: No space left on device (os error 28)
 
 error: could not compile `rustls` (lib) due to 1 previous error
 == exit 101
 == cargo doc --no-deps -p skyzfs-agent -p skyzfs-control
-error: failed to create directory `/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/target/debug/build/postcard/152d9b9b42713fae/out`
+error: failed to create directory `<scratch>/target/debug/build/postcard/152d9b9b42713fae/out`
 
 Caused by:
   No space left on device (os error 28)
 == exit 101
+
+== Rerun after the disk filled (the review's own target, debuginfo off)
+== RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p skyzfs-agent -p skyzfs-control
+    Finished `dev` profile [optimized] target(s) in 5.71s
+== exit 0
+== cargo test -p skyzfsd (plain and --features test-hooks): not rerun here. The
+   container's disk (2.4 GB free, shared with other sessions) does not hold the
+   daemon's dependency build. CI's `test` (ci.yml, skyzfs-ci.yml) and
+   `unit-arm64` jobs ran them on 366b217: see review.md, "CI on the head".

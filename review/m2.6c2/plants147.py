@@ -129,7 +129,7 @@ PLANTS = [
     ("R15", "review", HOST,
      '            .env("LC_ALL", "C")\n',
      '            .env("LC_ALL", "C.UTF-8")\n',
-     AGENT, None, "the locale C.UTF-8 (what F2's other fix would do)"),
+     AGENT, None, "the locale C.UTF-8 (what B2's other fix would do)"),
 ]
 
 ENV = dict(os.environ)
@@ -151,8 +151,8 @@ def failed_tests(out):
     names = []
     for line in out.splitlines():
         line = line.strip()
-        if line.startswith("test ") and line.endswith("FAILED"):
-            names.append(line[5:].rsplit(" ...", 1)[0])
+        if line.startswith("---- ") and line.endswith(" stdout ----"):
+            names.append(line[5:-len(" stdout ----")])
     return names
 
 
