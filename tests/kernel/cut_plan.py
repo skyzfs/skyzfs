@@ -32,6 +32,8 @@ PR_UPLOAD_IMAGE = 'ubuntu-26.04'
 PR_UPLOAD_RECORDINGS = 'life umoved urow ukill ulease ulost uv1 uv1moved'
 UPLOAD_PATHS = (
     'crates/skyzfs-upload/',
+    # The daemon's channel, which skyzfsd and the uploader build on (#140).
+    'crates/skyzfs-control/',
     'bins/skyzfsd/',
     'crates/skyzfs-local/',
     'crates/skyzfs-ublk/',
