@@ -9,6 +9,9 @@ repository.workspace = true
 [[bin]]
 name = "skynbd-agent"
 path = "src/main.rs"
+# The library `skynbd_agent` documents to the same page
+# (`target/doc/skynbd_agent/index.html`); the library's docs are kept.
+doc = false
 
 [dependencies]
 skynbd-agent = { path = "../../crates/skynbd-agent", features = ["dm"] }

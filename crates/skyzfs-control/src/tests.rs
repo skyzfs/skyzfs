@@ -459,8 +459,8 @@ mod socket {
         let held = fill_backlog(&path);
         let mut tries = 0;
         let began = std::time::Instant::now();
-        let e = connect_counted(&path, Duration::from_millis(300), &mut tries)
-            .expect_err("no connection was taken");
+        let e =
+            connect_counted(&path, in_ms(300), &mut tries).expect_err("no connection was taken");
         let took = began.elapsed();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
         assert!(took >= Duration::from_millis(300), "{took:?}");
@@ -496,7 +496,7 @@ mod socket {
             (std::time::Instant::now(), taken, listener)
         });
         let mut tries = 0;
-        let stream = connect_counted(&path, Duration::from_secs(5), &mut tries)
+        let stream = connect_counted(&path, in_ms(5000), &mut tries)
             .expect("connected once the backlog had room");
         let connected = std::time::Instant::now();
         let (made, _taken, _listener) = room.join().expect("the thread that made room");
@@ -513,12 +513,19 @@ mod socket {
         drop(held);
     }
 
+    /// The instant `ms` milliseconds from now.
+    fn in_ms(ms: u64) -> std::time::Instant {
+        std::time::Instant::now() + Duration::from_millis(ms)
+    }
+
     /// No daemon at the socket (a socket left by one that has gone, or a
     /// file that is no socket), or no socket at all: the ask fails at
-    /// once, after one try, and says which. Only a full backlog is tried
-    /// again (G2 of the review of #131). Mutant: every error of the
-    /// connect tried again until the limit (CA), which turns "no daemon"
-    /// into a wait of the whole limit and the message of a full backlog.
+    /// once, after one try at most, and says which. Only a full backlog
+    /// is tried again (G2 of the review of #131). A file that is no
+    /// socket, and a path with nothing at it, are refused before any try
+    /// (L5 of #147). Mutant: every error of the connect tried again until
+    /// the limit (CA), which turns "no daemon" into a wait of the whole
+    /// limit and the message of a full backlog.
     #[test]
     fn no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once() {
         let dir = dir();
@@ -528,16 +535,16 @@ mod socket {
         std::fs::write(&plain, b"").expect("written");
         let missing = dir.path().join("missing.sock");
         let limit = Duration::from_secs(5);
-        for (path, kind) in [
-            (&stale, io::ErrorKind::ConnectionRefused),
-            (&plain, io::ErrorKind::ConnectionRefused),
-            (&missing, io::ErrorKind::NotFound),
+        for (path, kind, tried) in [
+            (&stale, io::ErrorKind::ConnectionRefused, 1),
+            (&plain, io::ErrorKind::PermissionDenied, 0),
+            (&missing, io::ErrorKind::NotFound, 0),
         ] {
             let mut tries = 0;
             let began = std::time::Instant::now();
-            let e = connect_counted(path, limit, &mut tries).expect_err("no daemon");
+            let e = connect_counted(path, in_ms(5000), &mut tries).expect_err("no daemon");
             assert_eq!(e.kind(), kind, "{}: {e}", path.display());
-            assert_eq!(tries, 1, "{}", path.display());
+            assert_eq!(tries, tried, "{}", path.display());
             let e = ask(path, &Request::Cuts, &[], limit).expect_err("no daemon");
             assert_eq!(e.kind(), kind, "{}: {e}", path.display());
             assert!(!e.to_string().contains("backlog"), "{e}");
@@ -548,6 +555,202 @@ mod socket {
                 began.elapsed()
             );
         }
+    }
+
+    /// A daemon that answers a byte at a time, each within the limit:
+    /// the ask still ends at its limit, which is one deadline for the
+    /// whole request and not one for each read (S4 of the review of
+    /// #131). Mutant: a timeout of each read, which waits 17 pauses here
+    /// and reads the greeting.
+    #[test]
+    fn an_ask_ends_at_its_limit_however_the_daemon_spreads_its_answer() {
+        use std::io::{BufRead, Write};
+        let dir = dir();
+        let path = dir.path().join("slow.sock");
+        let listener = UnixListener::bind(&path).expect("bound");
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepted");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+            let mut greeting = String::new();
+            reader.read_line(&mut greeting).expect("read");
+            let mut stream = stream;
+            for byte in format!("{HELLO}\n").bytes() {
+                std::thread::sleep(Duration::from_millis(100));
+                if stream.write_all(&[byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let limit = Duration::from_millis(300);
+        let began = std::time::Instant::now();
+        let e = ask(&path, &Request::Cuts, &[], limit).expect_err("no answer within the limit");
+        let took = began.elapsed();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(
+            took >= limit && took < limit + Duration::from_millis(250),
+            "{took:?}"
+        );
+        drop(daemon.join());
+    }
+
+    /// A daemon that sends part of its greeting and then nothing: the
+    /// read waits out what is left of the deadline, and its timeout
+    /// (`WouldBlock` from the socket) is given as `TimedOut` (R14 of the
+    /// review of #147). Mutant: the socket's error given as it is.
+    #[test]
+    fn a_read_cut_by_the_deadline_is_timed_out() {
+        use std::io::{BufRead, Write};
+        let dir = dir();
+        let path = dir.path().join("part.sock");
+        let listener = UnixListener::bind(&path).expect("bound");
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepted");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+            let mut greeting = String::new();
+            reader.read_line(&mut greeting).expect("read");
+            let mut stream = stream;
+            stream.write_all(b"skyzfs").expect("written");
+            let _ = stopped.recv_timeout(Duration::from_secs(10));
+        });
+        let limit = Duration::from_millis(300);
+        let began = std::time::Instant::now();
+        let e = ask(&path, &Request::Cuts, &[], limit).expect_err("no whole greeting");
+        let took = began.elapsed();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(took < limit + Duration::from_millis(250), "{took:?}");
+        drop(stop);
+        drop(daemon.join());
+    }
+
+    /// The wait for room in a full backlog counts in the ask's one
+    /// deadline (R3 of the review of #147): room is made 200 ms into a
+    /// limit of 300 ms and the answer comes 200 ms later, past the limit,
+    /// so the ask ends near 300 ms with no answer. Mutant: the deadline
+    /// started after the connect, which reads the answer at about 400 ms.
+    #[test]
+    fn the_wait_for_a_connection_counts_in_the_deadline() {
+        use std::io::{BufRead, Write};
+        let dir = dir();
+        let path = dir.path().join("late.sock");
+        let listener = small_backlog(&path);
+        let held = fill_backlog(&path);
+        let daemon = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            // Room for the ask: the connections that filled the backlog
+            // are taken, and the ask's is the next.
+            let mut taken = Vec::new();
+            for _ in 0..=held.len() {
+                taken.push(listener.accept().expect("accepted").0);
+            }
+            let stream = taken.pop().expect("the ask's connection");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+            let mut greeting = String::new();
+            let _ = reader.read_line(&mut greeting);
+            std::thread::sleep(Duration::from_millis(200));
+            let mut stream = stream;
+            let _ = stream.write_all(format!("{HELLO}\nnone\n").as_bytes());
+            drop(held);
+        });
+        let limit = Duration::from_millis(300);
+        let began = std::time::Instant::now();
+        let answer = ask(&path, &Request::Cuts, &[], limit);
+        let took = began.elapsed();
+        let e = answer.expect_err("the answer came past the deadline");
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+        assert!(took < limit + Duration::from_millis(80), "{took:?}");
+        drop(daemon.join());
+    }
+
+    /// A limit too long to add to the clock is an error, not a panic (F6
+    /// of the review of #147).
+    #[test]
+    fn a_limit_too_long_is_an_error() {
+        let dir = dir();
+        let path = dir.path().join("none.sock");
+        let e = ask(&path, &Request::Cuts, &[], Duration::MAX).expect_err("too long");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{e}");
+    }
+
+    /// A symbolic link at the socket's path is refused, even to a socket
+    /// the daemon would answer on, and nothing is connected (L5 of #147,
+    /// F8 of its review). Mutant: the path's metadata read through the
+    /// link.
+    #[test]
+    fn a_link_at_the_sockets_path_is_refused() {
+        let dir = dir();
+        let real = dir.path().join("real.sock");
+        let listener = UnixListener::bind(&real).expect("bound");
+        listener.set_nonblocking(true).expect("non-blocking");
+        let link = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&real, &link).expect("linked");
+        let mut tries = 0;
+        let e = connect_counted(&link, in_ms(1000), &mut tries).expect_err("a link");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        assert_eq!(tries, 0);
+        let e = ask(&link, &Request::Cuts, &[], Duration::from_secs(1)).expect_err("a link");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        assert!(
+            matches!(listener.accept(), Err(ref e) if e.kind() == io::ErrorKind::WouldBlock),
+            "the link's socket was connected"
+        );
+        // The socket itself is asked.
+        assert!(connect_counted(&real, in_ms(1000), &mut 0).is_ok());
+    }
+
+    /// A socket owned by another user, and a daemon of another user on a
+    /// socket owned by root, are refused (L5 of #147). Run as root only:
+    /// it needs another user. Mutants: the owner not read, the peer not
+    /// read.
+    #[test]
+    fn a_socket_or_a_daemon_of_another_user_is_refused() {
+        use std::io::BufRead as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::CommandExt as _;
+        if rustix::process::geteuid().as_raw() != 0 {
+            eprintln!("not root: another user's daemon is not tried here");
+            return;
+        }
+        const OTHER: u32 = 54_321;
+        let dir = dir();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))
+            .expect("open to the other user");
+        let path = dir.path().join("other.sock");
+        let mut daemon = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import socket, sys, time\n\
+                 s = socket.socket(socket.AF_UNIX)\n\
+                 s.bind(sys.argv[1]); s.listen(8)\n\
+                 print('ready', flush=True); time.sleep(30)",
+                path.to_str().expect("a UTF-8 path"),
+            ])
+            .uid(OTHER)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the other user's daemon");
+        let mut ready = String::new();
+        let out = daemon.stdout.take().expect("its output");
+        io::BufReader::new(out)
+            .read_line(&mut ready)
+            .expect("ready");
+        assert_eq!(ready.trim(), "ready");
+        let mut tries = 0;
+        let e = connect_counted(&path, in_ms(1000), &mut tries).expect_err("its socket");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        assert!(e.to_string().contains(&format!("user {OTHER}")), "{e}");
+        assert_eq!(tries, 0);
+        // The socket handed to root: the daemon is still another's.
+        std::os::unix::fs::chown(&path, Some(0), Some(0)).expect("chowned");
+        let e = connect_counted(&path, in_ms(1000), &mut tries).expect_err("its daemon");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        assert!(
+            e.to_string().contains(&format!("answered by user {OTHER}")),
+            "{e}"
+        );
+        let _ = daemon.kill();
+        let _ = daemon.wait();
     }
 
     /// A listener at `path` with a backlog of one, answered by nobody

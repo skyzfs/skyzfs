@@ -17,7 +17,7 @@
 //! where each member M is
 //!
 //! ```text
-//! {"guid":"N","local":{"prop":"value",...},"name":"tank/fs",
+//! {"guid":"N","local":{"prop":V,...},"name":"tank/fs",
 //!  "snapshot_guid":"N","type":"filesystem"}
 //! ```
 //!
@@ -26,6 +26,14 @@
 //! system properties whose source is `local`, and user properties, as
 //! `zfs get -p` gives their values. The members are the pool's root
 //! dataset first and then its descendants, sorted by name, each once.
+//!
+//! A value V is bytes, which ZFS does not require to be UTF-8. One whose
+//! bytes are all printable ASCII (0x20 to 0x7e) is written as a JSON
+//! string; any other as
+//! `{"encoding":"hex","value":"6361c3a9"}`, its bytes in lower-case hex.
+//! So a reader never guesses what a value's bytes were, and the same
+//! value has one form. (Amended in place by M2.6c-2, the review of #147,
+//! before any manifest was published: a value was a string before.)
 //!
 //! The GUIDs are decimal strings, and `createtxg` a number. This
 //! module's reading, not the plan's, which names the keys and not their
@@ -76,8 +84,9 @@ pub struct Member {
     pub guid: u64,
     /// The GUID of its `@t`, by which a restore finds it.
     pub snapshot_guid: u64,
-    /// Its properties set locally, by name.
-    pub local: BTreeMap<String, String>,
+    /// Its properties set locally, by name: each value's bytes ([module
+    /// docs](self)).
+    pub local: BTreeMap<String, Vec<u8>>,
 }
 
 /// What a member is.
@@ -147,7 +156,7 @@ impl Manifest {
                 }
                 string(&mut out, key);
                 out.push(b':');
-                string(&mut out, value);
+                local_value(&mut out, value);
             }
             out.extend_from_slice(b"},\"name\":");
             string(&mut out, &member.name);
@@ -292,6 +301,64 @@ fn string(out: &mut Vec<u8>, text: &str) {
     out.push(b'"');
 }
 
+/// Whether `value` is written as a JSON string: printable ASCII only.
+pub fn plain(value: &[u8]) -> bool {
+    value.iter().all(|b| (0x20..=0x7e).contains(b))
+}
+
+/// The value of a local property ([module docs](self)).
+fn local_value(out: &mut Vec<u8>, value: &[u8]) {
+    match std::str::from_utf8(value) {
+        Ok(text) if plain(value) => string(out, text),
+        _ => {
+            out.extend_from_slice(b"{\"encoding\":\"hex\",\"value\":\"");
+            out.extend_from_slice(hex(value).as_bytes());
+            out.extend_from_slice(b"\"}");
+        }
+    }
+}
+
+/// `bytes` in lower-case hex.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes of lower-case or upper-case hex `text`; `None` where it is
+/// not hex (a sign, which `from_str_radix` takes, included).
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect()
+}
+
+/// A local property's value as written ([module docs](self)): a string,
+/// or the object of its hex.
+fn read_local(key: &str, value: &Value) -> Result<Vec<u8>, ManifestError> {
+    let shape = |why: &str| ManifestError::Shape(format!("the local property `{key}` {why}"));
+    match value {
+        Value::String(text) => Ok(text.as_bytes().to_vec()),
+        Value::Object(_) => {
+            let map = object(value, "an encoded value", &["encoding", "value"])?;
+            if map.get("encoding").and_then(Value::as_str) != Some("hex") {
+                return Err(shape("is not in an encoding this agent reads"));
+            }
+            let text = map
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| shape("has no string `value`"))?;
+            unhex(text).ok_or_else(|| shape("is not hex"))
+        }
+        _ => Err(shape("is not a string or an encoded value")),
+    }
+}
+
 /// `value` as an object of exactly `keys`.
 fn object<'a>(
     value: &'a Value,
@@ -340,12 +407,7 @@ fn member(value: &Value) -> Result<Member, ManifestError> {
     };
     let local = local
         .iter()
-        .map(|(k, v)| match v {
-            Value::String(v) => Ok((k.clone(), v.clone())),
-            _ => Err(ManifestError::Shape(format!(
-                "the local property `{k}` is not a string"
-            ))),
-        })
+        .map(|(k, v)| Ok((k.clone(), read_local(k, v)?)))
         .collect::<Result<_, _>>()?;
     let kind = match map.get("type").and_then(Value::as_str) {
         Some("filesystem") => Kind::Filesystem,

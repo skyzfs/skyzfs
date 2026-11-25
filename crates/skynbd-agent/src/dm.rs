@@ -860,7 +860,7 @@ impl<O: DmOps> DmStack<O> {
     }
 
     /// One freeze window: recompute the shared set, discard at most
-    /// [`RECLAIM_BATCH_RANGES`] ranges, thaw. Returns (bytes discarded,
+    /// `RECLAIM_BATCH_RANGES` ranges, thaw. Returns (bytes discarded,
     /// ranges left for the next window).
     fn reclaim_window(&self, snap_dev_id: u64) -> Result<(u64, usize), StackError> {
         self.watchdog
@@ -1810,7 +1810,7 @@ impl<O: DmOps> DmStack<O> {
     }
 
     /// Lazy-timing eviction (§7.1): one freeze window, at most
-    /// `max_ranges` (≤ [`RECLAIM_BATCH_RANGES`]) still-shared ranges,
+    /// `max_ranges` (≤ `RECLAIM_BATCH_RANGES`) still-shared ranges,
     /// discarded on BOTH sides — the live origin through the port, and
     /// the retained snapshot through a transient RW activation of its
     /// thin dev id. The dual discard frees the data blocks (last-ref

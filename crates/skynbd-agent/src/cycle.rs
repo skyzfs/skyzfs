@@ -39,7 +39,7 @@ const EVICT_MAX_BATCHES: u32 = 8;
 /// the moment the rescue is slowest. So the window is self-tuning the
 /// same way the rate is — [`CycleEngine::effective_window`] takes
 /// `max(this, observed)` over the wall time of recent ADVANCE cycles
-/// (bounded above by [`OBSERVED_WINDOW_CAP`] × this value), and a
+/// (bounded above by `OBSERVED_WINDOW_CAP` × this value), and a
 /// deployment whose advances are quick keeps this value rather than
 /// shrinking below it (a fast advance today is no promise about the
 /// one that runs during an outage).
@@ -97,7 +97,7 @@ impl Decaying for f64 {
 }
 
 /// Rule 1's window as the margin uses it: the configured floor, raised
-/// by observation but never past [`OBSERVED_WINDOW_CAP`] × the floor.
+/// by observation but never past `OBSERVED_WINDOW_CAP` × the floor.
 ///
 /// The ceiling is measured from the floor and never from one below the
 /// default: a deployment that configures a very small (or zero) window
@@ -423,7 +423,7 @@ impl<L: LocalStack, C: ControlPlane> CycleEngine<L, C> {
     /// Rule 1's window as the margin actually uses it: the configured
     /// floor, or the decayed maximum of observed advance durations when
     /// this deployment's advances have proven slower than the guess —
-    /// bounded by [`OBSERVED_WINDOW_CAP`] × the floor, since the decay
+    /// bounded by `OBSERVED_WINDOW_CAP` × the floor, since the decay
     /// runs per advance and a rarely-advancing volume would otherwise
     /// carry one outlier forever.
     pub fn effective_window(&self) -> Duration {
@@ -442,7 +442,7 @@ impl<L: LocalStack, C: ControlPlane> CycleEngine<L, C> {
     /// nothing can be published that has exactly one ending, and rule 3
     /// only exists to pick which one.
     ///
-    /// Unset by default: see [`Self::ro_watermark`].
+    /// Unset by default: see `Self::ro_watermark`.
     pub fn with_ro_watermark(mut self, fraction: f64, after: Duration) -> Self {
         self.ro_watermark = Some((fraction, after));
         self

@@ -587,17 +587,17 @@ pub struct Hooks {
     /// where. `hash` (the default): only each block's hash.
     pub request_log_whole: bool,
     /// The request whose commit is sent with no buffer, for the driver
-    /// to refuse: the first of its kind ([`crate::refuse`]).
+    /// to refuse: the first of its kind (`crate::refuse`).
     pub refuse: Option<Held>,
     /// The start at which tag 0's first fetch is sent with no buffer,
     /// for the driver to refuse.
     pub refuse_fetch: Option<FetchRefusal>,
-    /// Where the uploader's thread kills the daemon ([`crate::kill`]).
+    /// Where the uploader's thread kills the daemon (`crate::kill`).
     pub kill_at: Option<KillAt>,
 }
 
 /// `--kill-at-upload`: the point of an upload at which the uploader's
-/// thread kills the daemon, as `kill -9` would ([`crate::kill`]). N
+/// thread kills the daemon, as `kill -9` would (`crate::kill`). N
 /// counts from 1, over the serve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillAt {
