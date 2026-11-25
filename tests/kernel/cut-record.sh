@@ -100,8 +100,8 @@
 # a commit and its cut's release, the lease, and a row of version 1 (the
 # upload courses, below rec_failed).
 # The publish courses (the channel rig, skyzfs-publish-rig.yml; below
-# rec_ufailed) are made then too, by name only: pplain, prewind, pkill,
-# pkillman, pkillpub and pchannel. An agent (publish_agent.py) asks the
+# rec_ufailed) are made then too, by name only: pplain, prewind,
+# prewindf, pkill, pkillman, pkillpub and pchannel. An agent (publish_agent.py) asks the
 # daemon through its channel to publish snapshots of the pool, and
 # DIR/ends.tsv gets each answer under the course's label for it, for
 # publish_check.py (their CUT_CHECK).
@@ -176,7 +176,7 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
-PUBLISH_NAMED="pplain prewind pkill pkillman pkillpub pchannel"
+PUBLISH_NAMED="pplain prewind prewindf pkill pkillman pkillpub pchannel"
 KNOWN=$ALL
 [ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED"; }
 RECS=${*:-$ALL}
@@ -630,11 +630,12 @@ rec_rewindsync() {
     load 1
     export_pool
 }
-rec_rewindf() {
+# Every copy of the root block of the exported pool's newest uberblock
+# zeroed, so that the newest group does not open and `zpool import -F`
+# goes back past it (rewindf, prewindf). What was zeroed goes to
+# DIR/rewind-f.txt, the uberblock zdb read to newest-before-damage.txt.
+zero_newest_root() {
     local ub dvas d off asize ss n=0
-    create_pool
-    load 6
-    export_pool
     ub=$(newest_ub)
     echo "$ub" > "$RDIR/newest-before-damage.txt"
     # zdb 2.4 prints the root block pointer as `bp = DVA[0]=<...> ...`.
@@ -650,6 +651,12 @@ rec_rewindf() {
         n=$((n + 1))
     done
     printf 'zeroed %s copies of the root block of group %s: %s\n' "$n" "$(awk '$1 == "txg" { print $3; exit }' <<< "$ub")" "${dvas[*]}" > "$RDIR/rewind-f.txt"
+}
+rec_rewindf() {
+    create_pool
+    load 6
+    export_pool
+    zero_newest_root
     # What zpool import sees, and the kernel's account of each attempt
     # (run 43638676548: -F refused the pool as "one or more devices is
     # currently unavailable" and nothing said why): -F, then -FX.
@@ -1553,6 +1560,8 @@ praw() {
 # then asked with another manifest (accepted with no I/O, then refused
 # `taken` by the lookup). t2 asked twice before the first look. t3 of
 # another attachment and of another cut state: refused, and never there.
+# `look` (M2.6a) reads snap/t1's row as node B reads it, and finds no
+# snap/t5 (expired) and no snap/t3 (never asked validly): `absent`.
 # t4 asked with G 20 above its snapshot's createtxg, so that cuts counted
 # after C fall below G and must be passed over (the lead's addition: a
 # cut below G is never what snap/t names). t5 can never be carried and
@@ -1567,6 +1576,7 @@ rec_pplain() {
     pflow t1 t1 --limit-s 300
     pagain t1-again t1 "$(preq t1 2)"
     pwait t1-again-end t1 120
+    pask t1-look look t1
     { cat "$RDIR/manifest-t1"; printf '%064d  another\n' 0; } > "$RDIR/manifest-t1-other"
     pask t1-other publish t1 "$(preq t1 3)" "$(preq t1 4)" "$(preq t1 5)" "$(preq t1 2)" "$RDIR/manifest-t1-other"
     pwait t1-other-end t1 120
@@ -1575,6 +1585,8 @@ rec_pplain() {
     pask state publish t3 "$(preq t1 3)" "$zero" "$(preq t1 5)" "$(preq t1 2)" "$RDIR/manifest-t1"
     pflow t4 t4 --group-plus 20 --sync --limit-s 600
     pflow t5 t5 --group-plus 1000000 --expiry-s 5 --limit-s 120
+    pask t5-look look t5
+    pask t3-look look t3
     pflow t7 t7 --group-plus 1000000 --expiry-s 900 --limit-s 3
     pask t7-other publish t7 "$(preq t7 3)" "$(preq t7 4)" "$(preq t7 5)" "$(preq t7 7)" "$(preq t7 6)"
     pask t7-withdraw withdraw t7
@@ -1611,7 +1623,9 @@ rec_pplain() {
 # with a count read then (the agent's AskAnew), which must be published
 # by a later cut of the present history that opens as itself. The lease
 # is 900 s, so the outage does not take it away. The status with the
-# store down goes to DIR/rewind-status.txt.
+# store down goes to DIR/rewind-status.txt. A `look` at r1 with the store
+# down is answered `refused store` or `refused no-answer`, never `absent`
+# (M2.6a).
 rec_prewind() {
     local groups t _i out top
     [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "prewind needs CUT_S3_DOWN and CUT_S3_UP"
@@ -1639,6 +1653,7 @@ rec_prewind() {
     import_pool -T "$t"
     ustatus rewind-status.txt
     pflow r1 r1 --limit-s 300
+    pask r1-look look r1
     bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
     S3_IS_DOWN=""
     for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
@@ -1647,6 +1662,30 @@ rec_prewind() {
     past_top 600
     panew r1-anew r1 record
     pwait r1-end r1 900 sync
+    load 1
+    export_pool
+}
+
+# prewindf: a rewind by `zpool import -F` while a publish waits for its
+# cut (the lead's addition to M2.6a's rig; design §5.2). f1 is asked
+# with G far above its snapshot's, so that it pends. The pool is
+# exported, every copy of the newest group's root block is zeroed
+# (zero_newest_root, as rewindf), and the import with -F goes back past
+# it. The groups the import and the nudges then sync are not above the
+# highest the daemon saw before the export: rule (R) marks each such cut,
+# and the mark ends f1, waiting with a count below it. Its progress must
+# read `refused rewound`, and f1 is never published (the check's
+# premise: the request log's `f1 refused rewound` as an end, after cuts
+# counted after f1's C whose group is not above the highest before).
+rec_prewindf() {
+    create_pool
+    load 3
+    pflow f1 f1 --group-plus 1000000 --expiry-s 900 --limit-s 3
+    export_pool
+    zero_newest_root
+    import_pool -F
+    echo "imported with -F" >> "$RDIR/rewind-f.txt"
+    pwait f1-end f1 300 sync
     load 1
     export_pool
 }

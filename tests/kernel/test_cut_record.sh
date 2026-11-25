@@ -474,5 +474,29 @@ panew "$t-anew" "$t" record'
 is "pkillat: asking again records nothing (the take-over's request is refused)" \
     "$(grep -cE '^ +pagain (tk-again|"\$t-again") .* record$' "$SCRIPT")" 0
 
+# prewindf: f1 pends, then the pool is exported, its newest root block
+# zeroed and imported with -F; f1's end is read after that, with the
+# pool synced between looks (the lead's addition to M2.6a's rig).
+is "prewindf: f1 pends, export, the root block zeroed, import -F, then f1's end" \
+    "$(order_of rec_prewindf '^    (pflow f1|export_pool|zero_newest_root|import_pool -F|echo "imported with -F"|pwait f1-end)')" \
+    "pflow export_pool zero_newest_root import_pool echo pwait export_pool "
+is "prewindf: f1 is asked with G far above, so that it waits" \
+    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pflow f1 f1 --group-plus 1000000 ')" 1
+is "prewindf: f1's end is read with the pool synced between looks" \
+    "$(sed -n '/^rec_prewindf() {$/,/^}$/p' "$SCRIPT" | grep -c '^    pwait f1-end f1 [0-9]* sync$')" 1
+is "rewindf zeroes the root block as prewindf does" \
+    "$(order_of rec_rewindf '^    (export_pool|zero_newest_root|session_begin)')" "export_pool zero_newest_root session_begin export_pool "
+is "prewindf is a publish course by name" \
+    "$(grep -c '^PUBLISH_NAMED=".* prewindf .*"$' "$SCRIPT")" 1
+
+# look (M2.6a): at t1 after it was done, at t5 after it expired and at t3,
+# never asked validly; at r1 with the store down, before it comes back.
+is "pplain: looks at t1 once done, at t5 once expired, and at t3" \
+    "$(order_of rec_pplain '^    (pwait t1-again-end|pask t1-look look t1$|pflow t5|pask t5-look look t5$|pask t3-look look t3$)')" \
+    "pwait pask pflow pask pask "
+is "prewind: looks at r1 with the store down, before it comes back" \
+    "$(order_of rec_prewind '^    (bash -c "\$S3_DOWN"|pflow r1|pask r1-look look r1$|bash -c "\$S3_UP")')" \
+    "bash pflow pask bash "
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

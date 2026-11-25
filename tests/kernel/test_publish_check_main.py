@@ -92,6 +92,24 @@ def log_text(instances):
     return ''.join(ln + '\n' for ln in out)
 
 
+def look_of(t, n, g):
+    """`look`'s `snap` answer as node B's row of T reads (FakeNodeB)."""
+    m = manifest_of(t)
+    return (f'snap commit={commit_of(t)} state={S} number={n} group={g} manifest-len={len(m)} '
+            f'manifest-hash={hashlib.sha256(m).hexdigest()}')
+
+
+def answer(label, text):
+    """A change: LABEL's answer in ends.tsv replaced by TEXT."""
+    def change(d):
+        p = os.path.join(d, 'ends.tsv')
+        with open(p) as f:
+            lines = [ln for ln in f.read().splitlines() if ln.split('\t')[0] != label]
+        with open(p, 'w') as f:
+            f.write(''.join(ln + '\n' for ln in lines + [f'{label}\t{text}']))
+    return change
+
+
 def node_b_row(n, g):
     return f'head\t{"f" * 64}\t9\nrow\t{S}\t{n}\t{g}\nrow_commit\t{"f" * 64}\nlease\tskyzfsd\t1\t0\n'
 
@@ -103,11 +121,12 @@ def node_b_row(n, g):
 COURSES = {
     'pplain': {
         'ends': {'t1': 'done commit=' + commit_of('t1'), 't1-again': 'accepted',
-                 't1-again-end': 'done commit=' + commit_of('t1'), 't1-other': 'accepted',
+                 't1-again-end': 'done commit=' + commit_of('t1'), 't1-look': look_of('t1', 8, 50),
+                 't1-other': 'accepted',
                  't1-other-end': 'refused taken snap/t1 names another manifest',
                  't2': 'done commit=' + commit_of('t2'), 'att': 'refused attachment not this one',
                  'state': 'refused state not this one', 't4': 'done commit=' + commit_of('t4'),
-                 't5': 'expired', 't7': 'pending after 12', 't7-other': 'refused asked other parameters',
+                 't5': 'expired', 't5-look': 'absent', 't3-look': 'absent', 't7': 'pending after 12', 't7-other': 'refused asked other parameters',
                  't7-withdraw': 'withdrawn', 't7-again': 'accepted', 't7-end': 'done commit=' + commit_of('t7')},
         'requests': {'t1': (7, 50, 50), 't2': (8, 51, 51), 't4': (9, 72, 52), 't7': (12, 73, 73)},
         'rows': {'t1': (8, 50), 't2': (9, 51), 't4': (12, 72), 't7': (13, 73)},
@@ -117,6 +136,7 @@ COURSES = {
     },
     'prewind': {
         'ends': {'r1': 'refused rewound a rewind may have been counted after the count asked from',
+                 'r1-look': 'refused store object storage answered with an error',
                  'r1-anew': 'accepted', 'r1-end': 'done commit=' + commit_of('r1')},
         # The first ask, refused, then the one asked anew past the top.
         'requests': {'r1': [(7, 50, 50), (10, 50, 50)]},
@@ -128,6 +148,18 @@ COURSES = {
                        ('publish', 'asked', 'r1 refused rewound'), (10, 52, True), (11, 53, True)])],
         'files': {'rewind-status.txt': 'cuts_held 3\n', 'rewind-row.txt': node_b_row(9, 51),
                   'rewind-top.txt': '52\n'},
+    },
+    'prewindf': {
+        'ends': {'f1': 'pending after 3 s',
+                 'f1-end': 'refused rewound a rewind may have been counted after the count asked from'},
+        'requests': {'f1': (7, 1000050, 50)},
+        'rows': {},
+        # The export synced up to group 55 (cut 9); -F went back past it,
+        # and cut 10, of group 55 again, is the mark that ended f1.
+        'log': [(PID, [(8, 52, True), (9, 55, True), (10, 55, False), ('publish', 'ended', 'f1 refused rewound'),
+                       (11, 56, True)])],
+        'files': {'rewind-f.txt': 'zeroed 3 copies of the root block of group 55: DVA[0]=<0:1000:1000>\n'
+                                  '== zpool import -d (the listing)\nimported with -F\n'},
     },
     'pkill': {
         'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tk': 'pending after 9',
@@ -144,9 +176,7 @@ COURSES = {
         'ends': {'p1': 'unknown', 'p1-after': 'unknown', 'p1-again': 'refused rewound', 'p1-anew': 'accepted',
                  'p1-end': 'refused taken',
                  # As node B's row of p1 reads (FakeNodeB): cut 8 of group 50 and its manifest.
-                 'p1-look': f'snap commit={commit_of("p1")} state={S} number=8 group=50 '
-                            f'manifest-len={len(manifest_of("p1"))} '
-                            f'manifest-hash={hashlib.sha256(manifest_of("p1")).hexdigest()}'},
+                 'p1-look': look_of('p1', 8, 50)},
         'requests': {'p1': (7, 50, 50)},
         'rows': {'p1': (8, 50)},
         'log': [(PID, [(8, 50, True)]), (PID2, [])],
@@ -382,17 +412,51 @@ class Pins(unittest.TestCase):
         self.assertEqual((rc, lines['pin_asking_twice_is_once'][0]), (1, 'FAILED'))
 
     def test_a_look_that_does_not_name_the_row_ends_1(self):
-        """#140's review, N6: look p1's fields against node B's row."""
-        look = COURSES['pkillpub']['ends']['p1-look']
-        for old, new in (('number=8', 'number=9'), ('group=50', 'group=51'), ('manifest-len=', 'manifest-len=1'),
-                         (f'state={S}', f'state={A}'), ('manifest-hash=', 'manifest-hash=0')):
-            def change(d, old=old, new=new):
-                with open(os.path.join(d, 'ends.tsv')) as f:
-                    text = f.read()
-                with open(os.path.join(d, 'ends.tsv'), 'w') as f:
-                    f.write(text.replace(look, look.replace(old, new, 1)))
-            rc, lines = run_course('pkillpub', change)
-            self.assertEqual((rc, lines['pin_p1_look'][0]), (1, 'FAILED'), new)
+        """#140's review, N6: a look's fields against node B's row, for
+        p1 (its look stands in for done) and t1 (a look beside done)."""
+        for name, t in (('pkillpub', 'p1'), ('pplain', 't1')):
+            look = COURSES[name]['ends'][f'{t}-look']
+            for old, new in (('number=8', 'number=9'), ('group=50', 'group=51'),
+                             ('manifest-len=', 'manifest-len=1'), (f'state={S}', f'state={A}'),
+                             ('manifest-hash=', 'manifest-hash=0'), ('commit=', 'commit=0')):
+                def change(d, old=old, new=new, look=look):
+                    with open(os.path.join(d, 'ends.tsv')) as f:
+                        text = f.read()
+                    with open(os.path.join(d, 'ends.tsv'), 'w') as f:
+                        f.write(text.replace(look, look.replace(old, new, 1)))
+                rc, lines = run_course(name, change)
+                self.assertEqual((rc, lines[f'pin_{t}_look'][0]), (1, 'FAILED'), (name, new))
+
+    def test_a_look_that_finds_what_is_not_there_ends_1(self):
+        """`absent` for names never made; never `absent` with the store down."""
+        for name, label, text in (('pplain', 't5-look', look_of('t5', 14, 74)), ('pplain', 't3-look', 'unknown'),
+                                    ('prewind', 'r1-look', 'absent')):
+            rc, lines = run_course(name, answer(label, text))
+            self.assertEqual((rc, lines[f'pin_answer_{label}'][0]), (1, 'FAILED'), label)
+
+    def test_prewindf_s_publish_not_ended_or_published_ends_1(self):
+        rc, lines = run_course('prewindf', answer('f1-end', 'pending after 300 s'))
+        self.assertEqual((rc, lines['pin_answer_f1-end'][0]), (1, 'FAILED'))
+        rc, lines = run_course('prewindf', rows={'f1': (11, 56)})
+        self.assertEqual((rc, lines['pin_f1_absent'][0]), (1, 'FAILED'))
+
+    def test_prewindf_with_no_ground_for_the_end_is_the_rig_s_error(self):
+        def log(lines):
+            return write('requests.tsv', log_text([(PID, lines)]))
+        for why, change in (
+                ('no end line', log([(8, 52, True), (9, 55, True), (10, 55, False), (11, 56, True)])),
+                ('refused when asked, not ended', log([(8, 52, True), (9, 55, True), (10, 55, False),
+                                                       ('publish', 'asked', 'f1 refused rewound')])),
+                ('no cut below the top before the end', log([(8, 52, True), (9, 55, True), (10, 56, True),
+                                                              ('publish', 'ended', 'f1 refused rewound')])),
+                ('the mark at or before C', log([(7, 55, True), (6, 50, False),
+                                                 ('publish', 'ended', 'f1 refused rewound')]))):
+            rc, lines = run_course('prewindf', change)
+            self.assertEqual((rc, lines['premise_f1_ended_by_a_rewind_cut'][0]), (2, 'ERROR'), why)
+        for text in ('zeroed 3 copies of the root block of group 55: x\n',
+                     'zeroed 0 copies of the root block of group 55: \nimported with -F\n', ''):
+            rc, lines = run_course('prewindf', write('rewind-f.txt', text))
+            self.assertEqual((rc, lines['premise_f1_import_f'][0]), (2, 'ERROR'), text)
 
     def test_pkillman_with_snap_m1_after_the_kill_ends_1(self):
         rc, lines = run_course('pkillman', write('m1-between.txt', f'ref\t{"9" * 64}\t3\nsnaprow\tnone\n'))
@@ -501,7 +565,8 @@ class Premises(unittest.TestCase):
             self.assertEqual((rc, lines[key][0]), (2, 'ERROR'), (name, fn))
 
     def test_a_missing_file_is_the_rig_s_error(self):
-        for name, fn in (('prewind', 'rewind-row.txt'), ('prewind', 'rewind-top.txt'), ('pkill', 'tw-status.txt'),
+        for name, fn in (('prewind', 'rewind-row.txt'), ('prewind', 'rewind-top.txt'), ('prewindf', 'rewind-f.txt'),
+                         ('prewindf', 'published.tsv'), ('pkill', 'tw-status.txt'),
                          ('pchannel', 'socket-mode.txt')):
             rc, lines = run_course(name, lambda d, fn=fn: os.remove(os.path.join(d, fn)))
             self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), (name, fn))

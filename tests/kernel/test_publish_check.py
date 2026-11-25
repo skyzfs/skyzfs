@@ -31,6 +31,7 @@ class Tables(unittest.TestCase):
                 't1': ('done ',),
                 't1-again': ('accepted',),            # the same request twice is one publish
                 't1-again-end': ('done ',),
+                't1-look': ('snap ',),                # the row node B reads (pin_t1_look)
                 't1-other': ('accepted',),            # answered before any lookup in object storage
                 't1-other-end': ('refused taken',),   # snap/t1 names another manifest
                 't2': ('done ',),
@@ -38,6 +39,8 @@ class Tables(unittest.TestCase):
                 'state': ('refused state',),
                 't4': ('done ',),
                 't5': ('expired',),                   # G never reached in its limit
+                't5-look': ('absent',),               # expired, so never made
+                't3-look': ('absent',),               # never asked validly
                 't7': ('pending after',),
                 't7-other': ('refused asked',),
                 't7-withdraw': ('withdrawn',),
@@ -46,8 +49,13 @@ class Tables(unittest.TestCase):
             },
             'prewind': {
                 'r1': ('refused rewound',),       # rule (R): below the abandoned top every cut is a mark
+                'r1-look': ('refused store', 'refused no-answer'),  # object storage down: never `absent`
                 'r1-anew': ('accepted',),         # past the top, with a count read then
                 'r1-end': ('done ',),
+            },
+            'prewindf': {
+                'f1': ('pending after',),             # G far above: it waits
+                'f1-end': ('refused rewound',),       # -F's first cuts are marks, which end it
             },
             'pkill': {
                 'tw': ('pending after',),
@@ -87,13 +95,17 @@ class Tables(unittest.TestCase):
         self.assertEqual(pc.PUBLISHED, {
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
             'prewind': {'r1': 'r1-end'},
+            'prewindf': {},
             'pkill': {'tk': 'tk-end'},
             'pkillman': {'m1': 'm1-end'},
             'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
         })
-        # t5 expired, t3 never asked validly, tw withdrawn before the kill.
-        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'pkill': ('tw',)})
+        # t5 expired, t3 never asked validly, f1 ended by the rewind's
+        # mark, tw withdrawn before the kill.
+        self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'pkill': ('tw',)})
+        # A look at a name published must name its row.
+        self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
         # manifest:1 kills before the transaction (no snap/m1 may show),
         # publish:1 after it (snap/p1 must).
         self.assertEqual(pc.BETWEEN, {'pkillman': ('m1', False), 'pkillpub': ('p1', True)})
@@ -121,6 +133,9 @@ class Tables(unittest.TestCase):
             for t, label in pc.PUBLISHED[course].items():
                 want = ('snap ',) if (course, t) == ('pkillpub', 'p1') else ('done ',)
                 self.assertEqual(pc.EXPECTED[course][label], want, (course, t))
+            for t, label in pc.LOOKS.get(course, {}).items():
+                self.assertIn(t, pc.PUBLISHED[course])
+                self.assertEqual(pc.EXPECTED[course][label], ('snap ',), (course, t))
 
     def test_a_snap_answer_names_its_commit_as_done_does(self):
         h = 'c' * 64
@@ -253,6 +268,8 @@ class Look(unittest.TestCase):
         self.assertEqual(pc.judge_look(self.LOOK.replace(' group=15', ''), self.ROW),
                          ['the look says group nothing, the row 15'])
         self.assertEqual(len(pc.judge_look(f'snap commit={H}', self.ROW)), 5)
+        self.assertEqual(pc.judge_look(self.LOOK, dict(self.ROW, commit='e' * 64)),
+                         [f'the look says commit {H}, the row {"e" * 64}'])
         self.assertEqual(pc.judge_look(self.LOOK, None), ['node B read no row to compare the look with'])
 
 
@@ -364,6 +381,14 @@ class Premises(unittest.TestCase):
         for refusal, op in (('r1 accepted', 'asked'), ('r12 refused rewound', 'asked'),
                             ('r1 refused rewound', 'progress')):
             self.assertEqual(pc.rewound_grounds(self.rewound_log(refusal, op), 'r1', 19), (False, []), (refusal, op))
+
+    def test_an_end_is_read_only_as_an_end(self):
+        """prewindf's premise: f1 ended `refused rewound` while it waited
+        (a `publish ended` line), not refused when asked."""
+        ended = self.rewound_log('r1 refused rewound', 'ended')
+        self.assertEqual(pc.rewound_grounds(ended, 'r1', 19, 'ended'), (True, [(20, 31, 43), (21, 32, 43)]))
+        self.assertEqual(pc.rewound_grounds(ended, 'r1', 19), (False, []))
+        self.assertEqual(pc.rewound_grounds(self.rewound_log(), 'r1', 19, 'ended'), (False, []))
 
     def test_exact_counts(self):
         st = {'publish_withdrawn': '1', 'publish_pending': '0', 'publish_published': '0'}
