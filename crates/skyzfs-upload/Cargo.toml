@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 skyzfs-blk = { workspace = true }
+skyzfs-control = { workspace = true }
 skyzfs-local = { workspace = true }
 skynbd-engine = { workspace = true }
 skynbd-format = { workspace = true }

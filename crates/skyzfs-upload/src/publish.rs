@@ -107,9 +107,9 @@ use skyzfs_local::inplace::CommittedCut;
 
 use crate::backoff::Backoff;
 
-/// The largest ZFS manifest a request carries: 1 MiB. Its format is the
-/// agent's (M2.6); the daemon stores it as it came.
-pub const MANIFEST_MAX: usize = 1 << 20;
+// The limits of a request are the channel protocol's (M2.6a): the
+// agent reads them there without linking this crate.
+pub use skyzfs_control::{valid_name, EXPIRY_DEFAULT, EXPIRY_MAX, MANIFEST_MAX};
 
 /// The cuts committed, or found committed, that the uploader keeps in
 /// view for a request that comes after their commit: the newest 64. A
@@ -125,13 +125,6 @@ pub const PENDING_MAX: usize = 64;
 
 /// The outcomes kept for [`Publishing::progress`]: the newest 1024.
 pub const OUTCOMES_KEPT: usize = 1024;
-
-/// How long a publish may pend where the agent names no expiry: ten
-/// minutes. The channel (M2.5-2) fills it in.
-pub const EXPIRY_DEFAULT: Duration = Duration::from_secs(10 * 60);
-
-/// The longest a publish may pend: an hour.
-pub const EXPIRY_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// The prefix of a snapshot's row among the refs object's meta rows.
 pub const SNAP_ROW_PREFIX: &str = "skyzfs/snap/";
@@ -160,16 +153,6 @@ pub fn manifest_key(vol: VolumeId, snap: SnapId) -> String {
         "{}skyzfs/manifest/{snap}",
         skynbd_engine::keys::volume_prefix(vol)
     )
-}
-
-/// Whether `name` may name a snapshot: 1 to 128 of `[A-Za-z0-9._-]`, as
-/// SkyNBD's engine requires of a snapshot's name.
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
 /// A request to publish a cut as `snap/<name>`.

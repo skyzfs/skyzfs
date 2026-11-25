@@ -4211,6 +4211,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-control"
+version = "0.0.1"
+dependencies = [
+ "rustix 1.1.4",
+ "tempfile",
+]
+
+[[package]]
 name = "skyzfs-local"
 version = "0.0.1"
 dependencies = [
@@ -4293,6 +4301,7 @@ dependencies = [
  "skynbd-store",
  "skynbd-types",
  "skyzfs-blk",
+ "skyzfs-control",
  "skyzfs-local",
  "skyzfs-uberblock",
  "thiserror 2.0.19",
@@ -4315,6 +4324,7 @@ dependencies = [
  "skynbd-store",
  "skynbd-types",
  "skyzfs-blk",
+ "skyzfs-control",
  "skyzfs-local",
  "skyzfs-uberblock",
  "skyzfs-ublk",

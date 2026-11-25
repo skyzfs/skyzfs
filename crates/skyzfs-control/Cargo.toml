@@ -1,0 +1,15 @@
+[package]
+name = "skyzfs-control"
+description = "The channel between a node's agent and a serving skyzfsd: the protocol's words and limits, and the client (M2.5-2, M2.6a). Nothing of the daemon's."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+# The client's connect, made without blocking so that a daemon whose
+# backlog is full is tried again within a limit.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["net"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

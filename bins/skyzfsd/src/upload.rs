@@ -834,7 +834,7 @@ pub struct Publishes {
 pub fn publish_ended_said(name: &str, progress: &Progress) -> String {
     format!(
         "publish {name}: {}",
-        crate::control::Reply::of(progress).line()
+        crate::control::reply_of(progress).line()
     )
 }
 

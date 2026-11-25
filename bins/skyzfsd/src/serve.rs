@@ -1504,7 +1504,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                         lines.publish(
                             crate::record::PublishLine::Ended,
                             name,
-                            &control::Reply::of(progress),
+                            &control::reply_of(progress),
                         );
                     })
                 }

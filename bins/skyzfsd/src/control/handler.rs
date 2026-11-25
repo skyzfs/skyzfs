@@ -29,7 +29,7 @@ use skyzfs_upload::queued::Desk;
 use skyzfs_upload::{Answer, Control};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{seen_reply, Code, CutsReply, Handler, Reply, Request};
+use super::{code_of, reply_of, seen_reply, Code, CutsReply, Handler, Reply, Request};
 use crate::upload::Runtime;
 
 /// How many requests may wait in the uploader's inbox. The channel asks
@@ -154,18 +154,18 @@ fn answer<R: RefStore>(
             send(inbox, Control::Ask(ask, tx))?;
             match wait(waiter, rx)? {
                 Answer::Accepted => Reply::Accepted,
-                Answer::Refused(why) => Reply::Refused(Code::of(&why), why.to_string()),
+                Answer::Refused(why) => Reply::Refused(code_of(&why), why.to_string()),
             }
         }
         Request::Progress(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Progress(name.clone(), tx))?;
-            Reply::of(&wait(waiter, rx)?)
+            reply_of(&wait(waiter, rx)?)
         }
         Request::Withdraw(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Withdraw(name.clone(), tx))?;
-            Reply::of(&wait(waiter, rx)?)
+            reply_of(&wait(waiter, rx)?)
         }
         Request::Look(name) => look(waiter, lookup, name)?,
     })
