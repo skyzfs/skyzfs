@@ -2197,8 +2197,56 @@ fn a_person_gives_up_in_the_order_of_every_give_up() {
             seen().away().at(UNTIL).unheld(),
             gave.clone(),
         ),
+        // A daemon that answers that it cannot say is away until a
+        // withdraw of the agent's own was answered (B1 of #149's review).
         (
-            "held, away",
+            "asked, refused no-answer",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::NoAnswer).looked(SnapSeen::Absent),
+            Action::Wait,
+        ),
+        (
+            "asked, refused ended",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::Ended).looked(SnapSeen::Absent),
+            Action::Wait,
+        ),
+        (
+            "asked, refused no-upload",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::NoUpload).looked(SnapSeen::Absent),
+            Action::Wait,
+        ),
+        (
+            "asked, refused no-answer, at held_until",
+            by(Person::GiveUp, asked()),
+            seen()
+                .refused(Code::NoAnswer)
+                .looked(SnapSeen::Absent)
+                .at(UNTIL),
+            Action::Release,
+        ),
+        (
+            "asked, refused no-answer after a withdraw answered",
+            by(Person::GiveUp, asked()),
+            seen()
+                .refused(Code::NoAnswer)
+                .withdrawn()
+                .looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "asked, refused busy",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::Busy).looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        // Released at once (the lead's decision on L1 of #149's review):
+        // a publish recorded held has no request out, since the engine
+        // records it asked, synced, before it sends `publish`
+        // (`the_record_says_asked_before_the_request_is_sent`).
+        (
+            "held, away: recorded held, so no request out",
             by(Person::GiveUp, held()),
             seen().away(),
             Action::Release,

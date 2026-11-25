@@ -38,6 +38,20 @@
 //! record takes a new version and a test that decodes the version
 //! before it (the lead's decision on #144).
 //!
+//! # The marker
+//!
+//! The file [`MARKER`] says that the directory is an agent's directory
+//! of a volume (L4 of #149's review). Its bytes are the magic
+//! [`MARKER_MAGIC`] and the version [`MARKER_VERSION`] (u16, little
+//! endian). [`Store::save`] writes it, in one step as the record is
+//! written, before the first record, and again before any save that
+//! finds it missing; so a record on the disk has a marker beside it
+//! unless a person removed it. The engine's sweep releases a hold no
+//! publish names only where the marker is there: an agent given a
+//! mistyped `--dir` finds no marker and no record, and releases nothing
+//! (`engine::Error::Unmarked`). A file of that name with other bytes is
+//! not a marker, and is written over at the next save.
+//!
 //! # The manifests
 //!
 //! A publish's ZFS manifest (design §5.4, [`crate::manifest`]) is in
@@ -64,6 +78,22 @@ pub const UNDER_WAY_MAX: usize = 8;
 /// The names given up that the record keeps: the newest 64. They are
 /// for M2.7's retention, which decides what becomes of their snapshots.
 pub const ABANDONED_KEPT: usize = 64;
+
+/// The agent's marker in its directory of a volume ([module docs](self)).
+pub const MARKER: &str = "agent";
+
+/// The marker's magic.
+pub const MARKER_MAGIC: [u8; 4] = *b"SZAD";
+
+/// The marker's version.
+pub const MARKER_VERSION: u16 = 1;
+
+/// The marker's bytes: [`MARKER_MAGIC`], then [`MARKER_VERSION`].
+pub fn marker_bytes() -> [u8; 6] {
+    let [a, b, c, d] = MARKER_MAGIC;
+    let [v0, v1] = MARKER_VERSION.to_le_bytes();
+    [a, b, c, d, v0, v1]
+}
 
 /// The record's file in the agent's directory of a volume.
 pub const RECORD: &str = "record";
@@ -170,11 +200,15 @@ pub enum Phase {
     /// The snapshot taken and its manifest on disk.
     Taken(Taken),
     /// The hold placed, and the members, the layout and `load_guid`
-    /// verified.
+    /// verified; no request of the publish is out (the engine records
+    /// [`Phase::Asked`] before it sends one: L1 of #149's review).
     Held(Taken),
-    /// The daemon answered `accepted`; the agent holds the snapshot until
-    /// `held_until_ms` while the daemon does not answer. Times are the
-    /// wall clock, in ms since 1970.
+    /// A request to publish sent, or about to be: recorded before it is
+    /// sent, with `held_until_ms` past what its expiry can be, and again
+    /// once the daemon answered `accepted`, with `held_until_ms` from the
+    /// answer. The agent holds the snapshot until `held_until_ms` while
+    /// the daemon does not answer. Times are the wall clock, in ms since
+    /// 1970.
     Asked {
         /// What was taken.
         taken: Taken,
@@ -539,8 +573,21 @@ impl<F: Fs> Store<F> {
         if let Loaded::Corrupt(why) = self.load()? {
             return Err(SaveError::Corrupt(why));
         }
+        if !self.marked()? {
+            replace(&self.fs, &self.dir, MARKER, &marker_bytes())?;
+        }
         replace(&self.fs, &self.dir, RECORD, &bytes)?;
         Ok(())
+    }
+
+    /// Whether the directory holds the agent's marker ([module
+    /// docs](self)).
+    pub fn marked(&self) -> io::Result<bool> {
+        match self.fs.read(&self.dir.join(MARKER)) {
+            Ok(bytes) => Ok(bytes == marker_bytes()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Write the manifest of `name`, synced, before the record names it.
@@ -615,6 +662,8 @@ pub trait Keep {
     fn remove_manifest(&self, name: &str) -> io::Result<()>;
     /// [`Store::manifest_names`].
     fn manifest_names(&self) -> io::Result<Vec<String>>;
+    /// [`Store::marked`].
+    fn marked(&self) -> io::Result<bool>;
 }
 
 impl<F: Fs> Keep for Store<F> {
@@ -635,6 +684,9 @@ impl<F: Fs> Keep for Store<F> {
     }
     fn manifest_names(&self) -> io::Result<Vec<String>> {
         Store::manifest_names(self)
+    }
+    fn marked(&self) -> io::Result<bool> {
+        Store::marked(self)
     }
 }
 

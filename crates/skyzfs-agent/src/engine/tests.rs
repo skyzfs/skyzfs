@@ -777,6 +777,14 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
 /// once and by one of them at least (a report is not recorded), and
 /// given up at its eighth stall.
 ///
+/// One stop costs a stall: one from the record of the ask (`asking`,
+/// before it is sent) to the record of its answer (`asked`). The record
+/// then says asked, and the ask anew at the same place counts a stall,
+/// as for a request accepted and lost: the cost of recording the ask
+/// before it is sent (the lead's decision on L1 of #149's review;
+/// `Agent::ask`). Such a stop counts one stall more, once; any other
+/// counts none.
+///
 /// Mutant: the stalls committed with the publish left at `Asked` (a
 /// request asked anew after a stop between the count and the ask is
 /// counted twice), or the report made at each count (made more than
@@ -784,6 +792,24 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
 #[test]
 fn a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once() {
     let whole = stalling_run_stopped_at(usize::MAX).points;
+    // From after the record of the ask to before the record of its answer.
+    let between_ask_and_answer = |k: usize| {
+        let at =
+            |j: usize, effect: Effect, after: bool| whole.get(j) == Some(&Point { effect, after });
+        let mut j = k;
+        loop {
+            if at(j, Effect::Asking, true) {
+                return true;
+            }
+            let inside = at(j, Effect::Ask, false)
+                || at(j, Effect::Ask, true)
+                || at(j, Effect::Asked, false);
+            if !inside || j == 0 {
+                return false;
+            }
+            j -= 1;
+        }
+    };
     let assist = |k: usize| whole.get(k).is_some_and(|p| p.effect == Effect::Assist);
     let stops = (0..whole.len()).filter(|&k| !assist(k) || k < 2 || !assist(k - 2));
     for k in stops {
@@ -810,8 +836,14 @@ fn a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once() {
             "{at}: {:?}",
             run.reports
         );
+        let more = run
+            .asked
+            .windows(2)
+            .map(|w| w[1].saturating_sub(w[0] + 1))
+            .sum::<u32>();
+        let allowed = u32::from(between_ask_and_answer(k));
         assert!(
-            run.asked.windows(2).all(|w| w[1] <= w[0] + 1),
+            more <= allowed,
             "{at}: a stall counted twice: {:?}",
             run.asked
         );
@@ -1897,7 +1929,9 @@ fn the_matrices_need_the_rule_r_of_the_daemon() {
     let off = failing_under(Rule::Off);
     assert!(off.len() >= 10, "with no rule: {off:?}");
     let previous = failing_under(Rule::Previous);
-    let expected: BTreeSet<String> = [25, 26, 27]
+    // The second ask's `ask` (after), `asked` (before) and `asked`
+    // (after); two `asking` records before them since #149's L1.
+    let expected: BTreeSet<String> = [29, 30, 31]
         .map(|k| format!("ErrLow Agent({k}, RewindF(BelowCreated))"))
         .into();
     assert_eq!(previous, expected, "under the rule as M2.6a built it");
@@ -2138,6 +2172,62 @@ fn a_person_gives_up_a_publish_whose_request_pends() {
     assert!(holds(&world).is_empty(), "{:?}", holds(&world));
 }
 
+/// A person's give-up while the uploader is in a long step (`progress`
+/// and `withdraw` answered `refused no-answer`, as skyzfsd answers them)
+/// keeps the hold until `held_until`, though a person stands ready to
+/// destroy `pool@t` once it is let go. Where the request lands, it lands
+/// on a cut that holds every member's `@t` as the manifest has it, and
+/// the publish is published, not given up; where it does not, it has
+/// expired before the hold goes, and no `snap/t` is ever made (B1 of
+/// #149's review, its R1 and R2). Mutant: the silent answers read as a
+/// daemon that answered.
+#[test]
+fn a_person_s_give_up_keeps_the_hold_while_the_uploader_is_silent() {
+    for mode in [Mode::Busy, Mode::Idle, Mode::Abandoned] {
+        let world = World::new(mode);
+        world.borrow_mut().lag_ms = 60_000;
+        let keep = MemKeep::default();
+        let mut agent0 = agent(&world, &keep).with_points(Box::new(|p: Point, _: &str| p == ASKED));
+        let t = agent0.begin().expect("begun");
+        assert!(matches!(agent0.settle(LIMIT), Err(Error::Stopped)));
+        drop(agent0);
+        {
+            let mut world = world.borrow_mut();
+            world.silent_until = u64::MAX;
+            world.destroyer = Some(t.clone());
+        }
+        let mut again = agent(&world, &keep);
+        again.recover(&t, Choice::GiveUp).expect("recovered");
+        again.settle(LIMIT).expect("settled");
+        let published = match again.outcomes() {
+            [(n, Outcome::Published(_))] if *n == t => true,
+            [(n, Outcome::Abandoned(Why::Person))] if *n == t => false,
+            other => panic!("{mode:?}: {other:?}"),
+        };
+        // Whatever still pends at the daemon has its time to land.
+        world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+        let world = world.borrow();
+        assert!(holds(&world).is_empty(), "{mode:?}: {:?}", holds(&world));
+        let Some(r) = world.refs.get(&t) else {
+            assert!(!published, "{mode:?}: published, and no snap/{t}");
+            continue;
+        };
+        assert!(published, "{mode:?}: given up, and snap/{t} made");
+        let manifest = Manifest::decode(&r.manifest).expect("the manifest");
+        let cut = &world.commits[&r.commit].cut;
+        for m in &manifest.members {
+            let at = format!("{}@{t}", m.name);
+            assert_eq!(
+                cut.snaps.get(&at),
+                Some(&m.snapshot_guid),
+                "{mode:?}: snap/{t} names cut {} (group {}) without {at}",
+                cut.number,
+                cut.group
+            );
+        }
+    }
+}
+
 /// Each report goes to the sink before the engine acts on it, and each
 /// point is named for its publish (testing's `--trace-points`).
 /// Mutant: the sink called after the act, or not at all; a point given
@@ -2281,6 +2371,7 @@ struct StopRun {
     holds: u32,
     asks: u32,
     releases: u32,
+    looks: u32,
     /// The world's time from the stop to the end of the settle.
     after_stop_ms: u64,
     held_at_end: Vec<String>,
@@ -2295,7 +2386,7 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
     let world = World::new(Mode::Busy);
     world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
     let stopped_at = Rc::new(Cell::new(None::<u64>));
-    let counts = Rc::new(Cell::new((0_u32, 0_u32, 0_u32)));
+    let counts = Rc::new(Cell::new((0_u32, 0_u32, 0_u32, 0_u32)));
     if at.is_none() {
         let mut w = world.borrow_mut();
         w.stop_uploader();
@@ -2305,14 +2396,15 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
         let (world, stopped_at, counts) = (world.clone(), stopped_at.clone(), counts.clone());
         let reached = Cell::new(0_u32);
         move |point: Point, _: &str| {
-            let (mut holds, mut asks, mut releases) = counts.get();
+            let (mut holds, mut asks, mut releases, mut looks) = counts.get();
             match (point.effect, point.after) {
                 (Effect::Hold, true) => holds += 1,
                 (Effect::Ask, true) => asks += 1,
                 (Effect::Release, true) => releases += 1,
+                (Effect::Look, true) => looks += 1,
                 _ => {}
             }
-            counts.set((holds, asks, releases));
+            counts.set((holds, asks, releases, looks));
             if let Some((p, nth)) = at {
                 if point == p {
                     reached.set(reached.get() + 1);
@@ -2332,7 +2424,7 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
         .map(|_| agent.begin().expect("begun"))
         .collect::<Vec<_>>();
     agent.settle(LIMIT).expect("settled");
-    let (hold_count, asks, releases) = counts.get();
+    let (hold_count, asks, releases, looks) = counts.get();
     let world = world.borrow();
     let stopped = stopped_at.get().expect("the uploader stopped");
     StopRun {
@@ -2342,15 +2434,18 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
         holds: hold_count,
         asks,
         releases,
+        looks,
         after_stop_ms: world.now_ms - stopped,
         held_at_end: holds(&world),
     }
 }
 
 /// Each publish is given up as `stopped` soon after the stop, reported
-/// once, its hold released, and no more holds, asks or releases than
-/// `per` (holds, asks, releases) for each.
-fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32)) {
+/// once, its hold released, and no more holds, asks, releases or looks
+/// than `per` (holds, asks, releases, looks) for each: a look's sight
+/// kept across the release, not looked for again (TG14 of #146's
+/// review).
+fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32, u32)) {
     let n = u32::try_from(run.names.len()).expect("a few");
     for t in &run.names {
         assert!(
@@ -2369,9 +2464,9 @@ fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32)) {
     assert_eq!(run.outcomes.len(), run.names.len(), "{run:?}");
     assert_eq!(run.reports.len(), run.names.len(), "{run:?}");
     assert_eq!(
-        (run.holds, run.asks, run.releases),
-        (per.0 * n, per.1 * n, per.2 * n),
-        "holds, asks and releases: {run:?}"
+        (run.holds, run.asks, run.releases, run.looks),
+        (per.0 * n, per.1 * n, per.2 * n, per.3 * n),
+        "holds, asks, releases and looks: {run:?}"
     );
     assert!(run.held_at_end.is_empty(), "{run:?}");
     // A round or two of ticks, not until the publish is too old.
@@ -2405,11 +2500,11 @@ fn a_stopped_uploader_gives_each_publish_up_at_once() {
         1,
     );
     // Asked: the stop ends the request that pends.
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(asked), 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(asked), 1), (1, 1, 1, 1));
     // Held and not asked: the ask is refused.
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(held), 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(held), 1), (1, 1, 1, 1));
     // Begun after the stop.
-    given_up_at_the_stop(&with_the_uploader_stopped(None, 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 1), (1, 1, 1, 1));
     // Two publishes asked, ended by one stop: each is reported.
     let second = (
         Point {
@@ -2418,9 +2513,9 @@ fn a_stopped_uploader_gives_each_publish_up_at_once() {
         },
         2,
     );
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(second), 2), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(second), 2), (1, 1, 1, 1));
     // Two begun after it.
-    given_up_at_the_stop(&with_the_uploader_stopped(None, 2), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 2), (1, 1, 1, 1));
 }
 
 /// N8's other case: a publish whose request expired before the stop is
@@ -2436,5 +2531,228 @@ fn a_publish_asked_anew_after_the_uploader_stopped_is_given_up() {
         1,
     );
     let run = with_the_uploader_stopped(Some(anew), 1);
-    given_up_at_the_stop(&run, (1, 2, 1));
+    given_up_at_the_stop(&run, (1, 2, 1, 2));
+}
+
+/// S13 of #146's next look: a daemon that refuses every `publish` with
+/// an answer skyzfsd gives a request only once (`rewound`, `state`,
+/// `attachment`, `asked`) cannot drive the rounds with no tick between:
+/// a publish is asked at most once at an instant, so at most once a
+/// tick, and the settle ends. Mutant: the guard removed (the world's
+/// clock stands still while the agent asks, and the fake stops it).
+#[test]
+fn a_daemon_that_refuses_every_ask_is_asked_at_most_once_a_tick() {
+    use skyzfs_control::Code;
+    for code in [Code::Rewound, Code::State, Code::Attachment, Code::Asked] {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(code);
+        let asks = Rc::new(Cell::new(0_u32));
+        let hook = {
+            let asks = asks.clone();
+            move |point: Point, _: &str| {
+                if point.effect == Effect::Ask && point.after {
+                    asks.set(asks.get() + 1);
+                }
+                false
+            }
+        };
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        agent.begin().expect("begun");
+        let _ = agent.settle(LIMIT);
+        let took_ms = world.borrow().now_ms - fake::EPOCH_MS;
+        let asked = u64::from(asks.get());
+        assert!(asked >= 2, "{code:?}: asked anew: {asked}");
+        assert!(
+            asked <= took_ms / 1000 + 1,
+            "{code:?}: {asked} asks in {took_ms} ms"
+        );
+    }
+}
+
+/// An agent given a mistyped `--dir` finds no marker and no record
+/// there, and releases none of the holds of the publishes under way in
+/// the right one: neither its sweep nor a publish asked there, which
+/// writes nothing in it (L4 of #149's review). Where the marker is
+/// there with no record (a crash between the two, or the record
+/// removed), the sweep releases as before. Mutants: the sweep without
+/// the marker's check; the check after the first release; `begin`
+/// writing before it sweeps.
+#[test]
+fn an_agent_given_a_mistyped_directory_releases_no_hold() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let right = MemKeep::default();
+    let mut first = agent(&world, &right);
+    let t = first.begin().expect("begun");
+    assert!(first.settle(Duration::from_secs(60)).is_err());
+    drop(first);
+    let held = holds(&world.borrow());
+    assert!(!held.is_empty(), "no hold to keep");
+    assert!(right.0.borrow().marked);
+
+    let mistyped = MemKeep::default();
+    let mut wrong = agent(&world, &mistyped);
+    match wrong.settle(LIMIT) {
+        Err(Error::Unmarked(names)) => assert_eq!(names, vec![t.clone()]),
+        other => panic!("settled in a mistyped directory: {other:?}"),
+    }
+    assert_eq!(holds(&world.borrow()), held);
+    let mut wrong = agent(&world, &mistyped);
+    match wrong.begin() {
+        Err(Error::Unmarked(names)) => assert_eq!(names, vec![t.clone()]),
+        other => panic!("begun in a mistyped directory: {other:?}"),
+    }
+    assert_eq!(holds(&world.borrow()), held);
+    {
+        let files = mistyped.0.borrow();
+        assert!(files.record.is_none() && !files.marked && files.manifests.is_empty());
+    }
+    let shown = Error::Unmarked(vec![t.clone()]).to_string();
+    assert!(
+        shown.contains("no agent's marker (`agent`)") && shown.contains(&t),
+        "{shown}"
+    );
+
+    // The marker with no record: the directory is the agent's.
+    mistyped.0.borrow_mut().marked = true;
+    let mut marked = agent(&world, &mistyped);
+    marked.settle(LIMIT).expect("settled");
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+}
+
+/// The record says a publish is asked, and is saved, before `publish` is
+/// sent (the lead's decision on L1 of #149's review), so that a publish
+/// recorded held has no request out. A crash between the save and the
+/// send leaves it asked with nothing asked of the daemon; a person's
+/// give-up then withdraws, looks and releases, and nothing is
+/// published. A refusal that says nothing pends records it held again;
+/// one that does not (`asked`, `ended`, `no-answer`) leaves it asked.
+/// Mutants: the save after the send; held again on every refusal; never
+/// held again.
+#[test]
+fn the_record_says_asked_before_the_request_is_sent() {
+    // The crash between the save and the send.
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let stop = |point: Point, _: &str| point.effect == Effect::Ask && !point.after;
+    let mut first = agent(&world, &keep).with_points(Box::new(stop));
+    let t = first.begin().expect("begun");
+    assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+    drop(first);
+    let saved = match keep.load().expect("loaded") {
+        Loaded::Present(record) => record,
+        other => panic!("{other:?}"),
+    };
+    let publish = saved.publish(&t).expect("under way");
+    assert!(
+        matches!(publish.phase, Phase::Asked { .. }),
+        "{:?}",
+        publish.phase
+    );
+    assert!(!world.borrow().daemon.asked(), "a request was sent");
+    let mut after = agent(&world, &keep);
+    after.recover(&t, Choice::GiveUp).expect("recovered");
+    after.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(after.outcomes(), [(n, Outcome::Abandoned(Why::Person))] if *n == t),
+        "{:?}",
+        after.outcomes()
+    );
+    assert!(world.borrow().refs.is_empty());
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+
+    // The crash after the send, the request accepted and its answer not
+    // recorded: still asked, with `held_until` past the request's expiry
+    // (the send plus the channel's wait); a person's give-up withdraws it.
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let keep = MemKeep::default();
+    let sent = Rc::new(Cell::new(0_u64));
+    let stop = {
+        let (world, sent) = (world.clone(), sent.clone());
+        move |point: Point, _: &str| {
+            if point.effect == Effect::Ask && !point.after {
+                sent.set(world.borrow().now_ms);
+            }
+            point.effect == Effect::Ask && point.after
+        }
+    };
+    let mut first = agent(&world, &keep).with_points(Box::new(stop));
+    let t = first.begin().expect("begun");
+    assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+    drop(first);
+    assert!(world.borrow().daemon.asked(), "no request was sent");
+    let saved = match keep.load().expect("loaded") {
+        Loaded::Present(record) => record,
+        other => panic!("{other:?}"),
+    };
+    match saved.publish(&t).map(|p| &p.phase) {
+        Some(Phase::Asked { held_until_ms, .. }) => {
+            let least = plan::held_until(sent.get(), EXPIRY_DEFAULT);
+            assert!(*held_until_ms >= least, "{held_until_ms} < {least}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut after = agent(&world, &keep);
+    after.recover(&t, Choice::GiveUp).expect("recovered");
+    after.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(after.outcomes(), [(n, Outcome::Abandoned(Why::Person))] if *n == t),
+        "{:?}",
+        after.outcomes()
+    );
+    assert!(world.borrow().refs.is_empty());
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+
+    // What each refusal leaves recorded, seen right after the answer.
+    use skyzfs_control::Code;
+    for (code, pends) in [
+        (Code::Attachment, false),
+        (Code::State, false),
+        (Code::Rewound, false),
+        (Code::Busy, false),
+        (Code::Taken, false),
+        (Code::Stopped, false),
+        (Code::NoUpload, false),
+        (Code::Asked, true),
+        (Code::Ended, true),
+        (Code::NoAnswer, true),
+    ] {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(code);
+        let keep = MemKeep::default();
+        // Stopped at the first point after the answer is handled.
+        let hook = {
+            let mut answered = false;
+            move |point: Point, _: &str| {
+                if answered && point.effect != Effect::Unasked {
+                    return true;
+                }
+                answered |= point.effect == Effect::Ask && point.after;
+                false
+            }
+        };
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        let t = agent.begin().expect("begun");
+        let _ = agent.settle(LIMIT);
+        let phase = match keep.load().expect("loaded") {
+            Loaded::Present(record) => record.publish(&t).map(|p| p.phase.clone()),
+            other => panic!("{code:?}: {other:?}"),
+        };
+        let asked = matches!(phase, Some(Phase::Asked { .. }));
+        assert_eq!(asked, pends, "{code:?}: {phase:?}");
+    }
 }

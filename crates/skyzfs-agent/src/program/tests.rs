@@ -407,6 +407,7 @@ fn settle_exits_by_the_worst_outcome() {
     let corrupt = crate::record::Corrupt::Hash;
     assert_eq!(exit_of_error(&Error::Corrupt(corrupt)), exit::RECORD);
     assert_eq!(exit_of_error(&Error::Volume([1; 16])), exit::RECORD);
+    assert_eq!(exit_of_error(&Error::Unmarked(vec![])), exit::RECORD);
     assert_eq!(
         exit_of_error(&Error::Premise(crate::zfs::Refusal::Checkpoint)),
         exit::PREMISE
@@ -674,6 +675,91 @@ fn a_person_s_give_up_exits_abandoned() {
     assert_eq!(code, exit::ABANDONED, "{out}");
     assert_eq!(out, format!("abandoned {t} person\n"));
     assert!(world.borrow().refs.is_empty());
+}
+
+/// A publish whose name a person took in one member between the intent
+/// and the snapshot is made under the next name, and `publish` exits by
+/// the outcome of that name (D2 of #149's review). The rows take one
+/// name, and two: the publish is renamed twice. Mutants: the exit looked
+/// up by the name begun, which has no outcome (exit 7); one rename
+/// followed and not the next.
+#[test]
+fn a_publish_made_under_its_next_name_exits_by_its_outcome() {
+    for names in [1, 2] {
+        let world = World::new(Mode::Busy);
+        let keep = MemKeep::default();
+        let taken = Rc::new(RefCell::new(Vec::<String>::new()));
+        let hook = {
+            let (world, taken) = (world.clone(), taken.clone());
+            move |point: Point, at: &str| {
+                let mut taken = taken.borrow_mut();
+                if point.effect == Effect::Intent
+                    && point.after
+                    && taken.len() < names
+                    && !taken.iter().any(|t| t == at)
+                {
+                    taken.push(at.to_string());
+                    let mut world = world.borrow_mut();
+                    let pool = world.pool.as_mut().expect("the pool");
+                    let snap = crate::engine::fake::Snap {
+                        guid: 0xdead,
+                        createtxg: pool.txg,
+                        holds: std::collections::BTreeSet::new(),
+                        held_in: None,
+                    };
+                    pool.snaps.insert(format!("{POOL}/db@{at}"), snap);
+                }
+                false
+            }
+        };
+        let mut agent =
+            agent_on(&world, FakeDaemon(world.clone()), &keep).with_points(Box::new(hook));
+        let (code, out, err) = executed(&mut agent, &Task::Publish, LIMIT);
+        let taken = taken.borrow().clone();
+        assert_eq!(taken.len(), names, "{names} names: {taken:?}");
+        assert_eq!(
+            (code, err.as_str()),
+            (exit::PUBLISHED, ""),
+            "{names} names: {out}"
+        );
+        assert_eq!(out.lines().count(), 1, "{names} names: {out}");
+        let made = out
+            .strip_prefix("snap/")
+            .and_then(|o| o.split(' ').next())
+            .expect("a snap/ line");
+        assert!(
+            !taken.iter().any(|t| t == made),
+            "{names} names: {made} {taken:?}"
+        );
+        assert!(
+            world.borrow().refs.contains_key(made),
+            "{names} names: {made}"
+        );
+    }
+}
+
+/// `settle` and `publish` in a mistyped `--dir`, beside a publish held
+/// from the right one: each exits 6 and names the marker, and the hold
+/// stays (L4 of #149's review).
+#[test]
+fn a_mistyped_directory_exits_record_and_releases_nothing() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let right = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &right);
+    let (code, _, _) = executed(&mut agent, &Task::Publish, Duration::from_secs(60));
+    assert_eq!(code, exit::UNSETTLED);
+    let held = crate::engine::fake::holds(&world.borrow());
+    assert!(!held.is_empty());
+    let mistyped = MemKeep::default();
+    for task in [Task::Settle, Task::Publish] {
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &mistyped);
+        let (code, out, err) = executed(&mut agent, &task, LIMIT);
+        assert_eq!((code, out.as_str()), (exit::RECORD, ""), "{task:?}: {err}");
+        assert!(err.contains("no agent's marker"), "{err}");
+        assert_eq!(crate::engine::fake::holds(&world.borrow()), held);
+    }
+    assert!(mistyped.0.borrow().record.is_none());
 }
 
 /// The test hooks and the expiry reach the engine. Mutant: one dropped.

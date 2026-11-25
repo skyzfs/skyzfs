@@ -122,8 +122,9 @@ pub mod exit {
     pub const STOPPED: i32 = 4;
     /// The pool is refused a publish (its premise): nothing was taken.
     pub const PREMISE: i32 = 5;
-    /// The record is corrupt, or another volume's: nothing was done, and
-    /// a person judges.
+    /// The record is corrupt, or another volume's, or the sweep would
+    /// release holds from a directory with no agent's marker: nothing was
+    /// done, and a person judges.
     pub const RECORD: i32 = 6;
     /// Still under way when the time limit passed.
     pub const UNSETTLED: i32 = 7;
@@ -551,7 +552,7 @@ pub fn worst(outcomes: &[(String, Outcome)], unsettled: bool) -> i32 {
 /// The exit code of an error of the engine.
 pub fn exit_of_error(e: &Error) -> i32 {
     match e {
-        Error::Corrupt(_) | Error::Volume(_) => exit::RECORD,
+        Error::Corrupt(_) | Error::Volume(_) | Error::Unmarked(_) => exit::RECORD,
         Error::Premise(_) => exit::PREMISE,
         Error::Unsettled(_) => exit::UNSETTLED,
         Error::Stopped
@@ -609,14 +610,19 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     }
     let _ = out.flush();
     match mine {
-        Some(mine) => exit_of(
-            agent
-                .outcomes()
-                .iter()
-                .rev()
-                .find(|(name, _)| *name == mine)
-                .map(|(_, outcome)| outcome),
-        ),
+        // By the name the publish goes by now: it may have taken the
+        // next one (D2 of #149's review).
+        Some(mine) => {
+            let mine = agent.name_now(&mine);
+            exit_of(
+                agent
+                    .outcomes()
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| *name == mine)
+                    .map(|(_, outcome)| outcome),
+            )
+        }
         None => worst(agent.outcomes(), !unsettled.is_empty()),
     }
 }

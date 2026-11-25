@@ -277,6 +277,33 @@ fn a_saved_record_loads_and_none_is_absent() {
     assert!(matches!(store.load(), Ok(Loaded::Present(_))));
 }
 
+/// The marker's bytes are pinned, are written by the first save and
+/// again by a save that finds them missing or other, and nothing else
+/// counts as the marker (L4 of #149's review). Mutants: no marker
+/// written; written only where the file is absent; any file of the name
+/// read as the marker.
+#[test]
+fn the_first_save_writes_the_agent_s_marker() {
+    assert_eq!(marker_bytes(), *b"SZAD\x01\x00");
+    let (_root, store) = store();
+    let marker = store.dir().join(MARKER);
+    assert!(!store.marked().expect("read"));
+    assert!(!marker.exists());
+    store.save(&full()).expect("saved");
+    assert!(store.marked().expect("read"));
+    assert_eq!(std::fs::read(&marker).expect("read"), marker_bytes());
+    std::fs::remove_file(&marker).expect("removed");
+    assert!(!store.marked().expect("read"));
+    store.save(&full()).expect("saved");
+    assert!(store.marked().expect("read"));
+    for other in [&b"SZAD\x02\x00"[..], b"SZAD", b"", b"SZAG\x01\x00"] {
+        std::fs::write(&marker, other).expect("written");
+        assert!(!store.marked().expect("read"), "{other:?}");
+        store.save(&full()).expect("saved");
+        assert_eq!(std::fs::read(&marker).expect("read"), marker_bytes());
+    }
+}
+
 /// A corrupt record is reported and kept: neither a save nor a load
 /// writes over it. Mutant: save writes over whatever is there.
 #[test]

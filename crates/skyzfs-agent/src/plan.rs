@@ -146,13 +146,17 @@
 //!   never asked has nothing to withdraw; one at Intent has nothing
 //!   held. With the daemon away, a publish asked keeps its hold until
 //!   `held_until`, as every publish asked does, and is given up after
-//!   it: until then a request of it may land, and the hold keeps
-//!   `pool@t` for the cut that carries it (rule (R)). One held and not
-//!   recorded asked is given up at once: the person's command is the
-//!   bound the rules otherwise lack, and only an ask accepted and not
-//!   recorded (a stop at step 8) could still land. This is this
-//!   module's reading (the design does not say). A publish already done
-//!   is released and forgotten as usual.
+//!   it; so does one whose daemon answers that it cannot say (`ended`,
+//!   `no-answer`, `no-upload`) before a withdraw of the agent's own was
+//!   answered (B1 of #149's review): until then a request of it may
+//!   land, and the hold keeps `pool@t` for the cut that carries it (rule
+//!   (R)). One held and not recorded asked is given up at once, the
+//!   lead's decision on L1 of #149's review: the engine records a
+//!   publish asked, and syncs the record, before it sends `publish`,
+//!   and records it held again only on a refusal that says nothing of it
+//!   pends (`engine`, step 8), so a publish recorded held has no request
+//!   that could land. A publish already done is released and forgotten
+//!   as usual.
 //! - **Done with the snapshot broken.** `snap/t` that is this publish's,
 //!   seen while `pool@t` or a member's `@t` is gone, is recorded done
 //!   and reported ([`Report::SnapshotGone`]): it was made before a rewind
@@ -480,10 +484,26 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
 /// A publish a person gave up ([module docs](self), "A person's part"):
 /// a request that may pend withdrawn, `snap/t` looked up, the hold
 /// released, the name given up.
+///
+/// A daemon that answers that it cannot say (`ended`, `no-answer`,
+/// `no-upload`) is read as one away, as the age bound reads it, until a
+/// withdraw of this agent's own has been answered: skyzfsd answers
+/// `progress` `refused no-answer` when its uploader is in a long step, and
+/// a request of the publish may still land (B1 of #149's review).
 fn given_up(publish: &Publish, seen: &Seen) -> Action {
     let pool = &seen.pool;
+    let silent = match &seen.daemon {
+        DaemonSeen::Away => true,
+        DaemonSeen::Here { answer, .. } => {
+            !seen.withdrawn
+                && matches!(
+                    answer,
+                    Reply::Refused(Code::Ended | Code::NoAnswer | Code::NoUpload, _)
+                )
+        }
+    };
     let answer = match (&publish.phase, &seen.daemon) {
-        (Phase::Asked { held_until_ms, .. }, DaemonSeen::Away) if seen.now_ms < *held_until_ms => {
+        (Phase::Asked { held_until_ms, .. }, _) if silent && seen.now_ms < *held_until_ms => {
             return Action::Wait
         }
         (Phase::Intent | Phase::Taken(_), _) | (_, DaemonSeen::Away) => {
@@ -660,9 +680,12 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
 /// after it until skyzfsd restarts, without keeping it (N6 of #144's
 /// fourth look; the lead's decision for M2.6c). `progress`, `withdraw`
 /// and `look` go on answering: `progress` of a name whose `publish` was
-/// so refused answers `unknown` (S9 of #146's review). A publish is given up on it whatever its age
-/// (the lead's ruling on #146): waiting would only hold `pool@t` for up
-/// to [`AGE_MAX`], and the next publish covers a restart.
+/// so refused answers what the uploader kept of the name, `unknown`
+/// where it kept nothing, or the outcome of an earlier publish of the
+/// name (S9 of #146's review; S12 of its next look). A publish is given
+/// up on it whatever its age (the lead's ruling on #146): waiting would
+/// only hold `pool@t` for up to [`AGE_MAX`], and the next publish covers
+/// a restart.
 ///
 /// Not `asked` (one pends), `busy`, or the daemon's silence (`ended`,
 /// `no-answer`, `no-upload`). skyzfsd gives `busy` only to a `publish`

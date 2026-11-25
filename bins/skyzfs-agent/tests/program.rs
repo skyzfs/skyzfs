@@ -132,7 +132,9 @@ fn a_build_without_the_hooks_refuses_them() {
 /// fake: a hold of the agent's tag that no publish names, which the
 /// sweep releases, and a kill just before the release. The trace has
 /// the point, named for the snapshot, and the agent dies of `SIGKILL`
-/// after its line on standard error.
+/// after its line on standard error. First, in a directory with no
+/// agent's marker (a mistyped `--dir`), the sweep releases nothing and
+/// the agent exits 6 (L4 of #149's review).
 #[cfg(feature = "test-hooks")]
 #[test]
 fn the_agent_traces_a_point_then_dies_of_sigkill_there() {
@@ -179,6 +181,17 @@ fn the_agent_traces_a_point_then_dies_of_sigkill_there() {
         "--kill-at",
         "sweep:before:1",
     ];
+    let out = agent(&args[..args.len() - 2], Some(&bin));
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(6), "{stderr}");
+    assert!(stderr.contains("no agent's marker (`agent`)"), "{stderr}");
+    assert!(stderr.contains("skz-old"), "{stderr}");
+    assert!(!bin.join("zfs.calls").exists());
+    assert_eq!(fs::read_to_string(&trace).unwrap_or_default(), "");
+    assert!(!Path::new(&dir).join("record").exists());
+    // The agent's directory: its marker, as the first save writes it.
+    fs::create_dir_all(&dir).expect("the agent's directory");
+    fs::write(Path::new(&dir).join("agent"), b"SZAD\x01\x00").expect("the marker");
     let out = agent(&args, Some(&bin));
     let stderr = text(&out.stderr);
     assert_eq!(out.status.signal(), Some(9), "{:?}: {stderr}", out.status);
