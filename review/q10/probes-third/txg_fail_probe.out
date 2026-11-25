@@ -1,0 +1,8 @@
+== A: no kstat; every zpool sync exits 1
+txgs=0 longest_sync=- longest_gap=>6.015 syncs=2 sync_longest=0.051
+   report exit 0
+   log kinds:  7 error  1 start  1 stop  3 sync 
+== B: a kstat with its header alone (zfs_txg_history 0); every zpool sync exits 1
+txgs=0 longest_sync=- longest_gap=>6.015 syncs=2 sync_longest=0.051
+   report exit 0
+   log kinds:  1 start  1 stop  3 sync 

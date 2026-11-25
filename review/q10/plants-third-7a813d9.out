@@ -58,3 +58,23 @@ P5	SURVIVED	write: the last second's line dropped
 P6	KILLED	stall: before from the seconds dropped	(python: FAIL: test_writes_counted_in_whole_seconds_of_the_window (__main__.Stall.test_writes_count)
 P7	KILLED	write: no end line	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
 P8	KILLED	write: monotonic clock, not the epoch	(python: FAIL: test_writes_until_told_and_logs_its_end (__main__.Writer.test_writes_until_told_and_)
+P9	KILLED	write: no wrap at 64 MiB	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
+P10	SURVIVED	stall: any second that overlaps counts
+P11	KILLED	stall: no start is not refused	(python: FAIL: test_no_start_is_no_writer (__main__.Stall.test_no_start_is_no_writer))
+P12	SURVIVED	write: 8 KiB writes
+T1	KILLED	writing: the probe reads another kstat (txg, not txgs)	(shell: FAIL: txgs beside snapshot: the committed group: got '0', want '1')
+T2	SURVIVED	writing: the probe's window empty (t0 t0)
+T3	SURVIVED	writing: the fill's window empty (t0 t0)
+T4	KILLED	fill_span: the span is the limit, not twice it	(shell: FAIL: new data: over twice the limit: got '1048576', want '2097152')
+T5	SURVIVED	fill_span: no 4 GiB cap
+T6	KILLED	fill_span: the history not turned on	(shell: FAIL: txg history: turned on, said: got '0)
+T7	KILLED	scale: ZCR_SCALE_LUA_MAX compared with -ge	(shell: FAIL: lua max: at the count itself, run: got '', want 'zfs program -j -t 100000000 -m 104857600 skzq)
+T8	KILLED	scale_all: ZCR_SCALE_LUA_MAX not checked	(shell: FAIL: scale_all: ZCR_SCALE_LUA_MAX abc refused: got 'abc', want '')
+T9	KILLED	scale_all: a long ZCR_SCALE_LUA_MAX not capped	(shell: FAIL: scale_all: a long ZCR_SCALE_LUA_MAX capped: got '99999999999999999999', want '999999')
+T10	SURVIVED	stop_bg: does not wait for the process it stopped
+T11	SURVIVED	stop_bg: says stopped when it was not
+T12	KILLED	writing: no writer of new data	(shell: FAIL: new data beside snapshot: its line: got 'no write', want 'longest=')
+T13	KILLED	writing: about.txt's txg line dropped	(shell: FAIL: txgs beside snapshot: said: got '0', want '1')
+T14	KILLED	writing: the probe not stopped (no line)	(shell: FAIL: txgs beside snapshot: its line: got 'the p', want 'txgs=')
+T15	SURVIVED	scale: the fill span not reset between counts (no local FILL_SPAN)
+F1	KILLED	fill: with O_DSYNC	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)

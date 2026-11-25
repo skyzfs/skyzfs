@@ -1,0 +1,2 @@
+hold: window 3.000 s -> txgs=0 longest_sync=3.000 longest_gap=3.001 syncs=1 sync_longest=3.059 (exit 0)
+dead: window 3.000 s -> txgs=0 longest_sync=- longest_gap=- syncs=0 sync_longest=- (exit 0)

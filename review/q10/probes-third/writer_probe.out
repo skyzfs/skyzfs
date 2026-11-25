@@ -1,0 +1,18 @@
+== X1: the writer killed (SIGKILL) 1 s after it started; the window is after its death
+longest=<0.01 writes=0 before=0.002
+   stall exit 0
+   log kinds:  1 sec  1 start 
+== X2: the writer's writes fail at once (ENOSPC, /dev/full); the window is while it 'ran'
+   writer exit 1: OSError: [Errno 28] No space left on device
+longest=<0.01 writes=0 before=0.000
+   stall exit 0
+== X3: a healthy writer across the same kind of window, for comparison
+longest=<0.01 writes=5490 before=0.001
+   stall exit 0
+== X4: the writer started 1.5 s after the window began (late start)
+longest=<0.01 writes=3252 before=0.000
+   stall exit 0
+== X5: no log at all (the writer could not open its file)
+   writer exit 1
+FileNotFoundError: [Errno 2] No such file or directory: 'D/x5.tsv'
+   stall exit 1
