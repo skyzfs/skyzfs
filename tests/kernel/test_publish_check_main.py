@@ -121,8 +121,13 @@ COURSES = {
         # The first ask, refused, then the one asked anew past the top.
         'requests': {'r1': [(7, 50, 50), (10, 50, 50)]},
         'rows': {'r1': (11, 53)},
-        'log': [(PID, [(8, 50, False), (9, 51, False), (10, 52, True), (11, 53, True)])],
-        'files': {'rewind-status.txt': 'cuts_held 3\n', 'rewind-row.txt': node_b_row(9, 51)},
+        # Before the rewind the pool reached group 52 (cut 6, the top);
+        # cuts 8 and 9, after the first C and not above it, are the
+        # refusal's ground.
+        'log': [(PID, [(6, 52, True), (7, 45, False), (8, 50, False), (9, 51, False),
+                       ('publish', 'asked', 'r1 refused rewound'), (10, 52, True), (11, 53, True)])],
+        'files': {'rewind-status.txt': 'cuts_held 3\n', 'rewind-row.txt': node_b_row(9, 51),
+                  'rewind-top.txt': '52\n'},
     },
     'pkill': {
         'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tk': 'pending after 9',
@@ -341,6 +346,12 @@ class Pins(unittest.TestCase):
         self.assertIn('counted after C = 7', lines['premise_rewind_cut_committed'][1])
         self.assertIn('asked after 10', lines['pin_r1_row'][1])
 
+    def test_r1_made_at_or_below_the_top_ends_1(self):
+        rc, lines = run_course('prewind', write('rewind-top.txt', '53\n'))
+        self.assertEqual((rc, lines['pin_r1_above_top'][0]), (1, 'FAILED'))
+        self.assertEqual(verdicts(lines, 'pin_r1_row', 'pin_r1_cut', 'premise_r1_rewound_with_a_rewind_cut',
+                                  'premise_rewind_cut_committed'), ['ok'] * 4)
+
     def test_pkillpub_done_on_another_commit_than_landed_ends_1(self):
         def change(d):
             with open(os.path.join(d, 'p1-between.txt'), 'w') as f:
@@ -366,7 +377,9 @@ class Premises(unittest.TestCase):
     def test_prewind_whose_committed_cut_opens_as_itself_ends_2(self):
         def change(d):
             with open(os.path.join(d, 'requests.tsv'), 'w') as f:
-                f.write(log_text([(PID, [(8, 50, False), (9, 51, True), (10, 52, True)])]))
+                f.write(log_text([(PID, [(6, 52, True), (7, 45, False), (8, 50, False),
+                                         ('publish', 'asked', 'r1 refused rewound'), (9, 51, True), (10, 52, True),
+                                         (11, 53, True)])]))
         rc, lines = run_course('prewind', change)
         self.assertEqual((rc, lines['premise_rewind_cut_committed'][0]), (2, 'ERROR'))
         self.assertIn('opens as itself', lines['premise_rewind_cut_committed'][1])
@@ -378,6 +391,39 @@ class Premises(unittest.TestCase):
     def test_prewind_with_r1_made_before_the_rewind_cut_ends_2(self):
         rc, lines = run_course('prewind', write('rewind-row.txt', node_b_row(10, 52)))
         self.assertEqual(rc, 2)
+
+    def prewind_log(self, lines):
+        def change(d):
+            with open(os.path.join(d, 'requests.tsv'), 'w') as f:
+                f.write(log_text([(PID, lines)]))
+        return change
+
+    def test_prewind_refused_with_no_cut_that_may_follow_the_rewind_ends_2(self):
+        key = 'premise_r1_rewound_with_a_rewind_cut'
+        # The refusal before any cut after C; and cuts after C above the groups before them.
+        for lines in ([(6, 52, True), (7, 45, False), ('publish', 'asked', 'r1 refused rewound'), (8, 50, False),
+                       (9, 51, False), (10, 52, True), (11, 53, True)],
+                      [(6, 52, True), (7, 45, False), (8, 60, False), (9, 61, False),
+                       ('publish', 'asked', 'r1 refused rewound'), (10, 62, True), (11, 63, True)]):
+            rc, got = run_course('prewind', self.prewind_log(lines), rows={'r1': (11, 63)})
+            self.assertEqual((rc, got[key][0]), (2, 'ERROR'), lines)
+            self.assertIn('none', got[key][1])
+
+    def test_prewind_with_no_refusal_line_ends_2(self):
+        rc, lines = run_course('prewind', self.prewind_log([(6, 52, True), (7, 45, False), (8, 50, False),
+                                                            (9, 51, False), (10, 52, True), (11, 53, True)]))
+        self.assertEqual((rc, lines['premise_r1_rewound_with_a_rewind_cut'][0]), (2, 'ERROR'))
+        self.assertIn('no `r1 refused rewound` line', lines['premise_r1_rewound_with_a_rewind_cut'][1])
+
+    def test_prewind_with_r1_never_asked_anew_ends_2(self):
+        def change(d):
+            with open(os.path.join(d, 'published.tsv')) as f:
+                first = f.readline()
+            with open(os.path.join(d, 'published.tsv'), 'w') as f:
+                f.write(first)
+        rc, lines = run_course('prewind', change)
+        self.assertEqual(rc, 2)
+        self.assertIn('not asked anew', lines['rig_error'][1])
 
     def test_pkill_counting_only_the_next_instance_s_cuts_ends_2(self):
         """B3: cuts past tw's G that only the next instance counted are no premise."""
@@ -402,7 +448,8 @@ class Premises(unittest.TestCase):
             self.assertEqual((rc, lines[key][0]), (2, 'ERROR'), (name, fn))
 
     def test_a_missing_file_is_the_rig_s_error(self):
-        for name, fn in (('prewind', 'rewind-row.txt'), ('pkill', 'tw-status.txt'), ('pchannel', 'socket-mode.txt')):
+        for name, fn in (('prewind', 'rewind-row.txt'), ('prewind', 'rewind-top.txt'), ('pkill', 'tw-status.txt'),
+                         ('pchannel', 'socket-mode.txt')):
             rc, lines = run_course(name, lambda d, fn=fn: os.remove(os.path.join(d, fn)))
             self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), (name, fn))
 

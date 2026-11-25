@@ -27,6 +27,8 @@ What the course left in DIR:
   that killed it (pkillman, pkillpub);
 - rewind-row.txt (prewind), tw-row.txt and tw-status.txt (pkill): node
   B's `row` and the daemon's status at the course's premise;
+- rewind-top.txt (prewind): the group of the daemon's newest cut before
+  the rewind, from `cuts` (the abandoned history's top);
 - channel-status.txt and socket-mode.txt (pchannel): the status after
   the channel's requests, whose counts (COUNTS) must be exact, and the
   socket's mode before the rig widened it for the peer, which must be
@@ -70,10 +72,16 @@ of #139):
 - prewind: a cut counted after the first ask's C, of group G or later,
   that opens only as a rewind, was committed after that ask (node B's
   row read after the store came back, DIR/rewind-row.txt, and that
-  cut's `cut` line), and r1 was not made by an earlier one. A daemon
-  that published without "opens as itself", and without rule (R), would
-  have named that cut, which pin_answer_r1 and pin_r1_cut judge as
-  verdicts.
+  cut's `cut` line), and r1 was not made by an earlier one. Under rule
+  (R) r1 is refused before that cut is committed, so no publish waits
+  when it is: the course judges a daemon without rule (R)
+  (pin_answer_r1), and not one without "opens as itself" with a publish
+  waiting; pin_r1_cut judges only the cut that made r1 asked anew. And
+  the refusal had its ground in the request log: a cut
+  counted after the first C whose group is not above the groups of the
+  instance's cuts before it, ahead of the line `r1 refused rewound`.
+  r1 asked anew must then be made by a cut above the top
+  (DIR/rewind-top.txt; pin_r1_above_top).
 - pkill: the instance that answered tw's withdrawal then counted cuts
   of tw's G or later that open as itself, and committed one
   (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
@@ -394,6 +402,25 @@ def withdrawn_past(instances, name, group):
     return None, []
 
 
+def rewound_grounds(instances, name, after):
+    """prewind's premise (rule R): the cuts counted after AFTER, ahead of
+    the request log's `NAME refused rewound` line, whose group is not
+    above the highest group of that instance's cut lines before them ->
+    (whether that line was found, [(number, group, the highest before)])."""
+    for inst in instances:
+        top, seen = None, []
+        for ln in inst['lines']:
+            if ln['event'] == 'cut' and ln['result'].isdigit() and ln['sectors'].isdigit():
+                number, group = int(ln['sectors']), int(ln['result'])
+                if top is not None and number > after and group <= top:
+                    seen.append((number, group, top))
+                top = group if top is None else max(top, group)
+            elif ln['event'] == 'publish' and ln['op'] == 'asked' and \
+                    ln['result'].startswith(f'{name} refused rewound'):
+                return True, seen
+    return False, []
+
+
 def exact_counts(status, want):
     """-> [what differs]: each key of WANT in STATUS, exactly."""
     return [f'{k} is {status.get(k) or "missing"}, not {v}' for k, v in want.items() if status.get(k) != str(v)]
@@ -572,12 +599,27 @@ def main():
             r1 = read_published(text_of('published.tsv'), first=True).get('r1')
             if r1 is None:
                 raise RigError('no request of r1 in published.tsv')
+            if published['r1'] == r1:
+                raise RigError('r1 was not asked anew: its last request in published.tsv is its first')
+            found, grounds = rewound_grounds(instances, 'r1', r1['after'])
+            premise('premise_r1_rewound_with_a_rewind_cut', found and bool(grounds),
+                    'no `r1 refused rewound` line in the request log' if not found else
+                    f"cuts counted after C = {r1['after']} before the refusal, not above the groups before them: "
+                    + (', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t in grounds) or 'none'))
             held = status_of(text_of('rewind-status.txt')).get('cuts_held', '')
             premise('premise_held_at_rewind', held.isdigit() and int(held) > 0,
                     f'cuts held with object storage down, at the rewind: {held or "none"}')
             cut = cut_daemon_check.read_row(text_of('rewind-row.txt'), 'rewind-row.txt')['cut']
             got = snap_row('r1')
             named = got['row']['number'] if isinstance(got.get('row'), dict) else None
+            top = text_of('rewind-top.txt').strip()
+            if not top.isdigit():
+                raise RigError(f'rewind-top.txt: not a group: {top!r}')
+            group = got['row']['group'] if isinstance(got.get('row'), dict) else None
+            holds('pin_r1_above_top', [] if group is not None and group > int(top) else
+                  [f"r1's cut is of group {group if group is not None else 'none'}, not above the top {top}"],
+                  'server', f"r1 asked anew was made by a cut of group {group}, above the abandoned history's "
+                  f"top {top}")
             bad = rewind_committed(cuts, cut, r1, named)
             premise('premise_rewind_cut_committed', not bad,
                     '; '.join(bad) if bad else

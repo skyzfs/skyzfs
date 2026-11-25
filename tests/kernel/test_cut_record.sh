@@ -442,5 +442,17 @@ is "pchannel: records the socket's mode before the rig widens it" \
     "$(sed -n '/^ppeer() {$/,/^}$/p' "$SCRIPT" | grep -nE '^    (stat -c %a "\$sock"|chmod 0666)' | cut -d: -f2 | sed 's/^ *//; s/ .*//' | tr '\n' ' ')" \
     "stat chmod "
 
+is "prewind: reads the abandoned top after the export and before the rewind" \
+    "$(order_of rec_prewind '^    (export_pool|out=\$\(pagent ask cuts|echo "\$top"|import_pool -T)')" \
+    "export_pool out=\$(pagent echo import_pool export_pool "
+top_line=$(sed -n '/^rec_prewind() {$/,/^}$/p' "$SCRIPT" | grep -m1 '^    top=')
+is "prewind's top line is in the script" "$([ -n "$top_line" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2154  # out and top are the top line's, run through eval
+is "prewind's top is the group of the cuts answer" \
+    "$(out='cuts attachment=a state=b count=19 group=43 opens=itself'; eval "$top_line"; echo "$top")" 43
+# shellcheck disable=SC2034,SC2154  # out and top are the top line's, run through eval
+is "prewind's top before any cut is empty (the rig's error)" \
+    "$(out='cuts attachment=a state=b count=0 group=none opens=none'; eval "$top_line"; echo "[$top]")" "[]"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

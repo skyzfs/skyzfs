@@ -1597,16 +1597,19 @@ rec_pplain() {
 # back (CUT_S3_UP), and the uploader commits the newest cut it holds, one
 # of those. The rig waits until node B's row names a cut counted after
 # r1's first C of group G or later, with nothing else written
-# (DIR/rewind-row.txt: the check's premise that a cut a daemon without
-# "opens as itself" would name was committed after the ask, the review
-# of #139, B2). Only then does it write and sync a group at a time until
+# (DIR/rewind-row.txt: the check's premise that a cut that opens only as
+# a rewind, counted after that C, was committed after the ask, the review
+# of #139, B2). Under rule (R) r1 is refused before that commit, so no
+# publish waits when it comes: the course no longer tests "opens as
+# itself" with a publish waiting, only rule (R)'s refusal and, for r1
+# asked anew, the cut that made it. Only then does it write and sync a group at a time until
 # the daemon's newest cut opens as itself (past_top), and asks r1 anew
 # with a count read then (the agent's AskAnew), which must be published
 # by a later cut of the present history that opens as itself. The lease
 # is 900 s, so the outage does not take it away. The status with the
 # store down goes to DIR/rewind-status.txt.
 rec_prewind() {
-    local groups t _i
+    local groups t _i out top
     [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "prewind needs CUT_S3_DOWN and CUT_S3_UP"
     create_pool
     load 3
@@ -1621,6 +1624,13 @@ rec_prewind() {
     t=${groups[$(( ${#groups[@]} - 8 ))]}
     echo "$t" > "$RDIR/rewind-txg"
     export_pool
+    # The abandoned history's top: the group of the daemon's newest cut,
+    # the export's own among them (DIR/rewind-top.txt, the check's
+    # pin_r1_above_top).
+    out=$(pagent ask cuts 2>> "$RDIR/agent.err") || rig_error "the agent's cuts before the rewind ended $?: $out"
+    top=$(sed -n 's/.* group=\([0-9]*\) .*/\1/p' <<< "$out")
+    [ -n "$top" ] || rig_error "a cuts answer with no group before the rewind: $out"
+    echo "$top" > "$RDIR/rewind-top.txt"
     log "prewind: importing at group $t of ${groups[-1]}, object storage down"
     import_pool -T "$t"
     ustatus rewind-status.txt

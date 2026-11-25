@@ -313,6 +313,34 @@ class Premises(unittest.TestCase):
         log[0]['lines'][1] = log_line('publish', '-', '-', 'tw withdrawn', 2, op='asked')
         self.assertEqual(pc.withdrawn_past(log, 'tw', 50), (None, []))
 
+    @staticmethod
+    def rewound_log(refusal='r1 refused rewound', op='asked'):
+        # The run at #140's 7d1152a (45551498087): the pool reached group
+        # 43; r1 asked with C = 19 was refused after cuts 20 and 21.
+        return [{'pid': '31', 'lines': [log_line('cut', 'itself', '17', '43', 1),
+                                        log_line('cut', 'rewind', '18', '27', 2),
+                                        log_line('cut', 'rewind', '19', '29', 3),
+                                        log_line('cut', 'rewind', '20', '31', 4),
+                                        log_line('cut', 'rewind', '21', '32', 5),
+                                        log_line('publish', '-', '-', refusal, 6, op=op),
+                                        log_line('cut', 'rewind', '22', '33', 7),
+                                        log_line('cut', 'itself', '26', '48', 8)]}]
+
+    def test_the_cuts_rule_r_refused_on(self):
+        self.assertEqual(pc.rewound_grounds(self.rewound_log(), 'r1', 19), (True, [(20, 31, 43), (21, 32, 43)]))
+        # Cuts after the refusal (22) are no ground, nor those at or before C.
+        self.assertEqual(pc.rewound_grounds(self.rewound_log(), 'r1', 21), (True, []))
+
+    def test_a_cut_above_the_groups_before_it_is_no_ground(self):
+        log = self.rewound_log()
+        log[0]['lines'][3:5] = [log_line('cut', 'itself', '20', '44', 4), log_line('cut', 'itself', '21', '45', 5)]
+        self.assertEqual(pc.rewound_grounds(log, 'r1', 19), (True, []))
+
+    def test_no_refusal_line_is_no_ground(self):
+        for refusal, op in (('r1 accepted', 'asked'), ('r12 refused rewound', 'asked'),
+                            ('r1 refused rewound', 'progress')):
+            self.assertEqual(pc.rewound_grounds(self.rewound_log(refusal, op), 'r1', 19), (False, []), (refusal, op))
+
     def test_exact_counts(self):
         st = {'publish_withdrawn': '1', 'publish_pending': '0', 'publish_published': '0'}
         self.assertEqual(pc.exact_counts(st, pc.TW_STATUS), [])
