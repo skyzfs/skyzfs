@@ -1,0 +1,35 @@
+[
+ {
+  "id": "NB4b",
+  "what": "node B writes the version big-endian",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::a_row_is_put_as_the_uploader_reads_it",
+   "tests::the_row_codec_is_the_uploaders",
+   "tests::an_expected_row_holds_for_its_cut_in_either_version",
+   "tests::move_head_writes_the_row_in_the_same_commit",
+   "tests::the_guard_holds_the_row_as_read_in_either_version"
+  ],
+  "note": "11 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH2b",
+  "what": "move-head commits head under the guard alone, then puts the row in a second transaction (not atomic)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "16 passed",
+  "clean_after": true
+ },
+ {
+  "id": "MH7",
+  "what": "move-head with --row and no guard: a lost head swap is an error, not exit 6 (as before --row)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "SURVIVED",
+  "failed": [],
+  "note": "16 passed",
+  "clean_after": true
+ }
+]

@@ -1,0 +1,43 @@
+# skyzfs-cut-daemon run 45512357623, job 138863068225 (record through skyzfsd and check, ubuntu-26.04-upload), head bec9a2f
+# steps:
+#   1 Set up job: success
+#   2 Run actions/checkout@v6: success
+#   3 Package mirrors: success
+#   4 Install ZFS and the ublk driver: success
+#   5 Start MinIO: success
+#   6 Run dtolnay/rust-toolchain@stable: success
+#   7 Run Swatinem/rust-cache@v2: success
+#   8 Build skyzfsd with its test hooks: success
+#   9 Build skyzfs-nodeb: success
+#   10 Record through skyzfsd and check: failure
+#   11 Summary: success
+#   12 Run actions/upload-artifact@v6: success
+#   23 Post Run Swatinem/rust-cache@v2: skipped
+#   24 Post Run actions/checkout@v6: success
+#   25 Complete job: success
+# the step 'Record through skyzfsd and check' and the summary step, from the job's log:
+2026-11-24T23:54:02.3587748Z ##[group]Run read -r -a recs <<< "$RECORDINGS"
+2026-11-24T23:54:02.3588172Z read -r -a recs <<< "$RECORDINGS"
+2026-11-24T23:54:02.3588652Z for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+2026-11-24T23:54:02.3589286Z sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD="$HOLD" CUT_UPLOAD="$UPLOAD" \
+2026-11-24T23:54:02.3589948Z   CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
+2026-11-24T23:54:02.3590477Z   SKZ_S3_BUCKET="skyzfs-cut-45512357623-1" \
+2026-11-24T23:54:02.3590914Z   AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+2026-11-24T23:54:02.3591395Z   CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
+2026-11-24T23:54:02.3591864Z   CUT_CHECK="python3 $PWD/tests/kernel/cut_daemon_check.py" \
+2026-11-24T23:54:02.3592399Z   bash tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
+2026-11-24T23:54:02.3627995Z shell: /usr/bin/bash -e {0}
+2026-11-24T23:54:02.3628267Z env:
+2026-11-24T23:54:02.3631015Z ##[endgroup]
+2026-11-24T23:54:02.3703777Z ##[error]not a recording: uv1
+2026-11-24T23:54:02.3712691Z ##[error]Process completed with exit code 64.
+2026-11-24T23:54:02.3754458Z ##[group]Run sudo chmod -R a+rX cut-out 2>/dev/null || true
+2026-11-24T23:54:02.3754928Z sudo chmod -R a+rX cut-out 2>/dev/null || true
+2026-11-24T23:54:02.3755717Z if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+2026-11-24T23:54:02.3756518Z python3 tests/kernel/cut_summary.py cut-out "ubuntu-26.04-upload" "Cut rig on the daemon (M2.T3)" >> "$GITHUB_STEP_SUMMARY" \
+2026-11-24T23:54:02.3757266Z   || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+2026-11-24T23:54:02.3787979Z shell: /usr/bin/bash -e {0}
+2026-11-24T23:54:02.3788244Z env:
+2026-11-24T23:54:02.3789961Z ##[endgroup]
+2026-11-24T23:54:02.4198898Z ##[group]Run actions/upload-artifact@v6
+# the artifact cut-daemon-ubuntu-26.04-upload holds one file: setup-apt.log

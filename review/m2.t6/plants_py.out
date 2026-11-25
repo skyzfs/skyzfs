@@ -1,0 +1,28 @@
+PY1 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY5 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY9 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY13 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_rows_commit_against_head.test_a_rows_commit_against_head", "test_what_an_upload_gets_wrong.test_what_an_upload_gets_wrong"]]}
+PY17 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads", "test_a_rows_commit_against_head.test_a_rows_commit_against_head", "test_what_an_upload_gets_wrong.test_what_an_upload_gets_wrong"]]}
+PY21 SURVIVED {}
+PY25 KILLED {"tests/kernel/test_cut_watch.py": [1, ["test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"]]}
+PY2 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY6 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY10 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY14 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_rows_commit_against_head.test_a_rows_commit_against_head"]]}
+PY18 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads", "test_each_courses_files.test_each_courses_files", "test_the_rows_commit_node_b_prints.test_the_rows_commit_node_b_prints"]]}
+PY22 SURVIVED {}
+PY26 KILLED {"tests/kernel/test_cut_watch.py": [1, ["test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"]]}
+PY3 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY7 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY11 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY15 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads", "test_a_row_of_version_1_over_the_daemons_cut.test_a_row_of_version_1_over_the_daemons_cut"]]}
+PY19 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads"]]}
+PY23 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads"]]}
+PY27 KILLED {"tests/kernel/test_cut_watch.py": [1, ["test_rows.test_rows", "test_the_rows_commit_is_written_with_its_cut.test_the_rows_commit_is_written_with_its_cut"]]}
+PY4 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY8 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY12 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_course_that_stops_the_uploads.test_a_course_that_stops_the_uploads", "test_each_courses_files.test_each_courses_files"]]}
+PY16 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_a_row_of_version_1_over_the_daemons_cut.test_a_row_of_version_1_over_the_daemons_cut"]]}
+PY20 KILLED {"tests/kernel/test_cut_daemon_main.py": [1, ["test_each_courses_files.test_each_courses_files"]]}
+PY24 KILLED {"tests/kernel/test_cut_daemon_check.py": [1, ["test_the_table.test_the_table"]]}
+PY28 KILLED {"tests/kernel/test_cut_plan.py": [1, ["test_a_pull_request_that_touches_the_uploader.test_a_pull_request_that_touches_the_uploader"]]}

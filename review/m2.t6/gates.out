@@ -1,0 +1,68 @@
+== fmt
+rc=0
+== clippy nodeb
+    Checking skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+    Checking skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+    Checking skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Checking skyzfs-nodeb v0.0.1 (<worktree>/bins/skyzfs-nodeb)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 27s
+rc=0
+== test nodeb
+   Compiling thiserror v2.0.19
+test tests::a_row_is_put_as_the_uploader_reads_it ... ok
+test tests::a_store_that_does_not_answer_is_not_about_content ... ok
+test tests::an_expected_row_holds_for_its_cut_in_either_version ... ok
+test tests::each_command_names_what_it_needs ... ok
+test tests::exit_codes ... ok
+test tests::holes_must_be_sector_aligned ... ok
+test tests::a_ref_whose_segments_are_gone_is_unreadable ... ok
+test tests::move_head_writes_the_row_in_the_same_commit ... ok
+test tests::runs_join_adjacent_blocks_and_skip_zeros ... ok
+test tests::the_cut_row_is_read_as_the_uploader_writes_it ... ok
+test tests::the_id_is_the_provisioners ... ok
+test tests::a_ref_whose_objects_are_gone_is_unreadable ... ok
+test tests::the_row_codec_is_the_uploaders ... ok
+test tests::the_guard_holds_the_row_as_read_in_either_version ... ok
+test tests::the_other_writer_acts_on_the_row_it_read ... ok
+test tests::a_put_image_reads_back_through_a_second_ref_store ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+rc=0
+== git rev-parse HEAD: bec9a2fec348e9c9b84650d97d23f7aa9c18f509
+== rustc: rustc 1.100.0 (0ef1bc386 2026-11-09)
+== clippy workspace
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 58s
+rc=0
+== clippy skyzfsd test-hooks
+    Finished `dev` profile [optimized + debuginfo] target(s) in 14.28s
+rc=0
+== clippy ublk-sys control-test-program
+    Finished `dev` profile [optimized + debuginfo] target(s) in 23.39s
+rc=0
+== head bec9a2fec348e9c9b84650d97d23f7aa9c18f509
+== python tests (python3 -I), as ci.yml lists them
+tests/kernel/test_cut_check.py rc=0 Ran 29 tests in 0.001s OK 
+tests/kernel/test_cut_daemon_check.py rc=0 Ran 104 tests in 10.511s OK 
+tests/kernel/test_cut_daemon_main.py rc=0 Ran 41 tests in 30.349s OK 
+tests/kernel/test_cut_hold.py rc=0 Ran 18 tests in 4.817s OK 
+tests/kernel/test_cut_plan.py rc=0 Ran 11 tests in 0.421s OK 
+tests/kernel/test_cut_ref.py rc=0 Ran 41 tests in 0.300s OK 
+tests/kernel/test_cut_watch.py rc=0 Ran 13 tests in 3.727s OK 
+tests/kernel/test_nodeb_check.py rc=0 Ran 28 tests in 0.046s OK 
+tests/bench/test_bracket.py rc=0 Ran 29 tests in 0.001s OK 
+tests/bench/test_cut_release.py rc=0 Ran 13 tests in 2.108s OK 
+tests/bench/test_embedded_python.py rc=0 Ran 7 tests in 1.292s OK 
+tests/bench/test_perfcat.py rc=0 Ran 6 tests in 0.005s OK 
+tests/bench/test_skz_time.py rc=0 Ran 39 tests in 0.023s OK 
+tests/bench/test_syscalls.py rc=0 Ran 6 tests in 0.001s OK 
+== bash tests/kernel/test_cut_record.sh
+all passed
+== git ls-files '*.sh' | xargs shellcheck -S warning (shellcheck 0.9.0)
+rc=0
+== cut-record.sh without -S warning, notes by kind, base 69837ba then head
+    783 note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]
+      3 note: Note that A && B || C is not if-then-else. C may run when A is true. [SC2015]
+      1 note: Not following: tests/lib/gnu-dd.sh was not specified as input (see shellcheck -x). [SC1091]
+--
+    821 note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]
+      3 note: Note that A && B || C is not if-then-else. C may run when A is true. [SC2015]
+      1 note: Not following: tests/lib/gnu-dd.sh was not specified as input (see shellcheck -x). [SC1091]

@@ -1,0 +1,4 @@
+baseline 0 [] 16 passed
+NB4b KILLED ['tests::a_row_is_put_as_the_uploader_reads_it', 'tests::the_row_codec_is_the_uploaders', 'tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 11 passed
+MH2b SURVIVED [] 16 passed
+MH7 SURVIVED [] 16 passed

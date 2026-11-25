@@ -1,0 +1,23 @@
+baseline 0 [] 16 passed
+NB1 KILLED ['tests::the_row_codec_is_the_uploaders', 'tests::the_cut_row_is_read_as_the_uploader_writes_it'] 14 passed
+NB2 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_row_codec_is_the_uploaders', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 12 passed
+NB3 KILLED ['tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders'] 13 passed
+NB4 NOT APPLIED (2 matches of '    let mut b = version.to_le_bytes().to_vec();') [] 
+NB5 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+NB6 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 13 passed
+NB7 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::a_row_is_put_as_the_uploader_reads_it', 'tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_row_codec_is_the_uploaders'] 11 passed
+NB8 KILLED ['tests::an_expected_row_holds_for_its_cut_in_either_version', 'tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_row_codec_is_the_uploaders', 'tests::the_guard_holds_the_row_as_read_in_either_version'] 12 passed
+NB9 KILLED ['tests::the_cut_row_is_read_as_the_uploader_writes_it', 'tests::the_row_codec_is_the_uploaders'] 14 passed
+RW1 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW2 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW3 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW4 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW5 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW6 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+RW7 KILLED ['tests::the_row_codec_is_the_uploaders'] 15 passed
+MH1 KILLED ['tests::move_head_writes_the_row_in_the_same_commit'] 15 passed
+MH2 KILLED ['tests::the_other_writer_acts_on_the_row_it_read'] 15 passed
+MH3 SURVIVED [] 16 passed
+MH4 KILLED ['tests::move_head_writes_the_row_in_the_same_commit'] 15 passed
+MH5 KILLED ['tests::move_head_writes_the_row_in_the_same_commit'] 15 passed
+MH6 KILLED ['tests::move_head_writes_the_row_in_the_same_commit', 'tests::the_guard_holds_the_row_as_read_in_either_version', 'tests::the_other_writer_acts_on_the_row_it_read'] 13 passed
