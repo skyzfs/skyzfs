@@ -52,18 +52,28 @@ itself) must find:
   content, import, snapshot, mount, files, copies) on `snap/T`, with
   the agent's manifest as the files and digests to find.
 
+Rule (R) (M2.6a): a request asked with a count from before a take-over
+(pkill, pkillman, pkillpub) or from below the top of a rewind's
+abandoned groups (prewind) is answered `refused rewound`, and the
+courses pin it; asked anew with a count read then, as the agent's
+AskAnew asks, it is published. p1 asked anew is refused `taken` (what
+landed before the kill was carried by a cut counted before the new
+count), and `look p1` then names the commit of snap/p1: for p1 the
+`snap` answer of the look stands in for `done` above.
+
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
 not make the case it is there for: the rig's error, not a verdict.
 
 The premises that make two courses test what they are for (the review
 of #139):
-- prewind: a cut counted after C, of group G or later, that opens only
-  as a rewind, was committed after the ask (node B's row read after the
-  store came back, DIR/rewind-row.txt, and that cut's `cut` line), and
-  r1 was not made by an earlier one. A daemon that published without
-  "opens as itself" would have named that cut, which pin_r1_cut judges
-  as a verdict.
+- prewind: a cut counted after the first ask's C, of group G or later,
+  that opens only as a rewind, was committed after that ask (node B's
+  row read after the store came back, DIR/rewind-row.txt, and that
+  cut's `cut` line), and r1 was not made by an earlier one. A daemon
+  that published without "opens as itself", and without rule (R), would
+  have named that cut, which pin_answer_r1 and pin_r1_cut judge as
+  verdicts.
 - pkill: the instance that answered tw's withdrawal then counted cuts
   of tw's G or later that open as itself, and committed one
   (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
@@ -117,8 +127,13 @@ EXPECTED = {
         't7-again': ('accepted',),            # withdrawn, then asked anew
         't7-end': ('done ',),
     },
+    # Rule (R) (M2.6a): a request asked with a count from before a
+    # take-over or a rewind is refused `rewound`; asked anew with a count
+    # read then, it is published.
     'prewind': {
-        'r1': ('done ',),
+        'r1': ('refused rewound',),           # the snapshot's and hold's cuts open only as a rewind
+        'r1-anew': ('accepted',),             # past the abandoned top, a count read then
+        'r1-end': ('done ',),
     },
     'pkill': {
         'tw': ('pending after',),
@@ -126,7 +141,8 @@ EXPECTED = {
         'tk': ('pending after',),
         'tw-after': ('withdrawn', 'unknown'),  # never done, with whatever commit
         'tk-after': ('unknown',),             # pending publishes are in memory
-        'tk-again': ('accepted',),
+        'tk-again': ('refused rewound',),     # the new instance's count at its start is a mark
+        'tk-anew': ('accepted',),
         'tk-end': ('done ',),
         'tw-last': ('withdrawn', 'unknown'),
     },
@@ -135,14 +151,19 @@ EXPECTED = {
         # next instance's to its last look (it does not know m1).
         'm1': ('none ', 'unknown'),
         'm1-after': ('unknown',),
-        'm1-again': ('accepted',),
+        'm1-again': ('refused rewound',),
+        'm1-anew': ('accepted',),
         'm1-end': ('done ',),
     },
     'pkillpub': {
         'p1': ('none ', 'unknown'),
         'p1-after': ('unknown',),
-        'p1-again': ('accepted',),            # the lookup finds what landed
-        'p1-end': ('done ',),
+        'p1-again': ('refused rewound',),
+        'p1-anew': ('accepted',),
+        # The lookup finds what landed, on a cut counted before the new
+        # count: not this request's, so `taken`; the look reads the row.
+        'p1-end': ('refused taken',),
+        'p1-look': ('snap ',),
     },
     'pchannel': {
         'nu': ('refused no-upload',),
@@ -153,13 +174,14 @@ EXPECTED = {
         'cuts': ('cuts ',),
     },
 }
-# The names published -> the label whose `done` names their commit.
+# The names published -> the label whose `done` (or, for p1, `look`'s
+# `snap`) names their commit.
 PUBLISHED = {
     'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
-    'prewind': {'r1': 'r1'},
+    'prewind': {'r1': 'r1-end'},
     'pkill': {'tk': 'tk-end'},
     'pkillman': {'m1': 'm1-end'},
-    'pkillpub': {'p1': 'p1-end'},
+    'pkillpub': {'p1': 'p1-look'},
     'pchannel': {},
 }
 # Names that must have no ref and no row: an expired publish, one never
@@ -216,8 +238,9 @@ def judge_ends(course, ends):
     return [(k, any(ends[k].startswith(a) for a in want[k]), ends[k], want[k]) for k in want]
 
 
-def read_published(text):
-    """published.tsv -> {T: the last request asked of it}."""
+def read_published(text, first=False):
+    """published.tsv -> {T: the last request asked of it}, or the first
+    with `first`."""
     out = {}
     for ln in text.splitlines():
         if not ln:
@@ -226,6 +249,8 @@ def read_published(text):
         if len(f) != 7 or not (f[1].isdigit() and f[4].isdigit() and f[6].isdigit()) \
                 or len(f[2]) != 32 or len(f[3]) != 32:
             raise RigError(f'published.tsv: not T, G, A, S, C, a path and a createtxg: {ln!r}')
+        if first and f[0] in out:
+            continue
         out[f[0]] = {'name': f[0], 'group': int(f[1]), 'attachment': f[2], 'state': f[3], 'after': int(f[4]),
                      'manifest': f[5], 'txg': int(f[6])}
     return out
@@ -259,9 +284,10 @@ def read_snap_row(text):
 
 
 def done_commit(answer):
-    """`done commit=H` -> H; anything else -> None."""
+    """`done commit=H`, or `look`'s `snap commit=H ...` -> H; anything
+    else -> None."""
     f = answer.split()
-    if len(f) == 2 and f[0] == 'done' and f[1].startswith('commit='):
+    if ((len(f) == 2 and f[0] == 'done') or (len(f) == 7 and f[0] == 'snap')) and f[1].startswith('commit='):
         return f[1][len('commit='):]
     return None
 
@@ -541,7 +567,9 @@ def main():
                   'server', 'after the withdrawal and that commit: ' +
                   ', '.join(f'{k} {v}' for k, v in TW_STATUS.items()))
         if name == 'prewind':
-            r1 = published.get('r1')
+            # The premise is of the first ask, refused `rewound`; the
+            # request judged is the one asked anew.
+            r1 = read_published(text_of('published.tsv'), first=True).get('r1')
             if r1 is None:
                 raise RigError('no request of r1 in published.tsv')
             held = status_of(text_of('rewind-status.txt')).get('cuts_held', '')
@@ -568,10 +596,10 @@ def main():
                 premise(f'premise_{t}_landed', is_there,
                         f'snap/{t} {"was" if is_there else "was not"} there after the kill (the hook after the '
                         'transaction)')
-                end = done_commit(ends.get(f'{t}-end', ''))
+                end = done_commit(ends.get(PUBLISHED[name][t], ''))
                 holds(f'pin_{t}_found', [] if got['ref'] is not None and got['ref'][0] == end else
                       [f"done names {str(end)[:12]}, the ref after the kill {got['ref'][0][:12] if got['ref'] else 'none'}"],
-                      'server', 'asked again, done on the commit that landed before the kill: found, not made anew')
+                      'server', 'asked anew, read on the commit that landed before the kill: found, not made anew')
             else:
                 holds(f'pin_{t}_not_before_the_transaction', ['snap/T or its row after a kill before the '
                                                               'transaction'] if is_there else [], 'server',

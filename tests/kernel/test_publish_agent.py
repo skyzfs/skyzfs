@@ -35,6 +35,12 @@ class Answers(unittest.TestCase):
         self.assertEqual(pa.parse_answer('refused stopped the uploader steps no more'),
                          ('refused', {}, 'stopped', 'the uploader steps no more'))
         self.assertEqual(pa.parse_answer('refused peer'), ('refused', {}, 'peer', ''))
+        snap = f'snap commit={H} state={S} number=9 group=51 manifest-len=911 manifest-hash={H}'
+        self.assertEqual(pa.parse_answer(snap), ('snap', {'commit': H, 'state': S, 'number': '9', 'group': '51',
+                                                          'manifest-len': '911', 'manifest-hash': H}, None, None))
+        self.assertEqual(pa.parse_answer('absent'), ('absent', {}, None, None))
+        self.assertEqual(pa.parse_answer(f'unreadable commit={H} why=version'),
+                         ('unreadable', {'commit': H, 'why': 'version'}, None, None))
 
     def test_what_is_not_an_answer_is_the_rigs_error(self):
         for line in ('', 'refused ', 'cuts', f'cuts attachment={A} state={S} count=7 group=41',
@@ -44,7 +50,12 @@ class Answers(unittest.TestCase):
                      f'cuts attachment={A} state={S} count=7 group=none opens=itself',
                      f'cuts attachment={A} state={S} count=7 group=41 opens=maybe',
                      'done', f'done commit={H[:-1]}', f'done commit={H.upper()}', 'accepted now',
-                     'pending  ', 'publish', f'done commit={H} commit={H}'):
+                     'pending  ', 'publish', f'done commit={H} commit={H}',
+                     f'snap commit={H} state={S} number=9 group=51 manifest-len=911',
+                     f'snap commit={H[:-1]} state={S} number=9 group=51 manifest-len=911 manifest-hash={H}',
+                     f'snap commit={H} state={S} number=x group=51 manifest-len=911 manifest-hash={H}',
+                     f'snap commit={H} state={S[:-1]} number=9 group=51 manifest-len=911 manifest-hash={H}',
+                     'absent now', f'unreadable commit={H}'):
             with self.assertRaises(pa.RigError, msg=line):
                 pa.parse_answer(line)
 
@@ -77,7 +88,7 @@ class AnAgent(unittest.TestCase):
     def test_a_request_is_sent_and_recorded(self):
         ag = self.agent((0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
                         (0, 'accepted\n'), (1, 'refused name not a name\n'), (0, f'done commit={H}\n'),
-                        (0, 'withdrawn\n'))
+                        (0, 'withdrawn\n'), (0, 'absent\n'))
         self.assertEqual(ag.cuts()[1]['count'], '7')
         self.assertEqual(ag.publish('t1', A, S, 7, 41, '/m', expiry=30)[0], 'accepted')
         self.assertEqual(ag.progress('x y')[2], 'name')
@@ -88,10 +99,12 @@ class AnAgent(unittest.TestCase):
                                               '--attachment', A, '--state', S, '--after', '7', '--group', '41',
                                               '--manifest', '/m', '--expiry-s', '30'])
         self.assertEqual(self.fake.calls[2][1], 'publish-progress')
+        self.assertEqual(ag.look('t1')[0], 'absent')
         self.assertEqual(self.fake.calls[4][1], 'withdraw')
+        self.assertEqual(self.fake.calls[5], ['skyzfsd', 'look', '--dir', 'VOL', '--run-dir', 'RUN', '--name', 't1'])
         with open(self.log) as f:
             rows = [ln.rstrip('\n').split('\t') for ln in f]
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertEqual(rows[0][:2], ['100', '110'])
         self.assertEqual(rows[2][2:], ['publish-progress --name x y', '1', 'refused name not a name'])
         self.assertEqual(rows[3][4], f'done commit={H}')

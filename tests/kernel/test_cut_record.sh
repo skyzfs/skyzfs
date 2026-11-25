@@ -375,11 +375,64 @@ is "asked: a publish of r1 with no answer yet" "$(asked_trace '1\t2\tpublish --n
 is "asked: another name's, or r1's look, is not it" \
     "$(asked_trace '1\t2\tpublish --name r12 --a\t0\taccepted\n1\t2\tprogress --name r1\t0\tpending\n' r1)" "rc=1"
 
+# panew asks T anew with a count read now, and T's last G and manifest.
+pn_fn=$(sed -n '/^panew() {$/,/^}$/p;/^preq() /p' "$SCRIPT")
+is "panew is in the script" "$([ -n "$pn_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # run through eval
+panew_trace() { ( # the cuts answer, record or not
+    RDIR=$(mktemp -d)
+    printf 'r1\t50\taa\tbb\t7\t/m\t48\n' > "$RDIR/published.tsv"
+    pagent() { echo "$1 $*" >> "$RDIR/calls"; [ "$2" = cuts ] && echo "$CUTS"; return 0; }
+    pask() { echo "pask $*"; }
+    rig_error() { echo "rig_error $*"; exit 2; }
+    CUTS=$1
+    eval "$pn_fn"
+    panew r1-anew r1 "$2"
+    tail -n 1 "$RDIR/published.tsv"; rm -rf "${RDIR:?}"
+) 2>&1; }
+A32=$(printf 'a%.0s' $(seq 32)); S32=$(printf 'b%.0s' $(seq 32))
+is "panew: asked with the count read now, G and the manifest of the last request, and recorded" \
+    "$(panew_trace "cuts attachment=$A32 state=$S32 count=19 group=33 opens=itself" record)" \
+    "pask r1-anew publish r1 $A32 $S32 19 50 /m
+r1	50	$A32	$S32	19	/m	48"
+is "panew: not recorded without record" \
+    "$(panew_trace "cuts attachment=$A32 state=$S32 count=19 group=33 opens=itself" '')" \
+    "pask r1-anew publish r1 $A32 $S32 19 50 /m
+r1	50	aa	bb	7	/m	48"
+is "panew: a cuts answer with no state is the rig's error" \
+    "$(panew_trace "cuts attachment=$A32 state=none count=0 group=none opens=none" record)" \
+    "rig_error a cuts answer the rig cannot read: cuts attachment=$A32 state=none count=0 group=none opens=none"
+
+# past_top syncs a group at a time until the newest cut opens as itself.
+pt_fn=$(sed -n '/^past_top() {$/,/^}$/p' "$SCRIPT")
+is "past_top is in the script" "$([ -n "$pt_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # run through eval
+past_top_trace() { ( # the opens of each cuts answer in turn, the limit
+    RDIR=$(mktemp -d); MNT=$RDIR; NAME=course
+    # shellcheck disable=SC2086  # one answer a word
+    printf '%s\n' $1 > "$RDIR/opens"
+    pagent() { local o; o=$(head -n 1 "$RDIR/opens"); sed -i 1d "$RDIR/opens"; echo "cuts count=1 opens=$o"; }
+    z() { echo sync >> "$RDIR/syncs"; }
+    dd() { :; }; sleep() { :; }
+    log() { echo "log $*"; }
+    rig_error() { echo "rig_error $*"; exit 2; }
+    eval "$pt_fn"
+    past_top "$2"; echo "rc=$? syncs=$(wc -l < "$RDIR/syncs" 2>/dev/null || echo 0)"; rm -rf "${RDIR:?}"
+) 2>&1; }
+is "past_top: rewind, rewind, itself: two syncs, then done" \
+    "$(past_top_trace "rewind rewind itself" 60)" "log course: the newest cut opens as itself: cuts count=1 opens=itself
+rc=0 syncs=2"
+is "past_top: a limit passed with no cut opening as itself is the rig's error" \
+    "$(past_top_trace "rewind rewind" 0)" "rig_error no cut opened as itself 0 s on: cuts count=1 opens=rewind"
+
 # The order the premises need (#139's B2 and B3).
 order_of() { sed -n "/^$1() {\$/,/^}\$/p" "$SCRIPT" | grep -nE "$2" | cut -d: -f2- | sed 's/^ *//; s/ .*//' | tr '\n' ' '; }
-is "prewind: asks, waits for the answer, brings the store back, waits for the rewind cut's commit, then nudges" \
-    "$(order_of rec_prewind '^    (pflow|asked|bash -c "\$S3_UP"|row_past|rm -f "\$WORK/watch.pause"|while kill)')" \
-    "pflow asked bash row_past rm while "
+is "prewind: asks (refused rewound), brings the store back, waits for the rewind cut's commit, passes the abandoned top, then asks anew" \
+    "$(order_of rec_prewind '^    (pflow|asked|bash -c "\$S3_UP"|row_past|rm -f "\$WORK/watch.pause"|past_top|panew|pwait)')" \
+    "pflow bash row_past rm past_top panew pwait "
+is "pkill: tk asked again as it was, then anew with a count read then" \
+    "$(order_of rec_pkill '^    (pask tk-after|pagain|panew|pwait tk-end)')" \
+    "pask pagain panew pwait "
 is "prewind: the agent does not sync groups itself" \
     "$(sed -n '/^rec_prewind() {$/,/^}$/p' "$SCRIPT" | grep -c 'pflow r1 .*--sync')" 0
 is "pkill: withdraws, waits for a commit past tw's G, reads the status, then asks tk and kills" \

@@ -585,7 +585,7 @@ rec_life() {
     export_pool
 }
 rec_rewind() {
-    local groups t
+    local groups t _i
     create_pool
     load 8
     mapfile -t groups < <(committed)
@@ -1490,6 +1490,37 @@ pagain() {
     [ "${4:-}" != record ] || printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$a" "$s" "$c" "$m" "$x" >> "$RDIR/published.tsv"
     pask "$1" publish "$2" "$a" "$s" "$c" "$3" "$m"
 }
+# LABEL T [record]: T asked anew as the agent's AskAnew asks it after
+# `refused rewound`: with the attachment, cut state and count of a
+# `cuts` read now, and T's last G and manifest; with `record`, as the
+# request its publish is judged by.
+panew() {
+    local out rc=0 a s c m x g
+    out=$(pagent ask cuts 2>> "$RDIR/agent.err") || rc=$?
+    [ "$rc" = 0 ] || rig_error "the agent's cuts before asking $2 anew ended $rc: $out"
+    a=$(sed -n 's/.* attachment=\([0-9a-f]*\) .*/\1/p' <<< "$out")
+    s=$(sed -n 's/.* state=\([0-9a-f]*\) .*/\1/p' <<< "$out")
+    c=$(sed -n 's/.* count=\([0-9]*\) .*/\1/p' <<< "$out")
+    if [ -z "$a" ] || [ -z "$s" ] || [ -z "$c" ]; then rig_error "a cuts answer the rig cannot read: $out"; fi
+    g=$(preq "$2" 2); m=$(preq "$2" 6); x=$(preq "$2" 7)
+    [ -n "$g" ] || rig_error "no request of $2 in published.tsv"
+    [ "${3:-}" != record ] || printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$g" "$a" "$s" "$c" "$m" "$x" >> "$RDIR/published.tsv"
+    pask "$1" publish "$2" "$a" "$s" "$c" "$g" "$m"
+}
+# SECONDS: a group written and synced at a time until the daemon's
+# newest cut opens as itself: past every group a rewind abandoned, so
+# that rule (R) marks no cut after it (design §5.2).
+past_top() {
+    local t0=$SECONDS out
+    while :; do
+        out=$(pagent ask cuts 2>> "$RDIR/agent.err") || rig_error "the agent's cuts ended $?: $out"
+        [[ $out == *" opens=itself" ]] && { log "$NAME: the newest cut opens as itself: $out"; return 0; }
+        [ $((SECONDS - t0)) -lt "$1" ] || rig_error "no cut opened as itself $1 s on: $out"
+        dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
+        z 60 zpool sync "$POOL"
+        sleep 0.5
+    done
+}
 # LABEL T SECONDS [sync]: how T stands, asked until it no longer pends
 # (`pending after N s` when it still does); with sync, 4 KiB written and
 # the pool synced between two looks, so that the pool cuts.
@@ -1560,19 +1591,22 @@ rec_pplain() {
 # uberblocks rank above the new history's in the labels' rings. With the
 # store still down, the agent takes r1 and asks, and syncs nothing: the
 # snapshot's and the hold's own syncs are cuts counted after C, of group
-# G or later, that open only as a rewind, and the pool makes no other
-# while nothing writes. Once r1 is answered the store comes back
-# (CUT_S3_UP), and the uploader commits the newest cut it holds, one of
-# those. The rig waits until node B's row names a cut counted after C of
-# group G or later, with nothing else written (DIR/rewind-row.txt: the
-# check's premise that a cut a daemon without "opens as itself" would
-# name was committed after the ask). Only then does it write and sync a
-# group at a time until r1 ends, and r1 must be published by a later cut
-# of the present history that opens as itself (the review of #139, B2).
-# The lease is 900 s, so the outage does not take it away. The status
-# with the store down goes to DIR/rewind-status.txt.
+# G or later, that open only as a rewind. Rule (R) marks each of them (a
+# group not above the highest the daemon has seen), so r1 is answered
+# `refused rewound` (M2.6a): the course pins it. Then the store comes
+# back (CUT_S3_UP), and the uploader commits the newest cut it holds, one
+# of those. The rig waits until node B's row names a cut counted after
+# r1's first C of group G or later, with nothing else written
+# (DIR/rewind-row.txt: the check's premise that a cut a daemon without
+# "opens as itself" would name was committed after the ask, the review
+# of #139, B2). Only then does it write and sync a group at a time until
+# the daemon's newest cut opens as itself (past_top), and asks r1 anew
+# with a count read then (the agent's AskAnew), which must be published
+# by a later cut of the present history that opens as itself. The lease
+# is 900 s, so the outage does not take it away. The status with the
+# store down goes to DIR/rewind-status.txt.
 rec_prewind() {
-    local groups t pid _i t0
+    local groups t _i
     [ -n "$S3_DOWN" ] && [ -n "$S3_UP" ] || rig_error "prewind needs CUT_S3_DOWN and CUT_S3_UP"
     create_pool
     load 3
@@ -1590,21 +1624,15 @@ rec_prewind() {
     log "prewind: importing at group $t of ${groups[-1]}, object storage down"
     import_pool -T "$t"
     ustatus rewind-status.txt
-    pflow r1 r1 --limit-s 900 &
-    pid=$!
-    asked r1 120 || rig_error "the agent's publish of r1 had no answer 120 s on"
+    pflow r1 r1 --limit-s 300
     bash -c "$S3_UP" > "$RDIR/s3-up.log" 2>&1 || rig_error "CUT_S3_UP failed: $(tail -n 2 "$RDIR/s3-up.log")"
     S3_IS_DOWN=""
     for _i in $(seq 1 60); do nodeb row > /dev/null 2>&1 && break; sleep 1; done
     row_past rewind-row.txt "$(preq r1 5)" "$(preq r1 2)" 180 || true
     rm -f "$WORK/watch.pause"
-    t0=$SECONDS
-    while kill -0 "$pid" 2>/dev/null && [ $((SECONDS - t0)) -lt 900 ]; do
-        dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
-        z 60 zpool sync "$POOL"
-        sleep 1
-    done
-    wait "$pid"
+    past_top 600
+    panew r1-anew r1 record
+    pwait r1-end r1 900 sync
     load 1
     export_pool
 }
@@ -1616,10 +1644,13 @@ rec_prewind() {
 # left it queued (the review of #139, B3); its status then goes to
 # DIR/tw-status.txt. Then tk pends likewise and is not withdrawn, and
 # the daemon is killed (kill -9). The next instance takes over and knows
-# neither (pending publishes are in memory): tk asked again is
-# published; tw, never asked again, must read withdrawn or unknown, and
-# never be there (the lead's addition: a kill after the withdrawal was
-# answered and before the publish could land).
+# neither (pending publishes are in memory). tk asked again as it was
+# asked is refused `rewound`: the instance's count at its start is a
+# rewind mark (rule (R), M2.6a), and cuts were counted after tk's C.
+# Asked anew with a count read then, tk is published. tw, never asked
+# again, must read withdrawn or unknown, and never be there (the lead's
+# addition: a kill after the withdrawal was answered and before the
+# publish could land).
 rec_pkill() {
     create_pool
     load 1
@@ -1632,7 +1663,8 @@ rec_pkill() {
     serve_start 2
     pask tw-after progress tw
     pask tk-after progress tk
-    pagain tk-again tk "$(preq tk 2)" record
+    pagain tk-again tk "$(preq tk 2)"
+    panew tk-anew tk record
     pwait tk-end tk 600 sync
     pask tw-last progress tw
     load 1
@@ -1644,9 +1676,13 @@ rec_pkill() {
 # manifest landed and before the transaction that makes snap/T,
 # publish:1 once that transaction landed and before the uploader knew.
 # Node B reads snap/T between the kill and the take-over
-# (DIR/T-between.txt). The next instance does not know T; asked again,
-# the publish is made (manifest:1) or found (publish:1), done on the
-# commit snap/T names.
+# (DIR/T-between.txt). The next instance does not know T. Asked again as
+# it was asked, T is refused `rewound` (the instance's count at its start
+# is a rewind mark, rule (R), M2.6a). Asked anew with a count read then:
+# m1 (manifest:1) is made and done; p1 (publish:1) is accepted, then
+# refused `taken` by the lookup, since the row that landed names a cut
+# counted before the new count; `look p1` then reads that row on the
+# commit snap/p1 names, as the agent's look does (N1 of #140's review).
 rec_pkillat() {
     local t=$1 fpid _i
     create_pool
@@ -1668,8 +1704,15 @@ rec_pkillat() {
     kill -0 "$fpid" 2>/dev/null && rig_error "the agent had not ended 300 s after the take-over"
     wait "$fpid" || true
     pask "$t-after" progress "$t"
-    pagain "$t-again" "$t" "$(preq "$t" 2)" record
-    pwait "$t-end" "$t" 600 sync
+    pagain "$t-again" "$t" "$(preq "$t" 2)"
+    if [ "$t" = p1 ]; then
+        panew "$t-anew" "$t"
+        pwait "$t-end" "$t" 600 sync
+        pask "$t-look" look "$t"
+    else
+        panew "$t-anew" "$t" record
+        pwait "$t-end" "$t" 600 sync
+    fi
     load 1
     export_pool
 }
