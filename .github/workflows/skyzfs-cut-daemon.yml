@@ -214,7 +214,7 @@ jobs:
           UPLOAD: ${{ matrix.upload }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
-          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z][a-z0-9]*$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD="$HOLD" CUT_UPLOAD="$UPLOAD" \
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
             SKZ_S3_BUCKET="skyzfs-cut-${{ github.run_id }}-${{ github.run_attempt }}" \
