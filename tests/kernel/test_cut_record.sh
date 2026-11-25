@@ -303,5 +303,30 @@ is "rec_bound: paused before the create, the writes, a wait, then the status whi
     "$(bound_trace | grep -c '^dd$') $(bound_trace | head -n 1) $(bound_trace | tail -n 5 | tr '\n' ';')" \
     "10 create paused=yes z 60 zpool sync p;sleep 0.3;status status-bound-held.txt paused=yes;load 2;export;"
 
+# status_until reads the status again, with nothing done to the pool,
+# until a count the daemon posts on its own shows (run 45529175986: the
+# peer refused, and control_peer 0 in the status read right after it).
+su_fn=$(sed -n '/^status_until() {$/,/^}$/p' "$SCRIPT")
+is "status_until is in the script" "$([ -n "$su_fn" ] && echo yes)" yes
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are status_until's, run through eval
+until_trace() { ( # the count each look reads, the limit
+    RDIR=$(mktemp -d); NAME=pchannel; looks=0
+    read -r -a counts <<< "$1"
+    ustatus() { echo "control_peer ${counts[$looks]}" > "$RDIR/$1"; looks=$((looks + 1)); }
+    skey() { sed -n "s/^$2 //p" "$RDIR/$1" | head -n 1; }
+    sleep() { :; }
+    log() { echo "log $*"; }
+    eval "$su_fn"
+    status_until s.txt control_peer 1 "$2"; rc=$?
+    echo "$rc looks=$looks file=$(cat "$RDIR/s.txt")"; rm -rf "${RDIR:?}"
+) 2>&1; }
+is "status_until: the count shows at the third look" "$(until_trace "0 0 1 1" 10)" "0 looks=3 file=control_peer 1"
+is "status_until: a count already there is one look" "$(until_trace "2" 10)" "0 looks=1 file=control_peer 2"
+is "status_until: a count that never shows is 1, said, after the last look" \
+    "$(until_trace "0 0" 0)" "log pchannel: the status's control_peer was 0, not at least 1, 0 s on
+1 looks=1 file=control_peer 0"
+is "pchannel waits for the peer's count before it reads the channel's status" \
+    "$(sed -n '/^rec_pchannel() {$/,/^}$/p' "$SCRIPT" | grep -A3 '^    ppeer$' | grep -c '^    status_until channel-status.txt control_peer 1 10 || true$')" 1
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

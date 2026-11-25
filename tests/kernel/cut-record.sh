@@ -1041,6 +1041,24 @@ nudge_until() {
     log "$NAME: the status's $2 was ${v:-nothing}, not at least $3, $4 s on"
     return 1
 }
+# FILE KEY N SECONDS: the status, until its KEY is at least N, for up to
+# SECONDS, with nothing done to the pool between looks; the status then
+# in DIR/FILE. For a count the daemon posts on its own: it writes its
+# status at most every 100 ms and never leaves a change unwritten, so a
+# status read just after the act can be the one before it (run
+# 45529175986, control_peer 0 right after the peer was refused). 1 when
+# it was not, which the check judges.
+status_until() {
+    local t0=$SECONDS v=""
+    while :; do
+        ustatus "$1"; v=$(skey "$1" "$2")
+        [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge "$3" ] && return 0
+        [ $((SECONDS - t0)) -lt "$4" ] || break
+        sleep 0.2
+    done
+    log "$NAME: the status's $2 was ${v:-nothing}, not at least $3, $4 s on"
+    return 1
+}
 # The volume's state and its newest uploaded cut before another writer
 # acts: DIR/STEP-status.txt after a sync of the pool (where it is
 # imported) and a drain, DIR/STEP-row.txt. Then up to 120 s for the
@@ -1655,7 +1673,9 @@ rec_pchannel() {
     praw name 'skyzfs-control 1\nprogress name=a/b\n'
     praw cuts 'skyzfs-control 1\ncuts\n'
     ppeer
-    ustatus channel-status.txt
+    # The peer is the last connection counted, and each post holds every
+    # count so far: once it shows, the malformed ones do too.
+    status_until channel-status.txt control_peer 1 10 || true
     load 1
     export_pool
 }
