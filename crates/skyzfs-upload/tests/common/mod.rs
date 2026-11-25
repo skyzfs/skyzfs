@@ -231,11 +231,31 @@ impl Fixture {
     /// Group `txg`'s uberblock to the four labels, and no flush: the
     /// flush after it takes the cut of group `txg`.
     pub fn labels(&mut self, store: &mut InPlace<SimDisk>, txg: u64) {
+        self.labels_of(store, uberblock(txg), txg);
+    }
+
+    /// Group `txg` written anew, as the first group of an import by
+    /// `zpool import -F` writes it (M2.6a): the abandoned best's group,
+    /// another root block pointer and a later time, then the flush. Its
+    /// cut opens as itself at once.
+    pub fn group_anew(&mut self, store: &mut InPlace<SimDisk>, txg: u64) {
+        let mut slot = uberblock(txg);
+        for n in 0..16 {
+            let word = (txg * 31 + 1).rotate_left(n as u32) ^ 0x5a5a;
+            slot[40 + 8 * n..48 + 8 * n].copy_from_slice(&word.to_le_bytes());
+        }
+        slot[32..40].copy_from_slice(&1000u64.to_le_bytes());
+        self.labels_of(store, slot, txg);
+        self.run(store, Op::Flush);
+        self.at.insert(txg, self.now.clone());
+    }
+
+    fn labels_of(&mut self, store: &mut InPlace<SimDisk>, uberblock: Buf, txg: u64) {
         let labels = Labels::for_size(SIZE);
         let rings: Vec<u64> = labels.rings().map(|ring| ring.start).collect();
         for ring in rings {
             let offset = ring + (txg % RING_SLOTS) * SLOT;
-            let mut slot = uberblock(txg);
+            let mut slot = uberblock.clone();
             seal(&mut slot, offset, ByteOrder::Little);
             let at = offset as usize;
             self.now[at..at + SLOT as usize].copy_from_slice(&slot);

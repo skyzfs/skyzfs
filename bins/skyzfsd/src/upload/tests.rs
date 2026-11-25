@@ -1211,6 +1211,7 @@ fn uploading_with(world: &World, take: bool, before: impl FnOnce(&Runtime)) -> U
     let publishes = Publishes {
         attachment: None,
         state: None,
+        rewound: 0,
         inbox,
         told: Box::new(|_, _| {}),
     };
@@ -1516,13 +1517,15 @@ fn the_region_is_aws_region_or_the_default() {
 }
 
 /// The uploader's thread answers the channel's requests from its inbox,
-/// for the attachment and the cut state it was given: a publish of
-/// another attachment is refused, one of this attachment and state is
+/// for the attachment, the cut state and the rewind mark it was given: a
+/// publish of another attachment is refused, and so is one asked after a
+/// count below the mark (M2.6a); one of this attachment and state is
 /// taken. A publish that ends (here, withdrawn) is told.
 ///
 /// Mutant: the attachment or the state not given to the uploader (the
-/// first publish is refused), the inbox not read (no answer), or an
-/// ended publish not told.
+/// first publish is refused), the mark not given (the publish after a
+/// lower count is taken), the inbox not read (no answer), or an ended
+/// publish not told.
 #[test]
 fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     use skyzfs_upload::publish::{Request as Ask, EXPIRY_DEFAULT};
@@ -1533,6 +1536,8 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
     let publishes = Publishes {
         attachment: Some([0xa1; 16]),
         state: Some([0x5e; 16]),
+        // As a start that took up a count of 2 (M2.6a).
+        rewound: 2,
         inbox,
         told: Box::new(move |name, progress| {
             let _ = told.send((name.to_owned(), progress.clone()));
@@ -1555,7 +1560,7 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
         name: "t".into(),
         attachment,
         state: [0x5e; 16],
-        after: 0,
+        after: 2,
         group: 1,
         manifest: Vec::new(),
         expiry: EXPIRY_DEFAULT,
@@ -1572,6 +1577,16 @@ fn the_thread_answers_the_channel_for_its_attachment_and_state() {
         .blocking_send(Control::Ask(other, reply))
         .expect("sent");
     assert_eq!(within(answer), Some(Answer::Refused(Refusal::Attachment)));
+    // Asked after a count below the one the start took up: refused at
+    // once, before the uploader's first check of a cut (M2.6a).
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    let mut before = ask([0xa1; 16]);
+    before.name = "v".into();
+    before.after = 1;
+    requests
+        .blocking_send(Control::Ask(before, reply))
+        .expect("sent");
+    assert_eq!(within(answer), Some(Answer::Refused(Refusal::Rewound)));
     let (reply, answer) = tokio::sync::oneshot::channel();
     requests
         .blocking_send(Control::Progress("t".into(), reply))

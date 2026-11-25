@@ -200,6 +200,101 @@ fn a_stopped_uploader_ends_what_pends_and_refuses_what_comes() {
     assert_eq!(publishing.figures().refused, 5);
 }
 
+/// Rule (R) (work package M2.6a): a request asked after a lower count
+/// than the store's rewind mark is refused `rewound`, and one at the
+/// mark or above is taken. The mark never goes back.
+#[test]
+fn a_request_asked_after_a_count_below_the_rewind_mark_is_refused() {
+    let mut publishing = publishing();
+    publishing.set_rewound(5);
+    assert_eq!(
+        publishing.ask(request("below", 4, 40)),
+        Answer::Refused(Refusal::Rewound)
+    );
+    assert_eq!(publishing.ask(request("at", 5, 40)), Answer::Accepted);
+    publishing.set_rewound(2);
+    assert_eq!(
+        publishing.ask(request("below", 4, 40)),
+        Answer::Refused(Refusal::Rewound),
+        "the mark went back"
+    );
+    assert_eq!(publishing.progress("below"), Progress::Unknown);
+    assert_eq!(publishing.pending().0, 1);
+    assert_eq!(publishing.figures().refused, 2);
+}
+
+/// The rewind of the plan's §0, at the publishes: `t` is asked after
+/// count 1 for group 12; after `zpool import -F` the first cut of the
+/// new history is number 2, of group 12, and opens as itself, so it
+/// would carry `t`. The driver gives the store's mark, 2, at that cut's
+/// check, before its commit: `t`, waiting or not yet looked up, ends
+/// refused `rewound`, and the cut, once committed, is given to no one.
+/// A request asked again with the count read anew is taken.
+#[test]
+fn a_rewind_ends_the_publishes_that_wait_from_before_it() {
+    let mut publishing = publishing();
+    assert_eq!(publishing.ask(request("waits", 1, 12)), Answer::Accepted);
+    publishing.absent("waits");
+    assert_eq!(stage(&publishing, "waits"), Some(Stage::Wait));
+    assert_eq!(publishing.ask(request("unlooked", 1, 12)), Answer::Accepted);
+    assert_eq!(publishing.ask(request("after", 2, 12)), Answer::Accepted);
+    let first_of_the_new_history = cut(2, 12, true);
+    assert!(request("waits", 1, 12).carried_by(&first_of_the_new_history));
+    // The mark at the count of the publishes asks nothing.
+    publishing.set_rewound(1);
+    assert_eq!(publishing.pending().0, 3);
+    publishing.set_rewound(2);
+    for name in ["waits", "unlooked"] {
+        assert_eq!(
+            publishing.progress(name),
+            Progress::Refused(Refusal::Rewound),
+            "{name}"
+        );
+    }
+    assert_eq!(publishing.progress("after"), Progress::Pending);
+    publishing.committed(first_of_the_new_history);
+    assert_eq!(publishing.pending().0, 1);
+    assert_eq!(publishing.figures().refused, 2);
+    assert_eq!(
+        publishing.take_ended(),
+        [
+            ("waits".to_string(), Progress::Refused(Refusal::Rewound)),
+            ("unlooked".to_string(), Progress::Refused(Refusal::Rewound)),
+        ]
+    );
+    // Asked again after `pool@t` is checked, with the count read anew.
+    assert_eq!(publishing.ask(request("waits", 2, 12)), Answer::Accepted);
+}
+
+/// A publish given its cut before the rewind was counted goes on: that
+/// cut was counted with no rewind since the publish's count (the
+/// driver gave the mark at its check), so it holds the history the
+/// publish was asked on. So does one whose transaction failed and may
+/// have landed, which is looked up as before. The same request asked
+/// again while it pends is accepted, as asking twice is asking once.
+#[test]
+fn a_publish_given_its_cut_before_a_rewind_goes_on() {
+    let mut publishing = publishing();
+    publishing.committed(cut(3, 42, true));
+    assert_eq!(publishing.ask(request("ready", 1, 40)), Answer::Accepted);
+    publishing.absent("ready");
+    assert_eq!(publishing.ask(request("recheck", 2, 40)), Answer::Accepted);
+    publishing.absent("recheck");
+    publishing.failed("recheck");
+    publishing.set_rewound(6);
+    assert_eq!(
+        stage(&publishing, "ready"),
+        Some(Stage::Ready(cut(3, 42, true)))
+    );
+    assert_eq!(
+        stage(&publishing, "recheck"),
+        Some(Stage::Recheck(cut(3, 42, true)))
+    );
+    assert_eq!(publishing.ask(request("ready", 1, 40)), Answer::Accepted);
+    assert_eq!(publishing.pending().0, 2);
+    assert_eq!(publishing.figures().refused, 0);
+}
+
 /// A publish accepted is looked up first; absent, it goes on the first
 /// cut known that carries it, or waits, and the first cut committed
 /// after that carries it takes it, not one that does not.

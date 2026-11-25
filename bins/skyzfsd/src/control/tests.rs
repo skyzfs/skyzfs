@@ -100,6 +100,7 @@ fn the_lines_are_version_1s_words() {
             "busy",
             "taken",
             "stopped",
+            "rewound",
             "version",
             "malformed",
             "peer",
@@ -222,6 +223,7 @@ fn a_publishs_refusal_keeps_its_own_code() {
         (Refusal::Busy, Code::Busy),
         (Refusal::Taken, Code::Taken),
         (Refusal::Stopped, Code::Stopped),
+        (Refusal::Rewound, Code::Rewound),
     ];
     for (refusal, code) in cases {
         assert_eq!(Code::of(&refusal), code);
@@ -459,7 +461,7 @@ mod socket {
     /// half a second after the room. A pause capped at a few hundred ms
     /// can still try soon after the room by chance (a cap of 500 ms, CE5,
     /// tries at 1511 ms), so the tries are counted too: at 50 ms there
-    /// are about 36 before the connection, at a cap of 200 ms 16, so at
+    /// are about 36, the last of which connects, at a cap of 200 ms 16, so at
     /// least 20 are asked for (T1 of the review of #136). Not caught here
     /// or above: a cap of 100 ms (22 tries), which costs a connect 100 ms
     /// at most, and a first pause of 50 ms (CF), which costs it 50 ms.

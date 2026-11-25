@@ -70,9 +70,21 @@
 //!   The E seconds are counted from the acceptance on this daemon's
 //!   uploader: asked again while it pends, a publish keeps the deadline
 //!   it had; asked of the next daemon (after a restart), it has a new
-//!   one. So an agent that holds `pool@T` while its publish pends counts
-//!   its hold from its last request answered `accepted`, not its first
-//!   (q11 of the review of #122).
+//!   one where no cut was counted after C before the restart, and is
+//!   refused `rewound` otherwise (below). So an agent that holds
+//!   `pool@T` while its publish pends counts its hold from its last
+//!   request answered `accepted`, not its first (q11 of the review of
+//!   #122).
+//!
+//!   `refused rewound`, to a `publish` or as its `progress` (work
+//!   package M2.6a): a cut that may follow a rewind was counted after C
+//!   (one whose group is not above the group of the cut before it, as
+//!   the first group after `zpool import -F` or `-T` is), or this daemon
+//!   started after C, so a cut that carries the request may be of a
+//!   history without `pool@T`. Nothing is published. The agent checks
+//!   `pool@T` and asks again with a count read anew. A publish that was
+//!   given its cut before the rewind is not ended so
+//!   (`skyzfs_upload::publish`).
 //! - `progress`: how the publish of T stands. `done` names the commit
 //!   (H, 64 hex digits) that `snap/T` names. `unknown`: not asked of
 //!   this daemon's uploader, or its end has left the 1024 kept.
@@ -238,6 +250,8 @@ pub enum Code {
     Taken,
     /// The uploader publishes nothing more.
     Stopped,
+    /// A rewind may have been counted after the request's count.
+    Rewound,
     /// The greeting is not this version's.
     Version,
     /// The request does not parse.
@@ -257,7 +271,7 @@ pub enum Code {
     NoAnswer,
 }
 
-const CODES: [(Code, &str); 15] = [
+const CODES: [(Code, &str); 16] = [
     (Code::Name, "name"),
     (Code::Attachment, "attachment"),
     (Code::State, "state"),
@@ -267,6 +281,7 @@ const CODES: [(Code, &str); 15] = [
     (Code::Busy, "busy"),
     (Code::Taken, "taken"),
     (Code::Stopped, "stopped"),
+    (Code::Rewound, "rewound"),
     (Code::Version, "version"),
     (Code::Malformed, "malformed"),
     (Code::Peer, "peer"),
@@ -303,6 +318,7 @@ impl Code {
             Refusal::Busy => Code::Busy,
             Refusal::Taken => Code::Taken,
             Refusal::Stopped => Code::Stopped,
+            Refusal::Rewound => Code::Rewound,
         }
     }
 }

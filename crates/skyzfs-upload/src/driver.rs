@@ -546,6 +546,9 @@ impl<L: Local, R: Remote> Driver<L, R> {
             return (Stage::Check, Ok(Step::Idle));
         };
         self.publishing.set_state(cut.state);
+        // Before the cut can be committed and given to a publish: a
+        // rewind counted up to now ends what waits from before it.
+        self.publishing.set_rewound(cut.rewound);
         let seen = match self.remote.observe().await {
             Ok(seen) => seen,
             Err(e) => return (Stage::Check, Err(e)),

@@ -1416,3 +1416,68 @@ async fn a_publish_past_its_deadline_is_not_made_on_the_cut_that_carries_it() {
     assert_eq!((figures.expired, figures.published), (1, 0));
     assert!(published(&fx, "t", "cut 2").await.is_none());
 }
+
+/// The rewind of the M2.6 plan's §0, through the store and the driver
+/// (work package M2.6a, rule (R)): `t` is asked after cut 1 of group 12
+/// and waits. Then `zpool import -F` writes group 12 anew, with another
+/// root and a later time, and the flush cuts it: cut 2, of group 12,
+/// counted after *C*, which opens as itself, and so carries `t`, though
+/// the history it opens may lack `pool@t`. Its group is not above cut
+/// 1's, so the store's rewind mark is 2, and the driver gives it at the
+/// cut's check, before the commit: `t` ends refused `rewound`, cut 2 is
+/// committed with no publish, and `t` asked again with the count read
+/// anew goes on the next cut. Without the mark given at the check, `t`
+/// is published on cut 2.
+#[tokio::test]
+async fn a_publish_asked_before_a_rewind_by_f_is_not_carried_by_its_first_cut() {
+    let mut fx = Fixture::new(64).await;
+    let mut store = fx.start();
+    fx.write(&mut store, 100, 0x12);
+    fx.group(&mut store, 12);
+    let mut up = driver(&fx, store);
+    up.run().await.expect("cut 1");
+    assert_eq!(ask_now(&mut up, "t", 12), Answer::Accepted);
+    let steps = up.run().await.expect("the lookup");
+    assert_eq!(steps, [Step::PublishLooked { name: "t".into() }]);
+    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+
+    fx.write(up.local(), 101, 0x13);
+    fx.group_anew(up.local(), 12);
+    let cuts = up.local().cuts();
+    assert_eq!(
+        (cuts.count, cuts.rewound),
+        (2, 2),
+        "the first cut after the rewind marks it"
+    );
+    let held = up.local().held_cuts();
+    assert_eq!(
+        held.iter()
+            .map(|cut| (cut.number, cut.state.txg, cut.itself))
+            .collect::<Vec<_>>(),
+        [(2, 12, true)],
+        "the first group of the new history opens as itself"
+    );
+    let steps = up.run().await.expect("cut 2");
+    assert!(
+        told(&steps)
+            .iter()
+            .all(|step| matches!(step, Step::Began { .. } | Step::Uploaded { .. })),
+        "{steps:?}"
+    );
+    fx.assert_uploaded(12, "cut 2").await;
+    assert!(published(&fx, "t", "cut 2").await.is_none(), "cut 2");
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Rewound)
+    );
+
+    // Asked again with the count read anew (the agent checks `pool@t`
+    // first, M2.6): the next cut carries it.
+    assert_eq!(ask_now(&mut up, "t", 12), Answer::Accepted);
+    up.run().await.expect("the lookup again");
+    fx.write(up.local(), 102, 0x14);
+    fx.group(up.local(), 13);
+    up.run().await.expect("cut 3");
+    let snapshot = published(&fx, "t", "cut 3").await.expect("published");
+    assert_eq!((snapshot.row.cut.number, snapshot.row.cut.group), (3, 13));
+}

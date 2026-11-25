@@ -1205,6 +1205,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // start: the store's, which changes only at a start (F5 of the review
     // of #127).
     let cut_state = served.cut_state_id();
+    // The store's rewind mark at the start, which is at least the count
+    // it took up (M2.6a): a publish asked of the instance before is
+    // refused `rewound` from the first request, not at the first check.
+    let rewound = served.cuts().rewound;
     let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
         number,
@@ -1501,6 +1505,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let publishes = Publishes {
                 attachment: attachment.as_ref().ok().copied(),
                 state: cut_state,
+                rewound,
                 inbox,
                 told,
             };

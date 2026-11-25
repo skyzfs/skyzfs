@@ -73,6 +73,29 @@
 //! once the expiry has passed by its own clock with a margin for the
 //! channel (M2.6). The agent can also withdraw a publish
 //! ([`Publishing::withdraw`]): it ends the same way, at once.
+//!
+//! **A rewind ends a publish that waits** (work package M2.6a, rule (R)
+//! of its plan). The store counts as a rewind's every cut whose group is
+//! not above the group of the cut before it, and the count it started
+//! with (`skyzfs_local::inplace::Cuts::rewound`): after `zpool import
+//! -F` the first group of the new history has the abandoned best's
+//! number and opens as itself, so without the rule a publish asked
+//! before the rewind would be carried by a cut of a history that may
+//! lack `pool@t`. A request asked after a lower count than the mark is
+//! refused ([`Refusal::Rewound`]), and a publish pending that has no cut
+//! yet (to be looked up, or waiting) ends so once the mark passes its
+//! count ([`Publishing::set_rewound`]). The agent then checks `pool@t`
+//! and asks again with a count read anew (M2.6). The driver gives the
+//! mark at each check of a cut, before that cut can be committed, so no
+//! cut is given to a publish with a rewind counted between the
+//! publish's count and the cut; a publish given its cut before a later
+//! rewind goes on, as that cut was counted on the history it was asked
+//! on. Between two checks the mark here can be behind the store's: a
+//! request asked then is accepted and ends `rewound` at the next check,
+//! before any cut after the rewind is committed. With the mark in memory,
+//! a request asked of the daemon before a restart is refused by the
+//! next (the lead's answer to the plan's Q1, in place of M2.5's new
+//! deadline there).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -246,6 +269,11 @@ pub enum Refusal {
     /// same: a new uploader asked again finds it.
     #[error("this uploader publishes nothing more")]
     Stopped,
+    /// A cut that may follow a rewind was counted after the count the
+    /// request names, or the daemon started after it ([module
+    /// docs](self)): read the count again, and ask anew.
+    #[error("a rewind may have been counted after the count asked from")]
+    Rewound,
 }
 
 /// The answer to a request. A request is answered with no I/O, so it is
@@ -485,6 +513,8 @@ impl Outcome {
 pub struct Publishing {
     attachment: Option<[u8; 16]>,
     state: Option<[u8; 16]>,
+    /// The store's rewind mark, as last given ([`Publishing::set_rewound`]).
+    rewound: u64,
     stopped: bool,
     pending: Vec<Pending>,
     known: VecDeque<Known>,
@@ -511,6 +541,7 @@ impl Publishing {
         Self {
             attachment,
             state,
+            rewound: 0,
             stopped: false,
             pending: Vec::new(),
             known: VecDeque::new(),
@@ -538,6 +569,21 @@ impl Publishing {
     pub fn set_state(&mut self, state: [u8; 16]) {
         self.state = Some(state);
         self.end_where(|p| p.request.state != state, Refusal::State);
+    }
+
+    /// The store's rewind mark (`skyzfs_local::inplace::Cuts::rewound`):
+    /// the driver gives it at each check of a cut, and the daemon at the
+    /// uploader's start. The mark never goes back. Each publish pending
+    /// that has no cut yet and that was asked after a lower count ends
+    /// refused ([`Refusal::Rewound`]); one given its cut goes on ([module
+    /// docs](self)).
+    pub fn set_rewound(&mut self, rewound: u64) {
+        self.rewound = self.rewound.max(rewound);
+        let mark = self.rewound;
+        self.end_where(
+            |p| p.request.after < mark && matches!(p.stage, Stage::Look | Stage::Wait),
+            Refusal::Rewound,
+        );
     }
 
     /// The uploader publishes nothing more: its lease is lost for good, or
@@ -636,6 +682,11 @@ impl Publishing {
                 pending.lapse = None;
             }
             return Answer::Accepted;
+        }
+        // After the same request pending, which is answered as it
+        // stands: one given its cut before the rewind goes on.
+        if request.after < self.rewound {
+            return Answer::Refused(Refusal::Rewound);
         }
         if self.pending.len() >= PENDING_MAX {
             return Answer::Refused(Refusal::Busy);

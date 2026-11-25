@@ -812,6 +812,9 @@ pub struct Publishes {
     pub attachment: Option<[u8; 16]>,
     /// The store's cut state.
     pub state: Option<[u8; 16]>,
+    /// The store's rewind mark at the start
+    /// (`skyzfs_upload::Publishing::set_rewound`).
+    pub rewound: u64,
     /// The channel's requests.
     pub inbox: tokio::sync::mpsc::Receiver<Control>,
     /// Told of each publish that ends.
@@ -1080,6 +1083,7 @@ impl Uploading {
                 if let Some(state) = publishes.state {
                     uploader.publishing().set_state(state);
                 }
+                uploader.publishing().set_rewound(publishes.rewound);
                 let mut told = publishes.told;
                 let end = runtime.block_on(async {
                     let asked = async {

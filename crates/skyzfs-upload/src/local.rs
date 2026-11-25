@@ -35,6 +35,11 @@ pub struct Uploadable {
     /// were made against, the uploader's assumed base. `None` where the
     /// map names none.
     pub base: Option<CommittedCut>,
+    /// The store's rewind mark when the cut was offered
+    /// (`skyzfs_local::inplace::Cuts::rewound`, work package M2.6a): what
+    /// ends the publishes asked after a lower count, before this cut can
+    /// be given to one (`crate::publish`).
+    pub rewound: u64,
 }
 
 impl Uploadable {
@@ -200,6 +205,7 @@ impl<D: Dir> Store for InPlace<D> {
             whole: self.cut_is_whole(first.number),
             itself: first.itself,
             base: self.committed_cut(),
+            rewound: InPlace::cuts(self).rewound,
         })
     }
 
