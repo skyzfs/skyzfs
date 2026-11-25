@@ -1,0 +1,7 @@
+# The head's own skyzfsd library test binary at 029a48e (from the plain test gate, no probe line), beside 16 busy loops (load 13.29 at the start, 23.81 at the end):
+unprobed head, T1 test alone, beside 16 busy loops: 100 passed, 0 failed of 100
+whole skyzfsd lib run 1 beside 16 busy loops: rc 0 test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out ; T1: test control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+whole skyzfsd lib run 2 beside 16 busy loops: rc 0 test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out ; T1: test control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+whole skyzfsd lib run 3 beside 16 busy loops: rc 0 test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out ; T1: test control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+whole skyzfsd lib run 4 beside 16 busy loops: rc 0 test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out ; T1: test control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+whole skyzfsd lib run 5 beside 16 busy loops: rc 0 test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out ; T1: test control::tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok

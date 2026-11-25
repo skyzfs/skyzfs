@@ -1,0 +1,510 @@
+[
+ {
+  "id": "head",
+  "busy_loops": 0,
+  "loadavg_before": "2.53",
+  "runs": 100,
+  "passed": 100,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   36,
+   36
+  ],
+  "tries_hist": {
+   "36": 100
+  },
+  "late_ms_min_median_max": [
+   15.5,
+   16.1,
+   19.1
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CE",
+  "busy_loops": 0,
+  "loadavg_before": "0.30",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   547.7,
+   547.8,
+   548.3
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 548.273188ms after the backlog had room, at try 12"
+ },
+ {
+  "id": "CE5",
+  "busy_loops": 0,
+  "loadavg_before": "0.14",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   9.7,
+   11.8,
+   12.0
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 12 tries, connected 12.041441ms after the backlog had room"
+ },
+ {
+  "id": "C400",
+  "busy_loops": 0,
+  "loadavg_before": "0.08",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   13,
+   13
+  ],
+  "tries_hist": {
+   "13": 20
+  },
+  "late_ms_min_median_max": [
+   211.8,
+   211.9,
+   212.2
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 212.159797ms after the backlog had room, at try 13"
+ },
+ {
+  "id": "C200",
+  "busy_loops": 0,
+  "loadavg_before": "0.05",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   16,
+   16
+  ],
+  "tries_hist": {
+   "16": 20
+  },
+  "late_ms_min_median_max": [
+   156.1,
+   156.3,
+   156.8
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 16 tries, connected 156.459667ms after the backlog had room"
+ },
+ {
+  "id": "C100",
+  "busy_loops": 0,
+  "loadavg_before": "0.03",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   22,
+   22
+  ],
+  "tries_hist": {
+   "22": 20
+  },
+  "late_ms_min_median_max": [
+   28.5,
+   28.8,
+   30.8
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CF",
+  "busy_loops": 0,
+  "loadavg_before": "0.02",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   31,
+   31
+  ],
+  "tries_hist": {
+   "31": 20
+  },
+  "late_ms_min_median_max": [
+   2.2,
+   2.5,
+   3.6
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "head",
+  "busy_loops": 8,
+  "loadavg_before": "0.65",
+  "runs": 100,
+  "passed": 100,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   36,
+   36
+  ],
+  "tries_hist": {
+   "36": 100
+  },
+  "late_ms_min_median_max": [
+   7.3,
+   12.1,
+   24.2
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CE",
+  "busy_loops": 8,
+  "loadavg_before": "7.54",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   539.9,
+   544.6,
+   552.3
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 542.629611ms after the backlog had room, at try 12"
+ },
+ {
+  "id": "CE5",
+  "busy_loops": 8,
+  "loadavg_before": "7.77",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   3.9,
+   12.3,
+   18.1
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 12 tries, connected 12.396256ms after the backlog had room"
+ },
+ {
+  "id": "C400",
+  "busy_loops": 8,
+  "loadavg_before": "7.86",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   13,
+   13
+  ],
+  "tries_hist": {
+   "13": 20
+  },
+  "late_ms_min_median_max": [
+   204.0,
+   208.6,
+   216.5
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 216.456128ms after the backlog had room, at try 13"
+ },
+ {
+  "id": "C200",
+  "busy_loops": 8,
+  "loadavg_before": "7.92",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   16,
+   16
+  ],
+  "tries_hist": {
+   "16": 20
+  },
+  "late_ms_min_median_max": [
+   148.1,
+   152.8,
+   160.4
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 16 tries, connected 154.854994ms after the backlog had room"
+ },
+ {
+  "id": "C100",
+  "busy_loops": 8,
+  "loadavg_before": "7.96",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   22,
+   22
+  ],
+  "tries_hist": {
+   "22": 20
+  },
+  "late_ms_min_median_max": [
+   23.3,
+   29.1,
+   33.1
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CF",
+  "busy_loops": 8,
+  "loadavg_before": "7.98",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   31,
+   32
+  ],
+  "tries_hist": {
+   "31": 11,
+   "32": 9
+  },
+  "late_ms_min_median_max": [
+   0.1,
+   4.6,
+   48.1
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "head",
+  "busy_loops": 16,
+  "loadavg_before": "7.99",
+  "runs": 100,
+  "passed": 100,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   36,
+   36
+  ],
+  "tries_hist": {
+   "36": 100
+  },
+  "late_ms_min_median_max": [
+   13.6,
+   27.8,
+   47.2
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CE",
+  "busy_loops": 16,
+  "loadavg_before": "15.45",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   542.7,
+   556.3,
+   580.0
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 579.995412ms after the backlog had room, at try 12"
+ },
+ {
+  "id": "CE5",
+  "busy_loops": 16,
+  "loadavg_before": "15.72",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   12,
+   12
+  ],
+  "tries_hist": {
+   "12": 20
+  },
+  "late_ms_min_median_max": [
+   3.9,
+   28.0,
+   36.1
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 12 tries, connected 18.49466ms after the backlog had room"
+ },
+ {
+  "id": "C400",
+  "busy_loops": 16,
+  "loadavg_before": "15.83",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   13,
+   13
+  ],
+  "tries_hist": {
+   "13": 20
+  },
+  "late_ms_min_median_max": [
+   206.7,
+   224.1,
+   232.0
+  ],
+  "failure_reasons": [
+   "tries<20 late>=200"
+  ],
+  "first_failure": "connected 206.775044ms after the backlog had room, at try 13"
+ },
+ {
+  "id": "C200",
+  "busy_loops": 16,
+  "loadavg_before": "15.96",
+  "runs": 20,
+  "passed": 0,
+  "failed": 20,
+  "other": 0,
+  "tries_min_max": [
+   16,
+   16
+  ],
+  "tries_hist": {
+   "16": 20
+  },
+  "late_ms_min_median_max": [
+   151.0,
+   176.0,
+   188.0
+  ],
+  "failure_reasons": [
+   "tries<20"
+  ],
+  "first_failure": "only 16 tries, connected 187.989753ms after the backlog had room"
+ },
+ {
+  "id": "C100",
+  "busy_loops": 16,
+  "loadavg_before": "16.16",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   22,
+   22
+  ],
+  "tries_hist": {
+   "22": 20
+  },
+  "late_ms_min_median_max": [
+   27.6,
+   56.1,
+   72.0
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ },
+ {
+  "id": "CF",
+  "busy_loops": 16,
+  "loadavg_before": "16.10",
+  "runs": 20,
+  "passed": 20,
+  "failed": 0,
+  "other": 0,
+  "tries_min_max": [
+   31,
+   31
+  ],
+  "tries_hist": {
+   "31": 20
+  },
+  "late_ms_min_median_max": [
+   5.3,
+   15.7,
+   24.1
+  ],
+  "failure_reasons": [],
+  "first_failure": null
+ }
+]

@@ -1,0 +1,9 @@
+# l1_repeat.py at 029a48e: L1's test from the head's driver binary and from one with B1H planted (l1_build.py), idle and beside 8 and 16 busy loops on 4 CPUs. loadavg_before is the 1-minute average when the batch began, so it lags the loops started 2 s earlier (the idle batch began just after the previous script's 16 loops were stopped).
+{"what": "head, L1 test", "busy_loops": 0, "loadavg_before": "14.77", "runs": 300, "passed": 300, "failed": 0, "other": 0, "results": ["test result: ok. 1 passed; 0 failed"]}
+{"what": "B1H, L1 test", "busy_loops": 0, "loadavg_before": "13.59", "runs": 100, "passed": 0, "failed": 100, "other": 0, "results": ["test result: FAILED. 0 passed; 1 failed"]}
+{"what": "head, L1 test", "busy_loops": 8, "loadavg_before": "13.14", "runs": 300, "passed": 300, "failed": 0, "other": 0, "results": ["test result: ok. 1 passed; 0 failed"]}
+{"what": "B1H, L1 test", "busy_loops": 8, "loadavg_before": "12.42", "runs": 100, "passed": 0, "failed": 100, "other": 0, "results": ["test result: FAILED. 0 passed; 1 failed"]}
+{"what": "head, L1 test", "busy_loops": 16, "loadavg_before": "12.53", "runs": 300, "passed": 300, "failed": 0, "other": 0, "results": ["test result: ok. 1 passed; 0 failed"]}
+{"what": "B1H, L1 test", "busy_loops": 16, "loadavg_before": "15.08", "runs": 100, "passed": 0, "failed": 100, "other": 0, "results": ["test result: FAILED. 0 passed; 1 failed"]}
+{"what": "head, whole driver binary", "busy_loops": 16, "loadavg_before": "15.88", "runs": 30, "passed": 30, "failed": 0, "other": 0, "results": ["test result: ok. 25 passed; 0 failed"]}
+exit 0

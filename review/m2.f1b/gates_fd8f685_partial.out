@@ -1,0 +1,11 @@
+# The gates at fd8f685, stopped during the plain tests when the head moved to 029a48e.
+== at fd8f685, rustc 1.100.0 (0ef1bc386 2026-11-09)
+== fmt
+fmt exit 0
+== clippy plain
+clippy plain exit 0
+== clippy hooks
+clippy hooks exit 0
+== clippy ctl
+clippy ctl exit 0
+== test plain

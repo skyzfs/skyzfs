@@ -1,0 +1,112 @@
+[
+ {
+  "id": "unplanted",
+  "rc": 0,
+  "passed": 176,
+  "failed": 0,
+  "secs": 105
+ },
+ {
+  "id": "B1H",
+  "what": "L1's plant: head is the engine's, head's group from observe's first read of head",
+  "verdict": "KILLED",
+  "failed": [
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found"
+  ],
+  "secs": 59,
+  "new_test": "FAILED",
+  "b1_test": "passed",
+  "new_panic": "crates/skyzfs-upload/tests/driver.rs:1299:13 assertion `left == right` failed: the other writer's group Some(5): cut 1 is not uploaded onto a commit with a group |   left: [Began { number: 1, rule: Whole }, Uploaded { number: 1, rule: Whole, blocks: 256 }] |  right: [Mismatch { why: HeadMoved, abandoned: [1] }]",
+  "b1_panic": null,
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "5 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "0 of 5 failed"
+  }
+ },
+ {
+  "id": "B1",
+  "what": "B1's original line: observe returns head as first read (head's group the engine's)",
+  "verdict": "KILLED",
+  "failed": [
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it"
+  ],
+  "secs": 61,
+  "new_test": "passed",
+  "b1_test": "FAILED",
+  "new_panic": null,
+  "b1_panic": "crates/skyzfs-upload/tests/driver.rs:1255:9 assertion `left == right` failed: the other writer's group None: cut 2 is not uploaded onto another writer's commit |   left: [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }] |  right: [Mismatch { why: HeadMoved, abandoned: [2] }]",
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "0 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "5 of 5 failed"
+  }
+ },
+ {
+  "id": "B1B1H",
+  "what": "both: head and head's group from observe's first read",
+  "verdict": "KILLED",
+  "failed": [
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it"
+  ],
+  "secs": 66,
+  "new_test": "FAILED",
+  "b1_test": "FAILED",
+  "new_panic": "crates/skyzfs-upload/tests/driver.rs:1299:13 assertion `left == right` failed: the other writer's group Some(5): cut 1 is not uploaded onto a commit with a group |   left: [Began { number: 1, rule: Whole }, Uploaded { number: 1, rule: Whole, blocks: 256 }] |  right: [Mismatch { why: HeadMoved, abandoned: [1] }]",
+  "b1_panic": "crates/skyzfs-upload/tests/driver.rs:1255:9 assertion `left == right` failed: the other writer's group None: cut 2 is not uploaded onto another writer's commit |   left: [Began { number: 2, rule: Delta }, Uploaded { number: 2, rule: Delta, blocks: 5 }] |  right: [Mismatch { why: HeadMoved, abandoned: [2] }]",
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "5 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "5 of 5 failed"
+  }
+ },
+ {
+  "id": "B1RH",
+  "what": "control, a correct fix of another shape: head and head's group from the first read, and the check observes again where not current",
+  "verdict": "SURVIVED",
+  "failed": [],
+  "secs": 74,
+  "new_test": "passed",
+  "b1_test": "passed",
+  "new_panic": null,
+  "b1_panic": null,
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "0 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "0 of 5 failed"
+  }
+ },
+ {
+  "id": "NR",
+  "what": "with no row a whole cut goes up whatever head's group (the rule itself)",
+  "verdict": "KILLED",
+  "failed": [
+   "check::tests::a_whole_cut_onto_a_head_that_is_not_the_rows_is_a_mismatch",
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found",
+   "no_row_under_a_cut_of_part_of_the_volume_is_a_mismatch"
+  ],
+  "secs": 68,
+  "new_test": "FAILED",
+  "b1_test": "passed",
+  "new_panic": "crates/skyzfs-upload/tests/driver.rs:1299:13 assertion `left == right` failed: the other writer's group Some(5): cut 1 is not uploaded onto a commit with a group |   left: [Began { number: 1, rule: Whole }, Uploaded { number: 1, rule: Whole, blocks: 256 }] |  right: [Mismatch { why: HeadMoved, abandoned: [1] }]",
+  "b1_panic": null,
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "5 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "0 of 5 failed"
+  }
+ },
+ {
+  "id": "NC",
+  "what": "stricter: with no row the check refuses wherever the engine was opened on another head than observe's first read",
+  "verdict": "KILLED",
+  "failed": [
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found"
+  ],
+  "secs": 62,
+  "new_test": "FAILED",
+  "b1_test": "passed",
+  "new_panic": "crates/skyzfs-upload/tests/driver.rs:1316:13 assertion `left == right` failed: the other writer's group None |   left: [Mismatch { why: HeadMoved, abandoned: [1] }] |  right: [Began { number: 1, rule: Whole }, Uploaded { number: 1, rule: Whole, blocks: 256 }]",
+  "b1_panic": null,
+  "repeat": {
+   "head_swapped_before_the_first_cut_is_judged_by_the_group_the_engine_found": "5 of 5 failed",
+   "head_swapped_while_the_engine_is_opened_again_is_judged_as_the_engine_found_it": "0 of 5 failed"
+  }
+ }
+]

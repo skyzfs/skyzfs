@@ -1,0 +1,31 @@
+# The cut rig's upload job on 029a48e (run 45513895028, job 138874175057): its result lines, the runner's holder name replaced by RUNNER.
+life: upload_reads: PASS: node B read the content of every cut it found at head
+life: upload_content: PASS: node B fetched cuts 26 at head: 1 of 26 cuts fetched at head; 12330 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+life: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder RUNNER, uploaded_whole 1, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 10, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'RUNNER'; the drain took 1 s
+life: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 26 = committed and let go 10 + replaced 16 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+umoved: upload_reads: PASS: node B read the content of every cut it found at head
+umoved: upload_content: PASS: node B fetched cuts 9 at head and 1 of another writer's: 1 of 9 cuts fetched at head; 3824 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+umoved: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder RUNNER, uploaded_whole 1, lease_epoch 1, upload_mismatches 3, upload_abandoned_at_mismatch 5, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked head_moved, uploaded 4; uploaded 4, upload_checked 'head_moved', upload_rule 'delta', upload_errors '0', lease_holder 'RUNNER'; the drain took 1 s
+umoved: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 16 = committed and let go 4 + replaced 7 + abandoned 5 + held +0; at the start upload_state 'idle', after the drain 'idle'
+umoved: upload_course: PASS: umoved
+urow: upload_reads: PASS: node B read the content of every cut it found at head
+urow: upload_content: PASS: node B fetched cuts 8, 12, 14, 18, 22 at head and 2 of another writer's: 5 of 22 cuts fetched at head; 32758 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+urow: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder RUNNER, uploaded_whole 3, lease_epoch 1, upload_mismatches 2, upload_abandoned_at_mismatch 2, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, upload_checked matched; uploaded 12, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'RUNNER'; the drain took 1 s
+urow: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 22 = committed and let go 12 + replaced 8 + abandoned 2 + held +0; at the start upload_state 'idle', after the drain 'idle'
+urow: upload_course: PASS: row1: upload_checked 'not_the_base' once the mismatch was counted; row2: upload_checked 'not_the_base' once the mismatch was counted
+ukill: upload_reads: PASS: node B read the content of every cut it found at head
+ukill: upload_content: PASS: node B fetched cuts 90, 94 at head: 2 of 94 cuts fetched at head; 54406 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ukill: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder RUNNER, uploaded_whole 0, lease_epoch 1, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 1, uploaded 32; uploaded 32, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'RUNNER'; the drain took 1 s
+ukill: upload_balance: PASS: serve 2, from balance-start.txt: cuts 4 = committed and let go 2 + replaced 2 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+ukill: upload_course: PASS: ukill
+ulease: upload_reads: PASS: node B read the content of every cut it found at head
+ulease: upload_content: PASS: node B fetched cuts 10, 18 at head: 2 of 18 cuts fetched at head; 11069 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ulease: upload_status: PASS: upload_state idle, cuts_held 0, lease held, lease_holder RUNNER, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0; uploaded 5, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'RUNNER'; the drain took 1 s
+ulease: upload_balance: PASS: serve 2, from balance-start.txt: cuts 8 = committed and let go 3 + replaced 5 + abandoned 0 + held +0; at the start upload_state 'idle', after the drain 'idle'
+ulease: upload_course: PASS: the refused start wrote 5 paths (vol, volume.start, run, v-10301-86021a); lease_epoch '2' after the other holder let go
+ulost: upload_reads: PASS: node B read the content of every cut it found at head
+ulost: upload_content: PASS: node B fetched cuts 10 at head: 1 of 10 cuts fetched at head; 3829 blocks compared over them, 0 of them discarded (either content), 0 not known to the reference (a write that covers part of a block)
+ulost: upload_status: PASS: upload_state lease_lost, cuts_held 2, lease lost, lease_holder other-node, uploaded_whole 1, lease_epoch 2, upload_mismatches 0, upload_abandoned_at_mismatch 0, upload_cuts_lost 0, upload_given_up 0, upload_committed_kept 0, upload_found_committed 0, uploaded 4; uploaded 4, upload_checked 'matched', upload_rule 'delta', upload_errors '0', lease_holder 'other-node'; the drain took 0 s
+ulost: upload_balance: PASS: serve 1, from status-start-1.txt: cuts 18 = committed and let go 4 + replaced 12 + abandoned 0 + held +2; at the start upload_state 'idle', after the drain 'lease_lost'
+ulost: upload_course: PASS: ulost
+[00:23:11] done: worst exit 0

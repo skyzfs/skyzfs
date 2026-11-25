@@ -1,0 +1,86 @@
+[
+ {
+  "what": "head, L1 test",
+  "busy_loops": 0,
+  "loadavg_before": "14.77",
+  "runs": 300,
+  "passed": 300,
+  "failed": 0,
+  "other": 0,
+  "results": [
+   "test result: ok. 1 passed; 0 failed"
+  ]
+ },
+ {
+  "what": "B1H, L1 test",
+  "busy_loops": 0,
+  "loadavg_before": "13.59",
+  "runs": 100,
+  "passed": 0,
+  "failed": 100,
+  "other": 0,
+  "results": [
+   "test result: FAILED. 0 passed; 1 failed"
+  ]
+ },
+ {
+  "what": "head, L1 test",
+  "busy_loops": 8,
+  "loadavg_before": "13.14",
+  "runs": 300,
+  "passed": 300,
+  "failed": 0,
+  "other": 0,
+  "results": [
+   "test result: ok. 1 passed; 0 failed"
+  ]
+ },
+ {
+  "what": "B1H, L1 test",
+  "busy_loops": 8,
+  "loadavg_before": "12.42",
+  "runs": 100,
+  "passed": 0,
+  "failed": 100,
+  "other": 0,
+  "results": [
+   "test result: FAILED. 0 passed; 1 failed"
+  ]
+ },
+ {
+  "what": "head, L1 test",
+  "busy_loops": 16,
+  "loadavg_before": "12.53",
+  "runs": 300,
+  "passed": 300,
+  "failed": 0,
+  "other": 0,
+  "results": [
+   "test result: ok. 1 passed; 0 failed"
+  ]
+ },
+ {
+  "what": "B1H, L1 test",
+  "busy_loops": 16,
+  "loadavg_before": "15.08",
+  "runs": 100,
+  "passed": 0,
+  "failed": 100,
+  "other": 0,
+  "results": [
+   "test result: FAILED. 0 passed; 1 failed"
+  ]
+ },
+ {
+  "what": "head, whole driver binary",
+  "busy_loops": 16,
+  "loadavg_before": "15.88",
+  "runs": 30,
+  "passed": 30,
+  "failed": 0,
+  "other": 0,
+  "results": [
+   "test result: ok. 25 passed; 0 failed"
+  ]
+ }
+]

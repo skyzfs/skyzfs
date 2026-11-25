@@ -1,0 +1,36 @@
+== at 029a48e, rustc 1.100.0 (0ef1bc386 2026-11-09)
+== fmt
+fmt exit 0
+== clippy plain
+clippy plain exit 0
+== clippy hooks
+clippy hooks exit 0
+== clippy ctl
+clippy ctl exit 0
+== test plain
+test plain exit 0
+== test hooks
+test hooks exit 0
+== test ctl
+test ctl exit 0
+== done
+
+# Commands (CARGO_INCREMENTAL=0, no debug info):
+"fmt" cargo fmt --all -- --check
+"clippy plain" cargo clippy --workspace --all-targets -- -D warnings
+"clippy hooks" cargo clippy --workspace --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings
+"clippy ctl" cargo clippy --workspace --all-targets --features skyzfs-ublk-sys/control-test-program -- -D warnings
+"test plain" cargo test --workspace
+"test hooks" cargo test --workspace --features skyzfsd/test-hooks,skyzfs-local/test-hooks
+"test ctl" cargo test --workspace --features skyzfs-ublk-sys/control-test-program
+
+# Counts, summed over every 'test result' line of each test run:
+test_plain : 114 binaries, 1700 passed, 0 failed, 16 ignored
+test_hooks : 114 binaries, 1742 passed, 0 failed, 16 ignored
+test_ctl : 115 binaries, 1724 passed, 0 failed, 18 ignored
+
+# Warning or error lines in the fmt and clippy outputs:
+fmt.log: 0
+clippy_plain.log: 0
+clippy_hooks.log: 0
+clippy_ctl.log: 0
