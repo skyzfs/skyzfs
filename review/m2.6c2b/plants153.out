@@ -23,3 +23,22 @@
 {"id": "P6", "what": "as_before: the type not compared", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.92s"]}
 {"id": "P7", "what": "take(): a reading with pool@t there kept as the reading before (no early return)", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.71s"]}
 {"id": "P8", "what": "rename(): the reading before the old name's take kept for the new name", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.76s"]}
+{"id": "P9", "what": "EEXIST with no pool@t: destroyed (someone else's member @t)", "result": "KILLED", "by": ["engine::tests::a_name_a_person_took_first_is_passed_over"]}
+{"id": "P10", "what": "EEXIST with no pool@t: the same name kept", "result": "KILLED", "by": ["engine::tests::a_name_a_person_took_first_is_passed_over"]}
+{"id": "P12", "what": "the limits off by one dataset", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P13", "what": "the limits' units: 100 us a dataset, not 100 ms", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P14", "what": "the cap dropped", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P15", "what": "a failed count gives 0 datasets, not the cap", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P16", "what": "a failed count gives the bases", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P17", "what": "a count past u32 gives no more time, not the cap", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.68s"]}
+{"id": "P18", "what": "the count's own limit scaled", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P19", "what": "a failed count: the base of the call, not the cap", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P20", "what": "members.lua full: the snapshot's createtxg read from the dataset", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.82s"]}
+{"id": "P21", "what": "members.lua full: inherited system properties read as local", "result": "SURVIVED", "tests": ["test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.63s"]}
+{"id": "P22", "what": "datasets(): the full read run without -n (may change the pool)", "result": "KILLED", "by": ["zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex", "zfs::cli::tests::datasets_that_cannot_be_read_are_an_error", "zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "P23", "what": "the count without -t filesystem,volume", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "P24", "what": "destroy_r: dataset does not exist read as an error", "result": "KILLED", "by": ["zfs::cli::tests::the_destroy_is_zfs_destroy_r", "zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded"]}
+{"id": "P25", "what": "held(): no members given read as all", "result": "KILLED", "by": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "P27", "what": "adopt: a take gone after zfs snapshot -r exited 0 moves to the next name", "result": "KILLED", "by": ["engine::tests::a_persons_action_at_any_point_is_met", "engine::tests::a_restart_under_a_running_agent_at_any_point_is_met", "engine::tests::the_matrices_need_the_rule_r_of_the_daemon"]}
+{"id": "P28", "what": "rename(): the old name's manifest file not removed", "result": "KILLED", "by": ["engine::tests::the_agent_stopped_at_any_point_recovers_in_any_restart", "engine::tests::the_matrices_need_the_rule_r_of_the_daemon"]}
+{"worktree after": "clean"}
