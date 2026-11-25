@@ -36,11 +36,14 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from unittest import mock
 
 WT, ART = sys.argv[1:3]
+HEAD = subprocess.run(['git', '-C', WT, 'rev-parse', '--short=7', 'HEAD'], capture_output=True,
+                      text=True).stdout.strip() or '?'
 sys.path.insert(0, os.path.join(WT, 'tests/kernel'))
 import nodeb_check  # noqa: E402
 import publish_agent  # noqa: E402
@@ -517,6 +520,12 @@ def main():
          {'a1': (10, 20, h2, state)}, answer('a1', f'done commit={h2}'), only('a1', 0),
          marks(a1_end=(424300000000, 20, 'done')),
          log_ended('a1', done, f'done commit={h2}', after_ns=423900000000), agent_until('a1', 424200000000))
+    # Where the two forms of B1's fix differ (not judged): a group below G
+    # that no assist wrote, between a1's assists. b3bb916 lets it pass
+    # (below G it carries nothing); the form 'first' calls the pool not
+    # idle.
+    case('I1', 'group 19 (below G) written between a1\'s assists by something else (assist 1 wrote only 18)', None,
+         good, assists(lambda rs: [r[:5] + ['18', '18'] if r[0] == 'a1' and r[4] == '17' else r for r in rs]))
     case('V5', 'a2 assisted only in its burst (3 rows), then never again for 58 s; pending', 2,
          good, only('a2', 3), ceiling=True)
     case('V6', 'a2 spaced at 20 s after its burst (twice ASSIST_AFTER)', 2,
@@ -539,7 +548,7 @@ def main():
          good, retime('a2', [458.23, 459.35, 460.47, 472.3, 484.1, 495.9, 507.7]), ceiling=True)
 
     judged = [r for r in RESULTS if r[-1] is not None]
-    for k, label in ((1, 'head'), (2, "with B1's sketch"), (3, 'with B1\'s sketch and the ceiling')):
+    for k, label in ((1, f'head ({HEAD})'), (2, "with B1's sketch"), (3, 'with B1\'s sketch and the ceiling')):
         bad = [r[0] for r in judged if r[k] != r[-1]]
         print(f'{label}: {len(judged) - len(bad)} of {len(judged)} cases right; not: {", ".join(bad) or "none"}')
 
