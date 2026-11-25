@@ -39,7 +39,7 @@ fn run() -> i32 {
     };
     match command {
         Command::Help => {
-            println!("{USAGE}");
+            print_out(&format!("{USAGE}\n"));
             exit::PUBLISHED
         }
         Command::Record { dir } => dump(&dir),
@@ -49,12 +49,34 @@ fn run() -> i32 {
     }
 }
 
-/// `skyzfs-agent record`.
+/// Write `text` to standard output. A pipe closed by its reader (`|
+/// head -1`) is not an error of the agent's: what it printed is lost to
+/// none who reads (S4 of #149's review).
+fn print_out(text: &str) {
+    let mut out = io::stdout().lock();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
+}
+
+/// `skyzfs-agent record`: `absent` for a directory with no record, an
+/// error for a path that is not a directory (S2 of #149's review: a
+/// mistyped `--dir` does not read as "no record").
 fn dump(dir: &Path) -> i32 {
+    match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            eprintln!("skyzfs-agent: {}: not a directory", dir.display());
+            return exit::ERROR;
+        }
+        Err(e) => {
+            eprintln!("skyzfs-agent: {}: {e}", dir.display());
+            return exit::ERROR;
+        }
+    }
     match record::peek(dir) {
         Ok(loaded) => match program::dump(&loaded) {
             Ok(text) => {
-                print!("{text}");
+                print_out(&text);
                 exit::PUBLISHED
             }
             Err(why) => {

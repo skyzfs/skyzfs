@@ -81,6 +81,21 @@ fn each_command_is_parsed_with_its_options() {
     for help in ["--help", "-h", "help"] {
         assert_eq!(parse(&args(help), false), Ok(Command::Help));
     }
+    // After a command too, and where a value was looked for (S6 of
+    // #149's review).
+    for line in [
+        "record --help",
+        "publish -h",
+        "record --dir /d --help",
+        "record --dir --help",
+    ] {
+        assert_eq!(parse(&args(line), false), Ok(Command::Help), "{line}");
+    }
+    // A value that begins with `--`, given with `=`.
+    assert_eq!(
+        parse(&args("record --dir=--d"), false),
+        Ok(Command::Record { dir: "--d".into() })
+    );
 }
 
 /// Mutant: an option of one command taken by another, a missing one
@@ -100,6 +115,11 @@ fn a_command_line_the_program_does_not_take_is_a_usage_error() {
         ("record --dir=", "--dir needs a value"),
         ("record --dir /d --dir /e", "--dir is given twice"),
         ("record --dir /d stray", "is not an option"),
+        // S3 of #149's review: the next option is not a value.
+        (
+            "record --dir --d",
+            "--dir needs a value, not the option --d",
+        ),
         (
             "record --dir /d --pool tank",
             "record takes no option --pool",
@@ -130,6 +150,14 @@ fn a_command_line_the_program_does_not_take_is_a_usage_error() {
             "--retry takes no value",
         ),
         (with("publish --name t"), "publish takes no option --name"),
+        (
+            with("recover --name --give-up --retry"),
+            "--name needs a value, not the option --give-up",
+        ),
+        (
+            "publish --volume --run /r --device /d --pool tank --dir /a".into(),
+            "--volume needs a value, not the option --run",
+        ),
     ];
     for (line, want) in rows {
         let why = refused(&line, false);

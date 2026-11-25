@@ -57,7 +57,16 @@
 //! # Exit codes
 //!
 //! `publish` and `recover` exit by the outcome of their own publish;
-//! `settle` by the worst of all ([`worst`]): see [`exit`].
+//! `settle` by the worst of all ([`worst`]): see [`exit`]. An error of
+//! the engine exits by [`exit_of_error`], whatever was settled before
+//! it: a `publish` whose own publish was made, and whose run then
+//! failed on another, prints its `snap/` line and exits 1. 5 comes only
+//! from `publish`, where the pool's premise refuses the publish it
+//! begins; a publish under way whose premise is refused later is given
+//! up (`abandoned <t> premise`, 3), under any command.
+//!
+//! `record` of a directory with no record prints `absent` and exits 0;
+//! of a path that is not a directory it exits 1.
 //!
 //! # Test hooks
 //!
@@ -225,7 +234,8 @@ test hooks (a build with the feature test-hooks):
   --kill-at EFFECT:before|after[:N]  --trace-points FILE
   --assist-after-s S  --age-max-s S
 exit: 0 published, 1 error, 2 usage, 3 abandoned, 4 stopped for a person,
-      5 premise refused, 6 record corrupt or another volume's,
+      5 premise refused (publish), 6 record corrupt or another volume's,
+      or no agent's marker where holds would be released,
       7 unsettled at the limit, 8 another agent holds the record";
 
 /// Parse the arguments after the program's name. `hooks` says whether
@@ -241,6 +251,9 @@ pub fn parse(args: &[String], hooks: bool) -> Result<Command, Usage> {
     let mut options: Vec<(String, Option<String>)> = Vec::new();
     let mut words = rest.iter();
     while let Some(word) = words.next() {
+        if matches!(word.as_str(), "--help" | "-h") {
+            return Ok(Command::Help);
+        }
         let Some(key) = word.strip_prefix("--") else {
             return usage(format!("{word:?} is not an option"));
         };
@@ -248,6 +261,17 @@ pub fn parse(args: &[String], hooks: bool) -> Result<Command, Usage> {
             Some((key, value)) => (key.to_string(), Some(value.to_string())),
             None if FLAGS.contains(&key) => (key.to_string(), None),
             None => match words.next() {
+                // An option's value is not the next option: `--name
+                // --give-up` is a name forgotten, not a name (S3 of
+                // #149's review). A value that begins with `--` is given
+                // as `--key=--value`.
+                Some(value) if value == "--help" => return Ok(Command::Help),
+                Some(value) if value.starts_with("--") => {
+                    return usage(format!(
+                        "--{key} needs a value, not the option {value}; \
+                         give such a value as --{key}={value}"
+                    ))
+                }
                 Some(value) => (key.to_string(), Some(value.clone())),
                 None => return usage(format!("--{key} needs a value")),
             },

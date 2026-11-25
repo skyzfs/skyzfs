@@ -10,6 +10,9 @@ publish = false
 [[bin]]
 name = "skyzfs-agent"
 path = "src/main.rs"
+# The library `skyzfs_agent` documents to the same page; its docs are
+# the program's (S9 of #149's review).
+doc = false
 
 [features]
 # Options for the rigs (`--kill-at`, `--trace-points`, `--assist-after-s`,

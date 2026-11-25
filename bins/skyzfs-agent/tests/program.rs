@@ -58,6 +58,78 @@ fn record_of_a_directory_with_none_prints_absent() {
     );
 }
 
+/// A path that is not a directory is an error, not `absent` (S2 of
+/// #149's review); a closed pipe on standard output is no panic (S4).
+#[test]
+fn record_of_what_is_not_a_directory_is_an_error() {
+    let top = tempfile::tempdir().expect("tmp");
+    let missing = top.path().join("missing");
+    let out = agent(&["record", "--dir", &missing.display().to_string()], None);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "");
+    assert!(
+        text(&out.stderr).contains("missing"),
+        "{}",
+        text(&out.stderr)
+    );
+    let file = top.path().join("file");
+    fs::write(&file, b"").expect("a file");
+    let out = agent(&["record", "--dir", &file.display().to_string()], None);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("not a directory"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// `record` and `--help` into a pipe whose reader has gone: no panic,
+/// and the exit is the command's (S4 of #149's review).
+#[test]
+fn a_closed_pipe_on_standard_output_is_no_panic() {
+    let top = tempfile::tempdir().expect("tmp");
+    let dir = top.path().display().to_string();
+    for args in [&["record", "--dir", &dir][..], &["--help"][..]] {
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        let out = Command::new(AGENT)
+            .args(args)
+            .stdout(writer)
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("the agent runs");
+        let stderr = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+    }
+}
+
+/// A second agent on the same directory exits 8 and touches nothing
+/// (T2 of #149's review).
+#[test]
+fn an_agent_whose_directory_another_holds_exits_8() {
+    let top = tempfile::tempdir().expect("tmp");
+    let (volume, run, dir) = dirs(top.path());
+    let _held = skyzfs_agent::record::Store::open(&dir).expect("the first agent's store");
+    let args = [
+        "settle",
+        "--volume",
+        &volume,
+        "--run",
+        &run,
+        "--device",
+        "/dev/null",
+        "--pool",
+        "tank",
+        "--dir",
+        &dir,
+    ];
+    let out = agent(&args, None);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(8), "{stderr}");
+    assert_eq!(text(&out.stdout), "");
+}
+
 #[test]
 fn a_usage_error_exits_2_with_the_usage() {
     for args in [&[][..], &["publish"][..], &["record", "--dir"][..]] {
