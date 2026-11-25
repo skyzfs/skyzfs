@@ -4254,6 +4254,8 @@ dependencies = [
  "skynbd-refs",
  "skynbd-store",
  "skynbd-types",
+ "skyzfs-local",
+ "skyzfs-upload",
  "tokio",
  "ulid",
 ]

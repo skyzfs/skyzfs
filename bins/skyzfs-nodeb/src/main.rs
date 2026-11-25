@@ -11,7 +11,7 @@
 //! skyzfs-nodeb bucket --endpoint URL --bucket B --volume NAME
 //! skyzfs-nodeb lease --endpoint URL --bucket B --volume NAME --holder H --ttl-s N
 //! skyzfs-nodeb release --endpoint URL --bucket B --volume NAME --holder H
-//! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--expect-row ROW]
+//! skyzfs-nodeb move-head --endpoint URL --bucket B --volume NAME --at OFFSET --group G|none [--row ROW] [--expect-row ROW]
 //! skyzfs-nodeb set-row --endpoint URL --bucket B --volume NAME --row ROW [--expect-row ROW]
 //! ```
 //!
@@ -53,7 +53,12 @@
 //! - `move-head`: opens the volume at head, writes one 4 KiB block of
 //!   0x5a bytes at OFFSET (a multiple of 4096), sets the commit's group
 //!   to G or none, and commits: head moves, the row does not;
-//!   `head HEX`;
+//!   `head HEX`. With `--row ROW` (the forms `v1:`, `hex:` and
+//!   `STATE:NUMBER:GROUP:COMMIT`, whose bytes do not depend on the head
+//!   being written) the commit also writes the row, in the same
+//!   transaction, and it prints `row set ROW` and `row_commit HEX|none`
+//!   as set-row does: another writer that moves head and leaves a row of
+//!   version 1 in one step (the cut rig's uv1 courses);
 //! - `set-row`: puts the cut's row, deletes it, or puts bytes, and
 //!   prints `row set ROW` and `row_commit HEX` (`row_commit none` for a
 //!   row with no commit); head does not move. ROW is one of
@@ -595,6 +600,12 @@ async fn move_head(a: &Args) -> Result<u8, String> {
         "none" => None,
         g => Some(number("--group", g)?),
     };
+    let row = move_head_row(&a.row)?;
+    let commit = row
+        .as_deref()
+        .and_then(decode_row)
+        .and_then(|c| c.commit)
+        .map_or("none".to_string(), |h| hex(&h));
     let expect = a.expect_row.as_deref().map(row_spec).transpose()?;
     let (store, refs) = open(a).await?;
     let vol = volume_id(&a.volume);
@@ -605,8 +616,33 @@ async fn move_head(a: &Args) -> Result<u8, String> {
             None => return Ok(report(None::<()>, |()| {})),
         },
     };
-    let moved = move_head_on(store, refs, vol, at, group, expect).await?;
-    Ok(report(moved, |head| println!("head\t{}", hex(&head))))
+    let written = row.is_some();
+    let moved = move_head_on(store, refs, vol, at, group, expect, row).await?;
+    Ok(report(moved, |head| {
+        println!("head\t{}", hex(&head));
+        if written {
+            println!("row\tset\t{}\nrow_commit\t{commit}", a.row);
+        }
+    }))
+}
+
+/// move-head's `--row` -> the row's bytes to write with the commit, or
+/// None for no `--row`. Only the forms whose bytes are known before the
+/// commit: `v1:`, `hex:` and `STATE:NUMBER:GROUP:COMMIT`.
+/// `STATE:NUMBER:GROUP` names the head being written, and `none` would
+/// delete the row: both are refused.
+fn move_head_row(r: &str) -> Result<Option<Vec<u8>>, String> {
+    if r.is_empty() {
+        return Ok(None);
+    }
+    match row_spec(r)? {
+        spec @ (RowSpec::V1(_) | RowSpec::Bytes(_) | RowSpec::WithCommit(_)) => row_value(&spec, None),
+        _ => Err(format!(
+            "move-head --row {r}: only v1:, hex: and STATE:NUMBER:GROUP:COMMIT, whose bytes are known \
+             before the commit (STATE:NUMBER:GROUP would name the head being written, and none would \
+             delete the row)"
+        )),
+    }
 }
 
 /// `Some(x)` -> print it and 0; `None` (the expected row did not hold)
@@ -624,20 +660,31 @@ fn report<T>(got: Option<T>, print: impl FnOnce(T)) -> u8 {
     }
 }
 
-/// The meta op that holds the row at EXPECT and leaves it as it is.
-fn row_held(expect: Option<Vec<u8>>) -> Result<RefOp, String> {
-    let value = expect
-        .clone()
-        .ok_or("--expect-row none: move-head keeps a row it can name")?;
-    Ok(RefOp::MetaCas {
-        key: ROW_KEY.to_string(),
-        expected: expect,
-        value,
+/// The meta op of move-head's commit: under EXPECT (the row's bytes,
+/// `None` for no row), the row held and left as it is, or set to ROW;
+/// with no guard, ROW put; neither, no op.
+fn row_op(expect: Option<Option<Vec<u8>>>, row: Option<Vec<u8>>) -> Result<Option<RefOp>, String> {
+    let key = ROW_KEY.to_string();
+    Ok(match (expect, row) {
+        (Some(expected), row) => {
+            let value = row
+                .or_else(|| expected.clone())
+                .ok_or("--expect-row none: move-head keeps a row it can name, or writes --row")?;
+            Some(RefOp::MetaCas {
+                key,
+                expected,
+                value,
+            })
+        }
+        (None, Some(value)) => Some(RefOp::MetaPut { key, value }),
+        (None, None) => None,
     })
 }
 
 /// move-head on a volume's store and refs -> head's new commit, or None
 /// where `expect` (the row's bytes, `Some(None)` for no row) did not hold.
+/// `row`: the row's bytes to write in the same commit, or `None` to
+/// leave the row as it is.
 async fn move_head_on<S: ObjectStore + Clone + 'static>(
     store: S,
     refs: Arc<ObjectRefStore<S>>,
@@ -645,19 +692,32 @@ async fn move_head_on<S: ObjectStore + Clone + 'static>(
     at: u64,
     group: Option<u64>,
     expect: Option<Option<Vec<u8>>>,
+    row: Option<Vec<u8>>,
 ) -> Result<Option<[u8; 32]>, String> {
-    let ops = expect.map(row_held).transpose()?;
+    // Only a guard turns a lost swap of head into "the row moved": an
+    // unguarded --row also makes an op, and its lost swap is an error.
+    let guarded = expect.is_some();
+    let ops = row_op(expect, row)?;
     let mut eng = Engine::open(store, refs, vol, EngineConfig::default())
         .await
         .map_err(|e| format!("open the volume: {e}"))?;
     eng.write(at, &[0x5a; BLOCK])
         .map_err(|e| format!("write at {at}: {e}"))?;
     eng.set_group(group);
-    let guarded = ops.is_some();
     let done = match ops {
         Some(op) => eng.commit_with(CommitKind::Flush, vec![op]).await,
         None => eng.commit(CommitKind::Flush).await,
     };
+    commit_outcome(done, guarded)
+}
+
+/// What move-head's commit came to: head's new commit; None where the
+/// guard did not hold (the row moved, or head with it); an error for
+/// any other failure, a lost swap of head without a guard included.
+fn commit_outcome(
+    done: Result<[u8; 32], EngineError>,
+    guarded: bool,
+) -> Result<Option<[u8; 32]>, String> {
     match done {
         Ok(head) => Ok(Some(head)),
         // The row, or head with it (a daemon's commit moves both): what
@@ -719,7 +779,7 @@ async fn set_row_on<S: ObjectStore + Clone + 'static>(
         }],
         // The row held, then deleted, in one transaction.
         (None, Some(expected)) => vec![
-            row_held(expected)?,
+            row_op(Some(expected), None)?.ok_or("a guard makes an op")?,
             RefOp::MetaDelete {
                 key: ROW_KEY.to_string(),
             },
@@ -871,6 +931,84 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review of #134, G3: node B's row codec against the uploader's
+    /// (`skyzfs_upload::row`). Each reads the other's rows of both
+    /// versions as written, and the two refuse the same bytes: each
+    /// version from 0 to 4, and versions whose high byte is not 0 (both
+    /// write the version as a little-endian u16), at every length up to
+    /// 80.
+    #[test]
+    fn the_row_codec_is_the_uploaders() {
+        use skyzfs_local::inplace::CommittedCut;
+        use skyzfs_upload::row;
+        let cuts = [
+            ([0u8; 16], 0u64, 0u64),
+            ([0x5e; 16], 1, 7),
+            (*b"0123456789abcdef", u64::MAX, u64::MAX - 1),
+            ([0xff; 16], 1 << 40, 3 << 50),
+        ];
+        let commits = [[0u8; 32], [0xab; 32], *b"0123456789abcdef0123456789abcdef"];
+        for (state, number, group) in cuts {
+            let cut = CommittedCut {
+                state,
+                number,
+                group,
+            };
+            for commit in commits {
+                // The uploader's row of version 2, read by node B.
+                let up = row::encode(&cut, &commit);
+                let read = decode_row(&up).expect("node B reads the uploader's row");
+                assert_eq!(
+                    (read.state, read.number, read.group, read.commit),
+                    (state, number, group, Some(commit))
+                );
+                // Node B's row of version 2: the same bytes, and the
+                // uploader reads it.
+                let ours = RowCut {
+                    state,
+                    number,
+                    group,
+                    commit: Some(commit),
+                };
+                assert_eq!(encode_row(&ours), up);
+                let named = row::decode(&up).expect("the uploader reads node B's row");
+                assert_eq!((named.cut, named.commit), (cut, Some(commit)));
+            }
+            // Node B's row of version 1 (`v1:`): the uploader reads the
+            // cut and no commit.
+            let v1 = encode_row(&RowCut {
+                state,
+                number,
+                group,
+                commit: None,
+            });
+            assert_eq!(v1.len(), row::ROW_V1_LEN);
+            let named = row::decode(&v1).expect("the uploader reads a row of version 1");
+            assert_eq!((named.cut, named.commit), (cut, None));
+            let read = decode_row(&v1).expect("node B reads a row of version 1");
+            assert_eq!(
+                (read.state, read.number, read.group, read.commit),
+                (state, number, group, None)
+            );
+        }
+        assert_eq!(row::ROW_LEN, ROW_LEN_V2);
+        assert_eq!(row::ROW_V1_LEN, ROW_LEN_V1);
+        // The bytes one refuses, the other refuses too.
+        for version in [0u16, 1, 2, 3, 4, 0x0101, 0x0102, 0x0201, 0x0202, 0xffff] {
+            for len in 0..=80usize {
+                let mut b: Vec<u8> = (0..len).map(|k| (k * 37 + 11) as u8).collect();
+                if len >= 2 {
+                    b[..2].copy_from_slice(&version.to_le_bytes());
+                }
+                assert_eq!(
+                    decode_row(&b).is_some(),
+                    row::decode(&b).is_ok(),
+                    "version {version}, {len} bytes"
+                );
+            }
+        }
+    }
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -1078,6 +1216,7 @@ mod tests {
             0,
             Some(1000),
             row(4, 7).map(Some),
+            None,
         )
         .await
         .expect("move-head");
@@ -1097,6 +1236,7 @@ mod tests {
             0,
             Some(1001),
             row(3, 6).map(Some),
+            None,
         )
         .await
         .expect("move-head");
@@ -1119,9 +1259,168 @@ mod tests {
             Ok(true)
         );
         assert_eq!(read().await, None);
-        assert!(move_head_on(store, refs, vol, 0, None, Some(None))
+        assert!(move_head_on(store, refs, vol, 0, None, Some(None), None)
             .await
             .is_err());
+    }
+
+    /// move-head with --row: head moves and the row is written in one
+    /// transaction (the cut rig's uv1 courses: a row of version 1 left
+    /// with head moved by another writer). Under a guard that no longer
+    /// holds, neither moves. The forms that name the head being written
+    /// are refused.
+    #[test]
+    fn move_head_takes_the_row_forms_known_before_the_commit() {
+        let s = "cd".repeat(16);
+        let c = "ef".repeat(32);
+        assert_eq!(move_head_row(""), Ok(None));
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1: is taken");
+        assert_eq!(v1.as_ref().map(Vec::len), Some(ROW_LEN_V1));
+        assert_eq!(move_head_row("hex:0102"), Ok(Some(vec![1, 2])));
+        let v2 = move_head_row(&format!("{s}:3:40:{c}")).expect("a named commit is taken");
+        assert_eq!(
+            v2.as_deref().and_then(decode_row).and_then(|r| r.commit),
+            Some([0xef; 32])
+        );
+        for r in [format!("{s}:3:40"), "none".to_string()] {
+            let err = move_head_row(&r).expect_err("refused");
+            assert!(err.contains("only v1:"), "{err}");
+        }
+        assert!(move_head_row("none")
+            .unwrap_err()
+            .contains("none would delete the row"));
+    }
+
+    #[test]
+    fn a_lost_swap_of_head_is_the_row_moved_only_under_a_guard() {
+        let h = [7u8; 32];
+        assert_eq!(commit_outcome(Ok(h), false), Ok(Some(h)));
+        assert_eq!(commit_outcome(Ok(h), true), Ok(Some(h)));
+        for guarded in [false, true] {
+            let op = Err(EngineError::OpConflict { op_index: 0 });
+            assert_eq!(commit_outcome(op, guarded), Ok(None));
+        }
+        assert_eq!(commit_outcome(Err(EngineError::Conflict), true), Ok(None));
+        // Without a guard, --row still makes an op (a put): its lost swap
+        // of head is an error, not "the expected row did not hold" (the
+        // review of #137, N2).
+        assert!(commit_outcome(Err(EngineError::Conflict), false).is_err());
+    }
+
+    #[tokio::test]
+    async fn move_head_writes_head_and_the_row_in_one_transaction() {
+        let (store, _, vol, _) = put_small("move-row-one").await;
+        let faults = skynbd_store::FaultStore::new(store);
+        let refs = Arc::new(ObjectRefStore::new(faults.clone()));
+        let s = "cd".repeat(16);
+        let before = refs
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        let v2 = row_value(&row_spec(&format!("{s}:3:40")).unwrap(), Some(before)).unwrap();
+        assert_eq!(set_row_on(&refs, vol, v2.clone(), None).await, Ok(true));
+        let v1 = move_head_row(&format!("v1:{s}:3:40")).expect("v1");
+        // One write of the refs object is allowed; a second fails.
+        faults
+            .arm(skynbd_store::FaultOp::Put, &skynbd_refs::refs_key(vol), 1)
+            .await;
+        let moved = move_head_on(
+            faults.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(40),
+            Some(v2),
+            v1.clone(),
+        )
+        .await
+        .expect("head and the row in one write of the refs object");
+        faults.disarm().await;
+        let fresh = ObjectRefStore::new(faults.inner().clone());
+        let now = fresh
+            .get(vol, "head")
+            .await
+            .expect("get")
+            .expect("head")
+            .commit;
+        assert!(moved.is_some_and(|h| h == now) && now != before);
+        assert_eq!(fresh.meta_get(vol, ROW_KEY).await.expect("meta_get"), v1);
+    }
+
+    #[tokio::test]
+    async fn move_head_writes_the_row_in_the_same_commit() {
+        let (store, refs, vol, _) = put_small("move-row").await;
+        let s = "cd".repeat(16);
+        let v1 = |n: u64, g: u64| {
+            row_value(&row_spec(&format!("v1:{s}:{n}:{g}")).unwrap(), None).unwrap()
+        };
+        let head = || async {
+            refs.get(vol, "head")
+                .await
+                .expect("get")
+                .expect("head")
+                .commit
+        };
+        let read = || async { refs.meta_get(vol, ROW_KEY).await.expect("meta_get") };
+        let before = head().await;
+        let v2 = row_value(&row_spec(&format!("{s}:3:40")).unwrap(), Some(before)).unwrap();
+        assert_eq!(set_row_on(&refs, vol, v2.clone(), None).await, Ok(true));
+        // The guard holds (the row as read, of version 2): head moves to
+        // a commit of the row's group, and the row is now of version 1.
+        let moved = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(40),
+            Some(v2.clone()),
+            v1(3, 40),
+        )
+        .await
+        .expect("move-head");
+        let now = head().await;
+        assert!(moved.is_some_and(|h| h == now) && now != before);
+        assert_eq!(read().await, v1(3, 40));
+        assert_eq!(
+            read()
+                .await
+                .as_deref()
+                .and_then(decode_row)
+                .map(|c| c.commit),
+            Some(None)
+        );
+        // A guard that no longer holds: neither head nor the row moves.
+        let stale = move_head_on(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            0,
+            Some(1040),
+            Some(v2),
+            v1(9, 99),
+        )
+        .await
+        .expect("move-head");
+        assert_eq!(stale, None);
+        assert_eq!((head().await, read().await), (now, v1(3, 40)));
+        // Unguarded: put with the commit.
+        let moved = move_head_on(store, Arc::clone(&refs), vol, 0, None, None, v1(4, 41))
+            .await
+            .expect("move-head");
+        assert!(moved.is_some());
+        assert_eq!(read().await, v1(4, 41));
+        // The command takes only the forms whose bytes it knows before the
+        // commit.
+        for r in [format!("{s}:3:40"), "none".to_string()] {
+            let a = parse(&args(&format!(
+                "move-head --endpoint e --bucket b --volume v --at 0 --group 1 --row {r}"
+            )))
+            .expect("parse");
+            let err = move_head(&a).await.expect_err("refused");
+            assert!(err.contains("only v1:"), "{err}");
+        }
     }
 
     #[test]

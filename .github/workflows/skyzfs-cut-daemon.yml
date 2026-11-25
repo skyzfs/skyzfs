@@ -45,7 +45,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound boundsparse edges takeover failed; with upload: umoved urow ukill ulease ulost, and by name only unostore ukillput ufailed); empty: all"
+        description: "recordings, separated by spaces (life slog rewind rewindsync rewindf multihost config stray autotrim full; with hold: bound boundsparse edges takeover failed; with upload: umoved urow ukill ulease ulost uv1 uv1moved, and by name only unostore ukillput ufailed); empty: all"
         default: ""
       hold:
         description: "serve with --hold-cuts and check the held cuts' content (the second stage); ignored with upload"
@@ -214,7 +214,7 @@ jobs:
           UPLOAD: ${{ matrix.upload }}
         run: |
           read -r -a recs <<< "$RECORDINGS"
-          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z][a-z0-9]*$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD="$HOLD" CUT_UPLOAD="$UPLOAD" \
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
             SKZ_S3_BUCKET="skyzfs-cut-${{ github.run_id }}-${{ github.run_attempt }}" \

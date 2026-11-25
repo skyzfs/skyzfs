@@ -4,6 +4,7 @@ import ast
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,7 +106,7 @@ class Plan(unittest.TestCase):
                      '.github/workflows/skyzfs-cut-daemon.yml'):
             jobs = cut_plan.plan('pull_request', '', '', '', '', ['README.md', path])
             self.assertEqual(len(jobs), 3, path)
-            self.assertEqual(stages(jobs)[2], ('ubuntu-26.04', '0', '1', 'life umoved urow ukill ulease ulost',
+            self.assertEqual(stages(jobs)[2], ('ubuntu-26.04', '0', '1', 'life umoved urow ukill ulease ulost uv1 uv1moved',
                                                'ubuntu-26.04-upload'), path)
 
     def test_every_crate_under_the_uploader(self):
@@ -198,6 +199,35 @@ class Plan(unittest.TestCase):
     def test_another_event(self):
         with self.assertRaises(ValueError):
             cut_plan.plan('schedule', '', '', '', '', [])
+
+    def test_every_recording_passes_the_workflows_check_of_names(self):
+        """Each workflow that runs cut-record.sh checks the names it is
+        given with a bash pattern. Every name the script knows, and every
+        name the plan gives a job, must pass it: in #137 the pattern took
+        letters only, and the upload job stopped at `uv1` before it
+        recorded anything (the review of #137, B1 and G-b)."""
+        with open(os.path.join(HERE, 'cut-record.sh')) as f:
+            script = f.read()
+        names = set(cut_plan.PR_UPLOAD_RECORDINGS.split())
+        for var in ('ALL', 'HELD_ONLY', 'UPLOAD_ONLY', 'UPLOAD_NAMED'):
+            m = re.search(rf'^{var}="([a-z0-9 ]+)"$', script, re.M)
+            self.assertIsNotNone(m, var)
+            names |= set(m.group(1).split())
+        self.assertTrue({'uv1', 'uv1moved', 'life', 'bound', 'unostore'} <= names, names)
+        for wf in ('skyzfs-cut-daemon.yml', 'skyzfs-cut-rig.yml', 'skyzfs-nodeb-rig.yml'):
+            with open(os.path.join(ROOT, '.github', 'workflows', wf)) as f:
+                pats = re.findall(r'\[\[ \$r =~ (\S+) \]\]', f.read())
+            self.assertEqual(len(pats), 1, wf)
+
+            def passes(name, pat=pats[0]):
+                return subprocess.run(['bash', '-c', f'[[ $1 =~ {pat} ]]', 'x', name]).returncode == 0
+            for n in sorted(names):
+                with self.subTest(wf=wf, name=n):
+                    self.assertTrue(passes(n), f'{wf} refuses {n}')
+            # The check still refuses what is not a name.
+            for bad in ('', 'Uv1', '1life', 'life;x', 'a b', '-x', 'life/'):
+                with self.subTest(wf=wf, bad=bad):
+                    self.assertFalse(passes(bad), f'{wf} takes {bad!r}')
 
     def test_the_command(self):
         with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False) as f:
