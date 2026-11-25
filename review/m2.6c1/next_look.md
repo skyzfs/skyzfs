@@ -51,8 +51,10 @@ pull request does not change it.
   other plant of the kept answer that changes behaviour; one plant that
   only costs a look survives (TG14, minor).
 - **Gates pass; CI is green on the head** (17 check runs: 13 success, 4
-  skipped by design). The doc gate of the workspace fails on the base
-  as the author says, not on this pull request (item 4).
+  skipped by design); the test counts are the answer's. The workspace
+  doc gate fails at the head exactly as on the base: the answer's
+  `queue.rs:373` is one of 33 errors in eight crates, none in this pull
+  request's files (item 4).
 
 ### Findings, most severe first
 
@@ -283,9 +285,38 @@ killed by the two-publish cases.
 **The plants** (`plants146c.py`, `plants146c.out`): each applied alone in
 a clean worktree of `0213a6c`, then `cargo test -p skyzfs-agent --lib`,
 then the file restored. The 118 plants of `plants146b.py` (read from that
-file, less Z1, which is now the head) and this look's eight of the fix.
+file, less Z1, which is now the head) and this look's nine of the fix.
 
-PLANTS_TABLE
+| Plants | Run | Killed | Survived |
+|---|---|---|---|
+| `plants146b.py`'s, less Z1 | 118 | 111 | 7: T3f, T3g, R3, E2, E3, G1, X9b |
+| this look's, of the fix (N8*) | 9 | 6 | 3: N8s, N8g, N8h |
+
+- **Against `4ff4549`** (`plants146b.out`): every one of the 118 has the
+  same verdict but N6e, X12b, X16b, Y2 and Y3, survivors there and
+  killed now, which is TG9, TG10, TG11 and TG13 closed as the answer
+  says (N6e, X16b, Y2 and Y3 by the new rows of
+  `refused_stopped_gives_a_publish_up_whatever_its_age`; X12b by
+  `a_stopped_uploader_gives_each_publish_up_at_once`, two publishes).
+  The seven left are the last look's known survivors: T3f, T3g (the
+  `Disk` syncs), E2, E3, G1 (earlier looks), R3 (dead code) and X9b (the
+  model's limit).
+- **The `stopped` reason not reported or not given:** W3-Stopped, N6f,
+  P6, P8, Y5 and W10 are killed, each by the new engine tests, the new
+  rows, or both.
+- **This look's nine:**
+
+| Plant | Verdict |
+|---|---|
+| N8r the fix reverted (the answer and the sight cleared at a release, as at `4ff4549`) | killed: both new engine tests (the fake's livelock check) |
+| N8a the sight kept across a release, the answer not | killed: both new engine tests |
+| N8s the answer kept across a release, the sight not (one more look) | **survived** (TG14) |
+| N8d the answer dropped at the look instead (kept across a release only) | killed: both new engine tests |
+| N8e the kept answer read once (taken by `see`) | killed: both new engine tests |
+| N8f the answer and the sight never cleared | killed: seven engine tests (the restart matrices among them) |
+| N8g the answer and the sight kept across a hold too | survived: not a defect (below) |
+| N8l the look's result not kept at all | killed: 29 tests |
+| N8h kept across a release only after `stopped` (a narrower fix) | survived: an alternative fix (below) |
 
 **Do the tests cover the fix?** Yes, where it changes behaviour: every
 plant that makes the agent ask again after a release, or drop the
@@ -298,7 +329,39 @@ same with one more `progress` or `look`).
 
 ### (4) Gates (at 0213a6c) and the base's doc failure
 
-GATES_TEXT
+`rustup check`: stable 1.100.0 (2026-11-09), up to date. Run by
+`gates146c.sh` in a clean worktree of `0213a6c`, with a shared target
+directory and debug info off (`CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0`; the container's disk was nearly full);
+summed in `gates146c.log`.
+
+| Gate | At `0213a6c` |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo clippy -p skyzfs-agent --all-targets -- -D warnings` | pass |
+| `cargo test -p skyzfs-agent` | 75 passed |
+| `cargo doc -p skyzfs-agent --no-deps`, `-D warnings` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings`: plain, `test-hooks`, `control-test-program` | pass, pass, pass |
+| `cargo test --workspace`, plain | 1816 passed, 0 failed, 16 ignored |
+| the same with `skyzfsd/test-hooks,skyzfs-local/test-hooks` | 1858 passed, 0 failed, 16 ignored |
+| the same with `skyzfs-ublk-sys/control-test-program` | 1840 passed, 0 failed, 18 ignored |
+| `cargo doc --workspace --no-deps`, `-D warnings` | fails, as on the base (below) |
+
+The counts are the answer's (1816, 1858, 1840).
+
+**The base's doc failure: true, and not the only one.** At `a4e004e`
+the workspace doc gate, run as `gates146c.sh` runs it, stops at
+`crates/skyzfs-ublk-sys/src/queue.rs:373` (the public `start` links to
+the private `own_control_ring`), as the answer says. But cargo stops at
+the first crate that fails, and which one that is depends on the order
+of the build: at the head the same command stopped at `skyzfs-local`
+first (`inplace/intent.rs:141`). With `--keep-going` the base and the
+head fail alike: 33 errors in eight crates (`skyzfs-ublk-sys`,
+`skyzfs-local`, `skyzfsd`, `skynbd-refs`, `skynbd-engine`,
+`skynbd-agent`, `skynbd-agent-cli`, `skynbdctl`), the same locations at
+both heads, all in files this pull request does not touch;
+`skyzfs-agent` documents cleanly. No workflow runs `cargo doc`, which is
+how they went unseen. Not this pull request's to fix.
 
 ### (5) CI on the head, and the diff (at 0213a6c)
 
@@ -338,8 +401,13 @@ ended. Five runs, 17 check runs: 13 success and 4 skipped.
 
 ### Decisions for the lead
 
-None needed. S12 and TG14 are small and can follow in M2.6c-2 or later;
-S13 is a question for M2.6c-3, if at all.
+None needed for this pull request. S12 and TG14 are small and can
+follow in M2.6c-2 or later; S13 is a question for M2.6c-3, if at all.
+
+For information: the workspace doc gate (`cargo doc --workspace
+--no-deps` with `-D warnings`) fails on `zfs-topology` in eight crates
+(item 4), and no workflow runs it. If it is meant to be a gate, it needs
+a package of its own and a CI job.
 
 ### Files (beside this note, in `review/m2.6c1/`)
 

@@ -42,6 +42,9 @@ P = [p for p in P if not p[0].startswith("Z1 ")] + [
      [(EN, KEEP, "")]),
     ("N8g the answer and the sight kept across a hold too",
      [(EN, KEEP, KEEP.replace("Action::Look | Action::Release", "Action::Look | Action::Release | Action::Hold"))]),
+    ("N8l the look's result not kept at all (asked for again at each round)",
+     [(EN, "                self.memory.entry(name).or_default().snap = snap;\n",
+       "                let _ = &self.memory;\n")]),
     ("N8h kept across a release only after `stopped` (a narrower fix)",
      [(EN, KEEP, KEEP.replace(
          "        if !matches!(action, Action::Look | Action::Release) {\n",

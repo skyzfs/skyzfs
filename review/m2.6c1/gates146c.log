@@ -1,0 +1,190 @@
+# gates146c.sh at the head, in a clean worktree, with a shared target directory and debug info off
+# (CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0, for disk space). Summed per command by
+# the 'test result' lines; the raw log is not kept (it names scratch paths).
+0213a6ccdb28018fcd45ceddebe0053e7c24b26a
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+cargo fmt --all -- --check -> exit 0
+cargo clippy -p skyzfs-agent --all-targets -- -D warnings -> exit 0
+cargo test -p skyzfs-agent -> exit 0: 75 passed, 0 failed, 0 ignored (2 binaries)
+cargo doc -p skyzfs-agent --no-deps -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings -> exit 0
+cargo clippy --workspace --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings -> exit 0
+cargo clippy --workspace --all-targets --features skyzfs-ublk-sys/control-test-program -- -D warnings -> exit 0
+cargo test --workspace -> exit 0: 1816 passed, 0 failed, 16 ignored (118 binaries)
+cargo test --workspace --features skyzfsd/test-hooks,skyzfs-local/test-hooks -> exit 0: 1858 passed, 0 failed, 16 ignored (118 binaries)
+cargo test --workspace --features skyzfs-ublk-sys/control-test-program -> exit 0: 1840 passed, 0 failed, 18 ignored (119 binaries)
+cargo doc --workspace --no-deps -> exit 101
+
+## The workspace doc gate at the head, as gates146c.sh runs it (cargo stops at the first crate that fails)
+error: public documentation for `state` links to private item `super::state::CutState::id`
+   --> crates/skyzfs-local/src/inplace/intent.rs:141:44
+error: public documentation for `replaced` links to private item `CutState::flushed`
+   --> crates/skyzfs-local/src/inplace/state.rs:803:12
+error: public documentation for `replaced` links to private item `CutState::freeze`
+   --> crates/skyzfs-local/src/inplace/state.rs:804:38
+error: unresolved link to `InPlace::read_cut`
+    --> crates/skyzfs-local/src/inplace.rs:3076:46
+error: could not document `skyzfs-local`
+
+## The same at the base (gates146c.sh <wt> <log> doc-only)
+a4e004eae7ea24496b54695d712cf8e9117617ba
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+error: public documentation for `start` links to private item `own_control_ring`
+   --> crates/skyzfs-ublk-sys/src/queue.rs:373:24
+error: could not document `skyzfs-ublk-sys`
+
+## RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --keep-going, at the base and the head
+### a4e004e
+error: public documentation for `start` links to private item `own_control_ring`
+   --> crates/skyzfs-ublk-sys/src/queue.rs:373:24
+error: could not document `skyzfs-ublk-sys`
+error: public documentation for `state` links to private item `super::state::CutState::id`
+   --> crates/skyzfs-local/src/inplace/intent.rs:141:44
+error: public documentation for `replaced` links to private item `CutState::flushed`
+   --> crates/skyzfs-local/src/inplace/state.rs:803:12
+error: public documentation for `replaced` links to private item `CutState::freeze`
+   --> crates/skyzfs-local/src/inplace/state.rs:804:38
+error: unresolved link to `InPlace::read_cut`
+    --> crates/skyzfs-local/src/inplace.rs:3076:46
+error: could not document `skyzfs-local`
+error: public documentation for `lease_acquire` links to private item `lease::acquire`
+   --> crates/skynbd-refs/src/lib.rs:279:62
+error: public documentation for `lease_renew` links to private item `lease::renew`
+   --> crates/skynbd-refs/src/lib.rs:285:12
+error: could not document `skynbd-refs`
+error: public documentation for `index` links to private item `ShardBuilder::push`
+  --> crates/skynbd-engine/src/index.rs:18:34
+error: public documentation for `index` links to private item `merge`
+  --> crates/skynbd-engine/src/index.rs:27:11
+error: could not document `skynbd-engine`
+error: unresolved link to `crate::refuse`
+   --> bins/skyzfsd/src/cli.rs:590:45
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:595:57
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:600:52
+error: public documentation for `upload` links to private item `reserve`
+  --> bins/skyzfsd/src/upload.rs:22:41
+error: public documentation for `upload` links to private item `refused_over`
+  --> bins/skyzfsd/src/upload.rs:33:23
+error: unresolved link to `shown`
+  --> bins/skyzfsd/src/upload.rs:67:21
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/upload.rs:784:29
+error: unresolved link to `crate::record`
+   --> bins/skyzfsd/src/upload.rs:807:8
+error: could not document `skyzfsd`
+error: public documentation for `effective_window` links to private item `OBSERVED_WINDOW_CAP`
+   --> crates/skynbd-agent/src/cycle.rs:426:22
+error: public documentation for `with_ro_watermark` links to private item `Self::ro_watermark`
+   --> crates/skynbd-agent/src/cycle.rs:445:33
+error: public documentation for `evict` links to private item `RECLAIM_BATCH_RANGES`
+    --> crates/skynbd-agent/src/dm.rs:1813:27
+error: unresolved link to `DmStack::capture`
+   --> crates/skynbd-agent/src/dm_linux.rs:182:7
+error: public documentation for `control_plane_client_with` links to private item `READ_TIMEOUT`
+   --> crates/skynbd-agent/src/http.rs:123:7
+error: could not document `skynbd-agent`
+error: unclosed HTML tag `volume`
+ --> bins/skynbdctl/src/main.rs:9:36
+error: could not document `skynbdctl`
+error: unresolved link to `:PORT`
+  --> bins/skynbd-agent/src/main.rs:16:41
+error: unresolved link to `mounts`
+  --> bins/skynbd-agent/src/main.rs:20:49
+error: unresolved link to `mounts`
+   --> bins/skynbd-agent/src/main.rs:364:17
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:14:17
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:15:17
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:15:23
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:18:17
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:385:9
+error: unclosed HTML tag `volume`
+   --> bins/skynbd-agent/src/main.rs:483:56
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:548:52
+error: could not document `skynbd-agent-cli`
+exit 101
+### 0213a6c
+error: unclosed HTML tag `volume`
+ --> bins/skynbdctl/src/main.rs:9:36
+error: unresolved link to `:PORT`
+  --> bins/skynbd-agent/src/main.rs:16:41
+error: unresolved link to `mounts`
+  --> bins/skynbd-agent/src/main.rs:20:49
+error: unresolved link to `mounts`
+   --> bins/skynbd-agent/src/main.rs:364:17
+error: could not document `skynbdctl`
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:14:17
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:15:17
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:15:23
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:18:17
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:385:9
+error: unclosed HTML tag `volume`
+   --> bins/skynbd-agent/src/main.rs:483:56
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:548:52
+error: unresolved link to `crate::refuse`
+   --> bins/skyzfsd/src/cli.rs:590:45
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:595:57
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:600:52
+error: public documentation for `upload` links to private item `reserve`
+  --> bins/skyzfsd/src/upload.rs:22:41
+error: public documentation for `upload` links to private item `refused_over`
+  --> bins/skyzfsd/src/upload.rs:33:23
+error: unresolved link to `shown`
+  --> bins/skyzfsd/src/upload.rs:67:21
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/upload.rs:784:29
+error: unresolved link to `crate::record`
+   --> bins/skyzfsd/src/upload.rs:807:8
+error: could not document `skynbd-agent-cli`
+error: could not document `skyzfsd`
+error: public documentation for `start` links to private item `own_control_ring`
+   --> crates/skyzfs-ublk-sys/src/queue.rs:373:24
+error: could not document `skyzfs-ublk-sys`
+error: public documentation for `state` links to private item `super::state::CutState::id`
+   --> crates/skyzfs-local/src/inplace/intent.rs:141:44
+error: public documentation for `replaced` links to private item `CutState::flushed`
+   --> crates/skyzfs-local/src/inplace/state.rs:803:12
+error: public documentation for `replaced` links to private item `CutState::freeze`
+   --> crates/skyzfs-local/src/inplace/state.rs:804:38
+error: unresolved link to `InPlace::read_cut`
+    --> crates/skyzfs-local/src/inplace.rs:3076:46
+error: could not document `skyzfs-local`
+error: public documentation for `effective_window` links to private item `OBSERVED_WINDOW_CAP`
+   --> crates/skynbd-agent/src/cycle.rs:426:22
+error: public documentation for `with_ro_watermark` links to private item `Self::ro_watermark`
+   --> crates/skynbd-agent/src/cycle.rs:445:33
+error: public documentation for `evict` links to private item `RECLAIM_BATCH_RANGES`
+    --> crates/skynbd-agent/src/dm.rs:1813:27
+error: unresolved link to `DmStack::capture`
+   --> crates/skynbd-agent/src/dm_linux.rs:182:7
+error: public documentation for `control_plane_client_with` links to private item `READ_TIMEOUT`
+   --> crates/skynbd-agent/src/http.rs:123:7
+error: could not document `skynbd-agent`
+error: public documentation for `index` links to private item `ShardBuilder::push`
+  --> crates/skynbd-engine/src/index.rs:18:34
+error: public documentation for `index` links to private item `merge`
+  --> crates/skynbd-engine/src/index.rs:27:11
+error: could not document `skynbd-engine`
+error: public documentation for `lease_acquire` links to private item `lease::acquire`
+   --> crates/skynbd-refs/src/lib.rs:279:62
+error: public documentation for `lease_renew` links to private item `lease::renew`
+   --> crates/skynbd-refs/src/lib.rs:285:12
+error: could not document `skynbd-refs`
+exit 101
+
+## The two keep-going runs' error locations, sorted: identical (41 lines: 33 errors in 8 crates; skyzfs-agent documents)
