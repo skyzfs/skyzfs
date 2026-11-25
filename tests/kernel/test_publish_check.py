@@ -527,18 +527,92 @@ class Assist(unittest.TestCase):
                                     ((59, 4096), (60, 4096), (61, 4096), (62, 0), (63, 8192), (64, 4096), (65, 0)))
         p = pc.assist_pace(rows, cuts, {'uploaded': '3', 'upload_blocks': '100'},
                            {'uploaded': '9', 'upload_blocks': '160'}, 60.0, txgs)
-        self.assertEqual(p, {'assists': 3, 'seconds': 30.0, 'assists_per_min': 6.0,
+        self.assertEqual(p, {'lacks': [], 'assists': 3, 'seconds': 30.0, 'assists_per_min': 6.0,
                              'groups': 3, 'groups_per_min': 6.0, 'empty': 1, 'cuts': 3, 'cuts_per_min': 6.0,
                              'set_wrote': 2, 'sync_wrote': 2,
                              'flow_s': 60.0, 'uploaded': 6, 'uploads_per_min': 6.0,
                              'blocks': 60, 'blocks_per_min': 60.0})
-        for before, after, flow in (({}, {'uploaded': '9', 'upload_blocks': '1'}, 60.0),
-                                    ({'uploaded': '3', 'upload_blocks': '1'}, {'uploaded': 'x', 'upload_blocks': '1'},
-                                     60.0),
-                                    ({'uploaded': '3', 'upload_blocks': '1'}, {'uploaded': '4', 'upload_blocks': '1'},
-                                     None)):
-            with self.assertRaises(pc.RigError):
-                pc.assist_pace(rows, cuts, before, after, flow, txgs)
+        # A status without a count is said, with no upload figures (F2).
+        for before, after, lacks in (({}, {'uploaded': '9', 'upload_blocks': '1'},
+                                      ['upload_blocks (before)', 'uploaded (before)']),
+                                     ({'uploaded': '3', 'upload_blocks': '1'}, {'uploaded': 'x', 'upload_blocks': '1'},
+                                      ['uploaded (after)'])):
+            p = pc.assist_pace(rows, cuts, before, after, 60.0, txgs)
+            self.assertEqual((p['lacks'], p['uploaded'], p['uploads_per_min'], p['blocks'], p['blocks_per_min']),
+                             (lacks, None, None, None, None))
+            self.assertEqual(p['groups'], 3)
+        # No span of requests is the rig's.
+        with self.assertRaises(pc.RigError):
+            pc.assist_pace(rows, cuts, {'uploaded': '3', 'upload_blocks': '1'},
+                           {'uploaded': '4', 'upload_blocks': '1'}, None, txgs)
+
+    def test_accepted_tsv_reads_and_a_line_that_does_not_is_the_rig_s_error(self):
+        m = pc.read_marks('a1\taccepted\t100\t50\t10.0\na1\tend\t900\t56\tdone\na2\taccepted\t950\t56\t10\n')
+        self.assertEqual(m, {'a1': {'accepted': (100, 50, 10.0), 'end': (900, 56, 'done')},
+                             'a2': {'accepted': (950, 56, 10.0)}})
+        for bad in ('a1\taccepted\t100\t50\n', 'a1\tstarted\t100\t50\t10\n', 'a1\taccepted\tx\t50\t10\n',
+                    'a1\taccepted\t100\t50\tten\n', 'a1\taccepted\t100\t50\t0\n', 'a1\tend\t100\t50\t\n',
+                    '\taccepted\t100\t50\t10\n', 'a1\tend\t1\t5\tdone\na1\tend\t2\t5\tdone\n'):
+            with self.assertRaises(pc.RigError, msg=bad):
+                pc.read_marks(bad)
+
+    def a1(self, g, marks, rows, wrote=range(40, 70)):
+        txgs = KSTAT_HEAD + ''.join(f'{x} 1 C 0 0 {4096 if x in wrote else 0} 0 0\n' for x in range(40, 70))
+        return pc.a1_premise(g, marks, [dict(zip(('before', 'mid', 'after'), r)) for r in rows], txgs)
+
+    def test_a1_s_premise_rests_on_the_marks_the_assists_and_the_kstat(self):
+        acc = (0, 50, 10.0)
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 56, 'done')}, [(50, 51, 52), (52, 53, 54), (54, 55, 56)])
+        self.assertTrue(ok, why)
+        self.assertIn('assist 3 took it across G', why)
+        # The pool below G at the end: a `done` is the daemon's alone (the
+        # pins judge it), a `pending` means the assists did not get there.
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 52, 'done')}, [(50, 51, 52)])
+        self.assertTrue(ok, why)
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 50, 'refused')}, [])
+        self.assertTrue(ok, why)
+        for g, marks, rows, wrote, said in (
+                (55, {'accepted': acc, 'end': (9, 54, 'pending')}, [(50, 51, 52), (52, 53, 54)], range(40, 70),
+                 'never took the pool to G'),
+                (50, {'accepted': acc, 'end': (9, 52, 'done')}, [(50, 51, 52)], range(40, 70),
+                 'G was written before any assist'),
+                (55, {'accepted': acc, 'end': (9, 56, 'done')}, [], range(40, 70), 'no assist took the pool across G'),
+                # Assists that wrote and a group in between that none wrote.
+                (55, {'accepted': acc, 'end': (9, 56, 'done')}, [(50, 51, 52), (53, 54, 56)], range(40, 70),
+                 'groups no assist wrote: 53'),
+                # The end read past the last assist: a group after it.
+                (55, {'accepted': acc, 'end': (9, 57, 'done')}, [(50, 51, 52), (52, 54, 56)], range(40, 70),
+                 'groups no assist wrote: 57'),
+                (55, {'accepted': acc}, [(50, 51, 56)], range(40, 70), 'no end mark')):
+            with self.subTest(said=said):
+                ok, why = self.a1(g, marks, rows, wrote)
+                self.assertFalse(ok)
+                self.assertIn(said, why)
+        # A group the kstat says wrote nothing is no stray, however it lies.
+        ok, why = self.a1(55, {'accepted': acc, 'end': (9, 57, 'done')}, [(50, 51, 52), (53, 54, 56)],
+                          [x for x in range(40, 70) if x not in (53, 57)])
+        self.assertTrue(ok, why)
+        # A kstat that does not reach back over a1's groups is the rig's.
+        with self.assertRaises(pc.RigError):
+            self.a1(55, {'accepted': (0, 30, 10.0), 'end': (9, 56, 'done')}, [(30, 51, 56)])
+
+    def test_the_decided_pace(self):
+        s = 10**9
+
+        def rows(*t0):
+            return [{'name': 'a2', 't0': int(t * s)} for t in t0]
+        self.assertEqual(pc.pace_faults(rows(10.0, 11.1, 12.2, 22.3, 32.4), 0, 10.0), [])
+        self.assertEqual(pc.pace_faults(rows(), 0, 10.0), [])
+        # Before A; spaced in the burst; every round past it; and for a
+        # shorter A, the same rules.
+        for t0, said in (((9.9, 11.0), 'first assist 9.9 s'), ((10.0, 15.1), 'assist 2 5.1 s'),
+                         ((10.0, 11.0, 12.0, 13.0), 'assist 4 1.0 s'), ((10.0, 11.0, 12.0, 21.4), 'assist 4 9.4 s')):
+            with self.subTest(t0=t0):
+                bad = pc.pace_faults(rows(*t0), 0, 10.0)
+                self.assertEqual(len(bad), 1, bad)
+                self.assertIn(said, bad[0])
+        self.assertEqual(pc.pace_faults(rows(4.0, 5.0, 6.0, 10.0, 14.0), 0, 4.0), [])
+        self.assertTrue(pc.pace_faults(rows(4.0, 5.0, 6.0, 7.0), 0, 4.0))
 
     def test_the_kstat_s_groups_that_wrote_and_those_that_did_not(self):
         txgs = KSTAT_HEAD + '41 1 C 0 0 4096 0 0\n42 1 C 0 0 0 0 0\n43 1 C 0 0 512 0 0\n44 1 S 0 0 0 0 0\n'

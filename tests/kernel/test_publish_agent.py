@@ -244,26 +244,68 @@ class AFlow(unittest.TestCase):
             rows = [ln.rstrip('\n').split('\t') for ln in f]
         return end, shell, rows
 
+    def marks(self):
+        with open(os.path.join(self.d.name, 'accepted.tsv')) as f:
+            return [ln.rstrip('\n').split('\t') for ln in f]
+
     def test_the_assist_sets_a_new_value_then_syncs_and_writes_nothing(self):
         """#144's `Zfs::assist`: after ASSIST_AFTER, a `zfs set` with a
         value not set before (one above the last when the wall clock
         steps back), then `zpool sync`; no nudge."""
         # Rounds at now() 4, 8, 12, 16 (t0 = 0): no assist before 10 s.
-        # Four reads an assist: before, after the set, then until two agree.
-        synced = iter([60, 61, 61, 61,   61, 62, 62, 62])
+        # One read at the acceptance; four an assist: before, after the
+        # set, then until two agree; one at the end.
+        synced = iter([60,   60, 61, 61, 61,   61, 62, 62, 62,   62])
         end, shell, rows = self.assisted(4, 10, [5_000_000_000, 4_000_000_000], synced)
         self.assertEqual(end, f'done commit={H}')
         mid = shell[4:-1]
         self.assertEqual(mid, ['zfs set skyzfs:assist=5000 p', 'zpool sync p',
                                'zfs set skyzfs:assist=5001 p', 'zpool sync p'])
         self.assertFalse([c for c in shell if 'nudge' in c])
-        self.assertEqual(rows, [['t1', '1000', '1010', '5000', '60', '61', '61'],
-                                ['t1', '1020', '1030', '5001', '61', '62', '62']])
+        self.assertEqual(rows, [['t1', '1010', '1020', '5000', '60', '61', '61'],
+                                ['t1', '1030', '1040', '5001', '61', '62', '62']])
+
+    def test_the_pool_at_the_acceptance_and_at_the_end_whatever_the_daemon_answers(self):
+        """#145's F1: the premises read the kstat at both ends of the
+        wait, not how long the daemon answered `pending`."""
+        synced = iter([58,   60, 61, 61, 61,   63])
+        end, _, _ = self.assisted(3, 10, [5_000_000_000], synced)
+        self.assertEqual(end, f'done commit={H}')
+        self.assertEqual(self.marks(), [['t1', 'accepted', '1000', '58', '10'],
+                                        ['t1', 'end', '1030', '63', 'done']])
+
+    def test_an_end_by_the_limit_or_a_refusal_is_marked_too(self):
+        for answers, word in (([(0, 'pending\n')] * 5, 'pending'), ([(1, 'refused unknown no\n')], 'refused')):
+            with self.subTest(word=word):
+                marks = os.path.join(self.d.name, 'accepted.tsv')
+                if os.path.exists(marks):
+                    os.unlink(marks)
+                fake = Fake(*([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
+                               (0, 'accepted\n')] + answers))
+                ag = pa.Agent('skyzfsd', 'VOL', 'RUN', self.log, clock=lambda: 1, runner=fake)
+                clock = iter(range(0, 1000, 4))
+                end = pa.flow(ag, 'p', 't1', sleep=lambda s: None, limit=6,
+                              shell=lambda c: '55\n' if 'createtxg' in c else '/p\n' if c[:2] == ['zfs', 'get'] else '',
+                              files=lambda root: b'x  f1\n', now=lambda: next(clock), assist_after=100,
+                              synced=lambda pool: 70, mono=iter(range(5, 1000)).__next__)
+                self.assertTrue(end.startswith(word), end)
+                self.assertEqual([m[1] for m in self.marks()], ['accepted', 'end'])
+                self.assertEqual(self.marks()[-1][3:], ['70', word])
+
+    def test_no_mark_without_the_assist(self):
+        self.run_flow([(0, f'cuts attachment={A} state={S} count=7 group=41 opens=itself\n'),
+                       (0, 'accepted\n'), (0, f'done commit={H}\n')])
+        self.assertFalse(os.path.exists(os.path.join(self.d.name, 'accepted.tsv')))
+
+    def test_assist_after_is_ten_seconds_as_on_144(self):
+        """The course passes `--assist` alone, so the default is what
+        must equal #144's `plan::ASSIST_AFTER` (#145's G3, plant A19)."""
+        self.assertEqual((pa.ASSIST_AFTER, pa.ASSIST_BURST), (10, 3))
 
     def test_the_group_after_the_sync_is_read_until_it_stays_put(self):
-        synced = iter([60, 60, 61, 62, 62])
+        synced = iter([59,   60, 60, 61, 62, 62,   62])
         _, _, rows = self.assisted(3, 10, [7_000_000_000], synced)
-        self.assertEqual(rows, [['t1', '1000', '1010', '7000', '60', '60', '62']])
+        self.assertEqual(rows, [['t1', '1010', '1020', '7000', '60', '60', '62']])
 
     def test_three_assists_a_second_apart_then_one_every_assist_after(self):
         """The pace the lead decided on #144: from ASSIST_AFTER after the

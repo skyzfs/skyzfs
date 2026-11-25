@@ -34,6 +34,14 @@ that write nothing and no uberblock (the implementation notes, M2.T1):
 those are no cut, and they come every few seconds on an idle pool, so
 they are not counted.
 
+With `--assist`, DIR/accepted.tsv has two lines for T, read from the
+kstat whatever the daemon answered: `T accepted NS W A` once the
+publish is accepted, and `T end NS W VERB` when its end is read (NS the
+monotonic ns, W the newest group that wrote, A the assist's wait in
+seconds, VERB the end's first word: `done`, `pending`, `refused`, ...).
+The check's premises rest on these and on assist.tsv, and not on the
+daemon's answers (#145's review, F1).
+
 A request refused `rewound` (a rewind, or a daemon's start, may have been
 counted after C) is asked anew by the rig's courses with a count read
 anew (`ask cuts`), as the agent's AskAnew does; `ask look T` reads
@@ -382,18 +390,31 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
                                                 expiry)
             if verb == 'refused':
                 return f'refused {code} {text}'
+        out_dir = os.path.dirname(agent.log)
+
+        def mark(what, last):
+            # The pool as the kstat has it, whatever the daemon answers
+            # (#145's F1): the check's premises read this, not the answers.
+            if assist_after is not None:
+                with open(os.path.join(out_dir, 'accepted.tsv'), 'a') as f:
+                    f.write(f'{name}\t{what}\t{mono()}\t{synced(pool)}\t{last}\n')
+
+        def ended(end):
+            mark('end', end.split(' ', 1)[0])
+            return end
+        mark('accepted', assist_after)
         t0 = now()
         last = 0
         assists, assisted_at = 0, 0
         while True:
             verb, fields, code, text = agent.progress(name)
             if verb == 'refused':
-                return f'refused {code} {text}'
+                return ended(f'refused {code} {text}')
             if verb in ENDS:
-                return verb + ''.join(f' {k}={v}' for k, v in fields.items())
+                return ended(verb + ''.join(f' {k}={v}' for k, v in fields.items()))
             waited = now() - t0
             if waited > limit:
-                return f'pending after {limit} s'
+                return ended(f'pending after {limit} s')
             if sync:
                 # A group with something in it: an idle pool's sync makes
                 # no cut.
@@ -401,7 +422,7 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
                 sh_(['zpool', 'sync', pool])
             if assist_after is not None and waited >= assist_after and \
                     (assists < ASSIST_BURST or waited - assisted_at >= assist_after):
-                last = assist(pool, name, os.path.dirname(agent.log), last, sh_, synced, wall, mono, sleep)
+                last = assist(pool, name, out_dir, last, sh_, synced, wall, mono, sleep)
                 assists, assisted_at = assists + 1, waited
             sleep(1)
     finally:
