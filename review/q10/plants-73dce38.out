@@ -1,0 +1,18 @@
+base: unit test passes
+U1	caught	program: -j dropped	(FAIL: program -n: got 'program -n -t 100000000 -m 104857600 skzq - skzq t', want)
+U2	caught	program: memory limit 100 MB, not MiB	(FAIL: program -n: got 'program -n -j -t 100000000 -m 100000000 skzq - skzq t', w)
+U3	caught	rec: stdin not given	(FAIL: stdin read: got '', want 'the program')
+U4	caught	rec: no limit	(FAIL: limit: got '0', want '124')
+U5	not caught	catch: no limit
+U6	caught	catch: pattern read on stderr	(FAIL: caught: rc: got '1', want '0')
+U7	not caught	catch: rc of the first try kept, not the last
+U8	not caught	keep: a name used twice not refused
+U9	not caught	agent_commands: zpool status without -P
+U10	not caught	agent_commands: zpool get without -p
+U11	not caught	record_pool: holds -r without -H
+U12	not caught	record_pool: hold tag changed (skyzfs -> other)
+U13	not caught	record_pool: members.lua run without -n
+U14	caught	catch: the not-caught note says caught	(FAIL: not caught: note: got 'caught at try 5', want 'not caught: no output of 4 )
+U15	caught	catch: returns 0 when not caught	(FAIL: not caught: rc: got '0', want '1')
+U16	caught	program: --locale read and dropped	(FAIL: program --locale: got 'program -n -j -t 100000000 -m 104857600 skzq - skzq)
+U17	caught	program: --locale sets LANG, not LC_ALL	(FAIL: program --locale: got 'unset program -n -j -t 100000000 -m 104857600 skzq )

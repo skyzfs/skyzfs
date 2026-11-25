@@ -50,3 +50,6 @@ plant U12 "record_pool: hold tag changed (skyzfs -> other)" 's/zfs hold -r skyzf
 plant U13 "record_pool: members.lua run without -n" 's/members.lua -n "\$p" t$/members.lua "$p" t/'
 plant U14 "catch: the not-caught note says caught" 's/echo "not caught: no output of \$tries matched \/\$pattern\/; this is the last"/echo "caught at try $i"/'
 plant U15 "catch: returns 0 when not caught" 's/^    \[ "\$i" -le "\$tries" \]$/    true/'
+# The head's second commit (73dce38): program --locale.
+plant U16 "program: --locale read and dropped" 's/env=(env "LC_ALL=\$2")/env=()/'
+plant U17 "program: --locale sets LANG, not LC_ALL" 's/env=(env "LC_ALL=\$2")/env=(env "LANG=$2")/'

@@ -106,6 +106,15 @@ fn q10_readings_on_the_records() {
         };
         let mut z = cli(dir, &[(&prog(false, &format!("{pool} t skyzfs:assist")), &format!("{x}-snapshot-1"))]);
         p(&format!("snapshot {x}-snapshot-1"), format!("{:?}", z.snapshot(pool, "t")));
+        // From the head 73dce38 on: the program at @p where the child's @p
+        // exists (the EEXIST check, before anything is taken).
+        if dir.join("zfs-cli").join(format!("{x}-snapshot-partial")).exists() {
+            let mut z = cli(
+                dir,
+                &[(&prog(false, &format!("{pool} p skyzfs:assist")), &format!("{x}-snapshot-partial"))],
+            );
+            p(&format!("snapshot {x}-snapshot-partial"), format!("{:?}", z.snapshot(pool, "p")));
+        }
         let mut z = cli(dir, &[(&prog(true, &format!("{pool} t")), &format!("{x}-members"))]);
         p(&format!("members {x}-members"), format!("{:?}", z.members(pool, "t")));
         let mut z = cli(dir, &[(&prog(true, &format!("{pool} absent")), &format!("{x}-members-absent"))]);
