@@ -20,8 +20,9 @@ name: skyzfs-publish-rig
 # publish asked anew, a name taken, `look` at a name published and at
 # names absent), prewind (P2: a rewind import with the abandoned
 # history's cuts held while object storage is down, `look` with it
-# down), prewindf (a `zpool import -F` while a publish waits: refused
-# `rewound`),
+# down), prewindf (a rewind import, `zpool import -F` or else -FX,
+# while a publish waits: refused `rewound`), prewindc (its control:
+# a plain import, and the publish still waits),
 # pkill, pkillman, pkillpub (P3: kills while a publish pends, after a
 # withdrawal, before and after the publish's transaction), pchannel
 # (P4: no upload, the greeting, a malformed request, a name, another
@@ -40,7 +41,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       courses:
-        description: "courses, separated by spaces (pplain prewind prewindf pkill pkillman pkillpub pchannel); empty: all"
+        description: "courses, separated by spaces (pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel); empty: all"
         default: ""
       daemon_ref:
         description: "build skyzfsd from this commit (40 hex digits) and not from the checkout, under the checkout's rig. Empty: the checkout"
@@ -175,7 +176,7 @@ jobs:
         env:
           COURSES: ${{ inputs.courses || '' }}
         run: |
-          read -r -a recs <<< "${COURSES:-pplain prewind prewindf pkill pkillman pkillpub pchannel}"
+          read -r -a recs <<< "${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel}"
           for r in "${recs[@]}"; do [[ $r =~ ^p[a-z]+$ ]] || { echo "::error::not a publish course: $r"; exit 64; }; done
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" \

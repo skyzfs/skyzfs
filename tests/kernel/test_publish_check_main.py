@@ -155,7 +155,8 @@ COURSES = {
     },
     'prewindf': {
         'ends': {'f1': 'pending after 3 s',
-                 'f1-end': 'refused rewound a rewind may have been counted after the count asked from'},
+                 'f1-end': 'refused rewound a rewind may have been counted after the count asked from',
+                 'f1-look': 'absent'},
         'requests': {'f1': (7, 1000050, 50)},
         'rows': {},
         # The export synced up to group 55 (cut 9); -F went back past it,
@@ -168,8 +169,21 @@ COURSES = {
                   'agent.tsv': f'990\t995\tpublish --name f1 --attachment {A} --state {S} --after 7 '
                                f'--group 1000050 --manifest m --expiry-s 900\t0\taccepted\n'},
     },
+    # prewindf's control: a plain import (session 2 ready at ns 1035, the
+    # log's clock); cuts 10 and 11 after it go on above group 55, and c1
+    # still waits.
+    'prewindc': {
+        'ends': {'c1': 'pending after 3 s', 'c1-end': 'pending after 60 s', 'c1-withdraw': 'withdrawn',
+                 'c1-look': 'absent'},
+        'requests': {'c1': (7, 1000050, 50)},
+        'rows': {},
+        'log': [(PID, [(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True),
+                       ('publish', 'withdraw', 'c1 withdrawn'), (12, 58, True)])],
+        'files': {'marks.tsv': '1005\tsession-1-begin\n1006\tsession-1-ready\n1025\tsession-1-end\n'
+                               '1030\tsession-2-begin\n1035\tsession-2-ready\n'},
+    },
     'pkill': {
-        'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tk': 'pending after 9',
+        'ends': {'tw': 'pending after 7', 'tw-withdraw': 'withdrawn', 'tw-look': 'absent', 'tk': 'pending after 9',
                  'tw-after': 'unknown', 'tk-after': 'unknown', 'tk-again': 'refused rewound',
                  'tk-anew': 'accepted', 'tk-end': 'done commit=' + commit_of('tk'), 'tw-last': 'unknown'},
         'requests': {'tw': (7, 50, 20), 'tk': [(9, 80, 50), (11, 80, 50)]},
@@ -572,6 +586,56 @@ class Premises(unittest.TestCase):
             rc, got = run_course('prewind', self.prewind_log(lines), rows={'r1': (11, 63)})
             self.assertEqual((rc, got[key][0]), (2, 'ERROR'), lines)
             self.assertIn('none', got[key][1])
+
+    def prewindc_log(self, lines):
+        def change(d):
+            with open(os.path.join(d, 'requests.tsv'), 'w') as f:
+                f.write(log_text([(PID, lines)]))
+        return change
+
+    def test_prewindc_ends_1_for_a_daemon_that_ends_c1_at_any_import(self):
+        """#141's review, S1: with no cut marked, c1 ended `refused
+        rewound` is a verdict against the daemon, the premise holding."""
+        log = self.prewindc_log([(8, 52, True), (9, 55, True), (10, 56, True),
+                                 ('publish', 'ended', 'c1 refused rewound'), (11, 57, True),
+                                 ('publish', 'withdraw', 'c1 unknown'), (12, 58, True)])
+
+        def change(d):
+            log(d)
+            answer('c1-end', 'refused rewound a rewind may have been counted after the count asked from')(d)
+            answer('c1-withdraw', 'unknown')(d)
+        rc, lines = run_course('prewindc', change)
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(lines, 'pin_answer_c1-end', 'pin_answer_c1-withdraw',
+                                  'premise_c1_waited_across_a_plain_import'), ['FAILED', 'FAILED', 'ok'])
+        self.assertNotIn('rig_error', lines)
+
+    def test_prewindc_whose_import_was_a_rewind_or_made_no_cut_ends_2(self):
+        key = 'premise_c1_waited_across_a_plain_import'
+        for lines, why in (
+                # a cut after C not above the groups before it: the import was a rewind
+                ([(8, 52, True), (9, 55, True), (10, 55, False), (11, 57, True),
+                  ('publish', 'withdraw', 'c1 withdrawn')], 'cuts not above the groups before them: 10 of group 55'),
+                # no cut once the import returned (ns 1035) and before the withdrawal
+                ([(8, 52, True), (9, 55, True), (10, 56, True), ('publish', 'withdraw', 'c1 withdrawn'),
+                  (11, 57, True)], 'before c1\'s withdrawal: none'),
+                # no line of c1's withdrawal
+                ([(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True)], 'no line of c1\'s withdrawal'),
+                # another name's withdrawal is not c1's
+                ([(8, 52, True), (9, 55, True), (10, 56, True), (11, 57, True),
+                  ('publish', 'withdraw', 'c12 withdrawn')], 'no line of c1\'s withdrawal')):
+            rc, got = run_course('prewindc', self.prewindc_log(lines))
+            self.assertEqual((rc, got[key][0]), (2, 'ERROR'), lines)
+            self.assertIn(why, got[key][1])
+        rc, got = run_course('prewindc', write('marks.tsv', '1005\tsession-1-begin\n'))
+        self.assertEqual(rc, 2)
+        self.assertIn('no mark session-2-ready', got['rig_error'][1])
+
+    def test_a_look_that_finds_an_ended_or_withdrawn_name_ends_1(self):
+        for course, label, t in (('prewindf', 'f1-look', 'f1'), ('prewindc', 'c1-look', 'c1'),
+                                 ('pkill', 'tw-look', 'tw')):
+            rc, lines = run_course(course, answer(label, look_of(t, 9, 55)))
+            self.assertEqual((rc, lines[f'pin_answer_{label}'][0]), (1, 'FAILED'), course)
 
     def test_the_watcher_s_verdict_ends_1(self):
         """#139's review: the watcher's VERDICT line (node B could not

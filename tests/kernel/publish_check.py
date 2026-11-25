@@ -5,9 +5,8 @@ snapshot is published by a cut of the pool's present history", and §5.4).
 Usage: publish_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 Called by tests/kernel/cut-record.sh as its CUT_CHECK after each of the
-publish courses (pplain, prewind, prewindf, pkill, pkillman, pkillpub,
-pchannel),
-recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
+publish courses (pplain, prewind, prewindf, prewindc, pkill, pkillman,
+pkillpub, pchannel), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
 daemon's request log; BASE is `-`. Environment: as nodeb_check.py's
 (SKZ_NODEB, SKZ_S3_ENDPOINT, SKZ_S3_BUCKET and the keys). The volume in
 object storage is `cut-NAME`.
@@ -69,7 +68,9 @@ count), and `look p1` then names the commit of snap/p1: for p1 the
 
 `look` (M2.6a; LOOKS): its `snap` answer for a name published must name
 the row node B read (its commit, state, cut, group and manifest), and
-for a name never published it must be `absent` (pplain's t5 and t3).
+for a name never published it must be `absent` (pplain's t5 and t3,
+prewindf's f1 once ended, prewindc's c1 once withdrawn, pkill's tw once
+withdrawn).
 With object storage down it must be `refused store` or `refused
 no-answer`, never `absent` (prewind's r1-look).
 
@@ -81,6 +82,11 @@ rewind cut (pin_f1_ended_after_the_rewind_cut). That is all prewindf
 pins: the mark ends a waiting publish. f1 is asked with G far above
 its snapshot's, so no daemon that honours G could publish it in either
 history, and pin_f1_absent cannot fail for one (#141's review, D-c).
+Its control, prewindc (#141's review, S1), is the same course with
+nothing zeroed and a plain import: its groups go on above the ones
+before, so no cut is marked, and c1 must still wait a minute of syncs
+later (`pending after`). A daemon that ended every waiting publish at
+an import, whatever its groups, passes prewindf and fails here.
 
 For each name in ABSENT, node B must find neither the ref nor the row.
 A premise (a `premise_` line) that does not hold means the course did
@@ -118,6 +124,10 @@ of #139):
   expiry, counted from the agent's send in agent.tsv on the request
   log's clock (so a course whose f1 expired first is the rig's error,
   and not a daemon that did not end it).
+- prewindc: cuts were counted after c1's C once the import had returned
+  (the rig's mark session-2-ready, on the log's clock) and before the
+  line of c1's withdrawal, whatever it answered, and no cut after C
+  before that line is a ground of rule (R): the import was no rewind.
 - pkill: the instance that answered tw's withdrawal, whatever it
   answered (pin_answer_tw-withdraw judges that), then counted cuts
   of tw's G or later that open as itself, and committed one
@@ -156,7 +166,7 @@ import cut_daemon_check  # noqa: E402
 import nodeb_check  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('pplain', 'prewind', 'prewindf', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
+COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel')
 
 # label -> the answers allowed, each a prefix of the answer line.
 EXPECTED = {
@@ -189,15 +199,25 @@ EXPECTED = {
         'r1-anew': ('accepted',),             # past the abandoned top, a count read then
         'r1-end': ('done ',),
     },
-    # A rewind by `zpool import -F` while f1 waits for its cut: the mark
-    # ends it.
+    # A rewind import (`zpool import -F`, else -FX) while f1 waits for
+    # its cut: the mark ends it.
     'prewindf': {
         'f1': ('pending after',),
         'f1-end': ('refused rewound',),
+        'f1-look': ('absent',),
+    },
+    # Its control (#141's review, S1): a plain import marks no cut, and c1
+    # still waits a minute of syncs later.
+    'prewindc': {
+        'c1': ('pending after',),
+        'c1-end': ('pending after',),
+        'c1-withdraw': ('withdrawn',),
+        'c1-look': ('absent',),
     },
     'pkill': {
         'tw': ('pending after',),
         'tw-withdraw': ('withdrawn',),
+        'tw-look': ('absent',),               # withdrawn, with a cut past its G committed
         'tk': ('pending after',),
         'tw-after': ('withdrawn', 'unknown'),  # never done, with whatever commit
         'tk-after': ('unknown',),             # pending publishes are in memory
@@ -240,6 +260,7 @@ PUBLISHED = {
     'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
     'prewind': {'r1': 'r1-end'},
     'prewindf': {},
+    'prewindc': {},
     'pkill': {'tk': 'tk-end'},
     'pkillman': {'m1': 'm1-end'},
     'pkillpub': {'p1': 'p1-look'},
@@ -248,7 +269,7 @@ PUBLISHED = {
 # Names that must have no ref and no row: an expired publish, one never
 # asked validly, one withdrawn before a kill and past whose G the pool's
 # cuts went.
-ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'pkill': ('tw',)}
+ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',)}
 # The names published -> the label of a `look` at them, whose `snap`
 # answer must name the row node B read (pin_T_look).
 LOOKS = {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}}
@@ -506,6 +527,28 @@ def asked_line(name, after):
     (review of #141, N3)."""
     return lambda ln: (ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
                        and ln['sectors'] == str(after))
+
+
+def withdraw_line(name):
+    """-> a STOP for rewind_cuts: the request log's line of NAME's
+    withdrawal, whatever the daemon answered."""
+    return lambda ln: (ln['event'] == 'publish' and ln['op'] == 'withdraw'
+                       and ln['result'].split(' ', 1)[0] == name)
+
+
+def cuts_since(instances, after, since, stop):
+    """The cuts counted after AFTER whose lines come after the monotonic
+    ns SINCE, in the instance where STOP holds, up to that line ->
+    [(number, group)]; [] where no line is STOP."""
+    for inst in instances:
+        seen = []
+        for ln in inst['lines']:
+            if stop(ln):
+                return seen
+            if (ln['event'] == 'cut' and ln['sectors'].isdigit() and ln['result'].isdigit()
+                    and int(ln['sectors']) > after and ln['ns'] > since):
+                seen.append((int(ln['sectors']), int(ln['result'])))
+    return []
 
 
 def ask_deadline(agent_text, name):
@@ -784,6 +827,25 @@ def main():
             holds('pin_f1_ended_after_the_rewind_cut', judge_ended(instances, 'f1', within[0][3]), 'server',
                   f'f1 ended `refused rewound` after cut {within[0][0]} of group {within[0][1]}, which the mark '
                   f'of rule (R) covers (the top before it {within[0][2]})')
+        if name == 'prewindc':
+            # The control's premise: the import was no rewind, by the cut
+            # lines and the rig's marks (its return, session 2's ready),
+            # up to c1's withdrawal, whatever the daemon answered there.
+            c1 = published.get('c1')
+            if c1 is None:
+                raise RigError('no request of c1 in published.tsv')
+            ready = [ns for ns, m in cut_daemon_check.read_marks(text_of('marks.tsv')) if m == 'session-2-ready']
+            if not ready:
+                raise RigError('no mark session-2-ready (the import\'s return) in marks.tsv')
+            found, grounds = rewind_cuts(instances, c1['after'], withdraw_line('c1'))
+            later = cuts_since(instances, c1['after'], ready[0], withdraw_line('c1'))
+            premise('premise_c1_waited_across_a_plain_import', found and bool(later) and not grounds,
+                    'no line of c1\'s withdrawal in the request log' if not found else
+                    f"cuts counted after C = {c1['after']} once the import returned and before c1's withdrawal: "
+                    + (', '.join(f'{n} of group {g}' for n, g in later) or 'none')
+                    + ('; cuts not above the groups before them: '
+                       + ', '.join(f'{n} of group {g} (the top before it {t})' for n, g, t, _ in grounds)
+                       if grounds else '; none of them, nor any after C before, a ground of rule (R)'))
         if name in BETWEEN:
             t, there = BETWEEN[name]
             kill = text_of('kill.tsv').strip()
