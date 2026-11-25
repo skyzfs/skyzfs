@@ -28,8 +28,9 @@
 //! whom) is for a person to judge. A record of another version is
 //! corrupt to this agent, as the plan says (no reader of other versions
 //! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
-//! was begun, and [`Why::NoProgress`], [`Why::TooOld`] and
-//! [`Why::Stopped`]; version 1
+//! was begun, a person's part in a publish ([`Person`]), and
+//! [`Why::NoProgress`], [`Why::TooOld`], [`Why::Stopped`] and
+//! [`Why::Person`]; version 1
 //! (M2.6b1) is not read, since no agent that wrote it ever ran: the
 //! crate had no engine and no program then. No agent has run version 2
 //! either; from the first run of the program (M2.6c), any change to the
@@ -123,6 +124,24 @@ pub struct Publish {
     /// When it was begun (the wall clock, in ms since 1970): its age
     /// bounds it ([`crate::plan::AGE_MAX`]).
     pub begun_ms: u64,
+    /// What a person is to do, or has done, about it; `None` while it is
+    /// the agent's alone.
+    pub person: Option<Person>,
+}
+
+/// A person's part in a publish under way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Person {
+    /// Stopped for a person: the daemon said `done`, and `look` did not
+    /// see this publish's `snap/<t>` with the commit `done` named
+    /// ([`crate::plan::Stop::DoneNotSeen`]). Recorded, so that the stop
+    /// outlasts a restart of the agent (S5 of #144's review): the hold and
+    /// the record are kept until a person runs `recover`.
+    Stopped,
+    /// A person gave it up (`recover --give-up`): its request is
+    /// withdrawn where one may pend, its hold released, and it is given
+    /// up as [`Why::Person`].
+    GiveUp,
 }
 
 /// The daemon's count of cuts that a publish is asked after, read before
@@ -236,6 +255,8 @@ pub enum Why {
     /// The daemon's uploader stopped for good (`refused stopped`) before
     /// it published it (the lead's ruling on #146).
     Stopped,
+    /// A person gave it up ([`Person::GiveUp`]).
+    Person,
 }
 
 /// Why a record's bytes are not read.
@@ -507,15 +528,7 @@ impl<F: Fs> Store<F> {
 
     /// The record there.
     pub fn load(&self) -> io::Result<Loaded> {
-        let bytes = match self.fs.read(&self.dir.join(RECORD)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Absent),
-            Err(e) => return Err(e),
-        };
-        Ok(match Record::decode(&bytes) {
-            Ok(record) => Loaded::Present(record),
-            Err(why) => Loaded::Corrupt(why),
-        })
+        peek_on(&self.fs, &self.dir)
     }
 
     /// Save `record` over the one there, which must be absent or a
@@ -622,6 +635,28 @@ impl<F: Fs> Keep for Store<F> {
     fn manifest_names(&self) -> io::Result<Vec<String>> {
         Store::manifest_names(self)
     }
+}
+
+/// The record in the directory `dir` on the disk, read without its lock
+/// and without changing anything: for a person, or a rig, to look at
+/// while an agent may be running (`skyzfs-agent record`). A save
+/// renames a whole file over the record, so what is read is one record
+/// or the next, never a part of one.
+pub fn peek(dir: &Path) -> io::Result<Loaded> {
+    peek_on(&Disk, dir)
+}
+
+/// [`peek`] on the file system `fs`.
+pub fn peek_on(fs: &impl Fs, dir: &Path) -> io::Result<Loaded> {
+    let bytes = match fs.read(&dir.join(RECORD)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Absent),
+        Err(e) => return Err(e),
+    };
+    Ok(match Record::decode(&bytes) {
+        Ok(record) => Loaded::Present(record),
+        Err(why) => Loaded::Corrupt(why),
+    })
 }
 
 /// Make `dir` where it is not, and sync its parent so that it stays.

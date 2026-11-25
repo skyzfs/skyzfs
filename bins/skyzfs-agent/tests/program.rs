@@ -1,0 +1,215 @@
+//! The program as a process: what it prints and how it exits where no
+//! pool is needed, and its test hooks on a fake `zpool` and `zfs`.
+
+use std::fs;
+use std::path::Path;
+use std::process::{Command, Output};
+
+const AGENT: &str = env!("CARGO_BIN_EXE_skyzfs-agent");
+
+const REMOTE: &str = "skyzfs-remote 1\nendpoint http://127.0.0.1:9000\nbucket volumes\n\
+                      volume pg-data\nid 01ARZ3NDEKTSV4RRFFQ69G5FAV\n";
+
+fn agent(args: &[&str], path: Option<&Path>) -> Output {
+    let mut command = Command::new(AGENT);
+    command.args(args);
+    if let Some(dir) = path {
+        let path = std::env::var("PATH").unwrap_or_default();
+        command.env("PATH", format!("{}:{path}", dir.display()));
+    }
+    command.output().expect("the agent runs")
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// A volume's directory with its `remote`, and the agent's directory.
+fn dirs(top: &Path) -> (String, String, String) {
+    let volume = top.join("vol");
+    fs::create_dir(&volume).expect("vol");
+    fs::write(volume.join("remote"), REMOTE).expect("remote");
+    let run = top.join("run");
+    fs::create_dir(&run).expect("run");
+    let dir = top.join("agent");
+    let s = |p: &Path| p.display().to_string();
+    (s(&volume), s(&run), s(&dir))
+}
+
+#[test]
+fn record_of_a_directory_with_none_prints_absent() {
+    let top = tempfile::tempdir().expect("tmp");
+    let out = agent(
+        &["record", "--dir", &top.path().display().to_string()],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "absent\n");
+    fs::write(top.path().join("record"), b"not a record").expect("write");
+    let out = agent(
+        &["record", "--dir", &top.path().display().to_string()],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(6), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("corrupt"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn a_usage_error_exits_2_with_the_usage() {
+    for args in [&[][..], &["publish"][..], &["record", "--dir"][..]] {
+        let out = agent(args, None);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(text(&out.stderr).contains("usage:"), "{args:?}");
+    }
+    let out = agent(&["--help"], None);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(text(&out.stdout).starts_with("usage:"));
+}
+
+#[test]
+fn a_volume_with_no_place_in_object_storage_publishes_nothing() {
+    let top = tempfile::tempdir().expect("tmp");
+    let (volume, run, dir) = dirs(top.path());
+    fs::remove_file(Path::new(&volume).join("remote")).expect("rm");
+    let args = [
+        "publish",
+        "--volume",
+        &volume,
+        "--run",
+        &run,
+        "--device",
+        "/dev/null",
+        "--pool",
+        "tank",
+        "--dir",
+        &dir,
+    ];
+    let out = agent(&args, None);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("remote"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[cfg(not(feature = "test-hooks"))]
+#[test]
+fn a_build_without_the_hooks_refuses_them() {
+    let out = agent(&["record", "--dir", "/d", "--trace-points", "/t"], None);
+    assert_eq!(out.status.code(), Some(2));
+    let out = agent(
+        &[
+            "settle",
+            "--volume",
+            "/v",
+            "--run",
+            "/r",
+            "--device",
+            "/d",
+            "--pool",
+            "tank",
+            "--dir",
+            "/d",
+            "--kill-at",
+            "sweep:before",
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        text(&out.stderr).contains("test hook"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// Testing's items 1 and 2 on a pool that `zpool` and `zfs` scripts
+/// fake: a hold of the agent's tag that no publish names, which the
+/// sweep releases, and a kill just before the release. The trace has
+/// the point, named for the snapshot, and the agent dies of `SIGKILL`
+/// after its line on standard error.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn the_agent_traces_a_point_then_dies_of_sigkill_there() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let top = tempfile::tempdir().expect("tmp");
+    let (volume, run, dir) = dirs(top.path());
+    let bin = top.path().join("bin");
+    fs::create_dir(&bin).expect("bin");
+    let script = |name: &str, body: &str| {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}")).expect("script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    script(
+        "zpool",
+        "[ \"$1\" = get ] || exit 1\n\
+         printf 'guid\\t11\\nload_guid\\t12\\nmultihost\\toff\\nreadonly\\toff\\ncheckpoint\\t-\\n'\n",
+    );
+    script(
+        "zfs",
+        "[ \"$1\" = program ] || { echo \"zfs $*\" >> \"$0.calls\"; exit 0; }\n\
+         printf '{\"return\": {\"tagged\": {\"skz-old\": \"1\"}}}\\n'\n",
+    );
+    let trace = top.path().join("trace");
+    let trace_arg = trace.display().to_string();
+    let args = [
+        "settle",
+        "--volume",
+        &volume,
+        "--run",
+        &run,
+        "--device",
+        "/dev/null",
+        "--pool",
+        "tank",
+        "--dir",
+        &dir,
+        "--limit-s",
+        "5",
+        "--trace-points",
+        &trace_arg,
+        "--kill-at",
+        "sweep:before:1",
+    ];
+    let out = agent(&args, Some(&bin));
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.signal(), Some(9), "{:?}: {stderr}", out.status);
+    assert!(
+        stderr.ends_with("skyzfs-agent: test hook --kill-at: killed at sweep before (1)\n"),
+        "{stderr}"
+    );
+    let traced = fs::read_to_string(&trace).expect("the trace");
+    let fields: Vec<Vec<&str>> = traced.lines().map(|l| l.split('\t').collect()).collect();
+    assert_eq!(fields.len(), 1, "{traced:?}");
+    assert!(fields[0][0].parse::<u64>().is_ok(), "{traced:?}");
+    assert_eq!(fields[0][1..], ["sweep", "before", "skz-old"], "{traced:?}");
+    // Killed before the release: `zfs release` never ran.
+    assert!(!bin.join("zfs.calls").exists());
+    // Without the kill, the sweep releases the hold and the trace says so.
+    fs::remove_file(&trace).expect("rm");
+    let out = agent(&args[..args.len() - 2], Some(&bin));
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let calls = fs::read_to_string(bin.join("zfs.calls")).expect("calls");
+    assert!(
+        calls.contains("release -r skyzfs-publish tank@skz-old"),
+        "{calls}"
+    );
+    let traced = fs::read_to_string(&trace).expect("the trace");
+    let points: Vec<&str> = traced
+        .lines()
+        .map(|l| l.split_once('\t').map_or("", |(_, rest)| rest))
+        .collect();
+    assert_eq!(
+        points,
+        ["sweep\tbefore\tskz-old", "sweep\tafter\tskz-old"],
+        "{traced:?}"
+    );
+}

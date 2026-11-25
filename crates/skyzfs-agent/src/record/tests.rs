@@ -36,6 +36,7 @@ pub(super) fn publish(name: &str, phase: Phase, held: bool) -> Publish {
         attempts: 2,
         stalls: 1,
         begun_ms: 1_700_000_000_000,
+        person: None,
     }
 }
 
@@ -108,6 +109,7 @@ fn a_record_reads_back_as_written() {
         Why::NoProgress,
         Why::TooOld,
         Why::Stopped,
+        Why::Person,
     ] {
         record.abandoned.push(Abandoned {
             name: format!("{why:?}"),
@@ -360,6 +362,12 @@ fn golden() -> Record {
         attempts,
         stalls: 20 + attempts,
         begun_ms: 0x60 + u64::from(attempts),
+        // Each value, so that the golden bytes pin every encoding.
+        person: match attempts {
+            2 => Some(Person::Stopped),
+            3 => Some(Person::GiveUp),
+            _ => None,
+        },
     };
     let whys = [
         Why::ManifestLost,
@@ -372,6 +380,7 @@ fn golden() -> Record {
         Why::NoProgress,
         Why::TooOld,
         Why::Stopped,
+        Why::Person,
     ];
     Record {
         volume: [0x0f; 16],
@@ -422,24 +431,25 @@ fn golden() -> Record {
 /// variants by position, so a field moved or added, or a variant inserted
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
-const GOLDEN: [&str; 17] = [
-    "535a414702000000ed0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+const GOLDEN: [&str; 18] = [
+    "535a414702000000fb0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e5e5e5e03ad2100000014600174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac02414141",
-    "4141414141414141414141414141414141414141414141414141414141000115",
-    "610168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e03ad2102290103702f6402ac0242424242424242424242424242424242",
-    "42424242424242424242424242424242010216620161a1a1a1a1a1a1a1a1a1a1",
-    "a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f64",
-    "03ac024343434343434343434343434343434343434343434343434343434343",
-    "4343430607010317630164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e",
-    "5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444444444444444",
-    "444444444444444444444444444444444444444444444444c0c0c0c0c0c0c0c0",
-    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0010418640a027730",
-    "00e80702773101e90702773202ea0702773303eb0702773404ec0702773505ed",
-    "0702773606ee0702773707ef0702773808f00702773909f1070545dc512e04dd",
-    "a024450c85490e0ba1e949a3a9bac375000d8d273edb82d3c2",
+    "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
+    "4141414141414141414141414141414141414141414141414141414141410001",
+    "1561000168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e03ad2102290103702f6402ac024242424242424242424242424242",
+    "4242424242424242424242424242424242420102166201000161a1a1a1a1a1a1",
+    "a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a01",
+    "03702f6403ac0243434343434343434343434343434343434343434343434343",
+    "4343434343434306070103176301010164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444",
+    "444444444444444444444444444444444444444444444444444444444444c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104",
+    "1864000b02773000e80702773101e90702773202ea0702773303eb0702773404",
+    "ec0702773505ed0702773606ee0702773707ef0702773808f00702773909f107",
+    "037731300af2073332f1873595cc4cd429cfa1d4877fb51fb1ef9c630afe29ac",
+    "a1c7cc220bd12c",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before

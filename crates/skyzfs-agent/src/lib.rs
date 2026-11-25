@@ -13,8 +13,9 @@
 //! on the file system's calls ([`fs`]).
 //! The adapters run it on the machine ([`host`]): `zfs` and `zpool`
 //! ([`zfs::cli`]) and the daemon's socket and device ([`daemon`]). The
-//! command line comes next (M2.6c). It has no async runtime and links
-//! nothing of the daemon.
+//! program `skyzfs-agent` (`bins/skyzfs-agent`) is a thin shell over
+//! [`program`]: its command line, output and exit codes. It has no async
+//! runtime and links nothing of the daemon.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -26,5 +27,6 @@ pub mod host;
 pub mod manifest;
 pub mod names;
 pub mod plan;
+pub mod program;
 pub mod record;
 pub mod zfs;

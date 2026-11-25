@@ -7,7 +7,7 @@ use std::time::Duration;
 use skyzfs_control::{Code, CutsReply, Reply, SnapReply, UnreadableReply, EXPIRY_DEFAULT};
 
 use super::*;
-use crate::record::{Count, Member, Phase, Publish, Taken, Why};
+use crate::record::{Count, Member, Person, Phase, Publish, Taken, Why};
 
 const LOAD: u64 = 0x10ad;
 const ATTACHMENT: [u8; 16] = [0xa1; 16];
@@ -63,6 +63,7 @@ fn publish(phase: Phase) -> Publish {
         attempts: 0,
         stalls: 0,
         begun_ms: BEGUN,
+        person: None,
     }
 }
 
@@ -132,6 +133,7 @@ fn seen() -> Seen {
         assists: 0,
         too_old: false,
         withdrawn: false,
+        assist_after: ASSIST_AFTER,
     }
 }
 
@@ -1973,4 +1975,276 @@ fn held_until_is_the_acceptance_plus_the_expiry_plus_the_margin() {
     assert_eq!(ASSIST_AFTER, Duration::from_secs(10));
     assert_eq!(ASSIST_PAUSE, Duration::from_secs(1));
     assert_eq!(ASSIST_QUICK, 3);
+}
+
+fn by(person: Person, phase: Phase) -> Publish {
+    Publish {
+        person: Some(person),
+        ..publish(phase)
+    }
+}
+
+/// Mutant: a recorded stop planned as if no person had a part, so that a
+/// restart asks the daemon again (S5 of #144's third look).
+#[test]
+fn a_recorded_stop_stops_again_whatever_is_seen() {
+    let stop = Action::Stop(Stop::DoneNotSeen);
+    let views = [
+        ("all well", seen()),
+        ("away", seen().away()),
+        (
+            "done, looked up",
+            seen()
+                .answer(Reply::Done(COMMIT))
+                .looked(SnapSeen::Ours(COMMIT)),
+        ),
+        ("too old", seen().too_old()),
+        ("gone", seen().gone()),
+        ("unheld", seen().unheld()),
+    ];
+    let mut wrong = Vec::new();
+    for phase in [intent(), taken_phase(), held(), asked()] {
+        for (what, view) in &views {
+            let got = plan(&by(Person::Stopped, phase.clone()), view);
+            if got != stop {
+                wrong.push(format!("{phase:?}, {what}: {got:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // Done is done: a person's mark on it changes nothing.
+    assert_eq!(plan(&by(Person::Stopped, done()), &seen()), Action::Release);
+    assert_eq!(
+        plan(&by(Person::GiveUp, done()), &seen().unheld()),
+        Action::Forget
+    );
+}
+
+/// Mutant: a give-up that releases while a request may pend, gives up a
+/// publish made, or waits for a daemon away at a phase that asked
+/// nothing.
+#[test]
+fn a_person_gives_up_in_the_order_of_every_give_up() {
+    let gave = Action::Abandon(Why::Person);
+    let rows: Vec<(&str, Publish, Seen, Action)> = vec![
+        (
+            "intent",
+            by(Person::GiveUp, intent()),
+            seen().gone(),
+            gave.clone(),
+        ),
+        (
+            "intent, away",
+            by(Person::GiveUp, intent()),
+            seen().gone().away(),
+            gave.clone(),
+        ),
+        (
+            "taken, held",
+            by(Person::GiveUp, taken_phase()),
+            seen(),
+            Action::Release,
+        ),
+        (
+            "taken, released",
+            by(Person::GiveUp, taken_phase()),
+            seen().unheld(),
+            gave.clone(),
+        ),
+        (
+            "held, pending",
+            by(Person::GiveUp, held()),
+            seen(),
+            Action::Withdraw,
+        ),
+        (
+            "asked, pending",
+            by(Person::GiveUp, asked()),
+            seen(),
+            Action::Withdraw,
+        ),
+        (
+            "asked, accepted",
+            by(Person::GiveUp, asked()),
+            seen().answer(Reply::Accepted),
+            Action::Withdraw,
+        ),
+        (
+            "asked, refused asked",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::Asked),
+            Action::Withdraw,
+        ),
+        (
+            "asked, pending, withdrawn",
+            by(Person::GiveUp, asked()),
+            seen().withdrawn(),
+            Action::Look,
+        ),
+        (
+            "asked, withdrawn",
+            by(Person::GiveUp, asked()),
+            seen().answer(Reply::Withdrawn),
+            Action::Look,
+        ),
+        (
+            "asked, withdrawn, made",
+            by(Person::GiveUp, asked()),
+            seen()
+                .answer(Reply::Withdrawn)
+                .looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        (
+            "asked, withdrawn, none",
+            by(Person::GiveUp, asked()),
+            seen().answer(Reply::Withdrawn).looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "asked, withdrawn, none, released",
+            by(Person::GiveUp, asked()),
+            seen()
+                .answer(Reply::Withdrawn)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            gave.clone(),
+        ),
+        (
+            "asked, another's",
+            by(Person::GiveUp, asked()),
+            seen()
+                .answer(Reply::Expired)
+                .looked(SnapSeen::NotOurs)
+                .unheld(),
+            gave.clone(),
+        ),
+        (
+            "asked, unreadable",
+            by(Person::GiveUp, asked()),
+            seen().refused(Code::Store).looked(SnapSeen::Unreadable),
+            Action::Release,
+        ),
+        // A request may still land: the hold stays until `held_until`.
+        (
+            "asked, away",
+            by(Person::GiveUp, asked()),
+            seen().away(),
+            Action::Wait,
+        ),
+        (
+            "asked, away, a ms before held_until",
+            by(Person::GiveUp, asked()),
+            seen().away().at(UNTIL - 1),
+            Action::Wait,
+        ),
+        (
+            "asked, away, at held_until",
+            by(Person::GiveUp, asked()),
+            seen().away().at(UNTIL),
+            Action::Release,
+        ),
+        (
+            "asked, away, released",
+            by(Person::GiveUp, asked()),
+            seen().away().at(UNTIL).unheld(),
+            gave.clone(),
+        ),
+        (
+            "held, away",
+            by(Person::GiveUp, held()),
+            seen().away(),
+            Action::Release,
+        ),
+        (
+            "held, away, released",
+            by(Person::GiveUp, held()),
+            seen().away().unheld(),
+            gave,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, publish, seen, want) in rows {
+        let got = plan(&publish, &seen);
+        if got != want {
+            wrong.push(format!("{what}: {got:?}, not {want:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Mutant: a publish too old that waits, held, for a daemon away goes
+/// unreported, or the report is made where it does not wait or is not
+/// held (S6 of #144's third look).
+#[test]
+fn a_publish_too_old_held_for_a_daemon_away_is_reported() {
+    let away = seen().away().too_old();
+    assert_eq!(plan(&publish(asked()), &away), Action::Wait);
+    assert_eq!(
+        report(&publish(asked()), &away, &Action::Wait),
+        Some(Report::HeldAway)
+    );
+    assert_eq!(
+        report(&publish(held()), &away, &Action::Wait),
+        Some(Report::HeldAway)
+    );
+    assert_eq!(
+        report(&publish(asked()), &seen().away(), &Action::Wait),
+        None
+    );
+    assert_eq!(
+        report(&publish(asked()), &away.clone().unheld(), &Action::Wait),
+        None
+    );
+    assert_eq!(report(&publish(asked()), &away, &Action::Release), None);
+    assert_eq!(report(&publish(taken_phase()), &away, &Action::Wait), None);
+    assert_eq!(
+        report(&publish(asked()), &seen().too_old(), &Action::Wait),
+        None
+    );
+}
+
+/// Mutant: the time before a sync fixed at [`ASSIST_AFTER`] whatever is
+/// set, or the quick pause longer than the time set.
+#[test]
+fn the_time_before_a_sync_is_the_one_set() {
+    let quick = |s: Seen| s.with(|s| s.assist_after = Duration::from_millis(500));
+    check(vec![
+        (
+            "a ms before",
+            asked(),
+            quick(seen().at(ASKED + 499)),
+            Action::Wait,
+        ),
+        (
+            "at it",
+            asked(),
+            quick(seen().at(ASKED + 500)),
+            Action::Assist,
+        ),
+        (
+            "the pause is no longer than it",
+            asked(),
+            quick(seen().at(ASKED + 1_000).assisted(ASKED + 500).assists(1)),
+            Action::Assist,
+        ),
+        (
+            "nor shorter",
+            asked(),
+            quick(seen().at(ASKED + 999).assisted(ASKED + 500).assists(1)),
+            Action::Wait,
+        ),
+        (
+            "carried: after twice it",
+            asked(),
+            quick(seen().at(ASKED + 1_000).cuts(carrying())),
+            Action::Assist,
+        ),
+        (
+            "carried: a ms before",
+            asked(),
+            quick(seen().at(ASKED + 999).cuts(carrying())),
+            Action::Wait,
+        ),
+    ]);
 }

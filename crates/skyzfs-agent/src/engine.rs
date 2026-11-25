@@ -74,7 +74,7 @@ use crate::manifest::{self, Manifest, ManifestError};
 use crate::names;
 use crate::plan::{self, Action, DaemonSeen, PoolSeen, Report, Seen, SnapSeen, Stop};
 use crate::record::{
-    Corrupt, Count, Enrolled, Keep, Loaded, Phase, Publish, Record, SaveError, Taken, Why,
+    Corrupt, Count, Enrolled, Keep, Loaded, Person, Phase, Publish, Record, SaveError, Taken, Why,
     UNDER_WAY_MAX,
 };
 use crate::zfs::{self, Zfs, ZfsError, HOLD_TAG};
@@ -82,6 +82,13 @@ use crate::zfs::{self, Zfs, ZfsError, HOLD_TAG};
 /// How often the engine looks again at a publish that waits (the plan,
 /// §4, step 11).
 pub const TICK: Duration = Duration::from_secs(1);
+
+/// Why a publish stopped where `done` was not confirmed by `look`.
+const DONE_NOT_SEEN: &str = "the daemon said done, and look did not see it";
+
+/// Why a publish recorded stopped stops again.
+const STOPPED_BEFORE: &str =
+    "stopped for a person earlier: the daemon said done, and look did not see it";
 
 /// The daemon, as the agent reaches it: its channel
 /// ([`skyzfs_control::ask`]) and its device.
@@ -183,6 +190,78 @@ pub enum Effect {
     Abandon,
     /// The manifest's file removed.
     Unlink,
+    /// The record saved with the publish stopped for a person
+    /// ([`Person::Stopped`]).
+    Stop,
+    /// The record saved with a person's choice ([`Agent::recover`]).
+    Recover,
+}
+
+impl Effect {
+    /// Every effect, in order.
+    pub const ALL: [Effect; 24] = [
+        Effect::Enrol,
+        Effect::Intent,
+        Effect::Program,
+        Effect::Manifest,
+        Effect::Taken,
+        Effect::Holding,
+        Effect::Hold,
+        Effect::Held,
+        Effect::Count,
+        Effect::Stalled,
+        Effect::Ask,
+        Effect::Asked,
+        Effect::Withdraw,
+        Effect::Look,
+        Effect::Assist,
+        Effect::Release,
+        Effect::Released,
+        Effect::Done,
+        Effect::Sweep,
+        Effect::Forget,
+        Effect::Abandon,
+        Effect::Unlink,
+        Effect::Stop,
+        Effect::Recover,
+    ];
+
+    /// Its name, in lower case (the rigs' hooks name it so).
+    pub fn word(self) -> &'static str {
+        match self {
+            Effect::Enrol => "enrol",
+            Effect::Intent => "intent",
+            Effect::Program => "program",
+            Effect::Manifest => "manifest",
+            Effect::Taken => "taken",
+            Effect::Holding => "holding",
+            Effect::Hold => "hold",
+            Effect::Held => "held",
+            Effect::Count => "count",
+            Effect::Stalled => "stalled",
+            Effect::Ask => "ask",
+            Effect::Asked => "asked",
+            Effect::Withdraw => "withdraw",
+            Effect::Look => "look",
+            Effect::Assist => "assist",
+            Effect::Release => "release",
+            Effect::Released => "released",
+            Effect::Done => "done",
+            Effect::Sweep => "sweep",
+            Effect::Forget => "forget",
+            Effect::Abandon => "abandon",
+            Effect::Unlink => "unlink",
+            Effect::Stop => "stop",
+            Effect::Recover => "recover",
+        }
+    }
+
+    /// The effect named `word`, in any case.
+    pub fn from_word(word: &str) -> Option<Effect> {
+        Effect::ALL
+            .into_iter()
+            .find(|e| e.word().eq_ignore_ascii_case(word))
+    }
 }
 
 /// A point at which the engine's tests can stop it: before or after an
@@ -195,9 +274,23 @@ pub struct Point {
     pub after: bool,
 }
 
-/// Called at each [`Point`]; `true` stops the engine there
-/// ([`Error::Stopped`]).
-pub type Points = Box<dyn FnMut(Point) -> bool>;
+/// Called at each [`Point`] with the name of the publish it is for (the
+/// snapshot's, for [`Effect::Sweep`]; empty for [`Effect::Enrol`]);
+/// `true` stops the engine there ([`Error::Stopped`]).
+pub type Points = Box<dyn FnMut(Point, &str) -> bool>;
+
+/// Called with each report as it is made, before the engine acts on what
+/// it reports ([`Agent::with_sink`]).
+pub type Sink = Box<dyn FnMut(&str, &Report)>;
+
+/// A person's choice for a publish under way ([`Agent::recover`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Give it up ([`Person::GiveUp`]).
+    GiveUp,
+    /// Plan it again as the agent's own: a recorded stop is cleared.
+    Retry,
+}
 
 /// Why the engine did not do what was asked.
 #[derive(Debug)]
@@ -222,6 +315,8 @@ pub enum Error {
     Io(io::Error),
     /// [`Agent::settle`] ran out of time with publishes still under way.
     Unsettled(Vec<String>),
+    /// [`Agent::recover`] named no publish under way.
+    NotUnderWay(String),
 }
 
 impl fmt::Display for Error {
@@ -239,6 +334,7 @@ impl fmt::Display for Error {
             Error::Save(e) => write!(f, "the record: {e}"),
             Error::Io(e) => write!(f, "a manifest's file: {e}"),
             Error::Unsettled(names) => write!(f, "still under way: {}", names.join(" ")),
+            Error::NotUnderWay(name) => write!(f, "no publish {name} is under way"),
         }
     }
 }
@@ -315,7 +411,11 @@ pub struct Agent<Z, D, K, C> {
     reports: Vec<(String, Report)>,
     reported: BTreeSet<String>,
     assists: u64,
+    assist_after: Duration,
     points: Option<Points>,
+    sink: Option<Sink>,
+    /// The publish the next [`Point`] is for.
+    at: String,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -360,7 +460,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             reports: Vec::new(),
             reported: BTreeSet::new(),
             assists: 0,
+            assist_after: plan::ASSIST_AFTER,
             points: None,
+            sink: None,
+            at: String::new(),
         })
     }
 
@@ -374,6 +477,28 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// [`plan::AGE_MAX`] (the engine's tests, and the rigs' test hooks).
     pub fn with_age_max(mut self, age_max: Duration) -> Self {
         self.age_max = age_max;
+        self
+    }
+
+    /// Give each report to `sink` as it is made, before the engine acts
+    /// on it: a report reaches a person at least once across a crash of
+    /// the agent (S4 and the next look's "For M2.6c" on #144). Each is
+    /// still kept in [`Agent::reports`].
+    pub fn with_sink(mut self, sink: Sink) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    /// Ask with `expiry` instead of [`EXPIRY_DEFAULT`] (the rigs).
+    pub fn with_expiry(mut self, expiry: Duration) -> Self {
+        self.expiry = expiry;
+        self
+    }
+
+    /// Pace the syncs by `assist_after` instead of [`plan::ASSIST_AFTER`]
+    /// (the rigs' test hooks).
+    pub fn with_assist_after(mut self, assist_after: Duration) -> Self {
+        self.assist_after = assist_after;
         self
     }
 
@@ -411,6 +536,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
         let props = self.zfs.props(&self.pool)?;
         let leaf = self.premise(&props)?.map_err(Error::Premise)?;
+        self.at.clear();
         if self.record.enrolled.is_none() {
             let enrolled = Enrolled {
                 pool: self.pool.clone(),
@@ -424,6 +550,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(why) => return Err(Error::Daemon(why)),
         };
         let name = self.fresh_name()?;
+        self.at.clone_from(&name);
         let begun_ms = self.clock.now_ms();
         let mono = self.clock.mono_ms();
         let publish = Publish {
@@ -434,6 +561,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             attempts: 0,
             stalls: 0,
             begun_ms,
+            person: None,
         };
         self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
         self.memory.entry(name.clone()).or_default().begun = Some((begun_ms, begun_ms, mono));
@@ -474,6 +602,27 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
     }
 
+    /// Record a person's `choice` for the publish of `name`
+    /// (`skyzfs-agent recover`): [`Choice::GiveUp`] has the engine give it
+    /// up as [`Why::Person`], the next time it is settled; [`Choice::Retry`]
+    /// clears what a person recorded (a stop for a person, or a give-up
+    /// not yet carried out), and the publish is planned again as the
+    /// agent's own. A publish already done is released and forgotten as
+    /// usual either way. The publish is no longer stopped in this process.
+    pub fn recover(&mut self, name: &str, choice: Choice) -> Result<(), Error> {
+        if self.record.publish(name).is_none() {
+            return Err(Error::NotUnderWay(name.to_string()));
+        }
+        let person = match choice {
+            Choice::GiveUp => Some(Person::GiveUp),
+            Choice::Retry => None,
+        };
+        self.at = name.to_string();
+        self.commit(Effect::Recover, |r| set(r, name, |p| p.person = person))?;
+        self.stopped.remove(name);
+        Ok(())
+    }
+
     /// Release each hold [`HOLD_TAG`] in the pool that no publish under
     /// way names, once per import of the pool (per `load_guid`) and at
     /// the agent's start.
@@ -502,6 +651,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             if self.record.publish(&name).is_some() {
                 continue;
             }
+            self.at.clone_from(&name);
             self.point(Effect::Sweep, false)?;
             self.zfs.release(&self.pool, &name, HOLD_TAG)?;
             self.point(Effect::Sweep, true)?;
@@ -515,6 +665,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let Some(publish) = self.record.publish(name).cloned() else {
             return Ok(Moved::No);
         };
+        self.at = name.to_string();
+        if publish.person == Some(Person::Stopped) {
+            // Stopped for a person in an earlier round or process: nothing
+            // is asked of the pool or the daemon for it.
+            self.stop(name.to_string(), STOPPED_BEFORE.to_string());
+            return Ok(Moved::No);
+        }
         let Some(seen) = self.see(&publish)? else {
             return Ok(Moved::No);
         };
@@ -522,10 +679,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         // Before the act, as the report of `done` (F1 of #144's review):
         // a stop between the two makes it again in the next process.
         if let Some(report) = plan::report(&publish, &seen, &action) {
-            let made = (name.to_string(), report);
-            if !self.reports.contains(&made) {
-                self.reports.push(made);
-            }
+            self.tell(name, report);
         }
         self.act(&publish, action)
     }
@@ -584,6 +738,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             assists,
             too_old,
             withdrawn,
+            assist_after: self.assist_after,
         }))
     }
 
@@ -737,10 +892,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 // forgotten. Made once in this process where a save that
                 // failed has it planned again.
                 if let Some(report) = report {
-                    let made = (name.clone(), report);
-                    if !self.reports.contains(&made) {
-                        self.reports.push(made);
-                    }
+                    self.tell(&name, report);
                 }
                 self.commit(Effect::Done, |r| {
                     set(r, &name, |p| p.phase = Phase::Done { taken, commit })
@@ -765,7 +917,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 let why = match stop {
                     Stop::Refused(code) => format!("the daemon refused it: {}", code.word()),
                     Stop::DoneNotSeen => {
-                        "the daemon said done, and look did not see it".to_string()
+                        // Recorded, so that the stop outlasts a restart
+                        // (S5 of #144's third look).
+                        if publish.person != Some(Person::Stopped) {
+                            self.commit(Effect::Stop, |r| {
+                                set(r, &name, |p| p.person = Some(Person::Stopped))
+                            })?;
+                        }
+                        DONE_NOT_SEEN.to_string()
                     }
                 };
                 self.stop(name, why);
@@ -950,6 +1109,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Some(report) => {
                 if self.reported.insert(name.clone()) {
                     self.reports.push((name.clone(), report));
+                    if let Some(sink) = &mut self.sink {
+                        sink(&name, &report);
+                    }
                 }
             }
             None => {
@@ -1043,6 +1205,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.point(Effect::Unlink, true)
     }
 
+    /// Tell a person `report` of the publish of `name`: once in this
+    /// process, to the sink as it is made.
+    fn tell(&mut self, name: &str, report: Report) {
+        let made = (name.to_string(), report);
+        if self.reports.contains(&made) {
+            return;
+        }
+        if let Some(sink) = &mut self.sink {
+            sink(name, &report);
+        }
+        self.reports.push(made);
+    }
+
     /// The publish of `name` stops for a person to judge.
     fn stop(&mut self, name: String, why: String) {
         self.stopped.insert(name.clone());
@@ -1068,7 +1243,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Stop here where the tests say so.
     fn point(&mut self, effect: Effect, after: bool) -> Result<(), Error> {
         let stop = match &mut self.points {
-            Some(points) => points(Point { effect, after }),
+            Some(points) => points(Point { effect, after }, &self.at),
             None => false,
         };
         if stop {
@@ -1092,6 +1267,6 @@ fn ms(d: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod fake;
+pub(crate) mod fake;
 #[cfg(test)]
 mod tests;

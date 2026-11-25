@@ -4206,6 +4206,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-agent-cli"
+version = "0.0.1"
+dependencies = [
+ "rustix 1.1.4",
+ "skyzfs-agent",
+ "skyzfs-control",
+ "tempfile",
+]
+
+[[package]]
 name = "skyzfs-blk"
 version = "0.0.1"
 dependencies = [

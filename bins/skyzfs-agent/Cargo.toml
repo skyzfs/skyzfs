@@ -1,0 +1,29 @@
+[package]
+name = "skyzfs-agent-cli"
+description = "The SkyZFS node agent's program: snapshots a pool on a served volume and has the daemon publish them (design §5.2, §5.4; M2.6)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "skyzfs-agent"
+path = "src/main.rs"
+
+[features]
+# Options for the rigs (`--kill-at`, `--trace-points`, `--assist-after-s`,
+# `--age-max-s`). Not in a default build: without it the program refuses
+# them as a usage error. The trace reads CLOCK_MONOTONIC (`rustix/time`);
+# the kill is a SIGKILL to the agent itself (`rustix/process`).
+test-hooks = ["dep:rustix", "rustix/time", "rustix/process"]
+
+[dependencies]
+skyzfs-agent = { workspace = true }
+skyzfs-control = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
