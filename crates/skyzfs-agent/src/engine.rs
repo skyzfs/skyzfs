@@ -1,0 +1,889 @@
+//! The engine (the plan of M2.6, §4): it begins a publish, and for each
+//! publish under way it looks at the pool, the daemon and `snap/<t>`,
+//! asks the planner ([`crate::plan`]) for the next action, does it, and
+//! records what it changed. Every rule is the planner's; the engine only
+//! sees and acts, so a crash anywhere is met by planning from what is
+//! seen ([`Agent::settle`] after [`Agent::new`]).
+//!
+//! # The steps of one publish
+//!
+//! 1. The premise ([`crate::zfs::premise`]), before any snapshot; the
+//!    pool and its leaf enrolled at the first publish (the lead's Q4).
+//! 2. `cuts`, with `load_guid` read before it (rule (L)).
+//! 3. Recorded [`Phase::Intent`].
+//! 4. The channel program, with the count read anew and recorded first.
+//! 5. The manifest's file, then recorded [`Phase::Taken`].
+//! 6. The hold, recorded as believed placed before it is placed.
+//! 7. The members, the hold and `load_guid` seen as recorded: recorded
+//!    [`Phase::Held`].
+//! 8. `publish`, answered `accepted`: recorded [`Phase::Asked`], with
+//!    `held_until` from this answer.
+//! 9. `progress` and `cuts` once a second, and `zpool sync` where the
+//!    planner says.
+//! 10. `done`, read with `look`: recorded [`Phase::Done`].
+//! 11. The hold released, then the publish and its manifest removed.
+//!
+//! [`Action::AskAnew`] reads a count anew in the planner's order ("The
+//! rule for AskAnew"): `load_guid`, `cuts`, the snapshot, its hold and
+//! its members, `load_guid` again, and records the count before it asks.
+//!
+//! # What the engine remembers between rounds
+//!
+//! Only within one process, and only as the planner's inputs: the answer
+//! to its last request about a publish (a refusal or a withdrawal, kept
+//! for the round after a `look` so that the planner sees both), what
+//! `look` saw, and when it last helped the publish with a sync. A
+//! restart forgets them, which costs at most a `look` or a sync.
+//!
+//! # Crash points
+//!
+//! In its tests the engine can be stopped before and after each effect
+//! ([`Point`]): each save of the record, each change to ZFS, each request
+//! to the daemon and each file of a manifest. The crash matrix (in
+//! `engine/tests.rs`) stops it at every one in turn.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::io;
+use std::time::Duration;
+
+use skyzfs_control::{CutsReply, Publish as PublishRequest, Reply, Request, EXPIRY_DEFAULT};
+
+use crate::manifest::{self, Manifest, ManifestError};
+use crate::names;
+use crate::plan::{self, Action, DaemonSeen, PoolSeen, Seen, SnapSeen, Stop};
+use crate::record::{
+    Corrupt, Count, Enrolled, Keep, Loaded, Phase, Publish, Record, SaveError, Taken, Why,
+    UNDER_WAY_MAX,
+};
+use crate::zfs::{self, Zfs, ZfsError, HOLD_TAG};
+
+/// How often the engine looks again at a publish that waits (the plan,
+/// §4, step 11).
+pub const TICK: Duration = Duration::from_secs(1);
+
+/// The daemon, as the agent reaches it: its channel
+/// ([`skyzfs_control::ask`]) and its device.
+pub trait Daemon {
+    /// Ask one request; `manifest` follows a `publish` and is empty
+    /// otherwise.
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply>;
+    /// The device number (`st_rdev`) of the volume's block device.
+    fn device(&mut self) -> io::Result<u64>;
+}
+
+/// The wall clock, and waiting.
+pub trait Clock {
+    /// Milliseconds since 1970.
+    fn now_ms(&mut self) -> u64;
+    /// Wait `d`.
+    fn sleep(&mut self, d: Duration);
+}
+
+/// The system's clock.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_ms(&mut self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    fn sleep(&mut self, d: Duration) {
+        std::thread::sleep(d);
+    }
+}
+
+/// An effect of the engine, at which its tests can stop it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Effect {
+    /// The record saved with the pool enrolled.
+    Enrol,
+    /// The record saved with a publish at [`Phase::Intent`].
+    Intent,
+    /// The channel program.
+    Program,
+    /// The manifest's file written.
+    Manifest,
+    /// The record saved at [`Phase::Taken`].
+    Taken,
+    /// The record saved with the hold believed placed.
+    Holding,
+    /// `zfs hold`.
+    Hold,
+    /// The record saved at [`Phase::Held`].
+    Held,
+    /// The record saved with a count read anew.
+    Count,
+    /// `publish` asked.
+    Ask,
+    /// The record saved at [`Phase::Asked`].
+    Asked,
+    /// `withdraw` asked.
+    Withdraw,
+    /// `look` asked.
+    Look,
+    /// `zpool sync`.
+    Assist,
+    /// `zfs release`.
+    Release,
+    /// The record saved with the hold released.
+    Released,
+    /// The record saved at [`Phase::Done`].
+    Done,
+    /// `zfs release` of a hold that no publish under way names, after an
+    /// import ([`Agent::settle`]).
+    Sweep,
+    /// The record saved with the publish removed.
+    Forget,
+    /// The record saved with the publish given up.
+    Abandon,
+    /// The manifest's file removed.
+    Unlink,
+}
+
+/// A point at which the engine's tests can stop it: before or after an
+/// effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Point {
+    /// The effect.
+    pub effect: Effect,
+    /// After it, or before.
+    pub after: bool,
+}
+
+/// Called at each [`Point`]; `true` stops the engine there
+/// ([`Error::Stopped`]).
+pub type Points = Box<dyn FnMut(Point) -> bool>;
+
+/// Why the engine did not do what was asked.
+#[derive(Debug)]
+pub enum Error {
+    /// Its tests stopped it at a [`Point`].
+    Stopped,
+    /// The record is corrupt: nothing is published, and a person judges.
+    Corrupt(Corrupt),
+    /// The record is another volume's.
+    Volume([u8; 16]),
+    /// [`UNDER_WAY_MAX`] publishes are under way.
+    Full,
+    /// The pool is refused a publish.
+    Premise(zfs::Refusal),
+    /// The daemon did not answer `cuts`, or holds no cuts yet.
+    Daemon(String),
+    /// ZFS failed.
+    Zfs(ZfsError),
+    /// The record was not saved.
+    Save(SaveError),
+    /// A manifest's file failed.
+    Io(io::Error),
+    /// [`Agent::settle`] ran out of time with publishes still under way.
+    Unsettled(Vec<String>),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Stopped => write!(f, "stopped at a crash point"),
+            Error::Corrupt(why) => {
+                write!(f, "the record is corrupt ({why}); a person must judge it")
+            }
+            Error::Volume(v) => write!(f, "the record is of volume {}", skyzfs_control::hex(v)),
+            Error::Full => write!(f, "{UNDER_WAY_MAX} publishes are under way"),
+            Error::Premise(why) => write!(f, "the pool is refused a publish: {why}"),
+            Error::Daemon(why) => write!(f, "the daemon: {why}"),
+            Error::Zfs(e) => write!(f, "zfs: {e}"),
+            Error::Save(e) => write!(f, "the record: {e}"),
+            Error::Io(e) => write!(f, "a manifest's file: {e}"),
+            Error::Unsettled(names) => write!(f, "still under way: {}", names.join(" ")),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<SaveError> for Error {
+    fn from(e: SaveError) -> Self {
+        Error::Save(e)
+    }
+}
+
+impl From<ZfsError> for Error {
+    fn from(e: ZfsError) -> Self {
+        Error::Zfs(e)
+    }
+}
+
+/// How a publish left the record, or stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Published: `snap/<t>` names this commit.
+    Published([u8; 32]),
+    /// Given up.
+    Abandoned(Why),
+    /// Stopped for a person to judge; it stays under way.
+    Stopped(String),
+}
+
+/// What the engine keeps of a publish between two rounds ([module
+/// docs](self)).
+#[derive(Debug, Default, Clone)]
+struct Memory {
+    answer: Option<Reply>,
+    snap: Option<SnapSeen>,
+    assisted_ms: Option<u64>,
+}
+
+/// Whether a round changed anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    Yes,
+    No,
+}
+
+/// The agent of one volume and its pool.
+pub struct Agent<Z, D, K, C> {
+    zfs: Z,
+    daemon: D,
+    keep: K,
+    clock: C,
+    pool: String,
+    expiry: Duration,
+    record: Record,
+    device: Option<u64>,
+    memory: BTreeMap<String, Memory>,
+    swept: Option<u64>,
+    stopped: BTreeSet<String>,
+    outcomes: Vec<(String, Outcome)>,
+    points: Option<Points>,
+}
+
+impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
+    /// The agent of `volume` and `pool`, with its record loaded. A
+    /// manifest's file that no publish under way names is removed (a
+    /// crash after the publish left the record).
+    pub fn new(
+        zfs: Z,
+        daemon: D,
+        keep: K,
+        clock: C,
+        volume: [u8; 16],
+        pool: &str,
+    ) -> Result<Self, Error> {
+        let record = match keep.load().map_err(Error::Io)? {
+            Loaded::Absent => Record::new(volume),
+            Loaded::Corrupt(why) => return Err(Error::Corrupt(why)),
+            Loaded::Present(record) if record.volume != volume => {
+                return Err(Error::Volume(record.volume))
+            }
+            Loaded::Present(record) => record,
+        };
+        for name in keep.manifest_names().map_err(Error::Io)? {
+            if record.publish(&name).is_none() {
+                keep.remove_manifest(&name).map_err(Error::Io)?;
+            }
+        }
+        Ok(Agent {
+            zfs,
+            daemon,
+            keep,
+            clock,
+            pool: pool.to_string(),
+            expiry: EXPIRY_DEFAULT,
+            record,
+            device: None,
+            memory: BTreeMap::new(),
+            swept: None,
+            stopped: BTreeSet::new(),
+            outcomes: Vec::new(),
+            points: None,
+        })
+    }
+
+    /// Stop at the points `points` chooses (the engine's tests).
+    pub fn with_points(mut self, points: Points) -> Self {
+        self.points = Some(points);
+        self
+    }
+
+    /// The record as last saved.
+    pub fn record(&self) -> &Record {
+        &self.record
+    }
+
+    /// How each publish that left the record, or stopped, ended, in
+    /// order.
+    pub fn outcomes(&self) -> &[(String, Outcome)] {
+        &self.outcomes
+    }
+
+    /// The parts, for a test to look at the world.
+    pub fn parts(&mut self) -> (&mut Z, &mut D, &mut K, &mut C) {
+        (
+            &mut self.zfs,
+            &mut self.daemon,
+            &mut self.keep,
+            &mut self.clock,
+        )
+    }
+
+    /// Begin a publish: the premise, the pool enrolled at the first,
+    /// the count, a name, and the record at [`Phase::Intent`]. Its name.
+    pub fn begin(&mut self) -> Result<String, Error> {
+        if self.record.under_way.len() >= UNDER_WAY_MAX {
+            return Err(Error::Full);
+        }
+        let props = self.zfs.props(&self.pool)?;
+        let leaf = self.premise(&props)?.map_err(Error::Premise)?;
+        if self.record.enrolled.is_none() {
+            let enrolled = Enrolled {
+                pool: self.pool.clone(),
+                pool_guid: props.guid,
+                leaf_guid: leaf,
+            };
+            self.commit(Effect::Enrol, |r| r.enrolled = Some(enrolled))?;
+        }
+        let count = match self.count(props.load_guid) {
+            Ok(count) => count,
+            Err(why) => return Err(Error::Daemon(why)),
+        };
+        let name = self.fresh_name()?;
+        let publish = Publish {
+            name: name.clone(),
+            count,
+            phase: Phase::Intent,
+            held: false,
+            attempts: 0,
+        };
+        self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
+        Ok(name)
+    }
+
+    /// Drive every publish under way until each has left the record or
+    /// stopped, waiting [`TICK`] between rounds where none moved; at most
+    /// until `limit` has passed. Each that left or stopped is in
+    /// [`Agent::outcomes`]. Each round begins with the sweep
+    /// ([`Agent::sweep`]).
+    pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
+        let end = self.clock.now_ms().saturating_add(ms(limit));
+        loop {
+            self.sweep()?;
+            let names: Vec<String> = self
+                .record
+                .under_way
+                .iter()
+                .map(|p| p.name.clone())
+                .filter(|name| !self.stopped.contains(name))
+                .collect();
+            if names.is_empty() {
+                return Ok(());
+            }
+            if self.clock.now_ms() >= end {
+                return Err(Error::Unsettled(names));
+            }
+            let mut moved = Moved::No;
+            for name in names {
+                if self.round(&name)? == Moved::Yes {
+                    moved = Moved::Yes;
+                }
+            }
+            if moved == Moved::No {
+                self.clock.sleep(TICK);
+            }
+        }
+    }
+
+    /// Release each hold [`HOLD_TAG`] in the pool that no publish under
+    /// way names, once per import of the pool (per `load_guid`) and at
+    /// the agent's start.
+    ///
+    /// Such a hold was brought back by a rewind: `zpool import -F` or
+    /// `-T` back to a group after the hold and before its release, when
+    /// the publish has since left the record. Nothing else would release
+    /// it, and a person could not destroy the snapshot. A hold of the
+    /// tag is the agent's alone. The agent places one only for a publish
+    /// in the record, and releases it before the publish leaves the
+    /// record (done, or given up after its request ended), so a hold no
+    /// publish names protects no publish. One agent runs per pool, and
+    /// within it the sweep and the steps of a publish do not overlap.
+    /// Not in the plan of M2.6: the crash matrix found it (a rewind
+    /// back to after the hold, under a publish already done).
+    fn sweep(&mut self) -> Result<(), Error> {
+        let load_guid = match self.zfs.props(&self.pool) {
+            Ok(props) => props.load_guid,
+            Err(ZfsError::NoPool) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        if self.swept == Some(load_guid) {
+            return Ok(());
+        }
+        for name in self.zfs.tagged(&self.pool, HOLD_TAG)? {
+            if self.record.publish(&name).is_some() {
+                continue;
+            }
+            self.point(Effect::Sweep, false)?;
+            self.zfs.release(&self.pool, &name, HOLD_TAG)?;
+            self.point(Effect::Sweep, true)?;
+        }
+        self.swept = Some(load_guid);
+        Ok(())
+    }
+
+    /// One round for the publish of `name`: see, plan, act.
+    fn round(&mut self, name: &str) -> Result<Moved, Error> {
+        let Some(publish) = self.record.publish(name).cloned() else {
+            return Ok(Moved::No);
+        };
+        let Some(seen) = self.see(&publish)? else {
+            return Ok(Moved::No);
+        };
+        let action = plan::plan(&publish, &seen);
+        self.act(&publish, action)
+    }
+
+    /// What the planner reads, or `None` where the pool cannot be seen
+    /// (not imported, or the volume's device not known).
+    fn see(&mut self, publish: &Publish) -> Result<Option<Seen>, Error> {
+        let pool = &self.pool.clone();
+        let name = &publish.name;
+        let props = match self.zfs.props(pool) {
+            Ok(props) => props,
+            Err(ZfsError::NoPool) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let premise = match self.premise(&props) {
+            Ok(verdict) => verdict.is_ok(),
+            Err(Error::Zfs(ZfsError::NoPool)) => return Ok(None),
+            Err(Error::Daemon(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let snapshot = self.zfs.members(pool, name)?;
+        let held = self.zfs.held(pool, name, HOLD_TAG)?;
+        let memory = self.memory.entry(name.clone()).or_default();
+        let kept = memory.answer.clone();
+        let snap = memory.snap;
+        let assisted_ms = memory.assisted_ms;
+        let daemon = match self.daemon.ask(&Request::Cuts, &[]) {
+            Ok(Reply::Cuts(cuts)) => {
+                let answer = match (&publish.phase, kept) {
+                    (_, Some(answer)) => Some(answer),
+                    (Phase::Intent | Phase::Taken(_), None) => Some(Reply::Unknown),
+                    (_, None) => self.daemon.ask(&Request::Progress(name.clone()), &[]).ok(),
+                };
+                match answer {
+                    Some(answer) => DaemonSeen::Here { cuts, answer },
+                    None => DaemonSeen::Away,
+                }
+            }
+            _ => DaemonSeen::Away,
+        };
+        Ok(Some(Seen {
+            pool: PoolSeen {
+                load_guid: props.load_guid,
+                premise,
+                snapshot,
+                held,
+            },
+            daemon,
+            snap,
+            now_ms: self.clock.now_ms(),
+            assisted_ms,
+        }))
+    }
+
+    /// Do `action` for `publish`.
+    fn act(&mut self, publish: &Publish, action: Action) -> Result<Moved, Error> {
+        let name = publish.name.clone();
+        if action != Action::Look {
+            let memory = self.memory.entry(name.clone()).or_default();
+            memory.answer = None;
+            memory.snap = None;
+        }
+        match action {
+            Action::Take => self.take(&name),
+            Action::Hold => {
+                self.commit(Effect::Holding, |r| set(r, &name, |p| p.held = true))?;
+                self.point(Effect::Hold, false)?;
+                let held = self.zfs.hold(&self.pool, &name, HOLD_TAG);
+                self.point(Effect::Hold, true)?;
+                Ok(if held.is_ok() { Moved::Yes } else { Moved::No })
+            }
+            Action::Held => {
+                let Some(taken) = publish.phase.taken().cloned() else {
+                    return Ok(Moved::No);
+                };
+                self.commit(Effect::Held, |r| {
+                    set(r, &name, |p| {
+                        p.held = true;
+                        p.phase = Phase::Held(taken);
+                    })
+                })?;
+                Ok(Moved::Yes)
+            }
+            Action::Ask => self.ask(publish, publish.count),
+            Action::AskAnew => self.ask_anew(publish),
+            Action::Withdraw => {
+                self.point(Effect::Withdraw, false)?;
+                let answer = self.daemon.ask(&Request::Withdraw(name.clone()), &[]);
+                self.point(Effect::Withdraw, true)?;
+                match answer {
+                    Ok(answer) => {
+                        self.memory.entry(name).or_default().answer = Some(answer);
+                        Ok(Moved::Yes)
+                    }
+                    Err(_) => Ok(Moved::No),
+                }
+            }
+            Action::Look => {
+                let Some(taken) = publish.phase.taken().cloned() else {
+                    return Ok(Moved::No);
+                };
+                self.point(Effect::Look, false)?;
+                let answer = self.daemon.ask(&Request::Look(name.clone()), &[]);
+                self.point(Effect::Look, true)?;
+                let snap = answer
+                    .ok()
+                    .and_then(|reply| plan::snap_seen(&reply, &taken));
+                self.memory.entry(name).or_default().snap = snap;
+                Ok(if snap.is_some() {
+                    Moved::Yes
+                } else {
+                    Moved::No
+                })
+            }
+            Action::Assist => {
+                self.point(Effect::Assist, false)?;
+                let synced = self.zfs.sync(&self.pool);
+                self.point(Effect::Assist, true)?;
+                let now = self.clock.now_ms();
+                self.memory.entry(name).or_default().assisted_ms = Some(now);
+                // A sync is a step only for the pool: the cut it makes is
+                // seen at the next round, a tick later.
+                let _ = synced;
+                Ok(Moved::No)
+            }
+            Action::Wait => Ok(Moved::No),
+            Action::Release => {
+                self.point(Effect::Release, false)?;
+                let released = self.zfs.release(&self.pool, &name, HOLD_TAG);
+                self.point(Effect::Release, true)?;
+                if released.is_err() {
+                    return Ok(Moved::No);
+                }
+                self.commit(Effect::Released, |r| set(r, &name, |p| p.held = false))?;
+                Ok(Moved::Yes)
+            }
+            Action::Done(commit) => {
+                let Some(taken) = publish.phase.taken().cloned() else {
+                    return Ok(Moved::No);
+                };
+                self.commit(Effect::Done, |r| {
+                    set(r, &name, |p| p.phase = Phase::Done { taken, commit })
+                })?;
+                Ok(Moved::Yes)
+            }
+            Action::Forget => {
+                let commit = match publish.phase {
+                    Phase::Done { commit, .. } => commit,
+                    _ => [0; 32],
+                };
+                self.commit(Effect::Forget, |r| r.under_way.retain(|p| p.name != name))?;
+                self.unlink(&name)?;
+                self.leave(name, Outcome::Published(commit));
+                Ok(Moved::Yes)
+            }
+            Action::Abandon(why) => {
+                self.abandon(&name, why)?;
+                Ok(Moved::Yes)
+            }
+            Action::Stop(stop) => {
+                let why = match stop {
+                    Stop::Refused(code) => format!("the daemon refused it: {}", code.word()),
+                    Stop::DoneNotSeen => {
+                        "the daemon said done, and look did not see it".to_string()
+                    }
+                };
+                self.stop(name, why);
+                Ok(Moved::No)
+            }
+        }
+    }
+
+    /// Take the snapshot: the count read anew and recorded, the program,
+    /// the manifest's file, and the record at [`Phase::Taken`].
+    fn take(&mut self, name: &str) -> Result<Moved, Error> {
+        let props = self.zfs.props(&self.pool)?;
+        let Ok(count) = self.count(props.load_guid) else {
+            return Ok(Moved::No);
+        };
+        self.commit(Effect::Intent, |r| set(r, name, |p| p.count = count))?;
+        self.point(Effect::Program, false)?;
+        let program = self.zfs.snapshot(&self.pool, name);
+        self.point(Effect::Program, true)?;
+        let program = match program {
+            Ok(program) => program,
+            Err(ZfsError::Exists) => {
+                // A member's `@t` of this name exists: nothing was taken,
+                // and the publish takes the next name.
+                let next = self.fresh_name()?;
+                self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next))?;
+                return Ok(Moved::Yes);
+            }
+            Err(_) => return Ok(Moved::No),
+        };
+        let manifest = Manifest {
+            pool: self.pool.clone(),
+            pool_guid: props.guid,
+            snapshot: name.to_string(),
+            createtxg: program.createtxg,
+            members: program.members,
+        };
+        let bytes = match manifest.encode() {
+            Ok(bytes) => bytes,
+            Err(ManifestError::TooLarge(_)) => {
+                self.abandon(name, Why::ManifestTooLarge)?;
+                return Ok(Moved::Yes);
+            }
+            Err(e) => {
+                self.stop(name.to_string(), format!("its manifest: {e}"));
+                return Ok(Moved::No);
+            }
+        };
+        self.point(Effect::Manifest, false)?;
+        self.keep.write_manifest(name, &bytes).map_err(Error::Io)?;
+        self.point(Effect::Manifest, true)?;
+        let taken = Taken {
+            group: manifest.createtxg,
+            members: manifest.snapshots(),
+            manifest_len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            manifest_hash: manifest::hash(&bytes),
+        };
+        self.commit(Effect::Taken, |r| {
+            set(r, name, |p| p.phase = Phase::Taken(taken))
+        })?;
+        Ok(Moved::Yes)
+    }
+
+    /// Ask the daemon to publish with `count`; `accepted` is recorded,
+    /// any other answer kept for the next round.
+    fn ask(&mut self, publish: &Publish, count: Count) -> Result<Moved, Error> {
+        let name = publish.name.clone();
+        let Some(taken) = publish.phase.taken().cloned() else {
+            return Ok(Moved::No);
+        };
+        let bytes = match self.keep.read_manifest(&name).map_err(Error::Io)? {
+            Some(bytes)
+                if bytes.len() == taken.manifest_len as usize
+                    && manifest::hash(&bytes) == taken.manifest_hash =>
+            {
+                bytes
+            }
+            // The agent's own file gone or changed under it: the hold is
+            // kept, and a person judges.
+            _ => {
+                self.stop(name, "its manifest's file is gone or changed".into());
+                return Ok(Moved::No);
+            }
+        };
+        let request = Request::Publish(PublishRequest {
+            name: name.clone(),
+            attachment: count.attachment,
+            state: count.state,
+            after: count.after,
+            group: taken.group,
+            manifest: bytes.len(),
+            expiry: Some(self.expiry),
+        });
+        self.point(Effect::Ask, false)?;
+        let answer = self.daemon.ask(&request, &bytes);
+        self.point(Effect::Ask, true)?;
+        match answer {
+            Ok(Reply::Accepted) => {
+                let now = self.clock.now_ms();
+                let held_until_ms = plan::held_until(now, self.expiry);
+                self.commit(Effect::Asked, |r| {
+                    set(r, &name, |p| {
+                        p.count = count;
+                        p.attempts = p.attempts.saturating_add(1);
+                        p.phase = Phase::Asked {
+                            taken,
+                            asked_ms: now,
+                            held_until_ms,
+                        };
+                    })
+                })?;
+                Ok(Moved::Yes)
+            }
+            Ok(answer) => {
+                self.memory.entry(name).or_default().answer = Some(answer);
+                Ok(Moved::Yes)
+            }
+            Err(_) => Ok(Moved::No),
+        }
+    }
+
+    /// Read a count anew after the hold is verified ("The rule for
+    /// AskAnew"), record it, and ask with it.
+    fn ask_anew(&mut self, publish: &Publish) -> Result<Moved, Error> {
+        let name = publish.name.clone();
+        let Some(taken) = publish.phase.taken() else {
+            return Ok(Moved::No);
+        };
+        let before = self.zfs.props(&self.pool)?.load_guid;
+        let Ok(count) = self.count(before) else {
+            return Ok(Moved::No);
+        };
+        let members = self.zfs.members(&self.pool, &name)?;
+        let held = self.zfs.held(&self.pool, &name, HOLD_TAG)?;
+        let whole = members.is_some_and(|mut members| {
+            let mut wanted = taken.members.clone();
+            members.sort();
+            wanted.sort();
+            members == wanted
+        });
+        let after = self.zfs.props(&self.pool)?.load_guid;
+        if !whole || !held || after != before {
+            // Seen again at the next round, which plans from it.
+            return Ok(Moved::No);
+        }
+        let recorded = count;
+        self.commit(Effect::Count, |r| set(r, &name, |p| p.count = recorded))?;
+        let mut publish = publish.clone();
+        publish.count = count;
+        self.ask(&publish, count)
+    }
+
+    /// The count of cuts now, with `load_guid` read before it.
+    fn count(&mut self, load_guid: u64) -> Result<Count, String> {
+        match self.daemon.ask(&Request::Cuts, &[]) {
+            Ok(Reply::Cuts(CutsReply {
+                attachment,
+                state: Some(state),
+                count,
+                ..
+            })) => Ok(Count {
+                attachment,
+                state,
+                after: count,
+                load_guid,
+            }),
+            Ok(Reply::Cuts(_)) => Err("it holds no cuts yet".into()),
+            Ok(reply) => Err(format!("it answered `cuts` with {reply:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// The premise for the pool now: the leaf's GUID, or why not.
+    fn premise(&mut self, props: &zfs::Props) -> Result<Result<u64, zfs::Refusal>, Error> {
+        let layout = self.zfs.layout(&self.pool)?;
+        let nocacheflush = self.zfs.nocacheflush()?;
+        let device = match self.daemon.device() {
+            Ok(device) => {
+                self.device = Some(device);
+                device
+            }
+            Err(e) => match self.device {
+                Some(device) => device,
+                None => return Err(Error::Daemon(format!("its device: {e}"))),
+            },
+        };
+        Ok(zfs::premise(
+            &layout,
+            props,
+            nocacheflush,
+            device,
+            &self.pool,
+            self.record.enrolled.as_ref(),
+        ))
+    }
+
+    /// A name for a new publish: this second's, with `-N` where it is
+    /// taken in the record or in the pool.
+    fn fresh_name(&mut self) -> Result<String, Error> {
+        let second = self.clock.now_ms() / 1000;
+        for taken in 0..=u32::from(u16::MAX) {
+            let name = names::name(second, taken);
+            let recorded = self.record.publish(&name).is_some()
+                || self.record.abandoned.iter().any(|a| a.name == name);
+            if recorded {
+                continue;
+            }
+            if self.zfs.members(&self.pool, &name)?.is_none() {
+                return Ok(name);
+            }
+        }
+        Err(Error::Zfs(ZfsError::Other(format!(
+            "no free name in second {second}"
+        ))))
+    }
+
+    /// Give the publish of `name` up for `why`, and remove its manifest.
+    fn abandon(&mut self, name: &str, why: Why) -> Result<(), Error> {
+        let now = self.clock.now_ms();
+        self.commit(Effect::Abandon, |r| r.abandon(name, why, now))?;
+        self.unlink(name)?;
+        self.leave(name.to_string(), Outcome::Abandoned(why));
+        Ok(())
+    }
+
+    /// Remove the manifest's file of a publish that has left the record.
+    fn unlink(&mut self, name: &str) -> Result<(), Error> {
+        self.point(Effect::Unlink, false)?;
+        self.keep.remove_manifest(name).map_err(Error::Io)?;
+        self.point(Effect::Unlink, true)
+    }
+
+    /// The publish of `name` stops for a person to judge.
+    fn stop(&mut self, name: String, why: String) {
+        self.stopped.insert(name.clone());
+        self.outcomes.push((name, Outcome::Stopped(why)));
+    }
+
+    /// The publish of `name` has left the record.
+    fn leave(&mut self, name: String, outcome: Outcome) {
+        self.memory.remove(&name);
+        self.outcomes.push((name, outcome));
+    }
+
+    /// Save the record as `change` leaves it, at the points of `effect`.
+    fn commit(&mut self, effect: Effect, change: impl FnOnce(&mut Record)) -> Result<(), Error> {
+        let mut next = self.record.clone();
+        change(&mut next);
+        self.point(effect, false)?;
+        self.keep.save(&next)?;
+        self.record = next;
+        self.point(effect, true)
+    }
+
+    /// Stop here where the tests say so.
+    fn point(&mut self, effect: Effect, after: bool) -> Result<(), Error> {
+        let stop = match &mut self.points {
+            Some(points) => points(Point { effect, after }),
+            None => false,
+        };
+        if stop {
+            Err(Error::Stopped)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Change the publish of `name` in `record`.
+fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
+    if let Some(publish) = record.under_way.iter_mut().find(|p| p.name == name) {
+        change(publish);
+    }
+}
+
+/// `d` in milliseconds.
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod tests;

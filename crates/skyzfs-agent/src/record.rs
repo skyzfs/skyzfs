@@ -523,6 +523,45 @@ impl Store {
     }
 }
 
+/// Where the engine keeps the record and the manifests: [`Store`] in the
+/// program, a store in memory in the engine's tests, where a save that
+/// returned is kept by a power cut as [`Store::save`]'s is.
+pub trait Keep {
+    /// [`Store::load`].
+    fn load(&self) -> io::Result<Loaded>;
+    /// [`Store::save`].
+    fn save(&self, record: &Record) -> Result<(), SaveError>;
+    /// [`Store::write_manifest`].
+    fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()>;
+    /// [`Store::read_manifest`].
+    fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>>;
+    /// [`Store::remove_manifest`].
+    fn remove_manifest(&self, name: &str) -> io::Result<()>;
+    /// [`Store::manifest_names`].
+    fn manifest_names(&self) -> io::Result<Vec<String>>;
+}
+
+impl Keep for Store {
+    fn load(&self) -> io::Result<Loaded> {
+        Store::load(self)
+    }
+    fn save(&self, record: &Record) -> Result<(), SaveError> {
+        Store::save(self, record)
+    }
+    fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        Store::write_manifest(self, name, bytes)
+    }
+    fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        Store::read_manifest(self, name)
+    }
+    fn remove_manifest(&self, name: &str) -> io::Result<()> {
+        Store::remove_manifest(self, name)
+    }
+    fn manifest_names(&self) -> io::Result<Vec<String>> {
+        Store::manifest_names(self)
+    }
+}
+
 /// Make `dir` where it is not, and sync its parent so that it stays.
 /// The parent is synced where `dir` was there too: an earlier call may
 /// have made it and stopped, or failed, before its sync.
