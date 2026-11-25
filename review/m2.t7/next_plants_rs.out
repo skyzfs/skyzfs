@@ -1,0 +1,7 @@
+baseline 0 [] 24 passed
+SR1 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it', 'tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed
+SR11 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it'] 23 passed
+SR14 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it'] 23 passed
+SR15 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it'] 23 passed
+SR16 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it'] 23 passed
+SR17 KILLED ['tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it', 'tests::the_snap_row_is_read_as_the_daemon_writes_it'] 22 passed

@@ -1,0 +1,25 @@
+== prewind as run (r1 on cut 27 of group 45): exit 0
+   pin_r1_row	ok	[server] snap/r1 and its row on ee0736055f1a: cut 27 of group 45 (asked after 20, G 31, the snapshot's createtxg 31)
+   pin_r1_cut	ok	[server] cut 27 of group 45 opens as itself in the request log
+   premise_rewind_cut_committed	ok	[rig] cut 22 of group 32, counted after C = 20 at G = 31 or later, opens only as a rewind and was committed after the ask; r1 was made by cut 27
+== prewind, no "opens as itself": r1 on the committed rewind cut 22 of group 32: exit 1
+   pin_r1_row	ok	[server] snap/r1 and its row on ee0736055f1a: cut 22 of group 32 (asked after 20, G 31, the snapshot's createtxg 31)
+   pin_r1_cut	FAILED	[server] cut 22 (group 32) opens only with a rewind
+   premise_rewind_cut_committed	ok	[rig] cut 22 of group 32, counted after C = 20 at G = 31 or later, opens only as a rewind and was committed after the ask; r1 was made by cut 22
+== prewind, the same fault on an earlier rewind cut, 21 of group 31: exit 2
+   pin_r1_row	ok	[server] snap/r1 and its row on ee0736055f1a: cut 21 of group 31 (asked after 20, G 31, the snapshot's createtxg 31)
+   pin_r1_cut	FAILED	[server] cut 21 (group 31) opens only with a rewind
+   premise_rewind_cut_committed	ERROR	[rig] r1 was made by cut 21, before cut 22 was committed
+   rig_error	ERROR	[rig] premise_rewind_cut_committed: r1 was made by cut 21, before cut 22 was committed
+== pkill as run (tw absent): exit 0
+   pin_tw_absent	ok	[server] no snap/tw and no row
+   premise_tw_committed_past_g	ok	[rig] instance 12429 answered tw's withdrawal, then counted 4 cuts of group 43 or later that open as itself, and node B's row named cut 19 of group 43: a commit that would have made tw
+   pin_tw_withdrawn_status	ok	[server] after the withdrawal and that commit: publish_withdrawn 1, publish_pending 0, publish_published 0
+== pkill, withdraw leaves tw queued: tw on cut 19 of group 43, the status as read: exit 1
+   pin_tw_absent	FAILED	[server] a ref snap/T; a row
+   premise_tw_committed_past_g	ok	[rig] instance 12429 answered tw's withdrawal, then counted 4 cuts of group 43 or later that open as itself, and node B's row named cut 19 of group 43: a commit that would have made tw
+   pin_tw_withdrawn_status	ok	[server] after the withdrawal and that commit: publish_withdrawn 1, publish_pending 0, publish_published 0
+== pkill, the same, with the status such a daemon posts: exit 1
+   pin_tw_absent	FAILED	[server] a ref snap/T; a row
+   premise_tw_committed_past_g	ok	[rig] instance 12429 answered tw's withdrawal, then counted 4 cuts of group 43 or later that open as itself, and node B's row named cut 19 of group 43: a commit that would have made tw
+   pin_tw_withdrawn_status	FAILED	[server] publish_withdrawn is 0, not 1; publish_published is 1, not 0

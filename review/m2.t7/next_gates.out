@@ -1,0 +1,19 @@
+Local gates at c7cc03f (rustc 1.100.0, the current stable; shellcheck 0.9.0; Python 3, bytecode off)
+
+python3 -m unittest discover (tests/kernel)                 Ran 599 tests: OK
+  (its "FAILED prefix ..." lines are printed by tests that expect them)
+python3 tests/kernel/test_publish_agent.py                  Ran 19 tests: OK
+python3 tests/kernel/test_publish_check.py                  Ran 23 tests: OK
+python3 tests/kernel/test_publish_check_main.py             Ran 22 tests: OK
+bash tests/kernel/test_cut_record.sh                        all passed
+shellcheck -S warning tests/kernel/*.sh tests/lib/*.sh      clean
+cargo fmt --all -- --check                                  clean
+cargo clippy -p skyzfs-nodeb --all-targets -- -D warnings   clean
+cargo test -p skyzfs-nodeb                                  24 passed
+
+Repeats of the new tests:
+test_publish_agent.py      50 of 50 alone; 48 of 48 run 16 at a time (3 rounds)
+test_publish_check_main.py 20 of 20
+
+git merge-tree origin/zfs-topology c7cc03f                  merges clean
+  (zfs-topology moved by one line of docs/skyzfs-impl-notes.md since 6e060e7)

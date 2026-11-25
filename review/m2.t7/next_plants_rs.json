@@ -1,0 +1,70 @@
+[
+ {
+  "id": "SR1",
+  "what": "the state read one byte late",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR11",
+  "what": "the version read by its low byte alone",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it"
+  ],
+  "note": "23 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR14",
+  "what": "the row read at the key snap/T (not skyzfs/snap/T)",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it"
+  ],
+  "note": "23 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR15",
+  "what": "the ref read as snaps/T",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it"
+  ],
+  "note": "23 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR16",
+  "what": "the manifest fetched from skyzfs/manifests/",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it"
+  ],
+  "note": "23 passed",
+  "clean_after": true
+ },
+ {
+  "id": "SR17",
+  "what": "the prefix constant skyzfs/snaps/",
+  "file": "bins/skyzfs-nodeb/src/main.rs",
+  "result": "KILLED",
+  "failed": [
+   "tests::snap_row_reads_what_the_uploader_writes_where_it_writes_it",
+   "tests::the_snap_row_is_read_as_the_daemon_writes_it"
+  ],
+  "note": "22 passed",
+  "clean_after": true
+ }
+]

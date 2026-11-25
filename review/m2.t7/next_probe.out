@@ -1,0 +1,14 @@
+the answer, request unread: 20: answer 'refused peer this daemon answers its own user' -> ok
+the answer, daemon closed before the client wrote: 20: answer 'refused peer this daemon answers its own user' -> ok
+the answer, request read (EOF): 20: answer 'refused peer this daemon answers its own user' -> ok
+half the answer line, request unread: 20: answer 'no answer line: skyzfs-control 1\\nrefused peer this daem' -> exit 1 (a verdict)
+half the answer line, request read (EOF): 20: answer 'no answer line: skyzfs-control 1\\nrefused peer this daem' -> exit 1 (a verdict)
+the greeting only, request unread: 20: answer 'no answer line: skyzfs-control 1\\n' -> exit 1 (a verdict)
+the greeting only, request read (EOF): 20: answer 'no answer line: skyzfs-control 1\\n' -> exit 1 (a verdict)
+nothing, request unread (reset): 20: answer '' -> exit 1 (a verdict)
+nothing, daemon closed before the client wrote (EPIPE): 20: answer '' -> exit 1 (a verdict)
+nothing, request read (EOF): 20: answer '' -> exit 1 (a verdict)
+the answer with no greeting: 20: answer 'refused peer this daemon answers its own user' -> ok
+another greeting, then the answer: 20: answer 'skyzfs-control 2' -> exit 1 (a verdict)
+a socket file with no listener (the daemon gone): 20: raised '[Errno 111] Connection refused' -> exit 2 (the rig's error)
+accepted, never answered (limit cut to 1 s): 2: raised 'timed out' -> exit 2 (the rig's error)
