@@ -19,13 +19,17 @@
 #           limit, the shell's "Killed" line, which names this script,
 #           is in it: that line is not ZFS's
 #   rc      its exit code (124: it did not end within the limit)
-#   secs    its wall time in seconds
+#   secs    its wall time in seconds: the command under lim, with lim's
+#           own steps (two mktemp, a fork, the copy of the outputs) and
+#           its poll of 0.1 s; for a catch, the try that was kept
 #   note    only where there is something to say: a state looked for
 #           and whether it was caught, or an expected message and
 #           whether it was seen
 #
 # and one line "NAME<TAB>rc<TAB>note<TAB>cmd" of OUT/index.tsv, in the
-# order run. NAME is "<pool>-<what>" with pool
+# order each record ended: a record run in the background (mirror-online,
+# mirror-rebuild) comes after the records that watched it. NAME is
+# "<pool>-<what>" with pool
 #
 #   rig     skzq: the data on /dev/ublkb0 of the reference ublk server,
 #           with a log device
@@ -33,18 +37,25 @@
 #           mirror, a cache device and a spare, so that each class's
 #           header is in its status. Its files scan in seconds, so its
 #           scrubs, resilver and rebuild run with a delay of 10 ms
-#           injected on every I/O of m0 (zinject -D 10:1, from the
-#           package zfs-test; about.txt says whether it took, and
-#           zinject.txt why not): the state's text is the same, it
-#           lasts long enough to be seen
+#           injected on every I/O of m0, and of m1 as well during the
+#           rebuild (zinject -D 10:1, from the package zfs-test;
+#           about.txt says whether it took, zinject.txt why not, and
+#           zinject-rebuild.txt what was injected for the rebuild): the
+#           state's text is the same, it lasts long enough to be seen
 #   remove  skzqr: two files, one of them removed (the removal's states)
 #   none    skznone, a pool that does not exist
 #   scale-N skzqs, made only when ZCR_SCALE names N: N file systems
 #           under the root (not mounted), and the snapshot program,
-#           members, hold -r, tagged and release -r on it, each with
-#           its wall time in secs and a limit of ZCR_SCALE_LIMIT
-#           seconds (default 1800) in place of the usual. about.txt
-#           says how long the file systems took to make
+#           snapshot-cli (zfs snapshot -r, only if the program did not
+#           take @t), members, hold -r, tagged and release -r on it,
+#           each with its wall time in secs. At most three counts, each
+#           at most 100000 and each once. Each command's limit is
+#           ZCR_SCALE_LIMIT seconds (default 1800), or what is left of
+#           ZCR_SCALE_BUDGET (default 4800 s, for all counts together)
+#           if less; once the budget is spent no command is started,
+#           and about.txt says where it stopped. about.txt also has df
+#           of WORK before each pool and how long the file systems took
+#           to make
 #
 # The adapter's tag is skyzfs-publish (HOLD_TAG, src/zfs.rs) and its
 # property skyzfs:assist (ASSIST_PROPERTY). Each live pool gets a child
@@ -93,6 +104,16 @@
 #                          snapshot.lua at @p, which refuses at its check
 #                          before taking anything (EEXIST, expected), then
 #                          the snapshots that are there
+#   destroy, destroy-after, destroy-absent
+#                          what the adapter runs when it cannot read the
+#                          snapshot program's output: zfs destroy -r P@T,
+#                          on @o0 (the program took it), then the
+#                          snapshots there, then on a snapshot that is
+#                          not there ("could not find any snapshots to
+#                          destroy", expected)
+#   destroy-held-hold, destroy-held, destroy-held-after
+#                          the same on @o2 with a hold on the child's
+#                          @o2 alone, then the snapshots there
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -112,22 +133,30 @@
 #   mirror-rebuild, mirror-rebuild-status[-g], mirror-rebuilt[-g]
 #                          a third file attached with -s (a sequential
 #                          rebuild). Its status in progress reads
-#                          "resilver (mirror-0) in progress", and is
-#                          most likely not caught: in run 45663170240
-#                          `zpool status` waited behind the attach until
-#                          the rebuild had ended, and only the scrub
-#                          that follows a rebuild was in progress
+#                          "resilver (mirror-0) in progress". Until
+#                          run 45665823917 it was not caught: the delay
+#                          was on m0 alone, the rebuild read m1 and was
+#                          over in seconds, and `zpool status` returned
+#                          only when the attach did. Both sides are now
+#                          slowed for it
 #
-# On files, `zpool online` and `zpool attach` return only once the
-# resilver has ended, so these two run in the background while the
-# status is watched.
+# `zpool online` and `zpool attach -s` run in the background (with a
+# limit of ZCR_CHANGE_LIMIT seconds, default 900) while the status is
+# watched, so that a command that waits for its scan cannot hide the
+# scan. In the runs so far `online` returned seconds after its resilver
+# began, and `attach -s` only after its rebuild had ended; whether
+# `attach -s` waits for the rebuild is not known.
 #   remove-status, remove-status-g, remove, remove-in-progress[-g],
 #   remove-done[-g]        skzqr's second file removed
 #
 # and once: `nocacheflush` (the module parameter), `version` and
 # `locale`. On the pool that does not exist, every command the adapter
 # runs: status, status-g, get, assist-set, assist-sync, the three
-# programs, holds, holds-r, hold, release.
+# programs, holds, holds-r, hold, release, destroy.
+#
+# Not recorded: the snapshot program's output that cannot be read (the
+# case that makes the adapter run destroy -r), which cannot be made to
+# happen from outside, and a checkpoint whose size reads 0.
 #
 # Meant for a throwaway machine. Exit 0 once set up, whatever the
 # commands answered; 2 when it could not set up.
@@ -147,6 +176,19 @@ PROGRAM_LIMITS=(-t 100000000 -m 104857600)
 # The adapter's hold tag and assist property.
 TAG=skyzfs-publish
 ASSIST=skyzfs:assist
+# A sequential rebuild under way, and not the scrub that follows it
+# ("scan: resilvered (mirror-0) ..." over "scrub in progress").
+REBUILD_PATTERN='resilver \([^)]*\) in progress'
+
+# The adapter's locale (src/host.rs): every command with LC_ALL=C.
+adapter_env() {
+    export LC_ALL=C
+}
+
+# secs_between T0 T1: T1 - T0 in seconds, to the millisecond.
+secs_between() {
+    awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f\n", b - a }'
+}
 
 # rec NAME [--in FILE] [--expect PATTERN] COMMAND...: run COMMAND once
 # and keep it as the record NAME. With --expect, the note says whether
@@ -176,7 +218,7 @@ rec() {
     lim "$LIMIT" "$@" < "$in" > "$d/stdout" 2> "$d/stderr" || rc=$?
     t1=$(date +%s.%N)
     echo "$rc" > "$d/rc"
-    awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.3f\n", b - a }' > "$d/secs"
+    secs_between "$t0" "$t1" > "$d/secs"
     if [ -n "$expect" ]; then
         if cat "$d/stdout" "$d/stderr" | grep -Eq -- "$expect"; then
             note="expected /$expect/: seen"
@@ -195,14 +237,16 @@ rec() {
 # note that says so; a try that did not end within the limit is the
 # last. Returns 0 when caught and kept.
 catch() {
-    local name=$1 pattern=$2 tries=$3 i tmp rc caught="" note
+    local name=$1 pattern=$2 tries=$3 i tmp rc caught="" note t0 t1
     shift 3
     tmp=$OUT/.catch
     for ((i = 1; i <= tries; i++)); do
         rm -rf "${tmp:?}"
         mkdir -p "$tmp"
         rc=0
+        t0=$(date +%s.%N)
         lim "$LIMIT" "$@" < /dev/null > "$tmp/stdout" 2> "$tmp/stderr" || rc=$?
+        t1=$(date +%s.%N)
         if grep -Eq -- "$pattern" "$tmp/stdout"; then
             caught=1
             break
@@ -217,15 +261,15 @@ catch() {
     else
         note="not caught: no output of $tries matched /$pattern/; this is the last"
     fi
-    keep "$name" "$tmp" "$rc" "$note" "$@" || { rm -rf "${tmp:?}"; return 70; }
+    keep "$name" "$tmp" "$rc" "$note" "$(secs_between "$t0" "$t1")" "$@" || { rm -rf "${tmp:?}"; return 70; }
     [ -n "$caught" ]
 }
 
-# keep NAME DIR RC NOTE COMMAND...: DIR's stdout and stderr as the
+# keep NAME DIR RC NOTE SECS COMMAND...: DIR's stdout and stderr as the
 # record NAME.
 keep() {
-    local name=$1 tmp=$2 rc=$3 note=$4 d shown
-    shift 4
+    local name=$1 tmp=$2 rc=$3 note=$4 secs=$5 d shown
+    shift 5
     d=$OUT/$name
     if [ -e "$d" ]; then
         echo "zfs-cli-record: the record $name twice" >&2
@@ -237,6 +281,7 @@ keep() {
     printf '%s\n' "$shown" > "$d/cmd"
     printf '%s\0' "$@" > "$d/argv"
     echo "$rc" > "$d/rc"
+    printf '%s\n' "$secs" > "$d/secs"
     printf '%s\n' "$note" > "$d/note"
     printf '%s\t%s\t%s\t%s\n' "$name" "$rc" "$note" "$shown" >> "$OUT/index.tsv"
     printf '== %s: rc %s (%s)\n' "$name" "$rc" "$note"
@@ -279,11 +324,15 @@ agent_commands() { # prefix pool
 }
 
 # The mirror's scans slowed, or as they are: DELAY names a vdev of the
-# pool DELAY_POOL to inject a delay on.
+# pool DELAY_POOL to inject a delay on, unless the vdevs are given.
 DELAY_POOL="" DELAY="" ZINJECT=""
-slow_on() { # pool
+slow_on() { # pool [vdev...]
     [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] && [ -n "$ZINJECT" ] || return 0
-    lim 30 "$ZINJECT" -d "$DELAY" -D 10:1 "$1" > /dev/null 2>&1
+    local p=$1 v
+    shift
+    for v in "${@:-$DELAY}"; do
+        lim 30 "$ZINJECT" -d "$v" -D 10:1 "$p" > /dev/null 2>&1
+    done
 }
 slow_off() { # pool
     [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] && [ -n "$ZINJECT" ] || return 0
@@ -338,13 +387,20 @@ record_pool() { # prefix pool
     rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
     program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
     rec "$x-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
+    # The adapter's destroy -r of a take it cannot read.
+    rec "$x-destroy" zfs destroy -r "$p@o0"
+    rec "$x-destroy-after" zfs list -H -t snapshot -o name -r "$p"
+    rec "$x-destroy-absent" --expect 'could not find any snapshots to destroy' zfs destroy -r "$p@absent"
+    rec "$x-destroy-held-hold" zfs hold "$TAG" "$p/child@o2"
+    rec "$x-destroy-held" zfs destroy -r "$p@o2"
+    rec "$x-destroy-held-after" zfs list -H -t snapshot -o name -r "$p"
+    release_quietly "$p" o2
     rec "$x-checkpoint" zpool checkpoint "$p"
     rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
     slow_on "$p"
     rec "$x-scrub" zpool scrub "$p"
-    catch "$x-scrub-status" 'scrub in progress' 100 zpool status -P "$p"
-    catch "$x-scrub-status-g" 'scrub in progress' 100 zpool status -P -g "$p"
+    catch_status "$x-scrub-status" 'scrub in progress' "$p"
     lim 600 zpool wait -t scrub "$p" > /dev/null 2>&1
     rec "$x-scrub-again" zpool scrub "$p"
     rec "$x-scrub-pause" zpool scrub -p "$p"
@@ -354,11 +410,62 @@ record_pool() { # prefix pool
     slow_off "$p"
 }
 
+# The pool that does not exist: every command the adapter runs.
+record_none() { # prefix pool
+    local x=$1 p=$2
+    agent_commands "$x" "$p"
+    program "$x-members" "$p" members.lua -n "$p" t
+    program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    rec "$x-holds" zfs holds -H "$p@t"
+    rec "$x-holds-r" zfs holds -H -r "$p@t"
+    rec "$x-hold" zfs hold -r "$TAG" "$p@t"
+    rec "$x-release" zfs release -r "$TAG" "$p@t"
+    rec "$x-destroy" zfs destroy -r "$p@t"
+}
+
+# scale_all COUNT...: scale for each count, at most three, each at most
+# 100000 and each once, all within ZCR_SCALE_BUDGET seconds.
+SCALE_END=0
+scale_all() {
+    local n seen=" " k=0
+    SCALE_END=$(($(date +%s) + ${ZCR_SCALE_BUDGET:-4800}))
+    for n in "$@"; do
+        case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
+        if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then
+            echo "scale: $n is more than 100000; not run" >> "$OUT/about.txt"
+            continue
+        fi
+        case $seen in *" $n "*) echo "scale: $n twice; run once" >> "$OUT/about.txt"; continue ;; esac
+        if [ "$k" -ge 3 ]; then
+            echo "scale: more than three counts; $n not run" >> "$OUT/about.txt"
+            continue
+        fi
+        seen="$seen$n "
+        k=$((k + 1))
+        scale "$n"
+    done
+}
+
+# scale_limit: LIMIT for scale's next command, ZCR_SCALE_LIMIT or what
+# is left of the budget if less. Fails when nothing is left.
+scale_limit() {
+    local left=$((SCALE_END - $(date +%s)))
+    [ "$left" -gt 0 ] || return 1
+    LIMIT=${ZCR_SCALE_LIMIT:-1800}
+    [ "$left" -lt "$LIMIT" ] && LIMIT=$left
+    return 0
+}
+
 # scale N: a pool with N file systems under its root, and the adapter's
 # programs and holds on it, each timed (the secs of its record).
 scale() {
-    local n=$1 p=skzqs t0 made
-    local LIMIT=${ZCR_SCALE_LIMIT:-1800}
+    local n=$1 p=skzqs t0 made step cut="" rc
+    local LIMIT
+    if ! scale_limit; then
+        echo "scale $n: not run, the budget was spent" >> "$OUT/about.txt"
+        return 0
+    fi
+    df -h "$WORK" 2>&1 | sed "s/^/scale $n: df: /" >> "$OUT/about.txt"
     truncate -s 16G "$WORK/scale.img"
     if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint=none -O canmount=off \
         -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$n.log" 2>&1; then
@@ -368,14 +475,30 @@ scale() {
     fi
     zfs set "$ASSIST=1700000000000" "$p" >> "$OUT/create-$p-$n.log" 2>&1
     t0=$(date +%s)
-    seq 1 "$n" | xargs -P 8 -I{} zfs create "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1
-    made=$(zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
-    echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s" >> "$OUT/about.txt"
-    program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
-    program "scale-$n-members" "$p" members.lua -n "$p" t
-    rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t"
-    program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG"
-    rec "scale-$n-release" zfs release -r "$TAG" "$p@t"
+    if scale_limit; then
+        rc=0
+        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
+        [ "$rc" = 124 ] && cut=" (stopped at the limit of $LIMIT s)"
+        made=$(lim 120 zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
+        echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
+    fi
+    for step in snapshot snapshot-cli members hold tagged release; do
+        if ! scale_limit; then
+            echo "scale $n: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
+            break
+        fi
+        case $step in
+            snapshot) program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST" ;;
+            # Without the program's @t, the CLI's, so that the rest has one.
+            snapshot-cli)
+                lim 120 zfs list -H -o name "$p@t" > /dev/null 2>&1 || rec "scale-$n-snapshot-cli" zfs snapshot -r "$p@t"
+                ;;
+            members) program "scale-$n-members" "$p" members.lua -n "$p" t ;;
+            hold) rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t" ;;
+            tagged) program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
+            release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
+        esac
+    done
     lim 600 zpool destroy -f "$p" > /dev/null 2>&1
     rm -f "$WORK/scale.img"
 }
@@ -384,6 +507,23 @@ scale() {
 catch_status() {
     catch "$1" "$2" 100 zpool status -P "$3"
     catch "$1-g" "$2" 100 zpool status -P -g "$3"
+}
+
+# during NAME STATUS PATTERN POOL COMMAND...: COMMAND as the record NAME,
+# in the background with a limit of ZCR_CHANGE_LIMIT seconds (default
+# 900), while catch_status STATUS PATTERN POOL watches; returns when
+# both have ended. It waits for that record alone: not for a status that
+# lim gave up on.
+during() {
+    local name=$1 st=$2 pattern=$3 p=$4 pid
+    shift 4
+    (
+        LIMIT=${ZCR_CHANGE_LIMIT:-900}
+        rec "$name" "$@"
+    ) &
+    pid=$!
+    catch_status "$st" "$pattern" "$p"
+    wait "$pid"
 }
 
 main() {
@@ -398,8 +538,7 @@ main() {
     OUT=$(cd "$OUT" && pwd)
     LUA_DIR=$(cd "$LUA_DIR" && pwd)
     : > "$OUT/index.tsv"
-    # The adapter's locale (src/host.rs).
-    export LC_ALL=C
+    adapter_env
     export DEBIAN_FRONTEND=noninteractive
     LOOPS=()
     # shellcheck disable=SC2317,SC2329  # reached through the trap
@@ -523,18 +662,19 @@ main() {
     "$DD" if=/dev/urandom of="$WORK/mnt/skzqm/child/more" bs=1M count=1024 conv=fsync status=none
     zpool sync skzqm
     slow_on skzqm
-    rec mirror-online zpool online skzqm "$WORK/m1.img" &
-    catch_status mirror-resilver-status 'resilver in progress' skzqm
-    wait
+    during mirror-online mirror-resilver-status 'resilver in progress' skzqm zpool online skzqm "$WORK/m1.img"
     lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
     status mirror-resilvered skzqm
 
-    rec mirror-rebuild zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img" &
-    catch_status mirror-rebuild-status 'resilver \([^)]*\) in progress' skzqm
-    wait
-    lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
-    lim 600 zpool wait -t scrub skzqm > /dev/null 2>&1
+    # The rebuild reads either side: both slowed.
+    slow_on skzqm "$WORK/m1.img"
+    [ -n "$ZINJECT" ] && lim 30 "$ZINJECT" > "$OUT/zinject-rebuild.txt" 2>&1
+    during mirror-rebuild mirror-rebuild-status "$REBUILD_PATTERN" skzqm \
+        zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img"
+    lim 900 zpool wait -t resilver skzqm > /dev/null 2>&1
+    # The scrub that follows a rebuild, at full speed.
     slow_off skzqm
+    lim 600 zpool wait -t scrub skzqm > /dev/null 2>&1
     status mirror-rebuilt skzqm
 
     status remove-status skzqr
@@ -543,21 +683,12 @@ main() {
     lim 600 zpool wait -t remove skzqr > /dev/null 2>&1
     status remove-done skzqr
 
-    # A pool that does not exist.
-    agent_commands none skznone
-    program none-members skznone members.lua -n skznone t
-    program none-tagged skznone tagged.lua -n skznone "$TAG"
-    rec none-holds zfs holds -H skznone@t
-    rec none-holds-r zfs holds -H -r skznone@t
-    rec none-hold zfs hold -r "$TAG" skznone@t
-    rec none-release zfs release -r "$TAG" skznone@t
+    record_none none skznone
 
     # The programs' times on many file systems, when asked.
-    local n
-    for n in ${ZCR_SCALE:-}; do
-        case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
-        scale "$n"
-    done
+    local counts
+    read -ra counts <<< "${ZCR_SCALE:-}"
+    [ "${#counts[@]}" = 0 ] || scale_all "${counts[@]}"
     exit 0
 }
 

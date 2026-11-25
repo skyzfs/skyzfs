@@ -11,13 +11,13 @@ on:
   workflow_dispatch:
     inputs:
       lua_ref:
-        description: "a full commit id or a branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run, resolved once for every image. Empty: 366b217 (#147)"
+        description: "a full commit id or a branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run, resolved once for every image. Empty: 0f709ae (#147)"
         default: ""
       images:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'): the snapshot program and the holds on a pool with that many, timed. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program and the holds on a pool with that many, timed, within 80 minutes in all. Empty: none"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
@@ -59,7 +59,7 @@ jobs:
           persist-credentials: false
       - id: resolve
         env:
-          LUA_REF: ${{ inputs.lua_ref || '366b217bc3f09ba046be639653bb9c080752630b' }}
+          LUA_REF: ${{ inputs.lua_ref || '0f709ae015eae55b116ec9cc3bb9ffe340973d0c' }}
         run: |
           case $LUA_REF in
             -*|*[!A-Za-z0-9._/-]*|'') echo "::error::lua_ref is a full commit id or a branch: $LUA_REF"; exit 64 ;;
@@ -104,6 +104,12 @@ jobs:
           case $ZCR_SCALE in
             *[!0-9\ ]*) echo "::error::scale is counts separated by spaces: $ZCR_SCALE"; exit 64 ;;
           esac
+          read -ra counts <<< "$ZCR_SCALE"
+          [ "${#counts[@]}" -le 3 ] || { echo "::error::scale: at most three counts"; exit 64; }
+          for n in "${counts[@]}"; do
+            case $n in 0*) echo "::error::scale: not a count: $n"; exit 64 ;; esac
+            if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then echo "::error::scale: $n is more than 100000"; exit 64; fi
+          done
           sudo --preserve-env=LUA_REF,ZCR_SCALE tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
