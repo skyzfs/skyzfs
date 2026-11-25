@@ -27,10 +27,11 @@ Line numbers are given per head: "77:N" is 77151b2 and "7a:N" is 7a813d9.
 
 ## Verdict at 7a813d9
 
-**Can merge once the description covers 7a813d9 and the daemon rig ends
-green on 7a813d9.** No code defect stops the recorder from doing its main
-job, which is to record the adapter's outputs as fixtures. N1 is fixed. The
-tag and the shape of `destroy -r` agree with #147 at ab8db11.
+**Can merge once the description covers 7a813d9.** CI on 7a813d9 is all
+green, the daemon rig and the replay rig included. No code defect stops the
+recorder from doing its main job, which is to record the adapter's outputs as
+fixtures. N1 is fixed. The tag and the shape of `destroy -r` agree with #147
+at ab8db11.
 
 What blocks:
 
@@ -42,8 +43,6 @@ What blocks:
      snapshots (R1). Today that rests on the words "which stayed. At that
      `@t`";
    - say what R2 means for the new lines.
-2. **`skyzfs-daemon-rig` 45691245781 was still running when last read.**
-   Every other check on 7a813d9 is green.
 
 R1's code fix is a few lines and is recommended in this pull request. With
 `scale_lua_max` empty, the default, a dispatch at 10000 takes that path
@@ -153,7 +152,7 @@ Nothing else blocks.
 **R7. `writes=0` for a window shorter than a second** (low; certain; both heads).
 
 - **Where:** `stall` counts only writes in the window's whole seconds (77:85, 7a:94).
-- **Seen:** the 100 `zfs snapshot -r` in run 45681972805 (0.56 s) reads `writes=0`, though the writer did about 2400 a second.
+- **Seen:** the 100 `zfs snapshot -r` in run 45681972805 (0.56 s) reads `writes=0`, though the writer was doing thousands of writes a second.
 - **Fix:** show `writes=-` when the window holds no whole second.
 
 ### Test gaps (plants that survived)
@@ -177,7 +176,7 @@ All plants are textual, one at a time, on a copy, with the unit tests run under
   - The release after it could be dropped.
 
   Fix: pin that record's words and the release.
-- **G1 (7a813d9; at 77151b2 too, but not planted there):** `get-checkpoint` (7a:417) without `-p` passes. The rules do not cover `zpool get`'s `-p`, and only the first site (7a:338) is pinned.
+- **G1 (7a813d9; at 77151b2 too, but not planted there):** `get-checkpoint` (7a:417) without `-p` passes. The rules do not cover `zpool get`'s `-p` (the first site is 7a:338; it was not planted).
 - **The wiring in `writing()`:**
   - W1: the stall's window empty;
   - W4: no margins;
@@ -191,8 +190,22 @@ All plants are textual, one at a time, on a copy, with the unit tests run under
   - P12: 8 KiB writes.
 
   P2 (O_DSYNC) and P9 (the 64 MiB wrap), survivors at 77151b2, are killed at 7a813d9 by its new writer tests.
-- **T5 (7a813d9):** the 4 GiB cap on the fill's span is unpinned.
-- [7a813d9's remaining plants: see "Plants at 7a813d9" below.]
+- **The probe's gaps that matter** (7a813d9):
+  - **Q7:** `report` counting only the `zpool sync` runs that began in the window passes. A sync that began in the margin and was held across the take is exactly the case a hold makes, and it would drop out of the line. `test_a_sync_across_the_window` tests groups, not syncs.
+  - **Q9:** the probe not logging a sync still open at its end passes. In run 45691238816 four of the five windows ended with one open, and without that line `sync_longest` loses its `>`.
+  - **W3 (in `stop_bg` here):** SIGKILL in place of SIGTERM passes. The writer then leaves no end line and the probe no stop line.
+  - **T11:** `stop_bg` saying a process stopped when it did not passes. The 60 s path is not tested.
+
+  Fix: a `report` test with a sync that begins before t0 and ends after t1; a probe test that kills the fake `zpool` late; and a fake process that ignores SIGTERM, with a shorter wait in the test.
+- **Smaller ones** (7a813d9):
+  - T5: the fill span's 4 GiB cap;
+  - F2: the fill's 1 MiB block;
+  - T10: `stop_bg` reaping its process;
+  - Q14: the last read after the stop.
+- **Equivalent or practically so** (7a813d9):
+  - **T15** (no `local FILL_SPAN`): `fill_span` resets it on every call, and with no writer's directory `writing` ignores it.
+  - **Q5** (the start always an anchor): it adds only a pair of negative length.
+  - **Q2** (`CLOCK_MONOTONIC` for `CLOCK_MONOTONIC_RAW`): the two clocks differ by milliseconds on a freshly booted machine. The code is right, because `gethrtime()` is the raw clock. A test would need a fake clock.
 
 ### Suggestions (not defects)
 
@@ -311,7 +324,36 @@ forms.
 Base: shell 142 checks, `test_dsync_writer.py` 10 and `test_txg_probe.py`
 14 tests pass.
 
-PLANTS_7A_TABLE
+Result: 64 KILLED, 29 SURVIVED, 93 plants. The 60 plants of 77151b2 were
+adapted where the head moved:
+
+- W3 is on `stop_bg`;
+- W7 is on take-cli with `"$p"`;
+- P2 is on `flags=os.O_DSYNC):`;
+- P6 is on line 97;
+- P9 is on `(n % span) * block`;
+- V19b is on `local LIMIT FILL_SPAN=""`.
+
+| Plant | Result | What it changes |
+|---|---|---|
+| V2-V9, V17, U7, V19a, V19b, V22b, V22c, V26, V29, V30, V30b, N1a, N1b, N1c, N1e, N1f, B4-B11, W5-W8, K1, P1, P3, P6, P7, P8, P11 | KILLED | as at 77151b2 |
+| **P2 P9** | KILLED (survived at 77151b2) | O_DSYNC dropped; no 64 MiB wrap: caught by the new writer tests |
+| **V19c V22a N1d N1g L1 L2 B1 B2 B3 W1 W3 W4 P4 P5 P10 P12** | SURVIVED | as at 77151b2 |
+| **G1** | SURVIVED | `get-checkpoint` without `-p` |
+| T1 | KILLED | the probe reads another kstat |
+| **T2 T3** | SURVIVED | the probe's, the fill's window `t0 t0` |
+| T4 | KILLED | the span is the limit, not twice it |
+| **T5** | SURVIVED | no 4 GiB cap |
+| T6 T7 T8 T9 | KILLED | history not turned on; `-ge` for `-gt`; `ZCR_SCALE_LUA_MAX` not checked; not capped |
+| **T10 T11** | SURVIVED | `stop_bg` does not reap; says stopped when not |
+| T12 T13 T14 | KILLED | no writer of new data; `about.txt`'s txg line dropped; the probe not stopped |
+| **T15** | SURVIVED | no `local FILL_SPAN` (equivalent) |
+| F1 F3 | KILLED | fill with O_DSYNC; its span taken as blocks |
+| **F2** | SURVIVED | fill in 4 KiB writes |
+| Q1 Q3 Q4 Q6 Q8 Q10 Q11 Q12 Q13 | KILLED | a group's end without o, q, w; w and s swapped; longest_sync only of groups that ended in the window; an anchor's gap not open; no `zpool sync`; a group logged at every read; groups not committed logged; the stop not an anchor; txgs counts every group |
+| **Q2** | SURVIVED | `CLOCK_MONOTONIC` (practically equivalent) |
+| **Q5** | SURVIVED | the start always an anchor (equivalent) |
+| **Q7 Q9 Q14** | SURVIVED | only syncs that began in the window; an open sync not logged; no read after the stop |
 
 ## CI and recordings (read-only)
 
@@ -321,7 +363,7 @@ PLANTS_7A_TABLE
 | coverage | 45679909467 success | 45691245589 success |
 | e2e | 45679909542 success | 45691245475 success |
 | skyzfs-kernel-probe | 45679909527 success | 45691245659 success |
-| skyzfs-daemon-rig | 45679909642 success | 45691245781 RUNNING_DAEMON |
+| skyzfs-daemon-rig (run because `tests/kernel/` changed; this pull request has no daemon code) | 45679909642 success | 45691245781 success (seven jobs: daemon on 24.04, 26.04 and 26.04-arm, and the stand-in) |
 | skyzfs-replay-rig | 45679909594 success | 45691245600 success (eight jobs, both kinds) |
 | skyzfs-ci (push) | 45679895498 success | 45691221912 success |
 | recordings | 45679911640 (24.04), 45681972805 (26.04, scale) success | 45691238816 (26.04, scale, `scale_lua_max` 1000) success |

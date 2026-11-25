@@ -78,3 +78,19 @@ T13	KILLED	writing: about.txt's txg line dropped	(shell: FAIL: txgs beside snaps
 T14	KILLED	writing: the probe not stopped (no line)	(shell: FAIL: txgs beside snapshot: its line: got 'the p', want 'txgs=')
 T15	SURVIVED	scale: the fill span not reset between counts (no local FILL_SPAN)
 F1	KILLED	fill: with O_DSYNC	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
+F2	SURVIVED	fill: 4 KiB writes
+F3	KILLED	fill: span in bytes taken as blocks	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
+Q1	KILLED	probe: a group's end is its birth plus its sync alone	(python: FAIL: test_a_probe_on_a_file (__main__.Probe.test_a_probe_on_a_file))
+Q2	SURVIVED	probe: CLOCK_MONOTONIC, not RAW
+Q3	KILLED	rows: wait and sync swapped	(python: FAIL: test_a_probe_on_a_file (__main__.Probe.test_a_probe_on_a_file))
+Q4	KILLED	report: longest_sync only of groups that ended in the window	(python: FAIL: test_a_sync_across_the_window (__main__.Report.test_a_sync_across_the_window))
+Q5	SURVIVED	report: the start always an anchor
+Q6	KILLED	report: a gap at an anchor not marked open	(python: FAIL: test_the_command_line (__main__.Probe.test_the_command_line))
+Q7	SURVIVED	report: only zpool syncs that began in the window
+Q8	KILLED	probe: no zpool sync	(python: FAIL: test_a_kstat_that_cannot_be_read (__main__.Probe.test_a_kstat_that_cannot_be_read))
+Q9	SURVIVED	probe: an open sync not logged at the end
+Q10	KILLED	probe: a group logged at every read	(python: FAIL: test_a_probe_on_a_file (__main__.Probe.test_a_probe_on_a_file))
+Q11	KILLED	probe: groups not yet committed logged too	(python: FAIL: test_a_probe_on_a_file (__main__.Probe.test_a_probe_on_a_file))
+Q12	KILLED	report: the stop not an anchor	(python: FAIL: test_no_commit_known_before_the_window (__main__.Report.test_no_commit_known_before_)
+Q13	KILLED	report: txgs counts every group	(python: FAIL: test_a_sync_across_the_window (__main__.Report.test_a_sync_across_the_window))
+Q14	SURVIVED	probe: no read after the stop
