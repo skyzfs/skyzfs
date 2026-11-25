@@ -1,0 +1,787 @@
+[
+ {
+  "id": "E1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t1-other-end may end done",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tw-after may end done",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_withdrawn_before_a_kill_may_not_end_done (__main__.Ends.test_withdrawn_before_a_kill_may_not_end_done) | FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tw-last may end done",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "tk-after may read pending",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "att: any refusal",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t5 may end done",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "peer: any refusal",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "m1-after may be done",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t7-withdraw may still pend",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t7-other accepted",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "nu may answer cuts",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "t1-again-end may be refused",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT drops tw",
+  "result": "NOT APPLIED (0 matches of \"ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}\")",
+  "clean_after": true
+ },
+ {
+  "id": "E14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT drops t5",
+  "result": "NOT APPLIED (0 matches of \"ABSENT = {'pplain': ('t5', 't3'), 'pkill': ('tw',)}\")",
+  "clean_after": true
+ },
+ {
+  "id": "E15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "PUBLISHED drops t4",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)",
+   "test_publish_check_main.py: rc 1: ERROR: test_a_name_published_on_a_cut_below_g_ends_1 (__main__.Pins.test_a_name_published_on_a_cut_below_g_ends_1) | ERROR: test_t4_with_no_cut_below_g_ends_2 (__main__.Premises.test_t4_with_no_cut_below_g_ends_2) | FAIL: test_pplain_s_controls_are_caught (__main__.Right.test_pplain_s_controls_are_c"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "BETWEEN: m1 judged as a premise that it landed",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)",
+   "test_publish_check_main.py: rc 1: FAIL: test_a_request_from_before_a_rewind_not_refused_rewound_ends_1 (__main__.Pins.test_a_request_from_before_a_rewind_not_refused_rewound_ends_1) | FAIL: test_the_watcher_s_verdict_ends_1 (__main__.Premises.test_the_watcher_s_verdict_ends_1) | FAIL: test_each_course_as_a_right_daemon_leaves_it_end"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E17",
+  "file": "tests/kernel/publish_check.py",
+  "what": "COUNTS: control_peer 0",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)",
+   "test_publish_check_main.py: rc 1: FAIL: test_each_course_as_a_right_daemon_leaves_it_ends_0 (__main__.Right.test_each_course_as_a_right_daemon_leaves_it_ends_0)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E18",
+  "file": "tests/kernel/publish_check.py",
+  "what": "COUNTS: control_answered not pinned",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)",
+   "test_publish_check_main.py: rc 1: ERROR: test_pchannel_s_counts_are_exact (__main__.Pins.test_pchannel_s_counts_are_exact)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E19",
+  "file": "tests/kernel/publish_check.py",
+  "what": "TW_STATUS: publish_pending not pinned",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_exact_counts (__main__.Premises.test_exact_counts) | FAIL: test_the_tables_are_exactly_these (__main__.Tables.test_the_tables_are_exactly_these)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E20",
+  "file": "tests/kernel/publish_check.py",
+  "what": "KILLED_BY: pkillpub's words those of any kill",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_killed_by_is_in_the_hook_s_own_words (__main__.Tables.test_killed_by_is_in_the_hook_s_own_words)",
+   "test_publish_check_main.py: rc 1: FAIL: test_a_kill_that_was_not_the_hook_s_ends_2 (__main__.Premises.test_a_kill_that_was_not_the_hook_s_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise t4 always holds",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_t4_with_no_cut_below_g_ends_2 (__main__.Premises.test_t4_with_no_cut_below_g_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_below put at the row's own group (cannot fail)",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_the_watcher_s_verdict_ends_1 (__main__.Premises.test_the_watcher_s_verdict_ends_1) | FAIL: test_each_course_as_a_right_daemon_leaves_it_ends_0 (__main__.Right.test_each_course_as_a_right_daemon_leaves_it_ends_0) | FAIL: test_pplain_s_controls_are_caught (__main__.Right.test_pplain_s_contr"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a MISSED row control does not fail the run",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_missed_row_control_ends_1 (__main__.Controls.test_a_missed_row_control_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M3f",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a MISSED ctl_files does not fail the run",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_missed_files_control_ends_1 (__main__.Controls.test_a_missed_files_control_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_files run with the right digests",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_each_course_as_a_right_daemon_leaves_it_ends_0 (__main__.Right.test_each_course_as_a_right_daemon_leaves_it_ends_0) | FAIL: test_pplain_s_controls_are_caught (__main__.Right.test_pplain_s_controls_are_caught)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT judged by the ref alone",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_an_absent_name_with_a_row_and_no_ref_ends_1 (__main__.Pins.test_an_absent_name_with_a_row_and_no_ref_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_m1 inverted",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_pkillman_with_snap_m1_after_the_kill_ends_1 (__main__.Pins.test_pkillman_with_snap_m1_after_the_kill_ends_1) | FAIL: test_each_course_as_a_right_daemon_leaves_it_ends_0 (__main__.Right.test_each_course_as_a_right_daemon_leaves_it_ends_0)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise prewind held: any status",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_prewind_without_cuts_held_at_the_rewind_ends_2 (__main__.Premises.test_prewind_without_cuts_held_at_the_rewind_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_rewind_cut_committed always holds",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_prewind_whose_row_names_a_cut_that_opens_as_itself_ends_2 (__main__.Premises.test_prewind_whose_row_names_a_cut_that_opens_as_itself_ends_2) | FAIL: test_prewind_with_no_cut_committed_after_the_ask_ends_2 (__main__.Premises.test_prewind_with_no_cut_committed_after_the_ask_ends_2) | FAIL: "
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_tw_committed_past_g always holds",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_pkill_counting_only_the_next_instance_s_cuts_ends_2 (__main__.Premises.test_pkill_counting_only_the_next_instance_s_cuts_ends_2) | FAIL: test_pkill_whose_row_did_not_move_past_g_ends_2 (__main__.Premises.test_pkill_whose_row_did_not_move_past_g_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "asking twice compared with the first done itself",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_t1_asked_again_done_on_another_commit_ends_1 (__main__.Pins.test_t1_asked_again_done_on_another_commit_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "node B stages not judged",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_node_b_failing_a_stage_ends_1 (__main__.Pins.test_node_b_failing_a_stage_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_T_cut not judged",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_r1_made_by_an_earlier_rewind_only_cut_is_a_verdict_not_the_rig_s_error (__main__.Pins.test_r1_made_by_an_earlier_rewind_only_cut_is_a_verdict_not_the_rig_s_error) | FAIL: test_r1_made_by_the_rewind_cut_is_a_verdict_not_the_rig_s_error (__main__.Pins.test_r1_made_by_the_rewind_cut_is_a_ver"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the controls run on no name",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: ERROR: test_a_missed_files_control_ends_1 (__main__.Controls.test_a_missed_files_control_ends_1) | ERROR: test_a_missed_row_control_ends_1 (__main__.Controls.test_a_missed_row_control_ends_1) | FAIL: test_pplain_s_controls_are_caught (__main__.Right.test_pplain_s_controls_are_caught)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "M14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ctl_files: any catch counts",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "P1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: a cut that opens as itself passes",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_a_cut_number_seen_twice_counts_as_itself_if_either_line_says_so (__main__.Premises.test_a_cut_number_seen_twice_counts_as_itself_if_either_line_says_so) | FAIL: test_each_way_the_rewind_premise_fails (__main__.Premises.test_each_way_the_rewind_premise_fails)",
+   "test_publish_check_main.py: rc 1: FAIL: test_prewind_whose_committed_cut_opens_as_itself_ends_2 (__main__.Premises.test_prewind_whose_committed_cut_opens_as_itself_ends_2) | FAIL: test_prewind_whose_row_names_a_cut_that_opens_as_itself_ends_2 (__main__.Premises.test_prewind_whose_row_names_a_cut_that_opens_as_itself_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "P2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: r1 made before the cut passes",
+  "result": "NOT APPLIED (0 matches of '    if named is not None and named < number:')",
+  "clean_after": true
+ },
+ {
+  "id": "P3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: r1 made BY the cut is the rig error (hides the verdict)",
+  "result": "NOT APPLIED (0 matches of '    if named is not None and named < number:')",
+  "clean_after": true
+ },
+ {
+  "id": "P4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: C not checked",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_each_way_the_rewind_premise_fails (__main__.Premises.test_each_way_the_rewind_premise_fails)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "P5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: G not checked",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_each_way_the_rewind_premise_fails (__main__.Premises.test_each_way_the_rewind_premise_fails)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "P6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: state not checked",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_each_way_the_rewind_premise_fails (__main__.Premises.test_each_way_the_rewind_premise_fails)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "P7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: a cut with no line passes",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_each_way_the_rewind_premise_fails (__main__.Premises.test_each_way_the_rewind_premise_fails)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "P8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "rewind_committed: the cut matched by number alone",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "P9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "prewind: named read as the row cut (premise never sees r1)",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_prewind_with_r1_made_before_the_rewind_cut_by_one_that_opens_as_itself_ends_2 (__main__.Premises.test_prewind_with_r1_made_before_the_rewind_cut_by_one_that_opens_as_itself_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: every instance's cuts after the line (B3 as it was)",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_cuts_after_the_withdrawal_line_on_its_instance_only (__main__.Premises.test_cuts_after_the_withdrawal_line_on_its_instance_only) | FAIL: test_the_withdrawal_line_whatever_it_answered (__main__.Premises.test_the_withdrawal_line_whatever_it_answered)",
+   "test_publish_check_main.py: rc 1: FAIL: test_pkill_counting_only_the_next_instance_s_cuts_ends_2 (__main__.Premises.test_pkill_counting_only_the_next_instance_s_cuts_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: cuts before the withdrawal count",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_cuts_after_the_withdrawal_line_on_its_instance_only (__main__.Premises.test_cuts_after_the_withdrawal_line_on_its_instance_only) | FAIL: test_the_withdrawal_line_whatever_it_answered (__main__.Premises.test_the_withdrawal_line_whatever_it_answered)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: rewind cuts count",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_cuts_after_the_withdrawal_line_on_its_instance_only (__main__.Premises.test_cuts_after_the_withdrawal_line_on_its_instance_only) | FAIL: test_the_withdrawal_line_whatever_it_answered (__main__.Premises.test_the_withdrawal_line_whatever_it_answered)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: G not checked",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_cuts_after_the_withdrawal_line_on_its_instance_only (__main__.Premises.test_cuts_after_the_withdrawal_line_on_its_instance_only) | FAIL: test_the_withdrawal_line_whatever_it_answered (__main__.Premises.test_the_withdrawal_line_whatever_it_answered)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "committed: any cut past G counts, not the committed one",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_pkill_whose_row_did_not_move_past_g_ends_2 (__main__.Premises.test_pkill_whose_row_did_not_move_past_g_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "committed: state not checked",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "Q7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "committed: C not checked",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "Q8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_tw_withdrawn_status not judged",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: ERROR: test_a_missing_file_is_the_rig_s_error (__main__.Premises.test_a_missing_file_is_the_rig_s_error) | FAIL: test_pkill_s_status_counting_tw_pending_ends_1 (__main__.Pins.test_pkill_s_status_counting_tw_pending_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "Q9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: any answer to tw's withdrawal",
+  "result": "NOT APPLIED (0 matches of \"ln['result'] == f'{name} withdrawn':\")",
+  "clean_after": true
+ },
+ {
+  "id": "Q10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "withdrawn_past: any op",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_no_withdrawal_line_no_instance (__main__.Premises.test_no_withdrawal_line_no_instance)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "killed_by: kill.tsv not read",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_kill_that_was_not_the_hook_s_ends_2 (__main__.Premises.test_a_kill_that_was_not_the_hook_s_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "killed_by: serve.log's words not read",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_kill_that_was_not_the_hook_s_ends_2 (__main__.Premises.test_a_kill_that_was_not_the_hook_s_ends_2)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_p1_found not judged",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_pkillpub_done_on_another_commit_than_landed_ends_1 (__main__.Pins.test_pkillpub_done_on_another_commit_than_landed_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pin_p1_found: any ref after the kill",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_pkillpub_done_on_another_commit_than_landed_ends_1 (__main__.Pins.test_pkillpub_done_on_another_commit_than_landed_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "counts judged at least",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_exact_counts (__main__.Premises.test_exact_counts)",
+   "test_publish_check_main.py: rc 1: FAIL: test_pchannel_s_counts_are_exact (__main__.Pins.test_pchannel_s_counts_are_exact)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "socket mode: any",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_socket_the_daemon_made_wider_ends_1 (__main__.Pins.test_a_socket_the_daemon_made_wider_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "socket mode: 0666 passes",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check_main.py: rc 1: FAIL: test_a_socket_the_daemon_made_wider_ends_1 (__main__.Pins.test_a_socket_the_daemon_made_wider_ends_1)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "C4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "exact_counts: a key missing passes",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_check.py: rc 1: FAIL: test_exact_counts (__main__.Premises.test_exact_counts)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A13",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "answer_of: an unended line is the answer",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_agent.py: rc 1: FAIL: test_a_cut_short_answer_is_served_as_no_answer_line (__main__.Raw.test_a_cut_short_answer_is_served_as_no_answer_line) | FAIL: test_only_a_whole_line_is_an_answer (__main__.Raw.test_only_a_whole_line_is_an_answer)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A14",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "answer_of: the greeting alone is the answer",
+  "result": "NOT APPLIED (0 matches of '    rest = whole[1:] if whole and whole[0] == HELLO else who')",
+  "clean_after": true
+ },
+ {
+  "id": "A15",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "raw: nothing written is the rig's error again",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_agent.py: rc 1: ERROR: test_a_close_before_the_client_writes_with_nothing_is_the_answer_nothing (__main__.Raw.test_a_close_before_the_client_writes_with_nothing_is_the_answer_nothing) | ERROR: test_a_reset_with_nothing_written_is_the_answer_nothing (__main__.Raw.test_a_reset_with_nothing_written_is_the_answer_nothi"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A16",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "raw: EPIPE on the write is the rig's error (X1)",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_agent.py: rc 1: ERROR: test_a_close_before_the_client_writes_with_nothing_is_the_answer_nothing (__main__.Raw.test_a_close_before_the_client_writes_with_nothing_is_the_answer_nothing) | ERROR: test_an_answer_before_the_client_writes_is_the_answer (__main__.Raw.test_an_answer_before_the_client_writes_is_the_answer)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A17",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "raw: a reset on the read raises (X4)",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_agent.py: rc 1: ERROR: test_a_cut_short_answer_is_served_as_no_answer_line (__main__.Raw.test_a_cut_short_answer_is_served_as_no_answer_line) | ERROR: test_a_reset_with_nothing_written_is_the_answer_nothing (__main__.Raw.test_a_reset_with_nothing_written_is_the_answer_nothing) | ERROR: test_an_answer_before_a_reset"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A18",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "answer_of: bytes with no whole line are ''",
+  "result": "KILLED",
+  "failed": [
+   "test_publish_agent.py: rc 1: FAIL: test_a_cut_short_answer_is_served_as_no_answer_line (__main__.Raw.test_a_cut_short_answer_is_served_as_no_answer_line) | FAIL: test_only_a_whole_line_is_an_answer (__main__.Raw.test_only_a_whole_line_is_an_answer)"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "A19",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "answer_of: no whole line after the greeting: the greeting",
+  "result": "NOT APPLIED (0 matches of '    if rest:\\n        return rest[0]')",
+  "clean_after": true
+ },
+ {
+  "id": "A20",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "raw: the exit for a refusal is 1 again",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "S1",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewind: the agent syncs groups again",
+  "result": "NOT APPLIED (0 matches of '    pflow r1 r1 --limit-s 900 &')",
+  "clean_after": true
+ },
+ {
+  "id": "S2",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewind: the store back before the answer",
+  "result": "NOT APPLIED (0 matches of '    asked r1 120 || rig_error \"the agent\\'s publish of r1 had')",
+  "clean_after": true
+ },
+ {
+  "id": "S3",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewind: row_past nudges",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "S4",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pkill: row_past does not nudge",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "S5",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pkill: no wait for the commit past G",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: "
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S6",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pchannel: the mode recorded after the rig widened it",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: FAIL pchannel: records the socket's mode before the rig widens it: got 'chmod stat ', want 'stat chmod '"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S7",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "row_past: a cut at C passes",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: "
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S8",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "row_past: G not checked",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: "
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S9",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "asked: a line with no answer passes",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: FAIL asked: a publish of r1 with no answer yet: got 'rc=0', want 'rc=1'"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S10",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "prewind: row_past with the arguments swapped (C and G)",
+  "result": "SURVIVED",
+  "failed": [],
+  "clean_after": true
+ },
+ {
+  "id": "S11",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pkill: the status read before the commit past G",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: FAIL pkill: withdraws, waits for a commit past tw's G, reads the status, then asks tk and kills: got 'pask ustatus row_past pflow kill_serve ', want 'pask row_past ustatus pflow kill_serve ' | FAIL pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before: got 'idle after "
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "S12",
+  "file": "tests/kernel/cut-record.sh",
+  "what": "pchannel: status_until dropped (B1 back)",
+  "result": "KILLED",
+  "failed": [
+   "test_cut_record.sh: rc 1: "
+  ],
+  "clean_after": true
+ }
+]

@@ -1,0 +1,28 @@
+baseline {'tests/kernel/publish_check.py': []}
+K1   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 without 'below G at the first assist'
+K2   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 without 'the assists reached G'
+K3   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 always holds
+K4   KILLED    the pin with < for <=  by test_publish_check_main.py
+K5   KILLED    the pin over a1's assists only  by test_publish_check_main.py
+K6   KILLED    the pin on the set's read (mid) for after  by test_publish_check_main.py
+K7   KILLED    the pin never fails  by test_publish_check_main.py
+K8   KILLED    premise_a2 with >= 0  by test_publish_check_main.py
+K9   KILLED    a2's rows are every assist  by test_publish_check_main.py
+K10  KILLED    obs_a1_cut names no assist  by test_publish_check_main.py
+K11  KILLED    kstat_groups without the missing check  by test_publish_check.py, test_publish_check_main.py
+K12  KILLED    kstat_groups with nwritten >= 0  by test_publish_check.py, test_publish_check_main.py
+K13  KILLED    kstat_groups without the state C  by test_publish_check.py
+K14  KILLED    kstat_groups over the first assist only  by test_publish_check.py, test_publish_check_main.py
+K15  KILLED    read_assists takes a line with more fields  by test_publish_check.py, test_publish_check_main.py
+K16  KILLED    read_assists takes a non-number  by test_publish_check.py
+K17  KILLED    the pace's cuts not bounded by the assists  by test_publish_check.py, test_publish_check_main.py
+K18  NOT APPLIED (0 matches of "uploaded = count(after, 'uploaded') - count(before") the pace's uploads not a difference
+K19  KILLED    EXPECTED: a2-look snap  by test_publish_check.py, test_publish_check_main.py
+K20  KILLED    EXPECTED: a1 pending  by test_publish_check.py, test_publish_check_main.py
+K21  KILLED    PUBLISHED: passist none  by test_publish_check.py, test_publish_check_main.py
+K22  KILLED    ABSENT: passist none  by test_publish_check.py
+K23  KILLED    COURSES without passist  by test_publish_check_main.py
+K24  KILLED    G3 undone: an empty watch.log passes  by test_publish_check_main.py
+V1x  KILLED    #143's V1 again: watch.log not read  by test_publish_check_main.py
+L4y  KILLED    #141's L4 again: f1 not in ABSENT  by test_publish_check.py, test_publish_check_main.py
+restored {'tests/kernel/publish_check.py': []}

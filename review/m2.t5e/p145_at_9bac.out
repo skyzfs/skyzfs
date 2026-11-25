@@ -1,0 +1,66 @@
+baseline {'tests/kernel/publish_check.py': [], '.github/workflows/skyzfs-publish-rig.yml': [], 'tests/kernel/cut-record.sh': [], 'tests/kernel/publish_agent.py': []}
+A1   SURVIVED  written_txg without the state C
+A2   KILLED    written_txg without nwritten (any committed group)  by test_publish_agent.py
+A3   KILLED    written_txg with nwritten >= 0  by test_publish_agent.py
+A4   SURVIVED  written_txg skips the first group row too
+A5   KILLED    written_txg: no group that wrote read as 0  by test_publish_agent.py
+A6   KILLED    settled returns the first read  by test_publish_agent.py
+A7   KILLED    settled returns at the first change  by test_publish_agent.py
+A8   KILLED    the value without last + 1  by test_publish_agent.py
+A9   KILLED    the same value at every assist  by test_publish_agent.py
+A10  KILLED    no zpool sync after the set  by test_publish_agent.py
+A11  KILLED    the sync before the set  by test_publish_agent.py
+A12  KILLED    after read as mid  by test_publish_agent.py
+A13  KILLED    assist.tsv with mid and after swapped  by test_publish_agent.py
+A14  KILLED    another property  by test_publish_agent.py
+A15  KILLED    a burst of one  by test_publish_agent.py, test_publish_check_main.py
+A16  KILLED    a burst of four  by test_publish_agent.py, test_publish_check_main.py
+A17  KILLED    after the burst, one a second (#144's engine at its head)  by test_publish_agent.py
+A18  KILLED    no wait before the first assist  by test_publish_agent.py
+A19  KILLED    ASSIST_AFTER 5  by test_publish_agent.py
+A20  KILLED    main: --assist ignored  by test_publish_agent.py
+A21  KILLED    main: --assist-after-s ignored  by test_publish_agent.py
+K1   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 without 'below G at the first assist'
+K2   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 without 'the assists reached G'
+K3   NOT APPLIED (0 matches of "bool(mine) and mine[0]['before'] < a1['group'] <= ") premise_a1 always holds
+K4   KILLED    the pin with < for <=  by test_publish_check_main.py
+K5   KILLED    the pin over a1's assists only  by test_publish_check_main.py
+K6   KILLED    the pin on the set's read (mid) for after  by test_publish_check_main.py
+K7   KILLED    the pin never fails  by test_publish_check_main.py
+K8   KILLED    premise_a2 with >= 0  by test_publish_check_main.py
+K9   KILLED    a2's rows are every assist  by test_publish_check_main.py
+K10  KILLED    obs_a1_cut names no assist  by test_publish_check_main.py
+K11  KILLED    kstat_groups without the missing check  by test_publish_check.py, test_publish_check_main.py
+K12  KILLED    kstat_groups with nwritten >= 0  by test_publish_check.py, test_publish_check_main.py
+K13  KILLED    kstat_groups without the state C  by test_publish_check.py
+K14  KILLED    kstat_groups over the first assist only  by test_publish_check.py, test_publish_check_main.py
+K15  KILLED    read_assists takes a line with more fields  by test_publish_check.py, test_publish_check_main.py
+K16  KILLED    read_assists takes a non-number  by test_publish_check.py
+K17  KILLED    the pace's cuts not bounded by the assists  by test_publish_check.py, test_publish_check_main.py
+K18  NOT APPLIED (0 matches of "uploaded = count(after, 'uploaded') - count(before") the pace's uploads not a difference
+K19  KILLED    EXPECTED: a2-look snap  by test_publish_check.py, test_publish_check_main.py
+K20  KILLED    EXPECTED: a1 pending  by test_publish_check.py, test_publish_check_main.py
+K21  KILLED    PUBLISHED: passist none  by test_publish_check.py, test_publish_check_main.py
+K22  KILLED    ABSENT: passist none  by test_publish_check.py
+K23  KILLED    COURSES without passist  by test_publish_check_main.py
+K24  KILLED    G3 undone: an empty watch.log passes  by test_publish_check_main.py
+V1x  KILLED    #143's V1 again: watch.log not read  by test_publish_check_main.py
+S1   KILLED    pidle without nwritten  by test_cut_record.sh
+S2   KILLED    pidle idle after 1 s  by test_cut_record.sh
+S3   KILLED    pidle never waits  by test_cut_record.sh
+S4   KILLED    a1 at its snapshot's group  by test_cut_record.sh
+S5   KILLED    no pidle before a1  by test_cut_record.sh
+S6   KILLED    a1 without --assist  by test_cut_record.sh
+S7   KILLED    a2 without --assist  by test_cut_record.sh
+S8   KILLED    a2 with no expiry  by test_cut_record.sh
+S9   KILLED    a2's txgs not kept  by test_cut_record.sh
+S10  SURVIVED  a2's statuses swapped
+S11  KILLED    no withdrawal of a2  by test_cut_record.sh
+S12  KILLED    PUBLISH_NAMED without passist  by test_cut_record.sh
+S13  SURVIVED  zfs_txg_history not raised
+S14  KILLED    the workflow's default without passist  by test_cut_record.sh
+L4y  KILLED    #141's L4 again: f1 not in ABSENT  by test_publish_check.py, test_publish_check_main.py
+R46y KILLED    #141's R46 again: prewindf not a course by name  by test_cut_record.sh
+N24y KILLED    #141's N24 again: the workflow's default list without prewindf  by test_cut_record.sh
+S14x KILLED    #143's S14 again: the workflow's default without prewindc  by test_cut_record.sh
+restored {'tests/kernel/publish_check.py': [], '.github/workflows/skyzfs-publish-rig.yml': [], 'tests/kernel/cut-record.sh': [], 'tests/kernel/publish_agent.py': []}

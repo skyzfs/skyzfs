@@ -1,0 +1,7 @@
+ 13:27:23 up 42 min,  0 user,  load average: 1.48, 2.67, 2.90
+bash 5.2.21(1)-release, 200 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'):
+  7  grow: error after 30 s, 29 sleeps
+  193  grow: error after 30 s, 30 sleeps
+  3  idle: idle after 12 s, 11 sleeps
+  194  idle: idle after 12 s, 12 sleeps
+  3  idle: idle after 13 s, 12 sleeps

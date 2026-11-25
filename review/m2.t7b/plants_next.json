@@ -31,10 +31,9 @@
   "id": "L4",
   "file": "publish_check.py",
   "what": "f1 not in ABSENT",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_publish_check.py",
-   "test_publish_check_main.py"
+   "0 matches"
   ]
  },
  {
@@ -154,9 +153,9 @@
   "id": "R4x",
   "file": "publish_check.py",
   "what": "asked_line: any op",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_publish_check.py"
+   "0 matches"
   ]
  },
  {
@@ -227,9 +226,9 @@
   "id": "R13x",
   "file": "publish_check.py",
   "what": "prewind's ground from the anew C",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_publish_check_main.py"
+   "0 matches"
   ]
  },
  {
@@ -247,7 +246,8 @@
   "what": "judge_look: no row is no failure",
   "verdict": "KILLED",
   "by": [
-   "test_publish_check.py"
+   "test_publish_check.py",
+   "test_cut_record.sh"
   ]
  },
  {
@@ -331,16 +331,17 @@
   "what": "prewindf's premises skipped",
   "verdict": "KILLED",
   "by": [
-   "test_publish_check_main.py"
+   "test_publish_check_main.py",
+   "test_cut_record.sh"
   ]
  },
  {
   "id": "R25",
   "file": "publish_check.py",
   "what": "prewindf not a course of the check",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_publish_check_main.py"
+   "0 matches"
   ]
  },
  {
@@ -399,7 +400,8 @@
   "what": "parse: manifest-len unchecked (A5)",
   "verdict": "KILLED",
   "by": [
-   "test_publish_agent.py"
+   "test_publish_agent.py",
+   "test_cut_record.sh"
   ]
  },
  {
@@ -465,9 +467,9 @@
   "id": "R46",
   "file": "cut-record.sh",
   "what": "prewindf not a course by name",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_cut_record.sh"
+   "0 matches"
   ]
  },
  {
@@ -528,9 +530,9 @@
   "id": "P1",
   "file": "publish_check.py",
   "what": "the anchor read as the refusal again",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_publish_check_main.py"
+   "0 matches"
   ]
  },
  {
@@ -607,7 +609,8 @@
   "what": "an `asked` line taken as an end",
   "verdict": "KILLED",
   "by": [
-   "test_publish_check.py"
+   "test_publish_check.py",
+   "test_cut_record.sh"
   ]
  },
  {
@@ -624,8 +627,10 @@
   "id": "N2",
   "file": "publish_check.py",
   "what": "a no-op (the harness itself)",
-  "verdict": "SURVIVED",
-  "by": []
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
  },
  {
   "id": "N3",
@@ -784,8 +789,10 @@
   "id": "N21",
   "file": "cut-record.sh",
   "what": "import_rewind_f: no ready mark",
-  "verdict": "SURVIVED",
-  "by": []
+  "verdict": "KILLED",
+  "by": [
+   "test_cut_record.sh"
+  ]
  },
  {
   "id": "N22",
@@ -807,9 +814,9 @@
   "id": "N24",
   "file": "../../.github/workflows/skyzfs-publish-rig.yml",
   "what": "the workflow's default list without prewindf",
-  "verdict": "KILLED",
+  "verdict": "NOT APPLIED",
   "by": [
-   "test_cut_record.sh"
+   "0 matches"
   ]
  }
 ]

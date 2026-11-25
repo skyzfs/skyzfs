@@ -1,0 +1,37 @@
+# Rig unit tests at b3bb916: exit code, file, its last words; then shellcheck 0.11.0 over git ls-files '*.sh'.
+0 tests/kernel/test_control_check.py Ran 21 tests in 0.010s OK 
+0 tests/kernel/test_cut_check.py Ran 36 tests in 0.012s OK 
+0 tests/kernel/test_cut_daemon_check.py Ran 104 tests in 11.940s OK 
+0 tests/kernel/test_cut_daemon_main.py Ran 42 tests in 30.147s OK 
+0 tests/kernel/test_cut_hold.py Ran 18 tests in 4.765s OK 
+0 tests/kernel/test_cut_plan.py Ran 12 tests in 0.521s OK 
+0 tests/kernel/test_cut_ref.py Ran 41 tests in 0.335s OK 
+0 tests/kernel/test_cut_watch.py Ran 13 tests in 3.377s OK 
+0 tests/kernel/test_daemon_check.py Ran 93 tests in 8.993s OK 
+0 tests/kernel/test_nodeb_check.py Ran 29 tests in 0.027s OK 
+0 tests/kernel/test_publish_agent.py Ran 33 tests in 0.315s OK 
+0 tests/kernel/test_publish_check.py Ran 43 tests in 0.002s OK 
+0 tests/kernel/test_publish_check_main.py Ran 54 tests in 0.222s OK 
+0 tests/kernel/test_replay.py Ran 53 tests in 3.254s OK 
+0 tests/kernel/test_replay_daemon.py Ran 54 tests in 1.141s OK 
+0 tests/kernel/test_replay_hole.py Ran 24 tests in 0.002s OK 
+0 tests/bench/test_bracket.py Ran 30 tests in 0.001s OK 
+0 tests/bench/test_cut_release.py Ran 13 tests in 1.980s OK 
+0 tests/bench/test_embedded_python.py Ran 8 tests in 0.983s OK 
+0 tests/bench/test_perfcat.py Ran 6 tests in 0.001s OK 
+0 tests/bench/test_skz_time.py Ran 39 tests in 0.016s OK 
+0 tests/bench/test_syscalls.py Ran 6 tests in 0.001s OK 
+0 tests/kernel/test_blktrace.sh all passed 
+0 tests/kernel/test_c_evidence.sh ok   a failed case keeps the logs, the extents and the trace, compressed all passed 
+0 tests/kernel/test_control_fetch.sh ok   a start that failed all passed 
+0 tests/kernel/test_control_refused.sh ok   an add that failed is the rig's error all passed 
+0 tests/kernel/test_cut_record.sh all passed 
+0 tests/kernel/test_daemon_fetch.sh ok     a volume that reads failed fails ok     a volume that reads failed fails 
+0 tests/kernel/test_daemon_refused.sh all passed 
+0 tests/kernel/test_devnode.sh all passed 
+0 tests/kernel/test_klog.sh ok   a failed dmesg is lost ok   a failed dmesg returns 3 
+0 tests/kernel/test_looks.sh ok   another state is FAIL all passed 
+0 tests/kernel/test_net_try.sh all passed 
+0 tests/kernel/test_ublksrvd_look.sh all passed 
+0 tests/kernel/test_zfs_stuck.sh all passed 
+shellcheck 0.11.0 rc=0

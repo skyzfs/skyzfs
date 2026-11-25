@@ -1,0 +1,23 @@
+# Local cargo gates at 9bac3dd (b3bb916 changes no Rust, Cargo or toolchain file).
+# rustup update stable, then fmt and clippy -D warnings (plain, skyzfsd --features test-hooks,
+# skyzfs-ublk-sys --features control-test-program); the worktree's path is shown as WT.
+  stable-x86_64-unknown-linux-gnu unchanged - rustc 1.100.0 (0ef1bc386 2026-11-09)
+
+info: checking for self-update (current version: 1.29.3)
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+FMT_OK
+    Checking skynbdd v0.0.1 (WT/bins/skynbdd)
+    Checking skyzfs-nodeb v0.0.1 (WT/bins/skyzfs-nodeb)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 28s
+    Checking skyzfsd v0.0.1 (WT/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 28.44s
+    Checking skyzfs-ublk-sys v0.0.1 (WT/crates/skyzfs-ublk-sys)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.60s
+
+# cargo test (CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0: the disk is small)
+plain rc=0
+hooks rc=0
+ctp rc=0
+ct_plain: passed 1775 failed 0 ignored 16 in 118 test binaries
+ct_hooks: passed 184 failed 0 ignored 0 in 4 test binaries
+ct_ctp: passed 37 failed 0 ignored 11 in 4 test binaries

@@ -1,0 +1,259 @@
+[
+ {
+  "id": "K1",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_a1 without 'below G at the first assist'",
+  "result": "NOT APPLIED (0 matches of \"bool(mine) and mine[0]['before'] < a1['group'] <= \")",
+  "clean_after": true
+ },
+ {
+  "id": "K2",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_a1 without 'the assists reached G'",
+  "result": "NOT APPLIED (0 matches of \"bool(mine) and mine[0]['before'] < a1['group'] <= \")",
+  "clean_after": true
+ },
+ {
+  "id": "K3",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_a1 always holds",
+  "result": "NOT APPLIED (0 matches of \"bool(mine) and mine[0]['before'] < a1['group'] <= \")",
+  "clean_after": true
+ },
+ {
+  "id": "K4",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pin with < for <=",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K5",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pin over a1's assists only",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K6",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pin on the set's read (mid) for after",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K7",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pin never fails",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K8",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_a2 with >= 0",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K9",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a2's rows are every assist",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "obs_a1_cut names no assist",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "kstat_groups without the missing check",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "kstat_groups with nwritten >= 0",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "kstat_groups without the state C",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "kstat_groups over the first assist only",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "read_assists takes a line with more fields",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "read_assists takes a non-number",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K17",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pace's cuts not bounded by the assists",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K18",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the pace's uploads not a difference",
+  "result": "NOT APPLIED (0 matches of \"uploaded = count(after, 'uploaded') - count(before\")",
+  "clean_after": true
+ },
+ {
+  "id": "K19",
+  "file": "tests/kernel/publish_check.py",
+  "what": "EXPECTED: a2-look snap",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K20",
+  "file": "tests/kernel/publish_check.py",
+  "what": "EXPECTED: a1 pending",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K21",
+  "file": "tests/kernel/publish_check.py",
+  "what": "PUBLISHED: passist none",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K22",
+  "file": "tests/kernel/publish_check.py",
+  "what": "ABSENT: passist none",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K23",
+  "file": "tests/kernel/publish_check.py",
+  "what": "COURSES without passist",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "K24",
+  "file": "tests/kernel/publish_check.py",
+  "what": "G3 undone: an empty watch.log passes",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "V1x",
+  "file": "tests/kernel/publish_check.py",
+  "what": "#143's V1 again: watch.log not read",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "L4y",
+  "file": "tests/kernel/publish_check.py",
+  "what": "#141's L4 again: f1 not in ABSENT",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ }
+]

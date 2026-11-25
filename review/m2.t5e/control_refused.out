@@ -1,0 +1,69 @@
+ok   the block the step reads
+ok   a refused commit
+ok     says what the driver answered
+ok     and that the client waits
+ok   a refused write
+ok   a refused flush
+ok   a refused read where a write was to be refused
+ok   a refused read where a flush was to be refused
+ok   a refusal with the reader ended
+ok     says what the reader got
+ok   a refusal that leaves the device live
+ok   a refusal after which the program does not end
+ok     says so
+ok   a refusal of another read
+ok   a commit the kernel took (the reader got an I/O error)
+ok     the server was killed
+ok     the reader's error
+ok   an aborted commit
+ok   a refusal after which the program crashed
+ok     says it has no last line of its own
+ok   a program that ended by a refusal the driver did not make
+ok     says what the driver answered
+ok   a commit the library did not send
+ok     says so
+ok   the control: no refusal
+ok   an add that failed is the rig's error
+ok     says why
+ok   the file's data, no error
+ok   other data
+ok   an error
+ok   an error with nothing read
+ok   a writer that succeeded
+ok   a client still waiting
+ok   read: the server ends by the refusal
+ok   write: the server ends by the refusal
+ok   flush: the server ends by the refusal
+ok   read: issued again, with the file's data
+ok     and says so
+ok     with its data
+ok   write: lands after the take-over
+ok     through the device and in the image
+ok   flush: completes after the take-over
+ok     the take-over handed the one flush
+ok   read, deleted: the client gets an I/O error
+ok     and the number is free
+ok   write, deleted: the client gets an I/O error
+ok     and the number is free
+ok   flush, deleted: the client gets an I/O error
+ok     and the number is free
+ok   write, deleted: the image keeps the old block
+ok   a write lost at the take-over fails
+ok     says where it is missing
+ok   a take-over that ended by itself fails
+ok     and is named, with its error
+ok     the client is not waited for past it
+ok     and where the program panicked, and why
+ok   a take-over that ended with no word fails
+ok     and quotes no earlier panic
+ok   a take-over handed two flushes fails
+ok     and says so
+ok   a take-over handed two writes fails
+ok   a client that ended before the take-over fails the take-over's pin
+ok   a write the device does not read back fails
+ok     says so
+ok   a write that is not in the image fails
+ok     says so
+ok   a write that landed and was answered with an error fails
+ok     says so
+all passed

@@ -1,0 +1,5 @@
+ 13:27:05 up 41 min,  0 user,  load average: 1.59, 2.77, 2.94
+1
+bash 5.2.21(1)-release, 300 runs of each with SECONDS unset in the stand-in's subshell:
+  300  grow: error after 30 s, 30 sleeps
+  300  idle: idle after 12 s, 12 sleeps

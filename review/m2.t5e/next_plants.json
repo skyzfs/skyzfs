@@ -1,0 +1,495 @@
+[
+ {
+  "id": "E1",
+  "file": "tests/kernel/cut_check.py",
+  "what": "no retry: one export, as before aabde27",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E2",
+  "file": "tests/kernel/cut_check.py",
+  "what": "unbounded: a wait of 1 s for ever",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E3",
+  "file": "tests/kernel/cut_check.py",
+  "what": "one wait more (16 s)",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E4",
+  "file": "tests/kernel/cut_check.py",
+  "what": "every failure tried again, not only a busy one",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E5",
+  "file": "tests/kernel/cut_check.py",
+  "what": "a busy export not tried again, any other failure is",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E6",
+  "file": "tests/kernel/cut_check.py",
+  "what": "no wait between tries",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E7",
+  "file": "tests/kernel/cut_check.py",
+  "what": "a wait of 1 s every time",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E8",
+  "file": "tests/kernel/cut_check.py",
+  "what": "no refusal recorded",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E9",
+  "file": "tests/kernel/cut_check.py",
+  "what": "no try after the last wait",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E10",
+  "file": "tests/kernel/cut_check.py",
+  "what": "still busy after the last wait returned as exported",
+  "result": "KILLED",
+  "by": [
+   "test_cut_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "E11",
+  "file": "tests/kernel/cut_check.py",
+  "what": "kimport: a failed export no longer the rig's error",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "E12",
+  "file": "tests/kernel/cut_check.py",
+  "what": "kimport: the retry bypassed (one export, as before)",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "E13",
+  "file": "tests/kernel/cut_check.py",
+  "what": "kimport: a busy export after all waits passes as exported",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "N1",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "no accepted.tsv",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N2",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the acceptance mark's A not the wait",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N3",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "no end mark for a refusal",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N4",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "no end mark for an end",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N5",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "no end mark for pending after",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N6",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the end mark with the whole end line",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N7",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the mark's W not read from the kstat",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N8",
+  "file": "tests/kernel/publish_agent.py",
+  "what": "the mark's time 0",
+  "result": "KILLED",
+  "by": [
+   "test_publish_agent.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N10",
+  "file": "tests/kernel/publish_check.py",
+  "what": "read_marks takes a mark twice",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N11",
+  "file": "tests/kernel/publish_check.py",
+  "what": "read_marks takes a wait of 0",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N12",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: no end mark holds",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N13",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: top from the end mark alone",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "N14",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: top from the assists alone",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N15",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: G at the acceptance allowed",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N16",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: G reached read as below",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "N17",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: below G, pending holds",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N18",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: below G, any end the rig's",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N19",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: crossing with <= at before",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ },
+ {
+  "id": "N20",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: no crossing needed",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N21",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: strays not judged",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N22",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: an assist's range from its before",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N23",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: strays only at or above G (B1's sketch)",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N24",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: no first-assist check",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N25",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: the burst's bound 2 A",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N26",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: the spaced bound A / 2",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N27",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: a burst of two",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N28",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: a burst of four",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N29",
+  "file": "tests/kernel/publish_check.py",
+  "what": "pace: the decided A for the mark's",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N30",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a2's pace not judged",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N31",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1 never accepted holds whatever its end",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N32",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the NA branch never taken",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N33",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the NA branch always taken",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N34",
+  "file": "tests/kernel/publish_check.py",
+  "what": "premise_a2 with >= 1",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N35",
+  "file": "tests/kernel/publish_check.py",
+  "what": "accepted.tsv required",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N36",
+  "file": "tests/kernel/publish_check.py",
+  "what": "the statuses required",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ },
+ {
+  "id": "N37",
+  "file": "tests/kernel/publish_check.py",
+  "what": "lacks: only a missing key",
+  "result": "KILLED",
+  "by": [
+   "test_publish_check.py",
+   "test_publish_check_main.py"
+  ],
+  "clean_after": true
+ }
+]

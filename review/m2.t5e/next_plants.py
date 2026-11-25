@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Next look at #145 (M2.T5e): textual plants, one at a time, each file
+"""Next look at #145 (M2.T5e), at 9bac3dd and b3bb916 (N40 to N44 are for
+b3bb916's line; N23 and N23b are 9bac3dd's text): textual plants, one at a time, each file
 put back in a finally, against the suites of the file planted (each
 under a 600 s limit). KILLED: a suite failed (a time-out counts);
 SURVIVED: every suite passed; NOT APPLIED: an old text is not in the file
@@ -34,6 +35,7 @@ BUSY = "        if rc == 0 or 'busy' not in out:\n"
 LAST = '        if wait is None:\n            return rc, out, refused\n'
 CALL = '                erc, eout, refused = export_after_import(POOL)\n'
 RAISE = "                if erc:\n                    raise RigError(f'zpool export after the import:"
+STRAY_B3 = '    stray = sorted(x for x in written_groups(txgs, w_acc, top) - theirs if x >= g)\n'
 
 PLANTS = [
     # aabde27: the retry.
@@ -82,6 +84,13 @@ PLANTS = [
     ('N23b', PC, "a1_premise: strays from the first assist on (B1's fix, the smaller form)",
      [("    stray = sorted(written_groups(txgs, w_acc, top) - theirs)",
        "    stray = sorted(written_groups(txgs, rows[0]['before'] if rows else w_acc, top) - theirs)")]),
+    # b3bb916: strays only at or above G (the text of 9bac3dd's N23 is gone).
+    ('N40', PC, "b3bb916: a stray at G itself not counted", [(STRAY_B3, STRAY_B3.replace('if x >= g)', 'if x > g)'))]),
+    ('N41', PC, "b3bb916 undone: every stray counted, as at 9bac3dd", [(STRAY_B3, STRAY_B3.replace(' if x >= g)', ')'))]),
+    ('N42', PC, "b3bb916: only strays below G counted", [(STRAY_B3, STRAY_B3.replace('if x >= g)', 'if x < g)'))]),
+    ('N43', PC, "b3bb916 as the form 'first': strays from the first assist on",
+     [(STRAY_B3, "    stray = sorted(written_groups(txgs, rows[0]['before'] if rows else w_acc, top) - theirs)\n")]),
+    ('N44', PC, "b3bb916: only a stray at the top counted", [(STRAY_B3, STRAY_B3.replace('if x >= g)', 'if x >= top)'))]),
     # 9bac3dd: pace_faults.
     ('N24', PC, "pace: no first-assist check", [("    if rows and rows[0]['t0'] - accepted_ns < after * 1e9:", "    if False:")]),
     ('N25', PC, "pace: the burst's bound 2 A", [("gap >= after / 2:", "gap >= after * 2:")]),

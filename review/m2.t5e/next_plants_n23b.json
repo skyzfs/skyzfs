@@ -1,0 +1,10 @@
+[
+ {
+  "id": "N23b",
+  "file": "tests/kernel/publish_check.py",
+  "what": "a1_premise: strays from the first assist on (B1's fix, the smaller form)",
+  "result": "SURVIVED",
+  "by": [],
+  "clean_after": true
+ }
+]

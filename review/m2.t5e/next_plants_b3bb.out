@@ -1,0 +1,36 @@
+baseline {'tests/kernel/publish_check.py': []}
+N10  KILLED    read_marks takes a mark twice  by test_publish_check.py, test_publish_check_main.py
+N11  KILLED    read_marks takes a wait of 0  by test_publish_check.py
+N12  KILLED    a1_premise: no end mark holds  by test_publish_check.py, test_publish_check_main.py
+N13  SURVIVED  a1_premise: top from the end mark alone
+N14  KILLED    a1_premise: top from the assists alone  by test_publish_check.py, test_publish_check_main.py
+N15  KILLED    a1_premise: G at the acceptance allowed  by test_publish_check.py, test_publish_check_main.py
+N16  SURVIVED  a1_premise: G reached read as below
+N17  KILLED    a1_premise: below G, pending holds  by test_publish_check.py, test_publish_check_main.py
+N18  KILLED    a1_premise: below G, any end the rig's  by test_publish_check.py, test_publish_check_main.py
+N19  SURVIVED  a1_premise: crossing with <= at before
+N20  KILLED    a1_premise: no crossing needed  by test_publish_check.py, test_publish_check_main.py
+N21  KILLED    a1_premise: strays not judged  by test_publish_check.py, test_publish_check_main.py
+N22  KILLED    a1_premise: an assist's range from its before  by test_publish_check.py
+N23  NOT APPLIED (0 matches of '    stray = sorted(written_groups(txgs, w_acc, top') a1_premise: strays only at or above G (B1's sketch)
+N23b NOT APPLIED (0 matches of '    stray = sorted(written_groups(txgs, w_acc, top') a1_premise: strays from the first assist on (B1's fix, the smaller form)
+N40  SURVIVED  b3bb916: a stray at G itself not counted
+N41  KILLED    b3bb916 undone: every stray counted, as at 9bac3dd  by test_publish_check.py, test_publish_check_main.py
+N42  KILLED    b3bb916: only strays below G counted  by test_publish_check.py, test_publish_check_main.py
+N43  KILLED    b3bb916 as the form 'first': strays from the first assist on  by test_publish_check.py
+N44  KILLED    b3bb916: only a stray at the top counted  by test_publish_check.py
+N24  KILLED    pace: no first-assist check  by test_publish_check.py, test_publish_check_main.py
+N25  KILLED    pace: the burst's bound 2 A  by test_publish_check.py, test_publish_check_main.py
+N26  KILLED    pace: the spaced bound A / 2  by test_publish_check.py
+N27  KILLED    pace: a burst of two  by test_publish_check.py, test_publish_check_main.py
+N28  KILLED    pace: a burst of four  by test_publish_check.py, test_publish_check_main.py
+N29  KILLED    pace: the decided A for the mark's  by test_publish_check_main.py
+N30  KILLED    a2's pace not judged  by test_publish_check_main.py
+N31  KILLED    a1 never accepted holds whatever its end  by test_publish_check_main.py
+N32  KILLED    the NA branch never taken  by test_publish_check_main.py
+N33  KILLED    the NA branch always taken  by test_publish_check_main.py
+N34  KILLED    premise_a2 with >= 1  by test_publish_check_main.py
+N35  KILLED    accepted.tsv required  by test_publish_check_main.py
+N36  KILLED    the statuses required  by test_publish_check_main.py
+N37  KILLED    lacks: only a missing key  by test_publish_check.py, test_publish_check_main.py
+restored {'tests/kernel/publish_check.py': []}
