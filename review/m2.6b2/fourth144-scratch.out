@@ -1,0 +1,319 @@
+# Scratch output of the fourth look at #144, at cf53e94
+# (paths of the scratch worktree removed)
+
+## 1. The ended arm in full: fourth144plan.rs appended to plan/tests.rs,
+##    its rows summed up by fourth144table.py
+
+12096 cells: 8064 too old or stalled eight times, 4032 not (control)
+
+1. Actions by answer, too old or stalled (all states)
+  (none: away)           Release x24, Wait x264
+  pending                Withdraw x288
+  done                   Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Look x48, Stop(DoneNotSeen) x192
+  expired                Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  withdrawn              Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  unknown                Abandon(Destroyed) x8, Abandon(NameTaken) x32, Abandon(NoProgress) x4, Abandon(TooOld) x4, Done { commit: [COMMIT], report: None } x16, Done { commit: [COMMIT], report: Some(SnapshotGone) } x8, Done { commit: [OTHER], report: None } x16, Done { commit: [OTHER], report: Some(SnapshotGone) } x8, Look x24, Release x24, Withdraw x144
+  absent                 Withdraw x288
+  accepted               Release x24, Wait x264
+  cuts                   Release x24, Wait x264
+  snap                   Release x24, Wait x264
+  unreadable             Release x24, Wait x264
+  refused name           Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused attachment     Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused state          Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused manifest       Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused expiry         Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused asked          Withdraw x288
+  refused busy           Release x24, Wait x264
+  refused taken          Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused stopped        Release x24, Wait x264
+  refused rewound        Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(Rewound) x16, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused version        Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused malformed      Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused peer           Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+  refused no-upload      Release x24, Wait x264
+  refused ended          Release x24, Wait x264
+  refused no-answer      Release x24, Wait x264
+  refused store          Abandon(Destroyed) x16, Abandon(NameTaken) x64, Abandon(NoProgress) x8, Abandon(TooOld) x8, Done { commit: [COMMIT], report: None } x32, Done { commit: [COMMIT], report: Some(SnapshotGone) } x16, Done { commit: [OTHER], report: None } x32, Done { commit: [OTHER], report: Some(SnapshotGone) } x16, Look x48, Release x48
+
+2. Release or give-up cells, by what allows them
+    216  A: a withdraw answered withdrawn/unknown/expired, then look
+   1584  B: an end of L7's list, then look (absent, another's, unreadable)
+    240  C: asked, at held_until, an answer that cannot tell (L5)
+      0  anything else
+  B by answer and action:
+      16  refused attachment / absent / Abandon(Destroyed)
+       8  refused attachment / absent / Abandon(NoProgress)
+       8  refused attachment / absent / Abandon(TooOld)
+      16  refused attachment / absent / Release
+      32  refused attachment / not-ours / Abandon(NameTaken)
+      16  refused attachment / not-ours / Release
+      32  refused attachment / unreadable / Abandon(NameTaken)
+      16  refused attachment / unreadable / Release
+      16  refused expiry / absent / Abandon(Destroyed)
+       8  refused expiry / absent / Abandon(NoProgress)
+       8  refused expiry / absent / Abandon(TooOld)
+      16  refused expiry / absent / Release
+      32  refused expiry / not-ours / Abandon(NameTaken)
+      16  refused expiry / not-ours / Release
+      32  refused expiry / unreadable / Abandon(NameTaken)
+      16  refused expiry / unreadable / Release
+      16  refused malformed / absent / Abandon(Destroyed)
+       8  refused malformed / absent / Abandon(NoProgress)
+       8  refused malformed / absent / Abandon(TooOld)
+      16  refused malformed / absent / Release
+      32  refused malformed / not-ours / Abandon(NameTaken)
+      16  refused malformed / not-ours / Release
+      32  refused malformed / unreadable / Abandon(NameTaken)
+      16  refused malformed / unreadable / Release
+      16  refused manifest / absent / Abandon(Destroyed)
+       8  refused manifest / absent / Abandon(NoProgress)
+       8  refused manifest / absent / Abandon(TooOld)
+      16  refused manifest / absent / Release
+      32  refused manifest / not-ours / Abandon(NameTaken)
+      16  refused manifest / not-ours / Release
+      32  refused manifest / unreadable / Abandon(NameTaken)
+      16  refused manifest / unreadable / Release
+      16  refused name / absent / Abandon(Destroyed)
+       8  refused name / absent / Abandon(NoProgress)
+       8  refused name / absent / Abandon(TooOld)
+      16  refused name / absent / Release
+      32  refused name / not-ours / Abandon(NameTaken)
+      16  refused name / not-ours / Release
+      32  refused name / unreadable / Abandon(NameTaken)
+      16  refused name / unreadable / Release
+      16  refused peer / absent / Abandon(Destroyed)
+       8  refused peer / absent / Abandon(NoProgress)
+       8  refused peer / absent / Abandon(TooOld)
+      16  refused peer / absent / Release
+      32  refused peer / not-ours / Abandon(NameTaken)
+      16  refused peer / not-ours / Release
+      32  refused peer / unreadable / Abandon(NameTaken)
+      16  refused peer / unreadable / Release
+       8  refused rewound / absent / Abandon(NoProgress)
+      16  refused rewound / absent / Abandon(Rewound)
+       8  refused rewound / absent / Abandon(TooOld)
+      16  refused rewound / absent / Release
+      32  refused rewound / not-ours / Abandon(NameTaken)
+      16  refused rewound / not-ours / Release
+      32  refused rewound / unreadable / Abandon(NameTaken)
+      16  refused rewound / unreadable / Release
+      16  refused state / absent / Abandon(Destroyed)
+       8  refused state / absent / Abandon(NoProgress)
+       8  refused state / absent / Abandon(TooOld)
+      16  refused state / absent / Release
+      32  refused state / not-ours / Abandon(NameTaken)
+      16  refused state / not-ours / Release
+      32  refused state / unreadable / Abandon(NameTaken)
+      16  refused state / unreadable / Release
+      16  refused store / absent / Abandon(Destroyed)
+       8  refused store / absent / Abandon(NoProgress)
+       8  refused store / absent / Abandon(TooOld)
+      16  refused store / absent / Release
+      32  refused store / not-ours / Abandon(NameTaken)
+      16  refused store / not-ours / Release
+      32  refused store / unreadable / Abandon(NameTaken)
+      16  refused store / unreadable / Release
+      16  refused taken / absent / Abandon(Destroyed)
+       8  refused taken / absent / Abandon(NoProgress)
+       8  refused taken / absent / Abandon(TooOld)
+      16  refused taken / absent / Release
+      32  refused taken / not-ours / Abandon(NameTaken)
+      16  refused taken / not-ours / Release
+      32  refused taken / unreadable / Abandon(NameTaken)
+      16  refused taken / unreadable / Release
+      16  refused version / absent / Abandon(Destroyed)
+       8  refused version / absent / Abandon(NoProgress)
+       8  refused version / absent / Abandon(TooOld)
+      16  refused version / absent / Release
+      32  refused version / not-ours / Abandon(NameTaken)
+      16  refused version / not-ours / Release
+      32  refused version / unreadable / Abandon(NameTaken)
+      16  refused version / unreadable / Release
+
+3. Wait cells, by answer (too old or stalled)
+    264  (none: away)
+    264  accepted
+    264  cuts
+    264  refused busy
+    264  refused ended
+    264  refused no-answer
+    264  refused no-upload
+    264  refused stopped
+    264  snap
+    264  unreadable
+  held, whole and held, Wait in every state of flag, snap and time:
+    (none: away)
+    accepted
+    cuts
+    refused busy
+    refused ended
+    refused no-answer
+    refused no-upload
+    refused stopped
+    snap
+    unreadable
+
+4. Look where a sight is already there (a loop)?
+  0 cells
+
+5. The report
+  cells where the report is not as L7 says: 0
+  cells with a report: 1584; not too old: 0
+       8  stalls-8 / refused attachment / Abandon(Destroyed) / Some(Refused(Attachment))
+      32  stalls-8 / refused attachment / Abandon(NameTaken) / Some(Refused(Attachment))
+       8  stalls-8 / refused attachment / Abandon(NoProgress) / Some(Refused(Attachment))
+      24  stalls-8 / refused attachment / Release / Some(Refused(Attachment))
+       8  stalls-8 / refused expiry / Abandon(Destroyed) / Some(Refused(Expiry))
+      32  stalls-8 / refused expiry / Abandon(NameTaken) / Some(Refused(Expiry))
+       8  stalls-8 / refused expiry / Abandon(NoProgress) / Some(Refused(Expiry))
+      24  stalls-8 / refused expiry / Release / Some(Refused(Expiry))
+       8  stalls-8 / refused malformed / Abandon(Destroyed) / Some(Refused(Malformed))
+      32  stalls-8 / refused malformed / Abandon(NameTaken) / Some(Refused(Malformed))
+       8  stalls-8 / refused malformed / Abandon(NoProgress) / Some(Refused(Malformed))
+      24  stalls-8 / refused malformed / Release / Some(Refused(Malformed))
+       8  stalls-8 / refused manifest / Abandon(Destroyed) / Some(Refused(Manifest))
+      32  stalls-8 / refused manifest / Abandon(NameTaken) / Some(Refused(Manifest))
+       8  stalls-8 / refused manifest / Abandon(NoProgress) / Some(Refused(Manifest))
+      24  stalls-8 / refused manifest / Release / Some(Refused(Manifest))
+       8  stalls-8 / refused name / Abandon(Destroyed) / Some(Refused(Name))
+      32  stalls-8 / refused name / Abandon(NameTaken) / Some(Refused(Name))
+       8  stalls-8 / refused name / Abandon(NoProgress) / Some(Refused(Name))
+      24  stalls-8 / refused name / Release / Some(Refused(Name))
+       8  stalls-8 / refused peer / Abandon(Destroyed) / Some(Refused(Peer))
+      32  stalls-8 / refused peer / Abandon(NameTaken) / Some(Refused(Peer))
+       8  stalls-8 / refused peer / Abandon(NoProgress) / Some(Refused(Peer))
+      24  stalls-8 / refused peer / Release / Some(Refused(Peer))
+      32  stalls-8 / refused rewound / Abandon(NameTaken) / Some(Refused(Rewound))
+       8  stalls-8 / refused rewound / Abandon(NoProgress) / Some(Refused(Rewound))
+       8  stalls-8 / refused rewound / Abandon(Rewound) / Some(Refused(Rewound))
+      24  stalls-8 / refused rewound / Release / Some(Refused(Rewound))
+       8  stalls-8 / refused state / Abandon(Destroyed) / Some(Refused(State))
+      32  stalls-8 / refused state / Abandon(NameTaken) / Some(Refused(State))
+       8  stalls-8 / refused state / Abandon(NoProgress) / Some(Refused(State))
+      24  stalls-8 / refused state / Release / Some(Refused(State))
+       8  stalls-8 / refused store / Abandon(Destroyed) / Some(Refused(Store))
+      32  stalls-8 / refused store / Abandon(NameTaken) / Some(Refused(Store))
+       8  stalls-8 / refused store / Abandon(NoProgress) / Some(Refused(Store))
+      24  stalls-8 / refused store / Release / Some(Refused(Store))
+       8  stalls-8 / refused taken / Abandon(Destroyed) / Some(Refused(Taken))
+      32  stalls-8 / refused taken / Abandon(NameTaken) / Some(Refused(Taken))
+       8  stalls-8 / refused taken / Abandon(NoProgress) / Some(Refused(Taken))
+      24  stalls-8 / refused taken / Release / Some(Refused(Taken))
+       8  stalls-8 / refused version / Abandon(Destroyed) / Some(Refused(Version))
+      32  stalls-8 / refused version / Abandon(NameTaken) / Some(Refused(Version))
+       8  stalls-8 / refused version / Abandon(NoProgress) / Some(Refused(Version))
+      24  stalls-8 / refused version / Release / Some(Refused(Version))
+       8  too-old / refused attachment / Abandon(Destroyed) / Some(Refused(Attachment))
+      32  too-old / refused attachment / Abandon(NameTaken) / Some(Refused(Attachment))
+       8  too-old / refused attachment / Abandon(TooOld) / Some(Refused(Attachment))
+      24  too-old / refused attachment / Release / Some(Refused(Attachment))
+       8  too-old / refused expiry / Abandon(Destroyed) / Some(Refused(Expiry))
+      32  too-old / refused expiry / Abandon(NameTaken) / Some(Refused(Expiry))
+       8  too-old / refused expiry / Abandon(TooOld) / Some(Refused(Expiry))
+      24  too-old / refused expiry / Release / Some(Refused(Expiry))
+       8  too-old / refused malformed / Abandon(Destroyed) / Some(Refused(Malformed))
+      32  too-old / refused malformed / Abandon(NameTaken) / Some(Refused(Malformed))
+       8  too-old / refused malformed / Abandon(TooOld) / Some(Refused(Malformed))
+      24  too-old / refused malformed / Release / Some(Refused(Malformed))
+       8  too-old / refused manifest / Abandon(Destroyed) / Some(Refused(Manifest))
+      32  too-old / refused manifest / Abandon(NameTaken) / Some(Refused(Manifest))
+       8  too-old / refused manifest / Abandon(TooOld) / Some(Refused(Manifest))
+      24  too-old / refused manifest / Release / Some(Refused(Manifest))
+       8  too-old / refused name / Abandon(Destroyed) / Some(Refused(Name))
+      32  too-old / refused name / Abandon(NameTaken) / Some(Refused(Name))
+       8  too-old / refused name / Abandon(TooOld) / Some(Refused(Name))
+      24  too-old / refused name / Release / Some(Refused(Name))
+       8  too-old / refused peer / Abandon(Destroyed) / Some(Refused(Peer))
+      32  too-old / refused peer / Abandon(NameTaken) / Some(Refused(Peer))
+       8  too-old / refused peer / Abandon(TooOld) / Some(Refused(Peer))
+      24  too-old / refused peer / Release / Some(Refused(Peer))
+      32  too-old / refused rewound / Abandon(NameTaken) / Some(Refused(Rewound))
+       8  too-old / refused rewound / Abandon(Rewound) / Some(Refused(Rewound))
+       8  too-old / refused rewound / Abandon(TooOld) / Some(Refused(Rewound))
+      24  too-old / refused rewound / Release / Some(Refused(Rewound))
+       8  too-old / refused state / Abandon(Destroyed) / Some(Refused(State))
+      32  too-old / refused state / Abandon(NameTaken) / Some(Refused(State))
+       8  too-old / refused state / Abandon(TooOld) / Some(Refused(State))
+      24  too-old / refused state / Release / Some(Refused(State))
+       8  too-old / refused store / Abandon(Destroyed) / Some(Refused(Store))
+      32  too-old / refused store / Abandon(NameTaken) / Some(Refused(Store))
+       8  too-old / refused store / Abandon(TooOld) / Some(Refused(Store))
+      24  too-old / refused store / Release / Some(Refused(Store))
+       8  too-old / refused taken / Abandon(Destroyed) / Some(Refused(Taken))
+      32  too-old / refused taken / Abandon(NameTaken) / Some(Refused(Taken))
+       8  too-old / refused taken / Abandon(TooOld) / Some(Refused(Taken))
+      24  too-old / refused taken / Release / Some(Refused(Taken))
+       8  too-old / refused version / Abandon(Destroyed) / Some(Refused(Version))
+      32  too-old / refused version / Abandon(NameTaken) / Some(Refused(Version))
+       8  too-old / refused version / Abandon(TooOld) / Some(Refused(Version))
+      24  too-old / refused version / Release / Some(Refused(Version))
+
+6. Too old against eight stalls
+  cells that differ but for the reason: 0
+
+7. done, by what look saw (too old or stalled)
+  -                  {'Look': 48}
+  absent             {'Stop(DoneNotSeen)': 48}
+  ours               {'Done { commit: [COMMIT], report: None }': 32, 'Done { commit: [COMMIT], report: Some(SnapshotGone) }': 16}
+  ours-other-commit  {'Stop(DoneNotSeen)': 48}
+  not-ours           {'Stop(DoneNotSeen)': 48}
+  unreadable         {'Stop(DoneNotSeen)': 48}
+
+## 2. The engine's scratch tests: fourth144rec.rs appended to engine/tests.rs
+##    (cargo test -p skyzfs-agent --lib review4 -- --nocapture --test-threads=1)
+
+
+running 4 tests
+test engine::tests::review4_a_stop_at_each_point_of_the_give_up_reports_at_least_once ... BelowCreated, k = 0, stopped at Some(Point { effect: Withdraw, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 1, stopped at Some(Point { effect: Withdraw, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 2, stopped at Some(Point { effect: Look, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 3, stopped at Some(Point { effect: Look, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 4, stopped at Some(Point { effect: Abandon, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 5, stopped at Some(Point { effect: Abandon, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+BelowCreated, k = 6, stopped at Some(Point { effect: Unlink, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+BelowCreated, k = 7, stopped at Some(Point { effect: Unlink, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+BelowCreated, k = 8: the first agent ended without a stop; done
+AfterHold, k = 0, stopped at Some(Point { effect: Withdraw, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 1, stopped at Some(Point { effect: Withdraw, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 2, stopped at Some(Point { effect: Look, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 3, stopped at Some(Point { effect: Look, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 4, stopped at Some(Point { effect: Release, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 5, stopped at Some(Point { effect: Release, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 6, stopped at Some(Point { effect: Released, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 7, stopped at Some(Point { effect: Released, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 8, stopped at Some(Point { effect: Look, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 9, stopped at Some(Point { effect: Look, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 10, stopped at Some(Point { effect: Abandon, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [("skz-20261125T010000Z", Abandoned(TooOld))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+AfterHold, k = 11, stopped at Some(Point { effect: Abandon, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+AfterHold, k = 12, stopped at Some(Point { effect: Unlink, after: false }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+AfterHold, k = 13, stopped at Some(Point { effect: Unlink, after: true }): first [] [("skz-20261125T010000Z", Refused(Rewound))]; next Ok(()) [] []; holds []
+AfterHold, k = 14: the first agent ended without a stop; done
+ok
+test engine::tests::review4_n4_runs_of_the_third_look_now_end ... too old, BelowCreated: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Rewound))], reports [("skz-20261125T010000Z", Refused(Rewound))], holds [], at 60 s
+too old, AfterHold: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Rewound))], holds [], at 60 s
+too old, BelowHold: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Rewound))], holds [], at 60 s
+held, accepted and not recorded: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Rewound))], holds []
+ok
+test engine::tests::review4_stopped_waits_and_version_gives_up ... stopped: settled Err("still under way: skz-20261125T010000Z"), outcomes [], reports [], under way [("skz-20261125T010000Z", false)], holds [], at 10800 s
+version: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(TooOld))], reports [("skz-20261125T010000Z", Refused(Version))], holds [], the fake's request still pending: true
+ok
+test plan::tests::review4_the_ended_arm_in_full ... TABLE	ended	phase	time	pool	withdrawn	snap	answer	action	report
+ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.08s
+
+
+## 3. Plant W9 (the report after the act, so after the save) against the suite
+##    and the scratch stop test: the suite passes, the scratch test fails
+
+test engine::tests::review4_a_stop_at_each_point_of_the_give_up_reports_at_least_once ... FAILED
+BelowCreated, k = 0, stopped at Some(Point { effect: Withdraw, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 1, stopped at Some(Point { effect: Withdraw, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 2, stopped at Some(Point { effect: Look, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 3, stopped at Some(Point { effect: Look, after: true }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 4, stopped at Some(Point { effect: Abandon, after: false }): first [] []; next Ok(()) [("skz-20261125T010000Z", Abandoned(Rewound))] [("skz-20261125T010000Z", Refused(Rewound))]; holds []
+BelowCreated, k = 5, stopped at Some(Point { effect: Abandon, after: true }): first [] []; next Ok(()) [] []; holds []
+thread 'engine::tests::review4_a_stop_at_each_point_of_the_give_up_reports_at_least_once' (14220) panicked at crates/skyzfs-agent/src/engine/tests.rs:1970:9:
+k = 5: no report
+test result: FAILED. 73 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.93s
