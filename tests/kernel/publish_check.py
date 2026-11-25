@@ -72,16 +72,19 @@ of #139):
 - prewind: a cut counted after the first ask's C, of group G or later,
   that opens only as a rewind, was committed after that ask (node B's
   row read after the store came back, DIR/rewind-row.txt, and that
-  cut's `cut` line), and r1 was not made by an earlier one. Under rule
-  (R) r1 is refused before that cut is committed, so no publish waits
-  when it is: the course judges a daemon without rule (R)
-  (pin_answer_r1), and not one without "opens as itself" with a publish
-  waiting; pin_r1_cut judges only the cut that made r1 asked anew. And
-  the refusal had its ground in the request log: a cut
-  counted after the first C whose group is not above the groups of the
-  instance's cuts before it, ahead of the line `r1 refused rewound`.
-  r1 asked anew must then be made by a cut above the top
-  (DIR/rewind-top.txt; pin_r1_above_top).
+  cut's `cut` line), and r1 was not made by an earlier one. And the
+  refusal had its ground in the request log: a cut counted after the
+  first C whose group is not above the groups of the instance's cuts
+  before it, ahead of the line `r1 refused rewound`. r1 asked anew
+  must then be made by a cut above the top (DIR/rewind-top.txt;
+  pin_r1_above_top) that opens as itself (pin_r1_cut).
+  What the course pins is rule (R) at the ask (pin_answer_r1) and the
+  way out past the top. Under rule (R) r1 is refused before the
+  rewind-only cut is committed, and no publish can wait across such a
+  cut, so the course does not test "opens as itself" with a publish
+  waiting: that rests on the unit tests of skyzfs-upload's publish and
+  on the cut rig, which judges each cut's opening against the kernel
+  (#140's review, N1).
 - pkill: the instance that answered tw's withdrawal then counted cuts
   of tw's G or later that open as itself, and committed one
   (DIR/tw-row.txt): had the withdrawal left tw queued, that commit would
@@ -298,6 +301,18 @@ def done_commit(answer):
     if ((len(f) == 2 and f[0] == 'done') or (len(f) == 7 and f[0] == 'snap')) and f[1].startswith('commit='):
         return f[1][len('commit='):]
     return None
+
+
+def judge_look(answer, row):
+    """`look`'s `snap commit=H state=S number=N group=G manifest-len=L
+    manifest-hash=X` against the row node B read -> [what differs]
+    (#140's review, N6). The commit is judged with the ref."""
+    f = dict(w.split('=', 1) for w in answer.split()[1:] if '=' in w)
+    if not isinstance(row, dict):
+        return ['node B read no row to compare the look with']
+    want = {'state': row['state'], 'number': str(row['number']), 'group': str(row['group']),
+            'manifest-len': str(row['manifest_len']), 'manifest-hash': row['manifest_hash']}
+    return [f'the look says {k} {f.get(k, "nothing")}, the row {v}' for k, v in want.items() if f.get(k) != v]
 
 
 def other_commit(commit):
@@ -543,6 +558,9 @@ def main():
                       f'{len(sent)} bytes, the row\'s length and hash, the bytes sent')
                 holds(f'pin_{t}_cut', judge_cut(cuts, row), 'server',
                       f"cut {row['number']} of group {row['group']} opens as itself in the request log")
+            if ends[label].startswith('snap '):
+                holds(f'pin_{t}_look', judge_look(ends[label], row), 'server',
+                      f'{label} names the row node B read: its state, cut, group and manifest')
             if name == 'pplain' and t == 't1':
                 again = done_commit(ends['t1-again-end'])
                 holds('pin_asking_twice_is_once', [] if again == commit else

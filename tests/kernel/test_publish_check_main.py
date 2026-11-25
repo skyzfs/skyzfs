@@ -142,8 +142,11 @@ COURSES = {
     },
     'pkillpub': {
         'ends': {'p1': 'unknown', 'p1-after': 'unknown', 'p1-again': 'refused rewound', 'p1-anew': 'accepted',
-                 'p1-end': 'refused taken', 'p1-look': f'snap commit={commit_of("p1")} state={S} number=8 group=50 '
-                                                        f'manifest-len=1 manifest-hash={"0" * 64}'},
+                 'p1-end': 'refused taken',
+                 # As node B's row of p1 reads (FakeNodeB): cut 8 of group 50 and its manifest.
+                 'p1-look': f'snap commit={commit_of("p1")} state={S} number=8 group=50 '
+                            f'manifest-len={len(manifest_of("p1"))} '
+                            f'manifest-hash={hashlib.sha256(manifest_of("p1")).hexdigest()}'},
         'requests': {'p1': (7, 50, 50)},
         'rows': {'p1': (8, 50)},
         'log': [(PID, [(8, 50, True)]), (PID2, [])],
@@ -377,6 +380,19 @@ class Pins(unittest.TestCase):
         rc, lines = run_course('pplain', change)
         self.assertEqual(lines['pin_answer_t1-again-end'][0], 'ok')
         self.assertEqual((rc, lines['pin_asking_twice_is_once'][0]), (1, 'FAILED'))
+
+    def test_a_look_that_does_not_name_the_row_ends_1(self):
+        """#140's review, N6: look p1's fields against node B's row."""
+        look = COURSES['pkillpub']['ends']['p1-look']
+        for old, new in (('number=8', 'number=9'), ('group=50', 'group=51'), ('manifest-len=', 'manifest-len=1'),
+                         (f'state={S}', f'state={A}'), ('manifest-hash=', 'manifest-hash=0')):
+            def change(d, old=old, new=new):
+                with open(os.path.join(d, 'ends.tsv')) as f:
+                    text = f.read()
+                with open(os.path.join(d, 'ends.tsv'), 'w') as f:
+                    f.write(text.replace(look, look.replace(old, new, 1)))
+            rc, lines = run_course('pkillpub', change)
+            self.assertEqual((rc, lines['pin_p1_look'][0]), (1, 'FAILED'), new)
 
     def test_pkillman_with_snap_m1_after_the_kill_ends_1(self):
         rc, lines = run_course('pkillman', write('m1-between.txt', f'ref\t{"9" * 64}\t3\nsnaprow\tnone\n'))

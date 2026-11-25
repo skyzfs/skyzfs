@@ -239,6 +239,23 @@ def log_line(event, sector, sectors, result, k, op='-'):
     return {'event': event, 'sector': sector, 'sectors': sectors, 'result': result, 'line': k, 'op': op}
 
 
+class Look(unittest.TestCase):
+    ROW = {'state': S, 'number': 9, 'group': 15, 'commit': H, 'snap': 'x', 'manifest_len': 414,
+           'manifest_hash': 'd' * 64}
+    LOOK = f'snap commit={H} state={S} number=9 group=15 manifest-len=414 manifest-hash={"d" * 64}'
+
+    def test_a_look_that_names_the_row(self):
+        self.assertEqual(pc.judge_look(self.LOOK, self.ROW), [])
+
+    def test_each_field_that_differs_is_said(self):
+        self.assertEqual(pc.judge_look(self.LOOK.replace('number=9', 'number=8'), self.ROW),
+                         ['the look says number 8, the row 9'])
+        self.assertEqual(pc.judge_look(self.LOOK.replace(' group=15', ''), self.ROW),
+                         ['the look says group nothing, the row 15'])
+        self.assertEqual(len(pc.judge_look(f'snap commit={H}', self.ROW)), 5)
+        self.assertEqual(pc.judge_look(self.LOOK, None), ['node B read no row to compare the look with'])
+
+
 class Cuts(unittest.TestCase):
     def test_cut_lines_and_the_row_s_cut(self):
         inst = [{'pid': '11', 'lines': [log_line('applied', '0', '8', '0', 1), log_line('cut', 'itself', '8', '50', 2),

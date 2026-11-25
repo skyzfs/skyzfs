@@ -454,5 +454,25 @@ is "prewind's top is the group of the cuts answer" \
 is "prewind's top before any cut is empty (the rig's error)" \
     "$(out='cuts attachment=a state=b count=0 group=none opens=none'; eval "$top_line"; echo "[$top]")" "[]"
 
+# rec_pkillat's steps, and which requests asked anew are the ones judged
+# (#140's review, N5): r1, tk and m1 by the request asked anew, p1 by its
+# first, since the publish found was made for it.
+pk_fn=$(sed -n '/^rec_pkillat() {$/,/^}$/p' "$SCRIPT")
+is "pkillat: after the take-over, asks how T stands, asks again, then anew, waits, and looks at p1" \
+    "$(grep -nE '^ +(pask "\$t-after"|pagain "\$t-again"|if \[ "\$t" = p1 \]|panew "\$t-anew"|pwait "\$t-end"|pask "\$t-look" look|else)' <<< "$pk_fn" | cut -d: -f2- | sed 's/^ *//; s/ .*//' | tr '\n' ' ')" \
+    "pask pagain if panew pwait pask else panew pwait "
+is "pkillat: p1 asked anew is not recorded, the others are" \
+    "$(sed -n '/^    if \[ "\$t" = p1 \]; then$/,/^    fi$/p' <<< "$pk_fn" | grep -E '^ +panew ' | sed 's/^ *//')" \
+    'panew "$t-anew" "$t"
+panew "$t-anew" "$t" record'
+is "every panew of the script, with its arguments" \
+    "$(grep -E '^ +panew ' "$SCRIPT" | sed 's/^ *//')" \
+    'panew r1-anew r1 record
+panew tk-anew tk record
+panew "$t-anew" "$t"
+panew "$t-anew" "$t" record'
+is "pkillat: asking again records nothing (the take-over's request is refused)" \
+    "$(grep -cE '^ +pagain (tk-again|"\$t-again") .* record$' "$SCRIPT")" 0
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

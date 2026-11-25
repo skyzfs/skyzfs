@@ -585,7 +585,7 @@ rec_life() {
     export_pool
 }
 rec_rewind() {
-    local groups t _i
+    local groups t
     create_pool
     load 8
     mapfile -t groups < <(committed)
@@ -1599,11 +1599,15 @@ rec_pplain() {
 # r1's first C of group G or later, with nothing else written
 # (DIR/rewind-row.txt: the check's premise that a cut that opens only as
 # a rewind, counted after that C, was committed after the ask, the review
-# of #139, B2). Under rule (R) r1 is refused before that commit, so no
-# publish waits when it comes: the course no longer tests "opens as
-# itself" with a publish waiting, only rule (R)'s refusal and, for r1
-# asked anew, the cut that made it. Only then does it write and sync a group at a time until
-# the daemon's newest cut opens as itself (past_top), and asks r1 anew
+# of #139, B2). Under rule (R) r1 is refused before that commit, and no
+# publish can wait across a cut that opens only as a rewind (the mark
+# ends it), so the course no longer tests "opens as itself" with a
+# publish waiting: it pins rule (R) at the ask and the way out past the
+# top. "Opens as itself" rests on the unit tests of skyzfs-upload's
+# publish and on the cut rig, which judges each cut's opening against
+# the kernel (#140's review, N1). Only then does it write and sync a
+# group at a time until the daemon's newest cut opens as itself
+# (past_top), and asks r1 anew
 # with a count read then (the agent's AskAnew), which must be published
 # by a later cut of the present history that opens as itself. The lease
 # is 900 s, so the outage does not take it away. The status with the
