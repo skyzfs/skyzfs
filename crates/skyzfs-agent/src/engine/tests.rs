@@ -467,7 +467,9 @@ fn each_sync_task_sets_a_value_of_its_own() {
 /// what the sync task's property is for.
 ///
 /// Mutant: the bound not applied, applied a stall early or late, the
-/// report made more than once, or the hold kept.
+/// report made more than once, or the hold kept; the syncs of a request
+/// not spaced to [`plan::ASSIST_AFTER`] after [`plan::ASSIST_QUICK`] of
+/// them, or their count not started again at each request.
 #[test]
 fn a_publish_no_cut_carries_is_reported_then_given_up() {
     let (world, agent) = rebooted_on_an_idle_pool(1, true);
@@ -494,6 +496,17 @@ fn a_publish_no_cut_carries_is_reported_then_given_up() {
     let took = (world.now_ms - fake::EPOCH_MS) / 1000;
     let least = u64::from(plan::STALLS_ABANDONED) * EXPIRY_DEFAULT.as_secs();
     assert!(took >= least, "{took} s, less than {least} s");
+    // The pace of the syncs (the lead's decision on #144): in each
+    // request, ASSIST_QUICK a pause apart, then one each ASSIST_AFTER.
+    let gaps: Vec<u64> = world.synced_at.windows(2).map(|w| w[1] - w[0]).collect();
+    let after = u64::try_from(plan::ASSIST_AFTER.as_millis()).expect("ms");
+    let short = gaps.iter().filter(|&&gap| gap < after).count();
+    let stalled = plan::STALLS_ABANDONED as usize;
+    let quick = plan::ASSIST_QUICK as usize;
+    assert_eq!(short, (quick - 1) * stalled, "{gaps:?}");
+    let most = stalled * (quick + (EXPIRY_DEFAULT.as_millis() / u128::from(after)) as usize);
+    let syncs = world.synced_at.len();
+    assert!(syncs <= most, "{syncs} sync tasks, more than {most}");
 }
 
 /// What [`stalling_run_stopped_at`] left.
@@ -570,9 +583,8 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
 }
 
 /// The agent stopped at any point of a stalling run, and started again
-/// (at each but the sync tasks after the first of a run of them: the
-/// agent syncs each second while no cut is counted, which makes more
-/// than nine in ten of the points):
+/// (at each but the sync tasks after the first of a run of them, which
+/// make most of the points):
 /// each stall is counted once, the publish reported by each agent at most
 /// once and by one of them at least (a report is not recorded), and
 /// given up at its eighth stall.

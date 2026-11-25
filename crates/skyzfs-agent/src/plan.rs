@@ -32,7 +32,8 @@
 //! - **Pending**: withdrawn where the hold is not there, the snapshot
 //!   is broken, or `load_guid` changed. Otherwise, with no qualifying
 //!   cut [`ASSIST_AFTER`] after `accepted`, `zpool sync`
-//!   ([`Action::Assist`]), one at a time, [`ASSIST_PAUSE`] apart. With a
+//!   ([`Action::Assist`]), one at a time: [`ASSIST_QUICK`] of them
+//!   [`ASSIST_PAUSE`] apart, then [`ASSIST_AFTER`] apart. With a
 //!   qualifying cut, a sync once [`ASSIST_AFTER`] has passed since the
 //!   last one, and no sooner than twice [`ASSIST_AFTER`] after
 //!   `accepted` (`assist_due`): the daemon's `cuts` counts the newest
@@ -116,7 +117,20 @@ pub const ASSIST_AFTER: Duration = Duration::from_secs(10);
 
 /// The least time between two syncs of one publish. "One at a time" (the
 /// plan, §6) is read as one done before the next, at most one a second.
+/// It holds for the first [`ASSIST_QUICK`] syncs of a request; after
+/// them, [`ASSIST_AFTER`] (`assist_due`).
 pub const ASSIST_PAUSE: Duration = Duration::from_secs(1);
+
+/// The syncs of a request with no qualifying cut that are run
+/// [`ASSIST_PAUSE`] apart; each after them waits [`ASSIST_AFTER`] (the
+/// lead's decision on #144). Since each sync writes a group of its own,
+/// a pool whose cut never comes would otherwise get a group a second for
+/// as long as the publish stalls: up to [`STALLS_ABANDONED`] expiries,
+/// about 80 minutes at the default expiry. Spaced, it costs about six
+/// groups a minute: at the default expiry, three syncs from
+/// [`ASSIST_AFTER`] after `accepted`, then one each [`ASSIST_AFTER`],
+/// about 61 a request.
+pub const ASSIST_QUICK: u32 = 3;
 
 /// The stalls in a row ([`stalls`]) at which a publish is reported
 /// ([`Report::NoProgress`]) and goes on (the lead's decision for M2.6b2).
@@ -187,6 +201,10 @@ pub struct Seen {
     pub now_ms: u64,
     /// When this publish was last helped by a sync.
     pub assisted_ms: Option<u64>,
+    /// The syncs run for the request under way since it was accepted, in
+    /// this process (none after a restart: the conservative reading, as a
+    /// restart is rare and gives at most [`ASSIST_QUICK`] syncs more).
+    pub assists: u32,
 }
 
 /// The one thing to do next.
@@ -392,7 +410,9 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
 /// `assisted_ms`, is due a `zpool sync` at `now_ms`.
 ///
 /// With no qualifying cut: from [`ASSIST_AFTER`] after `asked_ms`, each
-/// [`ASSIST_PAUSE`] after the last. With one (`carried`): a cut that
+/// [`ASSIST_PAUSE`] after the last while fewer than [`ASSIST_QUICK`] were
+/// run for the request (`assists`), each [`ASSIST_AFTER`] after the last
+/// from then on. With one (`carried`): a cut that
 /// carries the request is on its way, so a sync helps only where that cut
 /// was abandoned (the daemon's `cuts` cannot say): once [`ASSIST_AFTER`]
 /// has passed since the last sync, and since twice [`ASSIST_AFTER`]
@@ -402,7 +422,13 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
 /// again (a time recorded later than `now_ms` counts as none), and the
 /// request ends, at the latest at its expiry, after which
 /// the publish is looked up and asked anew (and a sync may be due again).
-fn assist_due(carried: bool, asked_ms: u64, assisted_ms: Option<u64>, now_ms: u64) -> bool {
+fn assist_due(
+    carried: bool,
+    asked_ms: u64,
+    assisted_ms: Option<u64>,
+    assists: u32,
+    now_ms: u64,
+) -> bool {
     let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     // A sync recorded later than now (the clock stepped back) counts as
     // none, so that it does not stop every sync until the clock passes
@@ -414,7 +440,12 @@ fn assist_due(carried: bool, asked_ms: u64, assisted_ms: Option<u64>, now_ms: u6
         let from = assisted_ms.map_or(from, |last| last.max(from));
         after(from, ASSIST_AFTER)
     } else {
-        after(asked_ms, ASSIST_AFTER) && assisted_ms.is_none_or(|last| after(last, ASSIST_PAUSE))
+        let pause = if assists < ASSIST_QUICK {
+            ASSIST_PAUSE
+        } else {
+            ASSIST_AFTER
+        };
+        after(asked_ms, ASSIST_AFTER) && assisted_ms.is_none_or(|last| after(last, pause))
     }
 }
 
@@ -493,7 +524,13 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
                 return Action::Ask;
             };
             let carried = qualifies(cuts, &publish.count, taken);
-            if assist_due(carried, asked_ms, seen.assisted_ms, seen.now_ms) {
+            if assist_due(
+                carried,
+                asked_ms,
+                seen.assisted_ms,
+                seen.assists,
+                seen.now_ms,
+            ) {
                 Action::Assist
             } else {
                 Action::Wait

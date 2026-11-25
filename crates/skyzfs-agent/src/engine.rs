@@ -268,6 +268,9 @@ struct Memory {
     answer: Option<Reply>,
     snap: Option<SnapSeen>,
     assisted_ms: Option<u64>,
+    /// The syncs since the request under way was accepted
+    /// ([`Seen::assists`]).
+    assists: u32,
     /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
     accepted: Option<(u64, u64)>,
 }
@@ -514,6 +517,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let kept = memory.answer.clone();
         let snap = memory.snap;
         let assisted_ms = memory.assisted_ms;
+        let assists = memory.assists;
         let daemon = match self.daemon.ask(&Request::Cuts, &[]) {
             Ok(Reply::Cuts(cuts)) => {
                 let answer = match (&publish.phase, kept) {
@@ -539,6 +543,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             snap,
             now_ms,
             assisted_ms,
+            assists,
         }))
     }
 
@@ -639,7 +644,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 let synced = self.zfs.assist(&self.pool, value);
                 self.point(Effect::Assist, true)?;
                 let now = self.now_for(publish);
-                self.memory.entry(name).or_default().assisted_ms = Some(now);
+                let memory = self.memory.entry(name).or_default();
+                memory.assisted_ms = Some(now);
+                memory.assists = memory.assists.saturating_add(1);
                 // A sync is a step only for the pool: the cut it makes is
                 // seen at the next round, a tick later.
                 let _ = synced;
@@ -799,7 +806,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                         };
                     })
                 })?;
-                self.memory.entry(name).or_default().accepted = Some((now, mono));
+                let memory = self.memory.entry(name).or_default();
+                memory.accepted = Some((now, mono));
+                memory.assists = 0;
                 Ok(Moved::Yes)
             }
             Ok(answer) => {

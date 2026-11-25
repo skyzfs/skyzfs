@@ -373,6 +373,8 @@ pub struct World {
     pub agent_skew_ms: i64,
     /// Each value the agent's sync task set `skyzfs:assist` to, in order.
     pub assists: Vec<u64>,
+    /// The world's time of each sync task, whether it wrote a group or not.
+    pub synced_at: Vec<u64>,
     /// The agent's sync task is a plain `zpool sync`: it writes no group
     /// (N1 of #142's review), for a test that shows the property is
     /// needed.
@@ -411,6 +413,7 @@ impl World {
             log: Vec::new(),
             agent_skew_ms: 0,
             assists: Vec::new(),
+            synced_at: Vec::new(),
             plain_sync: false,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
@@ -1230,6 +1233,8 @@ impl Zfs for FakeZfs {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
+        let now = world.now_ms;
+        world.synced_at.push(now);
         // `zfs set` is a sync task: its own group. The `zpool sync` after
         // it writes nothing more, since every change here is written as
         // it is made: a plain sync of an idle pool writes no group.

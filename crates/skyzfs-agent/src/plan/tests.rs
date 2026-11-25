@@ -127,6 +127,7 @@ fn seen() -> Seen {
         snap: None,
         now_ms: ASKED + SECOND,
         assisted_ms: None,
+        assists: 0,
     }
 }
 
@@ -180,6 +181,9 @@ trait With: Sized {
     }
     fn assisted(self, at_ms: u64) -> Seen {
         self.with(|s| s.assisted_ms = Some(at_ms))
+    }
+    fn assists(self, n: u32) -> Seen {
+        self.with(|s| s.assists = n)
     }
 }
 
@@ -513,7 +517,10 @@ fn asked_with_the_daemon_away_the_hold_is_kept_until_held_until() {
 /// more often than once per [`ASSIST_AFTER`] or before twice it, never
 /// run while one does (an abandoned cut stops the help until the
 /// expiry), run before [`ASSIST_AFTER`], more often than
-/// [`ASSIST_PAUSE`], or where a part of the cut's test is left out.
+/// [`ASSIST_PAUSE`], or where a part of the cut's test is left out; or
+/// more often than once per [`ASSIST_AFTER`] after [`ASSIST_QUICK`]
+/// syncs of the request, or less often before (the lead's decision on
+/// #144: the fourth sync waits [`ASSIST_AFTER`]).
 #[test]
 fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
     let due = ASKED + 10 * SECOND;
@@ -554,6 +561,60 @@ fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
             asked(),
             pending().assisted(due - ASSIST_PAUSE.as_millis() as u64),
             Action::Assist,
+        ),
+        (
+            "the third, assisted a pause ago",
+            asked(),
+            pending()
+                .at(due + 2 * SECOND)
+                .assisted(due + SECOND)
+                .assists(2),
+            Action::Assist,
+        ),
+        (
+            "the fourth, assisted a pause ago",
+            asked(),
+            pending()
+                .at(due + 3 * SECOND)
+                .assisted(due + 2 * SECOND)
+                .assists(3),
+            Action::Wait,
+        ),
+        (
+            "the fourth, assisted a ms less than ASSIST_AFTER ago",
+            asked(),
+            pending()
+                .at(due + 12 * SECOND - 1)
+                .assisted(due + 2 * SECOND)
+                .assists(3),
+            Action::Wait,
+        ),
+        (
+            "the fourth, assisted ASSIST_AFTER ago",
+            asked(),
+            pending()
+                .at(due + 12 * SECOND)
+                .assisted(due + 2 * SECOND)
+                .assists(3),
+            Action::Assist,
+        ),
+        (
+            "the fiftieth, assisted ASSIST_AFTER ago",
+            asked(),
+            pending()
+                .at(due + 500 * SECOND)
+                .assisted(due + 490 * SECOND)
+                .assists(49),
+            Action::Assist,
+        ),
+        (
+            "the fiftieth, assisted a pause ago",
+            asked(),
+            pending()
+                .at(due + 500 * SECOND)
+                .assisted(due + 499 * SECOND)
+                .assists(49),
+            Action::Wait,
         ),
     ];
     // A cut that carries it may have been abandoned, which `cuts` does
@@ -1278,4 +1339,6 @@ fn held_until_is_the_acceptance_plus_the_expiry_plus_the_margin() {
     assert_eq!(held_until(u64::MAX - 1, EXPIRY_DEFAULT), u64::MAX);
     assert_eq!(held_until(0, Duration::MAX), u64::MAX);
     assert_eq!(ASSIST_AFTER, Duration::from_secs(10));
+    assert_eq!(ASSIST_PAUSE, Duration::from_secs(1));
+    assert_eq!(ASSIST_QUICK, 3);
 }
