@@ -1,0 +1,45 @@
+base: shell test passes (142 ok)
+base: writer test passes
+base: probe test passes
+V2	KILLED	adapter_env: LC_ALL=C.UTF-8 exported after the pinned line	(shell: FAIL: rules: every record: got ' locale:none-assist-set locale:none-assist-sync locale:none-destroy )
+V3	KILLED	rec: the command run with LC_ALL=C.UTF-8	(shell: FAIL: rules: every record: got ' locale:none-assist-set locale:none-assist-sync locale:none-destroy )
+V4	KILLED	record_pool: tagged-held without -n	(shell: FAIL: rules: every record: got ' -n:rig-tagged-held limits:rig-tagged-held', want 'none')
+V5	KILLED	record_none: members without -n	(shell: FAIL: rules: every record: got ' -n:none-members limits:none-members', want 'none')
+V6	KILLED	record_pool: hold-2 without -r	(shell: FAIL: rules: every record: got ' -r:rig-hold-2', want 'none')
+V7	KILLED	record_pool: release-2 without -r	(shell: FAIL: rules: every record: got ' -r:rig-release-2', want 'none')
+V8	KILLED	record_none: hold with the old tag	(shell: FAIL: rules: every record: got ' -r:none-hold', want 'none')
+V9	KILLED	main: rig-resilvered without its -g partner	(shell: FAIL: pin the status sites: got '5', want '4')
+V17	KILLED	scale: members without -n	(shell: FAIL: rules: every record: got ' -n:scale-3-members limits:scale-3-members', want 'none')
+U7	KILLED	catch: an earlier try's rc kept	(shell: FAIL: caught: the kept try's rc: got '2', want '0')
+V19a	KILLED	scale_limit: ZCR_SCALE_LIMIT line dropped	(shell: exit 1)
+V19b	KILLED	scale: its LIMIT not local (leaks)	(shell: FAIL: scale's limit is its own: got '7', want '5')
+V19c	SURVIVED	scale_limit: each command gets all that is left, not ZCR_SCALE_LIMIT
+V22a	SURVIVED	during: a bare wait (waits for what lim gave up on)
+V22b	KILLED	during: no wait	(shell: FAIL: during: the command ended first: got '', want '0')
+V22c	KILLED	during: the background record under LIMIT, not ZCR_CHANGE_LIMIT	(shell: FAIL: during: the command ended first: got '124', want '0')
+V26	KILLED	keep: argv with spaces, not NUL	(shell: FAIL: caught: argv unquoted: got 'counter ', want 'counter|')
+V29	KILLED	record_pool: --expect dropped from hold-2	(shell: FAIL: pin --expect on hold-2: got '', want 'expected /')
+V30	KILLED	main: the rebuild's catch with 'in progress'	(shell: FAIL: pin the rebuild's pattern: got '0', want '1')
+V30b	KILLED	REBUILD_PATTERN reverted to 'in progress'	(shell: FAIL: rebuild pattern: not the scrub after it: got '1', want '0')
+N1a	KILLED	record_pool: destroy-held without -r	(shell: FAIL: rules: every record: got ' destroy:rig-destroy-held', want 'none')
+N1b	KILLED	record_none: destroy dropped	(shell: FAIL: pin none's destroy: got '', want 'zfs destroy -r skznone@t ')
+N1c	KILLED	record_pool: --expect dropped from destroy-absent	(shell: FAIL: pin --expect on destroy-absent: got '', want 'expected /')
+N1d	SURVIVED	record_pool: destroy-held's hold on the root, not the child
+N1e	KILLED	record_pool: destroy-held's hold with another tag	(shell: FAIL: rules: every record: got ' tag:rig-destroy-held-hold', want 'none')
+N1f	KILLED	record_pool: destroy with an extra flag (-d)	(shell: FAIL: pin destroy: got 'zfs destroy -r -d skzq@o0 ', want 'zfs destroy -r skzq@o0 ')
+N1g	SURVIVED	record_pool: the hold left on @o2 not released
+G1	SURVIVED	record_pool: get-checkpoint without -p
+L1	SURVIVED	main: adapter_env not called
+L2	SURVIVED	main: adapter_env called only after version, nocacheflush and locale
+B1	SURVIVED	scale_all: budget default 48000 s, not 4800
+B2	SURVIVED	scale: the zfs create loop without lim
+B3	SURVIVED	scale: zfs create without -u
+B4	KILLED	scale_all: four counts	(shell: FAIL: scale_all: the counts run: got '5 7 8 9 ', want '5 7 8 ')
+B5	KILLED	scale_all: the length bound dropped	(shell: FAIL: scale_all: the counts run: got '5 99999999999999999999 7 ', want '5 7 8 ')
+B6	KILLED	scale_all: the bound 1000000	(shell: FAIL: scale_all: the counts run: got '5 100001 7 ', want '5 7 8 ')
+B7	KILLED	scale_all: a count twice run twice	(shell: FAIL: scale_all: the counts run: got '5 5 7 ', want '5 7 8 ')
+B8	KILLED	scale_limit: nothing left is not refused	(shell: FAIL: budget: nothing after it: got 'yes', want 'no')
+B9	KILLED	scale: the fallback snapshot dropped	(shell: FAIL: pin scale's own snapshot: got '', want 'zfs snapshot -r skzqs@t ')
+B10	KILLED	scale: df dropped	(shell: FAIL: scale's df: got '0', want '2')
+B11	KILLED	scale: the start's budget check dropped	(shell: FAIL: budget spent: not run: got '0', want '1')
+W1	SURVIVED	writing: the stall's window empty (t0 t0)

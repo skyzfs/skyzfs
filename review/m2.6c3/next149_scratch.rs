@@ -254,6 +254,7 @@ fn run_case(case: &Case, prefix: &[u8], rng: u64) -> (Result<Verdict, String>, V
         world: world.clone(),
         script: script.clone(),
     };
+    let early: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let ran = catch_unwind(AssertUnwindSafe(|| {
         let mut again = Agent::new(
             FakeZfs(world.clone()),
@@ -263,11 +264,44 @@ fn run_case(case: &Case, prefix: &[u8], rng: u64) -> (Result<Verdict, String>, V
             VOLUME,
             POOL,
         )
-        .expect("the agent");
+        .expect("the agent")
+        .with_points({
+            // The strict invariant: no release while the request pends at
+            // the daemon (asked of the fake directly, not of the oracle).
+            let (world, early, t) = (world.clone(), early.clone(), t.clone());
+            Box::new(move |p: Point, _: &str| {
+                if p.effect == Effect::Release && !p.after {
+                    let (now, away, silent) = {
+                        let mut w = world.borrow_mut();
+                        let saved = (w.now_ms, w.away_until, w.silent_until);
+                        w.away_until = 0;
+                        w.silent_until = 0;
+                        saved
+                    };
+                    let reply = FakeDaemon(world.clone()).ask(&Request::Progress(t.clone()), &[]);
+                    {
+                        let mut w = world.borrow_mut();
+                        w.away_until = away;
+                        w.silent_until = silent;
+                        w.calls.pop();
+                    }
+                    if matches!(reply, Ok(Reply::Pending)) {
+                        early.borrow_mut().push(now);
+                    }
+                }
+                false
+            })
+        });
         again.recover(&t, Choice::GiveUp).expect("recovered");
         let settled = again.settle(LIMIT).map_err(|e| e.to_string());
         (settled, again.outcomes().to_vec())
     }));
+    if let Some(at) = early.borrow().first() {
+        return (
+            Err(format!("WRONG: released at {} s while the request pends", (at - start_ms) / 1000)),
+            script.borrow().arities.clone(),
+        );
+    }
     let arities = script.borrow().arities.clone();
     let (settled, outcomes) = match ran {
         Ok(r) => r,

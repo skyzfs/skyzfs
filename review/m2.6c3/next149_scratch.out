@@ -1,0 +1,547 @@
+# N2, N2b (planner tables), N3 (stall window), N4/N4b (renames), N5 (lost answer and a wall step) at the head
+
+running 2 tests
+test engine::tests::review_scratch::n2_planner_person_against_age_bound ... N2: rows where one gives the hold up and the other does not (289):
+  held   (away)               snap=None withdrawn=false before_until=true: person Release | age bound Wait
+  held   (away)               snap=None withdrawn=false before_until=false: person Release | age bound Wait
+  held   (away)               snap=None withdrawn=true before_until=true: person Release | age bound Wait
+  held   (away)               snap=None withdrawn=true before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   (away)               snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   (away)               snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   cuts                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   cuts                 snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   accepted             snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   accepted             snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   accepted             snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   accepted             snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   accepted             snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   accepted             snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   pending              snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   pending              snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   pending              snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   pending              snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   pending              snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   pending              snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   done                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  held   done                 snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  held   expired              snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   expired              snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   expired              snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   expired              snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   expired              snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   expired              snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   withdrawn            snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   unknown              snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   unknown              snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   unknown              snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   unknown              snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   unknown              snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   unknown              snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  held   absent               snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   absent               snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   snap                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   snap                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   snap                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   snap                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   snap                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   snap                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   snap                 snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   unreadable           snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   unreadable           snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused asked        snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   refused asked        snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   refused asked        snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   refused asked        snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   refused asked        snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  held   refused asked        snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  held   refused busy         snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused busy         snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused busy         snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused busy         snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused busy         snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused busy         snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused busy         snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-upload    snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused ended        snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused ended        snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  held   refused no-answer    snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Wait
+  asked  cuts                 snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  cuts                 snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  cuts                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  cuts                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  cuts                 snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  cuts                 snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  cuts                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  cuts                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  cuts                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  cuts                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  accepted             snap=None withdrawn=false before_until=false: person Withdraw | age bound Release
+  asked  accepted             snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  accepted             snap=Some(Absent) withdrawn=false before_until=false: person Withdraw | age bound Release
+  asked  accepted             snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  accepted             snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Withdraw | age bound Release
+  asked  accepted             snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  accepted             snap=Some(NotOurs) withdrawn=false before_until=false: person Withdraw | age bound Release
+  asked  accepted             snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  accepted             snap=Some(Unreadable) withdrawn=false before_until=false: person Withdraw | age bound Release
+  asked  accepted             snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  pending              snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  pending              snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  pending              snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  pending              snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  pending              snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  pending              snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  done                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Stop(DoneNotSeen)
+  asked  done                 snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Stop(DoneNotSeen)
+  asked  expired              snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  expired              snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  expired              snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  expired              snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  expired              snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  expired              snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  withdrawn            snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  unknown              snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  unknown              snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  unknown              snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  unknown              snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  unknown              snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  unknown              snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(Absent) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(NotOurs) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(Unreadable) withdrawn=false before_until=false: person Release | age bound Withdraw
+  asked  absent               snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  absent               snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  snap                 snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  snap                 snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  snap                 snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  snap                 snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  snap                 snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  snap                 snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  snap                 snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  snap                 snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  snap                 snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  snap                 snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  unreadable           snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  unreadable           snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  unreadable           snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  unreadable           snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  unreadable           snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused asked        snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  refused asked        snap=Some(Absent) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  refused asked        snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  refused asked        snap=Some(NotOurs) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  refused asked        snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Withdraw
+  asked  refused asked        snap=Some(Unreadable) withdrawn=true before_until=false: person Release | age bound Withdraw
+  asked  refused busy         snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  refused busy         snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  refused busy         snap=Some(Absent) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  refused busy         snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused busy         snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused busy         snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused busy         snap=Some(NotOurs) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  refused busy         snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused busy         snap=Some(Unreadable) withdrawn=false before_until=true: person Release | age bound Wait
+  asked  refused busy         snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-upload    snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  refused no-upload    snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  refused no-upload    snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-upload    snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused no-upload    snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused no-upload    snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-upload    snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused ended        snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  refused ended        snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  refused ended        snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused ended        snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused ended        snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused ended        snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused ended        snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-answer    snap=None withdrawn=false before_until=false: person Look | age bound Release
+  asked  refused no-answer    snap=None withdrawn=true before_until=false: person Look | age bound Release
+  asked  refused no-answer    snap=Some(Absent) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-answer    snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=false before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused no-answer    snap=Some(Ours([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])) withdrawn=true before_until=false: person Done { commit: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], report: None } | age bound Release
+  asked  refused no-answer    snap=Some(NotOurs) withdrawn=true before_until=true: person Release | age bound Wait
+  asked  refused no-answer    snap=Some(Unreadable) withdrawn=true before_until=true: person Release | age bound Wait
+N2: unsafe rows (0):
+ok
+test engine::tests::review_scratch::n2b_may_pend_against_silent ... N2b: name       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: attachment to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: state      to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: manifest   to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: expiry     to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: asked      to publish: stays asked | give-up from progress, asked: Withdraw; held: Withdraw
+N2b: busy       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: taken      to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: stopped    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: rewound    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: version    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: malformed  to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: peer       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: no-upload  to publish: held again | give-up from progress, asked: Wait; held: Release
+N2b: ended      to publish: stays asked | give-up from progress, asked: Wait; held: Release
+N2b: no-answer  to publish: stays asked | give-up from progress, asked: Wait; held: Release
+N2b: store      to publish: held again | give-up from progress, asked: Release; held: Release
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.00s
+
+
+running 1 test
+test engine::tests::review_scratch::n3_stall_window_measured ... N3: 1094 points; (point, in window, extra stalls) -> stops:
+  ask:after        window=true more=0: 3
+  ask:after        window=true more=1: 6
+  ask:before       window=true more=0: 3
+  ask:before       window=true more=1: 6
+  asked:before     window=true more=0: 3
+  asked:before     window=true more=1: 6
+  asking:after     window=true more=0: 3
+  asking:after     window=true more=1: 6
+  outside the window with none extra: 98
+N3: in the window with none extra (slack): ["19 asking:after", "20 ask:before", "21 ask:after", "22 asked:before", "27 asking:after", "28 ask:before", "29 ask:after", "30 asked:before", "951 asking:after", "952 ask:before", "953 ask:after", "954 asked:before"]
+N3: over the allowance: []
+
+thread 'engine::tests::review_scratch::n3_stall_window_measured' (20813) panicked at crates/skyzfs-agent/src/engine/review_scratch.rs:840:5:
+the window allows one where none is counted: ["19 asking:after", "20 ask:before", "21 ask:after", "22 asked:before", "27 asking:after", "28 ask:before", "29 ask:after", "30 asked:before", "951 asking:after", "952 ask:before", "953 ask:after", "954 asked:before"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::engine::tests::review_scratch::n3_stall_window_measured::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    engine::tests::review_scratch::n3_stall_window_measured
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.64s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
+
+running 1 test
+test engine::tests::review_scratch::n4_rename_chains_end_and_exit_by_their_outcome ... N4 execute n=1: code 0, programs 2, taken ["skz-20261125T010000Z"], made skz-20261125T010000Z-1
+N4 stop n=1 at program 1: first Err(Stopped), programs 3, taken ["skz-20261125T010000Z"], then Ok(Ok([("skz-20261125T010000Z-1", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=2: code 0, programs 3, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], made skz-20261125T010000Z-2
+N4 stop n=2 at program 1: first Err(Stopped), programs 4, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], then Ok(Ok([("skz-20261125T010000Z-2", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=2 at program 2: first Err(Stopped), programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], then Ok(Ok([("skz-20261125T010000Z-2", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=3: code 0, programs 4, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], made skz-20261125T010000Z-3
+N4 stop n=3 at program 1: first Err(Stopped), programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=3 at program 2: first Err(Stopped), programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=3 at program 3: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=4: code 0, programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], made skz-20261125T010000Z-4
+N4 stop n=4 at program 1: first Err(Stopped), programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 2: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 3: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 4: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=5: code 0, programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], made skz-20261125T010000Z-5
+N4 stop n=5 at program 1: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 2: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 3: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 4: first Err(Stopped), programs 10, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 5: first Err(Stopped), programs 11, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=6: code 0, programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], made skz-20261125T010000Z-6
+N4 stop n=6 at program 1: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 2: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 3: first Err(Stopped), programs 10, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 4: first Err(Stopped), programs 11, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 5: first Err(Stopped), programs 12, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 6: first Err(Stopped), programs 13, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.01s
+
+
+running 1 test
+test engine::tests::review_scratch::n4b_recover_follows_a_rename ... N4b: code 0 out "snap/skz-20261125T010000Z-1 0400000000000000739ecbdab87fa2da00000000000000000000000000000000\n" err ""
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.00s
+
+
+running 1 test
+test engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock ... N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost"]
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(5), wrong true
+  log tail ["snap/skz-20261125T010000Z made on cut 5", "cut 5 committed", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true"]
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost"]
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(5), wrong true
+  log tail ["snap/skz-20261125T010000Z made on cut 5", "cut 5 committed", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true"]
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost"]
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(5), wrong true
+  log tail ["snap/skz-20261125T010000Z made on cut 5", "cut 5 committed", "cut 1 committed", "1000: group 9 (destroy): cut 5 group 9 itself true", "0: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true"]
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost"]
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(5), wrong true
+  log tail ["snap/skz-20261125T010000Z made on cut 5", "cut 5 committed", "cut 1 committed", "1000: group 9 (destroy): cut 5 group 9 itself true", "0: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true"]
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true"]
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 abandoned", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 5 (created): cut 1 group 5 itself true"]
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true"]
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 abandoned", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 5 (created): cut 1 group 5 itself true"]
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true"]
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 abandoned", "cut 1 committed", "1000: group 9 (destroy): cut 5 group 9 itself true", "0: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 5 (created): cut 1 group 5 itself true"]
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true"]
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 abandoned", "cut 1 committed", "1000: group 9 (destroy): cut 5 group 9 itself true", "0: group 8 (release): cut 4 group 8 itself true", "publish answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true", "0: group 6 (snapshot): cut 2 group 6 itself true", "0: group 5 (created): cut 1 group 5 itself true"]
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+  log tail ["8100000: group 1629 (busy): cut 1625 group 1629 itself true", "cut 1623 committed", "8095000: group 1628 (busy): cut 1624 group 1628 itself true", "cut 1622 committed", "8090000: group 1627 (busy): cut 1623 group 1627 itself true", "cut 1620 committed", "8085000: group 1626 (busy): cut 1622 group 1626 itself true", "8080000: group 1625 (busy): cut 1621 group 1625 itself true"]
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(6), wrong true
+  log tail ["8100000: group 1629 (busy): cut 1625 group 1629 itself true", "cut 1623 committed", "8095000: group 1628 (busy): cut 1624 group 1628 itself true", "cut 1622 committed", "8090000: group 1627 (busy): cut 1623 group 1627 itself true", "cut 1620 committed", "8085000: group 1626 (busy): cut 1622 group 1626 itself true", "8080000: group 1625 (busy): cut 1621 group 1625 itself true"]
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+  log tail ["7880000: group 1585 (busy): cut 1581 group 1585 itself true", "cut 1578 committed", "7875000: group 1584 (busy): cut 1580 group 1584 itself true", "7870000: group 1583 (busy): cut 1579 group 1583 itself true", "cut 1577 committed", "7865000: group 1582 (busy): cut 1578 group 1582 itself true", "cut 1575 committed", "7860000: group 1581 (busy): cut 1577 group 1581 itself true"]
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(6), wrong true
+  log tail ["7205000: group 1450 (busy): cut 1446 group 1450 itself true", "cut 1444 committed", "7200000: group 1449 (busy): cut 1445 group 1449 itself true", "cut 1442 committed", "7195000: group 1448 (busy): cut 1444 group 1448 itself true", "7190000: group 1447 (busy): cut 1443 group 1447 itself true", "cut 1441 committed", "7185000: group 1446 (busy): cut 1442 group 1446 itself true"]
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+  log tail ["8100000: group 1629 (busy): cut 1625 group 1629 itself true", "cut 1623 committed", "8095000: group 1628 (busy): cut 1624 group 1628 itself true", "cut 1622 committed", "8090000: group 1627 (busy): cut 1623 group 1627 itself true", "cut 1620 committed", "8085000: group 1626 (busy): cut 1622 group 1626 itself true", "8080000: group 1625 (busy): cut 1621 group 1625 itself true"]
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(6), wrong true
+  log tail ["8100000: group 1629 (busy): cut 1625 group 1629 itself true", "cut 1623 committed", "8095000: group 1628 (busy): cut 1624 group 1628 itself true", "cut 1622 committed", "8090000: group 1627 (busy): cut 1623 group 1627 itself true", "cut 1620 committed", "8085000: group 1626 (busy): cut 1622 group 1626 itself true", "8080000: group 1625 (busy): cut 1621 group 1625 itself true"]
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+  log tail ["7880000: group 1585 (busy): cut 1581 group 1585 itself true", "cut 1578 committed", "7875000: group 1584 (busy): cut 1580 group 1584 itself true", "7870000: group 1583 (busy): cut 1579 group 1583 itself true", "cut 1577 committed", "7865000: group 1582 (busy): cut 1578 group 1582 itself true", "cut 1575 committed", "7860000: group 1581 (busy): cut 1577 group 1581 itself true"]
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(6), wrong true
+  log tail ["7205000: group 1450 (busy): cut 1446 group 1450 itself true", "cut 1444 committed", "7200000: group 1449 (busy): cut 1445 group 1449 itself true", "cut 1442 committed", "7195000: group 1448 (busy): cut 1444 group 1448 itself true", "7190000: group 1447 (busy): cut 1443 group 1447 itself true", "cut 1441 committed", "7185000: group 1446 (busy): cut 1442 group 1446 itself true"]
+
+thread 'engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock' (20950) panicked at crates/skyzfs-agent/src/engine/review_scratch.rs:1090:5:
+[
+    "Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(5), wrong true\n  log tail [\"snap/skz-20261125T010000Z made on cut 5\", \"cut 5 committed\", \"cut 1 committed\", \"2000: group 9 (destroy): cut 5 group 9 itself true\", \"1000: group 8 (release): cut 4 group 8 itself true\", \"publish answered Ok(Accepted); the answer is lost\", \"0: group 7 (hold): cut 3 group 7 itself true\", \"0: group 6 (snapshot
+    "Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Abandoned(Person))], snap/t Some(5), wrong true\n  log tail [\"snap/skz-20261125T010000Z made on cut 5\", \"cut 5 committed\", \"cut 1 committed\", \"2000: group 9 (destroy): cut 5 group 9 itself true\", \"1000: group 8 (release): cut 4 group 8 itself true\", \"publish answered Ok(Accepted); the answer is lost\", \"0: group 7 (hold): cut 3 group 7 itself true\", \"0: group 6 (snapshot): cut 2 group 6 itself true\"]",
+    "Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Published([5, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(5), wrong true\n  log tail [\"snap/skz-20261125T010000Z made on cut 5\", \"cut 5 committed\", \"cut 1 committed\", \"1000: group 9 (destroy): cut 5 group 9 itself true\", \"0: group 8 (release): cut 4 group 8 itself true\", \"publish answered Ok(Accepted); the answer is lost\", \"0: group 7 (hold): cut 3 group 7 itself true\", \"0: group 6 (snapshot): c
+    "Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Abandoned(Person))], snap/t Some(5), wrong true\n  log tail [\"snap/skz-20261125T010000Z made on cut 5\", \"cut 5 committed\", \"cut 1 committed\", \"1000: group 9 (destroy): cut 5 group 9 itself true\", \"0: group 8 (release): cut 4 group 8 itself true\", \"publish answered Ok(Accepted); the answer is lost\", \"0: group 7 (hold): cut 3 group 7 itself true\", \"0: group 6 (snapshot): cut 2 group 6 itself true\"]",
+    "Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(6), wrong true\n  log tail [\"8100000: group 1629 (busy): cut 1625 group 1629 itself true\", \"cut 1623 committed\", \"8095000: group 1628 (busy): cut 1624 group 1628 itself true\", \"cut 1622 committed\", \"8090000: group 1627 (busy): cut 1623 group 1627 itself true\", \"cut 1620 committed\", \"8085000: group 1626 (busy): cut 1622 group 1626 itself tr
+    "Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Abandoned(Person))], snap/t Some(6), wrong true\n  log tail [\"7205000: group 1450 (busy): cut 1446 group 1450 itself true\", \"cut 1444 committed\", \"7200000: group 1449 (busy): cut 1445 group 1449 itself true\", \"cut 1442 committed\", \"7195000: group 1448 (busy): cut 1444 group 1448 itself true\", \"7190000: group 1447 (busy): cut 1443 group 1447 itself true\", \"cut 1441 committed\", \"7185000: group 1446 (busy): cut 1442 group 1446 itself true\"]",
+    "Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Published([6, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(6), wrong true\n  log tail [\"8100000: group 1629 (busy): cut 1625 group 1629 itself true\", \"cut 1623 committed\", \"8095000: group 1628 (busy): cut 1624 group 1628 itself true\", \"cut 1622 committed\", \"8090000: group 1627 (busy): cut 1623 group 1627 itself true\", \"cut 1620 committed\", \"8085000: group 1626 (busy): cut 1622 group 1626 itself tru
+    "Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [(\"skz-20261125T010000Z\", Abandoned(Person))], snap/t Some(6), wrong true\n  log tail [\"7205000: group 1450 (busy): cut 1446 group 1450 itself true\", \"cut 1444 committed\", \"7200000: group 1449 (busy): cut 1445 group 1449 itself true\", \"cut 1442 committed\", \"7195000: group 1448 (busy): cut 1444 group 1448 itself true\", \"7190000: group 1447 (busy): cut 1443 group 1447 itself true\", \"cut 1441 committed\", \"7185000: group 1446 (busy): cut 1442 group 1446 itself true\"]",
+]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
+
+# N5 at the head, with the one-line fix (F1), and with plant L1j
+== N5 at the head
+N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [5], snap/t Some(5), wrong true
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(5), wrong true
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [5], snap/t Some(5), wrong true
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(5), wrong true
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [6], snap/t Some(6), wrong true
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(6), wrong true
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [6], snap/t Some(6), wrong true
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(6), wrong true
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.08s
+applied F1 - fix probe: the asking record's held_until on the clock that does not step (N5)
+== N5 with F1
+N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.04s
+applied L1j - no answer at all recorded held again
+== N5 with L1j
+N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [3], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [5], snap/t Some(5), wrong true
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(5), wrong true
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Abandoned Destroyed], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t None, wrong false
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(6), wrong true
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(6), wrong true
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()), outcome Published [4], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcome Published [6], snap/t Some(6), wrong true
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcome Abandoned Person], snap/t Some(6), wrong true
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 161 filtered out; finished in 0.08s

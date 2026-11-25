@@ -1,0 +1,55 @@
+== SCRATCH/probe149n/skyzfs-agent record --dir TMP/missing
+exit 1
+skyzfs-agent: TMP/missing: No such file or directory (os error 2)
+== SCRATCH/probe149n/skyzfs-agent record --dir TMP/file
+exit 1
+skyzfs-agent: TMP/file: not a directory
+== SCRATCH/probe149n/skyzfs-agent record --dir TMP/d
+exit 0
+absent
+== SCRATCH/probe149n/skyzfs-agent record --dir TMP/d --help
+exit 0
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+                       [--limit-s S] [--expiry-s E]
+== SCRATCH/probe149n/skyzfs-agent record --dir --help
+exit 0
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+                       [--limit-s S] [--expiry-s E]
+== SCRATCH/probe149n/skyzfs-agent record --dir -h
+exit 1
+skyzfs-agent: -h: No such file or directory (os error 2)
+== SCRATCH/probe149n/skyzfs-agent record --dir --d
+exit 2
+skyzfs-agent: --dir needs a value, not the option --d; give such a value as --dir=--d
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+== SCRATCH/probe149n/skyzfs-agent record --dir=--d
+exit 1
+skyzfs-agent: --d: No such file or directory (os error 2)
+== SCRATCH/probe149n/skyzfs-agent recover --volume 0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f --run TMP/run --device /dev/null --pool tank --dir TMP/d --name --give-up --retry
+exit 2
+skyzfs-agent: --name needs a value, not the option --give-up; give such a value as --name=--give-up
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+== SCRATCH/probe149n/skyzfs-agent recover --volume 0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f --run TMP/run --device /dev/null --pool tank --dir TMP/d --name -h --give-up
+exit 1
+skyzfs-agent: 0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f/remote: No such file or directory (os error 2) (a volume with no place in object storage publishes nothing)
+== SCRATCH/probe149n/skyzfs-agent publish --volume --run TMP/run --device /dev/null --pool tank --dir TMP/d
+exit 2
+skyzfs-agent: --volume needs a value, not the option --run; give such a value as --volume=--run
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+== SCRATCH/probe149n/skyzfs-agent publish -h
+exit 0
+usage:
+  skyzfs-agent publish --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+                       [--limit-s S] [--expiry-s E]
+== record into a closed pipe
+exit 0
+0
+== --help into head -1
+usage:
+exit 0
+0

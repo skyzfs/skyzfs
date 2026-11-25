@@ -1,0 +1,91 @@
+# N1a (exhaustive to depth 4) and N1b (50 random seeds a case), at the head, without and then with the strict check (no release while the request pends at the daemon)
+
+## without the strict check
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running unittests src/lib.rs (SCRATCH/tgt149s/release/build/skyzfs-agent/39b7472f9c591ee8/out/skyzfs_agent-39b7472f9c591ee8)
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive ... N1a depth 4 (58 s): 57276 runs: 6136 published, 49724 given up; 0 wrong publishes, 1416 given up then made, 0 other
+  given up then made: Away Accepted Busy: 236
+  given up then made: Away Accepted Idle: 236
+  given up then made: Away SentNotRecorded Busy: 118
+  given up then made: Away SentNotRecorded Idle: 118
+  given up then made: NoUpload Accepted Busy: 236
+  given up then made: NoUpload Accepted Idle: 236
+  given up then made: NoUpload SentNotRecorded Busy: 118
+  given up then made: NoUpload SentNotRecorded Idle: 118
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix []: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [1, 1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 58.21s
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running unittests src/lib.rs (SCRATCH/tgt149s/release/build/skyzfs-agent/39b7472f9c591ee8/out/skyzfs_agent-39b7472f9c591ee8)
+test engine::tests::review_scratch::n1b_give_up_random ... N1b 50 seeds a case (42 s): 44400 runs: 2852 published, 40657 given up; 0 wrong publishes, 891 given up then made, 0 other
+  given up then made: Away Accepted Busy: 147
+  given up then made: Away Accepted Idle: 144
+  given up then made: Away SentNotRecorded Busy: 79
+  given up then made: Away SentNotRecorded Idle: 77
+  given up then made: Ended Accepted Busy: 2
+  given up then made: Ended Accepted Idle: 1
+  given up then made: NoUpload Accepted Busy: 150
+  given up then made: NoUpload Accepted Idle: 157
+  given up then made: NoUpload SentNotRecorded Busy: 62
+  given up then made: NoUpload SentNotRecorded Idle: 72
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 641000 } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 681000 } prefix [211]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [13]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 42.11s
+
+## with the strict check
+
+running 1 test
+N1a depth 4 (59 s): 57276 runs: 6136 published, 49724 given up; 0 wrong publishes, 1416 given up then made, 0 other
+  given up then made: Away Accepted Busy: 236
+  given up then made: Away Accepted Idle: 236
+  given up then made: Away SentNotRecorded Busy: 118
+  given up then made: Away SentNotRecorded Idle: 118
+  given up then made: NoUpload Accepted Busy: 236
+  given up then made: NoUpload Accepted Idle: 236
+  given up then made: NoUpload SentNotRecorded Busy: 118
+  given up then made: NoUpload SentNotRecorded Idle: 118
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix []: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [1, 1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 59.16s
+
+
+running 1 test
+N1b 50 seeds a case (42 s): 44400 runs: 2852 published, 40657 given up; 0 wrong publishes, 891 given up then made, 0 other
+  given up then made: Away Accepted Busy: 147
+  given up then made: Away Accepted Idle: 144
+  given up then made: Away SentNotRecorded Busy: 79
+  given up then made: Away SentNotRecorded Idle: 77
+  given up then made: Ended Accepted Busy: 2
+  given up then made: Ended Accepted Idle: 1
+  given up then made: NoUpload Accepted Busy: 150
+  given up then made: NoUpload Accepted Idle: 157
+  given up then made: NoUpload SentNotRecorded Busy: 62
+  given up then made: NoUpload SentNotRecorded Idle: 72
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 641000 } prefix [1]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: Ended, until_rel: 681000 } prefix [211]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoUpload, until_rel: 641000 } prefix [13]: given up as the person's, and snap/skz-20261125T010000Z made afterwards (whole)
+test engine::tests::review_scratch::n1b_give_up_random ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 161 filtered out; finished in 41.74s
+
+
+## control: the strict check with B1's fix reverted (plant B1a), depth 2
+
+running 1 test
+N1a depth 2 (6 s): 7992 runs: 360 published, 5472 given up; 1944 wrong publishes, 216 given up then made, 0 other
+  given up then made: Away Accepted Busy: 36
+  given up then made: Away Accepted Idle: 36
+  given up then made: Away SentNotRecorded Busy: 18
+  given up then made: Away SentNotRecorded Idle: 18
+  given up then made: NoUpload Accepted Busy: 36
+  given up then made: NoUpload Accepted Idle: 36
+  given up then made: NoUpload SentNotRecorded Busy: 18
+  given up then made: NoUpload SentNotRecorded Idle: 18
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoAnswer, until_rel: 30000 } prefix []: WRONG: released at 0 s while the request pends
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoAnswer, until_rel: 30000 } prefix [1]: WRONG: released at 1 s while the request pends
+  Case { start: Accepted, mode: Busy, lag_ms: 60000, tail: NoAnswer, until_rel: 30000 } prefix [1, 1]: WRONG: released at 2 s while the request pends
