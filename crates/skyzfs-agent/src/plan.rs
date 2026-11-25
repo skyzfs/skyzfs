@@ -67,14 +67,18 @@
 //!   broken, the publish will not be asked again, so it is looked up
 //!   before it is given up (F1 and the lead's D1 on #142). `refused
 //!   rewound` with `pool@t` gone and no `snap/t` is [`Why::Rewound`].
+//!   `refused busy` waits; `refused asked` (another request of the name
+//!   pends) withdraws it. A `look` refused (`store`) or not answered is
+//!   no sight of `snap/t`: the engine leaves [`Seen::snap`] empty, and
+//!   the planner asks for the look again.
 //! - **Done with the snapshot broken.** `snap/t` that is this publish's,
 //!   seen while `pool@t` or a member's `@t` is gone, is recorded done
 //!   and reported ([`Report::SnapshotGone`]): it was made before a rewind
 //!   (its cut holds `pool@t`) or after one through a gap in rule (R) (it
-//!   does not), and only opening the cut tells (the lead's D1; S2). `refused busy` waits; `refused asked`
-//!   (another request of the name pends) withdraws it. A `look` refused
-//!   (`store`) or not answered is no sight of `snap/t`: the engine leaves
-//!   [`Seen::snap`] empty, and the planner asks for the look again.
+//!   does not), and only opening the cut tells (the lead's D1; S2). The
+//!   engine makes the report before it records the publish done, so at
+//!   least once: a stop between the two plans the same again (F1 of
+//!   #144's review).
 //! - **A daemon away** (no answer, or `stopped`, `ended`, `no-answer`,
 //!   `no-upload`): wait; a publish asked keeps its hold until
 //!   `held_until`, then releases it. When the daemon answers again, the
@@ -125,8 +129,8 @@ pub const ASSIST_PAUSE: Duration = Duration::from_secs(1);
 /// [`ASSIST_PAUSE`] apart; each after them waits [`ASSIST_AFTER`] (the
 /// lead's decision on #144). Since each sync writes a group of its own,
 /// a pool whose cut never comes would otherwise get a group a second for
-/// as long as the publish stalls: up to [`STALLS_ABANDONED`] expiries,
-/// about 80 minutes at the default expiry. Spaced, it costs about six
+/// as long as the publish stalls: up to [`STALLS_ABANDONED`] requests
+/// that run to their expiry, about 80 minutes at the default expiry. Spaced, it costs about six
 /// groups a minute: at the default expiry, three syncs from
 /// [`ASSIST_AFTER`] after `accepted`, then one each [`ASSIST_AFTER`],
 /// about 61 a request.
@@ -369,11 +373,15 @@ pub fn same_snapshot(members: &[Member], taken: &Taken) -> bool {
 /// The stalls of `publish` once it is asked anew with `count`: one more
 /// where it was asked (accepted) and the daemon's count is where it was
 /// (the same attachment and state, no cut counted since), none where a
-/// cut was counted or the daemon is another, and as they were where it
-/// was not asked. A count of another attachment or state resets them: a
-/// daemon that started anew or a rewind is not taken for no progress
-/// (the conservative reading; the lead's words were "with no cut
-/// taken").
+/// cut was counted or the count is of another attachment or state, and
+/// as they were where it was not asked. A reboot (a new attachment and
+/// state) or a rewind resets them (the conservative reading; the lead's
+/// words were "with no cut taken"). A take-over does not: a new daemon
+/// on the same attachment and state that answers `unknown` with the
+/// count where it was asked is a stall, so a daemon that dies before
+/// each cut gives a publish up after eight take-overs, in as little time
+/// as they take, and not only after eight expiries (F2 of #144's
+/// review).
 pub fn stalls(publish: &Publish, count: &Count) -> u32 {
     match publish.phase {
         Phase::Asked { .. } if same_place(count, &publish.count) => {

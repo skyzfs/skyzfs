@@ -667,12 +667,21 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 let Some(taken) = publish.phase.taken().cloned() else {
                     return Ok(Moved::No);
                 };
+                // The report before the save: a stop between the two
+                // plans `Done` with it again, so it is made at least once
+                // (F1 of #144's review). A report is not recorded, and
+                // after the save the publish is only released and
+                // forgotten. Made once in this process where a save that
+                // failed has it planned again.
+                if let Some(report) = report {
+                    let made = (name.clone(), report);
+                    if !self.reports.contains(&made) {
+                        self.reports.push(made);
+                    }
+                }
                 self.commit(Effect::Done, |r| {
                     set(r, &name, |p| p.phase = Phase::Done { taken, commit })
                 })?;
-                if let Some(report) = report {
-                    self.reports.push((name, report));
-                }
                 Ok(Moved::Yes)
             }
             Action::Forget => {

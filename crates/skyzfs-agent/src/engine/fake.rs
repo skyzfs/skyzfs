@@ -375,6 +375,11 @@ pub struct World {
     pub assists: Vec<u64>,
     /// The world's time of each sync task, whether it wrote a group or not.
     pub synced_at: Vec<u64>,
+    /// What the agent's last read of a snapshot's members found.
+    pub members_read: Option<Option<Vec<record::Member>>>,
+    /// The agent's reads of the pool and requests of the daemon, in order
+    /// (`props`, `members`, `held`, and the request's kind).
+    pub calls: Vec<&'static str>,
     /// The agent's sync task is a plain `zpool sync`: it writes no group
     /// (N1 of #142's review), for a test that shows the property is
     /// needed.
@@ -414,6 +419,8 @@ impl World {
             agent_skew_ms: 0,
             assists: Vec::new(),
             synced_at: Vec::new(),
+            members_read: None,
+            calls: Vec::new(),
             plain_sync: false,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
@@ -981,6 +988,13 @@ impl World {
     /// The channel's answer to `request`.
     fn answer(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
         self.asked_still();
+        self.calls.push(match request {
+            Request::Cuts => "cuts",
+            Request::Publish(_) => "publish",
+            Request::Progress(_) => "progress",
+            Request::Withdraw(_) => "withdraw",
+            Request::Look(_) => "look",
+        });
         if *request == Request::Cuts {
             let k = self.cuts_read;
             self.cuts_read += 1;
@@ -1123,6 +1137,7 @@ impl Zfs for FakeZfs {
 
     fn props(&mut self, pool: &str) -> Result<Props, ZfsError> {
         self.0.borrow_mut().asked_still();
+        self.0.borrow_mut().calls.push("props");
         self.pool(pool, |p| Props {
             guid: p.guid,
             load_guid: p.load_guid,
@@ -1152,7 +1167,8 @@ impl Zfs for FakeZfs {
     }
 
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<record::Member>>, ZfsError> {
-        self.pool(pool, |p| {
+        self.0.borrow_mut().calls.push("members");
+        let members = self.pool(pool, |p| {
             p.snaps.get(&format!("{POOL}@{t}"))?;
             let suffix = format!("@{t}");
             Some(
@@ -1166,7 +1182,9 @@ impl Zfs for FakeZfs {
                     })
                     .collect(),
             )
-        })
+        })?;
+        self.0.borrow_mut().members_read = Some(members.clone());
+        Ok(members)
     }
 
     fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
@@ -1213,6 +1231,7 @@ impl Zfs for FakeZfs {
     }
 
     fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<bool, ZfsError> {
+        self.0.borrow_mut().calls.push("held");
         self.pool(pool, |p| {
             p.snaps
                 .get(&format!("{POOL}@{t}"))

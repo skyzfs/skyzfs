@@ -110,3 +110,55 @@ impl Fs for Disk {
 
 #[cfg(test)]
 pub mod model;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Disk` does what the trait says on a real directory (T3 of #144's
+    /// review; whether its syncs reach the disk needs a kernel rig).
+    ///
+    /// Mutant: `write` that does not cut the file (a shorter record left
+    /// with the tail of a longer one), `unlink` or `rename` that does
+    /// nothing, `create_dir` that does not refuse a directory that is
+    /// there, or `list` that leaves names out.
+    #[test]
+    fn disk_writes_renames_lists_and_removes_files_in_a_directory() {
+        let root = tempfile::tempdir().expect("a directory");
+        let dir = root.path().join("d");
+        let disk = Disk;
+        disk.create_dir(&dir).expect("made");
+        assert_eq!(
+            disk.create_dir(&dir).map_err(|e| e.kind()),
+            Err(io::ErrorKind::AlreadyExists)
+        );
+        disk.sync_dir(root.path()).expect("parent synced");
+        let tmp = dir.join("a.tmp");
+        let file = dir.join("a");
+        disk.write(&tmp, b"a longer record").expect("written");
+        disk.write(&tmp, b"short").expect("written over");
+        disk.sync_file(&tmp).expect("synced");
+        assert_eq!(disk.read(&tmp).expect("read"), b"short");
+        disk.rename(&tmp, &file).expect("renamed");
+        disk.sync_dir(&dir).expect("synced");
+        assert_eq!(disk.read(&file).expect("read"), b"short");
+        assert_eq!(
+            disk.read(&tmp).map_err(|e| e.kind()),
+            Err(io::ErrorKind::NotFound)
+        );
+        disk.write(&dir.join("b"), b"").expect("written");
+        let mut names = disk.list(&dir).expect("listed");
+        names.sort();
+        assert_eq!(names, ["a", "b"]);
+        disk.unlink(&file).expect("removed");
+        assert_eq!(
+            disk.unlink(&file).map_err(|e| e.kind()),
+            Err(io::ErrorKind::NotFound)
+        );
+        assert_eq!(disk.list(&dir).expect("listed"), ["b"]);
+        assert_eq!(
+            disk.list(&root.path().join("none")).map_err(|e| e.kind()),
+            Err(io::ErrorKind::NotFound)
+        );
+    }
+}

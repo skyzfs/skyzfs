@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::fake::{
-    holds, DaemonPoint, FakeClock, FakeDaemon, FakeZfs, MemFiles, MemKeep, Mode, Restart, Rule,
-    User, World, DAEMON_POINTS, POOL, RESTARTS, USERS, VOLUME,
+    holds, Back, DaemonPoint, FakeClock, FakeDaemon, FakeZfs, MemFiles, MemKeep, Mode, Restart,
+    Rule, User, World, DAEMON_POINTS, POOL, RESTARTS, USERS, VOLUME,
 };
 use super::*;
 use crate::manifest::Manifest;
@@ -66,6 +66,10 @@ enum Fault {
     /// request asked with what the restart changed is not withdrawn by
     /// its next round.
     CutsThenStop(usize, Restart),
+    /// The world restarts at the agent's point number `k` and the agent
+    /// goes on, then it stops at its point number `stop` (after `k`); the
+    /// world does not restart again.
+    WorldThenStop(usize, Restart, usize),
 }
 
 /// What one run left.
@@ -78,6 +82,42 @@ struct Ran {
     points: usize,
     cuts_read: usize,
     stopped_at: Option<Point>,
+    /// The publishes whose snapshot was not whole as the agent recorded
+    /// them done.
+    gone_at_done: BTreeSet<String>,
+}
+
+/// The point just before the record says a publish is done.
+const DONE: Point = Point {
+    effect: Effect::Done,
+    after: false,
+};
+
+/// At [`DONE`], adds the publish to `gone` where the agent's last read
+/// of its snapshot found it gone or replaced (a run here has one
+/// publish, the program's last). A loss after that read is not the
+/// agent's to report: it decided on what it saw, and a rewind after its
+/// look leaves the cut that holds `pool@t`.
+fn note_gone(world: &Rc<RefCell<World>>, gone: &Rc<RefCell<BTreeSet<String>>>, point: Point) {
+    if point != DONE {
+        return;
+    }
+    let world = world.borrow();
+    let (Some(t), Some(read)) = (world.programs.keys().last(), &world.members_read) else {
+        return;
+    };
+    let whole = read.as_ref().is_some_and(|members| {
+        world.programs.get(t).is_some_and(|manifest| {
+            let mut read: Vec<u64> = members.iter().map(|m| m.snapshot_guid).collect();
+            let mut taken: Vec<u64> = manifest.members.iter().map(|m| m.snapshot_guid).collect();
+            read.sort_unstable();
+            taken.sort_unstable();
+            read == taken
+        })
+    });
+    if !whole {
+        gone.borrow_mut().insert(t.clone());
+    }
 }
 
 /// One publish in `mode` with `fault`, then recovery to quiescence, on a
@@ -93,6 +133,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     let keep = MemKeep::default();
     let count = Rc::new(Cell::new(0usize));
     let stopped_at = Rc::new(Cell::new(None));
+    let gone = Rc::new(RefCell::new(BTreeSet::new()));
     match fault {
         Fault::Daemon(point, restart) => world.borrow_mut().die = Some((point, restart)),
         Fault::Cuts(k, restart) | Fault::CutsThenStop(k, restart) => {
@@ -102,9 +143,11 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     }
     let hook = {
         let (count, stopped_at, world) = (count.clone(), stopped_at.clone(), world.clone());
+        let gone = gone.clone();
         move |point: Point| {
             let k = count.get();
             count.set(k + 1);
+            note_gone(&world, &gone, point);
             match fault {
                 Fault::Agent(at, _) if at == k => {
                     stopped_at.set(Some(point));
@@ -116,9 +159,13 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
                     world.user(user, &t);
                     false
                 }
-                Fault::World(at, restart) if at == k => {
+                Fault::World(at, restart) | Fault::WorldThenStop(at, restart, _) if at == k => {
                     world.borrow_mut().restart(restart, None);
                     false
+                }
+                Fault::WorldThenStop(_, _, stop) if stop == k => {
+                    stopped_at.set(Some(point));
+                    true
                 }
                 Fault::CutsThenStop(at, _)
                     if point == ASKED
@@ -143,12 +190,19 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
         Err(Error::Stopped) => {
             let restart = match fault {
                 Fault::Agent(_, restart) => restart,
-                Fault::CutsThenStop(..) => Restart::None,
+                Fault::CutsThenStop(..) | Fault::WorldThenStop(..) => Restart::None,
                 _ => unreachable!("only these faults stop the agent"),
             };
             world.borrow_mut().restart(restart, None);
             world.borrow_mut().advance(DOWN);
-            let mut again = agent(&world, &keep);
+            let note = {
+                let (world, gone) = (world.clone(), gone.clone());
+                move |point: Point| {
+                    note_gone(&world, &gone, point);
+                    false
+                }
+            };
+            let mut again = agent(&world, &keep).with_points(Box::new(note));
             let settled = again.settle(LIMIT);
             outcomes.extend(again.outcomes().iter().cloned());
             reports.extend(again.reports().iter().cloned());
@@ -166,6 +220,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
         points: count.get(),
         cuts_read,
         stopped_at: stopped_at.get(),
+        gone_at_done: gone.take(),
     }
 }
 
@@ -287,6 +342,19 @@ fn check(ran: &Ran) -> Result<(), String> {
                 }
             }
             Report::NoProgress(_) => return Err(format!("{t} reported: {report:?}")),
+        }
+    }
+    // The other way: a publish recorded done with its snapshot gone is
+    // reported (F1 and T1 of #144's review).
+    for t in &ran.gone_at_done {
+        let reported = ran
+            .reports
+            .iter()
+            .any(|(name, r)| name == t && *r == Report::SnapshotGone);
+        if !reported {
+            return Err(format!(
+                "{t} recorded done with its snapshot gone, and not reported"
+            ));
         }
     }
     let held = holds(&world);
@@ -795,6 +863,129 @@ fn the_agent_stopped_at_any_point_recovers_in_any_restart() {
     assert!(runs > 500, "{runs} runs");
 }
 
+/// A publish recorded done with its snapshot gone is reported however
+/// the agent stops after the loss (F1 of #144's review): each run in which
+/// a rewind below `pool@t` under a running agent ends in a report of
+/// [`Report::SnapshotGone`], with the agent then stopped at each later
+/// point and another started.
+///
+/// Mutant: the report made after the record says done (a stop between
+/// the two loses it), or not made.
+#[test]
+fn a_snapshot_gone_report_is_made_however_the_agent_stops_after_the_loss() {
+    let mut reported = 0;
+    let mut runs = 0;
+    for mode in MODES {
+        let points = run(mode, Fault::None).points;
+        for k in 0..points {
+            for restart in [
+                Restart::RewindF(Back::BelowCreated),
+                Restart::RewindT(Back::BelowCreated),
+            ] {
+                let ran = run(mode, Fault::World(k, restart));
+                let gone = |ran: &Ran| {
+                    ran.reports
+                        .iter()
+                        .filter(|(_, r)| *r == Report::SnapshotGone)
+                        .count()
+                };
+                if gone(&ran) == 0 {
+                    continue;
+                }
+                reported += 1;
+                for stop in k + 1..ran.points {
+                    let fault = Fault::WorldThenStop(k, restart, stop);
+                    let stopped = run(mode, fault);
+                    runs += 1;
+                    if let Err(why) = check(&stopped) {
+                        panic!("{}", failed(&format!("{mode:?} {fault:?}"), &stopped, &why));
+                    }
+                    // `check` requires the report of each publish
+                    // recorded done with its snapshot gone: here, the one.
+                    assert!(
+                        !stopped.gone_at_done.is_empty(),
+                        "{mode:?} {fault:?}: {:?}",
+                        stopped.outcomes
+                    );
+                }
+            }
+        }
+    }
+    assert!(reported > 0, "no run reports its snapshot gone");
+    assert!(runs > 10, "{runs} runs");
+}
+
+/// What a person changes between the agent's round and its request
+/// asked anew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Meddle {
+    None,
+    /// The agent's hold released (`zfs release`).
+    Released,
+    /// `pool@t` replaced by a snapshot of the same name (another GUID).
+    Replaced,
+}
+
+/// D5 (the lead's order for a request asked anew; T2 of #144's review):
+/// `load_guid`, then the members and the hold, then the count, then
+/// `load_guid` again, and only then the request. Where the hold or the
+/// snapshot changed after the round that planned it, nothing is counted
+/// or asked: the next round sees the change.
+///
+/// Mutant: the count read before the members and the hold are checked,
+/// or either check left out.
+#[test]
+fn asking_anew_checks_the_snapshot_and_its_hold_before_the_count() {
+    for meddle in [Meddle::None, Meddle::Released, Meddle::Replaced] {
+        let world = World::new(Mode::Busy);
+        let keep = MemKeep::default();
+        let armed = Rc::new(Cell::new(true));
+        let hook = {
+            let armed = armed.clone();
+            move |point: Point| point == ASKED && armed.replace(false)
+        };
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        agent.begin().expect("begun");
+        assert!(matches!(agent.settle(LIMIT), Err(Error::Stopped)));
+        let publish = agent
+            .record()
+            .under_way
+            .first()
+            .cloned()
+            .expect("a publish under way");
+        let t = publish.name.clone();
+        {
+            let mut world = world.borrow_mut();
+            let pool = world.pool.as_mut().expect("the pool");
+            let suffix = format!("@{t}");
+            for (name, snap) in pool.snaps.iter_mut() {
+                match meddle {
+                    Meddle::Released if name.ends_with(&suffix) => snap.holds.clear(),
+                    Meddle::Replaced if *name == format!("{POOL}{suffix}") => snap.guid ^= 1,
+                    _ => {}
+                }
+            }
+            world.calls.clear();
+        }
+        let moved = agent.ask_anew(&publish).expect("asked anew");
+        let calls = world.borrow().calls.clone();
+        match meddle {
+            Meddle::None => {
+                assert_eq!(moved, Moved::Yes);
+                assert_eq!(
+                    calls.get(..6),
+                    Some(&["props", "members", "held", "cuts", "props", "publish"][..]),
+                    "{calls:?}"
+                );
+            }
+            Meddle::Released | Meddle::Replaced => {
+                assert_eq!(moved, Moved::No, "{meddle:?}");
+                assert_eq!(calls, ["props", "members", "held"], "{meddle:?}");
+            }
+        }
+    }
+}
+
 /// The matrix of the daemon's losses: it dies at each point of its
 /// publish and comes back each way.
 #[test]
@@ -977,6 +1168,7 @@ fn a_hold_outlasts_the_deadline_of_the_last_acceptance() {
         points: 0,
         cuts_read: 0,
         stopped_at: None,
+        gone_at_done: BTreeSet::new(),
     };
     assert_eq!(asked.get(), 2, "asked anew of the next daemon");
     if let Err(why) = check(&ran) {
@@ -1218,6 +1410,7 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
             points: 0,
             cuts_read: 0,
             stopped_at: None,
+            gone_at_done: BTreeSet::new(),
         };
         if let Err(why) = check(&ran) {
             panic!("{}", failed(&format!("{mode:?}"), &ran, &why));
