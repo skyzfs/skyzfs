@@ -578,34 +578,40 @@ fn the_recordings_notice_the_defects_of_a_repeat() {
 
 /// Rule (R) on the recordings (work package M2.6a): one store that sees
 /// a whole record moves its rewind mark at exactly the reference's cuts
-/// whose group is not above the group of the cut before them, and at no
-/// other. The table pins where that is, so that a refresh of the
-/// fixtures that loses a rewind is noticed. In `rewindf` it is cut 19,
-/// the first of the import by `-FX`: group 43 again, with another root,
-/// after cut 18 of group 43, and it opens as itself (the case the
+/// whose group is not above the highest group of the cuts before them,
+/// and at no other. The table pins where that is, so that a refresh of
+/// the fixtures that loses a rewind is noticed. In `rewindf` it is cut
+/// 19, the first of the import by `-FX`: group 43 again, with another
+/// root, after cut 18 of group 43, and it opens as itself (the case the
 /// plan's §0 is about). In `rewind` and `rewindsync` it is cut 23, the
-/// first of the import by `-T`: group 39 after group 51. In `multihost`
-/// it is the stale cuts 10 and 27, a state of an older cut written again
-/// after a newer one, whose group errs low: the conservative reading
-/// takes them for rewinds (the agent publishes no pool with
-/// `multihost=on`, design §6.2). A mark that does not move
-/// (the defect `REWIND_UNSEEN`) is noticed in each pool the table names.
+/// first of the import by `-T` (group 39 after group 51), and each cut
+/// after it up to the abandoned group 51: the rule's cost after `-T`. In
+/// `multihost` it is the stale cuts 10 and 27, a state of an older cut
+/// written again after a newer one, whose group errs low: the
+/// conservative reading takes them for rewinds (the agent publishes no
+/// pool with `multihost=on`, design §6.2). A mark that does not move
+/// (the defect `REWIND_UNSEEN`) is noticed in each pool the table names;
+/// one that compares a cut with the cut before it alone (the defect
+/// `REWIND_BY_PREVIOUS`) moves only at the first cut of each `-T`.
 #[test]
 fn the_rewind_mark_moves_at_the_recorded_rewinds() {
     let pinned: &[(&str, &[u64])] = &[
         ("multihost", &[10, 27]),
-        ("rewind", &[23]),
+        ("rewind", &[23, 24, 25, 26, 27, 28, 29]),
         ("rewindf", &[19]),
-        ("rewindsync", &[23]),
+        ("rewindsync", &[23, 24, 25, 26, 27]),
     ];
     let mut found: Vec<(String, Vec<u64>)> = Vec::new();
     for pool in pools() {
         let reference = reference(&pool);
-        let wanted: Vec<u64> = reference
-            .windows(2)
-            .filter(|pair| pair[1].1 <= pair[0].1)
-            .map(|pair| pair[1].0)
-            .collect();
+        let mut top = None;
+        let mut wanted = Vec::new();
+        for &(number, group, ..) in &reference {
+            if top.is_some_and(|top| group <= top) {
+                wanted.push(number);
+            }
+            top = top.max(Some(group));
+        }
         let (counted, marks) = replay_marking(&pool, 0, false);
         assert_eq!(counted, reference, "{}", pool.name);
         assert_eq!(marks, wanted, "{}", pool.name);
@@ -615,6 +621,13 @@ fn the_rewind_mark_moves_at_the_recorded_rewinds() {
             "{}: a mark that does not move is not noticed",
             pool.name
         );
+        let previous: Vec<u64> = reference
+            .windows(2)
+            .filter(|pair| pair[1].1 <= pair[0].1)
+            .map(|pair| pair[1].0)
+            .collect();
+        let (_, by_previous) = replay_marking(&pool, Mutants::REWIND_BY_PREVIOUS, false);
+        assert_eq!(by_previous, previous, "{}: the defect", pool.name);
         if !wanted.is_empty() {
             found.push((pool.name.clone(), wanted));
         }

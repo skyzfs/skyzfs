@@ -216,7 +216,7 @@ async fn head(fx: &Fixture) -> CommitHash {
 /// (group 52), the first that carries it. The cut that does not open as
 /// itself with no rewind counted, where its opening alone keeps the
 /// publish off it, is
-/// [`a_cut_not_opening_as_itself_in_a_new_cut_state_is_not_published`].
+/// [`a_cut_below_a_group_left_on_the_labels_in_a_new_cut_state_marks_a_rewind`].
 #[tokio::test]
 async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     let mut fx = Fixture::new(40).await;
@@ -301,17 +301,25 @@ async fn a_cut_before_c_or_not_opening_as_itself_is_not_published() {
     fx.assert_uploaded(52, "after the publish").await;
 }
 
-/// A cut that does not open as itself is not published where no rewind
-/// is counted (M2.5's rule, kept beside rule (R) of M2.6a). After a
-/// reboot the cut state begins anew, with no cut before its first, while
-/// group 51 of the history before it is still on the labels, as after
-/// `zpool import -T` to an older group. `t` is asked at the new state's
-/// count 0 for group 40; cut 1 of the new state (group 40) is counted
-/// after *C* and marks no rewind, as no cut of its state is before it,
-/// but it does not open as itself, so it is not published. Cut 2
-/// (group 52) carries `t`.
+/// After a reboot the cut state begins anew, with no cut before its
+/// first, while group 51 of the history before it is still on the
+/// labels, as after `zpool import -T` to an older group. The start reads
+/// group 51 in its rings, so cut 1 of the new state (group 40) marks a
+/// rewind, though no cut of its state is before it (rule (R): the
+/// highest group seen since the start, the lead's decision on #140); it
+/// does not open as itself either. `t`, asked at the new state's count 0
+/// for group 40, ends refused `rewound` at cut 1's check, and no cut
+/// carries it. Asked again at count 1, it is carried by cut 2 (group
+/// 52), above 51, which opens as itself.
+///
+/// M2.5's rule that a cut opens as itself is kept beside (R). With (R) as
+/// built, a cut that (R) does not mark is above every group the store
+/// has seen, and opens as itself, so here the rule is a second guard;
+/// the unit test
+/// `a_cut_carries_a_publish_only_after_c_at_or_after_g_and_opening_as_itself`
+/// pins it.
 #[tokio::test]
-async fn a_cut_not_opening_as_itself_in_a_new_cut_state_is_not_published() {
+async fn a_cut_below_a_group_left_on_the_labels_in_a_new_cut_state_marks_a_rewind() {
     let mut fx = Fixture::new(41).await;
     let mut store = fx.start();
     fx.write(&mut store, 100, 0x51);
@@ -335,12 +343,20 @@ async fn a_cut_not_opening_as_itself_in_a_new_cut_state_is_not_published() {
         "group 40 does not open as itself while 51 is on the labels"
     );
     let cuts = up.local().cuts();
-    assert_eq!((cuts.count, cuts.rewound), (1, 0), "no rewind counted");
+    assert_eq!(
+        (cuts.count, cuts.rewound),
+        (1, 1),
+        "the start read group 51 in its rings"
+    );
     up.run().await.expect("cut 1");
     fx.assert_uploaded(40, "cut 1").await;
     assert!(published(&fx, "t", "cut 1").await.is_none(), "cut 1");
-    assert_eq!(up.publishes().progress("t"), Progress::Pending);
+    assert_eq!(
+        up.publishes().progress("t"),
+        Progress::Refused(Refusal::Rewound)
+    );
 
+    assert_eq!(ask_now(&mut up, "t", 40), Answer::Accepted);
     fx.write(up.local(), 102, 0x52);
     fx.group(up.local(), 52);
     up.run().await.expect("cut 2");

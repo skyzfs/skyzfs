@@ -882,13 +882,14 @@ fn rewound(store: &InPlace<SimDisk>) -> (u64, u64) {
     (cuts.count, cuts.rewound)
 }
 
-/// A cut whose group is not above the group of the cut before it may
-/// follow a rewind, and moves the rewind mark to its number: another
-/// state under the same group, as the first group of an import by `-F`
-/// writes it, and a lower group, as an import by `-T` or a stale write
-/// makes it. A higher group does not move it; the first cut of a store,
-/// with no cut before it, does not either. A cut that does not move the
-/// mark (the defect `REWIND_UNSEEN`) is noticed.
+/// A cut whose group is not above the highest group seen, in another
+/// state, may follow a rewind, and moves the rewind mark to its number:
+/// another state under the same group, as the first group of an import
+/// by `-F` writes it, and a lower group, as an import by `-T` or a stale
+/// write makes it. A higher group does not move it; the first cut of a
+/// store on an empty volume, with nothing seen before it, does not
+/// either. A cut that does not move the mark (the defect
+/// `REWIND_UNSEEN`) is noticed.
 #[test]
 fn a_cut_whose_group_is_not_above_the_one_before_marks_a_rewind() {
     let marks = |mutants: u128| {
@@ -970,6 +971,117 @@ fn a_rewind_by_f_marks_its_first_cut_though_it_opens_as_itself() {
             ((2, 0), Some((12, true)))
         ],
         "the -F rewind's first cut not marked is not noticed"
+    );
+}
+
+/// The rewind that M2.6a's first form of rule (R) missed (the crash
+/// matrix of M2.6b): a cut whose group errs low, a stale copy of group 6
+/// after group 8, is marked; then an import by `-F` begins its new
+/// history at group 8 again, in another state. Group 8 is above the low
+/// cut before it, but not above the highest group seen, so its cut is
+/// marked too, and a publish asked again after the low cut, before the
+/// rewind, is refused. Compared with the cut before it alone (the
+/// defect `REWIND_BY_PREVIOUS`), the new history's first cut passes for
+/// new.
+#[test]
+fn a_rewind_by_f_after_a_cut_whose_group_errs_low_is_marked() {
+    let marks = |mutants: u128| {
+        let disk = created(23, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut seen = Vec::new();
+        for (step, (txg, root)) in [(8, 1), (6, 0), (8, 9), (9, 10)].into_iter().enumerate() {
+            group(&mut store, 10 * step as u64 + 1, txg, root);
+            seen.push(rewound(&store));
+        }
+        seen
+    };
+    assert_eq!(marks(0), [(1, 0), (2, 2), (3, 3), (4, 3)]);
+    assert_eq!(
+        marks(Mutants::REWIND_BY_PREVIOUS),
+        [(1, 0), (2, 2), (3, 2), (4, 2)],
+        "a cut compared with the one before it alone is not noticed"
+    );
+}
+
+/// After an import by `-T`, each cut of the new history moves the mark
+/// until its groups pass the abandoned top: here groups 10 to 12 are
+/// abandoned, and the new history writes 10 to 13 in other states.
+/// Those below 12 do not open as themselves (the abandoned 12 is in the
+/// rings); the new 12 overwrites it and does, as the first group of a
+/// `-F` would. The rule's cost is that a publish asked in that window
+/// is refused and asked anew. Compared with the cut before it alone
+/// (the defect `REWIND_BY_PREVIOUS`), only the first cut of the new
+/// history is marked.
+#[test]
+fn after_a_rewind_by_t_each_cut_up_to_the_abandoned_top_is_marked() {
+    let marks = |mutants: u128| {
+        let disk = created(24, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut seen = Vec::new();
+        let groups = [
+            (10, 1),
+            (11, 2),
+            (12, 3),
+            (10, 4),
+            (11, 5),
+            (12, 6),
+            (13, 7),
+        ];
+        for (step, (txg, root)) in groups.into_iter().enumerate() {
+            group(&mut store, 10 * step as u64 + 1, txg, root);
+            seen.push((rewound(&store), newest(&store).map(|(_, itself)| itself)));
+        }
+        seen
+    };
+    assert_eq!(
+        marks(0),
+        [
+            ((1, 0), Some(true)),
+            ((2, 0), Some(true)),
+            ((3, 0), Some(true)),
+            ((4, 4), Some(false)),
+            ((5, 5), Some(false)),
+            ((6, 6), Some(true)),
+            ((7, 6), Some(true)),
+        ]
+    );
+    assert_eq!(
+        marks(Mutants::REWIND_BY_PREVIOUS)
+            .into_iter()
+            .map(|(marked, _)| marked)
+            .collect::<Vec<_>>(),
+        [(1, 0), (2, 0), (3, 0), (4, 4), (5, 4), (6, 4), (7, 4)],
+        "a cut compared with the one before it alone is not noticed"
+    );
+}
+
+/// A start takes the highest group from the rings it reads: a store
+/// started on a volume whose rings hold group 12, as an import by `-T`
+/// to a lower group leaves them, marks a cut of group 10, the new
+/// history's, though no cut was counted before it. A cut compared with
+/// the cut before it alone (the defect `REWIND_BY_PREVIOUS`) marks
+/// nothing here.
+#[test]
+fn a_start_compares_the_cuts_with_the_groups_in_its_rings() {
+    let marks = |mutants: u128| {
+        let disk = created(25, 0);
+        let mut store = start(&disk, 0, false).unwrap();
+        group(&mut store, 1, 11, 1);
+        group(&mut store, 11, 12, 2);
+        drop(store);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut seen = vec![rewound(&store)];
+        group(&mut store, 21, 10, 3);
+        seen.push(rewound(&store));
+        group(&mut store, 31, 13, 4);
+        seen.push(rewound(&store));
+        seen
+    };
+    assert_eq!(marks(0), [(0, 0), (1, 1), (2, 1)]);
+    assert_eq!(
+        marks(Mutants::REWIND_BY_PREVIOUS),
+        [(0, 0), (1, 0), (2, 0)],
+        "the rings read at the start not compared with is not noticed"
     );
 }
 
