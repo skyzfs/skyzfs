@@ -1,0 +1,94 @@
+name: skyzfs-zfs-cli-record
+
+# Recorded outputs of the ZFS commands the agent's ZFS adapter runs, for
+# its fixtures (the M2.6 plan's Q10): zpool status and get, the holds,
+# the three `zfs program` scripts, on a pool on a ublk device with a log,
+# a mirror of files, and a pool that does not exist. Records only: the
+# job is green unless the script could not set up. All the logic is
+# tests/kernel/zfs-cli-record.sh; the artifact is a tarball of its
+# records. Dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      lua_ref:
+        description: "the commit or branch whose crates/skyzfs-agent/src/zfs/cli/*.lua are run. Empty: 366b217 (#147)"
+        default: ""
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04"]'
+  # A dispatch from a branch needs the workflow to have run once: a push
+  # runs the unit tests only, and records nothing (the record job is
+  # dispatch only). ci.yml runs the unit tests on a pull request.
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/zfs-cli-record.sh
+      - tests/kernel/test_zfs_cli_record.sh
+      - .github/workflows/skyzfs-zfs-cli-record.yml
+
+concurrency:
+  group: zfs-cli-record-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash tests/kernel/test_zfs_cli_record.sh
+
+  record:
+    name: ${{ matrix.image }}
+    needs: unit
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: The adapter's programs
+        env:
+          LUA_REF: ${{ inputs.lua_ref || '366b217bc3f09ba046be639653bb9c080752630b' }}
+        run: |
+          case $LUA_REF in
+            -*|*[!A-Za-z0-9._/-]*|'') echo "::error::lua_ref is a commit or a branch: $LUA_REF"; exit 64 ;;
+          esac
+          git fetch --quiet --depth=1 origin "$LUA_REF"
+          mkdir -p lua
+          for f in snapshot members tagged; do
+            git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
+          done
+          echo "LUA_REF=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+      - name: Record
+        run: sudo --preserve-env=LUA_REF tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+      - name: Tarball and summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX zfs-cli 2>/dev/null || true
+          tar -czf "zfs-cli-${{ matrix.image }}.tar.gz" zfs-cli 2>/dev/null || true
+          {
+            echo "## ZFS command outputs, ${{ matrix.image }}"
+            echo
+            sed 's/^/    /' zfs-cli/about.txt 2>/dev/null
+            [ -e zfs-cli/setup-failed.txt ] && echo "**Setup failed:** $(cat zfs-cli/setup-failed.txt)"
+            echo
+            echo "| record | rc | note |"
+            echo "|---|---|---|"
+            cut -f1-3 zfs-cli/index.tsv 2>/dev/null | sed 's/|/\//g; s/\t/ | /g; s/^/| /; s/$/ |/'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: zfs-cli-${{ matrix.image }}
+          path: zfs-cli-${{ matrix.image }}.tar.gz
+          retention-days: 90
