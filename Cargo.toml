@@ -11,6 +11,7 @@ members = [
     "crates/skynbd-stream",
     "crates/skynbd-api",
     "crates/skynbd-agent",
+    "crates/skyzfs-agent",
     "crates/skyzfs-blk",
     "crates/skyzfs-control",
     "crates/skyzfs-local",
