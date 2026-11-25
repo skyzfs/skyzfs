@@ -34,6 +34,7 @@ fn publish(name: &str, phase: Phase, held: bool) -> Publish {
         phase,
         held,
         attempts: 2,
+        stalls: 1,
     }
 }
 
@@ -91,7 +92,7 @@ fn a_record_reads_back_as_written() {
     for record in [Record::new([1; 16]), full()] {
         let bytes = record.encode().expect("encoded");
         assert_eq!(&bytes[..4], b"SZAG");
-        assert_eq!(&bytes[4..8], &[1, 0, 0, 0]);
+        assert_eq!(&bytes[4..8], &[2, 0, 0, 0]);
         assert_eq!(Record::decode(&bytes), Ok(record));
     }
     let mut record = full();
@@ -103,6 +104,7 @@ fn a_record_reads_back_as_written() {
         Why::Premise,
         Why::NameTaken,
         Why::Rewound,
+        Why::NoProgress,
     ] {
         record.abandoned.push(Abandoned {
             name: format!("{why:?}"),
@@ -137,7 +139,7 @@ fn a_record_changed_or_cut_short_is_corrupt() {
 /// Mutant: a check of the head left out (each read past by a body that
 /// is otherwise good).
 #[test]
-fn a_head_that_is_not_version_1s_is_named() {
+fn a_head_that_is_not_version_2s_is_named() {
     let good = full().encode().expect("encoded");
     let with = |at: usize, value: &[u8]| {
         let mut bytes = good.clone();
@@ -148,7 +150,8 @@ fn a_head_that_is_not_version_1s_is_named() {
         Record::decode(&bytes)
     };
     assert_eq!(with(0, b"SAGT"), Err(Corrupt::Magic(*b"SAGT")));
-    assert_eq!(with(4, &2u16.to_le_bytes()), Err(Corrupt::Version(2)));
+    assert_eq!(with(4, &1u16.to_le_bytes()), Err(Corrupt::Version(1)));
+    assert_eq!(with(4, &3u16.to_le_bytes()), Err(Corrupt::Version(3)));
     assert_eq!(with(4, &0u16.to_le_bytes()), Err(Corrupt::Version(0)));
     assert_eq!(with(6, &1u16.to_le_bytes()), Err(Corrupt::Flags(1)));
     let is = (good.len() - HEAD - SUM) as u64;
@@ -352,6 +355,7 @@ fn golden() -> Record {
         phase,
         held,
         attempts,
+        stalls: 20 + attempts,
     };
     let whys = [
         Why::ManifestLost,
@@ -361,6 +365,7 @@ fn golden() -> Record {
         Why::Premise,
         Why::NameTaken,
         Why::Rewound,
+        Why::NoProgress,
     ];
     Record {
         volume: [0x0f; 16],
@@ -407,34 +412,35 @@ fn golden() -> Record {
     }
 }
 
-/// The bytes of [`golden`] at version 1. postcard writes fields and
+/// The bytes of [`golden`] at version 2. postcard writes fields and
 /// variants by position, so a field moved or added, or a variant inserted
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
-const GOLDEN: [&str; 16] = [
-    "535a414701000000d10100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+const GOLDEN: [&str; 17] = [
+    "535a414702000000dc0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e5e5e5e03ad210000000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141414141",
-    "41414141414141414141414141414141414141414141414141414100010168a1",
-    "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03",
-    "ad2102290103702f6402ac024242424242424242424242424242424242424242",
-    "42424242424242424242424201020161a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f6403ac02434343",
-    "4343434343434343434343434343434343434343434343434343434343060701",
-    "030164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e03ad21042b0103702f6404ac0244444444444444444444444444444444",
-    "44444444444444444444444444444444c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
-    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001040702773000e80702773101e90702",
-    "773202ea0702773303eb0702773404ec0702773505ed0702773606ee07006a9a",
-    "94aaf9698cbbeb676d3c883fd857dfe3e050bee6b0b1ca9a47673686dc",
+    "5e5e5e5e5e5e03ad21000000140174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e",
+    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac0241414141",
+    "4141414141414141414141414141414141414141414141414141414100011501",
+    "68a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+    "5e03ad2102290103702f6402ac02424242424242424242424242424242424242",
+    "42424242424242424242424242420102160161a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f6403ac02",
+    "4343434343434343434343434343434343434343434343434343434343434343",
+    "06070103170164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e5e5e03ad21042b0103702f6404ac02444444444444444444444444",
+    "4444444444444444444444444444444444444444c0c0c0c0c0c0c0c0c0c0c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104180802773000e8070277",
+    "3101e90702773202ea0702773303eb0702773404ec0702773505ed0702773606",
+    "ee0702773707ef079f072722cd00b3fb3c406cb5fae66c76344ccd515ab42a01",
+    "ae56f4a130f56cd5",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before
 /// another, or the head's order changed. Any of these is a record of
-/// another version read as version 1.
+/// another version read as version 2.
 #[test]
-fn version_1s_bytes_are_these() {
+fn version_2s_bytes_are_these() {
     let hex: String = GOLDEN.concat();
     let bytes: Vec<u8> = (0..hex.len())
         .step_by(2)

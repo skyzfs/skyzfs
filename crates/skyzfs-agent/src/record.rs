@@ -21,7 +21,9 @@
 //! not write over it: what it held (which snapshots are held, and by
 //! whom) is for a person to judge. A record of another version is
 //! corrupt to this agent, as the plan says (no reader of other versions
-//! yet).
+//! yet). Version 2 (M2.6b2) added a publish's stalls and
+//! [`Why::NoProgress`]; version 1 (M2.6b1) is not read, since no agent
+//! that wrote it ever ran: the crate had no engine and no program then.
 //!
 //! # The manifests
 //!
@@ -40,7 +42,7 @@ use serde::{Deserialize, Serialize};
 pub const MAGIC: [u8; 4] = *b"SZAG";
 
 /// The record's version.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// The publishes that may be under way at once (the lead's Q11).
 pub const UNDER_WAY_MAX: usize = 8;
@@ -100,6 +102,9 @@ pub struct Publish {
     pub held: bool,
     /// The requests made of the daemon for it.
     pub attempts: u32,
+    /// The requests in a row that ended with no cut counted after their
+    /// count ([`crate::plan::stalls`]).
+    pub stalls: u32,
 }
 
 /// The daemon's count of cuts that a publish is asked after, read before
@@ -204,6 +209,9 @@ pub enum Why {
     NameTaken,
     /// A rewind of the pool lost `pool@<name>`.
     Rewound,
+    /// It was asked anew [`crate::plan::STALLS_ABANDONED`] times in a row
+    /// with no cut counted (the lead's decision for M2.6b2).
+    NoProgress,
 }
 
 /// Why a record's bytes are not read.

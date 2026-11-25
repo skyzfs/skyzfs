@@ -60,6 +60,7 @@ fn publish(phase: Phase) -> Publish {
         held: !matches!(phase, Phase::Intent),
         phase,
         attempts: 0,
+        stalls: 0,
     }
 }
 
@@ -196,6 +197,23 @@ fn replaced() -> Vec<Member> {
     members
 }
 
+/// Done at [`COMMIT`], with nothing to report.
+fn published() -> Action {
+    Action::Done {
+        commit: COMMIT,
+        report: None,
+    }
+}
+
+/// Done at [`COMMIT`], reported: the snapshot was not whole when it was
+/// seen.
+fn published_gone() -> Action {
+    Action::Done {
+        commit: COMMIT,
+        report: Some(Report::SnapshotGone),
+    }
+}
+
 fn check(rows: Vec<(&str, Phase, Seen, Action)>) {
     let mut wrong = Vec::new();
     for (what, phase, seen, want) in rows {
@@ -208,22 +226,26 @@ fn check(rows: Vec<(&str, Phase, Seen, Action)>) {
 }
 
 /// Mutant: a snapshot found at the intent taken for one to publish, a
-/// program run while the daemon is away, or the premise checked here.
+/// program run while the daemon is away, or a snapshot taken of a pool
+/// whose premise is refused (S1 of #142's review).
 #[test]
 fn at_the_intent_the_snapshot_is_taken_or_given_up() {
     let none = || seen().with(|s| s.pool.snapshot = None).unheld();
     check(vec![
         ("away", intent(), none().away(), Action::Wait),
         ("here", intent(), none(), Action::Take),
-        // The premise is first checked at Taken, which gives the snapshot
-        // up there (kept, with no hold): a refused pool gets a `pool@t`.
-        // Whether the intent should check it too is for M2.6b2 (#142's
-        // review, S1); this row pins what is built.
+        // Nothing is taken: a refused pool gets no `pool@t` to keep.
         (
             "here, the premise refused",
             intent(),
             none().no_premise(),
-            Action::Take,
+            Action::Abandon(Why::Premise),
+        ),
+        (
+            "away, the premise refused",
+            intent(),
+            none().no_premise().away(),
+            Action::Wait,
         ),
         (
             "a snapshot with no manifest",
@@ -241,13 +263,19 @@ fn at_the_intent_the_snapshot_is_taken_or_given_up() {
     ]);
 }
 
-/// Mutant: the members compared in their order, a publish held without
-/// its members verified or with `load_guid` moved (rule (L)), or a hold
-/// left on a snapshot given up.
+/// Mutant: the members compared in their order or by their names, a
+/// publish held without its members verified or with `load_guid` moved
+/// (rule (L)), or a hold left on a snapshot given up.
 #[test]
 fn taken_it_is_held_once_its_members_and_load_guid_are_verified() {
     let mut reordered = members();
     reordered.reverse();
+    // `zfs rename tank/db tank/pg` after the snapshot: its `@t` is the
+    // same snapshot (S3 of #142's review).
+    let mut renamed = members();
+    renamed[1].name = "tank/pg".into();
+    let mut renamed_and_replaced = replaced();
+    renamed_and_replaced[1].name = "tank/pg".into();
     let mut missing = members();
     missing.pop();
     let mut more = members();
@@ -275,6 +303,18 @@ fn taken_it_is_held_once_its_members_and_load_guid_are_verified() {
             taken_phase(),
             seen().members(reordered),
             Action::Held,
+        ),
+        (
+            "a member renamed",
+            taken_phase(),
+            seen().members(renamed),
+            Action::Held,
+        ),
+        (
+            "a member renamed and its @t replaced",
+            taken_phase(),
+            seen().members(renamed_and_replaced).unheld(),
+            Action::Abandon(Why::Replaced),
         ),
         (
             "load_guid moved",
@@ -357,10 +397,21 @@ fn held_it_is_asked_with_the_count_read_before_the_snapshot() {
             seen().answer(Reply::Unknown).unheld(),
             Action::Hold,
         ),
+        // A request may be out at Held (asked anew, or asked before the
+        // agent stopped): looked up first (the lead's D1 on #142).
         (
             "unknown, gone",
             held(),
             seen().answer(Reply::Unknown).gone(),
+            Action::Look,
+        ),
+        (
+            "unknown, gone, absent",
+            held(),
+            seen()
+                .answer(Reply::Unknown)
+                .gone()
+                .looked(SnapSeen::Absent),
             Action::Abandon(Why::Destroyed),
         ),
         (
@@ -555,6 +606,20 @@ fn pending_a_sync_helps_only_where_no_cut_has_carried_the_request() {
             carried(twice + 30 * SECOND).assisted(twice + 29 * SECOND),
             Action::Wait,
         ),
+        // The clock stepped back an hour after a sync: the sync counts as
+        // none, and syncs go on (S11 of #142's review).
+        (
+            "assisted an hour ahead of the clock",
+            asked(),
+            pending().assisted(due + 3_600 * SECOND),
+            Action::Assist,
+        ),
+        (
+            "a cut carries it, assisted an hour ahead of the clock",
+            asked(),
+            carried(twice).assisted(twice + 3_600 * SECOND),
+            Action::Assist,
+        ),
     ]);
     let not_carrying = [
         (
@@ -633,13 +698,13 @@ fn done_is_recorded_only_as_look_sees_it() {
             "looked: ours",
             asked(),
             done_seen().looked(SnapSeen::Ours(COMMIT)),
-            Action::Done(COMMIT),
+            published(),
         ),
         (
             "held, looked: ours",
             held(),
             done_seen().looked(SnapSeen::Ours(COMMIT)),
-            Action::Done(COMMIT),
+            published(),
         ),
         (
             "looked: ours at another commit",
@@ -669,15 +734,24 @@ fn done_is_recorded_only_as_look_sees_it() {
             "ours, released",
             asked(),
             done_seen().looked(SnapSeen::Ours(COMMIT)).unheld(),
-            Action::Done(COMMIT),
+            published(),
+        ),
+        // What a rewind that rule (R) missed looks like from the agent:
+        // done, reported (S2 of #142's review).
+        (
+            "ours, pool@t gone, load_guid moved",
+            asked(),
+            done_seen().looked(SnapSeen::Ours(COMMIT)).gone().moved(),
+            published_gone(),
         ),
     ]);
 }
 
 /// Mutant: an end that may hide a publish made asked anew without a
 /// look, a name another holds published over, a snapshot not whole
-/// asked again, or this publish's `snap/t` not taken as done where the
-/// hold or `pool@t` has gone.
+/// asked again, this publish's `snap/t` not taken as done where the
+/// hold or `pool@t` has gone, or done with `pool@t` or a member's `@t`
+/// gone and not reported (D1 and S2 of #142's review).
 #[test]
 fn an_end_that_may_hide_a_publish_is_looked_up_first() {
     let mut rows = Vec::new();
@@ -699,21 +773,38 @@ fn an_end_that_may_hide_a_publish_is_looked_up_first() {
                 what,
                 phase.clone(),
                 ended().looked(SnapSeen::Ours(COMMIT)),
-                Action::Done(COMMIT),
+                published(),
             ));
             // This publish's `snap/t` is done whatever became of the hold
-            // or of `pool@t` since: the cut holds the snapshot.
+            // or of `pool@t` since. With `pool@t` or a member's `@t` gone,
+            // the cut may hold the snapshot (made before a rewind) or not
+            // (after one, through a gap in rule (R)): reported.
             rows.push((
                 what,
                 phase.clone(),
                 ended().looked(SnapSeen::Ours(COMMIT)).unheld(),
-                Action::Done(COMMIT),
+                published(),
             ));
             rows.push((
                 what,
                 phase.clone(),
                 ended().looked(SnapSeen::Ours(COMMIT)).gone(),
-                Action::Done(COMMIT),
+                published_gone(),
+            ));
+            rows.push((
+                what,
+                phase.clone(),
+                ended()
+                    .looked(SnapSeen::Ours(COMMIT))
+                    .members(replaced())
+                    .unheld(),
+                published_gone(),
+            ));
+            rows.push((
+                what,
+                phase.clone(),
+                ended().looked(SnapSeen::Ours(COMMIT)).no_premise(),
+                published(),
             ));
             rows.push((
                 what,
@@ -769,12 +860,16 @@ fn an_end_that_may_hide_a_publish_is_looked_up_first() {
 }
 
 /// Mutant: a request asked again with the count it was refused for, a
-/// rewind's loss reported as a destroy, or `unknown` of a publish asked
-/// taken to mean nothing was published and asked with the old count.
+/// rewind's loss reported as a destroy, `unknown` of a publish asked
+/// taken to mean nothing was published and asked with the old count, or
+/// a publish given up from `unknown` or `refused rewound` with no look
+/// where the snapshot is broken and `snap/t` may be this publish's (F1
+/// of #142's review; the lead's D1).
 #[test]
-fn rewound_and_unknown_are_asked_anew_without_a_look() {
+fn rewound_and_unknown_are_asked_anew_and_looked_up_only_where_broken() {
     let rewound = || seen().refused(Code::Rewound);
-    check(vec![
+    let unknown = || seen().answer(Reply::Unknown);
+    let mut rows = vec![
         ("rewound", asked(), rewound(), Action::AskAnew),
         ("rewound, held phase", held(), rewound(), Action::AskAnew),
         (
@@ -783,43 +878,78 @@ fn rewound_and_unknown_are_asked_anew_without_a_look() {
             rewound().unheld(),
             Action::Hold,
         ),
-        (
-            "rewound, gone",
-            asked(),
-            rewound().gone(),
-            Action::Abandon(Why::Rewound),
-        ),
-        (
-            "rewound, a member replaced",
-            asked(),
-            rewound().members(replaced()).unheld(),
-            Action::Abandon(Why::Replaced),
-        ),
-        (
-            "rewound, the premise refused",
-            asked(),
-            rewound().no_premise(),
-            Action::Release,
-        ),
-        (
-            "unknown, asked",
-            asked(),
-            seen().answer(Reply::Unknown),
-            Action::AskAnew,
-        ),
+        ("unknown, asked", asked(), unknown(), Action::AskAnew),
         (
             "unknown, asked, not held",
             asked(),
-            seen().answer(Reply::Unknown).unheld(),
+            unknown().unheld(),
             Action::Hold,
         ),
         (
-            "unknown, asked, gone",
+            "rewound, gone, absent",
             asked(),
-            seen().answer(Reply::Unknown).gone(),
+            rewound().gone().looked(SnapSeen::Absent),
+            Action::Abandon(Why::Rewound),
+        ),
+        (
+            "rewound, a member replaced, absent",
+            asked(),
+            rewound()
+                .members(replaced())
+                .unheld()
+                .looked(SnapSeen::Absent),
+            Action::Abandon(Why::Replaced),
+        ),
+        (
+            "rewound, the premise refused, absent",
+            asked(),
+            rewound().no_premise().looked(SnapSeen::Absent),
+            Action::Release,
+        ),
+        (
+            "unknown, gone, absent",
+            asked(),
+            unknown().gone().looked(SnapSeen::Absent),
             Action::Abandon(Why::Destroyed),
         ),
-    ]);
+        (
+            "unknown, held phase, gone, absent",
+            held(),
+            unknown().gone().looked(SnapSeen::Absent),
+            Action::Abandon(Why::Destroyed),
+        ),
+    ];
+    type Breaks = fn(Seen) -> Seen;
+    let broken: Vec<(&str, Breaks)> = vec![
+        ("gone", |s| s.gone()),
+        ("a member replaced", |s| s.members(replaced()).unheld()),
+        ("the premise refused", |s| s.no_premise()),
+    ];
+    for (what, end) in [("rewound", rewound()), ("unknown", unknown())] {
+        for (how, broke) in &broken {
+            let report = *how != "the premise refused";
+            let ended = || broke(end.clone());
+            rows.push((what, asked(), ended(), Action::Look));
+            rows.push((what, held(), ended(), Action::Look));
+            rows.push((
+                what,
+                asked(),
+                ended().looked(SnapSeen::Ours(COMMIT)),
+                if report {
+                    published_gone()
+                } else {
+                    published()
+                },
+            ));
+            rows.push((
+                what,
+                asked(),
+                ended().looked(SnapSeen::NotOurs).unheld(),
+                Action::Abandon(Why::NameTaken),
+            ));
+        }
+    }
+    check(rows);
 }
 
 /// Mutant: a refusal that says the agent asked wrongly retried, a busy
@@ -896,6 +1026,164 @@ fn done_it_is_released_then_forgotten() {
 }
 
 /// `look`'s answer for the publish taken, as a row of group `group`.
+/// Mutant: a stall counted where a cut was counted, where the daemon is
+/// another, or for a publish never accepted; the report made at another
+/// stall than the third, or more than once; the last stall not recorded
+/// before the publish is given up (the agent's own release writes a
+/// group, a cut that would undo the decision); a publish given up with a
+/// stall short, with a request pending, with no look, or with its hold
+/// kept; or the bound applied where the snapshot is broken (its own
+/// reason first).
+#[test]
+fn a_publish_that_makes_no_progress_is_reported_then_given_up() {
+    let with = |stalls: u32, phase: Phase| Publish {
+        stalls,
+        ..publish(phase)
+    };
+    let count = with(0, asked()).count;
+    let cut = Count {
+        after: C + 1,
+        ..count
+    };
+    let other = Count {
+        attachment: [0xa2; 16],
+        ..count
+    };
+    let reimported = Count {
+        load_guid: LOAD + 1,
+        ..count
+    };
+    assert_eq!(stalls(&with(0, asked()), &count), 1);
+    assert_eq!(stalls(&with(6, asked()), &count), 7);
+    assert_eq!(stalls(&with(6, asked()), &reimported), 7);
+    assert_eq!(stalls(&with(6, asked()), &cut), 0);
+    assert_eq!(stalls(&with(6, asked()), &other), 0);
+    assert_eq!(stalls(&with(6, held()), &count), 6);
+    assert_eq!(stalls(&with(6, taken_phase()), &cut), 6);
+    let reports: Vec<_> = (0..=STALLS_ABANDONED).map(stalls_report).collect();
+    let want: Vec<_> = (0..=STALLS_ABANDONED)
+        .map(|n| (n >= 3).then_some(Report::NoProgress(n)))
+        .collect();
+    assert_eq!(reports, want);
+
+    let mut wrong = Vec::new();
+    let expired = || seen().answer(Reply::Expired).looked(SnapSeen::Absent);
+    let rows: Vec<(&str, Publish, Seen, Action)> = vec![
+        ("a stall", with(0, asked()), expired(), Action::AskAnew),
+        ("the third", with(2, asked()), expired(), Action::AskAnew),
+        ("the seventh", with(6, asked()), expired(), Action::AskAnew),
+        ("the eighth", with(7, asked()), expired(), Action::Stalled),
+        (
+            "the eighth, released",
+            with(7, asked()),
+            expired().unheld(),
+            Action::Stalled,
+        ),
+        (
+            "the eighth, unknown",
+            with(7, asked()),
+            seen().answer(Reply::Unknown),
+            Action::Stalled,
+        ),
+        (
+            "the eighth, rewound",
+            with(7, asked()),
+            seen().refused(Code::Rewound),
+            Action::Stalled,
+        ),
+        (
+            "eight recorded",
+            with(8, held()),
+            seen().answer(Reply::Expired),
+            Action::Look,
+        ),
+        (
+            "eight recorded, absent",
+            with(8, held()),
+            expired(),
+            Action::Release,
+        ),
+        // The release wrote a group, counted as a cut: given up all the
+        // same.
+        (
+            "eight recorded, absent, released, a cut counted",
+            with(8, held()),
+            expired().unheld().cuts(carrying()),
+            Action::Abandon(Why::NoProgress),
+        ),
+        (
+            "eight recorded, unknown, absent, released",
+            with(8, held()),
+            seen()
+                .answer(Reply::Unknown)
+                .looked(SnapSeen::Absent)
+                .unheld(),
+            Action::Abandon(Why::NoProgress),
+        ),
+        (
+            "eight recorded, pending",
+            with(8, held()),
+            seen(),
+            Action::Withdraw,
+        ),
+        (
+            "eight recorded, ours",
+            with(8, held()),
+            seen()
+                .answer(Reply::Withdrawn)
+                .looked(SnapSeen::Ours(COMMIT)),
+            published(),
+        ),
+        (
+            "eight recorded, absent, gone",
+            with(8, held()),
+            expired().gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        (
+            "past the eighth (a record of an older bound)",
+            with(30, asked()),
+            expired().unheld(),
+            Action::Abandon(Why::NoProgress),
+        ),
+        (
+            "seven, and a cut counted",
+            with(7, asked()),
+            expired().cuts(carrying()),
+            Action::AskAnew,
+        ),
+        (
+            "seven, and another daemon",
+            with(7, asked()),
+            expired().cuts(CutsReply {
+                attachment: [0xa2; 16],
+                ..cuts()
+            }),
+            Action::AskAnew,
+        ),
+        (
+            "seven, never accepted",
+            with(7, held()),
+            expired(),
+            Action::AskAnew,
+        ),
+        (
+            "seven, gone",
+            with(7, asked()),
+            expired().gone(),
+            Action::Abandon(Why::Destroyed),
+        ),
+        ("seven, pending", with(7, asked()), seen(), Action::Wait),
+    ];
+    for (what, publish, seen, want) in rows {
+        let got = plan(&publish, &seen);
+        if got != want {
+            wrong.push(format!("{what}: {got:?}, not {want:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 fn row(group: u64) -> SnapReply {
     SnapReply {
         commit: COMMIT,
@@ -934,11 +1222,11 @@ fn an_earlier_request_that_landed_is_this_publishs() {
     let mut anew = publish(asked());
     anew.count.after = 9;
     anew.count.state = [0x5f; 16];
-    assert_eq!(plan(&anew, &landed()), Action::Done(COMMIT));
-    assert_eq!(plan(&anew, &landed().unheld()), Action::Done(COMMIT));
+    assert_eq!(plan(&anew, &landed()), published());
+    assert_eq!(plan(&anew, &landed().unheld()), published());
     let mut first = publish(asked());
     first.count.after = C;
-    assert_eq!(plan(&first, &landed()), Action::Done(COMMIT));
+    assert_eq!(plan(&first, &landed()), published());
 }
 
 /// Mutant: a `snap/t` of another manifest, or of a cut before the

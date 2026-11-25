@@ -267,9 +267,19 @@ pub trait Zfs {
     /// The names `t` of every snapshot in the pool, of any dataset, that
     /// has the hold `tag`.
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;
-    /// `zpool sync pool`: a group written.
-    fn sync(&mut self, pool: &str) -> Result<(), ZfsError>;
+    /// The agent's sync task: `zfs set skyzfs:assist=<value> pool`, then
+    /// `zpool sync pool`. The property is a change of the pool's own, so
+    /// the group it is in writes, and the sync writes that group now. A
+    /// plain `zpool sync` writes nothing on an idle pool: ZFS commits a
+    /// group with no changes and writes no uberblock for it (M2.T1; N1 of
+    /// #142's review). `value` differs at each call, so that no call
+    /// sets the property to what it already is. That a cut the daemon
+    /// counts follows on an idle pool is for a kernel check (M2.T5).
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError>;
 }
+
+/// The user property of the agent's sync task ([`Zfs::assist`]).
+pub const ASSIST_PROPERTY: &str = "skyzfs:assist";
 
 #[cfg(test)]
 mod tests;

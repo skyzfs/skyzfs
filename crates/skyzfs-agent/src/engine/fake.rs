@@ -368,6 +368,15 @@ pub struct World {
     pub programs: BTreeMap<String, Manifest>,
     /// What happened, for a failure's message.
     pub log: Vec<String>,
+    /// How far the agent's wall clock is from the world's (a step of it;
+    /// the daemon's deadlines are on the world's).
+    pub agent_skew_ms: i64,
+    /// Each value the agent's sync task set `skyzfs:assist` to, in order.
+    pub assists: Vec<u64>,
+    /// The agent's sync task is a plain `zpool sync`: it writes no group
+    /// (N1 of #142's review), for a test that shows the property is
+    /// needed.
+    pub plain_sync: bool,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -400,6 +409,9 @@ impl World {
             highest_written: 0,
             programs: BTreeMap::new(),
             log: Vec::new(),
+            agent_skew_ms: 0,
+            assists: Vec::new(),
+            plain_sync: false,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1215,9 +1227,27 @@ impl Zfs for FakeZfs {
         })
     }
 
-    fn sync(&mut self, pool: &str) -> Result<(), ZfsError> {
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
-        self.0.borrow_mut().sync("zpool sync");
+        let mut world = self.0.borrow_mut();
+        // `zfs set` is a sync task: its own group. The `zpool sync` after
+        // it writes nothing more, since every change here is written as
+        // it is made: a plain sync of an idle pool writes no group.
+        // A property set to the value it holds may write nothing: the
+        // conservative model, as `zfs set` is not known to write a group
+        // then (M2.T5 checks the agent's values on a kernel).
+        if world.plain_sync {
+            world
+                .log
+                .push(format!("zpool sync alone (value {value}): no group"));
+        } else if world.assists.last() == Some(&value) {
+            world
+                .log
+                .push(format!("zpool sync alone (value {value} again): no group"));
+        } else {
+            world.assists.push(value);
+            world.sync("zfs set skyzfs:assist");
+        }
         Ok(())
     }
 }
@@ -1242,7 +1272,12 @@ pub struct FakeClock(pub Rc<RefCell<World>>);
 
 impl Clock for FakeClock {
     fn now_ms(&mut self) -> u64 {
-        self.0.borrow().now_ms
+        let world = self.0.borrow();
+        world.now_ms.saturating_add_signed(world.agent_skew_ms)
+    }
+
+    fn mono_ms(&mut self) -> u64 {
+        self.0.borrow().now_ms - EPOCH_MS
     }
 
     fn sleep(&mut self, d: Duration) {

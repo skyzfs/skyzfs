@@ -9,14 +9,18 @@
 //!
 //! - **Intent** (the name chosen and the count read): with no `pool@t`
 //!   and the daemon here, take it ([`Action::Take`], with the count read
-//!   anew); with the daemon away, wait. With a `pool@t`, the
+//!   anew), unless the pool's premise is refused, which gives the name up
+//!   with nothing taken ([`Why::Premise`]; S1 of #142's review); with the
+//!   daemon away, wait. With a `pool@t`, the
 //!   agent stopped between the program and the manifest's file: give it
 //!   up, kept and unpublished ([`Why::ManifestLost`], the lead's Q5).
 //! - **The snapshot broken** (from Taken on): `pool@t` gone
 //!   ([`Why::Destroyed`]), a member's `@t` not the manifest's
 //!   ([`Why::Replaced`]), or the pool's premise refused
 //!   ([`Why::Premise`]): release the hold if it is there, then give up.
-//!   A request that pends is withdrawn first.
+//!   A request that pends is withdrawn first. Members are compared by
+//!   their snapshots' GUIDs alone ([`same_snapshot`]): a dataset renamed
+//!   since keeps its `@t` (S3 of #142's review).
 //! - **The hold**: placed after the manifest is on disk, and placed again
 //!   where it is not there. Only with the hold there, the members
 //!   verified and `load_guid` as read with the count is the publish
@@ -35,7 +39,21 @@
 //!   cut and does not say whether it was abandoned, and one abandoned on
 //!   an idle pool would otherwise stop every sync until the request
 //!   expires (Codex on #142; the lead's D3). Where the cut lands, the
-//!   request ends and so do the syncs.
+//!   request ends and so do the syncs. The engine's sync writes a group
+//!   of its own first, since a plain `zpool sync` writes none on an idle
+//!   pool (N1 of #142's review; [`crate::zfs::Zfs::assist`]).
+//! - **No progress** (the lead's decision for M2.6b2): a request that
+//!   ended with the daemon's count where it was asked (same attachment
+//!   and state, no cut counted since) is a stall ([`stalls`]).
+//!   [`STALLS_REPORTED`] in a row or more are reported (at least once:
+//!   the engine reports a publish once a process) and the publish goes on;
+//!   where an end would make [`STALLS_ABANDONED`], that stall is recorded
+//!   and nothing asked ([`Action::Stalled`]), and a publish with as many
+//!   is given up ([`Why::NoProgress`], the hold released first, a request
+//!   that pends withdrawn, and `snap/t` looked up). The stall is recorded
+//!   first because the agent's own release writes a group, which the
+//!   daemon counts as a cut: decided from the count, the release would
+//!   undo the decision.
 //! - **What the daemon answers.** `done`, `expired`, `withdrawn`,
 //!   `refused attachment`, `refused state` and `refused taken` are read
 //!   with `look` first: `snap/t` that is this publish's is
@@ -44,8 +62,15 @@
 //!   ([`Why::NameTaken`]); none is asked anew. `unknown` and `refused
 //!   rewound` are asked anew without a look (nothing was published, or
 //!   the uploader that knew has gone; a publish asked again is looked up
-//!   by the uploader before it is made). `refused rewound` with `pool@t`
-//!   gone is [`Why::Rewound`]. `refused busy` waits; `refused asked`
+//!   by the uploader before it is made), but where the snapshot is
+//!   broken, the publish will not be asked again, so it is looked up
+//!   before it is given up (F1 and the lead's D1 on #142). `refused
+//!   rewound` with `pool@t` gone and no `snap/t` is [`Why::Rewound`].
+//! - **Done with the snapshot broken.** `snap/t` that is this publish's,
+//!   seen while `pool@t` or a member's `@t` is gone, is recorded done
+//!   and reported ([`Report::SnapshotGone`]): it was made before a rewind
+//!   (its cut holds `pool@t`) or after one through a gap in rule (R) (it
+//!   does not), and only opening the cut tells (the lead's D1; S2). `refused busy` waits; `refused asked`
 //!   (another request of the name pends) withdraws it. A `look` refused
 //!   (`store`) or not answered is no sight of `snap/t`: the engine leaves
 //!   [`Seen::snap`] empty, and the planner asks for the look again.
@@ -92,6 +117,14 @@ pub const ASSIST_AFTER: Duration = Duration::from_secs(10);
 /// The least time between two syncs of one publish. "One at a time" (the
 /// plan, §6) is read as one done before the next, at most one a second.
 pub const ASSIST_PAUSE: Duration = Duration::from_secs(1);
+
+/// The stalls in a row ([`stalls`]) at which a publish is reported
+/// ([`Report::NoProgress`]) and goes on (the lead's decision for M2.6b2).
+pub const STALLS_REPORTED: u32 = 3;
+
+/// The stalls in a row at which a publish is given up
+/// ([`Why::NoProgress`]) instead of being asked anew.
+pub const STALLS_ABANDONED: u32 = 8;
 
 /// The margin past a publish's expiry for which the agent keeps its
 /// hold while the daemon does not answer: the channel's own wait
@@ -170,18 +203,28 @@ pub enum Action {
     Ask,
     /// Read a count anew after the hold is verified, and ask with it.
     AskAnew,
+    /// Record the request's end as the publish's last stall
+    /// ([`STALLS_ABANDONED`]), at [`Phase::Held`], and ask nothing.
+    Stalled,
     /// Withdraw the request that pends.
     Withdraw,
     /// Look `snap/<t>` up.
     Look,
-    /// `zpool sync`, so that a group is written and a cut counted.
+    /// A sync task of the agent's own, then `zpool sync`, so that a
+    /// group is written and a cut counted, even on an idle pool.
     Assist,
     /// Nothing now: see again later.
     Wait,
     /// Release the hold.
     Release,
-    /// Record the publish done: `snap/<t>` names this commit.
-    Done([u8; 32]),
+    /// Record the publish done: `snap/<t>` names this commit; with a
+    /// report where the snapshot was not whole when it was seen.
+    Done {
+        /// The commit `snap/<t>` names.
+        commit: [u8; 32],
+        /// What a person is told.
+        report: Option<Report>,
+    },
     /// Remove the publish from the record, and its manifest.
     Forget,
     /// Give the publish up, keeping `pool@t` where it is.
@@ -199,6 +242,18 @@ pub enum Stop {
     /// The daemon said `done`, and `look` did not see this publish's
     /// `snap/<t>` with the commit `done` named.
     DoneNotSeen,
+}
+
+/// What the agent tells a person while it goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Report {
+    /// `snap/<t>` is this publish's, and `pool@t` or a member's `@t` is
+    /// gone: the publish was made before a rewind, or after one through a
+    /// gap in rule (R), and only opening its cut tells which.
+    SnapshotGone,
+    /// The publish was asked anew this many times in a row with no cut
+    /// counted ([`stalls`]).
+    NoProgress(u32),
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held
@@ -236,6 +291,7 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
     match &publish.phase {
         Phase::Intent => match (&pool.snapshot, &seen.daemon) {
             (None, DaemonSeen::Away) => Action::Wait,
+            (None, DaemonSeen::Here { .. }) if !pool.premise => Action::Abandon(Why::Premise),
             (None, DaemonSeen::Here { .. }) => Action::Take,
             (Some(_), _) => give_up(pool, Why::ManifestLost),
         },
@@ -270,17 +326,57 @@ fn broken(pool: &PoolSeen, taken: &Taken) -> Option<Why> {
     let Some(members) = &pool.snapshot else {
         return Some(Why::Destroyed);
     };
-    let mut seen = members.clone();
-    seen.sort();
-    let mut wanted = taken.members.clone();
-    wanted.sort();
-    if seen != wanted {
+    if !same_snapshot(members, taken) {
         return Some(Why::Replaced);
     }
     if !pool.premise {
         return Some(Why::Premise);
     }
     None
+}
+
+/// Whether `members` are the snapshot that was taken: the same snapshot
+/// GUIDs, in any order and under any names (a dataset renamed since
+/// keeps its `@t`; S3 of #142's review). A GUID is random and 64 bits,
+/// and names one `@t`.
+pub fn same_snapshot(members: &[Member], taken: &Taken) -> bool {
+    let guids = |members: &[Member]| {
+        let mut guids: Vec<u64> = members.iter().map(|m| m.snapshot_guid).collect();
+        guids.sort_unstable();
+        guids
+    };
+    guids(members) == guids(&taken.members)
+}
+
+/// The stalls of `publish` once it is asked anew with `count`: one more
+/// where it was asked (accepted) and the daemon's count is where it was
+/// (the same attachment and state, no cut counted since), none where a
+/// cut was counted or the daemon is another, and as they were where it
+/// was not asked. A count of another attachment or state resets them: a
+/// daemon that started anew or a rewind is not taken for no progress
+/// (the conservative reading; the lead's words were "with no cut
+/// taken").
+pub fn stalls(publish: &Publish, count: &Count) -> u32 {
+    match publish.phase {
+        Phase::Asked { .. } if same_place(count, &publish.count) => {
+            publish.stalls.saturating_add(1)
+        }
+        Phase::Asked { .. } => 0,
+        _ => publish.stalls,
+    }
+}
+
+/// Whether two counts are at one place: the same attachment, state and
+/// number of cuts (`load_guid` aside).
+fn same_place(a: &Count, b: &Count) -> bool {
+    a.attachment == b.attachment && a.state == b.state && a.after == b.after
+}
+
+/// The report due for a publish with `stalls`: from the third on. A
+/// report is not recorded, so the engine makes it once in a process, and
+/// a restart makes it again (at least once, not exactly once).
+pub fn stalls_report(stalls: u32) -> Option<Report> {
+    (stalls >= STALLS_REPORTED).then_some(Report::NoProgress(stalls))
 }
 
 /// Give the publish up for `why`, the hold released first.
@@ -303,10 +399,15 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
 /// after `asked_ms`. It cannot spin: a sync is due at most once per
 /// [`ASSIST_AFTER`] here (and per [`ASSIST_PAUSE`] without such a cut),
 /// since the engine records each in [`Seen::assisted_ms`] before it plans
-/// again, and the request ends, at the latest at its expiry, after which
+/// again (a time recorded later than `now_ms` counts as none), and the
+/// request ends, at the latest at its expiry, after which
 /// the publish is looked up and asked anew (and a sync may be due again).
 fn assist_due(carried: bool, asked_ms: u64, assisted_ms: Option<u64>, now_ms: u64) -> bool {
     let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    // A sync recorded later than now (the clock stepped back) counts as
+    // none, so that it does not stop every sync until the clock passes
+    // it (S11 of #142's review).
+    let assisted_ms = assisted_ms.filter(|&last| last <= now_ms);
     let after = |at: u64, d: Duration| now_ms >= at.saturating_add(ms(d));
     if carried {
         let from = asked_ms.saturating_add(ms(ASSIST_AFTER));
@@ -343,12 +444,22 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
     };
     let broken = broken(pool, taken);
     let moved = pool.load_guid != publish.count.load_guid;
+    let report = match broken {
+        Some(Why::Destroyed | Why::Replaced) => Some(Report::SnapshotGone),
+        _ => None,
+    };
+    let done = |commit: [u8; 32]| Action::Done { commit, report };
     let look = |then: &dyn Fn() -> Action| match seen.snap {
         None => Action::Look,
-        Some(SnapSeen::Ours(commit)) => Action::Done(commit),
+        Some(SnapSeen::Ours(commit)) => done(commit),
         Some(SnapSeen::NotOurs | SnapSeen::Unreadable) => give_up(pool, Why::NameTaken),
         Some(SnapSeen::Absent) => then(),
     };
+    // A request accepted ended with no cut counted since its count.
+    let stalled = asked.is_some()
+        && cuts.attachment == publish.count.attachment
+        && cuts.state == Some(publish.count.state)
+        && cuts.count == publish.count.after;
     // Ask again: the snapshot whole and held, with a count read anew.
     let anew = |rewound: bool| {
         if let Some(why) = broken {
@@ -358,11 +469,20 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
             };
             return give_up(pool, why);
         }
+        if stalled && publish.stalls.saturating_add(1) >= STALLS_ABANDONED {
+            return Action::Stalled;
+        }
         if !pool.held {
             return Action::Hold;
         }
         Action::AskAnew
     };
+    if publish.stalls >= STALLS_ABANDONED {
+        return match answer {
+            Reply::Pending => Action::Withdraw,
+            _ => look(&|| give_up(pool, broken.unwrap_or(Why::NoProgress))),
+        };
+    }
     match answer {
         Reply::Pending => {
             if !pool.held || broken.is_some() || moved {
@@ -381,16 +501,18 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         }
         Reply::Done(commit) => match seen.snap {
             None => Action::Look,
-            Some(SnapSeen::Ours(at)) if at == *commit => Action::Done(at),
+            Some(SnapSeen::Ours(at)) if at == *commit => done(at),
             Some(_) => Action::Stop(Stop::DoneNotSeen),
         },
         Reply::Expired | Reply::Withdrawn => look(&|| anew(false)),
         Reply::Unknown => match asked {
             None if pool.held && broken.is_none() && !moved => Action::Ask,
+            _ if broken.is_some() => look(&|| anew(false)),
             _ => anew(false),
         },
         Reply::Refused(code, _) => match code {
             Code::Attachment | Code::State | Code::Taken => look(&|| anew(false)),
+            Code::Rewound if broken.is_some() => look(&|| anew(true)),
             Code::Rewound => anew(true),
             Code::Busy => Action::Wait,
             Code::Asked => Action::Withdraw,

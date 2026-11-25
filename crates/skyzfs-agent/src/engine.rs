@@ -18,22 +18,36 @@
 //!    [`Phase::Held`].
 //! 8. `publish`, answered `accepted`: recorded [`Phase::Asked`], with
 //!    `held_until` from this answer.
-//! 9. `progress` and `cuts` once a second, and `zpool sync` where the
-//!    planner says.
+//! 9. `progress` and `cuts` once a second, and the agent's sync task
+//!    ([`Zfs::assist`]) where the planner says.
 //! 10. `done`, read with `look`: recorded [`Phase::Done`].
 //! 11. The hold released, then the publish and its manifest removed.
 //!
 //! [`Action::AskAnew`] reads a count anew in the planner's order ("The
-//! rule for AskAnew"): `load_guid`, `cuts`, the snapshot, its hold and
-//! its members, `load_guid` again, and records the count before it asks.
+//! rule for AskAnew"): `load_guid`, the snapshot, its hold and its
+//! members, `cuts`, `load_guid` again, and records the count (the publish
+//! back at [`Phase::Held`]) before it asks.
 //!
 //! # What the engine remembers between rounds
 //!
 //! Only within one process, and only as the planner's inputs: the answer
 //! to its last request about a publish (a refusal or a withdrawal, kept
 //! for the round after a `look` so that the planner sees both), what
-//! `look` saw, and when it last helped the publish with a sync. A
-//! restart forgets them, which costs at most a `look` or a sync.
+//! `look` saw, when it last helped the publish with a sync, and when the
+//! daemon accepted it on the clock that does not step. A restart forgets
+//! them, which costs at most a `look` or a sync.
+//!
+//! # Time
+//!
+//! The record's times are the wall clock's, since they outlive the
+//! process. For a publish accepted in this process the planner reads the
+//! time as `accepted` plus what the clock that does not step has run
+//! since ([`Clock::mono_ms`]): a step of the wall clock neither releases
+//! its hold before `held_until` nor holds back its syncs (S4 and S11 of
+//! #142's review). After a restart the wall clock is all there is: a
+//! step forward while the agent was down may release a hold early (the
+//! request may still land; its cut holds the snapshot all the same), and
+//! a step back keeps it longer.
 //!
 //! # Crash points
 //!
@@ -51,7 +65,7 @@ use skyzfs_control::{CutsReply, Publish as PublishRequest, Reply, Request, EXPIR
 
 use crate::manifest::{self, Manifest, ManifestError};
 use crate::names;
-use crate::plan::{self, Action, DaemonSeen, PoolSeen, Seen, SnapSeen, Stop};
+use crate::plan::{self, Action, DaemonSeen, PoolSeen, Report, Seen, SnapSeen, Stop};
 use crate::record::{
     Corrupt, Count, Enrolled, Keep, Loaded, Phase, Publish, Record, SaveError, Taken, Why,
     UNDER_WAY_MAX,
@@ -72,23 +86,40 @@ pub trait Daemon {
     fn device(&mut self) -> io::Result<u64>;
 }
 
-/// The wall clock, and waiting.
+/// The wall clock, a clock that does not step, and waiting.
 pub trait Clock {
     /// Milliseconds since 1970.
     fn now_ms(&mut self) -> u64;
+    /// Milliseconds since a point fixed in this process, on a clock that
+    /// the wall clock's steps do not move (`CLOCK_MONOTONIC`).
+    fn mono_ms(&mut self) -> u64;
     /// Wait `d`.
     fn sleep(&mut self, d: Duration);
 }
 
-/// The system's clock.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemClock;
+/// The system's clocks.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemClock {
+    start: std::time::Instant,
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        SystemClock {
+            start: std::time::Instant::now(),
+        }
+    }
+}
 
 impl Clock for SystemClock {
     fn now_ms(&mut self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    fn mono_ms(&mut self) -> u64 {
+        ms(self.start.elapsed())
     }
 
     fn sleep(&mut self, d: Duration) {
@@ -115,8 +146,11 @@ pub enum Effect {
     Hold,
     /// The record saved at [`Phase::Held`].
     Held,
-    /// The record saved with a count read anew.
+    /// The record saved with a count read anew, at [`Phase::Held`].
     Count,
+    /// The record saved with the publish's last stall, at
+    /// [`Phase::Held`].
+    Stalled,
     /// `publish` asked.
     Ask,
     /// The record saved at [`Phase::Asked`].
@@ -125,7 +159,7 @@ pub enum Effect {
     Withdraw,
     /// `look` asked.
     Look,
-    /// `zpool sync`.
+    /// The agent's sync task ([`Zfs::assist`]).
     Assist,
     /// `zfs release`.
     Release,
@@ -234,6 +268,8 @@ struct Memory {
     answer: Option<Reply>,
     snap: Option<SnapSeen>,
     assisted_ms: Option<u64>,
+    /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
+    accepted: Option<(u64, u64)>,
 }
 
 /// Whether a round changed anything.
@@ -257,6 +293,9 @@ pub struct Agent<Z, D, K, C> {
     swept: Option<u64>,
     stopped: BTreeSet<String>,
     outcomes: Vec<(String, Outcome)>,
+    reports: Vec<(String, Report)>,
+    reported: BTreeSet<String>,
+    assists: u64,
     points: Option<Points>,
 }
 
@@ -298,6 +337,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             swept: None,
             stopped: BTreeSet::new(),
             outcomes: Vec::new(),
+            reports: Vec::new(),
+            reported: BTreeSet::new(),
+            assists: 0,
             points: None,
         })
     }
@@ -317,6 +359,11 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// order.
     pub fn outcomes(&self) -> &[(String, Outcome)] {
         &self.outcomes
+    }
+
+    /// What the agent has told a person while it went on, in order.
+    pub fn reports(&self) -> &[(String, Report)] {
+        &self.reports
     }
 
     /// The parts, for a test to look at the world.
@@ -356,6 +403,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             phase: Phase::Intent,
             held: false,
             attempts: 0,
+            stalls: 0,
         };
         self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
         Ok(name)
@@ -367,7 +415,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// [`Agent::outcomes`]. Each round begins with the sweep
     /// ([`Agent::sweep`]).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
-        let end = self.clock.now_ms().saturating_add(ms(limit));
+        let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
             self.sweep()?;
             let names: Vec<String> = self
@@ -380,7 +428,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             if names.is_empty() {
                 return Ok(());
             }
-            if self.clock.now_ms() >= end {
+            if self.clock.mono_ms() >= end {
                 return Err(Error::Unsettled(names));
             }
             let mut moved = Moved::No;
@@ -461,6 +509,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         };
         let snapshot = self.zfs.members(pool, name)?;
         let held = self.zfs.held(pool, name, HOLD_TAG)?;
+        let now_ms = self.now_for(publish);
         let memory = self.memory.entry(name.clone()).or_default();
         let kept = memory.answer.clone();
         let snap = memory.snap;
@@ -488,9 +537,24 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             },
             daemon,
             snap,
-            now_ms: self.clock.now_ms(),
+            now_ms,
             assisted_ms,
         }))
+    }
+
+    /// The time the planner reads for `publish` ([module docs](self),
+    /// "Time").
+    fn now_for(&mut self, publish: &Publish) -> u64 {
+        let wall = self.clock.now_ms();
+        let Phase::Asked { asked_ms, .. } = publish.phase else {
+            return wall;
+        };
+        match self.memory.get(&publish.name).and_then(|m| m.accepted) {
+            Some((at, mono)) if at == asked_ms => {
+                asked_ms.saturating_add(self.clock.mono_ms().saturating_sub(mono))
+            }
+            _ => wall,
+        }
     }
 
     /// Do `action` for `publish`.
@@ -524,6 +588,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             }
             Action::Ask => self.ask(publish, publish.count),
             Action::AskAnew => self.ask_anew(publish),
+            Action::Stalled => {
+                let Some(taken) = publish.phase.taken().cloned() else {
+                    return Ok(Moved::No);
+                };
+                let stalls = publish.stalls.saturating_add(1);
+                self.commit(Effect::Stalled, |r| {
+                    set(r, &name, |p| {
+                        p.stalls = stalls;
+                        p.phase = Phase::Held(taken);
+                    })
+                })?;
+                Ok(Moved::Yes)
+            }
             Action::Withdraw => {
                 self.point(Effect::Withdraw, false)?;
                 let answer = self.daemon.ask(&Request::Withdraw(name.clone()), &[]);
@@ -554,10 +631,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 })
             }
             Action::Assist => {
+                // A value of its own at each sync: the clock, or one past
+                // the last where the clock has not moved on.
+                let value = self.clock.now_ms().max(self.assists.saturating_add(1));
+                self.assists = value;
                 self.point(Effect::Assist, false)?;
-                let synced = self.zfs.sync(&self.pool);
+                let synced = self.zfs.assist(&self.pool, value);
                 self.point(Effect::Assist, true)?;
-                let now = self.clock.now_ms();
+                let now = self.now_for(publish);
                 self.memory.entry(name).or_default().assisted_ms = Some(now);
                 // A sync is a step only for the pool: the cut it makes is
                 // seen at the next round, a tick later.
@@ -575,13 +656,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 self.commit(Effect::Released, |r| set(r, &name, |p| p.held = false))?;
                 Ok(Moved::Yes)
             }
-            Action::Done(commit) => {
+            Action::Done { commit, report } => {
                 let Some(taken) = publish.phase.taken().cloned() else {
                     return Ok(Moved::No);
                 };
                 self.commit(Effect::Done, |r| {
                     set(r, &name, |p| p.phase = Phase::Done { taken, commit })
                 })?;
+                if let Some(report) = report {
+                    self.reports.push((name, report));
+                }
                 Ok(Moved::Yes)
             }
             Action::Forget => {
@@ -702,6 +786,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         match answer {
             Ok(Reply::Accepted) => {
                 let now = self.clock.now_ms();
+                let mono = self.clock.mono_ms();
                 let held_until_ms = plan::held_until(now, self.expiry);
                 self.commit(Effect::Asked, |r| {
                     set(r, &name, |p| {
@@ -714,6 +799,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                         };
                     })
                 })?;
+                self.memory.entry(name).or_default().accepted = Some((now, mono));
                 Ok(Moved::Yes)
             }
             Ok(answer) => {
@@ -726,32 +812,66 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
 
     /// Read a count anew after the hold is verified ("The rule for
     /// AskAnew"), record it, and ask with it.
+    ///
+    /// `load_guid` is read first, then the snapshot's members and its
+    /// hold are verified, then the count is read, then `load_guid` again:
+    /// the count is of the import whose hold was verified, and an import
+    /// between the two is seen again at the next round (D5 of #142's
+    /// review).
+    ///
+    /// The count is recorded with the publish's stalls ([`plan::stalls`])
+    /// and the publish at [`Phase::Held`]: no request of it is out (the
+    /// last one ended, which is why it is asked anew), so that a request
+    /// that is not accepted and is asked anew again is not counted twice,
+    /// and a crash before `accepted` is recorded asks with this count.
+    /// A publish with three stalls or more is reported
+    /// ([`plan::stalls_report`]) once in this process, and again if its
+    /// stalls fall below three and reach it anew: at least once, since a
+    /// report is not recorded and a crash may come between the count's
+    /// commit and the report (a restart reports the publish again).
     fn ask_anew(&mut self, publish: &Publish) -> Result<Moved, Error> {
         let name = publish.name.clone();
-        let Some(taken) = publish.phase.taken() else {
+        let Some(taken) = publish.phase.taken().cloned() else {
             return Ok(Moved::No);
         };
         let before = self.zfs.props(&self.pool)?.load_guid;
-        let Ok(count) = self.count(before) else {
-            return Ok(Moved::No);
-        };
         let members = self.zfs.members(&self.pool, &name)?;
         let held = self.zfs.held(&self.pool, &name, HOLD_TAG)?;
-        let whole = members.is_some_and(|mut members| {
-            let mut wanted = taken.members.clone();
-            members.sort();
-            wanted.sort();
-            members == wanted
-        });
-        let after = self.zfs.props(&self.pool)?.load_guid;
-        if !whole || !held || after != before {
+        let whole = members.is_some_and(|members| plan::same_snapshot(&members, &taken));
+        if !whole || !held {
             // Seen again at the next round, which plans from it.
             return Ok(Moved::No);
         }
-        let recorded = count;
-        self.commit(Effect::Count, |r| set(r, &name, |p| p.count = recorded))?;
+        let Ok(count) = self.count(before) else {
+            return Ok(Moved::No);
+        };
+        let after = self.zfs.props(&self.pool)?.load_guid;
+        if after != before {
+            return Ok(Moved::No);
+        }
+        let stalls = plan::stalls(publish, &count);
+        let recorded = taken.clone();
+        self.commit(Effect::Count, |r| {
+            set(r, &name, |p| {
+                p.count = count;
+                p.stalls = stalls;
+                p.phase = Phase::Held(recorded);
+            })
+        })?;
+        match plan::stalls_report(stalls) {
+            Some(report) => {
+                if self.reported.insert(name.clone()) {
+                    self.reports.push((name.clone(), report));
+                }
+            }
+            None => {
+                self.reported.remove(&name);
+            }
+        }
         let mut publish = publish.clone();
         publish.count = count;
+        publish.stalls = stalls;
+        publish.phase = Phase::Held(taken);
         self.ask(&publish, count)
     }
 

@@ -74,6 +74,7 @@ struct Ran {
     files: Rc<RefCell<MemFiles>>,
     settled: Result<(), String>,
     outcomes: Vec<(String, Outcome)>,
+    reports: Vec<(String, Report)>,
     points: usize,
     cuts_read: usize,
     stopped_at: Option<Point>,
@@ -133,8 +134,10 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     };
     let mut first = agent(&world, &keep).with_points(Box::new(hook));
     let mut outcomes = Vec::new();
+    let mut reports = Vec::new();
     let settled = first.begin().and_then(|_| first.settle(LIMIT));
     outcomes.extend(first.outcomes().iter().cloned());
+    reports.extend(first.reports().iter().cloned());
     drop(first);
     let settled = match settled {
         Err(Error::Stopped) => {
@@ -148,6 +151,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
             let mut again = agent(&world, &keep);
             let settled = again.settle(LIMIT);
             outcomes.extend(again.outcomes().iter().cloned());
+            reports.extend(again.reports().iter().cloned());
             settled
         }
         other => other,
@@ -158,6 +162,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
         files: keep.0.clone(),
         settled: settled.map_err(|e| e.to_string()),
         outcomes,
+        reports,
         points: count.get(),
         cuts_read,
         stopped_at: stopped_at.get(),
@@ -190,7 +195,10 @@ fn in_manifest_window(point: Option<Point>) -> bool {
 ///    published;
 /// 2. no snapshot carries the agent's hold;
 /// 3. the record has nothing under way, and no manifest's file is left;
-/// 4. nothing stopped, and recovery came to an end.
+/// 4. nothing stopped, and recovery came to an end;
+/// 5. a publish reported done with its snapshot gone is published, and
+///    its snapshot did not survive whole; no publish is reported for
+///    making no progress (the world always cuts again).
 fn check(ran: &Ran) -> Result<(), String> {
     let world = ran.world.borrow();
     ran.settled.clone()?;
@@ -250,13 +258,35 @@ fn check(ran: &Ran) -> Result<(), String> {
             Why::ManifestLost => in_manifest_window(ran.stopped_at),
             Why::Destroyed | Why::Rewound | Why::Replaced => !survived,
             Why::Premise => !premise,
-            Why::ManifestTooLarge | Why::NameTaken => false,
+            // The world always cuts again in time: a publish that makes
+            // no progress here is a defect of the engine.
+            Why::ManifestTooLarge | Why::NameTaken | Why::NoProgress => false,
         };
         if !confirmed {
             return Err(format!(
                 "{t} given up as {why:?}, which the world does not confirm (survived {survived}, premise {premise}, stopped at {:?})",
                 ran.stopped_at
             ));
+        }
+    }
+    for (t, report) in &ran.reports {
+        match report {
+            Report::SnapshotGone => {
+                let survived = world.programs.get(t).is_some_and(|manifest| {
+                    manifest.members.iter().all(|m| {
+                        pool.snaps
+                            .get(&format!("{}@{t}", m.name))
+                            .is_some_and(|s| s.guid == m.snapshot_guid)
+                    })
+                });
+                if !world.refs.contains_key(t) || survived {
+                    return Err(format!(
+                        "{t} reported done with its snapshot gone (published {}, survived {survived})",
+                        world.refs.contains_key(t)
+                    ));
+                }
+            }
+            Report::NoProgress(_) => return Err(format!("{t} reported: {report:?}")),
         }
     }
     let held = holds(&world);
@@ -327,6 +357,385 @@ fn a_publish_with_no_loss_is_published_in_each_mode() {
             "{mode:?}: {took} s, not {least} to {most} s"
         );
     }
+}
+
+/// The agent's run with the daemon rebooted just after each of its first
+/// `reboots` requests was accepted, on an idle pool: the held cuts are
+/// lost, and a request asked anew (with a count read after the hold) is
+/// carried only by a group the agent's own sync task writes.
+fn rebooted_on_an_idle_pool(reboots: usize, plain_sync: bool) -> (Rc<RefCell<World>>, FakeAgent) {
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = plain_sync;
+    let keep = MemKeep::default();
+    let rebooted = Rc::new(Cell::new(0));
+    let hook = {
+        let (world, rebooted) = (world.clone(), rebooted.clone());
+        move |point: Point| {
+            if point == ASKED && rebooted.get() < reboots {
+                rebooted.set(rebooted.get() + 1);
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    if let Err(e) = agent.settle(LIMIT) {
+        let world = world.borrow();
+        let tail: Vec<_> = world
+            .log
+            .iter()
+            .filter(|l| !l.contains("sync alone"))
+            .collect();
+        panic!(
+            "{e}: {:?} {:?} {:?}\n{tail:#?}",
+            agent.outcomes(),
+            agent.reports(),
+            agent.record().under_way
+        );
+    }
+    (world, agent)
+}
+
+/// Mutant: the sync task without its property (a plain `zpool sync`).
+/// After the reboot the publish is carried by the group of
+/// `skyzfs:assist`.
+#[test]
+fn on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request() {
+    let (world, agent) = rebooted_on_an_idle_pool(1, false);
+    assert!(
+        matches!(agent.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        agent.outcomes()
+    );
+    assert!(agent.reports().is_empty(), "{:?}", agent.reports());
+    let world = world.borrow();
+    assert!(!world.assists.is_empty(), "no sync task ran");
+}
+
+/// Mutant: the sync task's value set again (the fake writes no group for
+/// a property set to the value it holds, the conservative reading). Two
+/// publishes in a row on an idle pool, the daemon rebooted as each is
+/// first accepted, each need a sync task (a request asked anew is carried
+/// by no other group), and the agent's clock steps back between them:
+/// each value is new.
+#[test]
+fn each_sync_task_sets_a_value_of_its_own() {
+    let world = World::new(Mode::Idle);
+    let keep = MemKeep::default();
+    let armed = Rc::new(Cell::new(true));
+    let hook = {
+        let (world, armed) = (world.clone(), armed.clone());
+        move |point: Point| {
+            if point == ASKED && armed.replace(false) {
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    world.borrow_mut().agent_skew_ms = -3_600_000;
+    world.borrow_mut().advance(Duration::from_secs(1));
+    armed.set(true);
+    agent.begin().expect("begun again");
+    agent.settle(LIMIT).expect("settled again");
+    assert!(
+        matches!(
+            agent.outcomes(),
+            [(_, Outcome::Published(_)), (_, Outcome::Published(_))]
+        ),
+        "{:?}",
+        agent.outcomes()
+    );
+    let world = world.borrow();
+    let mut values = world.assists.clone();
+    values.sort_unstable();
+    values.dedup();
+    assert!(
+        world.assists.len() >= 2 && values.len() == world.assists.len(),
+        "{:?}",
+        world.assists
+    );
+}
+
+/// A plain `zpool sync` writes no group on an idle pool (N1 of #142's
+/// review), so the request asked anew after the reboot is never carried:
+/// the publish is reported at its third stall, and given up at its
+/// eighth, its hold released (the lead's decision for M2.6b2). This is
+/// what the sync task's property is for.
+///
+/// Mutant: the bound not applied, applied a stall early or late, the
+/// report made more than once, or the hold kept.
+#[test]
+fn a_publish_no_cut_carries_is_reported_then_given_up() {
+    let (world, agent) = rebooted_on_an_idle_pool(1, true);
+    let t = match agent.outcomes() {
+        [(t, Outcome::Abandoned(Why::NoProgress))] => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        agent.reports(),
+        [(t.clone(), Report::NoProgress(plan::STALLS_REPORTED))]
+    );
+    assert_eq!(
+        agent.record().abandoned.last().map(|a| a.why),
+        Some(Why::NoProgress)
+    );
+    assert!(agent.record().under_way.is_empty());
+    let world = world.borrow();
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+    assert!(world.refs.is_empty());
+    assert!(world.log.iter().any(|l| l.contains("zpool sync alone")));
+    // After the reboot, each of the eight requests that stalls runs to
+    // its expiry (the first's count, of the new daemon, resets the
+    // stalls; the eighth end gives the publish up).
+    let took = (world.now_ms - fake::EPOCH_MS) / 1000;
+    let least = u64::from(plan::STALLS_ABANDONED) * EXPIRY_DEFAULT.as_secs();
+    assert!(took >= least, "{took} s, less than {least} s");
+}
+
+/// What [`stalling_run_stopped_at`] left.
+struct Stalled {
+    /// The record at the end.
+    record: Record,
+    /// The reports of the agent stopped, and of the one in its place.
+    reports: [Vec<(String, Report)>; 2],
+    /// The stalls the record held as each request was asked.
+    asked: Vec<u32>,
+    /// The points reached, in order.
+    points: Vec<Point>,
+}
+
+/// The stalling run of [`a_publish_no_cut_carries_is_reported_then_given_up`]
+/// with the agent stopped at its point number `stop` if that comes after
+/// its first request (before it, a stop is a publish of the crash
+/// matrices, which may lose its manifest), and a new agent started in
+/// its place.
+fn stalling_run_stopped_at(stop: usize) -> Stalled {
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let points = Rc::new(RefCell::new(Vec::new()));
+    let rebooted = Rc::new(Cell::new(false));
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let hook = |stops: bool| {
+        let (world, keep) = (world.clone(), keep.clone());
+        let (points, rebooted, asked) = (points.clone(), rebooted.clone(), asked.clone());
+        move |point: Point| {
+            if point == ASKED {
+                if let Ok(Loaded::Present(record)) = keep.load() {
+                    let stalls = record.under_way.iter().map(|p| p.stalls).max();
+                    asked.borrow_mut().extend(stalls);
+                }
+                if !rebooted.get() {
+                    rebooted.set(true);
+                    world.borrow_mut().restart(Restart::Reboot, None);
+                }
+            }
+            let k = points.borrow().len();
+            points.borrow_mut().push(point);
+            stops && rebooted.get() && k == stop
+        }
+    };
+    let mut first = agent(&world, &keep).with_points(Box::new(hook(true)));
+    let settled = first.begin().and_then(|_| first.settle(LIMIT));
+    let mut reports = [first.reports().to_vec(), Vec::new()];
+    drop(first);
+    let record = match settled {
+        Err(Error::Stopped) => {
+            world.borrow_mut().advance(DOWN);
+            let mut again = agent(&world, &keep).with_points(Box::new(hook(false)));
+            again.settle(LIMIT).expect("settled after the stop");
+            reports[1] = again.reports().to_vec();
+            again.record().clone()
+        }
+        settled => {
+            settled.expect("settled");
+            match keep.load() {
+                Ok(Loaded::Present(record)) => record,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let asked = asked.borrow().clone();
+    let points = points.borrow().clone();
+    Stalled {
+        record,
+        reports,
+        asked,
+        points,
+    }
+}
+
+/// The agent stopped at any point of a stalling run, and started again
+/// (at each but the sync tasks after the first of a run of them: the
+/// agent syncs each second while no cut is counted, which makes more
+/// than nine in ten of the points):
+/// each stall is counted once, the publish reported by each agent at most
+/// once and by one of them at least (a report is not recorded), and
+/// given up at its eighth stall.
+///
+/// Mutant: the stalls committed with the publish left at `Asked` (a
+/// request asked anew after a stop between the count and the ask is
+/// counted twice), or the report made at each count (made more than
+/// once by one agent).
+#[test]
+fn a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once() {
+    let whole = stalling_run_stopped_at(usize::MAX).points;
+    let assist = |k: usize| whole.get(k).is_some_and(|p| p.effect == Effect::Assist);
+    let stops = (0..whole.len()).filter(|&k| !assist(k) || k < 2 || !assist(k - 2));
+    for k in stops {
+        let run = stalling_run_stopped_at(k);
+        let at = format!("stopped at point {k} of {}", whole.len());
+        assert!(run.record.under_way.is_empty(), "{at}: {:?}", run.record);
+        assert_eq!(
+            run.record.abandoned.last().map(|a| a.why),
+            Some(Why::NoProgress),
+            "{at}"
+        );
+        let each: Vec<_> = run.reports.iter().map(Vec::len).collect();
+        assert!(
+            each.iter().all(|&n| n <= 1) && each.contains(&1),
+            "{at}: {:?}",
+            run.reports
+        );
+        let ok = |r: &(String, Report)| {
+            matches!(r.1, Report::NoProgress(n)
+                if (plan::STALLS_REPORTED..plan::STALLS_ABANDONED).contains(&n))
+        };
+        assert!(
+            run.reports.iter().flatten().all(ok),
+            "{at}: {:?}",
+            run.reports
+        );
+        assert!(
+            run.asked.windows(2).all(|w| w[1] <= w[0] + 1),
+            "{at}: a stall counted twice: {:?}",
+            run.asked
+        );
+    }
+}
+
+/// A stalling publish whose stalls start again (the daemon rebooted once
+/// they reach three: another attachment) is reported again when they
+/// reach three anew.
+///
+/// Mutant: a publish reported once a process whatever its stalls did.
+#[test]
+fn a_publish_that_stalls_again_after_a_reset_is_reported_again() {
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let rebooted = Rc::new(Cell::new(0));
+    let hook = {
+        let (world, keep, rebooted) = (world.clone(), keep.clone(), rebooted.clone());
+        move |point: Point| {
+            if point != ASKED {
+                return false;
+            }
+            let stalls = match keep.load() {
+                Ok(Loaded::Present(record)) => record.under_way.iter().map(|p| p.stalls).max(),
+                _ => None,
+            };
+            let due = match rebooted.get() {
+                0 => true,
+                1 => stalls == Some(plan::STALLS_REPORTED),
+                _ => false,
+            };
+            if due {
+                rebooted.set(rebooted.get() + 1);
+                world.borrow_mut().restart(Restart::Reboot, None);
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    let t = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    assert_eq!(rebooted.get(), 2);
+    let third = Report::NoProgress(plan::STALLS_REPORTED);
+    assert_eq!(agent.reports(), [(t.clone(), third), (t, third)]);
+    assert!(
+        matches!(agent.outcomes(), [(_, Outcome::Abandoned(Why::NoProgress))]),
+        "{:?}",
+        agent.outcomes()
+    );
+}
+
+/// Mutant: the planner's time for a publish accepted in this process
+/// taken from the wall clock (S4 of #142's review). The agent's wall
+/// clock steps forward two hours while the daemon is away: the hold is
+/// kept until `held_until` on the clock that does not step.
+#[test]
+fn a_step_forward_of_the_wall_clock_does_not_release_a_hold_early() {
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let stepped = Rc::new(Cell::new(false));
+    let hook = {
+        let (world, stepped) = (world.clone(), stepped.clone());
+        move |point: Point| {
+            if point == ASKED && !stepped.get() {
+                stepped.set(true);
+                let mut world = world.borrow_mut();
+                world.agent_skew_ms = 2 * 3_600_000;
+                world.away_until = world.now_ms + 120_000;
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    let t = agent.begin().expect("begun");
+    assert!(agent.settle(Duration::from_secs(60)).is_err());
+    assert!(stepped.get());
+    let held = holds(&world.borrow());
+    assert!(
+        !held.is_empty() && held.iter().all(|h| h.ends_with(&format!("@{t}"))),
+        "the hold was released: {held:?}"
+    );
+    agent.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(agent.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        agent.outcomes()
+    );
+}
+
+/// Mutant: the same, or a sync recorded later than now not counted as
+/// none (S11 of #142's review). The agent's wall clock steps back an
+/// hour just after the request is accepted, behind an abandoned cut on
+/// an idle pool: the syncs go on, and the publish takes the time it
+/// takes with no step.
+#[test]
+fn a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs() {
+    let world = World::new(Mode::Abandoned);
+    let keep = MemKeep::default();
+    let hook = {
+        let world = world.clone();
+        move |point: Point| {
+            if point == ASKED {
+                world.borrow_mut().agent_skew_ms = -3_600_000;
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(agent.outcomes(), [(_, Outcome::Published(_))]),
+        "{:?}",
+        agent.outcomes()
+    );
+    let after = crate::plan::ASSIST_AFTER.as_secs();
+    let took = (world.borrow().now_ms - fake::EPOCH_MS) / 1000;
+    assert!(
+        (2 * after..=2 * after + 5).contains(&took),
+        "{took} s, not {} to {} s",
+        2 * after,
+        2 * after + 5
+    );
 }
 
 /// A refused premise takes nothing and publishes nothing.
@@ -552,6 +961,7 @@ fn a_hold_outlasts_the_deadline_of_the_last_acceptance() {
         files: keep.0.clone(),
         settled,
         outcomes: agent.outcomes().to_vec(),
+        reports: agent.reports().to_vec(),
         points: 0,
         cuts_read: 0,
         stopped_at: None,
@@ -792,6 +1202,7 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
             files: keep.0.clone(),
             settled,
             outcomes: again.outcomes().to_vec(),
+            reports: again.reports().to_vec(),
             points: 0,
             cuts_read: 0,
             stopped_at: None,
