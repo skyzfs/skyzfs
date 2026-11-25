@@ -336,12 +336,14 @@ rw=$(sed -n '/^run_workload() {/,/^}$/p' "$script")
 bz=$(sed -n '/^build_zfs_direct() {/,/^}$/p' "$script")
 # TB_SKZ_UPLOAD_FROM_LOAD: MinIO, frozen from after the create, answers
 # again once the workload begins, after the seed's watcher has its mark.
-minio_resume() { # paused unpause-rc [from-load] -> "calls|paused after" ; log in $tt/log
-    : > "$tt/minio"; : > "$tt/log"; rm -f "$tt/released"
+minio_resume() { # paused unpause-rc [from-load [tag]] -> "calls|paused after" ; log in $tt/log
+    : > "$tt/minio"; : > "$tt/log"; : > "$tt/saw"; rm -f "$tt/released"; rm -rf -- "${OUT:?}"; mkdir -p "$OUT"
+    # The stand-in also writes whether the release time was there when
+    # it was called (review of #132, W7).
     # shellcheck disable=SC2317,SC2329  # the stand-in is called by skz_minio_resume
     ( SKZ_MINIO_PAUSED=$1; SKZ_UPLOAD_FROM_LOAD=${3:-1}
-      skz_minio() { echo "$1" >> "$tt/minio"; return "$MINIO_RC"; }
-      MINIO_RC=$2 skz_minio_resume; echo "$(tr '\n' ' ' < "$tt/minio")|$SKZ_MINIO_PAUSED" > "$tt/resumed" )
+      skz_minio() { echo "$1" >> "$tt/minio"; if [ -s "$SKZ_SEED_RELEASED" ]; then echo time; else echo none; fi >> "$tt/saw"; return "$MINIO_RC"; }
+      MINIO_RC=$2 skz_minio_resume ${4:+"$4"}; echo "$(tr '\n' ' ' < "$tt/minio")|$SKZ_MINIO_PAUSED" > "$tt/resumed" )
     cat "$tt/resumed"
 }
 check "from the load: a frozen MinIO is let go as the workload begins" \
@@ -355,6 +357,18 @@ check "  =window: let go as the first window begins, its time written for the wa
 check "    one that would not go on writes no time, and is tried again" \
     '[ "$(minio_resume 1 1 window)" = "unpause |1" ] && [ ! -e "$tt/released" ] && grep -q "could not be let go as the first window begins" "$tt/log"'
 check "    not frozen: no time is written" '[ "$(minio_resume "" 0 window)" = "|" ] && [ ! -e "$tt/released" ]'
+# Review of #132, W7: the time is written before the unpause, so the
+# watcher's lower bound is one.
+check "    the time is there when MinIO is let go" \
+    '[ "$(minio_resume 1 0 window)" = "unpause |" ] && [ "$(cat "$tt/saw")" = time ]'
+# N18 to N20: the window that let MinIO go is marked with the time, and
+# only when it did.
+check "    the window that let it go is marked, with the time" \
+    '[ "$(minio_resume 1 0 window tpcb-zfs-skyzfsd)" = "unpause |" ] && cmp -s "$tt/released" "$OUT/tpcb-zfs-skyzfsd.released" && [ "$(ls "$OUT")" = tpcb-zfs-skyzfsd.released ]'
+check "    a window that could not let it go is not marked" \
+    '[ "$(minio_resume 1 1 window tpcb-zfs-skyzfsd)" = "unpause |1" ] && [ -z "$(ls "$OUT")" ]'
+check "    a window after MinIO went is not marked" \
+    '[ "$(minio_resume "" 0 window tpcb-zfs-skyzfsd)" = "|" ] && [ -z "$(ls "$OUT")" ]'
 # The line numbers of the first line holding each text, in order.
 order() { # text with fixed strings... (stdin: the function) -> "n,n,..."
     local body t; body=$(cat)
@@ -370,6 +384,13 @@ check "  run_workload lets it go after the mark, before the first warm-up" \
 win_at='[ "$SKZ_UPLOAD_FROM_LOAD" != window ] || skz_minio_resume'
 check "  =window: run_workload lets it go after the window's first status, before its pgbench" \
     'increasing "$(printf "%s\n" "$rw" | order "$warm_at" "snapshot \"\$OUT/\$tag.before\"" "skz_sample \"\$OUT/\$tag.skz\" &" "    $win_at" "log \"\$tag: measuring" "-T \$DURATION")"'
+# N19: the window passes its tag, so that its row is the one marked.
+check "  =window: run_workload passes the window's tag" \
+    '[ "$(printf "%s\n" "$rw" | grep -cxF -e "    $win_at \"\$tag\"")" = 1 ]'
+# N21: a mark left by an earlier row of the same tag is removed before
+# the window, with the row's other files.
+check "  =window: run_workload removes an earlier mark before the window" \
+    '[ "$(printf "%s\n" "$rw" | grep -A1 -F -e "rm -f \"\$OUT/\$tag.syscalls\"" | grep -cF -e "\"\$OUT/\$tag.released\"")" = 1 ] && increasing "$(printf "%s\n" "$rw" | order "\"\$OUT/\$tag.released\"" "    $win_at" "-T \$DURATION")"'
 check "  each at one place only" \
     '[ "$(grep -cF -e "$win_at" "$script")" = 1 ] && [ "$(grep -cF -e "] || skz_minio_resume" "$script")" = 2 ]'
 check "  frozen after the create and before the daemon starts, and only from the load" \
