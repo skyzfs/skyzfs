@@ -524,14 +524,17 @@ impl Store {
 }
 
 /// Make `dir` where it is not, and sync its parent so that it stays.
+/// The parent is synced where `dir` was there too: an earlier call may
+/// have made it and stopped, or failed, before its sync.
 fn make_dir(dir: &Path) -> io::Result<()> {
     match fs::create_dir(dir) {
-        Ok(()) => match dir.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => File::open(parent)?.sync_all(),
-            _ => Ok(()),
-        },
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    match dir.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => File::open(parent)?.sync_all(),
+        _ => Ok(()),
     }
 }
 

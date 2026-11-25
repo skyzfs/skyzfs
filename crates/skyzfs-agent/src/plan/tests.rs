@@ -207,14 +207,24 @@ fn check(rows: Vec<(&str, Phase, Seen, Action)>) {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// Mutant: a snapshot found at the intent taken for one to publish, or a
-/// program run while the daemon is away.
+/// Mutant: a snapshot found at the intent taken for one to publish, a
+/// program run while the daemon is away, or the premise checked here.
 #[test]
 fn at_the_intent_the_snapshot_is_taken_or_given_up() {
     let none = || seen().with(|s| s.pool.snapshot = None).unheld();
     check(vec![
         ("away", intent(), none().away(), Action::Wait),
         ("here", intent(), none(), Action::Take),
+        // The premise is first checked at Taken, which gives the snapshot
+        // up there (kept, with no hold): a refused pool gets a `pool@t`.
+        // Whether the intent should check it too is for M2.6b2 (#142's
+        // review, S1); this row pins what is built.
+        (
+            "here, the premise refused",
+            intent(),
+            none().no_premise(),
+            Action::Take,
+        ),
         (
             "a snapshot with no manifest",
             intent(),
@@ -611,8 +621,9 @@ fn done_is_recorded_only_as_look_sees_it() {
 }
 
 /// Mutant: an end that may hide a publish made asked anew without a
-/// look, a name another holds published over, or a snapshot not
-/// whole asked again.
+/// look, a name another holds published over, a snapshot not whole
+/// asked again, or this publish's `snap/t` not taken as done where the
+/// hold or `pool@t` has gone.
 #[test]
 fn an_end_that_may_hide_a_publish_is_looked_up_first() {
     let mut rows = Vec::new();
@@ -634,6 +645,20 @@ fn an_end_that_may_hide_a_publish_is_looked_up_first() {
                 what,
                 phase.clone(),
                 ended().looked(SnapSeen::Ours(COMMIT)),
+                Action::Done(COMMIT),
+            ));
+            // This publish's `snap/t` is done whatever became of the hold
+            // or of `pool@t` since: the cut holds the snapshot.
+            rows.push((
+                what,
+                phase.clone(),
+                ended().looked(SnapSeen::Ours(COMMIT)).unheld(),
+                Action::Done(COMMIT),
+            ));
+            rows.push((
+                what,
+                phase.clone(),
+                ended().looked(SnapSeen::Ours(COMMIT)).gone(),
                 Action::Done(COMMIT),
             ));
             rows.push((
@@ -828,10 +853,14 @@ fn row(group: u64) -> SnapReply {
     }
 }
 
-/// An earlier request landed: the publish was asked with C, refused
-/// `rewound`, and asked anew with a count read after the rewind (here 9,
-/// in another cut state). The first request was the one the daemon
-/// carried, by a cut it counted after C under its own rule (R). The
+/// An earlier request landed: the publish was asked with C of a daemon
+/// that carried it, by a cut it counted after C under its own rule (R).
+/// That daemon stopped before the agent read `done`; the next one,
+/// which knew nothing of the request, refused it `rewound` (its count
+/// at start is above C), and the publish was asked anew with a count
+/// read after (here 9, in another cut state). (In one daemon a request
+/// refused `rewound` is dropped: it is the restart that lets both
+/// happen.) The
 /// request asked anew ends `refused taken`, and `look` shows a row with
 /// the first count's cut (number C + 1, the first state) and this
 /// manifest. That row is this publish's: it is recorded done, at the

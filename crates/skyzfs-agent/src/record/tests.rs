@@ -328,3 +328,129 @@ fn manifests_are_kept_by_name_beside_the_record() {
     }
     assert!(matches!(store.load(), Ok(Loaded::Absent)));
 }
+
+/// One publish in each phase and one name given up for each reason, each
+/// field a value of its own: the record [`GOLDEN`] holds.
+fn golden() -> Record {
+    let taken = |group: u64, guid: u64, hash: u8| Taken {
+        group,
+        members: vec![Member {
+            name: "p/d".into(),
+            snapshot_guid: guid,
+        }],
+        manifest_len: 300,
+        manifest_hash: [hash; 32],
+    };
+    let publish = |name: &str, phase: Phase, held: bool, attempts: u32| Publish {
+        name: name.into(),
+        count: Count {
+            attachment: [0xa1; 16],
+            state: [0x5e; 16],
+            after: 3,
+            load_guid: 0x10ad,
+        },
+        phase,
+        held,
+        attempts,
+    };
+    let whys = [
+        Why::ManifestLost,
+        Why::ManifestTooLarge,
+        Why::Destroyed,
+        Why::Replaced,
+        Why::Premise,
+        Why::NameTaken,
+        Why::Rewound,
+    ];
+    Record {
+        volume: [0x0f; 16],
+        enrolled: Some(Enrolled {
+            pool: "p".into(),
+            pool_guid: 0x81,
+            leaf_guid: 0x82,
+        }),
+        under_way: vec![
+            publish("i", Phase::Intent, false, 0),
+            publish("t", Phase::Taken(taken(40, 1, 0x41)), false, 1),
+            publish("h", Phase::Held(taken(41, 2, 0x42)), true, 2),
+            publish(
+                "a",
+                Phase::Asked {
+                    taken: taken(42, 3, 0x43),
+                    asked_ms: 6,
+                    held_until_ms: 7,
+                },
+                true,
+                3,
+            ),
+            publish(
+                "d",
+                Phase::Done {
+                    taken: taken(43, 4, 0x44),
+                    commit: [0xc0; 32],
+                },
+                true,
+                4,
+            ),
+        ],
+        abandoned: whys
+            .iter()
+            .zip(0u64..)
+            .map(|(&why, at_ms)| Abandoned {
+                name: format!("w{at_ms}"),
+                why,
+                at_ms,
+            })
+            .collect(),
+    }
+}
+
+/// The bytes of [`golden`] at version 1. postcard writes fields and
+/// variants by position, so a field moved or added, or a variant inserted
+/// before another, changes these bytes without a test of reading back
+/// noticing: such a change is a new version ([`VERSION`]).
+const GOLDEN: [&str; 16] = [
+    "535a414701000000ca0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e5e03ad210000000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e",
+    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141414141",
+    "41414141414141414141414141414141414141414141414141414100010168a1",
+    "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03",
+    "ad2102290103702f6402ac024242424242424242424242424242424242424242",
+    "42424242424242424242424201020161a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f6403ac02434343",
+    "4343434343434343434343434343434343434343434343434343434343060701",
+    "030164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e03ad21042b0103702f6404ac0244444444444444444444444444444444",
+    "44444444444444444444444444444444c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001040702773000000277310101027732",
+    "020202773303030277340404027735050502773606063870419ed92f0a81e843",
+    "83e32bfc88cdc2875ca0fd02da03e81b4416f36beab9",
+];
+
+/// Mutant: two fields of a type swapped, a variant inserted before
+/// another, or the head's order changed. Any of these is a record of
+/// another version read as version 1.
+#[test]
+fn version_1s_bytes_are_these() {
+    let hex: String = GOLDEN.concat();
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("hex"))
+        .collect();
+    assert_eq!(golden().encode().expect("encoded"), bytes);
+    assert_eq!(Record::decode(&bytes), Ok(golden()));
+}
+
+/// Mutant: bytes left after the body read past.
+#[test]
+fn bytes_after_the_body_are_corrupt() {
+    let record = golden();
+    let mut body = postcard::to_allocvec(&record).expect("encoded");
+    assert_eq!(Record::decode(&frame(&body)), Ok(record));
+    body.push(0);
+    assert_eq!(
+        Record::decode(&frame(&body)),
+        Err(Corrupt::Body("1 bytes after the body".into()))
+    );
+}

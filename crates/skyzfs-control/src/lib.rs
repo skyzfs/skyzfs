@@ -357,8 +357,7 @@ pub enum Code {
     /// Too many publishes pend.
     Busy,
     /// `snap/T` exists and does not record this request: it names
-    /// another commit, or its row records another cut, manifest or
-    /// count.
+    /// another commit, or its row records another cut or manifest.
     Taken,
     /// The uploader publishes nothing more.
     Stopped,

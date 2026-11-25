@@ -7,8 +7,9 @@
 //!
 //! # The rules
 //!
-//! - **Intent** (the name chosen and the count read): with no `pool@t`,
-//!   take it ([`Action::Take`], with the count read anew). With one, the
+//! - **Intent** (the name chosen and the count read): with no `pool@t`
+//!   and the daemon here, take it ([`Action::Take`], with the count read
+//!   anew); with the daemon away, wait. With a `pool@t`, the
 //!   agent stopped between the program and the manifest's file: give it
 //!   up, kept and unpublished ([`Why::ManifestLost`], the lead's Q5).
 //! - **The snapshot broken** (from Taken on): `pool@t` gone
