@@ -1,0 +1,49 @@
+unplanted: all pass
+L1	KILLED	judge_look without the commit	test_publish_check.py, test_publish_check_main.py
+L2	KILLED	prewindf's end read as a refusal when asked	test_publish_check_main.py
+L3	KILLED	the look pins skipped	test_publish_check_main.py
+L4	KILLED	f1 not in ABSENT	test_publish_check.py, test_publish_check_main.py
+L5	KILLED	prewindf's premise without its ground	test_publish_check_main.py
+L6	KILLED	the -F premise without the damage	test_publish_check_main.py
+L7	KILLED	absent allowed with the store down	test_publish_check.py, test_publish_check_main.py
+L8	KILLED	pending allowed for f1's end	test_publish_check.py, test_publish_check_main.py
+L9	KILLED	t1's look dropped	test_cut_record.sh
+L10	KILLED	f1 asked after the export	test_cut_record.sh
+L11	KILLED	f1's end read with no syncs	test_cut_record.sh
+L12	KILLED	r1's look after the store is back (step 1: drop)	test_cut_record.sh
+L13	KILLED	the import without the damage	test_cut_record.sh
+R1	KILLED	rewound_grounds: a cut at the top's group is no ground (-F's first cut is)	test_publish_check_main.py
+R2	KILLED	rewound_grounds: the cut at C counts	test_publish_check.py, test_publish_check_main.py
+R3	KILLED	rewound_grounds: cuts at or before C count	test_publish_check.py, test_publish_check_main.py
+R4	KILLED	rewound_grounds: any op	test_publish_check.py, test_publish_check_main.py
+R5	SURVIVED	rewound_grounds: any refusal	
+R6	KILLED	rewound_grounds: any name	test_publish_check.py
+R7	SURVIVED	rewound_grounds: the top carried across instances	
+R8	KILLED	rewound_grounds: the cut before, not the running maximum (REWIND_BY_PREVIOUS)	test_publish_check.py, test_publish_check_main.py
+R9	KILLED	rewind_committed as before D1's fix	test_publish_check.py, test_publish_check_main.py
+R10	KILLED	rewind_committed without its named check	test_publish_check.py, test_publish_check_main.py
+R11	KILLED	pin_r1_above_top: at the top passes	test_publish_check_main.py
+R12	KILLED	r1 not asked anew passes	test_publish_check_main.py
+R13	KILLED	prewind's ground from the anew C	test_publish_check_main.py
+R14	KILLED	prewind's ground premise always holds	test_publish_check_main.py
+R15	KILLED	judge_look: no row is no failure	test_publish_check.py
+R16	KILLED	judge_look: a field missing from the look passes	test_publish_check.py
+R17	KILLED	judge_look without the manifest hash	test_publish_check.py, test_publish_check_main.py
+R18	KILLED	t5-look: a snap allowed	test_publish_check.py, test_publish_check_main.py
+R19	KILLED	t3-look: a refusal allowed	test_publish_check.py
+R20	KILLED	f1: a refusal at the ask allowed	test_publish_check.py
+R21	KILLED	LOOKS without pplain's t1	test_publish_check.py, test_publish_check_main.py
+R22	KILLED	the -F premise without the import	test_publish_check_main.py
+R23	KILLED	the -F premise with nothing zeroed	test_publish_check_main.py
+R24	KILLED	prewindf's premises skipped	test_publish_check_main.py
+R25	KILLED	prewindf not a course of the check	test_publish_check_main.py
+R26	SURVIVED	rewind-top.txt not checked as digits	
+R30	KILLED	answer_of: no greeting needed (D2 undone)	test_publish_agent.py
+R31	KILLED	raw: a timeout is the rig's error again (D3 undone)	test_publish_agent.py
+R32	SURVIVED	raw: a whole answer and no close is no answer	
+R33	KILLED	raw: a timeout answers ''	test_publish_agent.py
+R34	KILLED	parse: unreadable's commit unchecked (A3)	test_publish_agent.py
+R35	KILLED	parse: manifest-len unchecked (A5)	test_publish_agent.py
+R36	KILLED	ask look sends publish-progress (A4)	test_publish_agent.py
+R40	SURVIVED	pplain: t3's look before t5's	
+R41	SURVIVED	prewindf: f1 expires in 5 s	

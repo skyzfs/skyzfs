@@ -1,0 +1,18 @@
+diff --git a/tests/kernel/publish_check.py b/tests/kernel/publish_check.py
+index 2c51bfa..63b7dfb 100644
+--- a/tests/kernel/publish_check.py
++++ b/tests/kernel/publish_check.py
+@@ -466,9 +466,11 @@ def rewound_grounds(instances, name, after, op='asked'):
+                 if top is not None and number > after and group <= top:
+                     seen.append((number, group, top))
+                 top = group if top is None else max(top, group)
+-            elif ln['event'] == 'publish' and ln['op'] == op and \
+-                    ln['result'].startswith(f'{name} refused rewound'):
++            elif op == 'asked' and ln['event'] == 'publish' and ln['op'] == 'asked' and \
++                    ln['result'].split(' ', 1)[0] == name:
+                 return True, seen
++        if op == 'ended' and seen:
++            return True, seen
+     return False, []
+ 
+ 
