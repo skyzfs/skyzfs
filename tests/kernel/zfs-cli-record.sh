@@ -30,11 +30,12 @@
 #           with a log device
 #   mirror  skzqm: a mirror of two files, with a special and a dedup
 #           mirror, a cache device and a spare, so that each class's
-#           header is in its status. Its files scan in under a second,
-#           so its scrubs, resilver and rebuild run with a delay of 2 ms
-#           injected on every I/O of m0 (zinject -D 2:1; about.txt says
-#           whether it took): the state's text is the same, it lasts
-#           long enough to be seen
+#           header is in its status. Its files scan in seconds, so its
+#           scrubs, resilver and rebuild run with a delay of 10 ms
+#           injected on every I/O of m0 (zinject -D 10:1, from the
+#           package zfs-test; about.txt says whether it took, and
+#           zinject.txt why not): the state's text is the same, it
+#           lasts long enough to be seen
 #   remove  skzqr: two files, one of them removed (the removal's states)
 #   none    skznone, a pool that does not exist
 #
@@ -264,14 +265,14 @@ agent_commands() { # prefix pool
 
 # The mirror's scans slowed, or as they are: DELAY names a vdev of the
 # pool DELAY_POOL to inject a delay on.
-DELAY_POOL="" DELAY=""
+DELAY_POOL="" DELAY="" ZINJECT=""
 slow_on() { # pool
-    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] || return 0
-    lim 30 zinject -d "$DELAY" -D 2:1 "$1" > /dev/null 2>&1
+    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] && [ -n "$ZINJECT" ] || return 0
+    lim 30 "$ZINJECT" -d "$DELAY" -D 10:1 "$1" > /dev/null 2>&1
 }
 slow_off() { # pool
-    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] || return 0
-    lim 30 zinject -c all > /dev/null 2>&1
+    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] && [ -n "$ZINJECT" ] || return 0
+    lim 30 "$ZINJECT" -c all > /dev/null 2>&1
 }
 
 # Release every hold of TAG under P@T that is left, with no record.
@@ -364,6 +365,7 @@ main() {
     cleanup() {
         set +e
         local p l
+        [ -n "$ZINJECT" ] && lim 30 "$ZINJECT" -c all > /dev/null 2>&1
         for p in skzq skzqm skzqr; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
         command -v ublk > /dev/null && lim 60 ublk del -a > /dev/null 2>&1
         for l in "${LOOPS[@]}"; do losetup -d "$l" 2> /dev/null; done
@@ -387,6 +389,10 @@ main() {
         modprobe ublk_drv 2>> "$OUT/apt.log"
     }
     modprobe zfs 2>> "$OUT/apt.log"
+    # zinject, to slow the mirror's scans: not in zfsutils-linux.
+    command -v zinject > /dev/null || apt-get install -y --no-install-recommends zfs-test >> "$OUT/apt.log" 2>&1
+    ZINJECT=$(command -v zinject ||
+        find /usr/sbin /usr/libexec /usr/lib/zfs-linux /usr/share/zfs -name zinject -type f 2> /dev/null | head -n 1)
     # Cloning needs the network, and the runners' name resolution fails
     # for minutes at a time: three tries, a minute apart (as the control
     # rig does).
@@ -451,12 +457,16 @@ main() {
         dedup mirror "$WORK/d0.img" "$WORK/d1.img" cache "$cache" spare "$WORK/spare.img"
     make_pool skzqr 768 "$WORK/r0.img" "$WORK/r1.img"
     DELAY_POOL=skzqm DELAY=$WORK/m0.img
-    if slow_on skzqm && lim 30 zinject > "$OUT/zinject.txt" 2>&1 && grep -q m0.img "$OUT/zinject.txt"; then
-        echo "mirror's scans: a delay of 2 ms on every I/O of m0 (zinject -D 2:1)" >> "$OUT/about.txt"
+    if [ -z "$ZINJECT" ]; then
+        echo "mirror's scans: no zinject (apt.log); they run as they are" >> "$OUT/about.txt"
+    elif lim 30 "$ZINJECT" -d "$DELAY" -D 10:1 skzqm > "$OUT/zinject.txt" 2>&1 &&
+        lim 30 "$ZINJECT" >> "$OUT/zinject.txt" 2>&1; then
+        echo "mirror's scans: a delay of 10 ms on every I/O of m0 ($ZINJECT -D 10:1)" >> "$OUT/about.txt"
+        slow_off skzqm
     else
         echo "mirror's scans: the delay was refused (zinject.txt); they run as they are" >> "$OUT/about.txt"
+        ZINJECT=""
     fi
-    slow_off skzqm
     echo "set up" >> "$OUT/about.txt"
 
     record_pool rig skzq
