@@ -1110,3 +1110,71 @@ fn the_programs_only_read_and_call_what_the_sandbox_has() {
         }
     }
 }
+
+const COUNT: &str = "zfs list -r -H -o name -t filesystem,volume tank";
+
+/// `n` datasets as `zfs list -r -H -o name` lists them.
+fn listed(n: usize) -> String {
+    (0..n).map(|i| format!("tank/fs{i}\n")).collect()
+}
+
+/// The lead's rule on M2.6c-2b: the count is `zfs list -r` of the file
+/// systems and volumes, within its own fixed limit; a read and a change
+/// then take 100 ms more for each dataset counted, at most 20 minutes;
+/// a count that fails sets the longest. Before any count, the bases.
+/// Mutants: the limits not scaled, scaled but not capped, a failed count
+/// keeping the last, the count's own limit scaled.
+#[test]
+fn the_limits_grow_with_the_datasets_counted() {
+    let base = Limits::default();
+    let at = |n: u64, base: Duration| base + Duration::from_millis(100 * n);
+    let mut fake = Fake::default();
+    fake.ok(TAKE, "");
+    fake.ok(HOLDS_R, "");
+    let mut zfs = cli(fake);
+    let limits = |zfs: &mut ZfsCli<Fake>| {
+        zfs.host().ran.clear();
+        let _ = zfs.snapshot("tank", "skz-1");
+        let _ = zfs.held("tank", "skz-1", "skyzfs-publish", Some(&[]));
+        let ran = &zfs.host().ran;
+        assert_eq!(ran[0].words, TAKE);
+        assert_eq!(ran[1].words, HOLDS_R);
+        (ran[0].limit, ran[1].limit)
+    };
+    assert_eq!(limits(&mut zfs), (base.change, base.read), "no count yet");
+    for (n, change, read) in [
+        (3, at(3, base.change), at(3, base.read)),
+        (5000, at(5000, base.change), at(5000, base.read)),
+        // 120 s + 1080 s is 20 minutes: the cap, reached by a change.
+        (10_800, base.most, at(10_800, base.read)),
+        (20_000, base.most, base.most),
+        (0, base.change, base.read),
+    ] {
+        zfs.host().commands.remove(COUNT);
+        zfs.host().ok(COUNT, &listed(n as usize));
+        zfs.host().ran.clear();
+        assert_eq!(zfs.count("tank"), Ok(n));
+        assert_eq!(zfs.host().words(), [COUNT]);
+        assert_eq!(zfs.host().ran[0].limit, base.count, "{n}");
+        assert_eq!(limits(&mut zfs), (change, read), "{n}");
+    }
+    zfs.host().commands.remove(COUNT);
+    zfs.host().ok(COUNT, &listed(7));
+    assert_eq!(zfs.count("tank"), Ok(7));
+    zfs.host().commands.remove(COUNT);
+    zfs.host().fails(
+        COUNT,
+        1,
+        "cannot open 'tank': pool I/O is currently suspended\n",
+    );
+    assert!(zfs.count("tank").is_err());
+    assert_eq!(limits(&mut zfs), (base.most, base.most), "a count failed");
+    zfs.host().commands.remove(COUNT);
+    zfs.host().ok(COUNT, &listed(2));
+    assert_eq!(zfs.count("tank"), Ok(2));
+    assert_eq!(
+        limits(&mut zfs),
+        (at(2, base.change), at(2, base.read)),
+        "counted again"
+    );
+}

@@ -16,7 +16,7 @@
 //! 5. The take adopted: its members read, whole and as before it; the
 //!    manifest's file, then recorded [`Phase::Taken`]. A take that is
 //!    not is destroyed, and the publish takes the next name
-//!    ([`Agent::adopt`]).
+//!    (`Agent::adopt`).
 //! 6. The hold, recorded as believed placed before it is placed.
 //! 7. The members, the hold and `load_guid` seen as recorded: recorded
 //!    [`Phase::Held`].
@@ -487,11 +487,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Drive every publish under way until each has left the record or
     /// stopped, waiting [`TICK`] between rounds where none moved; at most
     /// until `limit` has passed. Each that left or stopped is in
-    /// [`Agent::outcomes`]. Each round begins with the sweep
-    /// (`Agent::sweep`).
+    /// [`Agent::outcomes`]. Each round begins with the count of the
+    /// pool's datasets ([`Zfs::count`]), which sets the time limits of
+    /// its calls, then the sweep (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
+            // Where the count fails, the limits are the longest, and the
+            // round's own calls say what is wrong (no pool, or another
+            // error): the count is not an error of the round.
+            let _counted = self.zfs.count(&self.pool);
             self.sweep()?;
             let names: Vec<String> = self
                 .record

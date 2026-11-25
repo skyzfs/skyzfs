@@ -1311,6 +1311,11 @@ impl Zfs for FakeZfs {
         Ok(false)
     }
 
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        self.0.borrow_mut().calls.push("count");
+        self.pool(pool, |p| p.datasets.len() as u64)
+    }
+
     fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
@@ -1486,6 +1491,7 @@ impl Zfs for FakeZfs {
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+        self.0.borrow_mut().calls.push("tagged");
         self.pool(pool, |p| {
             p.snaps
                 .iter()

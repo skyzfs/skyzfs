@@ -106,7 +106,8 @@
 //!   read, on the rig's pool and on a mirror of two files.
 //! - The channel-program sandbox has no `pcall` (a take program of
 //!   `366b217`, since dropped, failed on it on both images). The members
-//!   program in full has not run on ZFS.
+//!   program in full has not run on ZFS, nor has the count of the
+//!   datasets (`zfs list -r -H -o name -t filesystem,volume`).
 //! - A checkpoint is none where `zpool get -p` gives `-`; one that exists
 //!   gives its size.
 //! - A resilver under way says `resilver in progress` on its `scan:`
@@ -117,8 +118,22 @@
 //!   already exists` and holds nothing; `zfs release -r` of a tag no
 //!   member has fails with `no such tag`.
 //! - A pool that does not exist, for each command (above): `zpool` and
-//!   `zfs program` say `no such pool`, `zfs hold`, `holds` and `release`
-//!   say `dataset does not exist`.
+//!   `zfs program` say `no such pool`, `zfs hold`, `holds`, `release`
+//!   and `destroy -r` say `dataset does not exist`; `zfs snapshot -r`
+//!   says it too, with its usage, and exits 2: [`ZfsError::Other`], which
+//!   the engine tries again at its next round, where it reads no pool.
+//! - `zfs snapshot -r` (testing's #152): taken, exit 0 with no output,
+//!   even with `snapshot_limit=0` set on a member (as root). A member's
+//!   `@t` that exists fails it with one `dataset already exists` line for
+//!   each such member, in an order that varies, then `no snapshots were
+//!   created`; nothing was taken.
+//! - `zfs destroy -r` of a snapshot that is not there says `could not
+//!   find any snapshots to destroy`. A member's `@t` with a hold fails it
+//!   and destroys none; ZFS 2.2's userland says `dataset is busy` of it,
+//!   and 2.4.1's `it's being held`.
+//! - `zfs hold -r` where the root's `@t` alone has the tag fails with
+//!   `tag already exists`, and `zfs holds -r` then lists the root's alone
+//!   (TL-T2 of #147's review); `zfs release -r` then releases it.
 //!
 //! **Readings not checked on ZFS:**
 //!
@@ -138,8 +153,14 @@
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
 //! - Property values that are not printable ASCII, in hex as above.
-//! - The time limits ([`Limits`]): a read 60 s, a change 120 s. They are
-//!   provisional.
+//! - The time limits ([`Limits`]): a read 60 s, a change 120 s, each
+//!   plus 100 ms for each of the pool's datasets as last counted, at
+//!   most 20 minutes; the count itself 60 s. They are provisional (the
+//!   lead's rule on M2.6c-2b, from testing's figures in #152: at 10 001
+//!   file systems on a slow runner `zfs snapshot -r` took 391 s under a
+//!   heavy write load, and `tagged.lua` 68.7 s with none). Correctness
+//!   does not rest on them: a take killed at its limit is adopted at a
+//!   later round (above).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -170,16 +191,26 @@ pub const PROGRAM_INSTRUCTIONS: u64 = 100_000_000;
 /// `zfs_lua_max_memlimit`.
 pub const PROGRAM_MEMORY: u64 = 100 << 20;
 
-/// How long a command may run before it is killed.
+/// How long a command may run before it is killed. A read and a change
+/// take [`Limits::per_dataset`] more for each of the pool's datasets as
+/// [`Zfs::count`] last read them, up to [`Limits::most`] (the lead's rule
+/// on M2.6c-2b; provisional).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// A command that reads: `zpool status`, `zpool get`, `zfs holds`,
-    /// a read-only program.
+    /// A command that reads, on a pool of no datasets: `zpool status`,
+    /// `zpool get`, `zfs holds`, a read-only program.
     pub read: Duration,
     /// A command that changes the pool and waits for a group to be
-    /// written: `zfs snapshot -r`, `zfs destroy -r`, `zfs hold`, `zfs
-    /// release`, `zfs set`, `zpool sync`.
+    /// written, on a pool of no datasets: `zfs snapshot -r`, `zfs
+    /// destroy -r`, `zfs hold`, `zfs release`, `zfs set`, `zpool sync`.
     pub change: Duration,
+    /// What each of the pool's datasets adds to a read or a change.
+    pub per_dataset: Duration,
+    /// The most a read or a change is let run, however many datasets.
+    pub most: Duration,
+    /// The count of the datasets itself ([`Zfs::count`]), whatever their
+    /// number.
+    pub count: Duration,
 }
 
 impl Default for Limits {
@@ -187,8 +218,23 @@ impl Default for Limits {
         Limits {
             read: Duration::from_secs(60),
             change: Duration::from_secs(120),
+            per_dataset: Duration::from_millis(100),
+            most: Duration::from_secs(20 * 60),
+            count: Duration::from_secs(60),
         }
     }
+}
+
+/// What the limits are scaled by ([`Zfs::count`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    /// Not counted yet: the bases.
+    Base,
+    /// The pool's datasets as last counted.
+    Datasets(u64),
+    /// The last count failed: [`Limits::most`], which kills no command
+    /// sooner than any count would have.
+    Most,
 }
 
 /// [`Zfs`] on the commands ([module docs](self)).
@@ -196,12 +242,43 @@ impl Default for Limits {
 pub struct ZfsCli<H> {
     host: H,
     limits: Limits,
+    scale: Scale,
 }
 
 impl<H: Host> ZfsCli<H> {
     /// The commands on `host`, each within `limits`.
     pub fn new(host: H, limits: Limits) -> Self {
-        ZfsCli { host, limits }
+        ZfsCli {
+            host,
+            limits,
+            scale: Scale::Base,
+        }
+    }
+
+    /// The limit of a command whose base is `base` ([`Limits`]).
+    fn scaled(&self, base: Duration) -> Duration {
+        let limit = match self.scale {
+            Scale::Base => base,
+            Scale::Datasets(n) => {
+                let more = u32::try_from(n)
+                    .ok()
+                    .and_then(|n| self.limits.per_dataset.checked_mul(n))
+                    .unwrap_or(self.limits.most);
+                base.saturating_add(more)
+            }
+            Scale::Most => self.limits.most,
+        };
+        limit.min(self.limits.most)
+    }
+
+    /// The limit of a command that reads.
+    fn read_limit(&self) -> Duration {
+        self.scaled(self.limits.read)
+    }
+
+    /// The limit of a command that changes the pool.
+    fn change_limit(&self) -> Duration {
+        self.scaled(self.limits.change)
     }
 
     /// The host, for the tests.
@@ -266,9 +343,9 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// `zfs destroy -r pool@t`. `zfs destroy -r` of a snapshot that is
-    /// not there says `could not find any snapshots to destroy`
-    /// (`zfs_main.c`; not recorded on ZFS), or `dataset does not exist` of
-    /// a pool that is not: both are destroyed. `zfs destroy` takes `%`
+    /// not there says `could not find any snapshots to destroy`, or
+    /// `dataset does not exist` of a pool that is not (both recorded):
+    /// both are destroyed. `zfs destroy` takes `%`
     /// ranges and `,` lists after the `@`: a `t` that is not a snapshot's
     /// name ([`skyzfs_control::valid_name`]) is not destroyed at all.
     fn destroy_r(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
@@ -283,7 +360,7 @@ impl<H: Host> ZfsCli<H> {
         // goes on in the kernel and may finish in its own time (TL-F3 of
         // #147's review).
         let output = self
-            .exec("zfs", &args, &[], self.limits.change)
+            .exec("zfs", &args, &[], self.change_limit())
             .map_err(|e| match e {
                 ZfsError::Other(why) => {
                     ZfsError::Other(format!("{snapshot} may not have been destroyed: {why}"))
@@ -308,7 +385,7 @@ impl<H: Host> ZfsCli<H> {
         snapshot: &str,
         tag: &str,
     ) -> Result<Option<BTreeSet<String>>, ZfsError> {
-        let holds = match self.zfs(&["holds", "-H", "-r", snapshot], self.limits.read, true) {
+        let holds = match self.zfs(&["holds", "-H", "-r", snapshot], self.read_limit(), true) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
             Err(e) => return Err(e),
@@ -342,9 +419,9 @@ impl<H: Host> ZfsCli<H> {
         all.extend(["-j", "-t", &instructions, "-m", &memory, pool, "-"]);
         all.extend(args);
         let limit = if read_only {
-            self.limits.read
+            self.read_limit()
         } else {
-            self.limits.change
+            self.change_limit()
         };
         let output = self.exec("zfs", &all, text.as_bytes(), limit)?;
         if output.code == Some(0) {
@@ -361,7 +438,7 @@ impl<H: Host> ZfsCli<H> {
             args.push("-g");
         }
         args.push(pool);
-        let out = self.zpool(&args, self.limits.read)?;
+        let out = self.zpool(&args, self.read_limit())?;
         parse_status(&out, pool).map_err(|why| ZfsError::Other(format!("zpool status: {why}")))
     }
 
@@ -442,14 +519,15 @@ impl<H: Host> Zfs for ZfsCli<H> {
             "guid,load_guid,multihost,readonly,checkpoint",
             pool,
         ];
-        let output = self.exec("zpool", &args, &[], self.limits.read)?;
+        let output = self.exec("zpool", &args, &[], self.read_limit())?;
         if output.code != Some(0) {
             let error = failure("zpool", &args, &output, false);
             // ZFS 2.2's `zpool get` takes a name that is no pool's for no
             // pool named at all ([module docs](self)): `zpool status`
             // says whether the pool is there.
             if matches!(error, ZfsError::Other(_)) && says(&output.stderr, "missing pool name") {
-                if let Err(ZfsError::NoPool) = self.zpool(&["status", "-P", pool], self.limits.read)
+                if let Err(ZfsError::NoPool) =
+                    self.zpool(&["status", "-P", pool], self.read_limit())
                 {
                     return Err(ZfsError::NoPool);
                 }
@@ -476,10 +554,31 @@ impl<H: Host> Zfs for ZfsCli<H> {
         }
     }
 
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        let args = [
+            "list",
+            "-r",
+            "-H",
+            "-o",
+            "name",
+            "-t",
+            "filesystem,volume",
+            pool,
+        ];
+        let counted = self
+            .run("zfs", &args, &[], self.limits.count, false)
+            .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        self.scale = match counted {
+            Ok(n) => Scale::Datasets(n),
+            Err(_) => Scale::Most,
+        };
+        counted
+    }
+
     fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
         let args = ["snapshot", "-r", snapshot.as_str()];
-        let output = self.exec("zfs", &args, &[], self.limits.change)?;
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
         if output.code == Some(0) {
             return Ok(());
         }
@@ -513,7 +612,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
         let args = ["hold", "-r", tag, &snapshot];
-        let output = self.exec("zfs", &args, &[], self.limits.change)?;
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
         if output.code == Some(0) {
             return Ok(());
         }
@@ -545,7 +644,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
         let args = ["release", "-r", tag, &snapshot];
-        let output = self.exec("zfs", &args, &[], self.limits.change)?;
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
         if output.code == Some(0) {
             return Ok(());
         }
@@ -622,8 +721,8 @@ impl<H: Host> Zfs for ZfsCli<H> {
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         let set = format!("{ASSIST_PROPERTY}={value}");
-        self.zfs(&["set", &set, pool], self.limits.change, false)?;
-        self.zpool(&["sync", pool], self.limits.change)?;
+        self.zfs(&["set", &set, pool], self.change_limit(), false)?;
+        self.zpool(&["sync", pool], self.change_limit())?;
         Ok(())
     }
 }

@@ -1959,6 +1959,32 @@ fn at(effect: Effect, after: bool) -> Point {
     Point { effect, after }
 }
 
+/// Each round begins with the count of the pool's datasets, which sets
+/// the limits of its calls (the lead's rule on M2.6c-2b), then the sweep:
+/// the first count comes before the sweep's first read of the holds,
+/// each is followed by the sweep's read of the pool, and every round
+/// counts. Mutants: no count, a count after the sweep, one count for all
+/// the rounds.
+#[test]
+fn each_round_counts_the_datasets_before_its_calls() {
+    let one = one(|_| {}, |_| false);
+    one.published_as(&one.name);
+    let world = one.world.borrow();
+    let calls = &world.calls;
+    let first = calls.iter().position(|c| *c == "count");
+    let tagged = calls.iter().position(|c| *c == "tagged");
+    assert!(first.is_some() && first < tagged, "{calls:?}");
+    let counts: Vec<usize> = (0..calls.len()).filter(|&i| calls[i] == "count").collect();
+    assert!(
+        counts.iter().all(|&i| calls.get(i + 1) == Some(&"props")),
+        "{calls:?}"
+    );
+    let takes = calls.iter().filter(|c| **c == "snapshot").count();
+    let held = calls.iter().filter(|c| **c == "held").count();
+    // A round to take, then one at least for each hold read after it.
+    assert!(counts.len() > held && held >= 1 && takes == 1, "{calls:?}");
+}
+
 /// A take killed at its limit lands in its own time (the `zfs snapshot
 /// -r` ioctl is not cancelled by killing its client): the next round
 /// finds `pool@t` and adopts it, under its name, with nothing destroyed

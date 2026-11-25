@@ -10,7 +10,7 @@
 //! checks what the adapter made of the output. Two pools were recorded:
 //! `skzq`, the rig's (one leaf on `/dev/ublkb0`, a log on a loop
 //! device), and `skzqm`, a mirror of two files. Both have the members
-//! `child` and `vol`; the hold's tag is `skyzfs`.
+//! `child` and `vol`; the hold's tag is the agent's, `skyzfs-publish`.
 //!
 //! A `zpool status -P -g` was recorded beside some of the `-P` outputs
 //! only. A `-P` output without its own is read with the `-g` output of
@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::host::fake::{output, Fake};
-use crate::zfs::premise;
+use crate::zfs::{premise, HOLD_TAG};
 
 /// The recordings, by image.
 const IMAGES: [(&str, &str); 2] = [
@@ -37,8 +37,8 @@ const RIG: &str = "skzq";
 const MIRROR: &str = "skzqm";
 /// The pool that does not exist.
 const NONE: &str = "skznone";
-/// The tag the recorder held with.
-const TAG: &str = "skyzfs";
+/// The tag the recorder held with: the agent's.
+const TAG: &str = HOLD_TAG;
 /// The device number the fake gives the rig's leaf.
 const DEVICE: u64 = 0x0103_0000;
 
@@ -189,20 +189,20 @@ struct Guids {
 fn guids(image: &str) -> Guids {
     match image {
         "ubuntu-24.04" => Guids {
-            leaf: 10096076759507422227,
-            rig_mirror: 9409777588451531924,
-            attached: 3909907667470484589,
-            mirror: 18128604407801635679,
-            m0: 16373095470363891880,
-            m1: 2793949496771227188,
+            leaf: 8930052142508163984,
+            rig_mirror: 13916280981439498084,
+            attached: 12714833013087552368,
+            mirror: 9298558496200761961,
+            m0: 13066833937729343271,
+            m1: 962681601743306748,
         },
         "ubuntu-26.04" => Guids {
-            leaf: 16271519747545802741,
-            rig_mirror: 18147170327720314223,
-            attached: 13055505963219439480,
-            mirror: 9501878435615107014,
-            m0: 12234803531026141483,
-            m1: 1683628236547958467,
+            leaf: 17837908470104127412,
+            rig_mirror: 4990637876201622794,
+            attached: 13062360064792703612,
+            mirror: 9883761927635724529,
+            m0: 536622382384900784,
+            m1: 4958484949203869743,
         },
         other => panic!("no GUIDs for {other}"),
     }
@@ -263,57 +263,57 @@ fn the_properties_read_as_recorded() {
         (
             "ubuntu-24.04",
             "rig-get",
-            1829423435837219548,
-            16886306786165328804,
+            7999830091773344557,
+            14005298585444973037,
             false,
         ),
         (
             "ubuntu-24.04",
             "rig-get-checkpoint",
-            1829423435837219548,
-            16886306786165328804,
+            7999830091773344557,
+            14005298585444973037,
             true,
         ),
         (
             "ubuntu-24.04",
             "mirror-get",
-            5102303689996654980,
-            5329410269614274740,
+            503252197325000815,
+            11886059228267080567,
             false,
         ),
         (
             "ubuntu-24.04",
             "mirror-get-checkpoint",
-            5102303689996654980,
-            5329410269614274740,
+            503252197325000815,
+            11886059228267080567,
             true,
         ),
         (
             "ubuntu-26.04",
             "rig-get",
-            4270366141832664214,
-            2506374143759571741,
+            17263484139300742590,
+            10064081898206912642,
             false,
         ),
         (
             "ubuntu-26.04",
             "rig-get-checkpoint",
-            4270366141832664214,
-            2506374143759571741,
+            17263484139300742590,
+            10064081898206912642,
             true,
         ),
         (
             "ubuntu-26.04",
             "mirror-get",
-            16476376150338987236,
-            9930067105697095545,
+            8544523855526204880,
+            6971777658390579765,
             false,
         ),
         (
             "ubuntu-26.04",
             "mirror-get-checkpoint",
-            16476376150338987236,
-            9930067105697095545,
+            8544523855526204880,
+            6971777658390579765,
             true,
         ),
     ];
@@ -372,12 +372,10 @@ const GUIDED: [(&str, &str, [bool; 2]); 10] = [
         "mirror-scrub-status-g",
         [false, false],
     ),
-    // On 26.04 the resilver of two files had ended when `zpool status`
-    // was run: its `scan:` line says `resilvered`.
     (
         "mirror-resilver-status",
         "mirror-resilver-status-g",
-        [true, false],
+        [true, true],
     ),
     (
         "mirror-resilvered",
@@ -412,10 +410,16 @@ fn a_resilver_is_busy_and_a_scrub_is_not_as_recorded() {
                 _ => vec![mirror(g.mirror, vec![file(g.m0), file(g.m1)])],
             };
             assert_eq!(layout.data, data, "{} {named}", rec.image);
-            let other = usize::from(named.starts_with("rig"));
+            // The rig's pool has a log; the mirror's a special and a
+            // dedup mirror, a cache and a spare.
+            let classes = if named.starts_with("rig") {
+                (0, 0, 1)
+            } else {
+                (1, 1, 2)
+            };
             assert_eq!(
                 (layout.special, layout.dedup, layout.other),
-                (0, 0, other),
+                classes,
                 "{} {named}",
                 rec.image
             );
@@ -452,9 +456,24 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         assert_eq!(zfs.props(NONE), Err(ZfsError::NoPool), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&get), "{}", rec.image);
 
-        // `zfs snapshot -r` of a pool that does not exist waits for the
-        // recorder's next run (testing's #152); the channel program it
-        // replaces was recorded.
+        // `zfs snapshot -r` of a pool that does not exist says `dataset
+        // does not exist` with its usage (exit 2): an error, neither a
+        // take nor `EEXIST`. The engine's next round reads no pool.
+        let mut zfs = rec.adapter(&["none-snapshot-cli"]);
+        match zfs.snapshot(NONE, "t") {
+            Err(ZfsError::Other(why)) => assert!(
+                why.contains("zfs snapshot -r skznone@t: exit 2: cannot open 'skznone': dataset does not exist"),
+                "{}: {why}",
+                rec.image
+            ),
+            other => panic!("{}: {other:?}", rec.image),
+        }
+        assert_eq!(ran(&mut zfs), rec.words(&["none-snapshot-cli"]));
+        // `zfs destroy -r` says `dataset does not exist`: nothing to
+        // destroy.
+        let mut zfs = rec.adapter(&["none-destroy"]);
+        assert_eq!(zfs.destroy(NONE, "t"), Ok(()), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), rec.words(&["none-destroy"]));
         let mut zfs = rec.adapter(&["none-members"]);
         assert_eq!(
             zfs.members(NONE, "t"),
@@ -586,36 +605,36 @@ fn members_and_tagged_read_as_recorded() {
             "ubuntu-24.04",
             RIG,
             [
-                17353074155095446544,
-                13562140079100978298,
-                18141824629642732154,
+                8905661274482556820,
+                8050233510262137147,
+                16412086501098145477,
             ],
         ),
         (
             "ubuntu-24.04",
             MIRROR,
             [
-                13892159943213334028,
-                5615502437729244678,
-                7722993079470159888,
+                4662300770688396129,
+                15588697527660357681,
+                12087243843237415635,
             ],
         ),
         (
             "ubuntu-26.04",
             RIG,
             [
-                12891517287467393622,
-                11768059368557484299,
-                3958339386605656179,
+                13512717866315419289,
+                7783646357815522231,
+                9168614937943910373,
             ],
         ),
         (
             "ubuntu-26.04",
             MIRROR,
             [
-                9977119690113618384,
-                17106774907999532740,
-                12892526617983999289,
+                11097694641216761050,
+                6093465432507679344,
+                2749200871953126555,
             ],
         ),
     ];
@@ -663,19 +682,119 @@ fn members_and_tagged_read_as_recorded() {
     }
 }
 
-/// The take is `zfs snapshot -r POOL@T` (M2.6c-2b): as recorded, it
-/// exits 0 with nothing on either output, and the adapter's words are
-/// the record's. The recording of its failures waits for the recorder's
-/// next run (testing's #152).
+/// The take is `zfs snapshot -r POOL@T` (M2.6c-2b), as recorded on each
+/// pool (testing's #152):
+/// - taken: exit 0 with nothing on either output, even with
+///   `snapshot_limit=0` set on a member (the recorder runs as root);
+/// - a member's `@p` taken before: `dataset already exists` for it, then
+///   `no snapshots were created` (the list after shows no other `@p`);
+/// - every `@t` there: one such line for each member, in an order that
+///   varies between runs.
+///
+/// The last two are [`ZfsError::Exists`]. The adapter's words are the
+/// record's. Mutant: `EEXIST` read as another error.
 #[test]
 fn the_take_as_recorded() {
     for rec in recordings() {
         for pool in [RIG, MIRROR] {
             let prefix = if pool == RIG { "rig" } else { "mirror" };
-            let name = format!("{prefix}-snapshot-cli");
-            let mut zfs = rec.adapter(&[name.as_str()]);
-            assert_eq!(zfs.snapshot(pool, "t"), Ok(()), "{} {pool}", rec.image);
-            assert_eq!(ran(&mut zfs), rec.words(&[name.as_str()]));
+            for (what, t, want) in [
+                ("cli-limit", "q", Ok(())),
+                ("cli-exists-child", "p", Err(ZfsError::Exists)),
+                ("cli-exists-root", "t", Err(ZfsError::Exists)),
+            ] {
+                let name = format!("{prefix}-{what}");
+                let mut zfs = rec.adapter(&[name.as_str()]);
+                assert_eq!(zfs.snapshot(pool, t), want, "{} {name}", rec.image);
+                assert_eq!(ran(&mut zfs), rec.words(&[name.as_str()]));
+            }
+            let after = rec.get(&format!("{prefix}-cli-exists-child-after")).stdout;
+            let p: Vec<&str> = after.lines().filter(|l| l.ends_with("@p")).collect();
+            assert_eq!(p, [format!("{pool}/child@p")], "{}", rec.image);
         }
+    }
+}
+
+/// `zfs destroy -r POOL@T` as recorded on the rig's pool: destroyed;
+/// no such snapshot (`could not find any snapshots to destroy`), which
+/// is destroyed; and a member's `@t` with a hold, which is an error, and
+/// destroyed none (the list after). ZFS 2.2's userland (24.04) says
+/// `dataset is busy` of the hold, and 2.4.1's (26.04) `it's being held`. Mutants: no
+/// such snapshot read as an error, a hold read as destroyed.
+#[test]
+fn the_destroy_as_recorded() {
+    for rec in recordings() {
+        let mut zfs = rec.adapter(&["rig-destroy"]);
+        assert_eq!(zfs.destroy(RIG, "o0"), Ok(()), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), rec.words(&["rig-destroy"]));
+
+        let mut zfs = rec.adapter(&["rig-destroy-absent"]);
+        assert_eq!(zfs.destroy(RIG, "absent"), Ok(()), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), rec.words(&["rig-destroy-absent"]));
+
+        let mut zfs = rec.adapter(&["rig-destroy-held"]);
+        let says = if rec.image == "ubuntu-24.04" {
+            "dataset is busy"
+        } else {
+            "it's being held"
+        };
+        match zfs.destroy(RIG, "o2") {
+            Err(ZfsError::Other(why)) => assert!(
+                why.contains(&format!("cannot destroy snapshot skzq/child@o2: {says}")),
+                "{}: {why}",
+                rec.image
+            ),
+            other => panic!("{}: {other:?}", rec.image),
+        }
+        assert_eq!(ran(&mut zfs), rec.words(&["rig-destroy-held"]));
+        let after = rec.get("rig-destroy-held-after").stdout;
+        for kept in ["skzq@o2", "skzq/child@o2", "skzq/vol@o2"] {
+            assert!(after.lines().any(|l| l == kept), "{}: {after}", rec.image);
+        }
+    }
+}
+
+/// A hold on the root's `@t` alone (TL-T2 of #147's review), as
+/// recorded on the rig's pool: `zfs hold -r` says `tag already exists`
+/// and holds none, so the hold is refused, naming the members that lack
+/// it; `held` reads a part; `zfs release -r` then releases it, and
+/// `held` reads none. Mutants: a part read as held, the refusal not
+/// naming the members.
+#[test]
+fn a_hold_on_the_root_alone_as_recorded() {
+    for rec in recordings() {
+        let names = ["rig-hold-r-partial", "rig-members", "rig-holds-r-partial"];
+        let mut zfs = rec.adapter(&names);
+        match zfs.hold(RIG, "t", TAG) {
+            Err(ZfsError::Other(why)) => assert!(
+                why.ends_with("the tag is on some members and not on skzq/child@t, skzq/vol@t"),
+                "{}: {why}",
+                rec.image
+            ),
+            other => panic!("{}: {other:?}", rec.image),
+        }
+        assert_eq!(ran(&mut zfs), rec.words(&names));
+
+        let read = ["rig-members", "rig-holds-r-partial"];
+        let mut zfs = rec.adapter(&read);
+        let members = zfs.members(RIG, "t").expect("the members");
+        assert_eq!(
+            zfs.held(RIG, "t", TAG, members.as_deref()),
+            Ok(Held::Part),
+            "{}",
+            rec.image
+        );
+        assert_eq!(ran(&mut zfs), rec.words(&read));
+
+        let mut zfs = rec.adapter(&["rig-release-r-partial"]);
+        assert_eq!(zfs.release(RIG, "t", TAG), Ok(()), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), rec.words(&["rig-release-r-partial"]));
+        let mut zfs = rec.adapter(&["rig-holds-r-after-partial"]);
+        assert_eq!(
+            zfs.held(RIG, "t", TAG, members.as_deref()),
+            Ok(Held::No),
+            "{}",
+            rec.image
+        );
     }
 }

@@ -371,6 +371,12 @@ pub trait Zfs {
     fn props(&mut self, pool: &str) -> Result<Props, ZfsError>;
     /// Whether the module parameter `zfs_nocacheflush` is set.
     fn nocacheflush(&mut self) -> Result<bool, ZfsError>;
+    /// How many file systems and volumes the pool has. The count sets
+    /// the time limits of the calls that follow it, until the next count
+    /// (the adapter's `Limits`; the lead's rule on M2.6c-2b). Where it
+    /// fails, they are the longest. The engine counts once at the start
+    /// of each round, before the sweep.
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError>;
     /// `zfs snapshot -r pool@t`: `@t` of the pool and every descendant
     /// in one group, or none. A member's `@t` that exists fails it as a
     /// whole ([`ZfsError::Exists`]).
