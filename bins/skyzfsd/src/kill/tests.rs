@@ -1206,3 +1206,242 @@ fn a_cut_under_way_read_on_after_the_acceptance_is_not_chosen() {
         ]
     );
 }
+
+/// R2 and R1 of the review of #150, for each kill point: publish 1's
+/// transaction is asked on cut 7 and its call fails, after it landed
+/// (the refs object's write takes effect, then an error: R2) or before
+/// (R1). The hook cannot tell the two apart and gives up, saying so: it
+/// kills nowhere, though the publish waits its first second while cut 8
+/// is read and committed. Once the wait is over the publish is made on
+/// cut 7 (found there in R2). The post that follows ends publish 1, and
+/// the hook says nothing more (G1). Mutant: `KillRemote::publish`
+/// returns at the error without telling the hook (the hook kills at
+/// cut 8).
+#[test]
+fn a_publish_n_whose_call_failed_gives_the_hook_up() {
+    for kill in [KillAt::CarrySwap(1), KillAt::CarryPut(1)] {
+        for landed in [true, false] {
+            let held = vec![
+                (offered(7, 7, true), 2, false),
+                (offered(8, 8, true), 1, false),
+            ];
+            let (mut driver, carry, faults, said) = rig(kill, held);
+            // The check of 7 and its first slice, the acceptance, then
+            // the lookup, the last slice of 7 and its commit.
+            let mut seen = steps(&mut driver, &said, 2);
+            accept(&mut driver, &carry);
+            seen.extend(steps(&mut driver, &said, 3));
+            if landed {
+                block_on(faults.arm_after(FaultOp::Put, "/refs", 0));
+            } else {
+                block_on(faults.arm(FaultOp::Put, "/refs", 0));
+            }
+            let failed = block_on(driver.step());
+            block_on(faults.disarm());
+            assert!(
+                failed.is_err(),
+                "{kill:?} {landed}: the call failed: {failed:?}"
+            );
+            let wait = driver
+                .publish_failed(tokio::time::Instant::now())
+                .expect("the publish waits");
+            // Cut 8: checked, read and committed while the publish waits.
+            seen.extend(steps(&mut driver, &said, 3));
+            assert!(wait <= std::time::Duration::from_secs(30), "{wait:?}");
+            std::thread::sleep(wait + std::time::Duration::from_millis(50));
+            seen.extend(steps(&mut driver, &said, 3));
+            assert!(published_on(&seen, 7), "{kill:?} {landed}: {seen:?}");
+            assert_eq!(
+                landed,
+                seen.iter().any(|s| s.contains("found: true")),
+                "{kill:?} {landed}: found made where it landed: {seen:?}"
+            );
+            crate::upload::Around::posted(&carry, &driver.publishing().take_ended());
+            let point = match kill {
+                KillAt::CarryPut(_) => "carry-put:1",
+                _ => "carry-swap:1",
+            };
+            assert_eq!(
+                hooks(&taken(&said)),
+                [
+                    format!("say {point}: {ARMED}"),
+                    format!(
+                        "say {point}: publish 1 (t) may have been made (its call failed) on cut \
+                         7 (group 7), which the hook did not choose, before the hook fired; no \
+                         kill"
+                    ),
+                ],
+                "{kill:?} {landed}: {seen:?}"
+            );
+        }
+    }
+}
+
+/// One step of the cut, or of the publishes, in the order the uploader's
+/// turns give them (`Turns::next` in `skyzfs-upload`'s `uploader.rs`),
+/// not a publish first as `Driver::step` does.
+fn cut_step(driver: &mut Rig, seen: &mut Vec<String>) {
+    let step = block_on(driver.step_cut());
+    seen.push(format!("cut: {step:?}"));
+}
+
+fn publish_step(driver: &mut Rig, seen: &mut Vec<String>) {
+    let step = block_on(driver.step_publish());
+    seen.push(format!("publish: {step:?}"));
+}
+
+/// T of the review of #150, the window the module docs describe, for
+/// each kill point and in both cases: publish 1 accepted while cut 7, its
+/// carrier, uploads (case A) or after cut 7 committed (case B). The
+/// lookup takes a turn; the publish is then due on cut 7, but the cut has
+/// the next turns, as the uploader gives them where the lookup took
+/// longer than the cut's turns: cut 8 is checked, read (chosen) and
+/// committed before the publish's transaction. The hook kills at cut 8,
+/// and the publish's next step would make it on cut 7. No fault is
+/// needed. (After the restart, the publish asked again is made on cut 8,
+/// the cut the kill line names: the module docs.)
+#[test]
+fn the_uploaders_turns_can_have_the_hook_kill_at_a_cut_after_the_carrier() {
+    for kill in [KillAt::CarrySwap(1), KillAt::CarryPut(1)] {
+        for case_b in [false, true] {
+            let held = vec![
+                (offered(7, 7, true), if case_b { 1 } else { 2 }, false),
+                (offered(8, 8, true), 1, false),
+            ];
+            let (mut driver, carry, _faults, said) = rig(kill, held);
+            let mut seen = Vec::new();
+            cut_step(&mut driver, &mut seen); // Began 7
+            cut_step(&mut driver, &mut seen); // Read 7, its first slice
+            if case_b {
+                cut_step(&mut driver, &mut seen); // Uploaded 7
+            }
+            accept(&mut driver, &carry);
+            publish_step(&mut driver, &mut seen); // the lookup
+            if !case_b {
+                cut_step(&mut driver, &mut seen); // Read 7, its last slice
+                cut_step(&mut driver, &mut seen); // Uploaded 7
+            }
+            let due = driver.publish_due();
+            cut_step(&mut driver, &mut seen); // Began 8
+            cut_step(&mut driver, &mut seen); // Read 8: chosen
+            cut_step(&mut driver, &mut seen); // Uploaded 8
+            let lines = hooks(&taken(&said));
+            publish_step(&mut driver, &mut seen); // the publish's transaction
+            assert!(due, "{kill:?} {case_b}: due when cut 8 was checked");
+            assert!(
+                lines
+                    .last()
+                    .is_some_and(|s| s.starts_with("kill") && s.contains("of cut 8 (group 8)")),
+                "{kill:?} {case_b}: the kill fell at cut 8: {lines:?}"
+            );
+            assert!(
+                published_on(&seen, 7),
+                "{kill:?} {case_b}: publish 1 made on cut 7: {seen:?}"
+            );
+        }
+    }
+}
+
+/// A store that holds whole cuts, as `Holds`, and writes its releases
+/// down in the log, so that the log shows whether a kill came before the
+/// cut was let go.
+struct HoldsSaid {
+    holds: Holds,
+    said: Said,
+}
+
+impl Store for HoldsSaid {
+    fn uploadable(&mut self) -> Option<Uploadable> {
+        Store::uploadable(&mut self.holds)
+    }
+    fn read(&mut self, number: u64, from: u64, buf: &mut Buf) -> std::io::Result<CutSlice> {
+        Store::read(&mut self.holds, number, from, buf)
+    }
+    fn begin_sync_copies(&mut self, number: u64) -> std::io::Result<()> {
+        Store::begin_sync_copies(&mut self.holds, number)
+    }
+    fn copies_synced(&mut self, wait: bool) -> Option<std::io::Result<()>> {
+        Store::copies_synced(&mut self.holds, wait)
+    }
+    fn release(&mut self, number: u64) -> Released {
+        self.said
+            .lock()
+            .expect("the log")
+            .push(format!("release {number}"));
+        Store::release(&mut self.holds, number)
+    }
+    fn name_committed(&mut self, number: u64, group: u64) -> bool {
+        Store::name_committed(&mut self.holds, number, group)
+    }
+    fn abandon_all(&mut self) -> Vec<u64> {
+        Store::abandon_all(&mut self.holds)
+    }
+    fn cuts(&mut self) -> CutsNow {
+        Store::cuts(&mut self.holds)
+    }
+}
+
+/// F2, the order its line claims (G2 of the review of #150): where the
+/// chosen cut's commit lands and its call fails, `carry-swap` fires as
+/// the cut is let go, before it is. The test of the review, taken.
+/// Mutant: the hook told after the inner release.
+#[test]
+fn carry_swap_at_the_release_fires_before_the_cut_is_let_go() {
+    let (store, said) = log();
+    let (remote, _, epoch) = placed(&store);
+    let faults = FaultStore::new(store);
+    let refs = Arc::new(ObjectRefStore::new(faults.clone()));
+    let die = noted(&said);
+    let kill = KillAt::CarrySwap(1);
+    let carry = Carry::new(Some(kill), Arc::clone(&die), heard(&said)).expect("a carry hook");
+    let mut make = maker(
+        faults.clone(),
+        refs,
+        "node-a".into(),
+        remote.id,
+        Some(kill),
+        die,
+        Some(Arc::clone(&carry)),
+    );
+    let holds = HoldsSaid {
+        holds: Holds {
+            held: vec![
+                (offered(7, 7, true), 1, false),
+                (offered(8, 8, true), 1, false),
+            ],
+        },
+        said: Arc::clone(&said),
+    };
+    let mut driver = skyzfs_upload::Driver::with_slices(
+        KillLocal::new(holds, Arc::clone(&carry)),
+        make(epoch),
+        1,
+    )
+    .with_publishing(skyzfs_upload::Publishing::new(
+        Some([0xa1; 16]),
+        Some(STATE),
+    ));
+    let _ = taken(&said);
+    assert_eq!(
+        driver.publishing().ask(request("t", 6, 7)),
+        Answer::Accepted
+    );
+    asked(&carry, request("t", 6, 7), Answer::Accepted);
+    for _ in 0..3 {
+        let _ = block_on(driver.step());
+    }
+    block_on(faults.arm_after(FaultOp::Put, "/refs", 0));
+    let _ = block_on(driver.step());
+    block_on(faults.disarm());
+    let _ = block_on(driver.step());
+    let log = taken(&said);
+    let kill = log
+        .iter()
+        .position(|s| s.starts_with("kill "))
+        .expect("a kill");
+    let release = log
+        .iter()
+        .position(|s| s == "release 7")
+        .expect("cut 7 let go");
+    assert!(kill < release, "killed before the cut was let go: {log:?}");
+}

@@ -62,10 +62,31 @@
 //! began before the publish was accepted, or one committed before (F1 of
 //! the review of #150). So where publish N is made, on any cut, or ends
 //! without being made, before the hook has fired, the hook says so and
-//! gives up: it kills nowhere in that serve. Where the chosen cut's
-//! commit lands before the publish's step has made it on another cut,
-//! the hook still fires; the kill line names the cut chosen, which a rig
-//! compares with the cut the snapshot's row names after the restart.
+//! gives up: it kills nowhere in that serve. So does a publish N whose
+//! transaction was asked and whose call failed, since it may have landed
+//! with its answer lost (R2 of the review of #150); the conservative
+//! reading, which gives the hook up also where the transaction failed
+//! before it landed.
+//!
+//! What remains is reached with no fault, in the uploader's ordinary
+//! order of turns (T of the review of #150): the uploader gives the next
+//! step to the cut or to the publishes by the time each has had since
+//! both had work (`Turns::next` in `skyzfs-upload`'s `uploader.rs`), not
+//! a publish first as `Driver::step` does. Where publish N's lookup took
+//! longer than the next cut's check and first read, the cut may have
+//! the next turns while the publish is due on a committed cut: a cut
+//! read after the acceptance is chosen, and the hook fires at it
+//! (`carry-put` at its first segment PUT, `carry-swap` once its commit
+//! landed) before the publish's step has made it on the earlier cut. The
+//! killed serve would have made it there; the earlier cut was let go
+//! before the kill, and a new uploader knows only the cuts it committed
+//! or found committed since it began, so after the restart the publish
+//! asked again is made on the cut the kill line names (reasoned from the
+//! code, not run). The course is still a kill between the acceptance and
+//! the ref, at a cut that comes to carry publish N. A rig that compares
+//! the kill line's cut with the cut the snapshot's row names after the
+//! restart sees the same cut in this course; a difference is a finding
+//! against the daemon.
 //!
 //! The kill line names the cut chosen by its number and group. The hook
 //! also says on standard error, without killing, when it arms (publish N
@@ -355,6 +376,23 @@ impl Carry {
     /// hook has not fired, the hook gives up, whichever cut it was (F1 of
     /// the review of #150).
     fn published(&self, name: &str, cut: CommittedCut) {
+        self.gives_up_at(name, cut, "was made on");
+    }
+
+    /// Publish `name`'s transaction on `cut` was asked and its call
+    /// failed: it may have landed, with its answer lost, so the publish
+    /// may be made on `cut`. Where it is publish N and the hook has not
+    /// fired, the hook gives up as for a publish made (R2 of the review
+    /// of #150). The conservative reading: a transaction that failed
+    /// before it landed gives the hook up too (R1), which costs only that
+    /// serve's kill.
+    fn publish_failed(&self, name: &str, cut: CommittedCut) {
+        self.gives_up_at(name, cut, "may have been made (its call failed) on");
+    }
+
+    /// Where publish `name` is publish N and the hook has not fired, give
+    /// the hook up, saying that the publish `what` `cut`.
+    fn gives_up_at(&self, name: &str, cut: CommittedCut, what: &str) {
         let mut seen = self.seen();
         if seen.done
             || seen
@@ -372,8 +410,8 @@ impl Carry {
         };
         drop(seen);
         self.say_all(vec![format!(
-            "publish {} ({name}) was made on cut {} (group {}), {which}, before the hook \
-             fired; no kill",
+            "publish {} ({name}) {what} cut {} (group {}), {which}, before the hook fired; \
+             no kill",
             self.n, cut.number, cut.group
         )]);
     }
@@ -787,7 +825,14 @@ impl<R: Remote> Remote for KillRemote<R> {
         commit: CommitHash,
         snapshot: &Snapshot<'_>,
     ) -> std::result::Result<(), RemoteError> {
-        self.inner.publish(commit, snapshot).await?;
+        if let Err(e) = self.inner.publish(commit, snapshot).await {
+            // The transaction may have landed and its answer been lost:
+            // the publish may be made already (R2 of the review of #150).
+            if let Some(carry) = &self.carry {
+                carry.publish_failed(snapshot.name, snapshot.row.cut);
+            }
+            return Err(e);
+        }
         self.publishes += 1;
         if self.publish_at == Some(self.publishes) {
             (self.die)(&format!(
