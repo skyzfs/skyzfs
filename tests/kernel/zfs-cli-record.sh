@@ -116,7 +116,10 @@
 #                          tagged.lua before any hold
 #   members-full, members-full-absent
 #                          members.lua in its full mode (`POOL T full
-#                          ASSIST`) at t and at a t that is absent
+#                          ASSIST`) at t and at a t that is absent. Every
+#                          members-full record is made only where
+#                          members.lua has that mode (#153 on), and
+#                          about.txt says when it has not
 #   hold-1, holds, holds-r, hold-2, tagged-held, release-1,
 #   holds-r-released, release-2
 #                          the holds, and hold and release twice for the
@@ -151,6 +154,9 @@
 #                          before taking anything (EEXIST, expected; only
 #                          with snapshot.lua), then the snapshots that
 #                          are there
+#   members-full-partial   members.lua in its full mode at p, which the
+#                          child has and the root has not (after
+#                          exists-child-pre)
 #   cli-exists-child, cli-exists-child-after, cli-exists-root
 #                          zfs snapshot -r, the take, where it fails: at
 #                          @p, which the child has ("dataset already
@@ -235,6 +241,10 @@ PROGRAM_LIMITS=(-t 100000000 -m 104857600)
 # Whether LUA_DIR has the snapshot program (main): 0 once the take is
 # `zfs snapshot -r` alone.
 SNAPSHOT_LUA=1
+# Whether members.lua has its full mode (main): 0 for a members.lua from
+# before #153, whose answer to `... T full ASSIST` is the plain mode's,
+# so that no record is named for a mode that did not run.
+MEMBERS_FULL=1
 # The adapter's hold tag and assist property.
 TAG=skyzfs-publish
 ASSIST=skyzfs:assist
@@ -389,6 +399,25 @@ cli_snapshot() {
     rec "$name" zfs snapshot -r "$p@t"
 }
 
+# has_full FILE: whether the members program FILE has its full mode:
+# the word "full" quoted, which the program before #153 has nowhere.
+has_full() {
+    grep -q '"full"' "$1"
+}
+
+# full NAME POOL [--locale L] T: members.lua in its full mode at T, as
+# the adapter reads the manifest; nothing without that mode.
+full() {
+    [ "$MEMBERS_FULL" = 1 ] || return 0
+    local name=$1 p=$2 locale=()
+    shift 2
+    if [ "$1" = --locale ]; then
+        locale=(--locale "$2")
+        shift 2
+    fi
+    program "$name" "$p" members.lua "${locale[@]}" -n "$p" "$1" full "$ASSIST"
+}
+
 # members_line RECORD: how many members (datasets, in the full mode)
 # the members program's RECORD listed, in about.txt.
 members_line() {
@@ -458,8 +487,8 @@ record_pool() { # prefix pool
     fi
     program "$x-members" "$p" members.lua -n "$p" t
     program "$x-members-absent" "$p" members.lua --expect '"absent"' -n "$p" absent
-    program "$x-members-full" "$p" members.lua -n "$p" t full "$ASSIST"
-    program "$x-members-full-absent" "$p" members.lua -n "$p" absent full "$ASSIST"
+    full "$x-members-full" "$p" t
+    full "$x-members-full-absent" "$p" absent
     program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
     rec "$x-hold-1" zfs hold -r "$TAG" "$p@t"
     rec "$x-holds" zfs holds -H "$p@t"
@@ -493,10 +522,12 @@ record_pool() { # prefix pool
         rec "$x-take-o2" zfs snapshot -r "$p@o2"
     fi
     # The manifest's reading of those properties, in each locale.
-    program "$x-members-full-odd" "$p" members.lua -n "$p" o0 full "$ASSIST"
-    program "$x-members-full-odd-utf8" "$p" members.lua --locale C.UTF-8 -n "$p" o2 full "$ASSIST"
+    full "$x-members-full-odd" "$p" o0
+    full "$x-members-full-odd-utf8" "$p" --locale C.UTF-8 o2
     # The check refuses before anything is taken: the child has @p.
     rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
+    # A state that some members have: the child's @p alone.
+    full "$x-members-full-partial" "$p" p
     if [ "$SNAPSHOT_LUA" = 1 ]; then
         program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
     fi
@@ -541,7 +572,7 @@ record_none() { # prefix pool
     local x=$1 p=$2
     agent_commands "$x" "$p"
     program "$x-members" "$p" members.lua -n "$p" t
-    program "$x-members-full" "$p" members.lua -n "$p" t full "$ASSIST"
+    full "$x-members-full" "$p" t
     program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
     rec "$x-holds" zfs holds -H "$p@t"
     rec "$x-holds-r" zfs holds -H -r "$p@t"
@@ -795,8 +826,12 @@ scale() {
                 ;;
             # What the manifest reads after the take, at this count.
             take-cli-full)
-                program "scale-$n-take-cli-full" "$p" members.lua -n "$p" c full "$ASSIST"
-                members_line "scale-$n-take-cli-full"
+                if [ "$MEMBERS_FULL" = 1 ]; then
+                    full "scale-$n-take-cli-full" "$p" c
+                    members_line "scale-$n-take-cli-full"
+                else
+                    echo "scale $n: the full mode not run: members.lua has none" >> "$OUT/about.txt"
+                fi
                 ;;
         esac
     done
@@ -836,6 +871,7 @@ main() {
         [ -r "$LUA_DIR/$f.lua" ] || { echo "no $f.lua in $LUA_DIR" >&2; exit 64; }
     done
     [ -r "$LUA_DIR/snapshot.lua" ] || SNAPSHOT_LUA=0
+    has_full "$LUA_DIR/members.lua" || MEMBERS_FULL=0
     mkdir -p "$OUT" "$WORK"
     OUT=$(cd "$OUT" && pwd)
     LUA_DIR=$(cd "$LUA_DIR" && pwd)
@@ -896,6 +932,7 @@ main() {
         echo "zfs userland $(zfs version 2> /dev/null | head -n 1)"
         echo "lua from ${LUA_REF:-$LUA_DIR}"
         [ "$SNAPSHOT_LUA" = 1 ] || echo "no snapshot.lua: the take is zfs snapshot -r alone; the snapshot program's records are not made"
+        [ "$MEMBERS_FULL" = 1 ] || echo "members.lua has no full mode: the members-full records are not made"
         tail -n 1 "$OUT/ublksrv.ver"
     } > "$OUT/about.txt"
     cp "$LUA_DIR"/*.lua "$OUT/"

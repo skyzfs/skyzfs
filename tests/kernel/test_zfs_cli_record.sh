@@ -252,6 +252,9 @@ check "members full, odd in C.UTF-8 after its take" "$(order rig-snapshot-odd-ut
 check "members full, odd before the destroy" "$(order rig-members-full-odd rig-destroy)" yes
 check "members full, odd in C.UTF-8 before the destroy" "$(order rig-members-full-odd-utf8 rig-destroy-held)" yes
 check "members full, odd after the properties" "$(order rig-set-raw rig-members-full-odd)" yes
+check "pin members full, partial" "$(words rig-members-full-partial)" "zfs program -n $P skzq - skzq p full skyzfs:assist "
+check "members full, partial after the child's @p" "$(order rig-exists-child-pre rig-members-full-partial)" yes
+check "members full, partial before the take at @p" "$(order rig-members-full-partial rig-cli-exists-child)" yes
 # The writer beside each take: its log and its stall, in the record
 # and in about.txt.
 for r in snapshot take-cli; do
@@ -475,7 +478,32 @@ check "no lua: the child's @p still made" "$(words rig-exists-child-pre)" "zfs s
 check "no lua: scale said" "$(grep -c '^scale 3: the snapshot program not run: there is no snapshot.lua$' "$OUT/about.txt")" 1
 check "no lua: scale's @t by the CLI" "$(words scale-3-snapshot-cli)" "zfs snapshot -r skzqs@t "
 check "no lua: scale's full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+check "no lua: members full, partial" "$(words rig-members-full-partial)" "zfs program -n $P skzq - skzq p full skyzfs:assist "
 check "no lua: main needs members and tagged alone" "$(grep -v '^ *#' "$HERE/zfs-cli-record.sh" | grep -c '^    for f in members tagged; do$')" 1
+
+# A members.lua without the full mode (before #153): no members-full
+# record, as its answer would be the plain mode's under a full name.
+printf -- '-- members\nif not zfs.exists(pool .. "@" .. t) then\n' > "$T/plain.lua"
+printf -- '-- members\nif mode ~= "full" then\n' > "$T/full.lua"
+check "has_full: the plain program" "$(has_full "$T/plain.lua" && echo yes || echo no)" no
+check "has_full: #153's" "$(has_full "$T/full.lua" && echo yes || echo no)" yes
+# shellcheck disable=SC2016 # the line as written in the script
+check "has_full: in main" "$(grep -v '^ *#' "$HERE/zfs-cli-record.sh" | grep -c '^    has_full "$LUA_DIR/members.lua" || MEMBERS_FULL=0$')" 1
+OUT=$T/nofull
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+MEMBERS_FULL=0
+SCALE_END=$(($(date +%s) + 600))
+record_pool rig skzq > /dev/null 2> "$T/nofull.err"
+record_none none skznone > /dev/null 2>> "$T/nofull.err"
+ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/nofull.err"
+MEMBERS_FULL=1
+check "no full: no name twice" "$(grep -c twice "$T/nofull.err")" 0
+check "no full: no full record" "$(find "$OUT" -mindepth 1 -maxdepth 1 -type d -name '*-full*' | wc -l)" 0
+check "no full: no full mode run" "$(cat "$OUT"/*/argv | tr '\0' ' ' | grep -c ' full skyzfs:assist')" 0
+check "no full: the rest recorded" "$(words rig-members)/$(words rig-count)" "zfs program -n $P skzq - skzq t /zfs list -r -H -o name -t filesystem,volume skzq "
+check "no full: scale said" "$(grep -c '^scale 3: the full mode not run: members.lua has none$' "$OUT/about.txt")" 1
+check "no full: no scale line" "$(grep -c '^scale: scale-3-take-cli-full' "$OUT/about.txt")" 0
 OUT=$T/pins
 check "the take's create: -u, each" "$(grep -c '^C create -u skzqs/d[123]$' "$OUT/create-skzqs-3.log")" 3
 

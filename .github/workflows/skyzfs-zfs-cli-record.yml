@@ -121,6 +121,10 @@ jobs:
           else
             echo "No snapshot.lua at $LUA_REF: the snapshot program's records are not made." >> "$GITHUB_STEP_SUMMARY"
           fi
+          # As the recorder's has_full: the full mode is #153's.
+          if ! grep -q '"full"' lua/members.lua; then
+            echo "members.lua at $LUA_REF has no full mode: the members-full records are not made." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Record
         run: |
           case $ZCR_SCALE in
