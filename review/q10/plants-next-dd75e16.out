@@ -1,0 +1,48 @@
+base: unit test passes (63 ok)
+U1	caught	program: -j dropped	(FAIL: program -n: got 'program -n -t 100000000 -m 104857600 skzq - skzq t', want 'program )
+U2	caught	program: memory limit 100 MB, not MiB	(FAIL: program -n: got 'program -n -j -t 100000000 -m 100000000 skzq - skzq t', want 'progr)
+U3	caught	rec: stdin not given	(FAIL: stdin read: got '', want 'the program')
+U4	caught	rec: no limit	(FAIL: limit: got '0', want '124')
+U5	caught	catch: no limit	(FAIL: hung: one try: got 'not caught: no output of 3 matched /never/; this is the last', w)
+U6	caught	catch: pattern read on stderr	(FAIL: caught: rc: got '1', want '0')
+U7	not caught	catch: rc of the first try kept, not the last
+U8	caught	keep: a name used twice not refused	(FAIL: catch twice: rc: got '0', want '70')
+U9	caught	status: zpool status without -P	(FAIL: pin status: got 'zpool status skzq ', want 'zpool status -P skzq ')
+U10	caught	agent_commands: zpool get without -p	(FAIL: pin get: got 'zpool get -H -o property,value guid,load_guid,multihost,readonly,check)
+U11	caught	record_pool: holds -r without -H	(FAIL: pin holds -r: got 'zfs holds -r skzq@t ', want 'zfs holds -H -r skzq@t ')
+U12	caught	hold tag changed (TAG=skyzfs)	(FAIL: pin tagged: got 'zfs program -n -j -t 100000000 -m 104857600 skzq - skzq skyzfs ', w)
+U13	caught	record_pool: members.lua run without -n	(FAIL: pin members: got 'zfs program -j -t 100000000 -m 104857600 skzq - skzq t ', want 'zf)
+U14	caught	catch: the not-caught note says caught	(FAIL: not caught: note: got 'caught at try 5', want 'not caught: no output of 4 matched /r)
+U15	caught	catch: returns 0 when not caught	(FAIL: not caught: rc: got '0', want '1')
+U16	caught	program: --locale read and dropped	(FAIL: program --locale: got 'program -n -j -t 100000000 -m 104857600 skzq - skzq t)
+U17	caught	program: --locale sets LANG, not LC_ALL	(FAIL: program --locale: got 'unset program -n -j -t 100000000 -m 104857600 skzq - skzq t',)
+V1	caught	main: export LC_ALL=C.UTF-8 in place of C	(FAIL: pin the locale: got '0', want '1')
+V2	not caught	main: LC_ALL=C.UTF-8 exported again after the pinned line
+V3	not caught	rec: the command run with LC_ALL=C.UTF-8
+V4	not caught	record_pool: tagged-held without -n
+V5	not caught	main: none-members without -n
+V6	not caught	record_pool: hold-2 without -r
+V7	not caught	record_pool: release-2 without -r
+V8	not caught	main: none-hold with the old tag
+V9	not caught	main: rig-resilvered without its -g partner
+V10	caught	program: instruction limit 10^7	(FAIL: program -n: got 'program -n -j -t 10000000 -m 104857600 skzq - skzq t', want 'progra)
+V11	caught	agent_commands: snapshot program run with -n	(FAIL: pin snapshot: got 'zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t skyzfs:)
+V12	caught	status: -g dropped from the partner	(FAIL: pin status -g: got 'zpool status -P skzq ', want 'zpool status -P -g skzq ')
+V13	caught	assist property changed	(FAIL: pin assist set: got 'zfs set skyzfs:assisted=1700000000001 skzq ', want 'zfs set sky)
+V14	caught	agent_commands: zpool sync -f	(FAIL: pin assist sync: got 'zpool sync -f skzq ', want 'zpool sync skzq ')
+V15	caught	record_pool: holds without -H	(FAIL: pin holds: got 'zfs holds skzq@t ', want 'zfs holds -H skzq@t ')
+V16	caught	scale: hold without -r	(FAIL: pin scale hold: got 'zfs hold skyzfs-publish skzqs@t ', want 'zfs hold -r skyzfs-pub)
+V17	not caught	scale: members without -n
+V18	caught	scale: its limit not local (leaks into the rest)	(FAIL: scale's limit is its own: got '7', want '5')
+V19	not caught	scale: its limit dropped (the usual 120 s)
+V20	caught	rec: secs not written	(FAIL: pin secs: got '', want '1')
+V21	caught	rec: secs in whole seconds	(FAIL: pin secs: got '0', want '1')
+V22	not caught	main: the bare wait dropped
+V23	caught	scale: its image not removed	(FAIL: scale's image removed: got 'yes', want 'no')
+V24	caught	catch: a try at the limit does not end the tries (S4)	(FAIL: hung: one try: got 'not caught: try 4 did not end within 1 s; this is it', want 'not)
+V25	caught	catch: scratch left when keep refuses (S6)	(FAIL: catch twice: no scratch left: got 'yes', want 'no')
+V26	not caught	keep: argv written with spaces, not NUL
+V27	caught	rec: --expect always seen (D4)	(FAIL: expected not seen: got 'expected /no such tag/: seen', want 'expected /no such tag/:)
+V28	caught	rec: --expect reads stdout only	(FAIL: expected seen: got 'expected /^err$/: NOT SEEN', want 'expected /^err$/: seen')
+V29	not caught	record_pool: hold-2 without --expect
+V30	not caught	main: rebuild pattern back to plain 'in progress'

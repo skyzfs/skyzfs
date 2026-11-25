@@ -1,0 +1,16 @@
+workflow: *[!0-9\ ]*) echo "::error::scale is counts separated by spaces: $ZCR_SCALE"; exit 64 ;;
+script:   case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
+''                                                           workflow passes   script (nothing)
+1000\ 10000                                                  workflow passes   script [1000: scale] [10000: scale]
+1000\ \ 10000\                                               workflow passes   script [1000: scale] [10000: scale]
+1e9                                                          workflow refused  script (nothing)
+1000\;id                                                     workflow refused  script (nothing)
+\$\(id\)                                                     workflow refused  script (nothing)
+1000\,2000                                                   workflow refused  script (nothing)
+$'1000\n2000'                                                workflow refused  script (nothing)
+$'1000\t2000'                                                workflow refused  script (nothing)
+\*                                                           workflow refused  script (nothing)
+007                                                          workflow passes   script [007: skipped]
+0                                                            workflow passes   script [0: skipped]
+99999999999999999999                                         workflow passes   script [99999999999999999999: scale]
+1\ 2\ 3\ 4\ 5\ 6\ 7\ 8\ 9\ 10\ 11\ 12\ 13\ 14\ 15\ 16\ 17\ 18\ 19\ 20 workflow passes   script [1: scale] [2: scale] [3: scale] [4: scale] [5: scale] [6: scale] [7: scale] [8: scale] [9: scale] [10: scale] [11: scale] [12: scale] [13: scale] [14: scale] [15: scale] [16: scale] [17: scale] [18: scale] [19: scale] [20: scale]

@@ -1,0 +1,37 @@
+# nl147_sandbox.lua runs (lua5.2 5.2.4), the program at 0f709ae and plants; last lines of each .expected
+## bytes
+cut	false
+instructions	14800
+json_bytes	8960
+## wide
+cut	false
+instructions	1234200
+json_bytes	264101
+## wide_plain
+cut	false
+instructions	5400
+json_bytes	132613
+## raises
+error	nl147_sandbox.lua:165: I/O error while retrieving property 'bad' on dataset 'tank'
+instructions	200
+taken	0
+## old-bytes
+error	program:42: attempt to call global 'pcall' (a nil value)
+instructions	200
+taken	0
+## nohex-bytes
+cut	true
+instructions	7400
+json_bytes	172
+## upper-bytes
+cut	false
+instructions	14800
+json_bytes	8960
+## del127-bytes
+cut	false
+instructions	14800
+json_bytes	8932
+## space-bytes
+cut	false
+instructions	14800
+json_bytes	8988

@@ -1,0 +1,17 @@
+# head 0f709ae, rustc 1.100.0 (0ef1bc386 2026-11-09), run as uid 0
+
+running 4 tests
+test host::nl147_host::h1_a_grandchild_holding_the_pipes_after_the_child_ended ... h1: TimedOut after 300.2199ms; grandchild 25450 alive after the call: true; threads 2 -> 4; stuck 0
+h1: grandchild ended within 5 s: true; threads now 2
+ok
+test host::nl147_host::h2_a_setsid_grandchild_escapes_the_group_kill ... h2: TimedOut after 300.222816ms; setsid grandchild 25944 ended within 0.5 s: false; threads 2 -> 4; stuck 0 -> 0
+h2: stuck back to 0 within 2 s: true
+h2: grandchild ended within 5 s: true; threads now 2
+ok
+test host::nl147_host::h3_a_stopped_child_is_killed_and_reaped ... h3: stopped child 26357 gone: true; stuck back: true
+ok
+test host::nl147_host::h4_five_calls_past_their_limit_in_a_row_are_not_refused ... h4: five TimedOut, none refused; stuck back to 0: true
+ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 6.85s
+

@@ -1,0 +1,19 @@
+# head 0f709ae, rustc 1.100.0 (0ef1bc386 2026-11-09), run as uid 0
+
+running 4 tests
+test nl147_client::c1_a_directory_a_fifo_or_a_file_at_the_path_is_refused ... c1 <tmp>/d: PermissionDenied <tmp>/d: not a socket (tries 0)
+c1 <tmp>/f: PermissionDenied <tmp>/f: not a socket (tries 0)
+c1 <tmp>/p: PermissionDenied <tmp>/p: not a socket (tries 0)
+ok
+test nl147_client::c2_the_race_to_another_users_listener_is_refused_by_the_peer_check ... listener: ready 54321
+c2: to root's socket 193999; to the other user's 0; refused by the peer check 3006; by the lstat 1180541
+ok
+test nl147_client::c3_the_race_to_another_root_listener_is_accepted ... listener: ready 0
+c3: to the daemon's socket 154108; to another root listener through the link 1294; refused by the peer check 0; by the lstat 1293857
+ok
+test nl147_client::c4_a_listener_that_drops_to_another_user_after_listen_is_root_to_the_peer_check ... listener: ready 54321
+c4: listen as root, then uid 54321: Ok("accepted")
+ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 6.07s
+

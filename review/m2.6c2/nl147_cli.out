@@ -1,0 +1,33 @@
+# head 0f709ae, rustc 1.100.0 (0ef1bc386 2026-11-09), run as uid 0
+
+running 7 tests
+test zfs::cli::nl147_cli::a1_the_sandboxed_programs_output_reads_back_to_its_bytes ... a1 bytes: 3 members, manifest 9052 bytes
+a1 wide: 17 members, manifest 264291 bytes
+a1 wide_plain: 17 members, manifest 132803 bytes
+ok
+test zfs::cli::nl147_cli::a2_every_byte_value_has_one_form_and_round_trips ... ok
+test zfs::cli::nl147_cli::a3_alternate_forms_are_refused ... a3 upper case: Some(NotCanonical)
+a3 mixed case: Some(NotCanonical)
+a3 hex of a printable value: Some(NotCanonical)
+a3 the empty value in hex: Some(NotCanonical)
+a3 a non-printable value as a string: Some(NotCanonical)
+a3 UTF-8 as a string: Some(NotCanonical)
+a3 a tab as a string: Some(NotCanonical)
+a3 odd length: Some(Shape("the local property `u:v` is not hex"))
+a3 a sign: Some(Shape("the local property `u:v` is not hex"))
+a3 a non-ASCII digit: Some(Shape("the local property `u:v` is not hex"))
+a3 a key more: Some(Shape("an encoded value has the keys [\"encoding\", \"value\", \"x\"], not [\"encoding\", \"value\"]"))
+a3 keys out of order: Some(NotCanonical)
+a3 the encoding's case: Some(Shape("the local property `u:v` is not in an encoding this agent reads"))
+ok
+test zfs::cli::nl147_cli::a4_the_cut_output_of_a_program_without_hex_destroys_what_it_took ... a4: zfs program (snapshot) exited 0 and its output cannot be read: not JSON: EOF while parsing a string at line 1 column 172; tank@t destroyed
+ok
+test zfs::cli::nl147_cli::a5_a_partial_hold_is_never_held ... ok
+test zfs::cli::nl147_cli::a6_missing_pool_name_and_a_status_that_fails_is_not_nopool ... ok
+test zfs::cli::nl147_cli::a7_a_drifted_program_is_refused_and_its_take_destroyed ... a7 upper: zfs program (snapshot) exited 0 and its output cannot be read: zfs program (snapshot): `tank`: `mountpoint` is `2F7372762F636166C3A9`, not the lower-case hex of a value that is not printable; tank@t d
+a7 del127: zfs program (snapshot) exited 0 and its output cannot be read: zfs program (snapshot): `tank`: `u:b127` is a string that is not printable ASCII; tank@t destroyed
+a7 space: zfs program (snapshot) exited 0 and its output cannot be read: zfs program (snapshot): `tank`: `u:b032` is `20`, not the lower-case hex of a value that is not printable; tank@t destroyed
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.02s
+

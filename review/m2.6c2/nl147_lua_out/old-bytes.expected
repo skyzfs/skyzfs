@@ -1,0 +1,3 @@
+error	program:42: attempt to call global 'pcall' (a nil value)
+instructions	200
+taken	0

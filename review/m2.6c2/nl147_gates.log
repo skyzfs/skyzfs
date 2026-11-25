@@ -1,0 +1,873 @@
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+0f709ae015eae55b116ec9cc3bb9ffe340973d0c
+== cargo fmt --all --check
+== exit 0
+== cargo clippy --workspace --all-targets -- -D warnings
+    Checking libc v0.2.187
+    Checking num-traits v0.2.19
+    Checking log v0.4.33
+    Checking tracing-core v0.1.36
+    Checking time v0.3.54
+    Checking tracing v0.1.44
+    Checking serde_core v1.0.229
+    Checking num-integer v0.1.46
+    Checking linux-raw-sys v0.12.1
+    Checking errno v0.3.14
+    Checking signal-hook-registry v1.4.8
+    Checking socket2 v0.6.5
+    Checking mio v1.2.2
+    Checking tokio v1.53.1
+    Checking getrandom v0.2.17
+    Checking getrandom v0.3.4
+    Checking ring v0.17.14
+    Checking rand_core v0.9.5
+    Checking serde v1.0.229
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking rustix v1.1.4
+    Checking rand_core v0.6.4
+    Checking rand_core v0.10.1
+    Checking sync_wrapper v1.0.2
+    Checking rustls-webpki v0.103.13
+    Checking getrandom v0.4.3
+    Checking ff v0.13.1
+    Checking group v0.13.0
+    Checking tinystr v0.8.3
+    Checking rustls v0.23.42
+    Checking crypto-bigint v0.5.5
+    Checking rustls-webpki v0.101.7
+    Checking sct v0.7.1
+    Checking socket2 v0.5.10
+    Checking icu_locale_core v2.2.0
+    Checking tokio-util v0.7.18
+    Checking aws-smithy-async v1.3.0
+    Checking aws-smithy-types v1.6.1
+    Checking h2 v0.4.15
+    Checking tower v0.5.3
+    Checking h2 v0.3.27
+    Checking aws-smithy-runtime-api v1.13.0
+    Checking tokio-rustls v0.26.4
+    Checking aws-smithy-eventstream v0.61.1
+    Checking rustls v0.21.12
+    Checking aws-smithy-schema v0.2.0
+    Checking elliptic-curve v0.13.8
+    Checking zerotrie v0.2.4
+    Checking webpki-roots v1.0.9
+    Checking icu_collections v2.2.0
+    Checking tokio-rustls v0.24.1
+    Checking icu_provider v2.2.0
+    Checking aws-smithy-http v0.64.0
+    Checking tempfile v3.27.0
+    Checking signature v2.2.0
+    Checking primeorder v0.13.6
+    Checking ecdsa v0.16.9
+    Checking aws-credential-types v1.3.0
+    Checking byteorder v1.5.0
+    Checking p256 v0.13.2
+    Checking icu_properties v2.2.0
+    Checking icu_normalizer v2.2.0
+    Checking hyper v1.11.0
+    Checking aws-smithy-observability v0.3.0
+    Checking hyper v0.14.32
+    Checking aws-sigv4 v1.5.1
+    Checking aws-types v1.4.0
+    Checking hash32 v0.2.1
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+    Checking aws-smithy-json v0.63.0
+    Checking url v2.5.8
+    Checking hyper-util v0.1.20
+    Checking heapless v0.7.17
+    Checking aws-smithy-xml v0.61.1
+    Checking postcard v1.1.3
+    Checking aws-smithy-query v0.61.1
+    Checking ulid v1.2.1
+    Checking aws-smithy-checksums v0.65.0
+    Checking skynbd-types v0.0.1 (<worktree>/crates/skynbd-types)
+    Checking redb v2.6.3
+    Checking skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+    Checking hyper-rustls v0.27.9
+    Checking regex-syntax v0.8.11
+    Checking memchr v2.8.3
+    Checking skynbd-tree v0.0.1 (<worktree>/crates/skynbd-tree)
+    Checking zmij v1.0.23
+    Checking serde_json v1.0.151
+    Checking hyper-rustls v0.24.2
+    Checking aws-smithy-http-client v1.2.0
+    Checking thiserror v1.0.69
+    Checking wait-timeout v0.2.1
+    Checking aws-smithy-runtime v1.12.0
+    Checking quick-error v1.2.3
+    Checking bit-vec v0.8.0
+    Checking rusty-fork v0.3.1
+    Checking bit-set v0.8.0
+    Checking rand_xorshift v0.4.0
+    Checking unarray v0.1.4
+    Checking minimal-lexical v0.2.1
+    Checking proptest v1.11.0
+    Checking num-bigint v0.4.8
+    Checking nom v7.1.3
+    Checking lazy_static v1.5.0
+    Checking data-encoding v2.11.0
+    Checking pem v3.0.6
+    Checking yasna v0.5.2
+    Checking rusticata-macros v4.1.0
+    Checking asn1-rs v0.6.2
+    Checking asn1-rs v0.7.2
+    Checking serde_urlencoded v0.7.1
+    Checking aws-runtime v1.8.1
+    Checking mime v0.3.17
+    Checking tower-http v0.6.11
+    Checking reqwest v0.12.28
+    Checking oid-registry v0.7.1
+    Checking der-parser v9.0.0
+    Checking aws-sdk-sso v1.103.0
+    Checking aws-sdk-ssooidc v1.105.0
+    Checking aws-sdk-sts v1.108.0
+    Checking aws-sdk-s3 v1.138.1
+    Checking x509-parser v0.16.0
+    Checking oid-registry v0.8.1
+    Checking der-parser v10.0.0
+    Checking rcgen v0.13.2
+    Checking x509-parser v0.17.0
+    Checking rustls-pemfile v2.2.0
+    Checking axum-core v0.5.6
+    Checking aws-config v1.9.0
+    Checking serde_path_to_error v0.1.20
+    Checking matchit v0.8.4
+    Checking simple_asn1 v0.6.4
+    Checking jsonwebtoken v9.3.1
+    Checking axum v0.8.9
+    Checking aho-corasick v1.1.4
+    Checking regex-automata v0.4.16
+    Checking skyzfs-blk v0.0.1 (<worktree>/crates/skyzfs-blk)
+    Checking anstyle v1.0.14
+    Checking utf8parse v0.2.2
+    Checking adler2 v2.0.1
+    Checking simd-adler32 v0.3.10
+    Checking miniz_oxide v0.8.9
+    Checking regex v1.13.1
+    Checking anstyle-parse v1.0.0
+    Checking anstyle-query v1.1.5
+    Checking colorchoice v1.0.5
+    Checking jiff-core v0.1.0
+    Checking is_terminal_polyfill v1.70.2
+    Checking flate2 v1.1.9
+    Checking anstream v1.0.0
+    Checking env_filter v2.0.0
+    Checking chacha20 v0.10.1
+    Checking unicode-width v0.2.2
+    Checking jiff v0.2.34
+    Checking clap_lex v1.1.0
+    Checking strsim v0.11.1
+    Checking rand v0.10.2
+    Checking clap_builder v4.6.2
+    Checking console v0.16.4
+    Checking devicemapper-sys v0.3.3
+    Checking nix v0.31.3
+    Checking libudev-sys v0.1.4
+    Checking io-lifetimes v1.0.11
+    Checking env_logger v0.11.11
+    Checking portable-atomic v1.14.0
+    Checking retry v2.2.0
+    Checking semver v1.0.28
+    Checking unit-prefix v0.5.2
+    Checking bytemuck v1.25.2
+    Checking devicemapper v0.34.7
+    Checking roaring v0.11.4
+    Checking indicatif v0.18.6
+    Checking anyhow v1.0.104
+    Checking udev v0.9.3
+    Checking clap v4.6.4
+    Checking quick-xml v0.38.4
+    Checking nom v8.0.0
+    Checking skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+    Checking skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+    Checking iovec v0.1.4
+    Checking num_cpus v1.17.0
+    Checking parking v2.2.1
+    Checking exitcode v1.1.2
+    Checking fixedbitset v0.5.7
+    Checking rangemap v1.7.1
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Checking crossbeam-utils v0.8.23
+    Checking futures-io v0.3.34
+    Checking concurrent-queue v2.5.0
+    Checking futures-lite v2.6.1
+    Checking thinp v1.3.3 (https://github.com/jthornber/thin-provisioning-tools?tag=v1.3.3#b61de422)
+    Checking event-listener v5.4.2
+    Checking event-listener-strategy v0.5.4
+    Checking async-task v4.7.1
+    Checking async-channel v2.5.0
+    Checking polling v3.11.0
+    Checking skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+    Checking async-io v2.6.0
+    Checking piper v0.2.5
+    Checking async-lock v3.5.0
+    Checking blocking v1.7.0
+    Checking async-signal v0.2.14
+    Checking async-net v2.0.0
+    Checking async-process v2.5.0
+    Checking async-fs v2.2.0
+    Checking async-executor v1.14.1
+    Checking skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+    Checking smol v2.0.2
+    Checking libublk-rs-sys v0.1.2
+    Checking io-uring v0.7.16
+    Checking futures-timer v3.0.4
+    Checking bitmaps v3.2.1
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+    Checking toml_write v0.1.2
+    Checking libublk v0.4.8
+    Checking winnow v0.7.15
+    Checking matchers v0.2.0
+    Checking sharded-slab v0.1.7
+    Checking tracing-log v0.2.0
+    Checking thread_local v1.1.10
+    Checking nu-ansi-term v0.50.3
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+    Checking tracing-subscriber v0.3.23
+    Checking rand_chacha v0.3.1
+    Checking toml_edit v0.22.27
+    Checking hashbrown v0.12.3
+    Checking pin-project v1.1.13
+    Checking indexmap v1.9.3
+    Checking rand v0.8.7
+    Checking toml v0.8.23
+    Checking prost v0.13.5
+    Checking axum-core v0.4.5
+    Checking matchit v0.7.3
+    Checking async-stream v0.3.6
+    Checking tower v0.4.13
+   Compiling skynbd-csi-driver v0.0.1 (<worktree>/bins/skynbd-csi-driver)
+    Checking skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+    Checking axum v0.7.9
+    Checking hyper-timeout v0.5.2
+    Checking tokio-stream v0.1.19
+    Checking skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+    Checking skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+    Checking bpaf v0.9.26
+    Checking skynbd-nbd v0.0.1 (<worktree>/crates/skynbd-nbd)
+    Checking skynbd-stream v0.0.1 (<worktree>/crates/skynbd-stream)
+    Checking skynbd-agent v0.0.1 (<worktree>/crates/skynbd-agent)
+    Checking skynbd-api v0.0.1 (<worktree>/crates/skynbd-api)
+    Checking skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+    Checking tonic v0.12.3
+    Checking skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Checking prost-types v0.13.5
+    Checking skynbdctl v0.0.1 (<worktree>/bins/skynbdctl)
+    Checking skynbdd v0.0.1 (<worktree>/bins/skynbdd)
+    Checking skynbd-agent-cli v0.0.1 (<worktree>/bins/skynbd-agent)
+    Checking skyzfs-nodeb v0.0.1 (<worktree>/bins/skyzfs-nodeb)
+    Checking skyzfs-agent v0.0.1 (<worktree>/crates/skyzfs-agent)
+    Checking skyzfs-blkcheck v0.0.1 (<worktree>/bins/skyzfs-blkcheck)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 41s
+== exit 0
+== cargo clippy --workspace --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 4.42s
+== exit 0
+== cargo clippy --workspace --all-targets --features skyzfs-ublk-sys/control-test-program -- -D warnings
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 5.72s
+== exit 0
+== cargo test -p skyzfs-agent -p skyzfs-control
+   Compiling skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+   Compiling skyzfs-agent v0.0.1 (<worktree>/crates/skyzfs-agent)
+    Finished `test` profile [optimized + debuginfo] target(s) in 14.56s
+     Running unittests src/lib.rs (<target>/debug/build/skyzfs-agent/61ae950b77adb772/out/skyzfs_agent-61ae950b77adb772)
+
+running 114 tests
+test daemon::tests::the_device_is_the_block_devices_number ... ok
+test daemon::tests::an_ask_with_no_daemon_fails ... ok
+test engine::tests::a_name_a_person_took_first_is_passed_over ... ok
+test engine::tests::a_hold_outlasts_the_deadline_of_the_last_acceptance ... ok
+test engine::tests::a_pool_refused_its_premise_gets_no_snapshot ... ok
+test engine::tests::a_manifest_changed_under_the_agent_stops_its_publish ... ok
+test engine::tests::a_publish_no_cut_carries_is_reported_then_given_up ... ok
+test engine::tests::a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process ... ok
+test engine::tests::a_publish_that_stalls_again_after_a_reset_is_reported_again ... ok
+test engine::tests::a_publish_older_than_its_bound_is_given_up_and_its_hold_released ... ok
+test engine::tests::a_publish_whose_daemon_is_taken_over_at_each_request_is_given_up ... ok
+test engine::tests::a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported ... ok
+test engine::tests::a_publish_with_no_loss_is_published_in_each_mode ... ok
+test engine::tests::a_report_is_made_once_in_a_process_for_each_kind ... ok
+test engine::tests::a_persons_action_at_any_point_is_met ... ok
+test engine::tests::a_restart_as_the_cuts_are_read_is_met ... ok
+test daemon::tests::an_ask_ends_at_the_limit_it_was_given ... ok
+test engine::tests::a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs ... ok
+test engine::tests::a_step_forward_of_the_wall_clock_does_not_release_a_hold_early ... ok
+test engine::tests::a_restart_as_the_cuts_are_read_is_met_with_the_agent_down_after_it_asks ... ok
+test engine::tests::asking_anew_checks_the_snapshot_and_its_hold_before_the_count ... ok
+test engine::tests::at_most_eight_publishes_are_under_way ... ok
+test engine::tests::each_sync_task_sets_a_value_of_its_own ... ok
+test engine::tests::on_an_idle_pool_the_sync_task_writes_the_group_that_carries_a_request ... ok
+test engine::tests::a_snapshot_gone_report_is_made_however_the_agent_stops_after_the_loss ... ok
+test engine::tests::a_restart_under_a_running_agent_at_any_point_is_met ... ok
+test engine::tests::the_daemon_lost_at_any_point_of_a_publish_is_recovered_from ... ok
+test engine::tests::the_sweep_leaves_the_holds_of_publishes_under_way ... ok
+test fs::tests::disk_writes_renames_lists_and_removes_files_in_a_directory ... ok
+test host::tests::a_program_gives_its_code_and_both_outputs_in_the_c_locale ... ok
+test host::tests::a_program_not_found_is_an_error ... ok
+test host::tests::a_program_past_its_limit_goes_with_what_it_started ... ok
+test engine::tests::the_agent_stopped_at_any_point_recovers_in_any_restart ... ok
+test engine::tests::a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once ... ok
+test host::tests::a_program_past_its_limit_is_killed_and_not_waited_for ... ok
+test host::tests::at_the_most_children_left_running_a_call_is_refused ... ok
+test host::tests::an_output_held_open_past_the_end_is_waited_for_only_to_the_limit ... ok
+test host::tests::stat_tells_a_file_from_anything_else ... ok
+test manifest::tests::a_manifest_is_version_1s_canonical_json ... ok
+test host::tests::a_program_reads_what_it_is_given ... ok
+test manifest::tests::a_string_is_written_with_the_shortest_escapes ... ok
+test manifest::tests::a_value_that_is_not_printable_ascii_is_written_in_hex ... ok
+test manifest::tests::every_manifest_reads_back_as_written ... ok
+test manifest::tests::only_the_canonical_bytes_of_version_1_are_read ... ok
+test manifest::tests::the_members_are_the_root_then_its_descendants_in_order ... ok
+test manifest::tests::the_snapshots_are_the_members_names_and_snapshot_guids ... ok
+test names::tests::a_name_is_the_utc_second_in_iso_8601s_basic_form ... ok
+test names::tests::every_name_is_one_the_protocol_takes ... ok
+test manifest::tests::a_manifest_over_the_protocols_limit_is_refused ... ok
+test plan::tests::a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend ... ok
+test engine::tests::the_matrices_need_the_rule_r_of_the_daemon ... ok
+test plan::tests::a_publish_that_makes_no_progress_is_reported_then_given_up ... ok
+test plan::tests::an_earlier_request_that_landed_is_this_publishs ... ok
+test plan::tests::an_end_that_may_hide_a_publish_is_looked_up_first ... ok
+test plan::tests::asked_with_the_daemon_away_the_hold_is_kept_until_held_until ... ok
+test plan::tests::at_the_intent_the_snapshot_is_taken_or_given_up ... ok
+test plan::tests::done_it_is_released_then_forgotten ... ok
+test plan::tests::held_it_is_asked_with_the_count_read_before_the_snapshot ... ok
+test plan::tests::held_until_is_the_acceptance_plus_the_expiry_plus_the_margin ... ok
+test plan::tests::pending_a_sync_helps_only_where_no_cut_has_carried_the_request ... ok
+test plan::tests::done_is_recorded_only_as_look_sees_it ... ok
+test names::tests::names_sort_as_their_times ... ok
+test plan::tests::rewound_and_unknown_are_asked_anew_and_looked_up_only_where_broken ... ok
+test plan::tests::the_other_refusals_wait_withdraw_or_stop ... ok
+test plan::tests::taken_it_is_held_once_its_members_and_load_guid_are_verified ... ok
+test record::crash::a_power_cut_after_any_call_leaves_the_record_before_or_after_each_step ... ok
+test plan::tests::snap_t_is_ours_where_it_records_this_manifest_and_a_group_not_before_g ... ok
+test record::crash::the_model_loses_what_was_not_synced ... ok
+test record::crash::a_call_that_fails_leaves_the_record_before_or_after_and_the_step_can_be_asked_again ... ok
+test record::tests::a_head_that_is_not_version_2s_is_named ... ok
+test record::tests::a_name_given_up_leaves_those_under_way_and_the_newest_are_kept ... ok
+test record::tests::a_record_changed_or_cut_short_is_corrupt ... ok
+test record::tests::a_record_reads_back_as_written ... ok
+test record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read ... ok
+test host::tests::more_output_than_the_bound_is_an_error ... ok
+test record::tests::bytes_after_the_body_are_corrupt ... ok
+test record::crash::a_second_agent_is_refused_the_directory_while_the_first_has_it ... ok
+test record::tests::the_directory_synced_for_a_new_one_is_the_one_that_holds_it ... ok
+test record::tests::a_corrupt_record_is_not_written_over ... ok
+test record::tests::version_2s_bytes_are_these ... ok
+test zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded ... ok
+test zfs::cli::recordings::a_checkpoint_as_recorded_is_refused ... ok
+test zfs::cli::recordings::a_resilver_is_busy_and_a_scrub_is_not_as_recorded ... ok
+test zfs::cli::recordings::holds_read_as_recorded ... ok
+test zfs::cli::recordings::missing_pool_name_from_a_pool_that_exists_is_an_error ... ok
+test zfs::cli::recordings::the_properties_read_as_recorded ... ok
+test zfs::cli::recordings::the_recorded_failure_of_the_snapshot_program_is_an_error ... ok
+test zfs::cli::recordings::the_recordings_are_of_the_versions_the_docs_name ... ok
+test zfs::cli::recordings::the_rigs_pool_as_recorded_passes_the_premise ... ok
+test zfs::cli::recordings::members_and_tagged_read_as_recorded ... ok
+test record::tests::a_saved_record_loads_and_none_is_absent ... ok
+test zfs::cli::tests::a_command_past_its_limit_is_an_error ... ok
+test zfs::cli::tests::a_layout_that_changed_between_its_two_reads_is_refused ... ok
+test zfs::cli::tests::a_release_without_the_tag_is_released_where_no_member_keeps_it ... ok
+test zfs::cli::tests::a_hold_already_there_is_held_where_every_member_has_it ... ok
+test zfs::cli::tests::a_status_that_cannot_be_read_is_refused ... ok
+test zfs::cli::tests::every_kind_of_vdev_and_class_reads_as_it_is ... ok
+test zfs::cli::tests::held_reads_the_tag_on_the_pools_snapshot ... ok
+test zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex ... ok
+test zfs::cli::tests::no_such_pool_is_no_pool ... ok
+test zfs::cli::tests::only_a_resilver_rebuild_or_removal_under_way_is_busy ... ok
+test zfs::cli::tests::the_assist_sets_the_property_then_syncs ... ok
+test zfs::cli::tests::the_members_are_read_by_a_read_only_program ... ok
+test zfs::cli::tests::nocacheflush_is_read_from_the_module ... ok
+test zfs::cli::tests::output_of_the_snapshot_program_that_cannot_be_read_destroys_what_it_took ... ok
+test zfs::cli::tests::the_properties_read_as_they_are ... ok
+test zfs::cli::tests::the_snapshot_program_makes_the_manifests_members ... ok
+test zfs::cli::tests::the_rigs_pool_reads_as_one_disk_and_passes_the_premise ... ok
+test zfs::cli::tests::the_snapshot_programs_failures_say_what_was_taken ... ok
+test zfs::cli::tests::the_tagged_snapshots_are_read_by_name ... ok
+test zfs::cli::tests::the_snapshot_program_takes_nothing_before_it_has_read_everything ... ok
+test zfs::cli::tests::the_words_of_a_datasets_name_are_not_its_message ... ok
+test zfs::tests::a_pool_is_one_leaf_disk_on_the_volume_and_nothing_else_it_must_not_be ... ok
+test record::tests::manifests_are_kept_by_name_beside_the_record ... ok
+
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+
+     Running unittests src/lib.rs (<target>/debug/build/skyzfs-control/3fc10630d031ccb3/out/skyzfs_control-3fc10630d031ccb3)
+
+running 16 tests
+test tests::a_line_that_is_not_exactly_a_request_does_not_parse ... ok
+test tests::a_refusals_text_stays_on_one_line_within_the_limit ... ok
+test tests::each_line_of_version_1_reads_the_same_in_version_2 ... ok
+test tests::every_line_reads_back_as_written ... ok
+test tests::socket::a_limit_too_long_is_an_error ... ok
+test tests::socket::a_daemon_of_version_1_is_not_read ... ok
+test tests::socket::a_link_at_the_sockets_path_is_refused ... ok
+test tests::socket::a_socket_or_a_daemon_of_another_user_is_refused ... ok
+test tests::socket::a_full_backlog_is_tried_again_after_pauses_that_grow ... ok
+test tests::socket::a_read_cut_by_the_deadline_is_timed_out ... ok
+test tests::socket::no_daemon_at_the_socket_or_no_socket_fails_the_ask_at_once ... ok
+test tests::socket::an_ask_ends_at_its_limit_however_the_daemon_spreads_its_answer ... ok
+test tests::the_lines_are_version_2s_words ... ok
+test tests::socket::an_ask_of_a_socket_whose_backlog_is_full_ends_within_its_limit ... ok
+test tests::socket::the_wait_for_a_connection_counts_in_the_deadline ... ok
+test tests::socket::a_connect_is_made_soon_after_the_backlog_has_room ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+
+   Doc-tests skyzfs_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfs_control
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-control
+   Compiling rustix v1.1.4
+    Checking serde v1.0.229
+    Checking thiserror v2.0.19
+    Checking memchr v2.8.3
+    Checking cobs v0.3.0
+    Checking blake3 v1.8.5
+    Checking serde_json v1.0.151
+    Checking heapless v0.7.17
+    Checking postcard v1.1.3
+    Checking skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+ Documenting skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+ Documenting skyzfs-agent v0.0.1 (<worktree>/crates/skyzfs-agent)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3.72s
+   Generated <target>/doc/skyzfs_agent/index.html and 1 other file
+== exit 0
+== cargo doc --no-deps --workspace
+warning: output filename collision at <target>/doc/skynbd_agent/index.html
+  |
+  = note: the bin target `skynbd-agent` in package `skynbd-agent-cli v0.0.1 (<worktree>/bins/skynbd-agent)` has the same output filename as the lib target `skynbd_agent` in package `skynbd-agent v0.0.1 (<worktree>/crates/skynbd-agent)`
+  = note: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
+  = note: cargo 1.100.0 (3acc79c0c 2026-11-05) running on `x86_64-unknown-linux-gnu` target `x86_64-unknown-linux-gnu`
+  = note: first unit: Unit { pkg: Package { id: PackageId { name: "skynbd-agent-cli", version: "0.0.1", source: "<worktree>/bins/skynbd-agent" }, ..: ".." }, target: TargetInner { name: "skynbd-agent", doc: true, ..: with_path("<worktree>/bins/skynbd-agent/src/main.rs", Edition2021) }, profile: Profile { opt_level: "1", ..: default_dev() }, kind: Host, mode: Doc, features: [], rustflags: [], rustdocflags: ["-D", "warnings"], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 14392534835923828086 }
+  = note: second unit: Unit { pkg: Package { id: PackageId { name: "skynbd-agent", version: "0.0.1", source: "<worktree>/crates/skynbd-agent" }, ..: ".." }, target: TargetInner { name_inferred: true, ..: lib_target("skynbd_agent", ["lib"], "<worktree>/crates/skynbd-agent/src/lib.rs", Edition2021) }, profile: Profile { opt_level: "1", ..: default_dev() }, kind: Host, mode: Doc, features: ["dm"], rustflags: [], rustdocflags: ["-D", "warnings"], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 6206918988354859025 }
+    Checking tokio v1.53.1
+    Checking skynbd-types v0.0.1 (<worktree>/crates/skynbd-types)
+    Checking skynbd-tree v0.0.1 (<worktree>/crates/skynbd-tree)
+    Checking skyzfs-blk v0.0.1 (<worktree>/crates/skyzfs-blk)
+    Checking skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+    Checking skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+    Checking skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+    Checking skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+   Compiling skynbd-csi-driver v0.0.1 (<worktree>/bins/skynbd-csi-driver)
+ Documenting skyzfs-agent v0.0.1 (<worktree>/crates/skyzfs-agent)
+    Checking skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+ Documenting skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+ Documenting skyzfs-blkcheck v0.0.1 (<worktree>/bins/skyzfs-blkcheck)
+error: public documentation for `state` links to private item `super::state::CutState::id`
+   --> crates/skyzfs-local/src/inplace/intent.rs:141:44
+    |
+141 |     /// The cut state that made the cut ([`super::state::CutState::id`]):
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `replaced` links to private item `CutState::flushed`
+   --> crates/skyzfs-local/src/inplace/state.rs:803:12
+    |
+803 |     /// ([`CutState::flushed`]), and a cut whose flush is still under way
+    |            ^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: public documentation for `replaced` links to private item `CutState::freeze`
+   --> crates/skyzfs-local/src/inplace/state.rs:804:38
+    |
+804 |     /// at the next cut's instant ([`CutState::freeze`]); the newer cut
+    |                                      ^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `InPlace::read_cut`
+    --> crates/skyzfs-local/src/inplace.rs:3076:46
+     |
+3076 |     /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
+     |                                              ^^^^^^^^^^^^^^^^^ the struct `InPlace` has no field or associated item named `read_cut`
+     |
+     = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+ Documenting skynbd-format v0.0.1 (<worktree>/crates/skynbd-format)
+error: could not document `skyzfs-local`
+warning: build failed, waiting for other jobs to finish...
+== exit 101
+== RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --keep-going
+warning: output filename collision at <target>/doc/skynbd_agent/index.html
+  |
+  = note: the bin target `skynbd-agent` in package `skynbd-agent-cli v0.0.1 (<worktree>/bins/skynbd-agent)` has the same output filename as the lib target `skynbd_agent` in package `skynbd-agent v0.0.1 (<worktree>/crates/skynbd-agent)`
+  = note: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
+  = note: cargo 1.100.0 (3acc79c0c 2026-11-05) running on `x86_64-unknown-linux-gnu` target `x86_64-unknown-linux-gnu`
+  = note: first unit: Unit { pkg: Package { id: PackageId { name: "skynbd-agent-cli", version: "0.0.1", source: "<worktree>/bins/skynbd-agent" }, ..: ".." }, target: TargetInner { name: "skynbd-agent", doc: true, ..: with_path("<worktree>/bins/skynbd-agent/src/main.rs", Edition2021) }, profile: Profile { opt_level: "1", ..: default_dev() }, kind: Host, mode: Doc, features: [], rustflags: [], rustdocflags: ["-D", "warnings"], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 8896930663250399091 }
+  = note: second unit: Unit { pkg: Package { id: PackageId { name: "skynbd-agent", version: "0.0.1", source: "<worktree>/crates/skynbd-agent" }, ..: ".." }, target: TargetInner { name_inferred: true, ..: lib_target("skynbd_agent", ["lib"], "<worktree>/crates/skynbd-agent/src/lib.rs", Edition2021) }, profile: Profile { opt_level: "1", ..: default_dev() }, kind: Host, mode: Doc, features: ["dm"], rustflags: [], rustdocflags: ["-D", "warnings"], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 16186833103609369725 }
+    Checking tokio-util v0.7.18
+    Checking aws-smithy-async v1.3.0
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.4
+    Checking tokio-rustls v0.24.1
+    Checking skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+    Checking tokio-stream v0.1.19
+    Checking aws-smithy-types v1.6.1
+    Checking h2 v0.4.15
+    Checking h2 v0.3.27
+    Checking tower-http v0.6.11
+    Checking aws-smithy-runtime-api v1.13.0
+    Checking aws-smithy-eventstream v0.61.1
+    Checking aws-smithy-query v0.61.1
+    Checking axum v0.7.9
+    Checking aws-smithy-schema v0.2.0
+    Checking aws-smithy-http v0.64.0
+    Checking aws-credential-types v1.3.0
+    Checking aws-smithy-observability v0.3.0
+    Checking aws-sigv4 v1.5.1
+    Checking aws-types v1.4.0
+    Checking aws-smithy-json v0.63.0
+    Checking aws-smithy-xml v0.61.1
+    Checking hyper v0.14.32
+    Checking aws-smithy-checksums v0.65.0
+    Checking tower v0.4.13
+    Checking hyper v1.11.0
+    Checking skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+ Documenting skyzfs-ublk-sys v0.0.1 (<worktree>/crates/skyzfs-ublk-sys)
+error: public documentation for `start` links to private item `own_control_ring`
+   --> crates/skyzfs-ublk-sys/src/queue.rs:373:24
+    |
+373 |     /// it has none ([`own_control_ring`]). The end of a recovery is sent
+    |                        ^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: could not document `skyzfs-ublk-sys`
+warning: build failed, waiting for other jobs to finish...
+ Documenting skyzfs-ublk v0.0.1 (<worktree>/crates/skyzfs-ublk)
+ Documenting skyzfs-local v0.0.1 (<worktree>/crates/skyzfs-local)
+    Checking hyper-util v0.1.20
+error: public documentation for `state` links to private item `super::state::CutState::id`
+   --> crates/skyzfs-local/src/inplace/intent.rs:141:44
+    |
+141 |     /// The cut state that made the cut ([`super::state::CutState::id`]):
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `replaced` links to private item `CutState::flushed`
+   --> crates/skyzfs-local/src/inplace/state.rs:803:12
+    |
+803 |     /// ([`CutState::flushed`]), and a cut whose flush is still under way
+    |            ^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: public documentation for `replaced` links to private item `CutState::freeze`
+   --> crates/skyzfs-local/src/inplace/state.rs:804:38
+    |
+804 |     /// at the next cut's instant ([`CutState::freeze`]); the newer cut
+    |                                      ^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `InPlace::read_cut`
+    --> crates/skyzfs-local/src/inplace.rs:3076:46
+     |
+3076 |     /// thread (M2.4). Each block reads as [`InPlace::read_cut`] reads it,
+     |                                              ^^^^^^^^^^^^^^^^^ the struct `InPlace` has no field or associated item named `read_cut`
+     |
+     = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+ Documenting skyzfs-blk v0.0.1 (<worktree>/crates/skyzfs-blk)
+error: could not document `skyzfs-local`
+ Documenting skynbd-types v0.0.1 (<worktree>/crates/skynbd-types)
+ Documenting skyzfs-mapped v0.0.1 (<worktree>/crates/skyzfs-mapped)
+ Documenting skyzfs-control v0.0.1 (<worktree>/crates/skyzfs-control)
+ Documenting skyzfs-uberblock v0.0.1 (<worktree>/crates/skyzfs-uberblock)
+ Documenting skynbd-tree v0.0.1 (<worktree>/crates/skynbd-tree)
+    Checking hyper-rustls v0.27.9
+    Checking axum v0.8.9
+    Checking hyper-timeout v0.5.2
+    Checking reqwest v0.12.28
+    Checking tonic v0.12.3
+    Checking hyper-rustls v0.24.2
+    Checking aws-smithy-http-client v1.2.0
+    Checking aws-smithy-runtime v1.12.0
+    Checking aws-runtime v1.8.1
+    Checking aws-sdk-sts v1.108.0
+    Checking aws-sdk-sso v1.103.0
+    Checking aws-sdk-ssooidc v1.105.0
+    Checking aws-sdk-s3 v1.138.1
+    Checking aws-config v1.9.0
+    Checking skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+ Documenting skynbd-store v0.0.1 (<worktree>/crates/skynbd-store)
+    Checking skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+ Documenting skynbd-refs v0.0.1 (<worktree>/crates/skynbd-refs)
+error: public documentation for `lease_acquire` links to private item `lease::acquire`
+   --> crates/skynbd-refs/src/lib.rs:279:62
+    |
+279 |     /// three because the semantics are one state machine: [`lease::acquire`].
+    |                                                              ^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `lease_renew` links to private item `lease::renew`
+   --> crates/skynbd-refs/src/lib.rs:285:12
+    |
+285 |     /// ([`lease::renew`]). Never takes the lease: a row of another
+    |            ^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: could not document `skynbd-refs`
+    Checking skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+ Documenting skynbd-engine v0.0.1 (<worktree>/crates/skynbd-engine)
+error: public documentation for `index` links to private item `ShardBuilder::push`
+  --> crates/skynbd-engine/src/index.rs:18:34
+   |
+18 | //!   inside an 8 MiB segment. [`ShardBuilder::push`] checks rather than
+   |                                  ^^^^^^^^^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+   = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `index` links to private item `merge`
+  --> crates/skynbd-engine/src/index.rs:27:11
+   |
+27 | //! and [`merge`] folds it into a shard at commit time. The split is
+   |           ^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+error: could not document `skynbd-engine`
+    Checking skynbd-nbd v0.0.1 (<worktree>/crates/skynbd-nbd)
+    Checking skynbd-stream v0.0.1 (<worktree>/crates/skynbd-stream)
+    Checking skynbd-agent v0.0.1 (<worktree>/crates/skynbd-agent)
+    Checking skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+ Documenting skynbd-stream v0.0.1 (<worktree>/crates/skynbd-stream)
+ Documenting skyzfsd v0.0.1 (<worktree>/bins/skyzfsd)
+ Documenting skynbd-agent v0.0.1 (<worktree>/crates/skynbd-agent)
+    Checking skynbd-api v0.0.1 (<worktree>/crates/skynbd-api)
+error: unresolved link to `crate::refuse`
+   --> bins/skyzfsd/src/cli.rs:590:45
+    |
+590 |     /// to refuse: the first of its kind ([`crate::refuse`]).
+    |                                             ^^^^^^^^^^^^^ no item named `refuse` in module `skyzfsd`
+    |
+    = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:595:57
+    |
+595 |     /// Where the uploader's thread kills the daemon ([`crate::kill`]).
+    |                                                         ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/cli.rs:600:52
+    |
+600 | /// thread kills the daemon, as `kill -9` would ([`crate::kill`]). N
+    |                                                    ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: public documentation for `upload` links to private item `reserve`
+  --> bins/skyzfsd/src/upload.rs:22:41
+   |
+22 | //! the condition that there is none ([`reserve`]), and goes on to make
+   |                                         ^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+   = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `upload` links to private item `refused_over`
+  --> bins/skyzfsd/src/upload.rs:33:23
+   |
+33 | //! in its message ([`refused_over`]). This module's reading, which the
+   |                       ^^^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `shown`
+  --> bins/skyzfsd/src/upload.rs:67:21
+   |
+67 | //! status shows ([`shown`]).
+   |                     ^^^^^ no item named `shown` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+help: there's a similarly named item `Shown` (notice the capitalization)
+   |
+67 - //! status shows ([`shown`]).
+67 + //! status shows ([`Shown`]).
+   |
+
+error: unresolved link to `crate::kill`
+   --> bins/skyzfsd/src/upload.rs:784:29
+    |
+784 |     /// test hooks takes ([`crate::kill`]); a default build has none.
+    |                             ^^^^^^^^^^^ no item named `kill` in module `skyzfsd`
+
+error: unresolved link to `crate::record`
+   --> bins/skyzfsd/src/upload.rs:807:8
+    |
+807 | /// ([`crate::record`]), nothing otherwise.
+    |        ^^^^^^^^^^^^^ no item named `record` in module `skyzfsd`
+
+error: could not document `skyzfsd`
+ Documenting skynbd-api v0.0.1 (<worktree>/crates/skynbd-api)
+error: public documentation for `effective_window` links to private item `OBSERVED_WINDOW_CAP`
+   --> crates/skynbd-agent/src/cycle.rs:426:22
+    |
+426 |     /// bounded by [`OBSERVED_WINDOW_CAP`] × the floor, since the decay
+    |                      ^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `-D rustdoc::private-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::private_intra_doc_links)]`
+
+error: public documentation for `with_ro_watermark` links to private item `Self::ro_watermark`
+   --> crates/skynbd-agent/src/cycle.rs:445:33
+    |
+445 |     /// Unset by default: see [`Self::ro_watermark`].
+    |                                 ^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: public documentation for `evict` links to private item `RECLAIM_BATCH_RANGES`
+    --> crates/skynbd-agent/src/dm.rs:1813:27
+     |
+1813 |     /// `max_ranges` (≤ [`RECLAIM_BATCH_RANGES`]) still-shared ranges,
+     |                           ^^^^^^^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `DmStack::capture`
+   --> crates/skynbd-agent/src/dm_linux.rs:182:7
+    |
+182 | /// [`DmStack::capture`] refuse to run on exactly the volume whose delta
+    |       ^^^^^^^^^^^^^^^^ the struct `DmStack` has no field or associated item named `capture`
+    |
+    = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+error: public documentation for `control_plane_client_with` links to private item `READ_TIMEOUT`
+   --> crates/skynbd-agent/src/http.rs:123:7
+    |
+123 | /// [`READ_TIMEOUT`] is sized for the agent's upload path — it has to
+    |       ^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: could not document `skynbd-agent`
+ Documenting skyzfs-nodeb v0.0.1 (<worktree>/bins/skyzfs-nodeb)
+ Documenting skyzfs-upload v0.0.1 (<worktree>/crates/skyzfs-upload)
+ Documenting skynbd-nbd v0.0.1 (<worktree>/crates/skynbd-nbd)
+ Documenting skynbd-agent-cli v0.0.1 (<worktree>/bins/skynbd-agent)
+ Documenting skynbd-csi-driver v0.0.1 (<worktree>/bins/skynbd-csi-driver)
+ Documenting skynbdctl v0.0.1 (<worktree>/bins/skynbdctl)
+ Documenting skynbdd v0.0.1 (<worktree>/bins/skynbdd)
+error: unresolved link to `:PORT`
+  --> bins/skynbd-agent/src/main.rs:16:41
+   |
+16 | //!             [--api URL] [--nbd HOST[:PORT]] [--fstype FS] [--tls]
+   |                                         ^^^^^ invalid path separator
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+   = note: `-D rustdoc::broken-intra-doc-links` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::broken_intra_doc_links)]`
+
+error: unresolved link to `mounts`
+  --> bins/skynbd-agent/src/main.rs:20:49
+   |
+20 | //! `--thin` delegates to the resident agent's [mounts] control socket
+   |                                                 ^^^^^^ no item named `mounts` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+error: unresolved link to `mounts`
+   --> bins/skynbd-agent/src/main.rs:364:17
+    |
+364 |     /// with a [mounts] config section; the daemon owns the stack and
+    |                 ^^^^^^ no item named `mounts` in scope
+    |
+    = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:14:17
+   |
+14 | //!   snapshots <vol> --api URL [--token-file F]
+   |                 ^^^^^
+   |
+   = note: `-D rustdoc::invalid-html-tags` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(rustdoc::invalid_html_tags)]`
+
+error: unclosed HTML tag `vol`
+  --> bins/skynbd-agent/src/main.rs:15:17
+   |
+15 | //!   mount     <vol> <dir> [--snapshot S (--ro | --clone NEW)] [--thin]
+   |                 ^^^^^
+
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:15:23
+   |
+15 | //!   mount     <vol> <dir> [--snapshot S (--ro | --clone NEW)] [--thin]
+   |                       ^^^^^
+
+error: unclosed HTML tag `dir`
+  --> bins/skynbd-agent/src/main.rs:18:17
+   |
+18 | //!   unmount   <dir> [--state-dir D]
+   |                 ^^^^^
+
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:385:9
+    |
+385 |     /// <state-dir>/ctl.sock; match the daemon's `[mounts].socket`
+    |         ^^^^^^^^^^^
+
+error: unclosed HTML tag `volume`
+   --> bins/skynbd-agent/src/main.rs:483:56
+    |
+483 |     /// Recover a crashed debug-swing: the <state_dir>/<volume>.flip
+    |                                                        ^^^^^^^^
+
+error: unclosed HTML tag `state-dir`
+   --> bins/skynbd-agent/src/main.rs:548:52
+    |
+548 |         /// Resident agent control socket (default <state-dir>/ctl.sock;
+    |                                                    ^^^^^^^^^^^
+
+error: could not document `skynbd-agent-cli`
+error: unclosed HTML tag `volume`
+ --> bins/skynbdctl/src/main.rs:9:36
+  |
+9 | //!   skynbdctl fsck <config.toml> <volume> [--rebuild-refs]
+  |                                    ^^^^^^^^
+  |
+  = note: `-D rustdoc::invalid-html-tags` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(rustdoc::invalid_html_tags)]`
+
+error: could not document `skynbdctl`
+== exit 101

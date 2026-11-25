@@ -1,0 +1,6 @@
+W1: == bg: rc 0
+W1: catch returned after 1 s (note: not caught: try 1 did not end within 1 s; this is it); bare wait returned 5 s later; bg record rc 0
+W2: == bg: rc 0
+W2: catch returned after 1 s; wait "$!" returned 1 s later; bg record rc 0
+W3: catch rc 1; note: not caught: no output of 3 matched /resilver in progress/; this is the last
+W4: index order: c-P c-g bg 
