@@ -376,16 +376,23 @@ bytecode off):
 - The two new tests were run against the reverted client.
 - `until_plants.py` and `until_plants.out`: plants U1 to U5 on d169139's `status_until`.
 
-**CI at d169139, as of 02:23 UTC:**
-- **Green:**
-  - the publish rig (run 3);
-  - ci, including `unit-arm64`;
-  - skyzfs-ci, coverage, e2e, k3s-smoke;
-  - the node B rig, the kernel probe, the control rig, and the cut rig through skyzfsd (cut-daemon).
-- **Still running:** the daemon rig, the cut rig ("record and check" on four images) and the replay rig.
-- Two things about those still running:
-  - The cut rig's kernel jobs had not finished on any head of this pull request before d169139: each newer push cancelled them. They are the only kernel run of `cut_check`'s new `withheld_pick` (R10 to R12), so their result is owed before the merge.
-  - The node B rig, which runs node B's side of the pick, is green at d169139. Its `ctl_lacks` caught at copies on both images and both layouts, with no write passed over, so D10's naming did not show.
+**CI at d169139, re-checked at 02:46 UTC: every run is green.**
+- The publish rig (run 3).
+- ci, including `unit-arm64`; skyzfs-ci, coverage, e2e and k3s-smoke.
+- The daemon rig, the replay rig, the kernel probe and the control rig.
+- The node B rig and the cut rig through skyzfsd (cut-daemon).
+- The cut rig ("record and check", four images).
+
+The cut rig had not finished on any earlier head (each newer push
+cancelled it). At d169139 it is the first kernel run of `cut_check`'s
+`withheld_pick` (R10 to R12):
+- `ctl_withheld` was CAUGHT in every recording (for example "cut 14 without record 734 …: copies: 2 of 429 copies do not pass");
+- its worst exit was 0;
+- no write was passed over, so the "passed over" text did not show.
+
+The node B rig's `ctl_lacks` caught at copies on both images and both
+layouts, with no write passed over either, so D10's naming did not show
+on a kernel (W7 stays untested).
 
 At 9a87140 the publish rig was red (B1). The other runs there were
 cancelled or green when d169139 was pushed.
