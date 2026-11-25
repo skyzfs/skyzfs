@@ -1,0 +1,18 @@
+== head: exit 0
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 70120; Part releases in 2263440; violations 0
+== A2 Done releases only a whole hold: exit 101
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 804520; Part releases in 1529040; violations 40
+  Done { taken: Taken { group: 40, members: [Member { name: "tank", snapshot_guid: 4369 }, Member { name: "tank/db", snapshot_guid: 8738 }, Member { name: "tank/vol", snapshot_guid: 13107 }], manifest_len: 300, manifest_hash: [77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77] }, commit: [192, 192, 192, 192, 192, 192, 192, 
+== A3 away releases only a whole hold: exit 101
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 139240; Part releases in 2194320; violations 40
+  Asked { taken: Taken { group: 40, members: [Member { name: "tank", snapshot_guid: 4369 }, Member { name: "tank/db", snapshot_guid: 8738 }, Member { name: "tank/vol", snapshot_guid: 13107 }], manifest_len: 300, manifest_hash: [77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77] }, asked_ms: 1764032066000, held_until_ms: 176
+== A5 pending: a part read as held: exit 101
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 68680; Part releases in 2263440; violations 40
+  Held(Taken { group: 40, members: [Member { name: "tank", snapshot_guid: 4369 }, Member { name: "tank/db", snapshot_guid: 8738 }, Member { name: "tank/vol", snapshot_guid: 13107 }], manifest_len: 300, manifest_hash: [77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77] }) stalls 0 snap Some([Member { name: "tank", snapshot_g
+== M1 unknown: a part read as held (Ask): exit 101
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 69400; Part releases in 2263440; violations 40
+  Held(Taken { group: 40, members: [Member { name: "tank", snapshot_guid: 4369 }, Member { name: "tank/db", snapshot_guid: 8738 }, Member { name: "tank/vol", snapshot_guid: 13107 }], manifest_len: 300, manifest_hash: [77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77] }) stalls 0 snap Some([Member { name: "tank", snapshot_g
+== M5 pending with a part: release: exit 101
+  FL147 planner search: 3672000 cases x 3 holds; Part differs from All in 85960; Part releases in 2280720; violations 40
+  Held(Taken { group: 40, members: [Member { name: "tank", snapshot_guid: 4369 }, Member { name: "tank/db", snapshot_guid: 8738 }, Member { name: "tank/vol", snapshot_guid: 13107 }], manifest_len: 300, manifest_hash: [77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77] }) stalls 0 snap Some([Member { name: "tank", snapshot_g
+worktree after: clean

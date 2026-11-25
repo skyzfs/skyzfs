@@ -1,0 +1,22 @@
+{"id": "A1", "what": "give_up releases only a whole hold", "result": "KILLED", "by": ["engine::tests::a_hold_a_person_partly_released_is_given_up_and_released", "engine::tests::a_persons_action_at_any_point_is_met", "plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends", "engine::tests::the_matrices_need_the_rule_r_of_the_daemon"]}
+{"id": "A2", "what": "Done releases only a whole hold", "result": "KILLED", "by": ["engine::tests::a_persons_action_at_any_point_is_met", "plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends", "engine::tests::the_matrices_need_the_rule_r_of_the_daemon"]}
+{"id": "A3", "what": "away past held_until releases only a whole hold", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "A4", "what": "taken: a part read as held", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "A5", "what": "pending: a part read as held", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "A6", "what": "asked anew (onward): a part read as held", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "A7", "what": "F1e: the fake's held on the root's tag alone", "result": "KILLED (build)", "by": ["error[E0277]: can't compare `&std::string::String` with `std::string::String`", "error: could not compile `skyzfs-agent` (lib test) due to 1 previous error"]}
+{"id": "A8", "what": "the fake's hold adds the tag where missing (as before)", "result": "KILLED", "by": ["engine::tests::a_hold_a_person_partly_released_is_given_up_and_released"]}
+{"id": "A9", "what": "adapter: root untagged read as none", "result": "KILLED", "by": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "A10", "what": "adapter: pool@t gone between the reads read as none", "result": "KILLED", "by": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "A11", "what": "adapter: a part read as all", "result": "KILLED", "by": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot"]}
+{"id": "A12", "what": "ask_anew's own read: a part read as held", "result": "SURVIVED", "tests": ["test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.78s"]}
+{"id": "M1", "what": "held, not asked, unknown: a part read as held (Ask)", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "M2", "what": "adapter: nothing tagged read as a part (no early No)", "result": "KILLED", "by": ["zfs::cli::tests::held_is_the_tag_on_every_members_snapshot", "zfs::cli::recordings::holds_read_as_recorded"]}
+{"id": "M3", "what": "the fake's held: a part read as none (TL-T1 undone in held)", "result": "KILLED", "by": ["engine::tests::a_hold_a_person_partly_released_is_given_up_and_released", "engine::tests::a_persons_action_at_any_point_is_met", "engine::tests::the_matrices_need_the_rule_r_of_the_daemon"]}
+{"id": "M4", "what": "taken: Part is held (Held recorded on a part)", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "M5", "what": "pending with a part: release (the hold let go while it pends)", "result": "KILLED", "by": ["plan::tests::a_hold_on_some_members_is_released_where_the_publish_ends"]}
+{"id": "M6", "what": "give_up on a part: abandon with no release where pool@t is gone", "result": "SURVIVED", "tests": ["test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.66s"]}
+{"id": "M7", "what": "the fake's hold: refuses a whole hold too", "result": "SURVIVED", "tests": ["test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.70s"]}
+{"worktree after": "clean"}
+{"id": "A7", "what": "F1e: the fake's held on the root's tag alone (first planted with a type error, run again)", "result": "KILLED", "by": ["engine::tests::a_hold_a_person_partly_released_is_given_up_and_released"]}
+{"worktree after": "clean"}

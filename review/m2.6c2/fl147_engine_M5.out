@@ -1,0 +1,176 @@
+test engine::tests::a_persons_action_at_any_point_is_met ... FAILED
+FL147 ReleaseChild destroyer=false
+FL147   Abandoned RELEASE WHILE PENDING: 6
+FL147   Abandoned outcome Abandoned(TooOld): 3
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Abandoned outcome Published(8, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Abandoned outcome Published(9, 0, 0, 0, 0, 0, 0, 0, 89, 198, 21, 108, 123, 241, 165, 88, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 2
+FL147   Abandoned partly released: 14
+FL147   Abandoned runs: 36
+FL147   Busy RELEASE WHILE PENDING: 4
+FL147   Busy outcome Abandoned(TooOld): 3
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Busy outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Busy partly released: 12
+FL147   Busy runs: 34
+FL147   ErrLow RELEASE WHILE PENDING: 7
+FL147   ErrLow asked with a part: 2
+FL147   ErrLow outcome Abandoned(TooOld): 6
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   ErrLow outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 1
+FL147   ErrLow outcome Published(8, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 6
+FL147   ErrLow partly released: 18
+FL147   ErrLow report Refused(Rewound): 3
+FL147   ErrLow runs: 40
+FL147   Idle RELEASE WHILE PENDING: 4
+FL147   Idle outcome Abandoned(TooOld): 3
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Idle outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Idle partly released: 12
+FL147   Idle runs: 34
+FL147   ! Busy k=18: released at point 22 while a request pends
+FL147   ! Busy k=19: released at point 22 while a request pends
+FL147   ! Busy k=20: released at point 22 while a request pends
+FL147   ! Busy k=21: released at point 22 while a request pends
+FL147   ! Idle k=18: released at point 22 while a request pends
+FL147   ! Idle k=19: released at point 22 while a request pends
+FL147   ! Idle k=20: released at point 22 while a request pends
+FL147   ! Idle k=21: released at point 22 while a request pends
+FL147   ! Abandoned k=18: released at point 22 while a request pends
+FL147   ! Abandoned k=19: released at point 22 while a request pends
+FL147   ! Abandoned k=20: released at point 22 while a request pends
+FL147   ! Abandoned k=21: released at point 22 while a request pends
+FL147   failures: 21
+FL147 DestroyChild destroyer=false
+FL147   Abandoned outcome Abandoned(Replaced): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Replaced): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Replaced): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Replaced): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+FL147 Destroy destroyer=false
+FL147   Abandoned outcome Abandoned(Destroyed): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Destroyed): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Destroyed): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Destroyed): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+FL147 Retake destroyer=false
+FL147   Abandoned outcome Abandoned(Replaced): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Replaced): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Replaced): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Replaced): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+FL147 ReleaseChild destroyer=true
+FL147   Abandoned RELEASE WHILE PENDING: 6
+FL147   Abandoned outcome Abandoned(TooOld): 3
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Abandoned outcome Published(8, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Abandoned outcome Published(9, 0, 0, 0, 0, 0, 0, 0, 89, 198, 21, 108, 123, 241, 165, 88, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 2
+FL147   Abandoned partly released: 14
+FL147   Abandoned runs: 36
+FL147   Busy RELEASE WHILE PENDING: 4
+FL147   Busy outcome Abandoned(TooOld): 3
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Busy outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Busy partly released: 12
+FL147   Busy runs: 34
+FL147   ErrLow RELEASE WHILE PENDING: 7
+FL147   ErrLow asked with a part: 2
+FL147   ErrLow outcome Abandoned(TooOld): 6
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   ErrLow outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 1
+FL147   ErrLow outcome Published(8, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 6
+FL147   ErrLow partly released: 18
+FL147   ErrLow report Refused(Rewound): 3
+FL147   ErrLow runs: 40
+FL147   Idle RELEASE WHILE PENDING: 4
+FL147   Idle outcome Abandoned(TooOld): 3
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 27
+FL147   Idle outcome Published(7, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 4
+FL147   Idle partly released: 12
+FL147   Idle runs: 34
+FL147   ! Busy k=18: released at point 22 while a request pends
+FL147   ! Busy k=19: released at point 22 while a request pends
+FL147   ! Busy k=20: released at point 22 while a request pends
+FL147   ! Busy k=21: released at point 22 while a request pends
+FL147   ! Idle k=18: released at point 22 while a request pends
+FL147   ! Idle k=19: released at point 22 while a request pends
+FL147   ! Idle k=20: released at point 22 while a request pends
+FL147   ! Idle k=21: released at point 22 while a request pends
+FL147   ! Abandoned k=18: released at point 22 while a request pends
+FL147   ! Abandoned k=19: released at point 22 while a request pends
+FL147   ! Abandoned k=20: released at point 22 while a request pends
+FL147   ! Abandoned k=21: released at point 22 while a request pends
+FL147   failures: 21
+FL147 DestroyChild destroyer=true
+FL147   Abandoned outcome Abandoned(Replaced): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Replaced): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Replaced): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Replaced): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+FL147 Destroy destroyer=true
+FL147   Abandoned outcome Abandoned(Destroyed): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Destroyed): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Destroyed): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Destroyed): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+FL147 Retake destroyer=true
+FL147   Abandoned outcome Abandoned(Replaced): 8
+FL147   Abandoned outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 28
+FL147   Abandoned runs: 36
+FL147   Busy outcome Abandoned(Replaced): 8
+FL147   Busy outcome Published(4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Busy runs: 34
+FL147   ErrLow outcome Abandoned(Replaced): 8
+FL147   ErrLow outcome Published(5, 0, 0, 0, 0, 0, 0, 0, 39, 71, 63, 203, 89, 141, 208, 62, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 32
+FL147   ErrLow runs: 40
+FL147   Idle outcome Abandoned(Replaced): 8
+FL147   Idle outcome Published(3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 26
+FL147   Idle runs: 34
+FL147   failures: 0
+test engine::tests::the_matrices_need_the_rule_r_of_the_daemon ... FAILED
+test result: FAILED. 32 passed; 2 failed; 0 ignored; 0 measured; 92 filtered out; finished in 1.34s
+thread 'engine::tests::a_persons_action_at_any_point_is_met' (26647) panicked at crates/skyzfs-agent/src/engine/tests.rs:1593:21:
+Busy User(18, ReleaseChild): strict: released skz-20261125T010000Z while a request pends
+thread 'engine::tests::the_matrices_need_the_rule_r_of_the_daemon' (26675) panicked at crates/skyzfs-agent/src/engine/tests.rs:1935:5:
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
+exit 101
