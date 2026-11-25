@@ -30,7 +30,11 @@
 #           with a log device
 #   mirror  skzqm: a mirror of two files, with a special and a dedup
 #           mirror, a cache device and a spare, so that each class's
-#           header is in its status
+#           header is in its status. Its files scan in under a second,
+#           so its scrubs, resilver and rebuild run with a delay of 2 ms
+#           injected on every I/O of m0 (zinject -D 2:1; about.txt says
+#           whether it took): the state's text is the same, it lasts
+#           long enough to be seen
 #   remove  skzqr: two files, one of them removed (the removal's states)
 #   none    skznone, a pool that does not exist
 #
@@ -100,6 +104,10 @@
 #   mirror-rebuild, mirror-rebuild-status[-g], mirror-rebuilt[-g]
 #                          a third file attached with -s (a sequential
 #                          rebuild)
+#
+# On files, `zpool online` and `zpool attach` return only once the
+# resilver has ended, so these two run in the background while the
+# status is watched.
 #   remove-status, remove-status-g, remove, remove-in-progress[-g],
 #   remove-done[-g]        skzqr's second file removed
 #
@@ -254,6 +262,18 @@ agent_commands() { # prefix pool
     program "$x-snapshot-1" "$p" snapshot.lua "$p" t "$ASSIST"
 }
 
+# The mirror's scans slowed, or as they are: DELAY names a vdev of the
+# pool DELAY_POOL to inject a delay on.
+DELAY_POOL="" DELAY=""
+slow_on() { # pool
+    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] || return 0
+    lim 30 zinject -d "$DELAY" -D 2:1 "$1" > /dev/null 2>&1
+}
+slow_off() { # pool
+    [ "$1" = "$DELAY_POOL" ] && [ -n "$DELAY" ] || return 0
+    lim 30 zinject -c all > /dev/null 2>&1
+}
+
 # Release every hold of TAG under P@T that is left, with no record.
 release_quietly() { # pool t
     local s
@@ -305,6 +325,7 @@ record_pool() { # prefix pool
     rec "$x-checkpoint" zpool checkpoint "$p"
     rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
+    slow_on "$p"
     rec "$x-scrub" zpool scrub "$p"
     catch "$x-scrub-status" 'scrub in progress' 100 zpool status -P "$p"
     catch "$x-scrub-status-g" 'scrub in progress' 100 zpool status -P -g "$p"
@@ -314,6 +335,7 @@ record_pool() { # prefix pool
     status "$x-scrub-paused" "$p"
     rec "$x-scrub-stop" zpool scrub -s "$p"
     status "$x-scrub-canceled" "$p"
+    slow_off "$p"
 }
 
 # catch_status NAME PATTERN POOL: the pair during a state, if caught.
@@ -428,6 +450,13 @@ main() {
     make_pool skzqm 1024 mirror "$WORK/m0.img" "$WORK/m1.img" special mirror "$WORK/s0.img" "$WORK/s1.img" \
         dedup mirror "$WORK/d0.img" "$WORK/d1.img" cache "$cache" spare "$WORK/spare.img"
     make_pool skzqr 768 "$WORK/r0.img" "$WORK/r1.img"
+    DELAY_POOL=skzqm DELAY=$WORK/m0.img
+    if slow_on skzqm && lim 30 zinject > "$OUT/zinject.txt" 2>&1 && grep -q m0.img "$OUT/zinject.txt"; then
+        echo "mirror's scans: a delay of 2 ms on every I/O of m0 (zinject -D 2:1)" >> "$OUT/about.txt"
+    else
+        echo "mirror's scans: the delay was refused (zinject.txt); they run as they are" >> "$OUT/about.txt"
+    fi
+    slow_off skzqm
     echo "set up" >> "$OUT/about.txt"
 
     record_pool rig skzq
@@ -442,14 +471,19 @@ main() {
     rec mirror-offline zpool offline skzqm "$WORK/m1.img"
     "$DD" if=/dev/urandom of="$WORK/mnt/skzqm/child/more" bs=1M count=1024 conv=fsync status=none
     zpool sync skzqm
-    rec mirror-online zpool online skzqm "$WORK/m1.img"
+    slow_on skzqm
+    rec mirror-online zpool online skzqm "$WORK/m1.img" &
     catch_status mirror-resilver-status 'resilver in progress' skzqm
+    wait
     lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
     status mirror-resilvered skzqm
 
-    rec mirror-rebuild zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img"
+    rec mirror-rebuild zpool attach -s skzqm "$WORK/m0.img" "$WORK/m2.img" &
     catch_status mirror-rebuild-status 'in progress' skzqm
+    wait
     lim 600 zpool wait -t resilver skzqm > /dev/null 2>&1
+    lim 600 zpool wait -t scrub skzqm > /dev/null 2>&1
+    slow_off skzqm
     status mirror-rebuilt skzqm
 
     status remove-status skzqr
