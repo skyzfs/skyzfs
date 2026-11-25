@@ -1,5 +1,6 @@
-"""Textual plants for the next look at #142 (M2.6b1) at b79083a, one at a
-time, each file restored from its saved text in `finally`. A plant is a
+"""Textual plants for the next look at #142 (M2.6b1) at b79083a and
+347a17f (the D plants need 347a17f's `parent_of`), one at a time, each
+file restored from its saved text in `finally`. A plant is a
 list of edits (file, old, new); each old text must occur once. Run from a
 worktree of the head:
 WORKTREE=<path> OUT=<json> python3 plants142b.py [name prefixes...]
@@ -45,6 +46,8 @@ HERE_SPLIT = ("        DaemonSeen::Here { cuts, answer } => (cuts, answer),\n   
 INTENT_TAKE = "            (None, DaemonSeen::Here { .. }) => Action::Take,\n"
 LOOK_OURS = "        Some(SnapSeen::Ours(commit)) => Action::Done(commit),\n"
 PENDING_DUE = "            if assist_due(carried, asked_ms, seen.assisted_ms, seen.now_ms) {\n"
+MAKE_DIR_SYNC = ("    match parent_of(dir) {\n        Some(parent) => File::open(parent)?.sync_all(),\n"
+                 "        None => Ok(()),\n    }\n")
 
 P = [
     # The assist (b79083a): the author's four, then the review's own.
@@ -120,6 +123,20 @@ P = [
         "    /// `pool@<name>` was destroyed before it was published.\n    Destroyed,\n    /// A member's `@<name>` is not the one the manifest names (destroyed,\n    /// or destroyed and taken again).\n    Replaced,\n",
         "    /// A member's `@<name>` is not the one the manifest names (destroyed,\n    /// or destroyed and taken again).\n    Replaced,\n    /// `pool@<name>` was destroyed before it was published.\n    Destroyed,\n")]),
     ("R21 a new reason appended to Why (version 1 still reads)", [(RC, "    /// A rewind of the pool lost `pool@<name>`.\n    Rewound,\n}\n", "    /// A rewind of the pool lost `pool@<name>`.\n    Rewound,\n    /// Planted.\n    Planted,\n}\n")]),
+    # 347a17f (Codex's second P2): the directory that holds a new one.
+    ("D1 the old behaviour: an empty parent not synced", [(RC,
+        "        Some(parent) if parent.as_os_str().is_empty() => Some(Path::new(\".\")),\n",
+        "        Some(parent) if parent.as_os_str().is_empty() => None,\n")]),
+    ("D2 make_dir's old body back (parent_of unused)", [(RC, MAKE_DIR_SYNC,
+        "    match dir.parent() {\n        Some(parent) if !parent.as_os_str().is_empty() => File::open(parent)?.sync_all(),\n        _ => Ok(()),\n    }\n")]),
+    ("D3 make_dir syncs the new directory, not the one that holds it", [(RC, MAKE_DIR_SYNC,
+        "    match parent_of(dir) {\n        Some(_) => File::open(dir)?.sync_all(),\n        None => Ok(()),\n    }\n")]),
+    ("D4 make_dir syncs nothing", [(RC, MAKE_DIR_SYNC,
+        "    match parent_of(dir) {\n        Some(_) => Ok(()),\n        None => Ok(()),\n    }\n")]),
+    ("D5 parent_of gives . for every relative path", [(RC, "        parent => parent,\n",
+        "        _ if dir.is_relative() => Some(Path::new(\".\")),\n        parent => parent,\n")]),
+    ("D6 parent_of gives / for a root", [(RC, "        parent => parent,\n",
+        "        None => Some(Path::new(\"/\")),\n        parent => parent,\n")]),
 ]
 
 only = sys.argv[1:]
