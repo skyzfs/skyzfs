@@ -34,6 +34,8 @@ on:
       - tests/kernel/test_dsync_writer.py
       - tests/kernel/txg_probe.py
       - tests/kernel/test_txg_probe.py
+      - tests/kernel/zfs_cli_json.py
+      - tests/kernel/test_zfs_cli_json.py
       - .github/workflows/skyzfs-zfs-cli-record.yml
 
 concurrency:
@@ -54,6 +56,7 @@ jobs:
       - run: bash tests/kernel/test_zfs_cli_record.sh
       - run: python3 tests/kernel/test_dsync_writer.py
       - run: python3 tests/kernel/test_txg_probe.py
+      - run: python3 tests/kernel/test_zfs_cli_json.py
 
   # The Lua's commit, resolved once, so that every image runs the same.
   lua:
@@ -129,6 +132,12 @@ jobs:
         if: always()
         run: |
           sudo chmod -R a+rX zfs-cli 2>/dev/null || true
+          # The agent's fixture (#147's recorded/<image>.json), from these
+          # records, in the tarball beside them.
+          sudo chown -R "$(id -u)" zfs-cli 2>/dev/null || true
+          python3 -I tests/kernel/zfs_cli_json.py zfs-cli \
+            "testing's recorder tests/kernel/zfs-cli-record.sh (skyzfs/skyzfs ${GITHUB_SHA::7}), run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID, artifact zfs-cli-$IMAGE; Lua at ${LUA_REF::7}" \
+            > "recorded-$IMAGE.json" && mv "recorded-$IMAGE.json" zfs-cli/ || echo "::warning::no fixture: zfs_cli_json.py failed"
           tar -czf "zfs-cli-$IMAGE.tar.gz" zfs-cli 2>/dev/null || true
           {
             echo "## ZFS command outputs, $IMAGE"

@@ -92,6 +92,7 @@ jobs:
       # tests/fixtures/pools that the daemon's tests read: no kernel.
       - run: python3 tests/kernel/test_dsync_writer.py
       - run: python3 tests/kernel/test_txg_probe.py
+      - run: python3 tests/kernel/test_zfs_cli_json.py
       - run: python3 tests/kernel/test_cut_ref.py
       - run: python3 tests/kernel/test_cut_check.py
       - run: python3 tests/kernel/test_cut_daemon_check.py
