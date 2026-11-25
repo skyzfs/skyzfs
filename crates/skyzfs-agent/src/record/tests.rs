@@ -1,6 +1,6 @@
 use super::*;
 
-fn taken(group: u64) -> Taken {
+pub(super) fn taken(group: u64) -> Taken {
     Taken {
         group,
         members: vec![
@@ -27,13 +27,15 @@ fn count(after: u64) -> Count {
     }
 }
 
-fn publish(name: &str, phase: Phase, held: bool) -> Publish {
+pub(super) fn publish(name: &str, phase: Phase, held: bool) -> Publish {
     Publish {
         name: name.into(),
         count: count(3),
         phase,
         held,
         attempts: 2,
+        stalls: 1,
+        begun_ms: 1_700_000_000_000,
     }
 }
 
@@ -91,7 +93,7 @@ fn a_record_reads_back_as_written() {
     for record in [Record::new([1; 16]), full()] {
         let bytes = record.encode().expect("encoded");
         assert_eq!(&bytes[..4], b"SZAG");
-        assert_eq!(&bytes[4..8], &[1, 0, 0, 0]);
+        assert_eq!(&bytes[4..8], &[2, 0, 0, 0]);
         assert_eq!(Record::decode(&bytes), Ok(record));
     }
     let mut record = full();
@@ -103,6 +105,8 @@ fn a_record_reads_back_as_written() {
         Why::Premise,
         Why::NameTaken,
         Why::Rewound,
+        Why::NoProgress,
+        Why::TooOld,
     ] {
         record.abandoned.push(Abandoned {
             name: format!("{why:?}"),
@@ -137,7 +141,7 @@ fn a_record_changed_or_cut_short_is_corrupt() {
 /// Mutant: a check of the head left out (each read past by a body that
 /// is otherwise good).
 #[test]
-fn a_head_that_is_not_version_1s_is_named() {
+fn a_head_that_is_not_version_2s_is_named() {
     let good = full().encode().expect("encoded");
     let with = |at: usize, value: &[u8]| {
         let mut bytes = good.clone();
@@ -148,7 +152,8 @@ fn a_head_that_is_not_version_1s_is_named() {
         Record::decode(&bytes)
     };
     assert_eq!(with(0, b"SAGT"), Err(Corrupt::Magic(*b"SAGT")));
-    assert_eq!(with(4, &2u16.to_le_bytes()), Err(Corrupt::Version(2)));
+    assert_eq!(with(4, &1u16.to_le_bytes()), Err(Corrupt::Version(1)));
+    assert_eq!(with(4, &3u16.to_le_bytes()), Err(Corrupt::Version(3)));
     assert_eq!(with(4, &0u16.to_le_bytes()), Err(Corrupt::Version(0)));
     assert_eq!(with(6, &1u16.to_le_bytes()), Err(Corrupt::Flags(1)));
     let is = (good.len() - HEAD - SUM) as u64;
@@ -248,7 +253,7 @@ fn a_name_given_up_leaves_those_under_way_and_the_newest_are_kept() {
 
 fn store() -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().expect("a directory");
-    let store = Store::new(root.path().join("vol"));
+    let store = Store::open(root.path().join("vol")).expect("opened");
     (root, store)
 }
 
@@ -352,6 +357,8 @@ fn golden() -> Record {
         phase,
         held,
         attempts,
+        stalls: 20 + attempts,
+        begun_ms: 0x60 + u64::from(attempts),
     };
     let whys = [
         Why::ManifestLost,
@@ -361,6 +368,8 @@ fn golden() -> Record {
         Why::Premise,
         Why::NameTaken,
         Why::Rewound,
+        Why::NoProgress,
+        Why::TooOld,
     ];
     Record {
         volume: [0x0f; 16],
@@ -407,34 +416,35 @@ fn golden() -> Record {
     }
 }
 
-/// The bytes of [`golden`] at version 1. postcard writes fields and
+/// The bytes of [`golden`] at version 2. postcard writes fields and
 /// variants by position, so a field moved or added, or a variant inserted
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
-const GOLDEN: [&str; 16] = [
-    "535a414701000000d10100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+const GOLDEN: [&str; 17] = [
+    "535a414702000000e70100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e5e5e5e03ad210000000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141414141",
-    "41414141414141414141414141414141414141414141414141414100010168a1",
-    "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03",
-    "ad2102290103702f6402ac024242424242424242424242424242424242424242",
-    "42424242424242424242424201020161a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f6403ac02434343",
-    "4343434343434343434343434343434343434343434343434343434343060701",
-    "030164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e03ad21042b0103702f6404ac0244444444444444444444444444444444",
-    "44444444444444444444444444444444c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
-    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001040702773000e80702773101e90702",
-    "773202ea0702773303eb0702773404ec0702773505ed0702773606ee07006a9a",
-    "94aaf9698cbbeb676d3c883fd857dfe3e050bee6b0b1ca9a47673686dc",
+    "5e5e5e5e5e5e03ad2100000014600174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac02414141",
+    "4141414141414141414141414141414141414141414141414141414141000115",
+    "610168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e03ad2102290103702f6402ac0242424242424242424242424242424242",
+    "42424242424242424242424242424242010216620161a1a1a1a1a1a1a1a1a1a1",
+    "a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f64",
+    "03ac024343434343434343434343434343434343434343434343434343434343",
+    "4343430607010317630164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e",
+    "5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444444444444444",
+    "444444444444444444444444444444444444444444444444c0c0c0c0c0c0c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104186409027730",
+    "00e80702773101e90702773202ea0702773303eb0702773404ec0702773505ed",
+    "0702773606ee0702773707ef0702773808f0076316f2b2ac52930bdf0feaed14",
+    "b32d2fb27637bd2ffa3878db109b5ca374cbdc",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before
 /// another, or the head's order changed. Any of these is a record of
-/// another version read as version 1.
+/// another version read as version 2.
 #[test]
-fn version_1s_bytes_are_these() {
+fn version_2s_bytes_are_these() {
     let hex: String = GOLDEN.concat();
     let bytes: Vec<u8> = (0..hex.len())
         .step_by(2)

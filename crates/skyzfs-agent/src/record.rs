@@ -11,7 +11,13 @@
 //! endian), flags (u16, zero), the body's length (u32), the body
 //! (postcard), and the BLAKE3 hash of everything before it. It is
 //! written as a file beside it, synced, renamed over it, and the
-//! directory synced: a crash leaves the old record or the new one.
+//! directory synced: a crash leaves the old record or the new one. Each
+//! of those steps is a call of [`Fs`], and the tests cut the power after
+//! each, or fail each, on a model of a file system (D2 of #142's review).
+//!
+//! One agent keeps a directory: [`Store::open`] takes the lock of the
+//! file [`LOCK`] in it and holds it while the store lives, and a second
+//! agent's open is refused ([`OpenError::Held`]; S6 of #142's review).
 //!
 //! A file that does not read as a record of this version, whose hash
 //! does not match, or whose body breaks a rule of the record (more than
@@ -21,7 +27,13 @@
 //! not write over it: what it held (which snapshots are held, and by
 //! whom) is for a person to judge. A record of another version is
 //! corrupt to this agent, as the plan says (no reader of other versions
-//! yet).
+//! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
+//! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; version 1
+//! (M2.6b1) is not read, since no agent that wrote it ever ran: the
+//! crate had no engine and no program then. No agent has run version 2
+//! either; from the first run of the program (M2.6c), any change to the
+//! record takes a new version and a test that decodes the version
+//! before it (the lead's decision on #144).
 //!
 //! # The manifests
 //!
@@ -30,9 +42,10 @@
 //! record names it (phase [`Phase::Taken`]), and removed once the
 //! publish has left the record.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::fs::{Disk, Fs};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +53,7 @@ use serde::{Deserialize, Serialize};
 pub const MAGIC: [u8; 4] = *b"SZAG";
 
 /// The record's version.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// The publishes that may be under way at once (the lead's Q11).
 pub const UNDER_WAY_MAX: usize = 8;
@@ -54,6 +67,9 @@ pub const RECORD: &str = "record";
 
 /// The directory of the manifests in the agent's directory of a volume.
 pub const MANIFESTS: &str = "manifests";
+
+/// The file whose lock the agent that keeps the directory holds.
+pub const LOCK: &str = "lock";
 
 /// The magic, the version, the flags and the body's length.
 const HEAD: usize = 4 + 2 + 2 + 4;
@@ -100,6 +116,12 @@ pub struct Publish {
     pub held: bool,
     /// The requests made of the daemon for it.
     pub attempts: u32,
+    /// The requests in a row that ended with no cut counted after their
+    /// count ([`crate::plan::stalls`]).
+    pub stalls: u32,
+    /// When it was begun (the wall clock, in ms since 1970): its age
+    /// bounds it ([`crate::plan::AGE_MAX`]).
+    pub begun_ms: u64,
 }
 
 /// The daemon's count of cuts that a publish is asked after, read before
@@ -204,6 +226,12 @@ pub enum Why {
     NameTaken,
     /// A rewind of the pool lost `pool@<name>`.
     Rewound,
+    /// It was asked anew [`crate::plan::STALLS_ABANDONED`] times in a row
+    /// with no cut counted (the lead's decision for M2.6b2).
+    NoProgress,
+    /// It was older than its bound ([`crate::plan::AGE_MAX`]), whatever
+    /// the daemon said (L2 of #144's review).
+    TooOld,
 }
 
 /// Why a record's bytes are not read.
@@ -423,16 +451,49 @@ pub enum SaveError {
     Io(#[from] io::Error),
 }
 
-/// The agent's directory of a volume: its record and its manifests.
-#[derive(Debug, Clone)]
-pub struct Store {
-    dir: PathBuf,
+/// Why a store was not opened.
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    /// Another agent holds the directory's lock.
+    #[error("another agent holds the record in {0}")]
+    Held(PathBuf),
+    /// The file system's error.
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
-impl Store {
-    /// The store in `dir`, which is made at the first save.
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Store { dir: dir.into() }
+/// The agent's directory of a volume: its record and its manifests, on
+/// the file system `F`, its lock held while it lives.
+#[derive(Debug)]
+pub struct Store<F: Fs = Disk> {
+    dir: PathBuf,
+    fs: F,
+    _lock: F::Lock,
+}
+
+impl Store<Disk> {
+    /// Open the store in `dir` on the disk ([`Store::open_on`]).
+    pub fn open(dir: impl Into<PathBuf>) -> Result<Self, OpenError> {
+        Store::open_on(Disk, dir)
+    }
+}
+
+impl<F: Fs> Store<F> {
+    /// Open the store in `dir` on `fs`: the directory is made where it
+    /// is not (its parent must be there), and its lock taken.
+    pub fn open_on(fs: F, dir: impl Into<PathBuf>) -> Result<Self, OpenError> {
+        let dir = dir.into();
+        make_dir(&fs, &dir)?;
+        let lock = match fs.lock(&dir.join(LOCK)) {
+            Ok(lock) => lock,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Err(OpenError::Held(dir)),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Store {
+            dir,
+            fs,
+            _lock: lock,
+        })
     }
 
     /// The directory.
@@ -442,7 +503,7 @@ impl Store {
 
     /// The record there.
     pub fn load(&self) -> io::Result<Loaded> {
-        let bytes = match fs::read(self.dir.join(RECORD)) {
+        let bytes = match self.fs.read(&self.dir.join(RECORD)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Absent),
             Err(e) => return Err(e),
@@ -460,53 +521,50 @@ impl Store {
         if let Loaded::Corrupt(why) = self.load()? {
             return Err(SaveError::Corrupt(why));
         }
-        make_dir(&self.dir)?;
-        replace(&self.dir, RECORD, &bytes)?;
+        replace(&self.fs, &self.dir, RECORD, &bytes)?;
         Ok(())
     }
 
     /// Write the manifest of `name`, synced, before the record names it.
     pub fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         let dir = self.manifests(name)?;
-        make_dir(&self.dir)?;
-        make_dir(&dir)?;
-        replace(&dir, name, bytes)
+        make_dir(&self.fs, &dir)?;
+        replace(&self.fs, &dir, name, bytes)
     }
 
     /// The manifest of `name`, or `None` where there is none.
     pub fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.manifests(name)?.join(name)) {
+        match self.fs.read(&self.manifests(name)?.join(name)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    /// Remove the manifest of `name`, synced; none there is removed.
+    /// Remove the manifest of `name`, synced; none there is removed. The
+    /// directory is synced where there was none too: an earlier call may
+    /// have removed it and failed, or stopped, before its sync.
     pub fn remove_manifest(&self, name: &str) -> io::Result<()> {
         let dir = self.manifests(name)?;
-        match fs::remove_file(dir.join(name)) {
-            Ok(()) => File::open(&dir)?.sync_all(),
+        match self.fs.unlink(&dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        match self.fs.sync_dir(&dir) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+            other => other,
         }
     }
 
     /// The names whose manifests are on disk, sorted.
     pub fn manifest_names(&self) -> io::Result<Vec<String>> {
-        let entries = match fs::read_dir(self.dir.join(MANIFESTS)) {
+        let entries = match self.fs.list(&self.dir.join(MANIFESTS)) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
-        let mut names = Vec::new();
-        for entry in entries {
-            if let Some(name) = entry?.file_name().to_str() {
-                if file_name(name) {
-                    names.push(name.to_string());
-                }
-            }
-        }
+        let mut names: Vec<_> = entries.into_iter().filter(|n| file_name(n)).collect();
         names.sort();
         Ok(names)
     }
@@ -523,17 +581,56 @@ impl Store {
     }
 }
 
+/// Where the engine keeps the record and the manifests: [`Store`] in the
+/// program, a store in memory in the engine's tests, where a save that
+/// returned is kept by a power cut as [`Store::save`]'s is.
+pub trait Keep {
+    /// [`Store::load`].
+    fn load(&self) -> io::Result<Loaded>;
+    /// [`Store::save`].
+    fn save(&self, record: &Record) -> Result<(), SaveError>;
+    /// [`Store::write_manifest`].
+    fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()>;
+    /// [`Store::read_manifest`].
+    fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>>;
+    /// [`Store::remove_manifest`].
+    fn remove_manifest(&self, name: &str) -> io::Result<()>;
+    /// [`Store::manifest_names`].
+    fn manifest_names(&self) -> io::Result<Vec<String>>;
+}
+
+impl<F: Fs> Keep for Store<F> {
+    fn load(&self) -> io::Result<Loaded> {
+        Store::load(self)
+    }
+    fn save(&self, record: &Record) -> Result<(), SaveError> {
+        Store::save(self, record)
+    }
+    fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        Store::write_manifest(self, name, bytes)
+    }
+    fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        Store::read_manifest(self, name)
+    }
+    fn remove_manifest(&self, name: &str) -> io::Result<()> {
+        Store::remove_manifest(self, name)
+    }
+    fn manifest_names(&self) -> io::Result<Vec<String>> {
+        Store::manifest_names(self)
+    }
+}
+
 /// Make `dir` where it is not, and sync its parent so that it stays.
 /// The parent is synced where `dir` was there too: an earlier call may
 /// have made it and stopped, or failed, before its sync.
-fn make_dir(dir: &Path) -> io::Result<()> {
-    match fs::create_dir(dir) {
+fn make_dir(fs: &impl Fs, dir: &Path) -> io::Result<()> {
+    match fs.create_dir(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
     }
     match parent_of(dir) {
-        Some(parent) => File::open(parent)?.sync_all(),
+        Some(parent) => fs.sync_dir(parent),
         None => Ok(()),
     }
 }
@@ -550,20 +647,15 @@ fn parent_of(dir: &Path) -> Option<&Path> {
 
 /// Put `bytes` at `dir/name` in one step: written beside it, synced,
 /// renamed over it, and the directory synced.
-fn replace(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+fn replace(fs: &impl Fs, dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let tmp = dir.join(format!(".{name}.tmp"));
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    fs::rename(&tmp, dir.join(name))?;
-    File::open(dir)?.sync_all()
+    fs.write(&tmp, bytes)?;
+    fs.sync_file(&tmp)?;
+    fs.rename(&tmp, &dir.join(name))?;
+    fs.sync_dir(dir)
 }
 
+#[cfg(test)]
+mod crash;
 #[cfg(test)]
 mod tests;
