@@ -36,3 +36,5 @@ C7	KILLED	window: t0 twice	(test_zfs_cli_record.sh: FAIL: window beside snapshot
 C8	SURVIVED	the stall line on the window t0 t0 (W1)
 C9	SURVIVED	the probe's line on the window t0 t0 (T2)
 C10	KILLED	stopped: the wait message says 60 s whatever ZCR_STOP_TENTHS	(test_zfs_cli_record.sh: FAIL: stopped: one that ignores SIGTERM: got 'the probe did not stop within 60 s', want 'the probe did not sto)
+C11	KILLED	stop_bg: SIGKILL in place of SIGTERM (W3)	(test_zfs_cli_record.sh: FAIL: writer beside snapshot: its stall: got 'NOT COVE', want 'longest=')
+D1	KILLED	stall: NOT COVERED only on a late start	(test_dsync_writer.py: FAIL: test_a_log_that_ends_in_the_window_is_not_covered (__main__.Stall.test_a_log_that_ends_in_the_window_is_)
