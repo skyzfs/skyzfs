@@ -57,3 +57,4 @@ P4	SURVIVED	write: slow is > SLOW, not >=
 P5	SURVIVED	write: the last second's line dropped
 P6	KILLED	stall: before from the seconds dropped	(python: FAIL: test_writes_counted_in_whole_seconds_of_the_window (__main__.Stall.test_writes_count)
 P7	KILLED	write: no end line	(python: FAIL: test_fill_writes_new_data_over_its_span (__main__.Writer.test_fill_writes_new_data_o)
+P8	KILLED	write: monotonic clock, not the epoch	(python: FAIL: test_writes_until_told_and_logs_its_end (__main__.Writer.test_writes_until_told_and_)
