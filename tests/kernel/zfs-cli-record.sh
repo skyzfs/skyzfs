@@ -19,6 +19,7 @@
 #           limit, the shell's "Killed" line, which names this script,
 #           is in it: that line is not ZFS's
 #   rc      its exit code (124: it did not end within the limit)
+#   secs    its wall time in seconds
 #   note    only where there is something to say: a state looked for
 #           and whether it was caught, or an expected message and
 #           whether it was seen
@@ -38,6 +39,12 @@
 #           lasts long enough to be seen
 #   remove  skzqr: two files, one of them removed (the removal's states)
 #   none    skznone, a pool that does not exist
+#   scale-N skzqs, made only when ZCR_SCALE names N: N file systems
+#           under the root (not mounted), and the snapshot program,
+#           members, hold -r, tagged and release -r on it, each with
+#           its wall time in secs and a limit of ZCR_SCALE_LIMIT
+#           seconds (default 1800) in place of the usual. about.txt
+#           says how long the file systems took to make
 #
 # The adapter's tag is skyzfs-publish (HOLD_TAG, src/zfs.rs) and its
 # property skyzfs:assist (ASSIST_PROPERTY). Each live pool gets a child
@@ -145,7 +152,7 @@ ASSIST=skyzfs:assist
 # and keep it as the record NAME. With --expect, the note says whether
 # its stdout or stderr matched PATTERN (grep -E).
 rec() {
-    local name=$1 in=/dev/null expect="" shown d rc=0 note=""
+    local name=$1 in=/dev/null expect="" shown d rc=0 note="" t0 t1
     shift
     while :; do
         case ${1:-} in
@@ -165,8 +172,11 @@ rec() {
     [ "$in" = /dev/null ] || shown="$shown < $(basename "$in")"
     printf '%s\n' "$shown" > "$d/cmd"
     printf '%s\0' "$@" > "$d/argv"
+    t0=$(date +%s.%N)
     lim "$LIMIT" "$@" < "$in" > "$d/stdout" 2> "$d/stderr" || rc=$?
+    t1=$(date +%s.%N)
     echo "$rc" > "$d/rc"
+    awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.3f\n", b - a }' > "$d/secs"
     if [ -n "$expect" ]; then
         if cat "$d/stdout" "$d/stderr" | grep -Eq -- "$expect"; then
             note="expected /$expect/: seen"
@@ -344,6 +354,32 @@ record_pool() { # prefix pool
     slow_off "$p"
 }
 
+# scale N: a pool with N file systems under its root, and the adapter's
+# programs and holds on it, each timed (the secs of its record).
+scale() {
+    local n=$1 p=skzqs t0 made
+    local LIMIT=${ZCR_SCALE_LIMIT:-1800}
+    truncate -s 16G "$WORK/scale.img"
+    if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint=none -O canmount=off \
+        -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$n.log" 2>&1; then
+        echo "scale $n: zpool create failed (create-$p-$n.log)" >> "$OUT/about.txt"
+        rm -f "$WORK/scale.img"
+        return 0
+    fi
+    zfs set "$ASSIST=1700000000000" "$p" >> "$OUT/create-$p-$n.log" 2>&1
+    t0=$(date +%s)
+    seq 1 "$n" | xargs -P 8 -I{} zfs create "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1
+    made=$(zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
+    echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s" >> "$OUT/about.txt"
+    program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
+    program "scale-$n-members" "$p" members.lua -n "$p" t
+    rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t"
+    program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    rec "scale-$n-release" zfs release -r "$TAG" "$p@t"
+    lim 600 zpool destroy -f "$p" > /dev/null 2>&1
+    rm -f "$WORK/scale.img"
+}
+
 # catch_status NAME PATTERN POOL: the pair during a state, if caught.
 catch_status() {
     catch "$1" "$2" 100 zpool status -P "$3"
@@ -371,7 +407,7 @@ main() {
         set +e
         local p l
         [ -n "$ZINJECT" ] && lim 30 "$ZINJECT" -c all > /dev/null 2>&1
-        for p in skzq skzqm skzqr; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
+        for p in skzq skzqm skzqr skzqs; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
         command -v ublk > /dev/null && lim 60 ublk del -a > /dev/null 2>&1
         for l in "${LOOPS[@]}"; do losetup -d "$l" 2> /dev/null; done
         rm -rf "${OUT:?}/.catch"
@@ -515,6 +551,13 @@ main() {
     rec none-holds-r zfs holds -H -r skznone@t
     rec none-hold zfs hold -r "$TAG" skznone@t
     rec none-release zfs release -r "$TAG" skznone@t
+
+    # The programs' times on many file systems, when asked.
+    local n
+    for n in ${ZCR_SCALE:-}; do
+        case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
+        scale "$n"
+    done
     exit 0
 }
 

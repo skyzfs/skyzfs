@@ -16,6 +16,9 @@ on:
       images:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
+      scale:
+        description: "counts of file systems, space-separated (e.g. '1000 10000'): the snapshot program and the holds on a pool with that many, timed. Empty: none"
+        default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
   # dispatch only). ci.yml runs the unit tests on a pull request.
@@ -69,7 +72,7 @@ jobs:
     needs: [unit, lua]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 40
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +80,7 @@ jobs:
     env:
       IMAGE: ${{ matrix.image }}
       LUA_REF: ${{ needs.lua.outputs.commit }}
+      ZCR_SCALE: ${{ inputs.scale }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -96,7 +100,11 @@ jobs:
             git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
           done
       - name: Record
-        run: sudo --preserve-env=LUA_REF tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+        run: |
+          case $ZCR_SCALE in
+            *[!0-9\ ]*) echo "::error::scale is counts separated by spaces: $ZCR_SCALE"; exit 64 ;;
+          esac
+          sudo --preserve-env=LUA_REF,ZCR_SCALE tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |

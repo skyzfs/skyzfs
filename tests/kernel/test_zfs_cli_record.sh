@@ -156,6 +156,16 @@ check "pin the odd one in C.UTF-8" "$(words rig-snapshot-odd-utf8)" "env LC_ALL=
 check "pin the odd one as the adapter" "$(words rig-snapshot-odd)" "zfs program $P skzq - skzq o0 skyzfs:assist "
 check "pin -g partners" "$(for r in scrub-paused scrub-canceled; do words "rig-$r-g"; done)" "zpool status -P -g skzq zpool status -P -g skzq "
 check "pin none's assist" "$(words none-assist-set)" "zfs set skyzfs:assist=1700000000001 skznone "
+check "pin secs" "$(grep -Ec '^[0-9]+\.[0-9]{3}$' "$OUT/rig-status/secs")" 1
+# scale: the same words on its pool, and its limit in place of LIMIT.
+WORK=$T/work
+mkdir -p "$WORK"
+ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/pins.err"
+check "pin scale snapshot" "$(words scale-3-snapshot)" "zfs program $P skzqs - skzqs t skyzfs:assist "
+check "pin scale hold" "$(words scale-3-hold)" "zfs hold -r skyzfs-publish skzqs@t "
+check "pin scale release" "$(words scale-3-release)" "zfs release -r skyzfs-publish skzqs@t "
+check "scale's limit is its own" "$LIMIT" 5
+check "scale's image removed" "$([ -e "$WORK/scale.img" ] && echo yes || echo no)" no
 # The adapter runs every command with LC_ALL=C (src/host.rs); main
 # exports it.
 check "pin the locale" "$(grep -c '^    export LC_ALL=C$' "$HERE/zfs-cli-record.sh")" 1
