@@ -5,8 +5,11 @@
 #
 #   zfs-cli-record.sh OUT LUA_DIR [WORK]
 #
-# LUA_DIR holds snapshot.lua, members.lua and tagged.lua, the programs
-# as the adapter pipes them to `zfs program`. Every command runs with
+# LUA_DIR holds members.lua and tagged.lua, and snapshot.lua where the
+# adapter still has it, the programs as the adapter pipes them to `zfs
+# program`. Without snapshot.lua (the take is `zfs snapshot -r` since
+# M2.6c-2b), the records that run it are not made, and about.txt says
+# so. Every command runs with
 # LC_ALL=C, as the adapter runs its commands (src/host.rs), unless its
 # record says otherwise. Each command is one record, OUT/NAME/ with:
 #
@@ -97,16 +100,23 @@
 #   assist-set, assist-sync
 #                          the assist: zfs set skyzfs:assist=V POOL, then
 #                          zpool sync POOL
-#   snapshot-1             snapshot.lua at @t
+#   count                  zfs list -r -H -o name -t filesystem,volume
+#                          POOL: the adapter's count of the pool's
+#                          file systems and volumes
+#   snapshot-1             snapshot.lua at @t (only with snapshot.lua)
 #   snapshot-cli           only if snapshot-1 did not take the whole
 #                          @t: zfs snapshot -r, so that what follows has
 #                          its @t (cli_snapshot: where the program failed
 #                          part way, what it took is destroyed first,
 #                          snapshot-cli-destroy-partial)
-#   snapshot-2             snapshot.lua at @t again: EEXIST (expected)
+#   snapshot-2             snapshot.lua at @t again: EEXIST (expected;
+#                          only with snapshot.lua)
 #   members, members-absent, tagged
 #                          members.lua at t and at a t that is absent;
 #                          tagged.lua before any hold
+#   members-full, members-full-absent
+#                          members.lua in its full mode (`POOL T full
+#                          ASSIST`) at t and at a t that is absent
 #   hold-1, holds, holds-r, hold-2, tagged-held, release-1,
 #   holds-r-released, release-2
 #                          the holds, and hold and release twice for the
@@ -129,12 +139,18 @@
 #   snapshot-odd, snapshot-odd-utf8
 #                          snapshot.lua with those properties, at @o0 with
 #                          LC_ALL=C as the adapter, and at @o2 with
-#                          LC_ALL=C.UTF-8
+#                          LC_ALL=C.UTF-8; without snapshot.lua, take-o0
+#                          and take-o2, zfs snapshot -r at each
+#   members-full-odd, members-full-odd-utf8
+#                          members.lua in its full mode at o0 with
+#                          LC_ALL=C and at o2 with LC_ALL=C.UTF-8: the
+#                          properties as the manifest reads them
 #   exists-child-pre, snapshot-exists-child, exists-child-after
 #                          the child has @p and the root has not, then
 #                          snapshot.lua at @p, which refuses at its check
-#                          before taking anything (EEXIST, expected), then
-#                          the snapshots that are there
+#                          before taking anything (EEXIST, expected; only
+#                          with snapshot.lua), then the snapshots that
+#                          are there
 #   cli-exists-child, cli-exists-child-after, cli-exists-root
 #                          zfs snapshot -r, the take, where it fails: at
 #                          @p, which the child has ("dataset already
@@ -216,6 +232,9 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LIMIT=${ZCR_LIMIT:-120}
 # The program's limits, as the adapter passes them.
 PROGRAM_LIMITS=(-t 100000000 -m 104857600)
+# Whether LUA_DIR has the snapshot program (main): 0 once the take is
+# `zfs snapshot -r` alone.
+SNAPSHOT_LUA=1
 # The adapter's hold tag and assist property.
 TAG=skyzfs-publish
 ASSIST=skyzfs:assist
@@ -370,16 +389,18 @@ cli_snapshot() {
     rec "$name" zfs snapshot -r "$p@t"
 }
 
-# members_line RECORD: how many members the members program's RECORD
-# listed, in about.txt.
+# members_line RECORD: how many members (datasets, in the full mode)
+# the members program's RECORD listed, in about.txt.
 members_line() {
     local k
     k=$(python3 -I -c 'import json, sys
 try:
-    print(len(json.load(open(sys.argv[1]))["return"]["members"]))
+    r = json.load(open(sys.argv[1]))["return"]
+    k = "datasets" if "datasets" in r else "members"
+    print(len(r[k]), k)
 except Exception:
     print("not read")' "$OUT/$1/stdout" 2> /dev/null)
-    echo "scale: $1: ${k:-not read} members" >> "$OUT/about.txt"
+    echo "scale: $1: ${k:-not read}" >> "$OUT/about.txt"
 }
 
 # status NAME POOL: zpool status -P and -P -g, the adapter's pair.
@@ -396,7 +417,10 @@ agent_commands() { # prefix pool
     rec "$x-get" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-assist-set" zfs set "$ASSIST=1700000000001" "$p"
     rec "$x-assist-sync" zpool sync "$p"
-    program "$x-snapshot-1" "$p" snapshot.lua "$p" t "$ASSIST"
+    rec "$x-count" zfs list -r -H -o name -t filesystem,volume "$p"
+    if [ "$SNAPSHOT_LUA" = 1 ]; then
+        program "$x-snapshot-1" "$p" snapshot.lua "$p" t "$ASSIST"
+    fi
 }
 
 # The mirror's scans slowed, or as they are: DELAY names a vdev of the
@@ -429,9 +453,13 @@ record_pool() { # prefix pool
     agent_commands "$x" "$p"
     # Without the program, a snapshot for what follows all the same.
     cli_snapshot "$x-snapshot-cli" "$x-snapshot-1" "$p"
-    program "$x-snapshot-2" "$p" snapshot.lua --expect '"errno": *"17"' "$p" t "$ASSIST"
+    if [ "$SNAPSHOT_LUA" = 1 ]; then
+        program "$x-snapshot-2" "$p" snapshot.lua --expect '"errno": *"17"' "$p" t "$ASSIST"
+    fi
     program "$x-members" "$p" members.lua -n "$p" t
     program "$x-members-absent" "$p" members.lua --expect '"absent"' -n "$p" absent
+    program "$x-members-full" "$p" members.lua -n "$p" t full "$ASSIST"
+    program "$x-members-full-absent" "$p" members.lua -n "$p" absent full "$ASSIST"
     program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
     rec "$x-hold-1" zfs hold -r "$TAG" "$p@t"
     rec "$x-holds" zfs holds -H "$p@t"
@@ -457,11 +485,21 @@ record_pool() { # prefix pool
     rec "$x-set-utf8" zfs set "skyzfs:utf8=naïve, 日本, ∅" "$p/child"
     rec "$x-set-raw" zfs set "skyzfs:raw=a$(printf '\xff\xfe')b$(printf '\xc3')" "$p/child"
     rec "$x-get-odd" zfs get -H -p -o name,property,value,source skyzfs:utf8,skyzfs:raw "$p/child"
-    program "$x-snapshot-odd" "$p" snapshot.lua "$p" o0 "$ASSIST"
-    program "$x-snapshot-odd-utf8" "$p" snapshot.lua --locale C.UTF-8 "$p" o2 "$ASSIST"
+    if [ "$SNAPSHOT_LUA" = 1 ]; then
+        program "$x-snapshot-odd" "$p" snapshot.lua "$p" o0 "$ASSIST"
+        program "$x-snapshot-odd-utf8" "$p" snapshot.lua --locale C.UTF-8 "$p" o2 "$ASSIST"
+    else
+        rec "$x-take-o0" zfs snapshot -r "$p@o0"
+        rec "$x-take-o2" zfs snapshot -r "$p@o2"
+    fi
+    # The manifest's reading of those properties, in each locale.
+    program "$x-members-full-odd" "$p" members.lua -n "$p" o0 full "$ASSIST"
+    program "$x-members-full-odd-utf8" "$p" members.lua --locale C.UTF-8 -n "$p" o2 full "$ASSIST"
     # The check refuses before anything is taken: the child has @p.
     rec "$x-exists-child-pre" zfs snapshot "$p/child@p"
-    program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
+    if [ "$SNAPSHOT_LUA" = 1 ]; then
+        program "$x-snapshot-exists-child" "$p" snapshot.lua --expect '"errno": *"17"' "$p" p "$ASSIST"
+    fi
     rec "$x-exists-child-after" zfs list -H -t snapshot -o name -r "$p"
     # zfs snapshot -r, the take since e6788b0, where it fails: the
     # child's @p is there, and the root's @t is there.
@@ -503,6 +541,7 @@ record_none() { # prefix pool
     local x=$1 p=$2
     agent_commands "$x" "$p"
     program "$x-members" "$p" members.lua -n "$p" t
+    program "$x-members-full" "$p" members.lua -n "$p" t full "$ASSIST"
     program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
     rec "$x-holds" zfs holds -H "$p@t"
     rec "$x-holds-r" zfs holds -H -r "$p@t"
@@ -722,14 +761,17 @@ scale() {
         made=$(lim 120 zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
         echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
-    for step in snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members; do
+    for step in count snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-full; do
         if ! scale_limit; then
             echo "scale $n: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
         fi
         case $step in
+            count) rec "scale-$n-count" zfs list -r -H -o name -t filesystem,volume "$p" ;;
             snapshot)
-                if [ -n "${ZCR_SCALE_LUA_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_LUA_MAX" ]; then
+                if [ "$SNAPSHOT_LUA" != 1 ]; then
+                    echo "scale $n: the snapshot program not run: there is no snapshot.lua" >> "$OUT/about.txt"
+                elif [ -n "${ZCR_SCALE_LUA_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_LUA_MAX" ]; then
                     echo "scale $n: the snapshot program not run: $n is more than ZCR_SCALE_LUA_MAX ($ZCR_SCALE_LUA_MAX)" >> "$OUT/about.txt"
                 else
                     writing "scale-$n-snapshot" "$wdir" "$p" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
@@ -750,6 +792,11 @@ scale() {
             take-cli-members)
                 program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c
                 members_line "scale-$n-take-cli-members"
+                ;;
+            # What the manifest reads after the take, at this count.
+            take-cli-full)
+                program "scale-$n-take-cli-full" "$p" members.lua -n "$p" c full "$ASSIST"
+                members_line "scale-$n-take-cli-full"
                 ;;
         esac
     done
@@ -785,9 +832,10 @@ main() {
     LUA_DIR=${2:?usage: zfs-cli-record.sh OUT LUA_DIR [WORK]}
     WORK=${3:-/mnt/skz-cli-record}
     [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
-    for f in snapshot members tagged; do
+    for f in members tagged; do
         [ -r "$LUA_DIR/$f.lua" ] || { echo "no $f.lua in $LUA_DIR" >&2; exit 64; }
     done
+    [ -r "$LUA_DIR/snapshot.lua" ] || SNAPSHOT_LUA=0
     mkdir -p "$OUT" "$WORK"
     OUT=$(cd "$OUT" && pwd)
     LUA_DIR=$(cd "$LUA_DIR" && pwd)
@@ -847,6 +895,7 @@ main() {
         echo "zfs module $(cat /sys/module/zfs/version)"
         echo "zfs userland $(zfs version 2> /dev/null | head -n 1)"
         echo "lua from ${LUA_REF:-$LUA_DIR}"
+        [ "$SNAPSHOT_LUA" = 1 ] || echo "no snapshot.lua: the take is zfs snapshot -r alone; the snapshot program's records are not made"
         tail -n 1 "$OUT/ublksrv.ver"
     } > "$OUT/about.txt"
     cp "$LUA_DIR"/*.lua "$OUT/"
