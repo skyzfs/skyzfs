@@ -11,6 +11,7 @@ sys.path.insert(0, HERE)
 import cut_ref  # noqa: E402
 import nodeb_check  # noqa: E402
 from cut_check import RigError  # noqa: E402
+from test_cut_check import assert_pick_wiring  # noqa: E402
 
 FIXTURES = os.path.join(HERE, '..', 'fixtures', 'pools')
 
@@ -290,6 +291,13 @@ class Expected(unittest.TestCase):
                                                 'later': damage, 'hole': damage})
         self.assertEqual(nodeb_check.CLEAN, {'early': ('import', 'copies')})
         self.assertEqual(nodeb_check.ZDB_ABORT, 'rig: zdb died with signal 6')
+
+
+class PickWiring(unittest.TestCase):
+    def test_lacks_picks_through_withheld_pick_and_names_what_it_passed_over(self):
+        """Review of #139, W6 and W7: node B's lacks takes the cut rig's
+        pick, and its line names the writes passed over."""
+        assert_pick_wiring(self, nodeb_check.main, 'lacks', 'cut')
 
 
 if __name__ == '__main__':

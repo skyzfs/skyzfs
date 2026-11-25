@@ -3,9 +3,12 @@
 
     python3 tests/kernel/test_cut_check.py
 """
+import ast
+import inspect
 import os
 import sys
 import tempfile
+import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -320,6 +323,58 @@ class Picks(unittest.TestCase):
                    rec(3, ('discard',), self.OFF + 0x9000, 4096), rec(4, (), self.OFF + 0x1000, 4096)]
         self.assertEqual(cut_check.pick_later(records, cut(1, 5, 0, 2), self.BPS), 3)
         self.assertIsNone(cut_check.pick_later(records[:3], cut(1, 5, 0, 2), self.BPS))
+
+
+# The wiring of a rig's main (review of #139, W5 to W7): read from its
+# source, since main needs a kernel's recording to run.
+def tree(func):
+    return ast.parse(textwrap.dedent(inspect.getsource(func)))
+
+
+def calls(t, name):
+    """The calls of `name` (a plain name or an attribute) in t."""
+    return [n for n in ast.walk(t) if isinstance(n, ast.Call)
+            and name in (getattr(n.func, 'id', None), getattr(n.func, 'attr', None))]
+
+
+def names(node):
+    return [n.id for n in ast.walk(node) if isinstance(n, ast.Name)]
+
+
+def control_lines(t, key):
+    """The values assigned to got[key] in t."""
+    return [n.value for n in ast.walk(t) if isinstance(n, ast.Assign) and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Subscript) and isinstance(n.targets[0].value, ast.Name)
+            and n.targets[0].value.id == 'got' and isinstance(n.targets[0].slice, ast.Constant)
+            and n.targets[0].slice.value == key]
+
+
+def assert_pick_wiring(tc, func, key, cut_name):
+    """`func` picks its control's write through withheld_pick alone, with the
+    checker, the control's cut and its blocks, and every line of the
+    control names the writes passed over."""
+    t = tree(func)
+    tc.assertEqual(calls(t, 'pick_withheld'), [], 'the pick bypasses withheld_pick')
+    pick = calls(t, 'withheld_pick')
+    tc.assertEqual(len(pick), 1)
+    tc.assertEqual([names(a) for a in pick[0].args], [['ck'], [cut_name], ['bps']])
+    assign = [n for n in ast.walk(t) if isinstance(n, ast.Assign) and n.value is pick[0]]
+    tc.assertEqual(len(assign), 1)
+    tc.assertEqual(ast.unparse(assign[0].targets[0]).strip('()'), 'v, same')
+    over = calls(t, 'passed_over')
+    tc.assertEqual([[names(a) for a in c.args] for c in over], [[['same']]])
+    tc.assertEqual(ast.unparse(next(n for n in ast.walk(t) if isinstance(n, ast.Assign) and n.value is over[0])
+                               .targets[0]), 'passed')
+    lines = control_lines(t, key)
+    tc.assertEqual(len(lines), 2, f'got[{key!r}] is set in two places')
+    for v in lines:
+        tc.assertIn('passed', [n.id for s in ast.walk(v) if isinstance(s, ast.JoinedStr)
+                               for n in ast.walk(s) if isinstance(n, ast.Name)], ast.unparse(v))
+
+
+class PickWiring(unittest.TestCase):
+    def test_the_withheld_control_picks_through_withheld_pick(self):
+        assert_pick_wiring(self, cut_check.main, 'withheld', 'mid')
 
 
 class Later(unittest.TestCase):
