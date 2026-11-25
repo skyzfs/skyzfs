@@ -245,7 +245,18 @@ check "pin none's members full" "$(words none-members-full)" "zfs program -n $P 
 check "pin scale's members full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
 # Each full record after what it reads: odd after the takes of o0 and
 # o2, and before their destroy.
-order() { grep -n -e "^$1	" -e "^$2	" "$OUT/index.tsv" | cut -d: -f1 | tr '\n' ' ' | awk '{print (NF == 2 && $1 < $2) ? "yes" : "no"}'; }
+# order A B: yes when A's line of the index comes before B's, each looked
+# up by itself (one grep for both would give them in the file's order).
+line_of() { grep -n -m 1 "^$1	" "$OUT/index.tsv" | cut -d: -f1; }
+order() {
+    local a b
+    a=$(line_of "$1")
+    b=$(line_of "$2")
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo yes || echo no
+}
+mkdir -p "$T/ord"
+printf 'x\t0\t\tx\ny\t0\t\ty\n' > "$T/ord/index.tsv"
+check "order: x before y, y not before x, a missing one not" "$(OUT=$T/ord order x y; OUT=$T/ord order y x; OUT=$T/ord order x z)" $'yes\nno\nno'
 check "members full after the take" "$(order rig-snapshot-1 rig-members-full)" yes
 check "members full, odd after its take" "$(order rig-snapshot-odd rig-members-full-odd)" yes
 check "members full, odd in C.UTF-8 after its take" "$(order rig-snapshot-odd-utf8 rig-members-full-odd-utf8)" yes
@@ -395,7 +406,7 @@ scale 10 > /dev/null 2>> "$T/pins.err"
 unset FAKE_PROGRAM_OUT
 check "partial: what was taken destroyed" "$(words scale-10-snapshot-cli-destroy-partial)" "zfs destroy -r skzqs@t "
 check "partial: then the CLI's @t" "$(words scale-10-snapshot-cli)" "zfs snapshot -r skzqs@t "
-check "partial: in that order" "$(grep -n -e '^scale-10-snapshot-cli-destroy-partial	' -e '^scale-10-snapshot-cli	' "$OUT/index.tsv" | cut -d: -f1 | tr '\n' ' ' | awk '{print ($1 < $2) ? "yes" : "no"}')" yes
+check "partial: in that order" "$(order scale-10-snapshot-cli-destroy-partial scale-10-snapshot-cli)" yes
 check "partial: said, with the count" "$(grep -c '^scale-10-snapshot-cli: scale-10-snapshot failed after taking 4563 snapshots: destroyed, and zfs snapshot -r takes @t$' "$OUT/about.txt")" 1
 check "not partial, @t there: no CLI" "$([ -e "$OUT/scale-9-snapshot-cli" ] && echo yes || echo no)" no
 # In record_pool too.
@@ -467,6 +478,7 @@ check "no lua: none of the program's records" "$(find "$OUT" -mindepth 1 -maxdep
 check "no lua: the CLI's @t" "$(words rig-snapshot-cli)" "zfs snapshot -r skzq@t "
 check "no lua: the CLI's @o0" "$(words rig-take-o0)" "zfs snapshot -r skzq@o0 "
 check "no lua: the CLI's @o2" "$(words rig-take-o2)" "zfs snapshot -r skzq@o2 "
+check "no lua: members full after the CLI's take" "$(order rig-snapshot-cli rig-members-full)" yes
 check "no lua: members full, odd after its take" "$(order rig-take-o0 rig-members-full-odd)" yes
 check "no lua: members full, odd in C.UTF-8 after its take" "$(order rig-take-o2 rig-members-full-odd-utf8)" yes
 check "no lua: members full, odd in C.UTF-8" "$(words rig-members-full-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program -n $P skzq - skzq o2 full skyzfs:assist "
