@@ -17,7 +17,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs, within 80 minutes in all. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs; no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
         default: ""
       scale_lua_max:
         description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"

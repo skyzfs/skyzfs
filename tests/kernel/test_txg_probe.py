@@ -24,8 +24,15 @@ def log(*lines):
     return [l + "\n" for l in lines]
 
 
-def txg(n, end, s):
-    return "txg\t%d\t%.6f\t1.0\t0.0\t0.0\t%.6f\t0\t0" % (n, end, s)
+def txg(n, end, s, ndirty=0, nwritten=0):
+    return "txg\t%d\t%.6f\t1.0\t0.0\t0.0\t%.6f\t%d\t%d" % (n, end, s, ndirty, nwritten)
+
+
+def fields(line):
+    return dict(f.split("=", 1) for f in line.split())
+
+
+MIB = 1 << 20
 
 
 class Rows(unittest.TestCase):
@@ -40,44 +47,92 @@ class Rows(unittest.TestCase):
 
 class Report(unittest.TestCase):
     def test_groups_in_the_window(self):
-        lines = log("start\t90.0\t0", txg(1, 95.0, 0.1), txg(2, 101.0, 0.2), txg(3, 105.0, 3.0),
-                    txg(4, 112.0, 0.5), "stop\t115.0")
+        lines = log("start\t90.0\t0", txg(1, 95.0, 0.1), txg(2, 101.0, 0.2), txg(3, 105.0, 3.0, MIB, 2 * MIB),
+                    txg(4, 112.0, 0.5), "tick\t115.0\t5\tO", "stop\t115.0")
         self.assertEqual(txg_probe.report(lines, 100.0, 110.0),
-                         "txgs=2 longest_sync=3.000 longest_gap=7.000 syncs=0 sync_longest=-")
+                         "txgs=2 longest_sync=3.000 longest_group=3:1/2 longest_gap=7.000 syncs=0 sync_longest=- "
+                         "sync_failed=0 before_sync=0.100 before_sync_longest=- errors=0")
 
     def test_a_sync_across_the_window(self):
         # Group 2's sync began before the window and ended after it.
-        lines = log("start\t90.0\t0", txg(1, 95.0, 0.1), txg(2, 111.0, 14.0), "stop\t115.0")
-        self.assertEqual(txg_probe.report(lines, 100.0, 110.0).split()[:3],
-                         ["txgs=0", "longest_sync=14.000", "longest_gap=16.000"])
+        lines = log("start\t90.0\t0", txg(1, 95.0, 0.1), txg(2, 111.0, 14.0, 300 * MIB, 1400 * MIB),
+                    "tick\t115.0\t3\tO", "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["txgs"], f["longest_sync"], f["longest_group"], f["longest_gap"]),
+                         ("0", "14.000", "2:300/1400", "16.000"))
 
     def test_no_commit_since_the_window_began(self):
         # The gap runs to the probe's stop: at least that.
-        lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), "stop\t115.0")
+        lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), "tick\t115.0\t2\tS", "stop\t115.0")
         self.assertIn("longest_gap=>16.000", txg_probe.report(lines, 100.0, 110.0))
 
     def test_no_commit_known_before_the_window(self):
-        lines = log("start\t98.0\t0", txg(1, 104.0, 0.1), txg(2, 106.0, 0.1), "stop\t115.0")
+        lines = log("start\t98.0\t0", txg(1, 104.0, 0.1), txg(2, 106.0, 0.1), "tick\t115.0\t3\tO", "stop\t115.0")
         self.assertIn("longest_gap=>9.000", txg_probe.report(lines, 100.0, 110.0))
 
     def test_history_before_the_start_is_not_cut(self):
         # The kstat's history held a group that ended before the probe
-        # began: the gap from it is known, not a bound.
-        lines = log("start\t98.0\t0", txg(1, 97.0, 0.1), txg(2, 108.0, 0.1), txg(3, 109.0, 0.1), "stop\t115.0")
-        self.assertIn("longest_gap=11.000", txg_probe.report(lines, 100.0, 110.0))
+        # began: the gap from it is known, not a bound; its sync is no
+        # part of the baseline, which is the margin the probe watched.
+        lines = log("start\t98.0\t0", txg(1, 97.0, 5.0), txg(2, 99.0, 0.3), txg(3, 108.0, 0.1), txg(4, 109.0, 0.1),
+                    "tick\t115.0\t5\tO", "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["longest_gap"], f["before_sync"]), ("9.000", "0.300"))
 
     def test_syncs(self):
-        lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), txg(2, 111.0, 0.1),
-                    "sync\t95.0\t1.0\t0", "sync\t101.0\t0.5\t0", "sync\t104.0\t4.5\t0", "stop\t115.0")
-        self.assertTrue(txg_probe.report(lines, 100.0, 110.0).endswith("syncs=2 sync_longest=4.500"))
+        lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), txg(2, 111.0, 0.1), "sync\t95.0\t1.0\t0",
+                    "sync\t101.0\t0.5\t0", "sync\t104.0\t4.5\t0", "tick\t115.0\t3\tO", "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["syncs"], f["sync_longest"], f["sync_failed"], f["before_sync_longest"]),
+                         ("2", "4.500", "0", "1.000"))
+
+    def test_a_sync_spanning_the_window_counts(self):
+        lines = log("start\t90.0\t0", "sync\t99.0\t12.0\t0", "tick\t115.0\t3\tO", "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["syncs"], f["sync_longest"], f["before_sync_longest"]), ("1", "12.000", "-"))
 
     def test_an_open_sync(self):
-        lines = log("start\t90.0\t0", "sync\t101.0\t0.5\t0", "open\t103.0\t12.0", "stop\t115.0")
-        self.assertTrue(txg_probe.report(lines, 100.0, 110.0).endswith("syncs=2 sync_longest=>12.000"))
+        lines = log("start\t90.0\t0", "sync\t101.0\t0.5\t0", "open\t103.0\t12.0", "tick\t115.0\t3\tO",
+                    "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["syncs"], f["sync_longest"]), ("2", ">12.000"))
+
+    def test_a_failed_sync_is_no_time(self):
+        # A `zpool sync` that exits 1 at once is not a fast sync.
+        lines = log("start\t90.0\t0", "sync\t94.0\t0.05\t1", "sync\t101.0\t0.05\t1", "sync\t104.0\t3.0\t0",
+                    "sync\t107.0\t0.05\t1", "tick\t115.0\t3\tO", "stop\t115.0")
+        f = fields(txg_probe.report(lines, 100.0, 110.0))
+        self.assertEqual((f["syncs"], f["sync_failed"], f["sync_longest"], f["before_sync_longest"]),
+                         ("3", "2", "3.000", "-"))
+
+    def test_errors_are_counted(self):
+        lines = log("start\t90.0\t0", "error\t91.0\tzpool sync: no such file", "error\t104.0\tbad",
+                    "tick\t115.0\t3\tO", "stop\t115.0")
+        self.assertTrue(txg_probe.report(lines, 100.0, 110.0).endswith(" errors=2"))
 
     def test_no_stop_uses_the_last_tick(self):
         lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), "tick\t112.0\t2\tW")
-        self.assertIn("longest_gap=>13.000", txg_probe.report(lines, 100.0, 110.0))
+        line = txg_probe.report(lines, 100.0, 110.0)
+        self.assertIn("longest_gap=>13.000", line)
+        self.assertFalse(line.startswith("NOT"))
+
+    def test_a_kstat_never_read_is_not_covered(self):
+        # Missing, or its header alone (zfs_txg_history 0): no tick at all.
+        lines = log("start\t90.0\t0", "error\t91.0\tNo such file", "stop\t115.0")
+        self.assertEqual(txg_probe.report(lines, 100.0, 110.0),
+                         "NOT COVERED: the probe ran from 90.000 to 115.000, its last read of the kstat none, "
+                         "the window from 100.000 to 110.000; txgs=0 longest_sync=- longest_group=- "
+                         "longest_gap=>25.000 syncs=0 sync_longest=- sync_failed=0 before_sync=- "
+                         "before_sync_longest=- errors=1")
+
+    def test_a_probe_that_died_in_the_window_is_not_covered(self):
+        lines = log("start\t90.0\t0", txg(1, 99.0, 0.1), "tick\t104.0\t2\tO")
+        self.assertTrue(txg_probe.report(lines, 100.0, 110.0).startswith(
+            "NOT COVERED: the probe ran from 90.000 to 104.000, its last read of the kstat at 104.000,"))
+
+    def test_a_probe_that_began_late_is_not_covered(self):
+        lines = log("start\t101.5\t0", "tick\t115.0\t2\tO", "stop\t115.0")
+        self.assertTrue(txg_probe.report(lines, 100.0, 110.0).startswith("NOT COVERED: the probe ran from 101.500"))
 
     def test_no_start_is_no_probe(self):
         self.assertIsNone(txg_probe.report(log(txg(1, 99.0, 0.1)), 100.0, 110.0))
@@ -138,11 +193,12 @@ class Probe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "p.tsv")
             with open(out, "w") as f:
-                f.write("start\t90.0\t0\n" + txg(1, 104.0, 2.0) + "\nstop\t115.0\n")
+                f.write("start\t90.0\t0\n" + txg(1, 104.0, 2.0, 3 * MIB, 5 * MIB) + "\ntick\t115.0\t2\tO\nstop\t115.0\n")
             r = subprocess.run([sys.executable, os.path.join(HERE, "txg_probe.py"), "report", out, "100", "110"],
                                capture_output=True, text=True)
             self.assertEqual((r.returncode, r.stdout),
-                             (0, "txgs=1 longest_sync=2.000 longest_gap=>14.000 syncs=0 sync_longest=-\n"))
+                             (0, "txgs=1 longest_sync=2.000 longest_group=1:3/5 longest_gap=>14.000 syncs=0 "
+                                 "sync_longest=- sync_failed=0 before_sync=- before_sync_longest=- errors=0\n"))
             with open(out, "w") as f:
                 f.write("")
             r = subprocess.run([sys.executable, os.path.join(HERE, "txg_probe.py"), "report", out, "100", "110"],
