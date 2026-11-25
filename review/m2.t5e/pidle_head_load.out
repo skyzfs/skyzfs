@@ -13,3 +13,30 @@ copy 4: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 slee
   150  grow: error after 30 s, 30 sleeps
   150  idle: idle after 12 s, 12 sleeps
 58fc660 without unset SECONDS, under load: 4 copies of 150 runs each beside 4 busy loops; 4.38 1.32 0.84 at the start (4 CPUs)
+load at the end: 6.04 2.08 1.11
+copy 1: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 209 ms:
+  17  grow: error after 30 s, 29 sleeps
+  132  grow: error after 30 s, 30 sleeps
+  1  grow: error after 31 s, 30 sleeps
+  7  idle: idle after 12 s, 11 sleeps
+  142  idle: idle after 12 s, 12 sleeps
+  1  idle: idle after 13 s, 12 sleeps
+copy 2: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 218 ms:
+  16  grow: error after 30 s, 29 sleeps
+  133  grow: error after 30 s, 30 sleeps
+  1  grow: error after 31 s, 30 sleeps
+  7  idle: idle after 12 s, 11 sleeps
+  142  idle: idle after 12 s, 12 sleeps
+  1  idle: idle after 13 s, 12 sleeps
+copy 3: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 219 ms:
+  13  grow: error after 30 s, 29 sleeps
+  137  grow: error after 30 s, 30 sleeps
+  12  idle: idle after 12 s, 11 sleeps
+  137  idle: idle after 12 s, 12 sleeps
+  1  idle: idle after 13 s, 12 sleeps
+copy 4: bash 5.2.21(1)-release, 150 runs of each (want 'idle after 12 s, 12 sleeps' and 'error after 30 s, 30 sleeps'), slowest run 234 ms:
+  20  grow: error after 30 s, 29 sleeps
+  130  grow: error after 30 s, 30 sleeps
+  5  idle: idle after 12 s, 11 sleeps
+  142  idle: idle after 12 s, 12 sleeps
+  3  idle: idle after 13 s, 12 sleeps
