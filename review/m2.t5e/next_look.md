@@ -96,7 +96,8 @@ the other five are S1's and S2's pace cases.
 - Count strays from the first assist's `before` on. This is plant N23b:
   every suite passed with it at 9bac3dd.
 
-**At b3bb916:** fixed, as the first form (`publish_check.py:755`). It
+**At b3bb916:** fixed, with strays counted only at or above G
+(`publish_check.py:755`). It
 also settles the fixtures' gap: new tests put a group below G before
 the first assist, in the unit test and through `main`.
 
@@ -127,6 +128,8 @@ run adds one.
   - The gate run at 9bac3dd failed once this way: "got 'error after 30
     s, 29 sleeps', want 'error after 30 s, 30 sleeps'" (`gates_py_9bac.log`).
   - In the earlier look, 2 of 8 full runs under load failed.
+  - In #141's plants, re-run at 9bac3dd, it killed a no-op plant (N2)
+    and one more (N21). Re-run alone, both survive.
 
 **Who runs it:**
 
@@ -458,11 +461,18 @@ KILLED and 6 SURVIVED.
   65 KILLED, 8 SURVIVED and 9 NOT APPLIED. Line for line, as at cb91ad1.
 - **#141's next look** (`review/m2.t7b/plants_next.py`;
   `p141_at_9bac.out`) and #143's re-aim (`reaim143_at_9bac.out`):
-  P141_RESULT
+  91 plants: 73 KILLED, 11 SURVIVED and 7 NOT APPLIED.
+  - Line for line as at cb91ad1, except N2 and N21, KILLED where they had
+    SURVIVED. Both were killed by `test_cut_record.sh` alone.
+  - **N2 is a no-op plant ("the harness itself"), so its kill is B2's
+    flake caught in the act.**
+  - Re-run alone twice, both SURVIVE (`p141_n2_n21_again.out`). So the
+    true count is 71, 13 and 7, as at cb91ad1.
+  - The re-aim: four KILLED and three NOT APPLIED, as at cb91ad1.
 
-Several of these suites include `test_cut_record.sh`, so B2 could turn a
-SURVIVED into a false KILLED. No line moved against the earlier results,
-so none did here.
+Several of these suites include `test_cut_record.sh`, so B2 can turn a
+SURVIVED into a false KILLED. It did twice, in #141's N2 and N21 (above).
+No other line moved against the earlier results.
 
 ## Part 3: b3bb916 (the coordinator's question)
 
@@ -665,7 +675,8 @@ The push runs of b3bb916 were skyzfs-ci (success) and the publish rig
 - `p145_at_9bac.out` and `.json`, `p145_at_b3bb.out` and `.json`:
   `plants145.py`.
 - `p143_at_9bac.*`, `p139_at_9bac.*`, `p141_at_9bac.out`,
-  `reaim143_at_9bac.out`: earlier pull requests' plants.
+  `p141_n2_n21_again.out`, `reaim143_at_9bac.out`: earlier pull
+  requests' plants.
 - `pidle_flake_9bac_load.out`, `pidle_flake_b3bb.out`,
   `pidle_time_b3bb.out`, `pidle_unset_b3bb.out`: B2.
 - `gates_cargo_9bac.log`, `gates_py_9bac.log`, `gates_py_b3bb.log`,
