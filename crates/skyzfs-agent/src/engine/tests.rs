@@ -293,22 +293,19 @@ const MODES: [Mode; 4] = [Mode::Busy, Mode::Idle, Mode::Abandoned, Mode::ErrLow]
 /// holds it, with nothing left held or under way, and in the time the
 /// mode allows.
 ///
-/// An abandoned cut on an idle pool costs the publish its expiry: the
-/// abandoned cut is still the daemon's newest and is counted, so the
-/// planner sees a qualifying cut and does not help. The publish waits
-/// until it expires, is asked anew with a count read after that cut, and
-/// is helped [`plan::ASSIST_AFTER`] later. The plan's §6 said
-/// `ASSIST_AFTER`; `cuts` does not tell an abandoned cut (a question for
-/// the lead in M2.6b2's description). On a busy pool the next group
-/// comes on its own.
+/// An abandoned cut on an idle pool costs the publish twice
+/// [`plan::ASSIST_AFTER`]: the abandoned cut is still the daemon's newest
+/// and is counted (`cuts` does not tell an abandoned cut), so the planner
+/// sees a qualifying cut and helps only from twice `ASSIST_AFTER` after
+/// the request was accepted (the bounded assist of #142), not at its
+/// expiry. On a busy pool the next group comes on its own.
 #[test]
 fn a_publish_with_no_loss_is_published_in_each_mode() {
-    let expiry = EXPIRY_DEFAULT.as_secs();
     let after = crate::plan::ASSIST_AFTER.as_secs();
     let times = [
         (Mode::Busy, 0, 30),
         (Mode::Idle, 0, 10),
-        (Mode::Abandoned, expiry, expiry + after + 5),
+        (Mode::Abandoned, 2 * after, 2 * after + 5),
         (Mode::ErrLow, 0, 30),
     ];
     assert_eq!(times.map(|(mode, ..)| mode), MODES);
