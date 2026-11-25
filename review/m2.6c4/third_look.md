@@ -8,11 +8,11 @@
 | The merge | clean. `git show --remerge-diff c429aab` is empty. In `skyzfsd` it changes only doc links in `cli.rs` and `upload.rs` (#151). It does not touch `skyzfs-upload`, so the references to `driver.rs` and `uploader.rs` in `next_look.md` still hold |
 | What was read | `git diff d629834 aa29399`, against `next_look.md` beside this note and the author's answer (issue comment 7176279810) |
 | Codex | completed on `c429aab` with no findings |
-| CI on the head | CI_HEADLINE |
+| CI on the head | all green (list at the end) |
 
 ## Verdict
 
-**VERDICT_LINE**
+**Ready to merge from the review's side. Nothing blocks.** CI is green on the head, Codex has no findings, and every blocking finding of the earlier looks is settled.
 
 - **R2 is fixed, for both failure modes.** `KillRemote::publish` tells the hook on any error from the inner call (`kill.rs:828-835`). That covers the write that landed with its answer lost (R2) and the write that failed before it landed (R1). The hook prints one give-up line and never kills afterwards.
 - **The test pins R2.** `a_publish_n_whose_call_failed_gives_the_hook_up` (`kill/tests.rs:1221`) covers both kill points, landed and not, and asserts the hook's lines in full. It fails when the fix is reverted (plant V1). My two scratch tests that showed R1 and R2 now fail at this head, as they should.
@@ -146,7 +146,18 @@ They were run at the head on toolchain 1.100.0 (`rustup update stable` reported 
 
 ## CI on `c429aab`, read only
 
-CI_TABLE
+All finished with success:
+
+| Run | Workflow |
+|---|---|
+| 45712640396 | skyzfs-ci (the branch push) |
+| 45712653314 | ci (`test`, `unit-arm64`) |
+| 45712653341 | coverage |
+| 45712653374 | e2e |
+| 45712653311 | publish rig |
+| 45712653318 | cut-daemon |
+| 45712653296 | replay rig |
+| 45712653316 | daemon rig: 24.04, 26.04 and 26.04-arm, on the daemon. Ended 23:00 UTC. These are job conclusions only: the summary tables were not readable through the REST API |
 
 **Not covered.** No job starts a daemon with `carry-put` or `carry-swap` (M15, testing's item 7).
 
@@ -154,7 +165,7 @@ CI_TABLE
 
 1. **D1.** Qualify "a difference is a finding against the daemon" for `carry-put`: a cut abandoned after the restart moves the publish to a later cut, as the design allows. Both the docs and the rig that drives `carry-*` should know this. A docs line; it does not block.
 2. **D2.** A one-line docs nit. It can go with D1, or later.
-3. **The merge.** MERGE_LINE
+3. **The merge.** From the review's side it can merge at `c429aab`: CI is green, Codex has no findings, and B1, F1, F2 and R2 are settled. D1 and D2 can follow in a docs commit, or go to testing with item 7. The daemon rig drove this pull request merged with `a5e883a`. `zfs-topology` has since moved to `918cf59`, a one-line change to `docs/skyzfs-design.md`, which touches no code.
 
 ## Files beside this note
 
