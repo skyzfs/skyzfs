@@ -50,9 +50,17 @@
 #   none    skznone, a pool that does not exist
 #   scale-N skzqs, made only when ZCR_SCALE names N: N file systems
 #           under the root (made with -u, not mounted; the root is),
-#           and on it, each with its wall time in secs:
+#           and on it, each with its wall time in secs (with an entry
+#           N:K, scale-N-sK: each dataset also has K retained snapshots,
+#           @r1 to @rK, taken before the steps below, so that the reads
+#           that list every snapshot read N+1 times K more, on a pool
+#           of 32 GiB, as many as leave 8 GiB free; #157's R1):
 #             count             zfs list -r -H -o name -t
 #                               filesystem,volume P, the adapter's count
+#             count-snapshots   zfs list -r -H -o name -t snapshot P,
+#                               the adapter's count of the snapshots,
+#                               for the list's limit (#160); about.txt
+#                               gives its lines
 #             snapshot          the snapshot program at @t (only with
 #                               snapshot.lua)
 #             snapshot-cli      zfs snapshot -r P@t, only if the program
@@ -60,6 +68,9 @@
 #                               about.txt then says how many it took
 #             members, hold, tagged, release
 #                               at @t, hold and release with -r
+#             holds             zfs holds -H -r P@t while @t is held,
+#                               the agent's read of the holds in each
+#                               round; about.txt gives its lines
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
@@ -67,6 +78,9 @@
 #                               local -o name,property,value all P: the
 #                               locally set properties of every file
 #                               system and volume, read by the CLI
+#             take-cli-get-pairs
+#                               the same with -o name,property: the
+#                               agent reads the pairs, then the values
 #             take-cli-get-json the same with -j in place of -H (ZFS
 #                               2.3 on)
 #             take-cli-list     zfs list -r -H -p -t
@@ -273,6 +287,12 @@
 # `attach -s` waits for the rebuild is not known.
 #   remove-status, remove-status-g, remove, remove-in-progress[-g],
 #   remove-done[-g]        skzqr's second file removed
+#
+# and `zpool list -H -o name`, by which the adapter tells a pool that is
+# not there from a snapshot that went (#160): pools-none before any pool
+# of the recording is made, pools-one with skzq alone, pools-three with
+# skzq, skzqm and skzqr, and none-pools-named of skznone, a pool that
+# does not exist (`zpool list -H -o name skznone`);
 #
 # and, on a pool of their own (skzrd, a file), the manifest's read by the
 # CLI as the adapter runs it (M2.6c-5): read-S-list (zfs list -r -H -p -t
@@ -780,13 +800,18 @@ record_none() { # prefix pool
     rec "$x-release" zfs release -r "$TAG" "$p@t"
     rec "$x-destroy" zfs destroy -r "$p@t"
     rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
+    rec "$x-pools-named" zpool list -H -o name "$p"
 }
 
-# scale_all COUNT...: scale for each count, at most three, each at most
-# 100000 and each once, all within ZCR_SCALE_BUDGET seconds.
+# scale_all ENTRY...: scale for each entry, at most three, each once,
+# all within ZCR_SCALE_BUDGET seconds. An entry is a count N of file
+# systems, at most 100000, or N:K with K retained snapshots of each, K
+# at most 20000 (one call each, about 0.12 s a call with two datasets in
+# run 45774416615: some 40 minutes at most), at most 200000 snapshots in
+# all ((N+1)*K).
 SCALE_END=0
 scale_all() {
-    local n seen=" " k=0
+    local e n r seen=" " k=0
     SCALE_END=$(($(date +%s) + ${ZCR_SCALE_BUDGET:-4800}))
     ZCR_SCALE_LUA_MAX=${ZCR_SCALE_LUA_MAX:-}
     case $ZCR_SCALE_LUA_MAX in
@@ -804,20 +829,32 @@ scale_all() {
             ;;
     esac
     [ "${#ZCR_SCALE_FULL_MAX}" -gt 6 ] && ZCR_SCALE_FULL_MAX=999999
-    for n in "$@"; do
-        case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
+    for e in "$@"; do
+        n=${e%%:*}
+        r=0
+        case $e in *:*) r=${e#*:} ;; esac
+        case $n in *[!0-9]* | 0* | '') echo "scale: not a count: $e" >> "$OUT/about.txt"; continue ;; esac
+        case $r in 0) ;; *[!0-9]* | 0* | '') echo "scale: not a count of snapshots: $e" >> "$OUT/about.txt"; continue ;; esac
         if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then
             echo "scale: $n is more than 100000; not run" >> "$OUT/about.txt"
             continue
         fi
-        case $seen in *" $n "*) echo "scale: $n twice; run once" >> "$OUT/about.txt"; continue ;; esac
-        if [ "$k" -ge 3 ]; then
-            echo "scale: more than three counts; $n not run" >> "$OUT/about.txt"
+        if [ "${#r}" -gt 6 ] || [ "$r" -gt 20000 ]; then
+            echo "scale: $e retains more than 20000 of each dataset; not run" >> "$OUT/about.txt"
             continue
         fi
-        seen="$seen$n "
+        if [ $(((n + 1) * r)) -gt 200000 ]; then
+            echo "scale: $e makes more than 200000 snapshots; not run" >> "$OUT/about.txt"
+            continue
+        fi
+        case $seen in *" $n:$r "*) echo "scale: $e twice; run once" >> "$OUT/about.txt"; continue ;; esac
+        if [ "$k" -ge 3 ]; then
+            echo "scale: more than three counts; $e not run" >> "$OUT/about.txt"
+            continue
+        fi
+        seen="$seen$n:$r "
         k=$((k + 1))
-        scale "$n"
+        scale "$n" "$r"
     done
 }
 
@@ -853,6 +890,18 @@ stop_bg() {
     return 0
 }
 
+# began FILE...: until each FILE has something in it, at most 10 s.
+began() {
+    local i=0 f ok
+    while [ "$i" -lt 100 ]; do
+        ok=1
+        for f in "$@"; do [ -s "$f" ] || ok=0; done
+        [ "$ok" = 0 ] || return 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+
 # writing NAME DIR POOL COMMAND...: the record NAME, made by COMMAND (rec
 # or program), with three things beside it, from ZCR_WRITER_MARGIN
 # seconds (default 2) before COMMAND to as long after:
@@ -886,6 +935,10 @@ writing() {
     fi
     python3 "$HERE/txg_probe.py" probe "${ZCR_KSTAT_DIR:-/proc/spl/kstat/zfs}/$pool/txgs" "$pool" "$log.txg.tsv" > /dev/null 2> "$log.txg.err" &
     qpid=$!
+    # The margin runs from when the logs have begun, not from when their
+    # programs were started: on a loaded machine a start can take longer
+    # than a short margin.
+    if [ -n "$fpid" ]; then began "$log.tsv" "$log.fill.tsv" "$log.txg.tsv"; else began "$log.tsv" "$log.txg.tsv"; fi
     sleep "$margin"
     t0=$(date +%s.%N)
     "$@"
@@ -966,101 +1019,168 @@ fill_span() {
     echo "scale $n: zfs_txg_history ${hist:-not read}" >> "$OUT/about.txt"
 }
 
-# scale N: a pool with N file systems under its root, and the adapter's
-# programs and holds on it, each timed (the secs of its record).
+# retain LABEL POOL N K: K snapshots of the root, recursive (@r1 to
+# @rK), so that each of its N+1 datasets has K that no take names, for
+# the reads that list every snapshot (#157's R1). One name a call: ZFS
+# refuses two snapshots of one dataset in one call ("multiple snapshots
+# of same fs not allowed", run 45774416615). Each call is under the
+# scale's limit. It stops, before a call, once the pool has less than
+# ZCR_RETAIN_FLOOR bytes free (8 GiB), read every 100 calls, so that the
+# takes and writers after it have room: in run 45774416615 a 16 GiB pool
+# was full at 9729 of each of 2 datasets, and the takes after it failed.
+# At each tenth of K and at the last, about.txt gets the pool's
+# allocated and free bytes and the time so far, which show how the
+# space grows with K; at the end, how many the pool has and how long
+# they took.
+retain() {
+    local lbl=$1 p=$2 n=$3 k=$4 i=1 t0 rc cut="" have step free floor=${ZCR_RETAIN_FLOOR:-8589934592}
+    step=$((k / 10))
+    [ "$step" -ge 1 ] || step=1
+    t0=$(date +%s)
+    while [ "$i" -le "$k" ]; do
+        if ! scale_limit; then
+            cut=" (stopped: the budget was spent)"
+            break
+        fi
+        if [ $(((i - 1) % 100)) = 0 ]; then
+            free=$(lim "$LIMIT" zpool list -Hp -o free "$p" 2> /dev/null)
+            case $free in
+                '' | *[!0-9]*) ;;
+                *) if [ "$free" -lt "$floor" ]; then
+                    cut=" (stopped before @r$i: $free bytes free, under $floor)"
+                    break
+                fi ;;
+            esac
+        fi
+        rc=0
+        lim "$LIMIT" zfs snapshot -r "$p@r$i" >> "$OUT/retain-$p-$lbl.log" 2>&1 || rc=$?
+        if [ "$rc" != 0 ]; then
+            cut=" (stopped: zfs snapshot -r of @r$i ended $rc, retain-$p-$lbl.log)"
+            break
+        fi
+        if [ $((i % step)) = 0 ] || [ "$i" = "$k" ]; then
+            echo "scale $lbl: retained @r$i at $(($(date +%s) - t0)) s: allocated and free $(lim "$LIMIT" zpool list -Hp -o alloc,free "$p" 2> /dev/null | tr '\t' ' ')" >> "$OUT/about.txt"
+        fi
+        i=$((i + 1))
+    done
+    have=$(lim 600 zfs list -H -t snapshot -o name -r "$p" 2> /dev/null | wc -l)
+    echo "scale $lbl: $have snapshots in the pool ($k of each of $((n + 1)) datasets asked, one name a call) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
+}
+
+# scale N [K]: a pool with N file systems under its root, and the adapter's
+# programs and holds on it, each timed (the secs of its record); with K,
+# K retained snapshots of each dataset as well (retain), and its records
+# are named scale-N-sK.
 scale() {
-    local n=$1 p=skzqs t0 made step cut="" rc wdir
+    local n=$1 k=${2:-0} lbl p=skzqs t0 made step cut="" rc wdir
     local LIMIT FILL_SPAN=""
+    lbl=$n
+    [ "$k" = 0 ] || lbl=$n-s$k
     if ! scale_limit; then
-        echo "scale $n: not run, the budget was spent" >> "$OUT/about.txt"
+        echo "scale $lbl: not run, the budget was spent" >> "$OUT/about.txt"
         return 0
     fi
-    df -h "$WORK" 2>&1 | sed "s/^/scale $n: df: /" >> "$OUT/about.txt"
-    truncate -s 16G "$WORK/scale.img"
+    df -h "$WORK" 2>&1 | sed "s/^/scale $lbl: df: /" >> "$OUT/about.txt"
+    # Retained snapshots take room of their own (retain).
+    if [ "$k" = 0 ]; then truncate -s 16G "$WORK/scale.img"; else truncate -s 32G "$WORK/scale.img"; fi
     if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$p" \
-        -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$n.log" 2>&1; then
-        echo "scale $n: zpool create failed (create-$p-$n.log)" >> "$OUT/about.txt"
+        -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$lbl.log" 2>&1; then
+        echo "scale $lbl: zpool create failed (create-$p-$lbl.log)" >> "$OUT/about.txt"
         rm -f "$WORK/scale.img"
         return 0
     fi
-    zfs set "$ASSIST=1700000000000" "$p" >> "$OUT/create-$p-$n.log" 2>&1
+    zfs set "$ASSIST=1700000000000" "$p" >> "$OUT/create-$p-$lbl.log" 2>&1
     # The writer's file is in the root, and only if the root is mounted.
     wdir=""
     if mountpoint -q "$WORK/mnt/$p"; then
         wdir=$WORK/mnt/$p
-        fill_span "$n"
+        fill_span "$lbl"
     else
-        echo "scale $n: the root is not mounted; no writer" >> "$OUT/about.txt"
+        echo "scale $lbl: the root is not mounted; no writer" >> "$OUT/about.txt"
     fi
     t0=$(date +%s)
     if scale_limit; then
         rc=0
-        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create -u -o skyzfs:note=local "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
+        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create -u -o skyzfs:note=local "$p/d{}" >> "$OUT/create-$p-$lbl.log" 2>&1 || rc=$?
         [ "$rc" = 124 ] && cut=" (stopped at the limit of $LIMIT s)"
         made=$(lim 120 zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
-        echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
+        echo "scale $lbl: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
-    for step in count snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-json take-cli-list take-cli-full; do
+    [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"
+    for step in count count-snapshots snapshot snapshot-cli members hold holds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
-            echo "scale $n: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
+            echo "scale $lbl: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
         fi
         case $step in
-            count) rec "scale-$n-count" zfs list -r -H -o name -t filesystem,volume "$p" ;;
+            count) rec "scale-$lbl-count" zfs list -r -H -o name -t filesystem,volume "$p" ;;
+            count-snapshots)
+                rec "scale-$lbl-count-snapshots" zfs list -r -H -o name -t snapshot "$p"
+                lines_line "scale-$lbl-count-snapshots"
+                ;;
             snapshot)
                 if [ "$SNAPSHOT_LUA" != 1 ]; then
-                    echo "scale $n: the snapshot program not run: there is no snapshot.lua" >> "$OUT/about.txt"
+                    echo "scale $lbl: the snapshot program not run: there is no snapshot.lua" >> "$OUT/about.txt"
                 elif [ -n "${ZCR_SCALE_LUA_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_LUA_MAX" ]; then
-                    echo "scale $n: the snapshot program not run: $n is more than ZCR_SCALE_LUA_MAX ($ZCR_SCALE_LUA_MAX)" >> "$OUT/about.txt"
+                    echo "scale $lbl: the snapshot program not run: $n is more than ZCR_SCALE_LUA_MAX ($ZCR_SCALE_LUA_MAX)" >> "$OUT/about.txt"
                 else
-                    writing "scale-$n-snapshot" "$wdir" "$p" program "scale-$n-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
+                    writing "scale-$lbl-snapshot" "$wdir" "$p" program "scale-$lbl-snapshot" "$p" snapshot.lua "$p" t "$ASSIST"
                 fi
                 ;;
             # Without the program's whole @t, the CLI's, so that the rest
             # has one.
-            snapshot-cli) cli_snapshot "scale-$n-snapshot-cli" "scale-$n-snapshot" "$p" ;;
+            snapshot-cli) cli_snapshot "scale-$lbl-snapshot-cli" "scale-$lbl-snapshot" "$p" ;;
             members)
-                program "scale-$n-members" "$p" members.lua -n "$p" t
-                members_line "scale-$n-members"
+                program "scale-$lbl-members" "$p" members.lua -n "$p" t
+                members_line "scale-$lbl-members"
                 ;;
-            hold) rec "scale-$n-hold" zfs hold -r "$TAG" "$p@t" ;;
-            tagged) program "scale-$n-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
-            release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
-            destroy) rec "scale-$n-destroy" zfs destroy -r "$p@t" ;;
-            take-cli) writing "scale-$n-take-cli" "$wdir" "$p" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
+            hold) rec "scale-$lbl-hold" zfs hold -r "$TAG" "$p@t" ;;
+            holds)
+                rec "scale-$lbl-holds" zfs holds -H -r "$p@t"
+                lines_line "scale-$lbl-holds"
+                ;;
+            tagged) program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
+            release) rec "scale-$lbl-release" zfs release -r "$TAG" "$p@t" ;;
+            destroy) rec "scale-$lbl-destroy" zfs destroy -r "$p@t" ;;
+            take-cli) writing "scale-$lbl-take-cli" "$wdir" "$p" rec "scale-$lbl-take-cli" zfs snapshot -r "$p@c" ;;
             # What the manifest reads after the take, at this count: by
             # the plain program, by the CLI (M2.6c-5), and by the full
             # program. Each read but the full one, and that one at the
             # counts asked, with the load beside it.
             take-cli-members)
-                writing "scale-$n-take-cli-members" "$wdir" "$p" program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c
-                members_line "scale-$n-take-cli-members"
+                writing "scale-$lbl-take-cli-members" "$wdir" "$p" program "scale-$lbl-take-cli-members" "$p" members.lua -n "$p" c
+                members_line "scale-$lbl-take-cli-members"
                 ;;
             take-cli-get)
-                writing "scale-$n-take-cli-get" "$wdir" "$p" rec "scale-$n-take-cli-get" zfs get -r -H -p -t filesystem,volume -s local -o name,property,value all "$p"
-                lines_line "scale-$n-take-cli-get"
+                writing "scale-$lbl-take-cli-get" "$wdir" "$p" rec "scale-$lbl-take-cli-get" zfs get -r -H -p -t filesystem,volume -s local -o name,property,value all "$p"
+                lines_line "scale-$lbl-take-cli-get"
+                ;;
+            # The agent reads the pairs first, then the values (cli.rs).
+            take-cli-get-pairs)
+                rec "scale-$lbl-take-cli-get-pairs" zfs get -r -H -p -t filesystem,volume -s local -o name,property all "$p"
+                lines_line "scale-$lbl-take-cli-get-pairs"
                 ;;
             take-cli-get-json)
-                rec "scale-$n-take-cli-get-json" zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all "$p"
+                rec "scale-$lbl-take-cli-get-json" zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all "$p"
                 ;;
             take-cli-list)
-                writing "scale-$n-take-cli-list" "$wdir" "$p" rec "scale-$n-take-cli-list" zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg "$p"
-                lines_line "scale-$n-take-cli-list"
+                writing "scale-$lbl-take-cli-list" "$wdir" "$p" rec "scale-$lbl-take-cli-list" zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg "$p"
+                lines_line "scale-$lbl-take-cli-list"
                 ;;
             take-cli-full)
                 if [ "$MEMBERS_FULL" = 1 ] && [ -n "${ZCR_SCALE_FULL_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_FULL_MAX" ]; then
-                    echo "scale $n: the full mode not run: $n is more than ZCR_SCALE_FULL_MAX ($ZCR_SCALE_FULL_MAX)" >> "$OUT/about.txt"
+                    echo "scale $lbl: the full mode not run: $n is more than ZCR_SCALE_FULL_MAX ($ZCR_SCALE_FULL_MAX)" >> "$OUT/about.txt"
                 elif [ "$MEMBERS_FULL" = 1 ]; then
                     # The read is read-only (-n): whether it delays
                     # writes or the pool's groups is measured beside it
                     # at the counts asked.
                     case " ${ZCR_SCALE_FULL_BESIDE-1000} " in
-                        *" $n "*) writing "scale-$n-take-cli-full" "$wdir" "$p" full "scale-$n-take-cli-full" "$p" c ;;
-                        *) full "scale-$n-take-cli-full" "$p" c ;;
+                        *" $n "*) writing "scale-$lbl-take-cli-full" "$wdir" "$p" full "scale-$lbl-take-cli-full" "$p" c ;;
+                        *) full "scale-$lbl-take-cli-full" "$p" c ;;
                     esac
-                    members_line "scale-$n-take-cli-full"
+                    members_line "scale-$lbl-take-cli-full"
                 else
-                    echo "scale $n: the full mode not run: members.lua has none" >> "$OUT/about.txt"
+                    echo "scale $lbl: the full mode not run: members.lua has none" >> "$OUT/about.txt"
                 fi
                 ;;
         esac
@@ -1202,10 +1322,13 @@ main() {
                 zpool sync "$p"
         } >> "$OUT/create-$p.log" 2>&1 || setup_failed "the datasets of $p (create-$p.log)"
     }
+    rec pools-none zpool list -H -o name
     make_pool skzq 1024 /dev/ublkb0 log "$slog"
+    rec pools-one zpool list -H -o name
     make_pool skzqm 1024 mirror "$WORK/m0.img" "$WORK/m1.img" special mirror "$WORK/s0.img" "$WORK/s1.img" \
         dedup mirror "$WORK/d0.img" "$WORK/d1.img" cache "$cache" spare "$WORK/spare.img"
     make_pool skzqr 768 "$WORK/r0.img" "$WORK/r1.img"
+    rec pools-three zpool list -H -o name
     DELAY_POOL=skzqm DELAY=$WORK/m0.img
     if [ -z "$ZINJECT" ]; then
         echo "mirror's scans: no zinject (apt.log); they run as they are" >> "$OUT/about.txt"
