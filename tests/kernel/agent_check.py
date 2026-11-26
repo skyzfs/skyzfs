@@ -51,10 +51,16 @@ in DIR/cases.tsv. For each case:
   snapshot, the manifests directory is empty, and `skyzfs:assist` is set
   locally on the pool's root only.
 - Case-specific: unmarked, the publish refused (exit 6) and released
-  nothing; sweep, the stray hold released by the traced publish;
-  carry-swap, the row of T names the cut the hook killed at (a finding
-  against the daemon: the lead's ruling on #150), carry-put the same as
-  INFO (the named cut had not committed and may be abandoned).
+  nothing; sweep, the stray hold released by the traced publish. The
+  carry hooks (the lead's ruling on #158): the request log's last ask of
+  T that the daemon accepted (premise_ID_asked, the rig's), and the row's
+  cut one that request accepts, counted after its C, of its G or later,
+  opening as itself (pin_ID_carried_by_the_last_request): after the
+  take-over the agent asks anew with a count read then, so the row may
+  move later than the cut the hook killed at. Under carry-swap the row's
+  cut is also no older than the killed cut, which had committed
+  (pin_ID_no_older_than_the_killed_cut). The killed cut and the first
+  cut the last request accepts are INFO (obs_ID_carried_by).
 
 For each name published (DIR/published.tsv), node B: snap-row's ref and
 row on one commit, the commit the agent printed (where it printed one),
@@ -333,6 +339,43 @@ def daemon_kill(hook, kill_tsv, log):
     return bad, cut
 
 
+def last_ask(instances, name):
+    """The request log's last ask of NAME that the daemon accepted ->
+    (ns, G, C), or None. skyzfsd writes G in the line's sector column and
+    C in its sectors column (record.rs; publish_check.asked_line)."""
+    last = None
+    for inst in instances:
+        for ln in inst['lines']:
+            if (ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'] == f'{name} accepted'
+                    and ln['sector'].isdigit() and ln['sectors'].isdigit()):
+                last = (ln['ns'], int(ln['sector']), int(ln['sectors']))
+    return last
+
+
+def judge_carried(cuts, row, ask):
+    """The lead's ruling on #158, (b): the row's cut is one the last
+    accepted request accepts: counted after its C, of its G or later, and
+    one that opens as itself in the request log -> [what is not so]. After
+    a take-over the agent asks anew with a count read then (rule (R)), so
+    the cut a hook killed at may be counted before the new C."""
+    _, g, c = ask
+    bad = []
+    if row['number'] <= c:
+        bad.append(f"the row's cut {row['number']} is not counted after C {c} of the last request accepted")
+    if row['group'] < g:
+        bad.append(f"the row's cut is of group {row['group']}, below G {g} of the last request accepted")
+    return bad + publish_check.judge_cut(cuts, row)
+
+
+def first_carrier(cuts, ask):
+    """The first cut, by number, that the request ASK accepts and that
+    opens as itself -> (number, group), or None: INFO, since a cut taken
+    before the acceptance may carry it and one after may be abandoned."""
+    _, g, c = ask
+    ok = sorted((n, gr) for n, gr, itself, _, _ in cuts if n > c and gr >= g and itself)
+    return ok[0] if ok else None
+
+
 def late_premise(stopped, t, trace, continued):
     """d6's premise -> [what is not so]: T asked and not done when the agent
     was stopped, and a `look` of the agent's after it went on, before its
@@ -604,14 +647,30 @@ def main():
             row = checked.get(t, (None,))[0]
             if kcut is None or hook not in ('carry-put:1', 'carry-swap:1'):
                 continue
-            same = row is not None and (row['number'], row['group']) == kcut
-            detail = (f"the hook killed at cut {kcut[0]} (group {kcut[1]}); snap/{t} names "
+            ask = last_ask(instances, t)
+            if not premise(f'premise_{cid}_asked', [] if ask else [f'no ask of {t} accepted in the request log'],
+                           f'the last ask of {t} accepted: G {ask[1]}, C {ask[2]}' if ask else ''):
+                continue
+            first = first_carrier(cuts, ask)
+            detail = (f"the hook killed at cut {kcut[0]} (group {kcut[1]}); the last request accepted (G {ask[1]}, "
+                      f"C {ask[2]}) is first carried by "
+                      + (f'cut {first[0]} (group {first[1]})' if first else 'no cut in the log') + f'; snap/{t} names '
                       + (f"cut {row['number']} (group {row['group']})" if row else 'no row'))
+            put(f'obs_{cid}_carried_by', 'INFO', 'server', detail)
+            if row is None:
+                holds(f'pin_{cid}_carried_by_the_last_request', [f'no row of {t} checked at node B'], 'server', '')
+                continue
+            holds(f'pin_{cid}_carried_by_the_last_request', judge_carried(cuts, row, ask), 'server',
+                  f"cut {row['number']} (group {row['group']}): counted after C {ask[2]}, of G {ask[1]} or later, "
+                  'opens as itself')
             if hook == 'carry-swap:1':
-                holds(f'pin_{cid}_carried_by_the_killed_cut', [] if same else [detail], 'server', detail)
-            else:
-                put(f'obs_{cid}_carried_by', 'INFO', 'server', detail + ('' if same else ': a later cut (design §5.2 '
-                                                                       'allows it: the named cut had not committed)'))
+                # The killed cut had committed: a row on an older one would
+                # be a cut from before it (the lead's ruling on #158).
+                older = (row['number'], row['group']) < kcut
+                holds(f'pin_{cid}_no_older_than_the_killed_cut',
+                      [f"snap/{t} names cut {row['number']} (group {row['group']}), older than the killed cut "
+                       f"{kcut[0]} (group {kcut[1]})"] if older else [], 'server',
+                      f"cut {row['number']} (group {row['group']}), not older than cut {kcut[0]} (group {kcut[1]})")
         # The controls, on the first name checked and a later one.
         order = [n for n in names if n in checked]
         if len(order) < 2:

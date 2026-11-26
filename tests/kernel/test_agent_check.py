@@ -101,6 +101,8 @@ def right():
                 ('unmarked', 'a3', 70, 503, '-'), ('gone', 'a4', 80, 504, '-'),
                 ('d-carry-swap', 'a5', 85, 505, commit_of('a5'))],
         'rows': {'a1': (5, 52), 'a2': (6, 61), 'a3': (7, 71), 'a4': (8, 81), 'a5': (9, 90)},
+        # The daemon's accepted asks: (name, G, C).
+        'asks': [('a5', 85, 8)],
     }
 
 
@@ -143,9 +145,13 @@ class FakeNodeB:
         return seen
 
 
-def log_text(cuts):
-    """[(number, group, itself)] -> a request log of one instance."""
+def log_text(cuts, asks=()):
+    """[(number, group, itself)], [(name, G, C)] -> a request log of one
+    instance: the asks, then the cuts."""
     out, ns = ['1000\t100\tstart\t0\t-\t-\t-\t64'], 1000
+    for name, g, c in asks:
+        ns += 10
+        out.append(f'{ns}\t100\tpublish\t-\tasked\t{g}\t{c}\t{name} accepted')
     for n, g, itself in cuts:
         ns += 10
         out.append(f'{ns}\t100\tcut\t-\t-\t{"itself" if itself else "rewind"}\t{n}\t{g}')
@@ -157,7 +163,7 @@ def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=F
     d = tempfile.mkdtemp()
     try:
         files = {'watch.log': '1000\tread cut 5\n', 'marks.tsv': '',
-                 'requests.tsv': log_text([(n, g, True) for n, g in sorted(c['rows'].values())]),
+                 'requests.tsv': log_text([(n, g, True) for n, g in sorted(c['rows'].values())], c.get('asks', ())),
                  'published.tsv': ''.join(f'{a}\t{n}\t{t}\t{g}\t{p}\n' for a, n, t, g, p in c['pub']),
                  'cases.tsv': ''.join(f'{i}\t{s}\t{k}\t{r}\t{t}\n' for i, s, k, r, t, _ in c['cases'])}
         for _, n, _, _, _ in c['pub']:
@@ -391,7 +397,8 @@ class Main(unittest.TestCase):
         self.assertEqual(rc, 0, not_ok(lines))
         self.assertNotIn('rig_error', lines)
         for k in ('pin_trace_criterion', 'pin_trace_outcome', 'pin_unmarked_refused', 'pin_gone_outcome',
-                  'premise_gone_killed', 'premise_d-carry-swap_daemon_killed', 'pin_d-carry-swap_carried_by_the_killed_cut',
+                  'premise_gone_killed', 'premise_d-carry-swap_daemon_killed', 'pin_d-carry-swap_carried_by_the_last_request',
+                  'pin_d-carry-swap_no_older_than_the_killed_cut',
                   'pin_a1_row', 'pin_a1_manifest', 'pin_a1_nodeb', 'pin_a5_nodeb'):
             self.assertEqual(lines[k][0], 'ok', (k, lines.get(k)))
         self.assertEqual(lines['obs_A-asked-after-1_outcome'][0], 'INFO')
@@ -538,25 +545,59 @@ class Main(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertNotEqual(lines['ctl_early'][0], 'CAUGHT_AT_SNAPSHOT')
 
-    def test_carry_swap_on_another_cut_ends_1_and_carry_put_is_info(self):
+    def test_the_carry_hooks_row_against_the_last_request(self):
+        # Run 45749017239: killed at cut 9, asked anew with C 10 after the
+        # take-over, the row on cut 11: right (the lead's ruling on #158).
+        c = right()
+        c['rows']['a5'] = (11, 92)
+        c['asks'] = [('a5', 85, 8), ('a5', 85, 10)]
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertEqual(lines['pin_d-carry-swap_carried_by_the_last_request'][0], 'ok')
+        self.assertEqual(lines['pin_d-carry-swap_no_older_than_the_killed_cut'][0], 'ok')
+        self.assertIn('the hook killed at cut 9 (group 90)', lines['obs_d-carry-swap_carried_by'][1])
+        self.assertIn('first carried by cut 11 (group 92)', lines['obs_d-carry-swap_carried_by'][1])
+        # The row on a cut the last request does not accept: counted at C.
+        c['asks'] = [('a5', 85, 8), ('a5', 85, 11)]
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_last_request'][0]), (1, 'FAILED'))
+        # Below G.
+        c['asks'] = [('a5', 93, 10)]
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_last_request'][0]), (1, 'FAILED'))
+        # A row older than the killed cut, though the request accepts it.
         c = right()
         c['rows']['a5'] = (8, 85)
         c['rows']['a4'] = (7, 81)
         c['rows']['a3'] = (6, 71)
         c['rows']['a2'] = (5, 61)
         c['rows']['a1'] = (4, 52)
+        c['asks'] = [('a5', 85, 7)]
         rc, lines = run_course(course=c)
-        self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_killed_cut'][0]), (1, 'FAILED'))
+        self.assertEqual(lines['pin_d-carry-swap_carried_by_the_last_request'][0], 'ok')
+        self.assertEqual((rc, lines['pin_d-carry-swap_no_older_than_the_killed_cut'][0]), (1, 'FAILED'))
+        # carry-put: an older cut is no finding, the last request still is.
         put = with_case('d-carry-swap', **{
             'serve-killed.log': 'skyzfsd: test hook --kill-at-upload: killed carry-put:1: after the first segment '
-                                'PUT of cut 8 (group 84), chosen to carry publish 1, landed (k)\n'})
+                                'PUT of cut 9 (group 90), chosen to carry publish 1, landed (k)\n'})
         put['cases'] = [('d-carry-put' if i == 'd-carry-swap' else i, s, k, r, t, own)
                         for i, s, k, r, t, own in put['cases']]
         put['pub'] = [('d-carry-put' if p[0] == 'd-carry-swap' else p[0],) + p[1:] for p in put['pub']]
+        put['rows'] = c['rows']
+        put['asks'] = [('a5', 85, 7)]
         rc, lines = run_course(course=put)
         self.assertEqual(rc, 0, not_ok(lines))
-        self.assertEqual(lines['obs_d-carry-put_carried_by'][0], 'INFO')
-        self.assertIn('a later cut', lines['obs_d-carry-put_carried_by'][1])
+        self.assertNotIn('pin_d-carry-put_no_older_than_the_killed_cut', lines)
+        self.assertEqual(lines['pin_d-carry-put_carried_by_the_last_request'][0], 'ok')
+        put['asks'] = [('a5', 85, 8)]
+        rc, lines = run_course(course=put)
+        self.assertEqual((rc, lines['pin_d-carry-put_carried_by_the_last_request'][0]), (1, 'FAILED'))
+
+    def test_a_carry_hook_with_no_ask_accepted_is_the_rig_s_error(self):
+        c = right()
+        c['asks'] = [('a4', 85, 8)]
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_d-carry-swap_asked'][0]), (2, 'ERROR'))
 
     def test_a_daemon_not_killed_by_its_hook_is_the_rig_s_error(self):
         rc, lines = run_course(change=case_file('d-carry-swap', 'kill.tsv', 'killed_rc\tnone\nserve\t2\n'))
