@@ -89,6 +89,21 @@ nopoints() {
 }
 is "aplain: a trace that gives no points is points-error.tsv, not the course's end" "$(nopoints)" \
     "trace $(printf 'trace\tthe trace reached no point ')"
+nopoints_empty() {
+    # shellcheck disable=SC2034,SC2329
+    (
+        RDIR=$T/n; rm -rf "$RDIR"; mkdir -p "$RDIR/cases/trace"
+        AGENT_SHARD=1/1 AGENT_POINTS=""
+        agent_begin() { :; }; agent_end() { :; }
+        acheck() { :; }
+        acase() { printf '%s ' "$1${3:+@$3}"; }
+        eval "$(fn rec_aplain)"
+        rec_aplain
+        cat "$RDIR/points-error.tsv"
+    )
+}
+is "aplain: a trace that gives no kill point is said" "$(nopoints_empty)" \
+    "trace $(printf 'trace\tthe trace gives no kill point: no A case ran')"
 
 # The trace helpers, on a stand-in agent.
 CDIR=$T/c; mkdir -p "$CDIR"
@@ -244,9 +259,9 @@ rare() { # ACHECK_FAILS_FOR
     (
         RDIR=$T/a; rm -rf "$RDIR"; mkdir -p "$RDIR"; AGENT_RARE="destroy sweep"
         agent_begin() { :; }; agent_end() { :; }
-        acheck() { case $2 in *"/$FAILS/"*) echo "the trace reached no point" >&2; return 2 ;; *destroy*) printf 'withdraw:before:1\nlook:before:7\n' ;; *) printf 'sweep:before:1\n' ;; esac; }
+        acheck() { case $2 in *"/$FAILS/"*) echo "the trace reached no point" >&2; return 2 ;; *"/$EMPTY/"*) ;; *destroy*) printf 'withdraw:before:1\nlook:before:7\n' ;; *) printf 'sweep:before:1\n' ;; esac; }
         acase() { printf '%s ' "$1${3:+@$3}"; }
-        FAILS=$1
+        FAILS=$1 EMPTY=${2:-none}
         eval "$(fn rec_arare)"
         rec_arare
         cat "$RDIR/points-error.tsv" 2>/dev/null
@@ -256,6 +271,8 @@ is "arare: each point the check gives" "$(rare none)" \
     "trace destroy K-destroy-withdraw-before-1@withdraw:before:1 K-destroy-look-before-7@look:before:7 sweep K-sweep-sweep-before-1@sweep:before:1 gone@holding:before:1 unmarked "
 is "arare: a trace that gives no points" "$(rare destroy)" \
     "trace destroy sweep K-sweep-sweep-before-1@sweep:before:1 gone@holding:before:1 unmarked $(printf 'destroy\tthe trace reached no point ')"
+is "arare: a scenario that adds no point is said" "$(rare none destroy)" \
+    "trace destroy sweep K-sweep-sweep-before-1@sweep:before:1 gone@holding:before:1 unmarked $(printf 'destroy\tits trace adds no kill point to the plain trace'"'"'s: no K-destroy case ran')"
 
 # G9 of #158's review: the shell plants that no test killed.
 # published: a snapshot of another name that holds T's, or T's name on a

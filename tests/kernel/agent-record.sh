@@ -620,8 +620,14 @@ rec_aplain() {
     # the points come from its trace either way.
     acase trace plain
     i=${AGENT_SHARD%/*}; n=${AGENT_SHARD#*/}
-    points=${AGENT_POINTS:-$(acheck points "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err")} \
-        || { printf 'trace\t%s\n' "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"; points=""; }
+    # A trace that gives no point runs no A case: said, as the check's
+    # error, as is a trace the check cannot read.
+    if ! points=${AGENT_POINTS:-$(acheck points "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err")}; then
+        printf 'trace\t%s\n' "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"
+        points=""
+    elif [ -z "$points" ]; then
+        printf 'trace\tthe trace gives no kill point: no A case ran\n' >> "$RDIR/points-error.tsv"
+    fi
     for p in $points; do
         k=$((k + 1))
         [ $(((k - 1) % n)) = $((i - 1)) ] || continue
@@ -645,8 +651,15 @@ rec_arare() {
     acase trace plain
     for s in $AGENT_RARE; do
         acase "$s" "$s"
-        pts=$(acheck points "$RDIR/cases/$s/trace.tsv" "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err") \
-            || { printf '%s\t%s\n' "$s" "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"; pts=""; }
+        # A scenario that adds no point to the plain trace's runs no K
+        # case: said, as the check's error (K-destroy ran none on 1a40bfc
+        # and the summary did not say so).
+        if ! pts=$(acheck points "$RDIR/cases/$s/trace.tsv" "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err"); then
+            printf '%s\t%s\n' "$s" "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"
+            pts=""
+        elif [ -z "$pts" ]; then
+            printf '%s\tits trace adds no kill point to the plain trace'"'"'s: no K-%s case ran\n' "$s" "$s" >> "$RDIR/points-error.tsv"
+        fi
         for p in $pts; do acase "K-$s-${p//:/-}" "$s" "$p"; done
     done
     acase gone gone holding:before:1

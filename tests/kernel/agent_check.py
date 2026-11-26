@@ -354,9 +354,13 @@ def outcome(t, outs, published, record=''):
 # not recorded): the next start finds pool@T at Phase::Intent, cannot
 # adopt it (what the pool was before the take is not kept across a
 # restart), destroys it and publishes under a new name (engine.rs, step
-# 5). T is then absent, and the settle publishes another name.
+# 5). T is then absent, and the settle publishes another name. Not
+# destroy:after: that take is gone already and the record still holds T
+# at Phase::Intent, so the next start takes T again under the same name
+# (a_crash_around_the_destroy_takes_again in engine/tests.rs; D11 of
+# #159's review).
 MOVED = {('take', 'after'), ('failed', 'before'), ('failed', 'after'), ('destroy', 'before'),
-         ('destroy', 'after'), ('manifest', 'before'), ('manifest', 'after'), ('taken', 'before')}
+         ('manifest', 'before'), ('manifest', 'after'), ('taken', 'before')}
 
 
 def moved(kill):

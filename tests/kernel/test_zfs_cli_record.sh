@@ -293,6 +293,8 @@ check "scale 3:2: the retained snapshots, then the take" \
     "$(printf '%s|' "$(grep -n '^snapshot -r skzqs@r1$' "$T/zfs-s.calls")" "$(grep -n '^snapshot -r skzqs@r2$' "$T/zfs-s.calls")" "$(grep -n '^snapshot -r skzqs@c$' "$T/zfs-s.calls")")"
 check "scale 3:2: the snapshots before the take" "$(grep -n '^snapshot ' "$T/zfs-s.calls" | grep -v '@t$' | head -n 2 | cut -d: -f2- | tr '\n' '|')" "snapshot -r skzqs@r1|snapshot -r skzqs@r2|"
 check "scale 3:2: said" "$(grep -c '^scale 3-s2: [0-9]* snapshots in the pool (2 of each of 4 datasets asked, one name a call) made in [0-9]* s$' "$T/pins-s/about.txt")" 1
+check "scale 3:2: the count lists every dataset's snapshots" "$(grep -c '^list -H -t snapshot -o name -r skzqs$' "$T/zfs-s.calls")" 1
+check "scale 3: none retained, none said" "$(grep -c '^scale 3: .* datasets asked' "$OUT/about.txt")" 0
 check "scale 3:2: on a pool of 32 GiB" "$(grep -c 'truncate -s 32G' "$HERE/zfs-cli-record.sh")" 1
 for r in take-cli-get take-cli-get-pairs take-cli-list; do
     check "lines said: $r" "$(grep -c "^scale: scale-3-$r: $(wc -l < "$OUT/scale-3-$r/stdout") lines$" "$OUT/about.txt")" 1
@@ -779,9 +781,10 @@ check "scale_all: the counts run" "$(tr '\n' ' ' < "$T/scaled")" "5:0 7:0 8:0 "
 check "scale_all: what was not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
 rm -f "$T/scaled"
 : > "$OUT/about.txt"
-scale_all 10:1000 10:1000 10:02 10:x 0:5 100:2000 10:10000 99999:3 5:0 > /dev/null
+scale_all 10:1000 10:1000 10:02 10:x 0:5 100:2000 10: :5 10:5:3 10:10000 99999:3 5:0 > /dev/null 2>&1
 check "scale_all: N:K entries run" "$(tr '\n' ' ' < "$T/scaled")" "10:1000 10:10000 5:0 "
-check "scale_all: N:K not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
+check "scale_all: N:K not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 9
+check "scale_all: an empty or a second count, said" "$(grep -c '^scale: not a count\( of snapshots\)\?: \(10:\|:5\|10:5:3\)$' "$OUT/about.txt")" 3
 check "scale_all: too many snapshots, said" "$(grep -c 'makes more than 200000 snapshots' "$OUT/about.txt")" 2
 rm -f "$T/scaled"
 scale_all 1:20001 1:20000 1:100000 > /dev/null

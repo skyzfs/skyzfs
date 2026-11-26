@@ -704,6 +704,11 @@ class Main(unittest.TestCase):
         self.assertIsNone(ac.expected('sweep', 'intent:before:1', False, 'k5'))
         self.assertEqual(ac.expected('sweep', 'intent:before:2', False, 'k5'), 'published')
         self.assertEqual(ac.expected('destroy', 'take:after:1', True, 'k5'), 'abandoned destroyed')
+        # D11 of #159's review: a kill after the destroy of the take leaves
+        # T at Intent with no pool@T, and the next start takes T again.
+        self.assertTrue(ac.moved('destroy:before:1'))
+        self.assertFalse(ac.moved('destroy:after:1'))
+        self.assertEqual(ac.expected('sweep', 'destroy:after:1', False, 'k5'), 'published')
 
         def course(**files):
             c = right()

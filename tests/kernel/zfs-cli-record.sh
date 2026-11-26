@@ -1029,7 +1029,7 @@ retain() {
             break
         fi
         if [ $(((i - 1) % 100)) = 0 ]; then
-            free=$(zpool list -Hp -o free "$p" 2> /dev/null)
+            free=$(lim "$LIMIT" zpool list -Hp -o free "$p" 2> /dev/null)
             case $free in
                 '' | *[!0-9]*) ;;
                 *) if [ "$free" -lt "$floor" ]; then
@@ -1045,7 +1045,7 @@ retain() {
             break
         fi
         if [ $((i % step)) = 0 ] || [ "$i" = "$k" ]; then
-            echo "scale $lbl: retained @r$i at $(($(date +%s) - t0)) s: allocated and free $(zpool list -Hp -o alloc,free "$p" 2> /dev/null | tr '\t' ' ')" >> "$OUT/about.txt"
+            echo "scale $lbl: retained @r$i at $(($(date +%s) - t0)) s: allocated and free $(lim "$LIMIT" zpool list -Hp -o alloc,free "$p" 2> /dev/null | tr '\t' ' ')" >> "$OUT/about.txt"
         fi
         i=$((i + 1))
     done
