@@ -11,3 +11,20 @@ V10 held_names: any count KILLED FAIL: pin sweep holds: got 'zfs holds -H skzq@t
 V11 scale: no cap of 1000 KILLED FAIL: scale's sweep: 1000 names at most: got '1002', want '1000'
 V12 sweep: gone not among the names KILLED FAIL: pin sweep holds, one gone: got 'zfs holds -H skzq@t skzq/child@t ', want 'zfs holds -H skzq@t skzq@gone skzq/child@t '
 V13 sweep: gone not destroyed KILLED FAIL: pin sweep gone: got 'zfs snapshot -r skzq@gone /', want 'zfs snapshot -r skzq@gone /zfs destroy -r skzq@gone ' | FAIL: sweep: the list before any hold, the rest while held: got 'yesyesyesyesnonoyesyes', want 'yesyesyesyesyesyesyesyes'
+V14 sweep: the odd tag as UTF-8 KILLED FAIL: the odd tag's bytes: got '636166c3a9', want '636166e9' | FAIL: sweep: the odd tag's cmd quoted: got 'zfs hold $'caf\303\251' skzq@t', want 'zfs hold $'caf\351' skzq@t'
+Traceback (most recent call last):
+  File "review/m2.t5b/pr159/plant2.py", line 18, in <module>
+    p = subprocess.run(cmd, shell=True, cwd=wt, capture_output=True, text=True, timeout=600)
+  File "PYTHONLIB/subprocess.py", line 557, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "PYTHONLIB/subprocess.py", line 1223, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "PYTHONLIB/subprocess.py", line 2196, in _communicate
+    stdout = self._translate_newlines(stdout,
+                                      self.stdout.encoding,
+                                      self.stdout.errors)
+  File "PYTHONLIB/subprocess.py", line 1100, in _translate_newlines
+    data = data.decode(encoding, errors)
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 2421: invalid continuation byte

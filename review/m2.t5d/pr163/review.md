@@ -23,15 +23,15 @@ Five commits:
 
 `zfs-topology` has moved on by one commit since (8c06862, one line of
 the notes). It merges cleanly with 4f0d632 and touches nothing here.
-Line numbers are at 4f0d632 unless a finding says
-otherwise. `review/m2.t5d/review.md` is the review of #143 (also
-M2.T5d), so this one is in `pr163/` beside it and does not replace it.
+Line numbers are at 4f0d632 unless a finding says otherwise.
+`review/m2.t5d/review.md` is the review of #143 (also M2.T5d), so this
+one is in `pr163/` beside it and does not replace it.
 The plant specs and their outputs are in `pr163/` (how to run them is
 at the end).
 
 ## Verdict
 
-- **Nothing blocks. It can merge from review __K_VERDICT__.**
+- **Nothing blocks. It can merge from review.** k is green on 4f0d632.
 - **B1 and B2, which blocked on fafc771, are fixed** by 4f0d632:
   - `agent_quiet` no longer exports a pool whose device has no server;
   - `cleanup`'s export runs under `lim`;
@@ -52,8 +52,13 @@ at the end).
   - G1 to G4: paths that no test pins, and observations.
   - The nits.
 - **The three new commits are right**, and every plant I ran on them is
-  killed (__P4_SUMMARY__).
-- **CI on 4f0d632:** __CI_SUMMARY__
+  killed (18 of 18, V1 to V18).
+- **CI on 4f0d632 is green** where it should run: ci, coverage, e2e,
+  the publish rig, the cut rig on four images, cut-daemon, node B, the
+  CLI recorder's dispatch, and the agent rig's a1, a2, d and **k**. k
+  ran its 102 cases in 26 minutes, with 62 thaws through the new wait.
+  The daemon, replay and probe rigs were cancelled, which is right
+  (section 7).
 - **Nothing here needs a decision of design.** G3 and G5 are the
   author's call.
 
@@ -508,7 +513,7 @@ the workflow, the tests).
   the gone snapshot not in the read, or not destroyed; the odd tag as
   UTF-8; the odd hold not released; `tagged.lua` required; the scale
   list with no load beside; a tagged run without `tagged.lua`):
-  __P4_REC__.
+  all killed.
 
 **7399124, `serve_start`'s files** (`cut-record.sh:399-405`).
 
@@ -543,7 +548,7 @@ run (its unit job only) and `skyzfs-ci` were green.
 | cut rig on the daemon | 45842997902 | success on 26.04, 26.04-arm and 26.04-upload; 15 (26.04) and 8 (upload) recordings read, all exit 0 |
 | node B rig | 45842997768 | success on 26.04 and 26.04-arm |
 | agent rig | 45842997610 | a1, a2 and d: success, exit 0, with 150, 149 and 96 ok lines, every control CAUGHT, no FAILED or ERROR; d thawed four times through the new wait. **k: success**, exit 0, 102 cases (21 restart, 9 destroy, 37 sweep, 19 assist, 13 tooold, gone, plain, unmarked), 1031 ok lines, every control CAUGHT, no FAILED or ERROR, 26 minutes; 62 thaws, all through the new wait |
-| cut rig | 45842997896 | __CUT_ROW__ |
+| cut rig | 45842997896 | success on 24.04, 24.04-arm, 26.04 and 26.04-arm; 10 recordings each, all exit 0 |
 | CLI recorder (dispatch) | 45843435778 | success: unit, lua, 24.04 and 26.04 (the 24.04 artifact says there was no `tagged.lua` at the `lua_ref` used). Its push run 45842982078 (unit only) is green too |
 | daemon rig, replay rig, kernel probe | 45842997658, 45842997961, 45842997581 | cancelled by the author a minute after they started |
 
@@ -594,12 +599,19 @@ test that should catch it with a 600 s limit, then restores the file.
 The series ran one after the other, never two at once: the first three
 in a worktree at fafc771, the fourth in one at 4f0d632.
 
+`plant2.py` stopped at V15: that test's output carries the odd tag's
+byte 0xe9, which Python could not decode as UTF-8. Its `finally` had put
+the file back. `plant3.py` is the same runner with the output decoded
+with replacement, and an optional list of plants to run; it ran V15 to
+V18. So `p4_new.out` has V1 to V14 and the traceback, and
+`p4_rest.out` has V15 to V18.
+
 | set | spec | plants | killed | survived |
 |---|---|---|---|---|
 | the judge: #159's survivors, re-anchored, and new | `p3_A.py` | 26 | 24 | Z04, Z08 |
 | the courses and hooks: #159's survivors, and new | `p3_sh.py` | 71 | 55 | U05r, U05q, X04, X04b, X06b, X10, X11, X12, X12b, X21, X25, X26, Y02, Y09, Y10, Y13 |
 | the CLI recorder: #159's survivors, and new | `p3_rec.py` | 18 | 18 | none |
-| the three new commits | `p4_new.py` | 18 | __P4_K__ | __P4_S__ |
+| the three new commits | `p4_new.py` | 18 | 18 | none |
 
 - **All of #159's survivors that still apply are killed**, each in the
   test that should catch it: set A, all 16 (P43 to N05p); the shell set,
@@ -649,5 +661,6 @@ in a worktree at fafc771, the fourth in one at 4f0d632.
 **To run** (from the checkout's root, with a worktree at the head named
 as `WT`): `python3 review/m2.t5b/pr159/plant2.py WT
 review/m2.t5d/pr163/p3_A.py`. The same command runs `p3_sh.py` and
-`p3_rec.py` (at fafc771) and `p4_new.py` (at 4f0d632). The outputs are
-the `.out` files of the same names.
+`p3_rec.py` (at fafc771) and `p4_new.py` (at 4f0d632; use
+`review/m2.t5d/pr163/plant3.py` for it, which decodes the odd tag). The
+outputs are the `.out` files of the same names, and `p4_rest.out`.

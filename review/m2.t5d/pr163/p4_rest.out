@@ -1,0 +1,4 @@
+V15 sweep: the odd hold not released KILLED FAIL: pin sweep odd tag: got 'zfs hold caf� skzq@t /', want 'zfs hold caf� skzq@t /zfs release caf� skzq@t ' | FAIL: sweep: the odd tag after the gone, let go before the release: got 'yesyesyesnono', want 'yesyesyesyesyes'
+V16 main: tagged.lua required KILLED FAIL: no lua: main needs members alone: got '1/1', want '1/0'
+V17 scale: the sweep list with no load beside KILLED FAIL: scale's sweep with the load beside it: got 'no', want 'yes' | FAIL: writer: beside the takes, the holds, the sweep's reads and the reads after the take, at 3: got 'scale-3-holds scale-3-snapshot scale-3-sweep-holds scale-3-take-cli scale-3-take-cli-get scale-3-take-cli-list scale-3-take-cli-me
+V18 tagged run without tagged.lua KILLED FAIL: no tagged: tagged.lua run by none: got '1', want '0' | FAIL: no tagged: none of its records: got '1', want '0'
