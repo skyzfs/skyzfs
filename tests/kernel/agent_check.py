@@ -436,6 +436,14 @@ def main():
                         killed_at(kill, first_rc, text_of(os.path.join(cd, 'publish.err'), need=False), trace),
                         f'killed at {kill}, as the trace and the hook\'s line say')
             destroyed = os.path.exists(os.path.join(rdir, cd, 'destroy.log'))
+            # A case with no kill must have done what it names (a case
+            # killed early may not have, and is the kill's to judge).
+            if scen == 'restart' and not kill and not os.path.exists(os.path.join(rdir, cd, 'between.txt')):
+                premise(f'premise_{cid}_pending_at_the_loss', ['the agent did not reach asked: the daemon was not '
+                                                               'restarted with a publish pending'], '')
+            if scen == 'assist' and not kill:
+                premise(f'premise_{cid}_assisted', [] if any(e == 'assist' for _, e, _, _ in trace)
+                        else ['the trace has no assist point'], 'the agent assisted while the store was frozen')
             if scen == 'restart' and os.path.exists(os.path.join(rdir, cd, 'between.txt')):
                 got = publish_check.read_snap_row(text_of(os.path.join(cd, 'between.txt')))
                 premise(f'premise_{cid}_pending_at_the_loss', ['snap/T had landed before the daemon was killed']

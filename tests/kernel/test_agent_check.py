@@ -546,6 +546,25 @@ class Main(unittest.TestCase):
         rc, lines = run_course(course=c, change=case_file('d1', 'between.txt', landed))
         self.assertEqual((rc, lines['premise_d1_pending_at_the_loss'][0]), (2, 'ERROR'))
 
+    def test_a_restart_or_assist_that_did_not_happen_is_the_rig_s_error(self):
+        c = right()
+        c['cases'].append(('restart', 'restart', '-', '1', '-', {'retry.out': f'snap/a6 {commit_of("a6")}\n'}))
+        c['pub'].append(('restart', 'a6', 90, 507, '-'))
+        c['rows']['a6'] = (11, 91)
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_restart_pending_at_the_loss'][0]), (2, 'ERROR'))
+        c = right()
+        c['cases'].append(('assist', 'assist', '-', '0', 'a6', {
+            'trace.tsv': trace('a6', *WHOLE), 'publish.out': f'snap/a6 {commit_of("a6")}\n'}))
+        c['pub'].append(('assist', 'a6', 90, 507, commit_of('a6')))
+        c['rows']['a6'] = (11, 91)
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_assist_assisted'][0]), (2, 'ERROR'))
+        c['cases'][-1][5]['trace.tsv'] = trace('a6', *(WHOLE[:12] + [('assist', 'before'), ('assist', 'after')]
+                                                         + WHOLE[12:]))
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_assist_assisted'][0]), (0, 'ok'), not_ok(lines))
+
     def test_the_watcher_s_verdict_ends_1(self):
         rc, lines = run_course(change=write('watch.log', '1000\tVERDICT cut 5 differs\n', 'a'))
         self.assertEqual((rc, lines['pin_watcher_reads'][0]), (1, 'FAILED'))
