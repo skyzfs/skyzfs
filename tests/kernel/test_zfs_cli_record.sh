@@ -169,6 +169,17 @@ case "$*" in
         exit 0 ;;
 esac
 [ "$1" = list ] && exit "${FAKE_LIST_RC:-0}"
+# What holds -r holds: the snapshot and its child's, the first twice
+# (a second tag), after the words.
+case "$*" in
+    "holds -H -r "*@*)
+        case ${FAKE_HOLDS_R:-} in
+            none) exit 0 ;;
+            one) printf '%s\tskyzfs-publish\tThu\n' "$4"; exit 0 ;;
+        esac
+        printf '%s\tskyzfs-publish\tThu\n%s\tother\tThu\n%s/child@%s\tskyzfs-publish\tThu\n' "$4" "$4" "${4%@*}" "${4#*@}"
+        exit 0 ;;
+esac
 # The snapshot program's answer, when one is given.
 case "$*" in
     program*skyzfs:assist) [ -n "${FAKE_PROGRAM_OUT:-}" ] && printf '%s\n' "$FAKE_PROGRAM_OUT" ;;
@@ -332,6 +343,38 @@ check "sweep: the odd tag's cmd quoted" "$(cat "$OUT/rig-sweep-hold-odd/cmd")" "
 check "sweep: the list before any hold, the rest while held" \
     "$(order rig-sweep-list rig-hold-1)$(order rig-hold-1 rig-sweep-list-held)$(order rig-sweep-list-held rig-sweep-holds)$(order rig-sweep-holds rig-sweep-gone-take)$(order rig-sweep-gone-take rig-sweep-gone-destroy)$(order rig-sweep-gone-destroy rig-sweep-holds-gone)$(order rig-sweep-holds-gone rig-sweep-holds-gone-last)$(order rig-sweep-holds-gone-last rig-release-1)" \
     yesyesyesyesyesyesyesyes
+# The agent's read of the counts after holds -r (#165): the names it
+# gave, once each, in its order; then with the middle of @c's destroyed
+# after its holds read, let go first.
+CL="zfs list -H -p -o name,userrefs -t snapshot"
+check "pin counts" "$(words rig-holds-r-counts)" "$CL skzq@t skzq/child@t "
+check "pin counts on @c" "$(words rig-counts-take)/$(words rig-counts-hold)/$(words rig-counts-holds-r)" \
+    "zfs snapshot -r skzq@c /zfs hold -r skyzfs-publish skzq@c /zfs holds -H -r skzq@c "
+check "pin counts, one gone" "$(words rig-counts-release-one)/$(words rig-counts-destroy-one)/$(words rig-holds-r-counts-gone)/$(words rig-counts-destroy)" \
+    "zfs release skyzfs-publish skzq/child@c /zfs destroy skzq/child@c /$CL skzq@c skzq/child@c /zfs destroy -r skzq@c "
+check "counts: the gone one said" "$(grep -c '^rig: rig-holds-r-counts-gone names skzq/child@c, destroyed after rig-counts-holds-r$' "$OUT/about.txt")" 1
+check "counts: after holds-r, in order, before hold-2" \
+    "$(order rig-holds-r rig-holds-r-counts)$(order rig-holds-r-counts rig-counts-take)$(order rig-counts-take rig-counts-hold)$(order rig-counts-hold rig-counts-holds-r)$(order rig-counts-holds-r rig-counts-release-one)$(order rig-counts-release-one rig-counts-destroy-one)$(order rig-counts-destroy-one rig-holds-r-counts-gone)$(order rig-holds-r-counts-gone rig-counts-destroy)$(order rig-counts-destroy rig-hold-2)" \
+    yesyesyesyesyesyesyesyesyes
+# Too few names: no counts at all, or none with one gone.
+cnt_t() { # FAKE_HOLDS_R
+    local d=$T/cnt-$1
+    rm -rf "${d:?}"; mkdir -p "$d"; : > "$d/index.tsv"
+    OUT=$d FAKE_HOLDS_R=$1 rec rig-holds-r zfs holds -H -r skzq@t > /dev/null
+    OUT=$d FAKE_HOLDS_R=$1 holds_counts rig skzq > /dev/null 2>&1
+    echo "$(cut -f1 "$d/index.tsv" | tr '\n' ' ')|$(tr '\n' ';' < "$d/about.txt")"
+}
+check "counts: holds -r names none" "$(cnt_t none)" \
+    "rig-holds-r rig-counts-take rig-counts-hold rig-counts-holds-r rig-counts-destroy |rig: the counts not read: rig-holds-r names no snapshot;rig: the counts with one gone not read: rig-counts-holds-r names 0 snapshots;"
+check "counts: holds -r names one" "$(cnt_t one)" \
+    "rig-holds-r rig-holds-r-counts rig-counts-take rig-counts-hold rig-counts-holds-r rig-counts-destroy |rig: the counts with one gone not read: rig-counts-holds-r names 1 snapshots;"
+# Another holder's tags with a tab and a newline on @t, read, let go.
+check "pin odd tags" "$(words rig-hold-tab)/$(words rig-holds-odd-tags)/$(words rig-holds-r-odd-tags)/$(words rig-release-nl)" \
+    "zfs hold $TAB_TAG skzq@t /zfs holds -H skzq@t /zfs holds -H -r skzq@t /zfs release $NL_TAG skzq@t "
+check "odd tags: the bytes" "$(printf '%q|%q' "$TAB_TAG" "$NL_TAG")" "\$'other\\tholder'|\$'other\\nholder'"
+check "odd tags: in order, after the release, before holds-absent" \
+    "$(order rig-release-2 rig-hold-tab)$(order rig-hold-tab rig-hold-nl)$(order rig-hold-nl rig-holds-odd-tags)$(order rig-holds-odd-tags rig-holds-r-odd-tags)$(order rig-holds-r-odd-tags rig-release-tab)$(order rig-release-tab rig-release-nl)$(order rig-release-nl rig-holds-absent)" \
+    yesyesyesyesyesyesyes
 check "pin none's sweep" "$(words none-sweep-list)/$(words none-sweep-holds)" "$SWL skznone /zfs holds -H skznone@t skznone@u "
 check "pin scale's sweep" "$(words scale-3-sweep-list)/$(words scale-3-sweep-holds)" "$SWL skzqs /zfs holds -H skzqs@t skzqs/child@t "
 check "scale's sweep while held" "$(order scale-3-hold scale-3-sweep-list)$(order scale-3-sweep-list scale-3-sweep-holds)$(order scale-3-sweep-holds scale-3-release)" yesyesyes
@@ -521,6 +564,11 @@ for d in "$OUT"/*/; do
                 *-hold-root | *-hold-child | *-destroy-held-hold) [ "${w[2]}" = skyzfs-publish ] || bad="$bad tag:$n" ;;
                 # The tag that is not UTF-8, on one snapshot.
                 *-sweep-hold-odd | *-sweep-release-odd) [ "${w[2]}" = "$ODD_TAG" ] && [ "${#w[@]}" = 4 ] || bad="$bad odd:$n" ;;
+                # Another holder's tags, with a tab and a newline, on @t.
+                *-hold-tab | *-release-tab) [ "${w[2]}" = "$TAB_TAG" ] && [ "${#w[@]}" = 4 ] || bad="$bad tab:$n" ;;
+                *-hold-nl | *-release-nl) [ "${w[2]}" = "$NL_TAG" ] && [ "${#w[@]}" = 4 ] || bad="$bad nl:$n" ;;
+                # The snapshot destroyed after the holds read, let go first.
+                *-counts-release-one) [ "${w[2]}" = skyzfs-publish ] && [ "${#w[@]}" = 4 ] || bad="$bad one:$n" ;;
                 *) [ "${w[2]} ${w[3]}" = "-r skyzfs-publish" ] || bad="$bad -r:$n" ;;
             esac
             ;;
@@ -535,7 +583,11 @@ for d in "$OUT"/*/; do
             ;;
         "zfs destroy")
             seen="$seen destroy"
-            [ "${#w[@]}" = 4 ] && [ "${w[2]}" = -r ] && [[ ${w[3]} == *@* ]] || bad="$bad destroy:$n"
+            case $n in
+                # One snapshot alone, on purpose.
+                *-counts-destroy-one) [ "${#w[@]}" = 3 ] && [[ ${w[2]} == *@* ]] || bad="$bad destroy-one:$n" ;;
+                *) [ "${#w[@]}" = 4 ] && [ "${w[2]}" = -r ] && [[ ${w[3]} == *@* ]] || bad="$bad destroy:$n" ;;
+            esac
             ;;
         "zpool status")
             seen="$seen status"

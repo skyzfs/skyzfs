@@ -210,6 +210,18 @@
 #                          a second hold on the first of them, whose tag
 #                          is not UTF-8 (caf and the byte 0xE9), the
 #                          sweep's two reads again, then that hold let go
+#   holds-r-counts         the agent's read of the counts after holds-r
+#                          (#165): zfs list -H -p -o name,userrefs -t
+#                          snapshot on each snapshot holds-r named
+#   counts-take, counts-hold, counts-holds-r, counts-release-one,
+#   counts-destroy-one, holds-r-counts-gone, counts-destroy
+#                          the same on @c, held with -r, with the middle
+#                          of its snapshots let go and destroyed after
+#                          the holds read; about.txt names it
+#   hold-tab, hold-nl, holds-odd-tags, holds-r-odd-tags, release-tab,
+#   release-nl             holds of another holder on @t whose tags have
+#                          a tab and a newline, as zfs holds -H prints
+#                          them, then let go
 #   holds-absent, hold-absent, release-absent
 #                          on a snapshot that is not there, on a live pool
 #   hold-root, hold-r-partial, holds-r-partial
@@ -782,6 +794,55 @@ sweep_holds() {
     rec "$x-sweep-release-odd" zfs release "$ODD_TAG" "${held[0]}"
 }
 
+# The agent's read of the counts after `zfs holds -H -r P@T` (#165,
+# M2.6c-5e): the snapshots the holds named, once each, in their order.
+COUNTS_LIST=(zfs list -H -p -o 'name,userrefs' -t snapshot)
+holds_names() {
+    awk -F '\t' 'NF >= 2 && $1 ~ /@/ && !seen[$1]++ { print $1 }' "$1"
+}
+
+# holds_counts X P: the counts of what X-holds-r named; then on @c, held
+# with -r, the same read with one of its snapshots destroyed after the
+# holds read (the middle one, so names come before and after it).
+holds_counts() {
+    local x=$1 p=$2 names gone
+    mapfile -t names < <(holds_names "$OUT/$x-holds-r/stdout")
+    if [ "${#names[@]}" = 0 ]; then
+        echo "$x: the counts not read: $x-holds-r names no snapshot" >> "$OUT/about.txt"
+    else
+        rec "$x-holds-r-counts" "${COUNTS_LIST[@]}" "${names[@]}"
+    fi
+    rec "$x-counts-take" zfs snapshot -r "$p@c"
+    rec "$x-counts-hold" zfs hold -r "$TAG" "$p@c"
+    rec "$x-counts-holds-r" zfs holds -H -r "$p@c"
+    mapfile -t names < <(holds_names "$OUT/$x-counts-holds-r/stdout")
+    if [ "${#names[@]}" -lt 2 ]; then
+        echo "$x: the counts with one gone not read: $x-counts-holds-r names ${#names[@]} snapshots" >> "$OUT/about.txt"
+    else
+        gone=${names[$((${#names[@]} / 2))]}
+        rec "$x-counts-release-one" zfs release "$TAG" "$gone"
+        rec "$x-counts-destroy-one" zfs destroy "$gone"
+        rec "$x-holds-r-counts-gone" "${COUNTS_LIST[@]}" "${names[@]}"
+        echo "$x: $x-holds-r-counts-gone names $gone, destroyed after $x-counts-holds-r" >> "$OUT/about.txt"
+    fi
+    release_quietly "$p" c
+    rec "$x-counts-destroy" zfs destroy -r "$p@c"
+}
+
+# holds_odd_tags X P: holds by another holder whose tags have a tab and a
+# newline, on P@t, as zfs holds -H prints them; then let go.
+TAB_TAG=$'other\tholder'
+NL_TAG=$'other\nholder'
+holds_odd_tags() {
+    local x=$1 p=$2
+    rec "$x-hold-tab" zfs hold "$TAB_TAG" "$p@t"
+    rec "$x-hold-nl" zfs hold "$NL_TAG" "$p@t"
+    rec "$x-holds-odd-tags" zfs holds -H "$p@t"
+    rec "$x-holds-r-odd-tags" zfs holds -H -r "$p@t"
+    rec "$x-release-tab" zfs release "$TAB_TAG" "$p@t"
+    rec "$x-release-nl" zfs release "$NL_TAG" "$p@t"
+}
+
 # Everything recorded on a live pool before the changes of its devices.
 record_pool() { # prefix pool
     local x=$1 p=$2
@@ -802,6 +863,7 @@ record_pool() { # prefix pool
     rec "$x-hold-1" zfs hold -r "$TAG" "$p@t"
     rec "$x-holds" zfs holds -H "$p@t"
     rec "$x-holds-r" zfs holds -H -r "$p@t"
+    holds_counts "$x" "$p"
     rec "$x-hold-2" --expect 'tag already exists' zfs hold -r "$TAG" "$p@t"
     if [ "$TAGGED_LUA" = 1 ]; then
         program "$x-tagged-held" "$p" tagged.lua -n "$p" "$TAG"
@@ -811,6 +873,7 @@ record_pool() { # prefix pool
     rec "$x-release-1" zfs release -r "$TAG" "$p@t"
     rec "$x-holds-r-released" zfs holds -H -r "$p@t"
     rec "$x-release-2" --expect 'no such tag' zfs release -r "$TAG" "$p@t"
+    holds_odd_tags "$x" "$p"
     rec "$x-holds-absent" zfs holds -H "$p@absent"
     rec "$x-hold-absent" zfs hold -r "$TAG" "$p@absent"
     rec "$x-release-absent" zfs release -r "$TAG" "$p@absent"
