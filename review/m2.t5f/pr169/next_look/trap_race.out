@@ -1,0 +1,1 @@
+bash 5.2.21(1)-release: the parent's EXIT trap ran in the killed child in 35 of 40 tries

@@ -1,0 +1,71 @@
+P01 D1: the rest of the window not waited (the fix removed): killed (test_zfs_cli_record.sh rc=1 312s)
+  [test_zfs_cli_record.sh] FAIL: reading_for: the window, no shorter: got '0.954', want 'yes'
+  [test_zfs_cli_record.sh] FAIL: reading_for: the rest of the window waited: got '0.848', want 'yes'
+P02 D1: half a second waited past the window: killed (test_zfs_cli_record.sh rc=1 284s)
+  [test_zfs_cli_record.sh] FAIL: reading_for: the window, no shorter: got '1.512', want 'yes'
+  [test_zfs_cli_record.sh] FAIL: reading_for: the rest of the window waited: got '1.516', want 'yes'
+  [test_zfs_cli_record.sh] FAIL: rounds list: the windows: got '1.030 1.007 1.665 1.697', want 'yes'
+  [test_zfs_cli_record.sh] FAIL: rounds holds: the windows: got '1.020 1.007 1.611 1.601', want 'yes'
+P03 D1: the about line's windows swapped between the sides: killed (test_zfs_cli_record.sh rc=1 309s)
+  [test_zfs_cli_record.sh] FAIL: rounds list: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds holds: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22, failed 1 2; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 22 
+P04 D1: the idle side's window read from the read's record: killed (test_zfs_cli_record.sh rc=1 282s)
+  [test_zfs_cli_record.sh] FAIL: rounds list: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds holds: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22, failed 1 2; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 22 
+P05 failed= dropped from the about line: killed (test_zfs_cli_record.sh rc=1 304s)
+  [test_zfs_cli_record.sh] FAIL: rounds list: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds holds: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 22 (median 21.5
+P06 failed= read from runs=: killed (test_zfs_cli_record.sh rc=1 289s)
+  [test_zfs_cli_record.sh] FAIL: rounds list: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds holds: said, with the medians: got '0', want '1'
+  [test_zfs_cli_record.sh] FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22, failed 11 22; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 2
+P07 R3: a step read that failed other than at its limit gets rounds: killed (test_zfs_cli_record.sh rc=1 302s)
+  [test_zfs_cli_record.sh] FAIL: rounds: the step's read failed, said: got 'scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |', want 'scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |scale 9: the sweep's list rounds not run: scale-9-sweep-list ended with status 1 '
+P08 D3: NOT COVERED lines read again: killed (test_zfs_cli_record.sh rc=1 288s)
+  [test_zfs_cli_record.sh] FAIL: field_of: a NOT COVERED line gives none: got '3.000/3.000', want '?/?'
+P09 the settle's limit back to octal in the budget: killed (test_zfs_cli_record.sh rc=1 301s)
+  [test_zfs_cli_record.sh] FAIL: rounds: a settle of 08 s in the budget: got 'WORKTREE/tests/kernel/zfs-cli-record.sh: line 1407: 2 * (w + 2 * (0 + 1) + 08: value too great for base (error token is "08")
+Q01 Q3 reserve: the pid not let go: killed (test_agent_record.sh rc=1 35s)
+  [test_agent_record.sh] FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 5) serve_again'
+  [test_agent_record.sh] FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+  [test_agent_record.sh] FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+  [test_agent_record.sh] FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+  [test_agent_record.sh] FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+  [test_agent_record.sh] FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+  [test_agent_record.sh] FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+Q02 Q3 reserve: the pid let go after rig_error: killed (test_agent_record.sh rc=1 35s)
+  [test_agent_record.sh] FAIL recover: the agent killed, the store thawed, the daemon served again: got '  none', want 'the agent killed;the store thawed;the daemon served again; thaw;serve_again; none'
+  [test_agent_record.sh] FAIL recover: a daemon that had ended is a verdict, with its status: got ': ', want 'daemon_serving: skyzfsd serve 2 had ended (status 5) with no kill of the rig's: serve died'
+  [test_agent_record.sh] FAIL recover: in dhook, a daemon ended after the rig's own error in the case is no verdict: got ' ', want ' skyzfsd serve 2 had ended (status 5), after the rig's own error in the case;the daemon served again;'
+  [test_agent_record.sh] FAIL recover: in dhook with no error of the rig's (none), a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in dhook with no error of the rig's (empty), a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in dhook after the hook's end, a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again'
+Q03 Q3 end_daemon: the pid not let go: killed (test_agent_record.sh rc=1 35s; test_cut_record.sh rc=0 28s)
+  [test_agent_record.sh] FAIL end_daemon: unreaped after SIGKILL, its pid let go: got 'rig error: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+Q04 Q3 end_daemon: the pid let go after rig_error: killed (test_agent_record.sh rc=1 35s; test_cut_record.sh rc=0 24s)
+  [test_agent_record.sh] FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 5) serve_again'
+  [test_agent_record.sh] FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+  [test_agent_record.sh] FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+  [test_agent_record.sh] FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+  [test_agent_record.sh] FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'

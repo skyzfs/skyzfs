@@ -1,0 +1,29 @@
+Q01 Q3 reserve: the pid not let go: killed (test_agent_record.sh rc=1 37s)
+  [test_agent_record.sh] FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 5) serve_again'
+  [test_agent_record.sh] FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+  [test_agent_record.sh] FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+  [test_agent_record.sh] FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+  [test_agent_record.sh] FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+  [test_agent_record.sh] FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+Q02 Q3 reserve: the pid let go after rig_error: killed (test_agent_record.sh rc=1 35s)
+  [test_agent_record.sh] FAIL recover: in dhook, a daemon ended after the rig's own error in the case is no verdict: got ' ', want ' skyzfsd serve 2 had ended (status 5), after the rig's own error in the case;the daemon served again;'
+  [test_agent_record.sh] FAIL recover: in dhook with no error of the rig's (none), a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in dhook with no error of the rig's (empty), a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in dhook after the hook's end, a daemon that ended is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+  [test_agent_record.sh] FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again'
+  [test_agent_record.sh] FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 5) serve_again'
+  [test_agent_record.sh] FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q03 Q3 end_daemon: the pid not let go: killed (test_agent_record.sh rc=1 35s; test_cut_record.sh rc=0 27s)
+  [test_agent_record.sh] FAIL end_daemon: unreaped after SIGKILL, its pid let go: got 'rig error: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+Q04 Q3 end_daemon: the pid let go after rig_error: SURVIVES (test_agent_record.sh rc=0 35s; test_cut_record.sh rc=0 28s)

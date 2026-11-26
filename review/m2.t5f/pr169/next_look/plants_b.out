@@ -1,0 +1,16 @@
+P10 the settle's limit ignored in the budget (always 30): killed (test_zfs_cli_record.sh rc=1 310s)
+  [test_zfs_cli_record.sh] FAIL: rounds: a settle of 08 s in the budget: got '|scale 9: the budget cannot hold the sweep's list round 1 (50 s left of the 88 s it may take); it and the rest were not run scale 9: the budget cannot hold the sweep's holds round 1 (50 s left of the 88 s it may take); it and the rest were not run '
+P11 S01: the settle after the margin: killed (test_zfs_cli_record.sh rc=1 287s)
+  [test_zfs_cli_record.sh] FAIL: writing: the settle, then the margin: got 'margin settle margin ', want 'settle margin margin '
+P12 S10: the line's default for the groups 3: killed (test_zfs_cli_record.sh rc=1 310s)
+  [test_zfs_cli_record.sh] FAIL: scale_all: the setting's defaults: got 'scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=3 groups have committed since its probe began, waiting at most ZCR_SETTLE_S=30 s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=2 s alone)', want 'scale settings: each window be
+P13 S12: the line's default for the margin 5: killed (test_zfs_cli_record.sh rc=1 280s)
+  [test_zfs_cli_record.sh] FAIL: scale_all: the setting's defaults: got 'scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=2 groups have committed since its probe began, waiting at most ZCR_SETTLE_S=30 s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=5 s alone)', want 'scale settings: each window be
+P14 the code's default for the groups 3, the line's still 2: killed (test_zfs_cli_record.sh rc=1 305s)
+  [test_zfs_cli_record.sh] FAIL: settle: the default, two: got 'NOT SETTLED: 1 of 3 groups in 0 s', want 'NOT SETTLED: 1 of 2 groups in 0 s'
+P15 the code's default margin 3, the line's still 2: SURVIVES (test_zfs_cli_record.sh rc=0 286s)
+P16 the code's default limit 40, the line's still 30: killed (test_zfs_cli_record.sh rc=1 303s)
+  [test_zfs_cli_record.sh] FAIL: settle: not a count: got 'NOT SETTLED: ZCR_SETTLE_TXGS and ZCR_SETTLE_S are counts: x, 40', want 'NOT SETTLED: ZCR_SETTLE_TXGS and ZCR_SETTLE_S are counts: x, 30'
+P17 K04: @c not let go before counts-destroy: killed (test_zfs_cli_record.sh rc=1 289s)
+  [test_zfs_cli_record.sh] FAIL: counts: released before the destroy: got '18 52 22', want 'yes'
+P18 K04: release_quietly lists but releases nothing: SURVIVES (test_zfs_cli_record.sh rc=0 300s)

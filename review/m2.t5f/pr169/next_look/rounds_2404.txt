@@ -1,0 +1,67 @@
+record	window_s	runs	failed	reads_longest	read_share	groups_in_window	groups_per_s	txgs	sync_longest	writer_longest	big_end_minus_t0	settled
+scale-10-s1000-sweep-holds-idle-r1	10.004	-	-	-	-	7	0.700	7	5.036	2.715	-3.04	settled=2.006 groups=2
+scale-10-s1000-sweep-holds-idle-r2	10.003	-	-	-	-	8	0.800	8	4.795	2.950	+0.72	settled=0.970 groups=2
+scale-10-s1000-sweep-holds-idle-r3	10.005	-	-	-	-	8	0.800	8	4.836	2.985	-2.94	settled=2.024 groups=2
+scale-10-s1000-sweep-holds-idle-r4	10.004	-	-	-	-	12	1.200	12	4.076	3.010	-3.00	settled=2.963 groups=3
+scale-10-s1000-sweep-holds-idle-r5	10.031	-	-	-	-	7	0.698	7	5.454	1.548	-2.88	settled=2.027 groups=2
+scale-10-s1000-sweep-holds-r1	11.212	514	0	0.060	>=0.99	9	0.803	9	5.478	2.944	-2.79	settled=2.028 groups=2
+scale-10-s1000-sweep-holds-r2	10.732	512	0	0.051	>=1.00	12	1.118	12	4.315	2.998	-2.83	settled=2.020 groups=2
+scale-10-s1000-sweep-holds-r3	10.917	479	0	0.056	>=0.99	9	0.824	9	5.447	1.306	-3.09	settled=2.039 groups=2
+scale-10-s1000-sweep-holds-r4	10.585	497	0	0.041	>=1.00	10	0.945	10	4.076	3.056	+0.52	settled=0.981 groups=2
+scale-10-s1000-sweep-holds-r5	10.061	498	0	0.129	>=0.99	9	0.895	9	5.593	2.936	+0.56	settled=1.001 groups=2
+scale-10-s1000-sweep-list-idle-r1	10.005	-	-	-	-	7	0.700	7	5.433	1.544	-2.89	settled=2.036 groups=2
+scale-10-s1000-sweep-list-idle-r2	10.003	-	-	-	-	8	0.800	8	4.974	3.002	-2.20	settled=1.016 groups=2
+scale-10-s1000-sweep-list-idle-r3	10.004	-	-	-	-	9	0.900	9	5.621	2.913	+0.47	settled=0.998 groups=2
+scale-10-s1000-sweep-list-idle-r4	10.003	-	-	-	-	8	0.800	8	5.424	1.488	-2.29	settled=1.950 groups=2
+scale-10-s1000-sweep-list-idle-r5	10.014	-	-	-	-	9	0.899	9	5.434	2.961	+0.57	settled=1.020 groups=2
+scale-10-s1000-sweep-list-r1	10.103	1	0	8.408	0.83	10	0.990	10	3.795	2.944	-3.04	settled=2.064 groups=2
+scale-10-s1000-sweep-list-r2	11.149	1	0	8.400	0.75	9	0.807	9	4.544	2.852	-2.15	settled=0.964 groups=2
+scale-10-s1000-sweep-list-r3	10.048	1	0	8.551	0.85	9	0.896	9	6.041	3.044	-3.00	settled=2.032 groups=2
+scale-10-s1000-sweep-list-r4	10.599	1	0	8.552	0.81	9	0.849	9	5.472	2.884	-2.75	settled=2.044 groups=2
+scale-10-s1000-sweep-list-r5	10.100	1	0	8.611	0.85	13	1.287	13	4.299	3.060	-2.96	settled=2.989 groups=3
+scale-1000-sweep-holds-idle-r1	10.003	-	-	-	-	19	1.899	19	2.007	1.107	-1.53	settled=0.945 groups=2
+scale-1000-sweep-holds-idle-r2	10.005	-	-	-	-	18	1.799	18	2.159	1.151	-0.80	settled=0.950 groups=2
+scale-1000-sweep-holds-idle-r3	10.003	-	-	-	-	19	1.899	19	2.059	1.109	-2.82	settled=2.000 groups=3
+scale-1000-sweep-holds-idle-r4	10.004	-	-	-	-	19	1.899	19	2.058	1.109	-2.87	settled=1.999 groups=3
+scale-1000-sweep-holds-idle-r5	10.004	-	-	-	-	19	1.899	19	2.107	1.147	-2.82	settled=2.013 groups=3
+scale-1000-sweep-holds-r1	10.586	15	0	0.672	>=0.94	22	2.078	22	1.957	1.118	-1.64	settled=0.948 groups=3
+scale-1000-sweep-holds-r2	10.438	15	0	0.697	>=0.93	19	1.820	19	2.115	1.155	-2.73	settled=1.962 groups=3
+scale-1000-sweep-holds-r3	10.464	15	0	0.689	>=0.93	20	1.911	20	2.159	1.096	-2.79	settled=1.996 groups=3
+scale-1000-sweep-holds-r4	10.701	15	0	0.702	>=0.93	20	1.869	20	2.172	1.168	-1.07	settled=0.955 groups=2
+scale-1000-sweep-holds-r5	10.077	15	0	0.693	>=0.93	19	1.885	19	2.057	1.113	-2.88	settled=1.994 groups=3
+scale-1000-sweep-list-idle-r1	10.003	-	-	-	-	17	1.699	17	2.159	1.138	-2.82	settled=2.010 groups=3
+scale-1000-sweep-list-idle-r2	10.005	-	-	-	-	19	1.899	19	2.063	1.156	-1.81	settled=0.944 groups=2
+scale-1000-sweep-list-idle-r3	10.004	-	-	-	-	19	1.899	19	2.160	1.107	-1.17	settled=0.959 groups=2
+scale-1000-sweep-list-idle-r4	10.004	-	-	-	-	19	1.899	19	2.158	1.144	-1.05	settled=0.958 groups=2
+scale-1000-sweep-list-idle-r5	10.003	-	-	-	-	19	1.899	19	2.211	1.158	-1.08	settled=0.973 groups=2
+scale-1000-sweep-list-r1	10.900	4	0	2.175	>=0.80	21	1.927	21	2.208	1.147	-1.02	settled=0.949 groups=2
+scale-1000-sweep-list-r2	10.164	4	0	2.131	>=0.79	19	1.869	19	2.057	1.110	-1.45	settled=0.951 groups=2
+scale-1000-sweep-list-r3	10.135	4	0	2.232	>=0.78	18	1.776	18	2.158	1.120	-1.12	settled=0.950 groups=2
+scale-1000-sweep-list-r4	10.158	4	0	2.158	>=0.79	19	1.871	19	2.112	1.107	-1.09	settled=0.953 groups=2
+scale-1000-sweep-list-r5	10.202	4	0	2.111	>=0.79	19	1.862	19	2.159	1.153	-1.14	settled=0.960 groups=2
+
+scale	kind	side	rounds	median_window_s	median_txgs	median_groups_per_s	median_sync_longest	median_writer_longest
+10-s1000	holds	read	5	10.732	9.000	0.895	5.447	2.944
+10-s1000	holds	idle	5	10.004	8.000	0.800	4.836	2.950
+10-s1000	list	read	5	10.103	9.000	0.896	4.544	2.944
+10-s1000	list	idle	5	10.004	8.000	0.800	5.433	2.913
+1000	holds	read	5	10.464	20.000	1.885	2.115	1.118
+1000	holds	idle	5	10.004	19.000	1.899	2.059	1.109
+1000	list	read	5	10.164	19.000	1.869	2.158	1.120
+1000	list	idle	5	10.004	19.000	1.899	2.159	1.144
+
+scale	kind	ratio of groups a second, read / idle, by round	median ratio	rounds read lower
+10-s1000	holds	1.15 1.40 1.03 0.79 1.28	1.147	1 of 5
+10-s1000	list	1.41 1.01 1.00 1.06 1.43	1.062	1 of 5
+1000	holds	1.09 1.01 1.01 0.98 0.99	1.006	2 of 5
+1000	list	1.13 0.98 0.94 0.98 0.98	0.984	4 of 5
+
+records with a settle and a group of 300 MiB or more: 56; the window opened before it committed: 7
+   scale-10-s1000-holds (+0.66 s, 1153 MiB, sync 3.00 s)
+   scale-10-s1000-sweep-holds-idle-r2 (+0.72 s, 1111 MiB, sync 2.95 s)
+   scale-10-s1000-sweep-holds-r4 (+0.52 s, 1111 MiB, sync 2.95 s)
+   scale-10-s1000-sweep-holds-r5 (+0.56 s, 1111 MiB, sync 2.93 s)
+   scale-10-s1000-sweep-list-idle-r3 (+0.47 s, 1110 MiB, sync 2.90 s)
+   scale-10-s1000-sweep-list-idle-r5 (+0.57 s, 1111 MiB, sync 2.96 s)
+   scale-10-s1000-take-cli (+0.43 s, 1108 MiB, sync 2.95 s)
+settle lines that are not settled=: 0

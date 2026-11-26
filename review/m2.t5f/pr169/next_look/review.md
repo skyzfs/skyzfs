@@ -24,9 +24,9 @@
     review gives 10.02 s for both runs of 4.9 s and of 5.1 s in a
     window of 10 s. Before the fix it gave 9.82 and 5.11 s.
   - **Q3's fix is right on every path** (section 3).
-  - **Every low is answered.** Each has a test, and all but two of the
-    tests fail when the change is planted out (section 4). The two
-    that survive are test gaps (section 5).
+  - **Every low is answered.** Each has a test. Of my 22 plants, 19
+    are killed (section 4). The three that survive are test gaps
+    (section 5).
 - **One finding on D1's subject, not blocking: D4** (section 2).
   - On the runners, every read window was still longer than its idle
     control, in 40 of 40 rounds:
@@ -335,8 +335,8 @@ in `plants.py`; their output is in `plants_a.out`, `plants_b.out`,
 | R3 | `failed` dropped from the line | P05 | killed |
 | R3 | `failed` read from `runs=` | P06 | killed |
 | R3 | a step read that ended 1 gets rounds | P07 | killed |
-| D3 | NOT COVERED lines read again by `field_of` | P08 | PENDING_P08 |
-| octal | `ZCR_SETTLE_S` read as octal in the budget | P09 | PENDING_P09 |
+| D3 | NOT COVERED lines read again by `field_of` | P08 | killed |
+| octal | `ZCR_SETTLE_S` read as octal in the budget | P09 | killed |
 | octal | the budget always takes 30 s for the settle | P10 | killed |
 | S01 | the settle after the margin | P11 | killed |
 | S10 | the line's default for the groups 3 | P12 | killed |
@@ -344,8 +344,8 @@ in `plants.py`; their output is in `plants_a.out`, `plants_b.out`,
 | S10 | the code's default for the groups 3, the line's 2 | P14 | killed |
 | S12 | the code's default margin 3, the line's 2 | P15 | **survives** |
 | S10 | the code's default limit 40, the line's 30 | P16 | killed |
-| K04 | `@c` not let go before `counts-destroy` | P17 | PENDING_P17 |
-| K04 | `release_quietly` lists but releases nothing | P18 | PENDING_P18 |
+| K04 | `@c` not let go before `counts-destroy` | P17 | killed |
+| K04 | `release_quietly` lists but releases nothing | P18 | **survives** |
 | Q3 | `reserve`: the pid not let go | Q01 | killed |
 | Q3 | `reserve`: let go after `rig_error` | Q02 | killed |
 | Q3 | `end_daemon`: the pid not let go | Q03 | killed |
@@ -376,6 +376,16 @@ dispatches:
   - The suite always sets `ZCR_WRITER_MARGIN`.
   - The settings line's default is pinned (P13 is killed). The code's
     default can drift from it without a failure.
+- **P18: the K04 test does not see a hold let go**
+  (`test_zfs_cli_record.sh:358-360`).
+  - The test checks that `release_quietly` lists the snapshots between
+    `holds -r` and the destroy. Its own comment says the fake lists no
+    snapshot `@c`.
+  - So a `release_quietly` that lists and releases nothing passes. In
+    the real rig, that would bring back K04: `destroy -r` refused on a
+    held snapshot.
+  - A fake that lists one `@c`, and a check for the `release` call,
+    would pin it.
 - **Q04: the order in `end_daemon` is not pinned**
   (`test_agent_record.sh:821-824`).
   - A stub `rig_error` that records `SERVE_PID`, as `reserve`'s test
@@ -413,9 +423,13 @@ dispatches:
   this pull request.
   - The suite's temporary directory vanishes mid-run, and 16 to 23
     checks fail after that point.
-  - It happens at 54b666b too (2 of 3 runs).
-  - It happens most with two other suites running beside it. Alone, the
-    suite passed (the Q04 runs and the final gate).
+  - With two other suites running beside it: at 54b666b, 2 of 3 runs
+    failed; at af0c183, most runs failed (`plants_q2.out`).
+  - Alone: at af0c183, 2 of 14 runs failed; at 54b666b, 0 of 4
+    (`agent_flake.out` and the runs after it).
+  - The first failing check is at `test_agent_record.sh:186` or soon
+    after. That is before the new test at `:241`, so the new test does
+    not start it.
   - I did not find the cause:
     - A background child killed before its exec runs the parent's EXIT
       trap in bash 5.2 (`trap_race.sh`: 35 of 40 tries).
@@ -513,8 +527,8 @@ These figures match the author's table in comment 7204030861.
 - **"All 10 were killed."** Their set and mine overlap:
   - mine also kill K04, S01, S10, S12, D3, R3, the octal settle, and
     Q3 removed in both functions;
-  - two of mine survive (P15, Q04), and the author's set does not have
-    them.
+  - three of mine survive (P15, P18, Q04), and the author's set does
+    not have them.
 - **"shellcheck 0.11 clean."** I have 0.9.0. It finds no new code
   against 54b666b, only four more SC2317 notes (info) in
   `test_agent_record.sh`.
@@ -539,7 +553,7 @@ These figures match the author's table in comment 7204030861.
 | suite | result |
 |---|---|
 | `test_zfs_cli_record.sh` | 711 ok, 0 fail |
-| `test_agent_record.sh` | 144 checks; passes alone. Flaky under load here, as at 54b666b (section 5) |
+| `test_agent_record.sh` | 144 checks; 12 of 14 runs alone passed. Flaky here, as at 54b666b (section 5) |
 | `test_cut_record.sh` | all passed |
 | `tests/lib/test_lim.sh` | all passed |
 | `test_agent_check.py`, `test_txg_probe.py`, `test_dsync_writer.py`, `test_zfs_cli_json.py` | OK (80, 20, 15, 7 tests) |
@@ -574,7 +588,9 @@ These figures match the author's table in comment 7204030861.
   - `plants.py`;
   - `plants_a.out` (P01 to P09), `plants_b.out` (P10 to P18),
     `plants_q.out` (Q01 to Q04, first runs; Q01 and Q02 there are mixed
-    with the suite's flake);
+    with the suite's flake). The Q lines at the end of `plants_a.out`
+    ran again under load and are all the flake; Q04 "killed" there is
+    the flake, not the `end_daemon` check;
   - `plants_q2.out`: Q01 and Q02 run again until a run had no flake,
     each with the failing line.
 - **The dispatch:**
@@ -586,4 +602,5 @@ These figures match the author's table in comment 7204030861.
   - `trap_race.sh`, `trap_race.out`: the EXIT trap in a killed child
     (section 5);
   - `gates.sh`, `gates.out`: the local gates (section 8). The agent
-    suite's failures in `gates.out` are the flake.
+    suite's failures in `gates.out` are the flake;
+  - `agent_flake.out`: the agent suite alone, 4 runs at each head.

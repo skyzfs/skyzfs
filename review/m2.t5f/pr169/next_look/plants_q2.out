@@ -1,0 +1,18 @@
+Q01 (try 1, 1 FAIL): killed
+   FAIL reserve: unreaped after SIGKILL, its pid let go: got 'daemon_stopped rig_error [1005] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 try 1: the suite's temp directory vanished (22 FAIL), tried again
+Q02 try 2: the suite's temp directory vanished (19 FAIL), tried again
+Q02 try 3: the suite's temp directory vanished (20 FAIL), tried again
+Q02 try 4: the suite's temp directory vanished (16 FAIL), tried again
+Q02 try 5: the suite's temp directory vanished (18 FAIL), tried again
+Q02 try 6: the suite's temp directory vanished (23 FAIL), tried again
+diff after: none
+Q02 again, try 1: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 2: FAIL reserve: unreaped after SIGKILL, its pid let go: got 'daemon_stopped rig_error [18594] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 3: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 4: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 5: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 6: FAIL reserve: unreaped after SIGKILL, its pid let go: got 'daemon_stopped rig_error [9170] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 7: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+Q02 again, try 8: FAIL reserve: unreaped after SIGKILL, its pid let go: got ' ', want 'daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;'
+diff after: none

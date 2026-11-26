@@ -1,0 +1,8 @@
+idle_for 10                        window  10.01 s  
+reads of 5.1 s                     window  10.10 s  runs=1 failed=0 longest=5.107 rc=0
+reads of 4.9 s                     window  10.16 s  runs=2 failed=0 longest=4.908 rc=0
+reads of 0.02 s                    window  10.12 s  runs=249 failed=0 longest=0.033 rc=0
+reads that fail at once            window  10.05 s  runs=975 failed=975 longest=0.011 rc=0
+a run of 4 s, then one of 7 s      window  11.21 s  runs=2 failed=0 longest=7.016 rc=0
+a run of 12 s                      window  12.13 s  runs=1 failed=0 longest=12.008 rc=0
+rec's limit of 3 s                 window   3.85 s   rc=124

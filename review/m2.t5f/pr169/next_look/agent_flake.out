@@ -1,0 +1,10 @@
+af0c183 run 1 rc=0 ok=144 fail=0
+af0c183 run 2 rc=0 ok=144 fail=0
+af0c183 run 3 rc=0 ok=144 fail=0
+af0c183 run 4 rc=1 ok=126 fail=18
+54b666b run 1 rc=0 ok=142 fail=0
+54b666b run 2 rc=0 ok=142 fail=0
+54b666b run 3 rc=0 ok=142 fail=0
+54b666b run 4 rc=0 ok=142 fail=0
+af0c183, before these: 2 runs alone, rc=1 (20 FAIL) then rc=0 (144 ok)
+af0c183, after these: 8 runs alone, all rc=0 (144 ok)
