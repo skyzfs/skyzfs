@@ -16,24 +16,20 @@ ran the checks below, and only then read the author's answer
 
 ## Verdict
 
-**Nothing in the code blocks the merge from review.** D1 is fixed end to
-end, F1 is fixed as asked, and every survivor of my two earlier looks is
-killed. Three things should be settled before the lead merges, none of
-them a defect that blocks:
+**Nothing blocks the merge from review.** D1 is fixed end to end, F1 is
+fixed as asked, every survivor of my two earlier looks is killed, the
+gates are clean on the four feature sets, and CI is green on the head
+after a rerun of the agent rig's job k (below). Two things should be
+answered on the pull request before the lead merges, neither a defect
+that blocks:
 
-1. **CI is not green on the head** (below). The agent rig's job k ended
-   with exit 2, the rig's own error and not a verdict, in a case that
-   has nothing to do with this delta. But k is the only job whose
-   sweep course drives the new parsing on a real pool (ZFS 2.4.1), and
-   it stopped before that course. Rerun k, and read its sweep lines,
-   before the merge.
-2. **F1's documented residual is real, and it is not harmless in the
+1. **F1's documented residual is real, and it is not harmless in the
    way the comment says** (F1-R). Nothing of another holder's is
    released, which I confirmed; but a crafted tag on any held snapshot
    of the pool makes every sweep fail, so every `publish` and `settle`,
    until that hold is released. The comment and the description should
    say so; whether to close it is the lead's call.
-3. **Codex's new P2** (argument budget, `cli.rs:324`) is real; I
+2. **Codex's new P2** (argument budget, `cli.rs:324`) is real; I
    reproduced it. It needs a non-default stack limit and names of
    almost the longest kind, so it is low. It has no answer on its
    thread yet.
@@ -57,10 +53,11 @@ them a defect that blocks:
   the tag. libzfs says `no such tag on this dataset` when no member had
   it (`zfs_release`: the list to release is empty, the last member's
   `ESRCH`), or, in a race, when a hold it found was gone at the
-  release; with one agent a pool, only the first. `release` (`cli.rs:1203-1223`) then checks with
-  `zfs holds -H -r POOL@t` (`tagged_snapshots`, `cli.rs:790-812`), which
-  parses the same text the same way, reads the same forged line, and
-  fails: `… kept the hold`. `sweep()` returns it (`engine.rs:788`), so
+  release; with one agent a pool, only the first. `release`
+  (`cli.rs:1203-1223`) then checks with `zfs holds -H -r POOL@t`
+  (`tagged_snapshots`, `cli.rs:790-812`), which parses the same text
+  the same way, reads the same forged line, and fails: `… kept the
+  hold`. `sweep()` returns it (`engine.rs:788`), so
   `begin` (`engine.rs:644`) and the first round of every `settle`
   (`engine.rs:692`) fail, in every process, until that hold is released.
   In a directory with no marker the agent exits 6 instead, and its
@@ -90,7 +87,7 @@ them a defect that blocks:
   | `skyzfs-publish\tx` | the same exit 1 | exit 6 |
 
   A scratch unit test (not committed) gives `Ok({"backup"})` from
-  `tagged()` for each of the three shapes above, and `release()` then
+  `tagged()` for each of the three shapes of the bullet before, and `release()` then
   fails with `kept the hold`.
 - **What to do.** At least: the comment at `cli.rs:892-895` and the
   description's "F1's residual" say that the sweep then fails on every
@@ -136,8 +133,8 @@ them a defect that blocks:
 - **In the sweep** it is reached only through `release`'s check after
   `no such tag`. A real stale hold never gives that: `zfs release -r`
   from `POOL@t` visits every file system and volume, releases the hold
-  it finds and exits 0, and only the agent changes its tag. So it is
-  reached only after F1-R. Shown: the forged tag plus a hold `caf\xe9` on
+  it finds and exits 0, and only the agent places or releases its tag.
+  So it is reached only after F1-R. Shown: the forged tag plus a hold `caf\xe9` on
   `tank@backup` makes `settle` exit 1 with `zfs holds -H -r tank@backup:
   its output is not UTF-8`. Every other read of the sweep is clean:
   `props` and the counts print no one else's text, the list is read as
@@ -153,28 +150,30 @@ them a defect that blocks:
 
 ### Process: CI at 18ec0a6
 
-Read with `gh api .../commits/18ec0a6.../check-runs` at about 14:55.
+Read with `gh api .../commits/18ec0a6.../check-runs`, last at 15:10 UTC.
 
-- **Green:** the CI suite's `test`, `lint` and `unit-arm64`; `e2e-tier-a`,
-  `s3-backends`, `chart-lint`, both k3s smokes; the agent rig's a1, a2
-  and d (Ubuntu 26.04) and "the check's logic". `skyzfs-ci.yml`'s jobs
-  are skipped, as on any pull request.
-- **Running:** `coverage` (in progress when I read it).
-- **Failed: the agent rig's k** (run 45836590019, Ubuntu 26.04), exit
-  2, the rig's own error. In course `arare`, case
-  `K-restart-ask-before-2` was to kill the agent at the second ask. In
-  this run one ask was enough (its trace has `ask before` once), so the
-  point was never reached; the rig then looked for `serve-7.log`, which
-  no daemon wrote, and stopped. At b83ac36 the same case reached its
-  point. This delta changes only the sweep's read of holds, which is
-  not on that path, so I read it as timing, not a verdict.
-  - But the course `sweep`, which comes later in `arare`, did not run.
-    It is the only check of `zfs list ... name,userrefs` and `zfs holds
-    -H` on a real pool, and the bytes path is new. Rerun k (or dispatch
-    the rig with `k`) and read `pin_sweep_swept` and
-    `pin_unmarked_refused` before the merge.
-  - #163 (testing) changes how the rig judges past its own errors; not
-    read for this note.
+- **Green:** the CI suite's `test`, `lint` and `unit-arm64`; `coverage`,
+  `e2e-tier-a`, `s3-backends`, `chart-lint`, both k3s smokes; the agent
+  rig (run 45836590019): a1, a2 and d on Ubuntu 26.04, "the check's
+  logic", and k at its second attempt. `skyzfs-ci.yml`'s jobs are
+  skipped, as on any pull request.
+- **k's first attempt** ended with exit 2, the rig's own error. In course
+  `arare`, case `K-restart-ask-before-2` was to kill the agent at the
+  second ask; that run needed only one ask (its trace has `ask before`
+  once), so the point was not reached, and the rig then stopped on a
+  `serve-7.log` that no daemon wrote. The case reached its point at
+  b83ac36 and again in the rerun, and this delta does not touch that
+  path: timing, not a verdict. #163 (testing) is about how the rig
+  judges past its own errors; I did not read it for this note.
+- **k's second attempt** (job 139980206456, ZFS 2.4.1) ended `worst
+  exit 0` with no line FAILED. The sweep course drives the new reads on
+  a real pool: `pin_sweep_swept` (the stray hold released),
+  `K-sweep-sweep-before-1` and `-after-1` (killed at each point, the
+  retry publishes and leaves no hold of the tag), and
+  `pin_unmarked_refused` (exit 6, nothing released) are all ok. So the
+  list with `userrefs` and `zfs holds -H` read as bytes parse on 2.4.1
+  as the fakes say. As before, the rig runs one stray hold on 26.04
+  only.
 - **The description** still says "CI at 18ec0a6: running; this line
   will link the runs".
 - **Codex at 18ec0a6:** one new finding, the P2 above (CX), with no
@@ -302,4 +301,28 @@ through `failed`); Q3 and Q4 are `plants162b.py`'s text, unchanged.
 
 ## Gates
 
-GATES_PLACEHOLDER
+At `18ec0a6`, on a scratch worktree, rustc 1.100.0 (`rustup update
+stable` found nothing newer), `CARGO_INCREMENTAL=0`, no debug info, the
+target cleaned between sets. `cargo fmt --all -- --check` is clean. For
+each set: `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, and `cargo doc --workspace --no-deps` with
+`RUSTDOCFLAGS=-D warnings`.
+
+| Feature set | clippy | tests | doc |
+|---|---|---|---|
+| plain | clean | 1962 passed, 0 failed, 16 ignored | clean |
+| `skyzfsd/test-hooks,skyzfs-local/test-hooks` | clean | 2020 passed, 0 failed, 16 ignored | clean |
+| `skyzfs-ublk-sys/control-test-program` | clean | 1986 passed, 0 failed, 18 ignored | clean |
+| `skyzfs-agent-cli/test-hooks` | clean | 1962 passed, 0 failed, 16 ignored | clean |
+
+The counts are the description's: one more test than at b83ac36
+(`another_holders_tag_is_read_as_bytes`). With the agent's test hooks,
+`the_agent_traces_a_point_then_dies_of_sigkill_there` ran and passed.
+
+## What was not checked
+
+- The plant script, the scratch tests and the stand-in runs stay on my
+  scratch worktrees and are not committed; this note describes each and
+  gives its result.
+- `bprm_stack_limits` is read from memory of Linux's `fs/exec.c`; the
+  `E2BIG` itself was run here.
