@@ -9,7 +9,11 @@
 //! The daemon listens on a Unix stream socket, [`SOCKET`] in the
 //! volume's run directory ([`socket_path`]), of mode 0600, and answers only a peer whose
 //! user is its own or root; it answers one request per connection and
-//! closes.
+//! closes. A request whose client has closed its connection (both ways)
+//! by the time the daemon reads it whole is dropped, not handled and not
+//! answered, so that nothing is done for a client that stopped waiting;
+//! a client that only shut its writing down after its request is
+//! answered.
 //!
 //! The limits a request is held to ([`valid_name`], [`MANIFEST_MAX`],
 //! [`EXPIRY_MAX`], and [`EXPIRY_DEFAULT`] where it names no expiry) are

@@ -118,7 +118,7 @@ pub(super) fn wake(path: &Path) {
 /// its bytes holds the thread no longer than [`REQUEST_LIMIT`] (F3 of
 /// the review of #127). Its writes wait [`IO_LIMIT`] each.
 struct Timed<'a> {
-    stream: &'a mut UnixStream,
+    stream: &'a UnixStream,
     until: Instant,
 }
 
@@ -132,17 +132,34 @@ impl Read for Timed<'_> {
             ));
         }
         self.stream.set_read_timeout(Some(left))?;
-        self.stream.read(buf)
+        (&mut &*self.stream).read(buf)
     }
 }
 
 impl Write for Timed<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.stream.write(buf)
+        (&mut &*self.stream).write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.stream.flush()
+        (&mut &*self.stream).flush()
+    }
+}
+
+/// Whether the client of `stream` has closed its end (`POLLHUP`, or an
+/// error on the socket), so that no answer can reach it: see "A client
+/// that hung up" in the module's documentation. A client that only shut
+/// its writing down is still there. A `poll` that fails says no.
+pub(super) fn hung_up(stream: &UnixStream) -> bool {
+    use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    let mut fds = [PollFd::new(stream, PollFlags::empty())];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    match poll(&mut fds, Some(&now)) {
+        Ok(_) => fds[0].revents().intersects(PollFlags::HUP | PollFlags::ERR),
+        Err(_) => false,
     }
 }
 
@@ -301,18 +318,26 @@ fn serve(
                 continue;
             }
         }
-        // An error: the peer went away, or sent nothing in time, and no
-        // answer reaches it.
+        // An error: the peer went away, sent nothing in time, or hung up
+        // before its request was handled, and no answer reaches it.
         let mut timed = Timed {
-            stream: &mut stream,
+            stream: &stream,
             until,
         };
-        if let Ok(reply) = answer(&mut timed, handler) {
-            counts.answered.fetch_add(1, Ordering::Relaxed);
-            if matches!(reply, Reply::Refused(Code::Malformed | Code::Version, _)) {
-                counts.malformed.fetch_add(1, Ordering::Relaxed);
+        match answer(&mut timed, handler, || hung_up(&stream)) {
+            Ok(reply) => {
+                counts.answered.fetch_add(1, Ordering::Relaxed);
+                if matches!(reply, Reply::Refused(Code::Malformed | Code::Version, _)) {
+                    counts.malformed.fetch_add(1, Ordering::Relaxed);
+                }
+                post(counts.figures());
             }
-            post(counts.figures());
+            // A request dropped for a client that hung up is told on
+            // standard error: it reached the daemon and was not handled.
+            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
+                eprintln!("skyzfsd: control: {e}");
+            }
+            Err(_) => {}
         }
     }
 }
