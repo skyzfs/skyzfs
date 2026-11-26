@@ -9,7 +9,7 @@ use skyzfs_control::{Code, Reply, Request};
 
 use super::*;
 use crate::engine::fake::{
-    FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, World, POOL, VOLUME,
+    Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, World, POOL, VOLUME,
 };
 use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
 
@@ -1026,10 +1026,12 @@ fn a_round_line_says_what_the_round_did() {
         skipped: 2,
         begun: Some("skz-20261126T120000Z".into()),
         under_way: 1,
+        synced: 4,
     };
     assert_eq!(
         round_line(&round),
-        "round 3 ok took_ms=3456 late_ms=12 skipped=2 begun=skz-20261126T120000Z under_way=1\n"
+        "round 3 ok took_ms=3456 late_ms=12 skipped=2 begun=skz-20261126T120000Z under_way=1 \
+         synced=4\n"
     );
     let failed = Round {
         failed: true,
@@ -1038,7 +1040,7 @@ fn a_round_line_says_what_the_round_did() {
     };
     assert_eq!(
         round_line(&failed),
-        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1\n"
+        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4\n"
     );
 }
 
@@ -1433,6 +1435,112 @@ fn an_end_comes_between_two_rounds_of_the_engine() {
     );
     assert_eq!(agent.record().under_way.len(), 1);
     assert!(keep.0.borrow().record.is_some());
+}
+
+/// An end asked for while a begin works waits for that begin and no
+/// more: `go` is asked before the settle's count and sweep, not after
+/// them, so that neither runs once the begin is done (n1 of the next
+/// look at #167; the lead's ruling). Mutant: `go` asked only after the
+/// count and the sweep that open a pass.
+#[test]
+fn an_end_during_a_begin_makes_no_read_after_it() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    // Yes at the round's start, no from then on: as a SIGTERM that
+    // comes while the begin works.
+    let mut asked = 0u32;
+    let mut go = || {
+        asked += 1;
+        asked == 1
+    };
+    let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    assert_eq!((code, err.as_str()), (exit::PUBLISHED, ""), "{out}");
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 1, "{out}");
+    assert_ne!(field(rounds[0], "begun"), "-", "{out}");
+    let calls = world.borrow().calls.clone();
+    let counts = calls.iter().filter(|c| **c == "count").count();
+    let sweeps = calls.iter().filter(|c| **c == "tagged").count();
+    assert_eq!((counts, sweeps), (1, 1), "the begin's own only: {calls:?}");
+    assert_eq!(agent.record().under_way.len(), 1);
+}
+
+/// An idle pool imported with `-T`, its abandoned history's top `gap`
+/// groups above the group the import wrote.
+fn rewound_t(gap: u64) -> Rc<RefCell<World>> {
+    let world = World::new(Mode::Idle);
+    {
+        let mut world = world.borrow_mut();
+        for _ in 0..4 {
+            world.sync("before the rewind");
+        }
+        world.restart(Restart::RewindT(Back::AfterHold), None);
+        let pool = world.pool.as_mut().expect("the pool");
+        pool.abandoned_top = pool.txg + gap;
+    }
+    world
+}
+
+/// After a rewind import, a round syncs the pool past the abandoned
+/// groups before it begins its publish, which is then published within
+/// the round; the round line says how many syncs (M2.7d). Mutants: no
+/// syncs before the begin; `synced` not in the line.
+#[test]
+fn a_round_after_a_rewind_import_syncs_past_it_before_it_begins() {
+    let world = rewound_t(5);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let every = Duration::from_secs(60);
+    let (code, out, err) = scheduled(&mut agent, every, &mut until(&world, start + 90_000));
+    assert_eq!((code, err.as_str()), (exit::PUBLISHED, ""), "{out}");
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 2, "{out}");
+    assert!(rounds[0].starts_with("round 1 ok "), "{out}");
+    assert_eq!(field(rounds[0], "synced"), "3", "{out}");
+    assert_ne!(field(rounds[0], "begun"), "-", "{out}");
+    assert_eq!(field(rounds[1], "synced"), "0", "{out}");
+    assert_eq!(world.borrow().refs.len(), 2, "{out}");
+}
+
+/// A round whose syncs stop with the newest cut still behind begins no
+/// publish, says why on standard error, and is `ok`: nothing failed, and
+/// no cut could carry a publish (M2.7d). The rounds after it sync no
+/// more in this process. Mutants: a begin after the syncs stopped; the
+/// round `failed`; the bound per round.
+#[test]
+fn a_round_still_behind_begins_no_publish() {
+    let world = rewound_t(10_000);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let every = Duration::from_secs(60);
+    let (code, out, err) = scheduled(&mut agent, every, &mut until(&world, start + 90_000));
+    assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 2, "{out}");
+    let max = crate::engine::SYNC_PAST_MAX.to_string();
+    for (round, synced) in rounds.iter().zip([max.as_str(), "0"]) {
+        assert!(round.contains(" ok "), "{out}");
+        assert_eq!(field(round, "begun"), "-", "{out}");
+        assert_eq!(field(round, "synced"), synced, "{out}");
+        assert_eq!(field(round, "under_way"), "0", "{out}");
+    }
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 2, "{err}");
+    assert!(
+        lines[0].starts_with("skyzfs-agent: round 1: no publish begun: the newest cut, of group "),
+        "{err}"
+    );
+    assert!(
+        lines[0]
+            .ends_with("does not open as itself: the syncs reached their bound in this process"),
+        "{err}"
+    );
+    assert!(world.borrow().programs.is_empty(), "{out}");
+    assert!(keep.0.borrow().record.is_none());
 }
 
 /// A record that a person must judge ends `run` with 6, after the

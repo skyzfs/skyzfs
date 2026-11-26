@@ -73,6 +73,22 @@
 //! `held_until` is read on the wall clock until the request is asked or
 //! accepted again in this process.
 //!
+//! # After a rewind import
+//!
+//! After `zpool import -T` the pool writes its next groups under numbers
+//! at or below those of the history it abandoned, whose uberblocks are
+//! still in the labels' rings: no cut opens as itself (the daemon's
+//! `opens=no`) until the pool's groups have passed them, so none can be
+//! published (design §5.2). [`Agent::sync_past`] runs the agent's sync
+//! task ([`Zfs::assist`]) one at a time until the daemon's newest cut
+//! opens as itself (M2.7d). It changes nothing in the record's
+//! directory, so a crash anywhere in it leaves nothing to recover, and
+//! it has no crash points. It is bounded three ways, so that the agent
+//! never writes groups for ever: a sync after which the daemon counts no
+//! cut ends it (the syncs do not reach the volume), so does an end asked
+//! for, and [`SYNC_PAST_MAX`] syncs in this process without a cut that
+//! opens as itself stop it until one does.
+//!
 //! # Crash points
 //!
 //! In its tests the engine can be stopped before and after each effect
@@ -99,6 +115,62 @@ use crate::zfs::{self, Held, Zfs, ZfsError, HOLD_TAG};
 /// How often the engine looks again at a publish that waits (the plan,
 /// §4, step 11).
 pub const TICK: Duration = Duration::from_secs(1);
+
+/// The most syncs [`Agent::sync_past`] runs in one process without
+/// seeing a cut that opens as itself: the most uberblocks one ring of a
+/// label holds (`VDEV_UBERBLOCK_RING`, 128 KiB, over the smallest slot,
+/// `1 << UBERBLOCK_SHIFT`, 1 KiB). `zpool import -T` loads an uberblock
+/// that is in the ring, so the abandoned groups still in view are fewer
+/// than that, and each sync writes at least one group (two on ZFS
+/// 2.4.1: [`Zfs::assist`]). More syncs than this without such a cut mean
+/// that something else keeps the newest cut from opening as itself; the
+/// agent then leaves the pool alone and says so each round.
+pub const SYNC_PAST_MAX: u32 = 128;
+
+/// What [`Agent::sync_past`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Past {
+    /// The daemon's newest cut opens as itself, or it holds none: nothing
+    /// is behind. `synced` is how many syncs this call ran to get there.
+    Clear {
+        /// The syncs run.
+        synced: u32,
+    },
+    /// The daemon did not answer `cuts`, or answered something else:
+    /// the agent cannot tell, and syncs nothing ([`Agent::begin`] then
+    /// says what is wrong).
+    Unseen,
+    /// The newest cut, of `group`, still does not open as itself.
+    Behind {
+        /// The syncs this call ran.
+        synced: u32,
+        /// The newest cut's group.
+        group: u64,
+        /// Why the syncs stopped.
+        why: Stuck,
+    },
+}
+
+/// Why [`Agent::sync_past`] stopped with the newest cut still behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stuck {
+    /// [`SYNC_PAST_MAX`] syncs in this process saw no cut open as itself.
+    Bound,
+    /// The daemon counted no cut after a sync.
+    NoCut,
+    /// An end was asked for (`go` said no).
+    Told,
+}
+
+impl fmt::Display for Stuck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Stuck::Bound => "the syncs reached their bound in this process",
+            Stuck::NoCut => "the daemon counted no cut after a sync",
+            Stuck::Told => "an end was asked for",
+        })
+    }
+}
 
 /// Why a publish stopped where `done` was not confirmed by `look`.
 const DONE_NOT_SEEN: &str = "the daemon said done, and look did not see it";
@@ -310,7 +382,8 @@ pub enum Error {
     Zfs(ZfsError),
     /// The record was not saved.
     Save(SaveError),
-    /// A manifest's file failed.
+    /// The record's directory failed: the record, a manifest, the
+    /// directory's listing or its marker.
     Io(io::Error),
     /// [`Agent::settle`] ran out of time with publishes still under way.
     Unsettled(Vec<String>),
@@ -510,6 +583,10 @@ pub struct Agent<Z, D, K, C> {
     /// ([`Agent::rename`], [`Agent::name_now`]). No name left is chosen
     /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
     renamed: BTreeMap<String, String>,
+    /// The syncs [`Agent::sync_past`] has run since it last saw no cut
+    /// behind. Kept across [`Agent::restart`]: it bounds what the
+    /// process writes, not what the record says.
+    past_synced: u32,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -549,6 +626,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             sink: None,
             outcome_sink: None,
             at: String::new(),
+            past_synced: 0,
         })
     }
 
@@ -687,6 +765,51 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         )
     }
 
+    /// Sync the pool until the daemon's newest cut opens as itself, one
+    /// sync at a time ([module docs](self), "After a rewind import"):
+    /// `cuts` read before each sync, `go` asked before each, and the
+    /// premise checked before the first ([`Error::Premise`]: the agent
+    /// changes nothing on a pool it would not publish).
+    pub fn sync_past(&mut self, go: &mut dyn FnMut() -> bool) -> Result<Past, Error> {
+        let mut synced = 0u32;
+        let mut count_before: Option<u64> = None;
+        loop {
+            let cuts = match self.daemon.ask(&Request::Cuts, &[]) {
+                Ok(Reply::Cuts(cuts)) => cuts,
+                Ok(_) | Err(_) => return Ok(Past::Unseen),
+            };
+            let group = match cuts.newest {
+                Some((group, false)) => group,
+                Some((_, true)) | None => {
+                    self.past_synced = 0;
+                    return Ok(Past::Clear { synced });
+                }
+            };
+            let behind = |why| Ok(Past::Behind { synced, group, why });
+            if count_before.is_some_and(|before| cuts.count <= before) {
+                return behind(Stuck::NoCut);
+            }
+            if self.past_synced >= SYNC_PAST_MAX {
+                return behind(Stuck::Bound);
+            }
+            if !go() {
+                return behind(Stuck::Told);
+            }
+            if synced == 0 {
+                let props = self.zfs.props(&self.pool)?;
+                self.premise(&props)?.map_err(Error::Premise)?;
+            }
+            // A value of its own at each call, as for a publish's syncs
+            // ([`Action::Assist`]).
+            let value = self.clock.now_ms().max(self.assists.saturating_add(1));
+            self.assists = value;
+            count_before = Some(cuts.count);
+            synced = synced.saturating_add(1);
+            self.past_synced = self.past_synced.saturating_add(1);
+            self.zfs.assist(&self.pool, value)?;
+        }
+    }
+
     /// Begin a publish: the premise, the pool enrolled at the first,
     /// the count, a name, and the record at [`Phase::Intent`]. Its name.
     pub fn begin(&mut self) -> Result<String, Error> {
@@ -738,9 +861,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// stopped, waiting [`TICK`] between rounds where none moved; until
     /// `limit` has passed, and in any case one round of the publishes
     /// under way, however long the count and the sweep before it took.
-    /// Each that left or stopped is in [`Agent::outcomes`]. Each round begins with the count of the
-    /// pool's datasets ([`Zfs::count`]), which sets the time limits of
-    /// its calls, then the sweep (`Agent::sweep`).
+    /// Each that left or stopped is in [`Agent::outcomes`]. Each round
+    /// begins with the count of the pool's datasets ([`Zfs::count`]),
+    /// which sets the time limits of its calls, then the sweep
+    /// (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
         self.settle_while(limit, &mut || true)
     }
@@ -759,18 +883,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         let mut passes = 0u64;
         loop {
+            // `go` is asked before each pass, the first too, and before
+            // the count and the sweep that open it, so that an end asked
+            // for during a step waits for no read after it (n1 of the
+            // next look at #167; the lead's ruling).
+            if !go() {
+                return self.unsettled();
+            }
             // Where the count fails, the limits are the bases, and the
             // round's own calls say what is wrong (no pool, or another
             // error): the count is not an error of the round.
             let _counted = self.zfs.count(&self.pool);
             self.sweep()?;
-            let names: Vec<String> = self
-                .record
-                .under_way
-                .iter()
-                .map(|p| p.name.clone())
-                .filter(|name| !self.stopped.contains(name))
-                .collect();
+            let names = self.unstopped();
             if names.is_empty() {
                 return Ok(());
             }
@@ -778,8 +903,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             // it: a count and a sweep that take as long as the limit
             // (a short `--every-s`, a large pool) would otherwise leave
             // every publish unmoved, round after round (P2 of Codex on
-            // #167). `go` is asked before each pass, the first too.
-            if (passes > 0 && self.clock.mono_ms() >= end) || !go() {
+            // #167).
+            if passes > 0 && self.clock.mono_ms() >= end {
                 return Err(Error::Unsettled(names));
             }
             passes += 1;
@@ -792,6 +917,27 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             if moved == Moved::No {
                 self.clock.sleep(TICK);
             }
+        }
+    }
+
+    /// The publishes under way that are not stopped, by name.
+    fn unstopped(&self) -> Vec<String> {
+        self.record
+            .under_way
+            .iter()
+            .map(|p| p.name.clone())
+            .filter(|name| !self.stopped.contains(name))
+            .collect()
+    }
+
+    /// How [`Agent::settle_while`] ends where `go` says no: with what is
+    /// still under way, or `Ok` where nothing is.
+    fn unsettled(&self) -> Result<(), Error> {
+        let names = self.unstopped();
+        if names.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Unsettled(names))
         }
     }
 

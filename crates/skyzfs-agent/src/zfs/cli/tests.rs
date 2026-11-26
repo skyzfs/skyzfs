@@ -2312,6 +2312,8 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
                 "{why}"
             );
             assert!(why.contains(gone.trim_end()), "{why}");
+            // What a person does (N3a of the next look at #168).
+            assert!(why.contains("release that hold by hand"), "{why}");
         }
         other => panic!("{other:?}"),
     }

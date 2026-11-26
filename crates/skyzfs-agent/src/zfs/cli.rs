@@ -538,8 +538,8 @@ fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<()
                     "`{snapshot}` has {lines} lines of holds and {refs} holds (`userrefs`): \
                      holds were placed or released between the two reads, again and \
                      again, or a line is forged by a tag with a newline, on the hold just \
-                     before one of them (of {}); read `zfs holds` of those snapshots and, where a tag \
-                     holds a newline, release that hold by hand",
+                     before one of them (of {}); read `zfs holds` of those snapshots and, \
+                     where a tag holds a newline, release that hold by hand",
                     if before.is_empty() {
                         "none".to_string()
                     } else {
@@ -1076,12 +1076,12 @@ impl<H: Host> ZfsCli<H> {
     /// of each snapshot named, by `zfs list -H -p -o name,userrefs -t
     /// snapshot` (at most [`HOLDS_AT_ONCE`] and [`HOLDS_ARG_BYTES`] of
     /// names a command, each on a read's limit), must not be fewer than
-    /// its lines ([`outnumbered`]): another holder's tag cannot forge
-    /// the agent's hold, nor hide one (F1-R of #162's review; the lead's
-    /// ruling on M2.6c-5e), unless a hold of that snapshot changes
+    /// its lines ([`outnumbered`]): another holder's tag cannot hide the
+    /// agent's hold, nor forge one unless a hold of that snapshot changes
     /// between the two commands at the same time (a race accepted: R1 of
-    /// #165's review). A snapshot named and gone before its count
-    /// is [`ZfsError::Vanished`].
+    /// #165's review; F1-R of #162's review; the lead's ruling on
+    /// M2.6c-5e). A snapshot named and gone before its count is
+    /// [`ZfsError::Vanished`].
     fn tagged_snapshots(
         &mut self,
         snapshot: &str,
@@ -1222,8 +1222,8 @@ impl<H: Host> ZfsCli<H> {
             // when, and no snapshot with more lines than holds: another
             // holder's tag with a tab or a newline is an error that names
             // the snapshot (after reads again where there are more lines
-            // than holds), and neither forges the agent's hold nor hides
-            // one, unless a hold of that snapshot changes between the two
+            // than holds). It never hides the agent's hold, and forges
+            // none unless a hold of that snapshot changes between the two
             // commands at the same time (accepted: R1 of #165's review;
             // F1-R of #162's review; the lead's ruling on M2.6c-5e).
             let asked: BTreeSet<&str> = names.iter().copied().collect();
