@@ -595,9 +595,13 @@ end_daemon() {
         || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/status.txt")"
     after=$(python3 -c 'import time; print(time.monotonic_ns())')
     printf '%s\t%s\n' "$before" "$after" > "$RDIR/status-time.tsv"
-    # serve ends on SIGTERM, with 0; detach then deletes the device.
-    kill -TERM "$SERVE_PID" 2>/dev/null || true
-    if ! serve_end 60; then
+    # serve ends on SIGTERM, with 0; detach then deletes the device. A
+    # daemon that had ended before the SIGTERM ended unasked: a verdict.
+    if ! kill -TERM "$SERVE_PID" 2>/dev/null; then
+        local st=unknown
+        if serve_end 5; then st=$SERVE_RC; fi
+        daemon_wrong daemon_stopped "skyzfsd serve had ended before SIGTERM (status $st): $(tail -n 2 "$SERVE_LOG")"
+    elif ! serve_end 60; then
         daemon_wrong daemon_stopped "skyzfsd serve did not end 60 s after SIGTERM: $(tail -n 2 "$SERVE_LOG")"
         kill -9 "$SERVE_PID" 2>/dev/null || true
         serve_end 10 || rig_error "skyzfsd serve did not end 10 s after SIGKILL"

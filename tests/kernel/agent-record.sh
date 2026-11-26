@@ -262,8 +262,12 @@ serve_again() {
 # The daemon ended on SIGTERM (status 0), then served again with the
 # options given: how a hook is armed between cases.
 reserve() {
-    kill -TERM "$SERVE_PID" 2>/dev/null || true
-    if ! serve_end 60; then
+    # A daemon that had ended before the SIGTERM ended unasked: a verdict.
+    if ! kill -TERM "$SERVE_PID" 2>/dev/null; then
+        local st=unknown
+        if serve_end 5; then st=$SERVE_RC; fi
+        verdict daemon_stopped "skyzfsd serve $SERVE_K had ended before SIGTERM (status $st): $(tail -n 2 "$(serve_log "$SERVE_K")")"
+    elif ! serve_end 60; then
         verdict daemon_stopped "skyzfsd serve $SERVE_K did not end 60 s after SIGTERM"
         kill -9 "$SERVE_PID" 2>/dev/null || true
         serve_end 10 || rig_error "skyzfsd serve $SERVE_K did not end 10 s after SIGKILL"
@@ -291,8 +295,10 @@ serve_log() { if [ "$1" = 1 ]; then echo "$RDIR/serve.log"; else echo "$RDIR/ser
 # the agent killed, the store thawed, the daemon serving. A daemon that
 # had ended without a kill of the rig's or its hook's is a verdict; in a
 # dhook case the rig's own error about the daemon's end comes first, and
-# only there (D9 of #159's review: in the other scenarios the rig never
-# stops the daemon, so one that ended did so by itself).
+# only there and only until the hook's end is recorded in kill.tsv: the
+# instance served after it has no hook armed (D9 of #159's review: in
+# the other scenarios the rig never stops the daemon, so one that ended
+# did so by itself).
 recover() {
     if [ -n "$AGENT_PID" ]; then
         kill -CONT "$AGENT_PID" 2>/dev/null || true
@@ -309,7 +315,7 @@ recover() {
         local k=$SERVE_K st=unknown
         if [ -n "$SERVE_PID" ] && serve_end 5; then st=$SERVE_RC; fi
         SERVE_PID=""
-        if [ "$SCEN" = dhook ] && [ -s "$CDIR/rig-error.txt" ]; then
+        if [ "$SCEN" = dhook ] && [ -s "$CDIR/rig-error.txt" ] && [ ! -e "$CDIR/kill.tsv" ]; then
             echo "skyzfsd serve $k had ended (status $st), after the rig's own error in the case" >> "$CDIR/recovered.txt"
         else
             verdict daemon_serving "skyzfsd serve $k had ended (status $st) with no kill of the rig's: $(tail -n 2 "$(serve_log "$k")")"
@@ -679,13 +685,14 @@ agent_quiet() {
     fi
     session_end
     # A daemon that had ended with no kill of the rig's is a verdict, as
-    # in recover (G5 of #163's review); in a dhook case the rig's own
-    # error about its end comes first.
+    # in recover (G5 of #163's review). In a dhook case, until the hook's
+    # end is recorded (kill.tsv), the rig's own error about that end
+    # comes first; the instance served after it has no hook armed.
     if [ -n "$SERVE_PID" ] && ! kill -0 "$SERVE_PID" 2>/dev/null; then
         local k=$SERVE_K st=unknown
         if serve_end 5; then st=$SERVE_RC; fi
         SERVE_PID=""
-        if [ -n "$CDIR" ] && [ "$SCEN" = dhook ]; then
+        if [ -n "$CDIR" ] && [ "$SCEN" = dhook ] && [ ! -e "$CDIR/kill.tsv" ]; then
             log "$NAME: skyzfsd serve $k had ended (status $st) in a dhook case, after the rig's own error"
         else
             agent_daemon_wrong daemon_serving "skyzfsd serve $k had ended (status $st) with no kill of the rig's, seen after the rig's error: $(tail -n 2 "$(serve_log "$k")" 2>/dev/null)"
