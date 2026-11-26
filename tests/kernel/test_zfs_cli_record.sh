@@ -148,9 +148,10 @@ check "rebuild pattern: not a healing resilver" "$(printf '  scan: resilver in p
 unset -f zfs
 cat > "$T/bin/zfs" << 'FAKE'
 #!/bin/sh
-printf '%s %s\n' "${LC_ALL:-unset}" "$*"
-# Every call, when a log is given.
+# Every call, when a log is given: before the output, which can end
+# the fake (SIGPIPE, as zfs send's into a recv that does not read).
 [ -n "${FAKE_ZFS_CALLS:-}" ] && printf '%s\n' "$*" >> "$FAKE_ZFS_CALLS"
+printf '%s %s\n' "${LC_ALL:-unset}" "$*"
 [ "$1" = hold ] && [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
 [ "$1" = list ] && exit "${FAKE_LIST_RC:-0}"
 # The snapshot program's answer, when one is given.
