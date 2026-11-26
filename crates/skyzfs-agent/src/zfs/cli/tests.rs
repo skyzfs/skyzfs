@@ -558,6 +558,56 @@ fn the_datasets_read_make_the_manifests_members() {
     assert!(manifest.encode().is_ok());
 }
 
+/// `filesystem_count` and `snapshot_count` are counters, not settings,
+/// but libzfs gives them the source `local` wherever ZFS keeps them
+/// (once a limit is set on the dataset or above it), so `zfs get -s
+/// local` lists them; and `snapshot_count` grows with the take itself.
+/// They are left out, from the one pass and where the dataset is read
+/// again alone, and are not read alone (Codex on #157). Mutants: either
+/// counter kept, a counter read alone.
+#[test]
+fn the_counters_libzfs_calls_local_are_left_out() {
+    let pairs = "tank\tcompression\ntank\tsnapshot_count\ntank\tfilesystem_count\n\
+                 tank/db\tsnapshot_limit\ntank/db\tsnapshot_count\ntank/db\ta:b\n";
+    // In the one pass every value is plain.
+    let values = "tank\tcompression\tlz4\ntank\tsnapshot_count\t3\ntank\tfilesystem_count\t2\n\
+                  tank/db\tsnapshot_limit\t10\ntank/db\tsnapshot_count\t1\ntank/db\ta:b\tc\n";
+    let mut zfs = cli(manifest_reads(pairs, values.as_bytes()));
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]);
+    assert_eq!(
+        local_of(&datasets, "tank").keys().collect::<Vec<_>>(),
+        ["compression"]
+    );
+    assert_eq!(
+        local_of(&datasets, "tank/db").keys().collect::<Vec<_>>(),
+        ["a:b", "snapshot_limit"]
+    );
+
+    // tank/db's value of a:b holds a newline: tank/db is read again
+    // alone, and its counter is not read.
+    let values = "tank\tcompression\tlz4\ntank\tsnapshot_count\t3\ntank\tfilesystem_count\t2\n\
+                  tank/db\tsnapshot_limit\t10\ntank/db\tsnapshot_count\t1\ntank/db\ta:b\tc\nd\n";
+    let mut fake = manifest_reads(pairs, values.as_bytes());
+    fake.ok(&alone("snapshot_limit", "tank/db"), "10\n");
+    fake.ok(&alone("a:b", "tank/db"), "c\nd\n");
+    let mut zfs = cli(fake);
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(
+        zfs.host().words(),
+        [
+            LIST_WORDS.to_string(),
+            PAIRS_WORDS.to_string(),
+            VALUES_WORDS.to_string(),
+            alone("snapshot_limit", "tank/db"),
+            alone("a:b", "tank/db"),
+        ]
+    );
+    let db = local_of(&datasets, "tank/db");
+    assert_eq!(db.keys().collect::<Vec<_>>(), ["a:b", "snapshot_limit"]);
+    assert_eq!(db["a:b"], b"c\nd");
+}
+
 /// The local properties of `name` in `datasets`.
 fn local_of<'a>(datasets: &'a [Dataset], name: &str) -> &'a BTreeMap<String, Vec<u8>> {
     &datasets

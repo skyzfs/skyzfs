@@ -115,7 +115,10 @@
 //!   on a snapshot only the properties set on the snapshot itself
 //!   (`dsl_prop_get_ds` reads any other through the dataset's directory).
 //!   Only those set locally are carried, not received ones.
-//! - `skyzfs:assist`, the agent's own ([`ASSIST_PROPERTY`]), is left out.
+//! - `skyzfs:assist`, the agent's own ([`ASSIST_PROPERTY`]), is left out,
+//!   and so are `filesystem_count` and `snapshot_count`, which libzfs
+//!   calls local though they are counters, and which no read alone
+//!   fetches (`COUNTERS`).
 //! - A dataset that (2) or (3) names and (1) did not list was created
 //!   after the list: it is no member of the take, and is left out. The
 //!   engine's check reads the pool again after its take, and a pool that
@@ -733,13 +736,15 @@ impl<H: Host> Zfs for ZfsCli<H> {
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &get))))?;
         let values = self.zfs_bytes(&get_words(pool, VALUES), limit, true)?;
         let (mut read, again) = match_values(&pairs, &values);
-        for (name, property) in pairs.iter().filter(|(name, _)| again.contains(name)) {
+        let again = pairs
+            .iter()
+            .filter(|(name, property)| again.contains(name) && carried(property));
+        for (name, property) in again {
             let value = self.value(name, property)?;
             read.insert((name.clone(), property.clone()), value);
         }
         for ((name, property), value) in read {
-            // The agent's own property is not the pool's.
-            if property == ASSIST_PROPERTY {
+            if !carried(&property) {
                 continue;
             }
             // A dataset created after the list is not a member of the
@@ -1173,6 +1178,21 @@ fn member_order(pool: &str, a: &str, b: &str) -> std::cmp::Ordering {
 /// The most bytes a property's value can have: `ZFS_MAXPROPLEN` less
 /// its terminating NUL.
 pub const VALUE_MOST: usize = 8191;
+
+/// Properties that `zfs get -s local` lists but the manifest does not
+/// carry. `filesystem_count` and `snapshot_count` are counters, not
+/// settings: libzfs gives them the source `local` wherever ZFS keeps
+/// them (`get_numeric_property` in `libzfs_dataset.c`: "not default,
+/// must be local"), which it does once a limit is set on the dataset or
+/// above it. `snapshot_count` grows with the take itself, so that the
+/// reads before and after it would never agree (Codex on #157).
+const COUNTERS: [&str; 2] = ["filesystem_count", "snapshot_count"];
+
+/// Whether the manifest carries a property that `zfs get -s local`
+/// lists: not the agent's own (it is not the pool's), not a counter.
+fn carried(property: &str) -> bool {
+    property != ASSIST_PROPERTY && !COUNTERS.contains(&property)
+}
 
 /// The columns of `zfs get` that list the local properties.
 const PAIRS: &str = "name,property";
