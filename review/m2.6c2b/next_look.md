@@ -242,15 +242,15 @@ The full read, from the artifact's `scale-N-take-cli-full`:
     tests.
   - `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` for both crates:
     clean.
-- **CI on 0a19e1c**, as of 01:02 UTC: 28 checks passed, 3 were skipped,
-  none failed, and 8 were still running.
+- **CI on 0a19e1c**, as of 01:10 UTC: 29 checks passed, 3 were skipped,
+  none failed, and 7 were still running. The replay rig's product-layout
+  reference job passed at about 01:05.
   - **Passed:** ci (lint, test, unit-arm64, s3-backends, chart-lint),
     e2e, k3s-smoke, skyzfs-ci, the publish rig, cut-daemon, and the
     replay rig's jobs through skyzfsd and write-into-a-hole.
   - **Still running:**
     - coverage;
-    - the replay rig's two reference jobs (product and whole-pool
-      layouts);
+    - the replay rig's whole-pool reference job;
     - the daemon rig (run 45731580101) on the daemon (24.04, 26.04,
       26.04-arm) and on the stand-in (24.04, 26.04).
   - **Why the stand-in and the reference replay jobs run this time.** The
