@@ -217,12 +217,20 @@
 //!   are, with a tab between the columns and a newline after each line.
 //! - The time limits ([`Limits`]), all provisional (the lead's rules on
 //!   M2.6c-2b and on N2 of #153's review):
-//!   - each of the manifest's three reads ([`Zfs::datasets`]): 60 s plus
+//!   - each of the manifest's two gets ([`Zfs::datasets`]): 60 s plus
 //!     200 ms for each of the pool's datasets as last counted, at most 35
 //!     minutes; a value read alone is a read as below;
+//!   - the manifest's list, which lists every snapshot as well: the
+//!     same, with each snapshot counted as a dataset (R1 of #157's
+//!     review, the lead's ruling);
 //!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
 //!     dataset counted, at most 20 minutes;
-//!   - the count itself 60 s; a count that fails leaves the bases.
+//!   - the count itself 60 s; a count that fails leaves the bases. After
+//!     a dataset count, `zfs list -r -H -o name -t snapshot` counts the
+//!     snapshots, within a read's limit. Where that fails, the list takes
+//!     the gets' limit: the conservative reading (the design is silent),
+//!     which gives no longer a limit than before on a pool whose commands
+//!     fail, and the list's own failure then names the read each round.
 //!
 //!   They come from testing's recordings on Ubuntu 26.04 (run
 //!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
@@ -278,8 +286,9 @@ pub const PROGRAM_MEMORY: u64 = 100 << 20;
 /// takes [`Limits::per_dataset`] more for each of the pool's datasets as
 /// [`Zfs::count`] last read them, up to [`Limits::most`]; each of the
 /// manifest's reads take [`Limits::full_per_dataset`] more, up to
-/// [`Limits::full_most`] (the lead's rules on M2.6c-2b and on N2 of
-/// #153's review; provisional; [module docs](self)).
+/// [`Limits::full_most`], and its list as much again for each snapshot
+/// counted (the lead's rules on M2.6c-2b, on N2 of #153's review and on
+/// R1 of #157's; provisional; [module docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// A command that reads, on a pool of no datasets: `zpool status`,
@@ -294,7 +303,8 @@ pub struct Limits {
     /// The most a read or a change is let run, however many datasets.
     pub most: Duration,
     /// What each of the pool's datasets adds to each of the manifest's
-    /// reads ([`Zfs::datasets`]), whose base is [`Limits::read`]. It was
+    /// reads ([`Zfs::datasets`]), whose base is [`Limits::read`], and
+    /// what each snapshot adds to its list. It was
     /// set at about twice the 90 ms a dataset the members program in full
     /// took on Ubuntu 26.04 (testing's run 45720225770), which the
     /// manifest's reads replaced; it is kept (the lead's ruling on
@@ -333,8 +343,23 @@ enum Scale {
     /// pool that holds every command (the lead's ruling on N2 of #153's
     /// review, which reverses the longest limits first ruled).
     Base,
-    /// The pool's datasets as last counted.
-    Datasets(u64),
+    /// The pool's datasets as last counted, and its snapshots where
+    /// they were counted too.
+    Counted {
+        /// File systems and volumes.
+        datasets: u64,
+        /// Snapshots; `None` where their count failed.
+        snapshots: Option<u64>,
+    },
+}
+
+/// `base` and `per` more for each of `n`, at most `most`.
+fn grown(base: Duration, per: Duration, most: Duration, n: u64) -> Duration {
+    let more = u32::try_from(n)
+        .ok()
+        .and_then(|n| per.checked_mul(n))
+        .unwrap_or(most);
+    base.saturating_add(more).min(most)
 }
 
 /// [`Zfs`] on the commands ([module docs](self)).
@@ -358,17 +383,10 @@ impl<H: Host> ZfsCli<H> {
     /// The limit of a command whose base is `base`, `per` more for each
     /// dataset counted, at most `most` ([`Limits`]).
     fn scaled(&self, base: Duration, per: Duration, most: Duration) -> Duration {
-        let limit = match self.scale {
-            Scale::Base => base,
-            Scale::Datasets(n) => {
-                let more = u32::try_from(n)
-                    .ok()
-                    .and_then(|n| per.checked_mul(n))
-                    .unwrap_or(most);
-                base.saturating_add(more)
-            }
-        };
-        limit.min(most)
+        match self.scale {
+            Scale::Base => base.min(most),
+            Scale::Counted { datasets, .. } => grown(base, per, most, datasets),
+        }
     }
 
     /// The limit of a command that reads.
@@ -383,10 +401,32 @@ impl<H: Host> ZfsCli<H> {
         self.scaled(l.change, l.per_dataset, l.most)
     }
 
-    /// The limit of each of the manifest's reads ([`Zfs::datasets`]).
+    /// The limit of each of the manifest's two gets ([`Zfs::datasets`]).
     fn full_read_limit(&self) -> Duration {
         let l = &self.limits;
         self.scaled(l.read, l.full_per_dataset, l.full_most)
+    }
+
+    /// The limit of the manifest's list ([`Zfs::datasets`]), which lists
+    /// every snapshot in the pool as well as its datasets: each snapshot
+    /// counted adds what a dataset does (R1 of #157's review, the lead's
+    /// ruling). Where the snapshots' count failed, the datasets' scale:
+    /// the conservative reading, no longer a limit than before on a pool
+    /// whose commands fail.
+    fn list_limit(&self) -> Duration {
+        let l = &self.limits;
+        match self.scale {
+            Scale::Counted {
+                datasets,
+                snapshots: Some(snapshots),
+            } => grown(
+                l.read,
+                l.full_per_dataset,
+                l.full_most,
+                datasets.saturating_add(snapshots),
+            ),
+            _ => self.full_read_limit(),
+        }
     }
 
     /// `zfs` with `args` within `limit`: its output's bytes where it
@@ -723,11 +763,29 @@ impl<H: Host> Zfs for ZfsCli<H> {
         let counted = self
             .run("zfs", &args, &[], self.limits.count, false)
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
-        self.scale = match counted {
-            Ok(n) => Scale::Datasets(n),
-            Err(_) => Scale::Base,
+        let datasets = match counted {
+            Ok(n) => n,
+            Err(e) => {
+                self.scale = Scale::Base;
+                return Err(e);
+            }
         };
-        counted
+        self.scale = Scale::Counted {
+            datasets,
+            snapshots: None,
+        };
+        // The snapshots, for the list's limit alone, within a read's
+        // limit on the datasets' scale.
+        let args = ["list", "-r", "-H", "-o", "name", "-t", "snapshot", pool];
+        let snapshots = self
+            .run("zfs", &args, &[], self.read_limit(), false)
+            .ok()
+            .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        self.scale = Scale::Counted {
+            datasets,
+            snapshots,
+        };
+        Ok(datasets)
     }
 
     fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
@@ -746,7 +804,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         let limit = self.full_read_limit();
         let list = list_words(pool);
-        let listed = self.zfs_bytes(&list, limit, Some(pool))?;
+        let listed = self.zfs_bytes(&list, self.list_limit(), Some(pool))?;
         let mut datasets = parse_listed(&listed, pool, t)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
         let get = get_words(pool, PAIRS);

@@ -608,6 +608,32 @@ fn the_counters_libzfs_calls_local_are_left_out() {
     assert_eq!(db["a:b"], b"c\nd");
 }
 
+/// A person's properties named like the counters are settings and are
+/// kept: only the two counters' exact names are left out (T5 of #157's
+/// review). Mutants: a filter widened to names that end `_count`, or
+/// that contain a counter's name.
+#[test]
+fn a_persons_properties_named_like_the_counters_are_kept() {
+    let pairs = "tank\tcom.example:snapshot_count\ntank\tx:filesystem_count\n\
+                 tank\tsnapshot_count\ntank\tx:y_count\n";
+    let values = "tank\tcom.example:snapshot_count\t7\ntank\tx:filesystem_count\t8\n\
+                  tank\tsnapshot_count\t3\ntank\tx:y_count\t9\n";
+    let mut zfs = cli(manifest_reads(pairs, values.as_bytes()));
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]);
+    let tank = local_of(&datasets, "tank");
+    assert_eq!(
+        tank.keys().collect::<Vec<_>>(),
+        [
+            "com.example:snapshot_count",
+            "x:filesystem_count",
+            "x:y_count"
+        ]
+    );
+    assert_eq!(tank["com.example:snapshot_count"], b"7");
+    assert_eq!(tank["x:filesystem_count"], b"8");
+}
+
 /// The local properties of `name` in `datasets`.
 fn local_of<'a>(datasets: &'a [Dataset], name: &str) -> &'a BTreeMap<String, Vec<u8>> {
     &datasets
@@ -835,6 +861,7 @@ fn a_value_that_cannot_be_read_alone_fails_the_read() {
 fn a_value_read_alone_takes_a_reads_limit() {
     let mut fake = manifest_reads("tank\ta:nl\n", b"tank\ta:nl\tx\ny\n");
     fake.ok(COUNT, &listed(1000));
+    fake.ok(SNAPSHOTS, "");
     fake.ok(&alone("a:nl", "tank"), "x\ny\n");
     let mut zfs = cli(fake);
     assert_eq!(zfs.count("tank"), Ok(1000));
@@ -844,7 +871,7 @@ fn a_value_read_alone_takes_a_reads_limit() {
     let limits: Vec<Duration> = zfs.host().ran.iter().map(|r| r.limit).collect();
     let full = base.read + base.full_per_dataset * 1000;
     let read = base.read + base.per_dataset * 1000;
-    assert_eq!(limits, [base.count, full, full, full, read]);
+    assert_eq!(limits, [base.count, read, full, full, full, read]);
 }
 
 /// A tiny generator of the tests' worlds (xorshift64).
@@ -1553,6 +1580,7 @@ fn the_programs_only_read_and_call_what_the_sandbox_has() {
 }
 
 const COUNT: &str = "zfs list -r -H -o name -t filesystem,volume tank";
+const SNAPSHOTS: &str = "zfs list -r -H -o name -t snapshot tank";
 
 /// `n` datasets as `zfs list -r -H -o name` lists them.
 fn listed(n: usize) -> String {
@@ -1594,6 +1622,7 @@ fn the_limits_grow_with_the_datasets_counted() {
     fake.ok(LIST_WORDS, LISTED);
     fake.ok(PAIRS_WORDS, PAIRS);
     fake.ok(VALUES_WORDS, VALUES);
+    fake.ok(SNAPSHOTS, "");
     let mut zfs = cli(fake);
     let limits = |zfs: &mut ZfsCli<Fake>| {
         zfs.host().ran.clear();
@@ -1683,8 +1712,9 @@ fn the_limits_grow_with_the_datasets_counted() {
         zfs.host().ok(COUNT, &listed(n as usize));
         zfs.host().ran.clear();
         assert_eq!(zfs.count("tank"), Ok(n));
-        assert_eq!(zfs.host().words(), [COUNT]);
+        assert_eq!(zfs.host().words(), [COUNT, SNAPSHOTS]);
         assert_eq!(zfs.host().ran[0].limit, base.count, "{n}");
+        assert_eq!(zfs.host().ran[1].limit, read, "{n}");
         assert_eq!(limits(&mut zfs), (change, read, full), "{n}");
     }
     zfs.host().commands.remove(COUNT);
@@ -1696,7 +1726,9 @@ fn the_limits_grow_with_the_datasets_counted() {
         1,
         "cannot open 'tank': pool I/O is currently suspended\n",
     );
+    zfs.host().ran.clear();
     assert!(zfs.count("tank").is_err());
+    assert_eq!(zfs.host().words(), [COUNT], "no snapshots counted");
     assert_eq!(
         limits(&mut zfs),
         (base.change, base.read, base.read),
@@ -1714,4 +1746,73 @@ fn the_limits_grow_with_the_datasets_counted() {
         ),
         "counted again"
     );
+}
+
+/// R1 of #157's review, the lead's ruling (a): `zfs list` in the
+/// manifest's read lists every snapshot in the pool, so its limit grows
+/// with the snapshots counted as well as the datasets: the count also
+/// counts the snapshots (`zfs list -r -H -o name -t snapshot`, within a
+/// read's limit), and the list takes [`Limits::full_per_dataset`] for
+/// each dataset and each snapshot, at most [`Limits::full_most`]. The
+/// two gets, which read only file systems and volumes, and every other
+/// command keep the datasets' scale. A snapshot count that fails leaves
+/// the list on the datasets' scale (the conservative reading: no longer
+/// limit than before on a pool whose commands fail), and the count of
+/// the datasets stands. Mutants: the snapshots not counted, counted but
+/// not added, added to the gets or to the other commands, the list not
+/// capped, a failed snapshot count failing the count or setting the
+/// bases, the snapshot count within the count's own limit.
+#[test]
+fn the_lists_limit_grows_with_the_snapshots_counted() {
+    let base = Limits::default();
+    let at = |n: u64, per_ms: u64| base.read + Duration::from_millis(per_ms * n);
+    let snapshots = |n: usize| -> String { (0..n).map(|i| format!("tank@s{i}\n")).collect() };
+    let mut fake = Fake::default();
+    fake.ok(COUNT, &listed(10));
+    fake.ok(LIST_WORDS, LISTED);
+    fake.ok(PAIRS_WORDS, PAIRS);
+    fake.ok(VALUES_WORDS, VALUES);
+    fake.ok(HOLDS_R, "");
+    let mut zfs = cli(fake);
+    // (snapshots listed, the list's limit)
+    for (m, list) in [
+        (0, at(10, 200)),
+        (1, at(11, 200)),
+        (990, at(1000, 200)),
+        (20_000, at(20_010, 200)),
+        // 60 s + 200 ms × 10 500 is past 35 minutes.
+        (10_490, base.full_most),
+        (1_000_000, base.full_most),
+    ] {
+        zfs.host().commands.remove(SNAPSHOTS);
+        zfs.host().ok(SNAPSHOTS, &snapshots(m));
+        zfs.host().ran.clear();
+        assert_eq!(zfs.count("tank"), Ok(10), "{m}");
+        assert_eq!(zfs.host().words(), [COUNT, SNAPSHOTS], "{m}");
+        assert_eq!(zfs.host().ran[1].limit, at(10, 100), "{m}");
+        zfs.host().ran.clear();
+        let _ = zfs.datasets("tank", "skz-1");
+        let _ = zfs.held("tank", "skz-1", "skyzfs-publish", Some(&[]));
+        let ran = &zfs.host().ran;
+        let words: Vec<&str> = ran.iter().map(|r| r.words.as_str()).collect();
+        assert_eq!(
+            words,
+            [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS, HOLDS_R],
+            "{m}"
+        );
+        assert_eq!(ran[0].limit, list.min(base.full_most), "{m}");
+        assert_eq!(ran[1].limit, at(10, 200), "{m}");
+        assert_eq!(ran[2].limit, at(10, 200), "{m}");
+        assert_eq!(ran[3].limit, at(10, 100), "{m}");
+    }
+    zfs.host().commands.remove(SNAPSHOTS);
+    zfs.host()
+        .fails(SNAPSHOTS, 1, "cannot iterate filesystems: I/O error\n");
+    assert_eq!(zfs.count("tank"), Ok(10), "a failed snapshot count");
+    zfs.host().ran.clear();
+    let _ = zfs.datasets("tank", "skz-1");
+    let ran = &zfs.host().ran;
+    assert_eq!(ran[0].words, LIST_WORDS);
+    assert_eq!(ran[0].limit, at(10, 200), "the datasets' scale");
+    assert_eq!(ran[1].limit, at(10, 200));
 }

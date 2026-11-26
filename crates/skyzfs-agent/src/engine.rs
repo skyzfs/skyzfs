@@ -1094,11 +1094,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// datasets read, `zfs snapshot -r`, and the take adopted
     /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
-        // The give-up at the last failed check was decided, and its take
-        // destroyed, before a stop: no take is asked again (D2 of #153's
-        // next look). The datasets that broke it are not known now: the
-        // report's list is empty, as it is where the members differ from
-        // the reading only in their count ([`Report::NotWhole`]).
+        // The give-up at the last failed check was decided before a stop:
+        // no take is asked again (D2 of #153's next look). Its take was
+        // destroyed before the stop, or by this process, which found it
+        // whole with no reading from before it ([`Agent::adopt`] then
+        // retakes without a count; N3 of #157's review). The datasets
+        // that broke it are not known now: the report's list is empty, as
+        // it is where the members differ from the reading only in their
+        // count ([`Report::NotWhole`]).
         if self
             .record
             .publish(name)
