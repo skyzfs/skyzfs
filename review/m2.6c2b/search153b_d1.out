@@ -1,0 +1,452 @@
+=== sn_
+SN never whole: outcomes [("skz-20261125T010010Z", Abandoned(NotWhole))] reports [("skz-20261125T010010Z", NotWhole(["tank/vol"]))] takes [(0, 1795568400000), (0, 1795568410000), (0, 1795568420000)] judge Ok(())
+SN not as before at every take: outcomes [("skz-20261125T010010Z", Abandoned(NotWhole))] reports [("skz-20261125T010010Z", NotWhole(["tank/db"]))] takes [(0, 1795568400000), (0, 1795568410000), (0, 1795568420000)] judge Ok(())
+SN a dataset created before every take: outcomes [("skz-20261125T010010Z", Abandoned(NotWhole))] reports [("skz-20261125T010010Z", NotWhole(["tank/new3"]))] takes [(0, 1795568400000), (0, 1795568410000), (0, 1795568420000)] judge Ok(())
+.
+=== sl_restart_loops
+SL never whole, late None, 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 20, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 2, "none": 3}; takes per run {0: 3, 3: 18, 4: 10, 5: 1, 239: 1, 240: 1}; most processes 241; least gap between takes in a process (no person, no late take) Some(10000) ms; 0 panics
+  least gap e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: true, every_take: None, loop_stop: Some(12) }: takes [(0, 1795568400000), (1, 1795568430000), (1, 1795568440000), (2, 1795568470000)]
+  judged wrong (judge_d1): 0 runs
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 5 takes in 3 processes, k=16 (Abandoned(NotWhole) stopped at Some(Point { effect: Abandon, after: false }))
+SL never whole, late Some(0), 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 20, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 2, "none": 3}; takes per run {0: 3, 3: 18, 4: 10, 5: 1, 239: 1, 240: 1}; most processes 241; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 0 runs
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 5 takes in 3 processes, k=16 (Abandoned(NotWhole) stopped at Some(Point { effect: Abandon, after: false }))
+SL never whole, late Some(2), 36 points (0 s): 36 runs; last outcomes {"Abandoned(NotWhole)": 22, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 2, "none": 3}; takes per run {0: 3, 3: 19, 4: 11, 6: 1, 238: 1, 239: 1}; most processes 241; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 0 runs
+    most takes: 239 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 238 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 6 takes in 4 processes, k=12 (Abandoned(NotWhole) stopped at Some(Point { effect: Take, after: false }))
+SL not as before at every take, late None, 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 3, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 15, 5: 3, 120: 2, 239: 1, 240: 1}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 4 runs
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(4) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025900Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (create
+    2 x REPORT NotWhole(["tank/db"]) for # which ended None | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(14) }: REPORT NotWhole(["tank/db"]) for skz-20261125T010040Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010040Z", NotWhole(["tank/db"])), ("skz-20261125T010120Z", NotWhole(["tank/db"]))]
+    takes [(0, 1795568400000), (1, 1795568440000), (1, 1795568450000), (2, 1795568480000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | 0: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself 
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 120 takes in 242 processes, k=3 (none stopped at Some(Point { effect: Unlink, after: true }))
+SL not as before at every take, late Some(0), 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 3, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 15, 5: 3, 120: 2, 239: 1, 240: 1}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 4 runs
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(4) }: skz-20261125T025901Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025901Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568491000), (5, 1795568551000), (7, 1795568611000), (9, 1795568671000), (11, 1795568731000), (13, 1795568791000), (15, 1795568851000), (17, 1795568911000), (19, 1795568971000), (21, 1795569031000), (23, 1795569091000), (25, 1795569151000), (27, 1795569211000), (29, 1795569271000), (31, 1795569331000), (33, 1795569391000), (35, 1795569451000), (37, 17955695110
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (cre
+    2 x REPORT NotWhole(["tank/db"]) for # which ended None | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(14) }: REPORT NotWhole(["tank/db"]) for skz-20261125T010041Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010041Z", NotWhole(["tank/db"])), ("skz-20261125T010121Z", NotWhole(["tank/db"]))]
+    takes [(0, 1795568400000), (1, 1795568441000), (1, 1795568451000), (2, 1795568481000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 comm
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 120 takes in 242 processes, k=3 (none stopped at Some(Point { effect: Unlink, after: true }))
+SL not as before at every take, late Some(2), 36 points (0 s): 36 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 5, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 14, 5: 3, 6: 1, 120: 2, 238: 1, 239: 1, 240: 2}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 7 runs
+    2 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(4) }: skz-20261125T025901Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025901Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568491000), (5, 1795568551000), (7, 1795568611000), (9, 1795568671000), (11, 1795568731000), (13, 1795568791000), (15, 1795568851000), (17, 1795568911000), (19, 1795568971000), (21, 1795569031000), (23, 1795569091000), (25, 1795569151000), (27, 1795569211000), (29, 1795569271000), (31, 1795569331000), (33, 1795569391000), (35, 1795569451000), (37, 17955695110
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Take, after: true })) | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(9) }: skz-20261125T025931Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T025931Z", Abandoned(TooOld))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568431000), (2, 1795568461000), (3, 1795568491000), (4, 1795568521000), (5, 1795568551000), (6, 1795568581000), (7, 1795568611000), (8, 1795568641000), (9, 1795568671000), (10, 1795568701000), (11, 1795568731000), (12, 1795568761000), (13, 1795568791000), (14, 1795568821000), (15, 1795568851000), (16, 1795568881000), (17, 1795568911000), (18, 1795568941000), 
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (cre
+    3 x REPORT NotWhole(["tank/db"]) for # which ended None | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(SetProperty), loop_stop: Some(14) }: REPORT NotWhole(["tank/db"]) for skz-20261125T010031Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010031Z", NotWhole(["tank/db"])), ("skz-20261125T010111Z", NotWhole(["tank/db"]))]
+    takes [(0, 1795568400000), (1, 1795568431000), (1, 1795568441000), (2, 1795568471000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user SetProperty skz-20261125T010000Z | 0: group 6 (set): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 c
+    most takes: 240 takes in 241 processes, k=10 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: false }))
+    most takes: 240 takes in 241 processes, k=9 (Abandoned(TooOld) stopped at Some(Point { effect: Take, after: true }))
+    most takes: 239 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+SL a dataset created before every take, late None, 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 3, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 15, 5: 3, 120: 2, 239: 1, 240: 1}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 4 runs
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(4) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025900Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (created): cu
+    2 x REPORT # for # which ended None | destroy_mode 0 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(14) }: REPORT NotWhole(["tank/new3"]) for skz-20261125T010040Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010040Z", NotWhole(["tank/new3"])), ("skz-20261125T010120Z", NotWhole(["tank/new4"]))]
+    takes [(0, 1795568400000), (1, 1795568440000), (1, 1795568450000), (2, 1795568480000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | 0: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committed | 10000: group 10 (busy): cut 6 group 10 itself tru
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 120 takes in 242 processes, k=3 (none stopped at Some(Point { effect: Unlink, after: true }))
+SL a dataset created before every take, late Some(0), 34 points (0 s): 34 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 3, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 15, 5: 3, 120: 2, 239: 1, 240: 1}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 panics
+  judged wrong (judge_d1): 4 runs
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(4) }: skz-20261125T025901Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025901Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568491000), (5, 1795568551000), (7, 1795568611000), (9, 1795568671000), (11, 1795568731000), (13, 1795568791000), (15, 1795568851000), (17, 1795568911000), (19, 1795568971000), (21, 1795569031000), (23, 1795569091000), (25, 1795569151000), (27, 1795569211000), (29, 1795569271000), (31, 1795569331000), (33, 1795569391000), (35, 1795569451000), (37, 17955695110
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (created):
+    2 x REPORT # for # which ended None | destroy_mode 0 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(14) }: REPORT NotWhole(["tank/new3"]) for skz-20261125T010041Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010041Z", NotWhole(["tank/new3"])), ("skz-20261125T010121Z", NotWhole(["tank/new4"]))]
+    takes [(0, 1795568400000), (1, 1795568441000), (1, 1795568451000), (2, 1795568481000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 0: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 committ
+    most takes: 240 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+    most takes: 239 takes in 241 processes, k=5 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: true }))
+    most takes: 120 takes in 242 processes, k=3 (none stopped at Some(Point { effect: Unlink, after: true }))
+SL a dataset created before every take, late Some(2), 36 points (0 s): 36 runs; last outcomes {"Abandoned(NotWhole)": 18, "Abandoned(NotWhole) (record)": 9, "Abandoned(TooOld)": 5, "Abandoned(TooOld) (record)": 1, "none": 3}; takes per run {0: 3, 3: 9, 4: 14, 5: 3, 6: 1, 120: 2, 238: 1, 239: 1, 240: 2}; most processes 242; least gap between takes in a process (no person, no late take) None ms; 0 p
+  judged wrong (judge_d1): 7 runs
+    2 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false } | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(4) }: skz-20261125T025901Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T025901Z", Abandoned(TooOld))]
+    reports []
+    takes [(1, 1795568430000), (3, 1795568491000), (5, 1795568551000), (7, 1795568611000), (9, 1795568671000), (11, 1795568731000), (13, 1795568791000), (15, 1795568851000), (17, 1795568911000), (19, 1795568971000), (21, 1795569031000), (23, 1795569091000), (25, 1795569151000), (27, 1795569211000), (29, 1795569271000), (31, 1795569331000), (33, 1795569391000), (35, 1795569451000), (37, 17955695110
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Take, after: true })) | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(9) }: skz-20261125T025931Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T025931Z", Abandoned(TooOld))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568431000), (2, 1795568461000), (3, 1795568491000), (4, 1795568521000), (5, 1795568551000), (6, 1795568581000), (7, 1795568611000), (8, 1795568641000), (9, 1795568671000), (10, 1795568701000), (11, 1795568731000), (12, 1795568761000), (13, 1795568791000), (14, 1795568821000), (15, 1795568851000), (16, 1795568881000), (17, 1795568911000), (18, 1795568941000), 
+    1 x # given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true })) | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(3) }: skz-20261125T025900Z given up as TooOld, which the world does not confirm (survived true, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(1, 1795568430000), (3, 1795568490000), (5, 1795568550000), (7, 1795568610000), (9, 1795568670000), (11, 1795568730000), (13, 1795568790000), (15, 1795568850000), (17, 1795568910000), (19, 1795568970000), (21, 1795569030000), (23, 1795569090000), (25, 1795569150000), (27, 1795569210000), (29, 1795569270000), (31, 1795569330000), (33, 1795569390000), (35, 1795569450000), (37, 17955695100
+    log: 0: group 5 (created):
+    3 x REPORT # for # which ended None | destroy_mode 0 act None late Some(2)
+      e.g. Knobs { mode: Busy, late: Some(2), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: false, every_take: Some(NewDs), loop_stop: Some(14) }: REPORT NotWhole(["tank/new3"]) for skz-20261125T010031Z, which ended None
+    outcomes []
+    reports [("skz-20261125T010031Z", NotWhole(["tank/new3"])), ("skz-20261125T010111Z", NotWhole(["tank/new4"]))]
+    takes [(0, 1795568400000), (1, 1795568431000), (1, 1795568441000), (2, 1795568471000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | user NewDs skz-20261125T010000Z | 0: group 6 (create): cut 2 group 6 itself true | 1000: group 7 (snapshot): cut 3 group 7 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 8 (destroy): cut 4 group 8 itself true | agent destroy -r skz-20261125T010000Z | 5000: group 9 (busy): cut 5 group 9 itself true | cut 1 comm
+    most takes: 240 takes in 241 processes, k=10 (Abandoned(TooOld) stopped at Some(Point { effect: Destroy, after: false }))
+    most takes: 240 takes in 241 processes, k=9 (Abandoned(TooOld) stopped at Some(Point { effect: Take, after: true }))
+    most takes: 239 takes in 241 processes, k=6 (Abandoned(TooOld) stopped at Some(Point { effect: Intent, after: false }))
+.
+=== sd1_
+SD1 (0 s): 4258 runs; last outcomes {"Abandoned(ManifestLost)": 270, "Abandoned(ManifestLost) (record)": 60, "Abandoned(NotWhole)": 3276, "Abandoned(NotWhole) (record)": 30, "Abandoned(Premise)": 256, "Published": 276, "none": 90}; takes per run {0: 130, 1: 250, 2: 344, 3: 2012, 4: 1472, 5: 50}; most processes 2; least gap between takes in a process (no person, no late take) Some(10000) ms; 0 pani
+  least gap e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: takes [(0, 1795568400000), (0, 1795568410000), (0, 1795568420000)]
+  judged wrong (judge_d1): 140 runs
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None) | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 0: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch)
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None) | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch)
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None) | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch)
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None) | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch)
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None) | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at None)
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch)
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after:  | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(10), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 0: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself true | cut 1 committed | 10000: group 9 (busy): cut 5 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after:  | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(10), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after:  | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(10), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after:  | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(14), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after:  | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(14), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Abandon, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after:  | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(8), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself true | cut 4 committed | 25000: group 11 (busy): cut 7 g
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after:  | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(8), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself true 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after:  | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(8), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself tr
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after:  | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(12), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself tr
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after:  | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(12), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Destroy, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself tr
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: f | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(4), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: f | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(4), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: f | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(4), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: f | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(4), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: f | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(4), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: t | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(3), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: t | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(3), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: t | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(3), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    6 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: t | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(3), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    6 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: t | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(3), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Intent, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: fal | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(6), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: fal | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(6), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: fal | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(6), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: fal | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(6), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: fal | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(6), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: false }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000), (1, 1795568431000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: tru | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(7), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself true | cut 4 committed | 25000: group 11 (busy): cut 7 g
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: tru | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(7), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 5000: group 7 (busy): cut 3 group 7 itself true | cut 1 committed | 10000: group 8 (busy): cut 4 group 8 itself true | cut 3 committed | 15000: group 9 (busy): cut 5 group 9 itself true | 20000: group 10 (busy): cut 6 group 10 itself true 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: tru | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(7), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: tru | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(7), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    4 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: tru | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(7), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Take, after: true }))
+    outcomes [("skz-20261125T010000Z", Abandoned(ManifestLost))]
+    reports []
+    takes [(0, 1795568400000), (1, 1795568430000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 5000: group 6 (busy): cut 2 group 6 itself true | cut 1 committed | 10000: group 7 (busy): cut 3 group 7 itself true | cut 2 committed | 15000: group 8 (busy): cut 4 group 8 itself true | 20000: group 9 (busy): cut 5 group 9 itself true | cut 3 committed | 25000: group 10 (busy): cut 6 group 10 itself true | cut 5 committed | 30000: group 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: f | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(12), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: false }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 0: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself true | cut 1 committed | 10000: group 9 (busy): cut 5 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: f | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(12), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: false }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: f | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(12), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: false }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: f | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(16), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: false }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: f | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(16), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: false }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: t | destroy_mode 2 act None late None
+      e.g. Knobs { mode: Busy, late: None, on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(13), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | 0: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself true | cut 1 committed | 10000: group 9 (busy): cut 5 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: t | destroy_mode 2 act None late Some(0)
+      e.g. Knobs { mode: Busy, late: Some(0), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(13), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 0: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itself 
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: t | destroy_mode 2 act None late Some(1)
+      e.g. Knobs { mode: Busy, late: Some(1), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(13), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: t | destroy_mode 2 act None late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(17), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: t | destroy_mode 2 act None late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 2, act: None, stop: Some(17), skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z given up as ManifestLost, which the world does not confirm (survived false, premise true, stopped at Some(Point { effect: Unlink, after: true }))
+    outcomes []
+    reports []
+    takes [(0, 1795568400000), (0, 1795568401000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | 1000: group 7 (destroy): cut 3 group 7 itself true | scratch: destroy -r skz-20261125T010000Z went through: Ok(()) | agent destroy -r skz-20261125T010000Z refused: killed at its limit (scratch) | 5000: group 8 (busy): cut 4 group 8 itse
+    2 x # neither published nor given up | destroy_mode 0 act Some(Destroy) late Some(3)
+      e.g. Knobs { mode: Busy, late: Some(3), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((11, Destroy)), stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z neither published nor given up
+    outcomes [("skz-20261125T010011Z", Abandoned(NotWhole))]
+    reports [("skz-20261125T010011Z", NotWhole(["tank/vol"]))]
+    takes [(0, 1795568400000), (0, 1795568401000), (0, 1795568401000), (0, 1795568411000), (0, 1795568421000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user Destroy skz-20261125T010000Z | 1000: group 7 (destroy): cut 3 group 7 itself true | 1000: group 8 (snapshot): cut 4 group 8 itself true | 1000: group 9 (destroy): cut 5 group 9 itself true | agent destroy -r skz-20261125T010001Z | 
+    2 x # neither published nor given up | destroy_mode 0 act Some(Destroy) late Some(9)
+      e.g. Knobs { mode: Busy, late: Some(18446744073709551615), on_land: None, snap_fail: false, ds_fail: None, destroy_mode: 0, act: Some((11, Destroy)), stop: None, skip: true, every_take: None, loop_stop: None }: skz-20261125T010000Z neither published nor given up
+    outcomes [("skz-20261125T010011Z", Abandoned(NotWhole))]
+    reports [("skz-20261125T010011Z", NotWhole(["tank/vol"]))]
+    takes [(0, 1795568400000), (0, 1795568401000), (0, 1795568401000), (0, 1795568411000), (0, 1795568421000)]
+    log: 0: group 5 (created): cut 1 group 5 itself true | 1000: group 6 (snapshot): cut 2 group 6 itself true | late take of skz-20261125T010000Z landed: Ok(()) | user Destroy skz-20261125T010000Z | 1000: group 7 (destroy): cut 3 group 7 itself true | 1000: group 8 (snapshot): cut 4 group 8 itself true | 1000: group 9 (destroy): cut 5 group 9 itself true | agent destroy -r skz-20261125T010001Z | 
+.

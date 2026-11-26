@@ -1,0 +1,34 @@
+{"id": "P2", "what": "as_before: the GUID compare dropped", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s"]}
+{"id": "P3", "what": "as_before: the name compare dropped", "result": "KILLED", "by": ["engine::tests::a_dataset_renamed_after_the_take_has_it_taken_again"]}
+{"id": "P5", "what": "as_before: the count of datasets not compared", "result": "KILLED", "by": ["engine::tests::a_dataset_destroyed_after_the_take_has_it_taken_again"]}
+{"id": "P6", "what": "as_before: the type not compared", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.80s"]}
+{"id": "P7", "what": "take(): no early return where the reading shows pool@t", "result": "KILLED", "by": ["engine::tests::a_late_take_landing_at_any_call_publishes_its_truth"]}
+{"id": "P8", "what": "rename(): the reading before the old name's take kept", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.71s"]}
+{"id": "D1a", "what": "no bound (the loop of the review)", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1b", "what": "the bound one more", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1c", "what": "the bound one fewer", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1d", "what": "no pause (the deadline never set)", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check"]}
+{"id": "D1e", "what": "a pause of 1 s", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check"]}
+{"id": "D1f", "what": "the pause ignored in take", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept"]}
+{"id": "D1g", "what": "the last take kept (not destroyed at the give-up)", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept"]}
+{"id": "D1h", "what": "no report at the give-up", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept"]}
+{"id": "D1i", "what": "a failed destroy at the give-up taken for done", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept"]}
+{"id": "D1j", "what": "the failed checks not counted in the record", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1k", "what": "every retake counted (a take with no reading too)", "result": "KILLED", "by": ["engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1l", "what": "a take not whole with no reading in this process not counted", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.83s"]}
+{"id": "D1m", "what": "the report of a take not as before names nothing", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.75s"]}
+{"id": "D1n", "what": "differing(): the datasets read before and missing from the take not named", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.79s"]}
+{"id": "D1o", "what": "the count read from the stalls, not attempts", "result": "KILLED", "by": ["engine::tests::a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept", "engine::tests::a_take_never_whole_is_given_up_at_the_third_failed_check", "engine::tests::a_take_retaken_after_a_restart_is_not_counted_as_failed"]}
+{"id": "D1p", "what": "the give-up's report made after the abandon (lost on a stop between)", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.91s"]}
+{"id": "D1q", "what": "taken(): only the first dataset that breaks the take named", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.74s"]}
+{"id": "D1r", "what": "the pause applied to every take, not only after a failed check", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.86s"]}
+{"id": "D1s", "what": "a retake for no reading keeps the failed checks' pause off (pause reset)", "result": "SURVIVED", "tests": ["test result: ok. 142 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.66s"]}
+{"id": "R1", "what": "Why::NotWhole inserted before Why::Stopped (a variant's index moved)", "result": "KILLED", "by": ["record::tests::version_2s_bytes_are_these"]}
+{"id": "L1", "what": "a failed count keeps the last limits", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L2", "what": "a failed count gives the cap (the first ruling)", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L3", "what": "a read scaled as a change", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L4", "what": "a change scaled as a read", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L5", "what": "the cap at 20 minutes", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L6", "what": "a read at 100 ms a dataset", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "L7", "what": "a read at 179 ms a dataset (still above twice the measured read)", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"worktree after": "clean"}
