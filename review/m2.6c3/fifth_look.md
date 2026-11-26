@@ -19,7 +19,7 @@
   - The bound the fix gives is worked out below.
 - **The rest of the answer checks out.** T1 and nit 1 are done, the correction about the recorded release is right, and Codex's thread is answered and resolved.
 - **The gates pass**, and the earlier searches pass again at this head.
-- **CI on the head is green.** One daemon-rig job, the stand-in on `ubuntu-26.04`, had not finished when I last read it (see "CI on the head").
+- **CI on the head is green:** all ten runs on `6ec5909` completed with success, the daemon rig at 01:45 UTC (see "CI on the head").
 - **One new finding, F1.** It is outside this commit and older than this pull request.
   - The hold's budget rests on the premise that a request is accepted within `ASK_LIMIT` of its send. That fails when the agent's connection waits in skyzfsd's backlog: skyzfsd accepts and runs a queued publish whose client has already given up.
   - The agent alone cannot close this. The fix belongs to skyzfsd or the protocol.
@@ -212,7 +212,7 @@ Read with `gh api`, read-only, including the review threads' route.
 | P2, "Track the publish across snapshot-name collision retries" (`program.rs`) | resolved, outdated | D2a KILLED at this head |
 | P2, "Revalidate the recorded deadline before sending the publish" (`engine.rs:1160`) | resolved; the author answered "Fixed in 6ec5909, as review's C1" with three points | The answer matches the code. It is right as far as the agent goes, with F1's condition on the channel |
 
-Codex had posted no review of `6ec5909` by 01:41 UTC.
+Codex had posted no review of `6ec5909` by 01:46 UTC.
 
 ## Test gaps and suggestions (none blocks)
 
@@ -312,7 +312,7 @@ The run counts are the same as at `5259bf5`.
 
 ## CI on the head
 
-Read with `gh api`, read-only, at 01:41 UTC on 2026-11-26, with the head still `6ec5909`.
+Read with `gh api`, read-only, last at 01:46 UTC on 2026-11-26, with the head still `6ec5909`. **All ten runs on `6ec5909` completed with success.**
 
 - **Completed with success:** `ci` (`changes`, `lint`, `test`, `unit-arm64`, `s3-backends`, `chart-lint`), `coverage`, `e2e`, `k3s-smoke`, `skyzfs-control-rig`, `skyzfs-cut-daemon` (no-kernel logic, `ubuntu-26.04`, `ubuntu-26.04-arm`, `ubuntu-26.04-upload`), `skyzfs-nodeb-rig` and `skyzfs-publish-rig`. Also `skyzfs-ci` on the push: its gate passed, and the rest was skipped because the pull request is open.
 - **`skyzfs-daemon-rig` (run 45732038971):**
@@ -321,13 +321,12 @@ Read with `gh api`, read-only, at 01:41 UTC on 2026-11-26, with the head still `
     - 1 `WAITING`: `pin_failed_volume_while_a_request_is_held`;
     - `NA` on `pin_c_kill_with_applied_unacknowledged` and `ctl_delay_before_apply`, both named by the in-place store's table;
     - the five controls that must fail, fail.
-  - **The stand-in** on `ubuntu-24.04`: green.
-  - **The stand-in on `ubuntu-26.04` had not finished** when I read it.
+  - **The stand-in** on `ubuntu-24.04` and `ubuntu-26.04`: green, with its own table's lines (30 `PASS`, 26 `WAITING` for checks of the daemon alone, and the five controls failing). The run ended green at 01:45 UTC.
 - **None of these drives the program** (the publish rig's agent is still the Python stand-in), and none builds `skyzfs-agent-cli` with `test-hooks`. A green CI says nothing about C1; the plants and probes above do.
 
 ## What blocks the merge
 
-**Nothing in `6ec5909`**, given that the last daemon-rig job (the stand-in on `ubuntu-26.04`) ends green. C1 is settled, Codex's three threads are settled, and T1 and nit 1 are done.
+**Nothing in `6ec5909`.** CI is green on the head, C1 is settled, Codex's three threads are settled, and T1 and nit 1 are done.
 
 ## Decisions for the lead
 
