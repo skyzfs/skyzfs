@@ -22,10 +22,11 @@
 //!   -j`), `members.lua`, beside this file, on its standard input.
 //! - [`Zfs::tagged`]: `zfs list -H -p -r -t snapshot -o name,userrefs
 //!   POOL`, then `zfs holds -H` on the snapshots it lists with a hold, at
-//!   most [`HOLDS_AT_ONCE`] a command. No channel program: a read-only
-//!   program may hold up the pool's sync for as long as it runs (#155),
-//!   and this read walks every snapshot in the pool (S1 of #161's
-//!   review; the lead's ruling, M2.6c-5d).
+//!   most [`HOLDS_AT_ONCE`] and [`HOLDS_ARG_BYTES`] of names a command.
+//!   No channel program: a read-only program may hold up the pool's
+//!   sync for as long as it runs (#155), and this read walks every
+//!   snapshot in the pool (S1 of #161's review; the lead's ruling,
+//!   M2.6c-5d).
 //! - [`Zfs::datasets`]: `zfs list` and twice `zfs get` ("The manifest's
 //!   read", below).
 //! - [`Zfs::destroy`]: `zfs destroy -r POOL@T`.
@@ -315,13 +316,53 @@ pub const NOCACHEFLUSH: &str = "/sys/module/zfs/parameters/zfs_nocacheflush";
 /// docs](self)).
 pub const MEMBERS_PROGRAM: &str = include_str!("cli/members.lua");
 
-/// How many snapshots one `zfs holds -H` of the sweep names
-/// ([`Zfs::tagged`]): at most about 256 KiB of names (255 bytes a name
-/// and its separator). The kernel's limit on a command's arguments is a
-/// quarter of the stack limit: 2 MiB with the default stack limit of
-/// 8 MiB, and 256 KiB, just enough, at a stack limit of 1 MiB
-/// (`LimitSTACK=1M`; N-d of #162's review).
+/// How many snapshots one `zfs holds -H` of the sweep names at most
+/// ([`Zfs::tagged`]). [`HOLDS_ARG_BYTES`] bounds a command too, and
+/// first where the names are long.
 pub const HOLDS_AT_ONCE: usize = 1000;
+
+/// How many bytes of snapshot names one `zfs holds -H` of the sweep
+/// carries at most, counting each name with its NUL and its argument
+/// pointer ([`arg_cost`]). The kernel counts the same against its limit
+/// on a command's arguments and environment together (`fs/exec.c`,
+/// `bprm_stack_limits`): a quarter of the stack limit (2 MiB with the
+/// default 8 MiB, 256 KiB at `LimitSTACK=1M`), and never less than
+/// `ARG_MAX`, 128 KiB. 64 KiB is half that floor, so the command's other words
+/// and the agent's environment have 64 KiB whatever the stack limit:
+/// about 248 names of 255 bytes, the longest ZFS allows. The design is
+/// silent on the agent's environment; half the floor is the
+/// conservative reading. Codex's P2 on #162 found 1000 such names
+/// (264 000 bytes) over the 256 KiB of `LimitSTACK=1M`.
+pub const HOLDS_ARG_BYTES: usize = 64 << 10;
+
+/// What one argument costs against the kernel's limit on a command's
+/// arguments: its bytes, its NUL, and its pointer in `argv`.
+pub fn arg_cost(arg: &str) -> usize {
+    arg.len() + 1 + std::mem::size_of::<usize>()
+}
+
+/// The sweep's commands of `zfs holds -H`: `names` cut, in their order,
+/// into runs of at most [`HOLDS_AT_ONCE`] names and at most
+/// [`HOLDS_ARG_BYTES`] of [`arg_cost`], each run at least one name. A
+/// name longer than the bound alone (ZFS allows none) is a run alone.
+pub fn holds_batches<'a, 'b>(names: &'b [&'a str]) -> Vec<&'b [&'a str]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, name) in names.iter().enumerate() {
+        let cost = arg_cost(name);
+        if i > start && (i - start == HOLDS_AT_ONCE || bytes + cost > HOLDS_ARG_BYTES) {
+            batches.push(&names[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += cost;
+    }
+    if start < names.len() {
+        batches.push(&names[start..]);
+    }
+    batches
+}
 
 /// The most instructions a channel program is let run: the default of
 /// `zfs_lua_max_instrlim`.
@@ -814,8 +855,9 @@ impl<H: Host> ZfsCli<H> {
     /// One read of [`Zfs::tagged`]: the snapshots in `pool` that have
     /// any hold (`userrefs` above 0), by `zfs list` within the list's
     /// limit on the snapshots counted ([`ZfsCli::walk_limit`]), then their
-    /// holds by `zfs holds -H`, [`HOLDS_AT_ONCE`] snapshots a command,
-    /// each within a read's limit. `zfs holds -r` would not do: it reads
+    /// holds by `zfs holds -H`, at most [`HOLDS_AT_ONCE`] snapshots and
+    /// [`HOLDS_ARG_BYTES`] of names a command ([`holds_batches`]), each
+    /// within a read's limit. `zfs holds -r` would not do: it reads
     /// the snapshots of one name `t` alone. A snapshot gone between the
     /// two reads (`dataset does not exist`, or libzfs's `no such pool or
     /// dataset` where `zpool list` lists the pool) is
@@ -864,7 +906,7 @@ impl<H: Host> ZfsCli<H> {
             }
         }
         let mut tagged = BTreeSet::new();
-        for names in held.chunks(HOLDS_AT_ONCE) {
+        for names in holds_batches(&held) {
             let mut args = vec!["holds", "-H"];
             args.extend_from_slice(names);
             // Read as bytes: another holder's tag may hold any byte but

@@ -1600,8 +1600,9 @@ fn the_sweep_reads_the_holds_of_the_snapshots_that_have_one() {
 }
 
 /// The sweep names [`HOLDS_AT_ONCE`] snapshots at most to each `zfs
-/// holds -H`, in the list's order. Mutants: another bound, all in one
-/// command, a chunk left out.
+/// holds -H`, in the list's order, where the names are short enough that
+/// [`HOLDS_ARG_BYTES`] does not bound them first. Mutants: another bound,
+/// all in one command, a chunk left out.
 #[test]
 fn the_sweep_reads_the_holds_a_thousand_snapshots_at_a_time() {
     assert_eq!(HOLDS_AT_ONCE, 1000);
@@ -1628,6 +1629,71 @@ fn the_sweep_reads_the_holds_a_thousand_snapshots_at_a_time() {
             .collect::<Vec<_>>(),
         [1000, 1000, 500]
     );
+}
+
+/// 1000 snapshots with names of 255 bytes, the longest ZFS allows, are
+/// read 248 a command: each costs 264 bytes against the kernel's limit
+/// (its bytes, its NUL, its pointer), and 248 of them fit in
+/// [`HOLDS_ARG_BYTES`], 249 do not. 1000 in one command (264 000 bytes)
+/// fail with `E2BIG` at `LimitSTACK=1M`, whose limit is 256 KiB
+/// (Codex's P2 on #162). Each command, with its own words, stays within
+/// half of the kernel's floor of 128 KiB. Mutants: no bound on the
+/// bytes, the pointer or the NUL not counted, a bound of 128 KiB.
+#[test]
+fn the_sweep_bounds_a_holds_command_by_its_bytes() {
+    assert_eq!(HOLDS_ARG_BYTES, 64 << 10);
+    assert_eq!(arg_cost("tank@t"), 6 + 1 + std::mem::size_of::<usize>());
+    let names: Vec<String> = (0..1000)
+        .map(|i| {
+            let name = format!("tank/{}@skz-{i:04}", "d".repeat(241));
+            assert_eq!(name.len(), 255);
+            name
+        })
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let listed: String = names.iter().map(|n| format!("{n}\t1\n")).collect();
+    let per = HOLDS_ARG_BYTES / (255 + 1 + std::mem::size_of::<usize>());
+    if std::mem::size_of::<usize>() == 8 {
+        assert_eq!(per, 248);
+    }
+    let mut fake = Fake::default();
+    fake.ok(TAGGED_LIST, &listed);
+    for chunk in refs.chunks(per) {
+        let holds: String = chunk.iter().map(|n| hold_line(n, HOLD_TAG)).collect();
+        fake.ok(&holds_of(chunk), &holds);
+    }
+    let mut zfs = cli(fake);
+    let tagged = zfs.tagged("tank", HOLD_TAG).expect("tagged");
+    assert_eq!(tagged.len(), 1000);
+    let words = zfs.host().words();
+    let chunks: Vec<String> = refs.chunks(per).map(holds_of).collect();
+    assert_eq!(words[1..], chunks[..]);
+    for command in &words[1..] {
+        let cost: usize = command.split(' ').map(arg_cost).sum();
+        assert!(cost <= (128 << 10) / 2, "{cost} bytes: {}", &command[..40]);
+    }
+}
+
+/// [`holds_batches`] fills a command up to [`HOLDS_ARG_BYTES`]
+/// exactly, keeps the order, never makes an empty command, and puts a
+/// name longer than the bound in a command alone. Mutants: a command
+/// cut one name early at the bound, the bytes not begun again with each
+/// command, a name too long left out.
+#[test]
+fn the_holds_batches_fill_up_to_the_bound() {
+    assert!(holds_batches(&[] as &[&str]).is_empty());
+    // Names that cost 256 bytes each: 256 fill the bound exactly.
+    let fits = 256 - 1 - std::mem::size_of::<usize>();
+    let names: Vec<String> = (0..600).map(|i| format!("{i:0fits$}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let sizes: Vec<usize> = holds_batches(&refs).iter().map(|b| b.len()).collect();
+    assert_eq!(sizes, [256, 256, 88]);
+    let again: Vec<&str> = holds_batches(&refs).concat();
+    assert_eq!(again, refs);
+    let long = "x".repeat(HOLDS_ARG_BYTES);
+    let odd = ["a@1", long.as_str(), "b@2"];
+    let sizes: Vec<usize> = holds_batches(&odd).iter().map(|b| b.len()).collect();
+    assert_eq!(sizes, [1, 1, 1]);
 }
 
 /// A snapshot listed with a hold and gone before its holds are read, or
