@@ -32,10 +32,12 @@
 //!   its manifests ([`crate::record`]). One agent at a time holds it.
 //!
 //! `publish` begins a publish, then settles every publish under way
-//! ([`crate::engine::Agent::settle`]) for at most `--limit-s` seconds
-//! ([`LIMIT_DEFAULT`]). `--expiry-s` is how long the daemon may keep the
-//! request pending (the protocol's default where it is not given, at
-//! most [`skyzfs_control::EXPIRY_MAX`]). `settle` settles every publish
+//! ([`crate::engine::Agent::settle`]) until `--limit-s` seconds have
+//! passed ([`LIMIT_DEFAULT`]), and in any case through one pass over
+//! the publishes under way, however long the reads before it take.
+//! `--expiry-s` is how long the daemon may keep the request pending
+//! (the protocol's default where it is not given, at most
+//! [`skyzfs_control::EXPIRY_MAX`]). `settle` settles every publish
 //! under way and begins none; it is how a rig, or a person, finishes
 //! what a stopped agent left. `recover` records a person's choice for one
 //! publish under way, then settles: `--give-up` gives it up as
@@ -72,28 +74,44 @@
 //!   how much.
 //! - `begun`: the publish this round began, `-` where its begin failed.
 //! - `under_way`: publishes still under way as the round ended.
-//! - `failed`: an engine call of the round failed; each error is on
-//!   standard error as `skyzfs-agent: round <n>: <error>`, and the next
-//!   tick tries again. After an error that may leave the process unlike
-//!   its record (any but the pool's premise or 8 under way), the next
-//!   round reads the record again first, as a new process would.
+//! - `ok`: no engine call of the round returned an error. It does not
+//!   say that anything moved: a round that waited on the daemon
+//!   throughout is `ok`.
+//! - `failed`: an engine call of the round failed, the two refusals of
+//!   a begin included (8 under way, the pool's premise); each error is
+//!   on standard error as `skyzfs-agent: round <n>: <error>`, and the
+//!   next tick tries again. After an error that may leave the process
+//!   unlike its record (any but those two refusals), the engine reads
+//!   the record again, as a new process would: at once after a begin's
+//!   error, before the round settles; at the next round after a
+//!   settle's error. A reading that fails is tried again at the next
+//!   round, which settles nothing until it succeeds. So `begun=-` can
+//!   follow a `snap/` line for the very publish whose begin failed: its
+//!   intent was saved before the save failed, and the round settled it.
 //!
 //! The outcome lines below are printed as each publish leaves the
 //! record or stops, among the round lines. A `snap/` line is printed
 //! before the record forgets its publish, so that a run killed in
 //! between prints it again when it starts: at least once. An
 //! `abandoned` line is printed just after the record's save that gives
-//! the publish up; a kill between the two loses that line, and the
-//! record keeps the give-up among its abandoned, which `record` prints.
+//! the publish up; a kill between the two loses that line, and so does
+//! that save failing after it was written (the give-up is then on the
+//! disk and the line was never told). The record keeps the give-up among
+//! its abandoned, which `record` prints.
 //!
 //! `run` ends with 0 at SIGTERM or SIGINT, between two rounds of the
 //! engine or while it waits for a tick, within [`WAKE`]; what is under
-//! way stays in the record for the next start. A second signal ends it
+//! way stays in the record for the next start. A signal that comes
+//! while the engine works ends `run` only once its step is done (a
+//! begin, or a pass over the publishes under way): a ZFS call is not
+//! cut, and the step's other calls run first, each within its own time
+//! limit. A second signal ends it
 //! at once with 1. It ends with 6 after the round line of a round that
 //! met a record that is corrupt or another volume's, or holds it would
 //! release with no agent's marker: a person judges those. It ends with
 //! 1 or 8 where it cannot start (the record unread, or the directory
-//! held). `recover` of a volume whose `run` holds its directory exits 8:
+//! held), and with 6 where the record it starts on is one a person
+//! judges. `recover` of a volume whose `run` holds its directory exits 8:
 //! a person stops `run`, recovers, and starts it again.
 //!
 //! # What it prints

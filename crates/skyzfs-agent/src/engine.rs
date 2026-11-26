@@ -337,7 +337,7 @@ impl fmt::Display for Error {
             Error::Daemon(why) => write!(f, "the daemon: {why}"),
             Error::Zfs(e) => write!(f, "zfs: {e}"),
             Error::Save(e) => write!(f, "the record: {e}"),
-            Error::Io(e) => write!(f, "a manifest's file: {e}"),
+            Error::Io(e) => write!(f, "the record's directory: {e}"),
             Error::Unsettled(names) => write!(f, "still under way: {}", names.join(" ")),
             Error::NotUnderWay(name) => write!(f, "no publish {name} is under way"),
             Error::Unmarked(names) => write!(
@@ -737,8 +737,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Drive every publish under way until each has left the record or
     /// stopped, waiting [`TICK`] between rounds where none moved; until
     /// `limit` has passed, and in any case one round of the publishes
-    /// under way, however long the count and the sweep before it took. Each that left or stopped is in
-    /// [`Agent::outcomes`]. Each round begins with the count of the
+    /// under way, however long the count and the sweep before it took.
+    /// Each that left or stopped is in [`Agent::outcomes`]. Each round begins with the count of the
     /// pool's datasets ([`Zfs::count`]), which sets the time limits of
     /// its calls, then the sweep (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {

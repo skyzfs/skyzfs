@@ -1757,3 +1757,279 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
         );
     }
 }
+
+/// A round's restart: after a settle's error, at the next round; one
+/// that fails; and one that finds a record a person must judge. These
+/// came from the review of #167 (its RC, RF, RI and RJ), which found
+/// that no test held them.
+mod restarts {
+    use std::cell::Cell;
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::record::{Loaded, SaveError};
+
+    /// A directory in memory that fails the first save matching `when`
+    /// after writing it (the directory's sync), and the `fail_load`-th
+    /// load (from 1), if any.
+    struct Flaky {
+        keep: MemKeep,
+        when: Box<dyn Fn(&Record) -> bool>,
+        failed: Rc<RefCell<Option<Record>>>,
+        loads: Cell<usize>,
+        fail_load: usize,
+        spoil: Cell<Spoil>,
+    }
+
+    /// What the save that fails leaves on the disk besides the record it
+    /// was given.
+    #[derive(Clone, Copy)]
+    enum Spoil {
+        No,
+        /// Its last byte flipped: a corrupt record.
+        Corrupt,
+        /// Another volume's record in its place.
+        Volume,
+    }
+
+    impl Keep for Flaky {
+        fn load(&self) -> io::Result<Loaded> {
+            self.loads.set(self.loads.get() + 1);
+            if self.loads.get() == self.fail_load {
+                return Err(io::Error::other("the record could not be read"));
+            }
+            self.keep.load()
+        }
+        fn save(&self, record: &Record) -> Result<(), SaveError> {
+            self.keep.save(record)?;
+            if self.failed.borrow().is_none() && (self.when)(record) {
+                *self.failed.borrow_mut() = Some(record.clone());
+                let mut files = self.keep.0.borrow_mut();
+                match self.spoil.get() {
+                    Spoil::No => {}
+                    Spoil::Corrupt => {
+                        if let Some(b) = files.record.as_mut().and_then(|r| r.last_mut()) {
+                            *b ^= 0xff;
+                        }
+                    }
+                    Spoil::Volume => {
+                        let other = Record::new(OTHER)
+                            .encode()
+                            .expect("an empty record encodes");
+                        files.record = Some(other);
+                    }
+                }
+                return Err(io::Error::other("the directory's sync failed").into());
+            }
+            Ok(())
+        }
+        fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+            self.keep.write_manifest(name, bytes)
+        }
+        fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+            self.keep.read_manifest(name)
+        }
+        fn remove_manifest(&self, name: &str) -> io::Result<()> {
+            self.keep.remove_manifest(name)
+        }
+        fn manifest_names(&self) -> io::Result<Vec<String>> {
+            self.keep.manifest_names()
+        }
+        fn marked(&self) -> io::Result<bool> {
+            self.keep.marked()
+        }
+    }
+
+    fn flaky(
+        when: Box<dyn Fn(&Record) -> bool>,
+        fail_load: usize,
+    ) -> (Flaky, MemKeep, Rc<RefCell<Option<Record>>>) {
+        let failed = Rc::new(RefCell::new(None));
+        let keep = MemKeep::default();
+        (
+            Flaky {
+                keep: keep.clone(),
+                when,
+                failed: failed.clone(),
+                loads: Cell::new(0),
+                fail_load,
+                spoil: Cell::new(Spoil::No),
+            },
+            keep,
+            failed,
+        )
+    }
+
+    fn sched_any<Z: Zfs, D: Daemon, K: Keep>(
+        agent: &mut Agent<Z, D, K, FakeClock>,
+        every: Duration,
+        go: &mut dyn FnMut() -> bool,
+    ) -> (i32, String, String) {
+        let (mut out, mut err) = (Shared::default(), Shared::default());
+        let mut told = out.clone();
+        agent.set_outcome_sink(Box::new(move |name, outcome| {
+            let _ = told.write_all(outcome_line(name, outcome).as_bytes());
+        }));
+        let code = schedule(agent, every, go, &mut out, &mut err);
+        (code, out.text(), err.text())
+    }
+
+    /// A begin whose save failed with another publish
+    /// under way, and a restart at once that cannot read the record: the
+    /// round settles nothing on what the process holds (a save of it
+    /// would write the new intent out), and the next round starts again
+    /// and publishes both.
+    #[test]
+    fn a_restart_that_fails_leaves_the_round_alone() {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().lag_ms = 90_000;
+        // Loads: 1 at Agent::new, 2 at the restart after the failed save
+        // (fails), 3 at the next round's.
+        let (keep, _files, failed) = flaky(Box::new(|r: &Record| r.under_way.len() == 2), 2);
+        let mut agent = Agent::new(
+            FakeZfs(world.clone()),
+            FakeDaemon(world.clone()),
+            keep,
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        let start = mono(&world);
+        let (code, out, err) = sched_any(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 400_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let failed = failed.borrow().clone().expect("a save failed");
+        let rounds = rounds(&out);
+        assert!(rounds[1].starts_with("round 2 failed "), "{out}");
+        assert_eq!(field(rounds[1], "begun"), "-", "{out}");
+        assert!(
+            err.contains("round 2: the record's directory: the record could not be read"),
+            "{err}"
+        );
+        for publish in &failed.under_way {
+            let told = format!("snap/{} ", publish.name);
+            assert!(
+                out.lines().any(|l| l.starts_with(&told)),
+                "{} not told:\n{out}{err}",
+                publish.name
+            );
+        }
+    }
+
+    /// Another volume's.
+    const OTHER: [u8; 16] = [0xee; 16];
+
+    /// A record found corrupt, or another volume's, when the engine
+    /// starts again (here at once, after a begin whose save failed) ends
+    /// `run` with 6, after the round's line.
+    #[test]
+    fn a_record_found_corrupt_at_a_restart_ends_run() {
+        let err = a_record_a_person_judges_at_a_restart(Spoil::Corrupt);
+        assert!(err.contains("round 1: the record is corrupt"), "{err}");
+    }
+
+    #[test]
+    fn a_record_of_another_volume_at_a_restart_ends_run() {
+        let err = a_record_a_person_judges_at_a_restart(Spoil::Volume);
+        let told = format!(
+            "round 1: the record is of volume {}",
+            skyzfs_control::hex(&OTHER)
+        );
+        assert!(err.contains(&told), "{err}");
+    }
+
+    /// The run of those two: its standard error.
+    fn a_record_a_person_judges_at_a_restart(spoil: Spoil) -> String {
+        let world = World::new(Mode::Busy);
+        let (keep, _files, _failed) = flaky(Box::new(|r: &Record| !r.under_way.is_empty()), 0);
+        keep.spoil.set(spoil);
+        let mut agent = Agent::new(
+            FakeZfs(world.clone()),
+            FakeDaemon(world.clone()),
+            keep,
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        let start = mono(&world);
+        let (code, out, err) = sched_any(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 600_000),
+        );
+        assert_eq!(code, exit::RECORD, "{out}{err}");
+        let rounds = rounds(&out);
+        assert_eq!(rounds.len(), 1, "{out}{err}");
+        assert!(rounds[0].starts_with("round 1 failed "), "{out}");
+        err
+    }
+
+    /// The first save that forgets a publish (the record empty again
+    /// after it held one) fails after it was written.
+    fn forget_fails() -> Box<dyn Fn(&Record) -> bool> {
+        let seen = Cell::new(false);
+        Box::new(move |r: &Record| {
+            if r.under_way.is_empty() {
+                seen.get()
+            } else {
+                seen.set(true);
+                false
+            }
+        })
+    }
+
+    /// A save in the settling that failed after it was
+    /// written (the one that forgets a publish); `fail_load` fails the
+    /// next round's restart too. Its line is told once.
+    fn settle_save_fails(fail_load: usize) -> (String, String) {
+        let world = World::new(Mode::Busy);
+        let (keep, _files, failed) = flaky(forget_fails(), fail_load);
+        let mut agent = Agent::new(
+            FakeZfs(world.clone()),
+            FakeDaemon(world.clone()),
+            keep,
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        let start = mono(&world);
+        let (code, out, err) = sched_any(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 200_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        assert!(failed.borrow().is_some(), "no save failed:\n{out}{err}");
+        let rounds = rounds(&out);
+        assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
+        let told: Vec<&str> = out.lines().filter(|l| l.starts_with("snap/")).collect();
+        let once: BTreeSet<&str> = told.iter().copied().collect();
+        assert_eq!(once.len(), told.len(), "a line told twice:\n{out}{err}");
+        (out, err)
+    }
+
+    /// The next round restarts after a save of the
+    /// settling failed.
+    #[test]
+    fn a_settle_whose_save_failed_restarts_at_the_next_round() {
+        let (out, _) = settle_save_fails(0);
+        assert!(rounds(&out)[1].starts_with("round 2 ok "), "{out}");
+    }
+
+    /// Where that restart fails, the round does nothing
+    /// on what the process holds; the next starts again.
+    #[test]
+    fn a_failed_restart_at_a_round_start_leaves_the_round_alone() {
+        let (out, err) = settle_save_fails(2);
+        let rounds = rounds(&out);
+        assert!(rounds[1].starts_with("round 2 failed "), "{out}");
+        assert_eq!(field(rounds[1], "begun"), "-", "{out}");
+        assert!(err.contains("round 2: the record's directory: "), "{err}");
+    }
+}
