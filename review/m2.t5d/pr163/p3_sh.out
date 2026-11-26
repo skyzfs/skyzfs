@@ -21,3 +21,41 @@ U30 serve_log: always serve-K KILLED FAIL serve_log: the first instance: got '/r
 V01 rig_error: hook 0 passes KILLED FAIL rig_error: a hook that ends 3: got '3 hook: zfs failed; rig error;', want '2 hook: zfs failed; rig error;'
 V02 rig_error: hook not cleared KILLED FAIL rig_error: the hook's own rig_error ends it, once: got '139 hook: first;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;hook: a
 V05 rig_error: hook any non-zero kept KILLED FAIL rig_error: a hook that ends 3: got '3 hook: zfs failed; rig error;', want '2 hook: zfs failed; rig error;'
+S18r destroy keeps hold KILLED FAIL destroy: release, destroy, both bounded: got 'freeze;abg;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 700; | FAIL destroy: a release that fails: got 'freeze;abg;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 700;
+U05r recover: no SIGCONT SURVIVED 
+U05q quiet: no SIGCONT SURVIVED 
+X01 akill: never a verdict KILLED FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: serve died' | FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig'
+X02 akill: status not taken KILLED FAIL akill_serve: a serving daemon, killed: got 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: serve died', want 'none : ' | FAIL akill_serve: a daemon that had ended 9: got 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: serve die
+X03 restart: kill_serve again KILLED FAIL restart: killed at asked, the store thawed, served again: got 'freeze;abg;thaw;snaprow t1 between.txt;serve_again;await publish 700;', want 'freeze;abg;akill;thaw;snaprow t1 between.txt;serve_again;await publish 700;'
+X04 late: kill_serve again SURVIVED 
+X04b late: the daemon not killed SURVIVED 
+X05 recover: the exemption for every scenario KILLED FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving' | FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+X06 recover: the exemption but in plain KILLED FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving' | FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+X06b recover: dhook always exempt SURVIVED 
+X07 destroy: no asked never a verdict KILLED FAIL destroy: no asked with no kill is a verdict: got '', want 'asked'
+X08 restart: no asked never a verdict KILLED FAIL restart: no asked with no kill: got 'freeze;abg;thaw;await publish 700;', want 'freeze;abg;thaw;await publish 700;asked'
+X09 destroy: wait 300 again KILLED FAIL destroy: release, destroy, both bounded: got 'freeze;abg;lim 60 zfs release;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 300;
+X10 tooold: wait 300 again SURVIVED 
+X11 both: wait 300 again SURVIVED 
+X12 asettle: no list of the snapshots after SURVIVED 
+X12b asettle: the list before the retry SURVIVED 
+X13 acase: CDIR kept KILLED FAIL acase: the scenario, recover, the settle; then no case: got 'scen_x arg --trace-points /tmp/tmp.SImgTOx5bc/ac/cases/c1/trace.tsv --kill-at kp:before:1;recover;asettle c1;CDIR=/tmp/tmp.SImgTOx5bc/ac/cases/c1', want 'scen_x arg --trace-points /tmp/tmp.SImgTOx5bc/ac/cases/c1/trace.tsv --kill-at kp
+X14 begin: no daemon hook KILLED FAIL agent_begin: the lists of the course before are gone; the course's hooks set: got 'cases.tsv: published.tsv: published-gone.tsv: points-error.tsv:none rig-error.tsv:none agent_judged ', want 'cases.tsv: published.tsv: published-gone.tsv: points-error.tsv:none rig-error.tsv:none agent_judged age
+X15 daemon_wrong: no course dir KILLED FAIL daemon_wrong: after the cases, the course's: got 'went on none', want 'went on none
+X16 judged: no quiet KILLED FAIL agent_judged: quiet, then the check; no case under way named none: got '1 check; none	zfs failed', want '1 quiet;check; none	zfs failed'
+X17 judged: quiet only with no check KILLED FAIL agent_judged: quiet, then the check; no case under way named none: got '1 check; none	zfs failed', want '1 quiet;check; none	zfs failed'
+X18 quiet: the agent not killed KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 13898 left thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: 
+X19 quiet: the store not thawed KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 none 1 stopped watching session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exporte
+X20 quiet: the watcher left paused KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped paused up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut e
+X21 quiet: the writer not asked to stop SURVIVED 
+X22 quiet: the export fatal (z) KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: skzcut did not export for the check: tests/kernel/test_agent_record.sh: line 775: z: command not found;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export s
+X23 quiet: no export KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check afte
+X24 quiet: no session_end KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported fo
+X25 quiet: the writer waited for unbounded SURVIVED 
+X26 quiet: the agent waited for unbounded SURVIVED 
+X27 quiet: AGENT_PID kept KILLED FAIL agent_quiet: everything put away, the pool exported: got '0 26966 thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;', want '0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcu
+Y01 cleanup: no hook KILLED FAIL cleanup: errexit with a hook that finds a verdict: got '1 ', want '1 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it;' | FAIL cleanup: errexit with a hook that finds none: got '1 ', want '2 hook: a command failed (status 1); th
+Y02 cleanup: hook not cleared before it runs SURVIVED 
+Y03 cleanup: the hook's status kept as is KILLED FAIL cleanup: errexit with a hook that finds none: got '0 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it;', want '2 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it
+Y04 cleanup: no line KILLED FAIL cleanup: errexit with a hook that finds a verdict: got '1 hook: a command failed (status 1); the job log names it;', want '1 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it;' | FAIL cleanup: errexit with a hook that finds none:
+Y05 daemon_wrong: no hook, goes on KILLED FAIL daemon_wrong: no hook, the rig's error: got 'went on none', want 'rig error: ended with 1' | FAIL end_daemon: a stop that ends 1, with no hook: got 'went on, detached yes', want 'rig error: skyzfsd serve ended with 1 on SIGTERM: lease kept'
