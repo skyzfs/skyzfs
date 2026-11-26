@@ -1,30 +1,36 @@
-# Review of skyzfs/skyzfs#162 (M2.6c-5d) at 6e420dc
+# Review of skyzfs/skyzfs#162 (M2.6c-5d) at b83ac36
 
-Head checked with `gh api repos/skyzfs/skyzfs/pulls/162 --jq .head.sha`:
-`6e420dcc5b72b948b22d2979074ee59e938c0752`, branch `skyzfs-coding`, base
-`zfs-topology` at 1d14ee9 (the merge base, and the base's tip when I
-read it). Two commits, `crates/skyzfs-agent` and `bins/skyzfs-agent`
+Heads checked with `gh api repos/skyzfs/skyzfs/pulls/162 --jq .head.sha`.
+The first look was at `6e420dc`. This note is the second look, at
+`b83ac36bef0fd046411251e8a2fe45459b09a6c4`, branch `skyzfs-coding`,
+base `zfs-topology` at 1d14ee9 (the merge base, and the base's tip when
+I read it). Three commits, `crates/skyzfs-agent` and `bins/skyzfs-agent`
 only:
 
 - `16be309`: the sweep reads holds with `zfs list` and `zfs holds -H`;
   `tagged.lua` deleted; 10 ms a snapshot (`holds_per_snapshot`, new
   `list_per_snapshot`); TG1, TG2, nits A to F of my review of #161;
-- `6e420dc`: a comment on the holds line the sweep skips.
+- `6e420dc`: a comment on the holds line the sweep skips;
+- `b83ac36`: the lead's ruling on R-COUNT. The snapshot count runs
+  within `Limits::full_most`; the three walks' errors name its failure
+  (`walked`); one new test; three tests expect the count's new limit.
+
+Line numbers are at `b83ac36`. `engine.rs` is the same at both heads.
 
 Before the description I read the diff, design §5.2 and §7, the module
 docs and every caller of the changed functions in `cli.rs` and
-`engine.rs`, the implementation notes on #155, #159 and #161, the
-recorder's records of run 45800940382 (both images, downloaded), and
-OpenZFS's `zfs_do_holds` (2.2.2 and 2.4.1, the same but for a printf
-cast), `zfs_for_each`, `zfs_open`, `zfs_do_list_ioctl`,
-`zfs_standard_error_fmt`, `zfs_get_holds`, `zfs_ioc_snapshot_list_next`
-and `dsl_userhold.c` (2.4.1).
+`engine.rs`, `host.rs`'s runner, the implementation notes on #155, #159
+and #161, the recorder's records of run 45800940382 (both images,
+downloaded), and OpenZFS's `zfs_do_holds` (2.2.2 and 2.4.1, the same
+but for a printf cast), `zfs_for_each`, `zfs_open`,
+`zfs_do_list_ioctl`, `zfs_standard_error_fmt`, `zfs_get_holds`,
+`zfs_ioc_snapshot_list_next` and `dsl_userhold.c` (2.4.1).
 
 ## Verdict
 
 **Nothing blocks the merge.** One defect should be fixed in this pull
-request, since it is one line in the code under review (D1); one
-question goes to the lead with figures (R-COUNT); the rest is low.
+request, since it is one line in the code under review (D1, unchanged
+at `b83ac36`). The rest is low.
 
 - **S1 is resolved.** The sweep runs no channel program. `zfs list`
   and `zfs holds` hold the pool only for each ioctl, so the sync is
@@ -32,21 +38,29 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   snapshot of every dataset, the exact tag, the name after `@`, a set.
 - **The partial `zfs holds -H` fake is faithful to the source** of
   2.2.2 and 2.4.1, and the code does not depend on its stdout anyway.
-- **The limits are as ruled**, saturate, and are capped. Every command
-  that walks the snapshots has its walk limit except the snapshot count
-  itself, which is R-COUNT.
+- **R-COUNT is resolved as the lead ruled.**
+  - The snapshot count runs within 35 minutes, whatever the datasets.
+    The runner returns at that limit even when the child cannot be
+    killed, and the count does not hold the pool's sync.
+  - `walked` names the count's failure in the `Other` errors of the
+    three walks, and nowhere else. Every count clears the failure, so
+    none reaches a later walk, and the walk's own error comes first.
+  - The new test fails when the count goes back to a read's limit, by
+    what its host does and not only by the limit it names (Q6).
+  - Two survivors, both low (TG-C).
+- **The limits are as ruled**, saturate, and are capped.
 - **TG1 and TG2 are answered.** PLANTS-SUMMARY
 - **The stand-in `zfs` of `program.rs` still drives the sweep's kill
   point honestly**, through both new commands. AGENT-RIG
-- **Gates.** GATES-SUMMARY
+- **Gates and CI.** GATES-SUMMARY
 
 ## Findings, most severe first
 
 ### D1 (defect, medium-low; fix in this PR): another holder's tag that is not UTF-8 stops every agent process
 
-- **Where.** `crates/skyzfs-agent/src/zfs/cli.rs:834`. Each of the
+- **Where.** `crates/skyzfs-agent/src/zfs/cli.rs:859`. Each of the
   sweep's `zfs holds -H` goes through `self.zfs`, that is `run`, which
-  fails the whole output where it is not UTF-8 (`cli.rs:606-612`).
+  fails the whole output where it is not UTF-8 (`cli.rs:628-635`).
 - **Why it can happen.** A hold's tag may hold any byte but NUL. The
   kernel checks only its length (`dsl_userhold.c:61-65`, 2.4.1), and
   `zfs hold` only refuses a leading `.` (`zfs_main.c:6775`).
@@ -66,7 +80,8 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   agent. `held()`'s `zfs holds -H -r pool@t` has been as strict since
   #147, but it reads only the holds of the agent's own `@t`. The sweep
   now reads the holds of every held snapshot in the pool.
-- **Certainty.** Certain from the code, and shown twice at the head.
+- **Certainty.** Certain from the code, and shown twice at `6e420dc`.
+  `b83ac36` does not touch these lines.
   - **A scratch unit test,** not committed. The list gives `tank@a`
     and `tank/db@backup`, and `zfs holds -H` gives the agent's hold on
     `tank@a` and `caf\xe9` on the other. `tagged()` returned
@@ -82,15 +97,17 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   another tag read as the agent's. A test with a byte above 0x7f in
   another holder's tag.
 
-### R-COUNT (medium, for the lead; the description raises it too): on Ubuntu 24.04 the snapshot count ends the round's reach at about 50 000 snapshots
+### R-COUNT (resolved at `b83ac36`): the snapshot count no longer ends the round's reach
 
-- **Where.** `cli.rs:1040-1044`. The snapshot count runs within a
-  read's limit on the datasets counted, 60 s + 100 ms a dataset. It
-  does not grow with the snapshots, which it is there to count.
-- **The figures**, from the records of run 45800940382 (one run on
-  each image, idle pool; I read the `secs` files):
+- **What it was, at `6e420dc`.** The snapshot count ran within a
+  read's limit on the datasets counted (60 s + 100 ms a dataset). On
+  Ubuntu 24.04 it took 1.25 ms a snapshot, so it failed past about
+  48 000 + 80 × D snapshots. Every walk then fell back to 61 to 80 s
+  and ran out of time: every round failed from about 50 000 snapshots.
+  The figures, from the records of run 45800940382 (one run on each
+  image, idle pool):
 
-  | Image, pool | snapshot count | its limit | `holds -r` | manifest's list |
+  | Image, pool | snapshot count | its old limit | `holds -r` | manifest's list |
   |---|---|---|---|---|
   | 24.04, 10:1000 (11 000) | 13.3 s | 61.1 s | 18.9 s | 20.3 s |
   | 24.04, 100:1000 (101 000) | **126.2 s** | **70.1 s** | 174.2 s | 185.9 s |
@@ -98,43 +115,23 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   | 26.04, 10:10000 (60 500) | 14.8 s | 61.1 s | 21.9 s | 24.2 s |
   | 26.04, 100:1000 (101 000) | 25.7 s | 70.1 s | 37.3 s | 41.6 s |
 
-- **What follows.** At 1.25 ms a snapshot, the count fails past about
-  48 000 + 80 × D snapshots on 24.04: 48 900 with 11 datasets, 56 100
-  with 101. Past that, `snapshots` is `None`, and every walk is back
-  on a read's limit or the gets' limit (61 to 80 s). Each walk then
-  takes longer than that: `holds -r` passes 61.1 s at about 35 500
-  snapshots. So on 24.04 every round fails from about 50 000 snapshots.
-  On 26.04 (0.25 ms) the same happens at about 240 000 to 280 000.
-- **Against the description.** "At 10 ms, the 35-minute cap is
-  reached at about 200 000 snapshots" is the cap's reach. The round's
-  reach on 24.04 is about a quarter of that.
-- **The new test claims more than holds.**
-  `the_holds_limit_covers_its_recording` (`cli/tests.rs:2105`) checks
-  the 24.04 row (101, 101 000) with a count the fake answers at once.
-  The same recording's count at that scale took 126.2 s against its
-  70.1 s limit. So on that pool `holds -r` never gets the limit the
-  test checks. The test could also hold the count's limit against the
-  count recorded at each row. It fails today, and that is the finding.
-- **Not a regression.** The base has the same count and the same
-  fallbacks.
-- **Options for the lead.**
-  1. Give the snapshot count `full_most`. It is `-o name`, simple mode,
-     and does not hold the sync. N2's case (a pool that holds every
-     command) mostly ends at the dataset count's 60 s first, since the
-     snapshot count runs only after the dataset count answered.
-  2. Where the snapshot count is killed at its limit after the dataset
-     count answered, take the walks to their cap: a pool that answers
-     but cannot list its snapshots in a minute has many.
-  3. Grow the count's limit from the last count. A fresh process on a
-     large 24.04 pool would still fail its first count.
+- **The ruling, as built.** The count runs within `Limits::full_most`
+  (`cli.rs:1068`). Where it still fails, the walks keep the limits
+  they had and their errors name the count's failure. That was my
+  option 1, plus the error the lead asked for. Checked below,
+  "Second look".
+- **Reach now.** The count's 35 minutes is about 1.7 million
+  snapshots at 1.25 ms (24.04, idle). The walks' cap of 35 minutes at
+  10 ms a snapshot comes first, at about 200 000. So the cap's reach
+  is now the round's reach.
 
-  My preference is 1: one line, plus the test's extra check.
-- **Certainty.** Certain from the code and the recorded seconds. One
-  run per image, idle pool.
+### TG-C (low, new at `b83ac36`): two properties of `walked` that no test pins
+
+TG-C-BODY
 
 ### F1 (low): another holder's tag that holds a newline can add a line to the sweep's read
 
-- **Where.** `cli.rs:844-858`. Each line of `zfs holds -H` is split at
+- **Where.** `cli.rs:869-883`. Each line of `zfs holds -H` is split at
   tabs. A line is kept where its second field is the agent's tag,
   whatever its first field.
 - **Scenario.** A tag `x\ntank@zz\tskyzfs-publish` on any held
@@ -143,7 +140,7 @@ question goes to the lead with figures (R-COUNT); the rest is low.
 - **Effects, by reading the code.**
   - In a marked directory, the agent asks `zfs release -r
     skyzfs-publish tank@zz`. That is `NoSnapshot`, or `no such tag`
-    and then an empty `holds -r`: both `Ok` (`cli.rs:1149-1160`). A
+    and then an empty `holds -r`: both `Ok` (`cli.rs:1174-1192`). A
     point `sweep before zz` is traced.
   - In a directory with no marker, exit 6 naming `zz`
     (`engine.rs:782-784`).
@@ -155,7 +152,7 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   to a real snapshot. Lines split from a multi-line tag then drop out
   as well.
 - **Already in the base, for later.** `tagged_snapshots`
-  (`cli.rs:773-781`, `zfs holds -H -r pool@t`, since #147) parses the
+  (`cli.rs:784-806`, `zfs holds -H -r pool@t`, since #147) parses the
   same way. A forged line in a tag on one member's `@t` could make
   `held()` read `Held::All` for a member that lacks the hold, or make
   `hold()` take a partial hold for whole. That needs a holder with
@@ -174,7 +171,7 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   `zfs_open` and its `zfs_get_holds`. That says `cannot get holds for
   'X': no such pool or dataset` (`libzfs_dataset.c:5355-5356`, 2.4.1),
   the shape the agent rig recorded for `holds -r`. It reaches
-  `confirm` with the pool passed at `cli.rs:834`. By reading, that pool
+  `confirm` with the pool passed at `cli.rs:859`. By reading, that pool
   is right and the read is made again.
 - **The plants.** Each of these survives:
   - R1: that command's pool to `confirm` replaced by its first
@@ -221,15 +218,15 @@ question goes to the lead with figures (R-COUNT); the rest is low.
     fake below.
   - The list with `userrefs` at R1's scales: its cost is inferred.
   - A tag with a byte above 0x7f, and one with a newline (D1, F1).
-- **Who answers.** The author should still answer Codex's thread on
-  the pull request.
+- **Who answers.** Codex posted the same P2 again on `b83ac36`. The
+  author should answer its thread on the pull request.
 
 ### Nits
 
 - **N-a: a dataset gone during the list is not an error.** The doc of
-  `tagged_once` (`cli.rs:790-793`) says "a dataset gone during either
+  `tagged_once` (`cli.rs:813-816`) says "a dataset gone during either
   is Vanished". The test feeds `cannot iterate filesystems: no such
-  pool or dataset` to the list (`cli/tests.rs:1684-1693`). libzfs does
+  pool or dataset` to the list (`cli/tests.rs:1684-1695`). libzfs does
   not say that of a vanished dataset:
   - `zfs_do_list_ioctl` ends the walk on `ENOENT`
     (`libzfs_iter.c:85-96`);
@@ -241,30 +238,121 @@ question goes to the lead with figures (R-COUNT); the rest is low.
   The list exits 0 without that dataset's snapshots, which is right
   for the sweep. Say so, and call the case defensive.
 - **N-b: one figure is from another run.** `list_per_snapshot`'s doc
-  (`cli.rs:381-384`) gives 26.04's list as "41.2 s ... run
-  45800940382, on an idle pool". In that run it took 41.6 s. 41.2 s is
-  run 45781769557's, beside the writers. The rate, 0.41 ms, is right
-  either way.
+  (`cli.rs:384-389`) gives 26.04's list as "41.2 s" and the run as
+  45800940382, on an idle pool. In that run it took 41.6 s. 41.2 s is
+  run 45781769557's, beside the writers, as the module docs
+  (`cli.rs:294-295`) say. The rate, 0.41 ms, is right either way.
 - **N-c: the per-snapshot cost grows with the snapshots per dataset.**
   #159 measured on 26.04, under writers: 0.40 ms a line up to 5500 a
   dataset, and 1.06 ms at 12 500. The "about five times the slowest"
   is at 1000 a dataset on an idle pool. At 12 500 a dataset on 24.04
   the margin may be about two. The docs could say so, or testing
   records one 24.04 point at a high count per dataset.
-- **N-d: argument length.** `HOLDS_AT_ONCE`'s doc (`cli.rs:314-317`)
+- **N-d: argument length.** `HOLDS_AT_ONCE`'s doc (`cli.rs:318-321`)
   says "far below the kernel's limit". Linux's limit is a quarter of
   the stack's rlimit, so a unit with `LimitSTACK=1M` allows 256 KiB,
   which is 1000 names of the longest kind. Real names are far shorter.
   Say "with the default stack limit".
-- **N-e: the skip's reason.** The comment at `cli.rs:846-849` says the
+- **N-e: the skip's reason.** The comment at `cli.rs:871-874` says the
   skip "keeps the hold it might name". Only another holder's
   multi-line tag makes a line without two fields: the agent's own
   lines are always whole. So the skip never keeps an agent's hold,
   and that is the better reason to give.
 
-## What I checked, by the four questions
+## Second look: `b83ac36`, the lead's ruling on R-COUNT
 
-### (1) `tagged_once` (`cli.rs:796-861`)
+### (1) The snapshot count within `Limits::full_most`
+
+- **The code.** `count` (`cli.rs:1037-1080`) runs the dataset count
+  within `Limits::count` (60 s), then `zfs list -r -H -o name -t
+  snapshot POOL` within `self.limits.full_most`. That is the
+  configured cap itself, not grown and not depending on the count it
+  makes. 35 minutes by default.
+- **The cap holds.** `System::run` (`host.rs:165-188`) returns
+  `TimedOut` at the limit. It kills the child's process group and does
+  not wait for it, so a child stuck on a suspended pool does not hold
+  the agent past 35 minutes. The `Slow` host of the test returns the
+  same `TimedOut`.
+- **The pool is not stalled.** The count lists names only (libzfs's
+  simple walk), one `SNAPSHOT_LIST_NEXT` ioctl at a time, each with
+  its own short hold of the pool (`zfs_ioctl.c:2415-2468`). Nothing
+  holds the configuration lock for the count's run, so the sync goes
+  on beside it.
+- **How long a round can wait.** Before the sweep, a round can now
+  wait up to 60 s for the dataset count and 35 minutes for the
+  snapshot count. The long wait needs a pool that answered the
+  dataset count, so the case of #153's N2 (a pool on which every
+  command hangs) still ends at the dataset count's 60 s. The
+  description says this under "Not done", and the ruling chose it.
+  - One consequence, low: `settle(limit)` checks its end between
+    rounds, so a round's count can now overrun it by up to 35
+    minutes. The walks could already overrun it by as much, so this is
+    not new in kind.
+- **Names and output.** A snapshot's name is ASCII, so the count's
+  output is always UTF-8. At 1.7 million snapshots its output is about
+  70 MB, held once.
+
+### (2) `walked`
+
+- **Where it is applied.** Exactly the three walks whose limit grows
+  with the snapshots counted: `holds -r` in `tagged_snapshots`
+  (`cli.rs:794`; so `held`, `hold` and `release`), the sweep's list
+  (`cli.rs:832-834`), and the manifest's list (`cli.rs:1098-1100`).
+  Those are the only callers of `walk_limit` and `list_limit`. The
+  sweep's per-chunk `zfs holds -H` and the manifest's gets are not on
+  a snapshot limit and do not append. That is right.
+- **What it passes through.** Only `Other` is changed. `NoSnapshot`
+  is matched before `walked` in `tagged_snapshots`, and `Vanished`
+  and `NoPool` are returned as they are, so `again` still reads a
+  vanished snapshot again and a missing pool is still `NoPool`. Not
+  pinned by a test (Q3, TG-C).
+- **No stale failure.** `uncounted` is set only by `count`, which is
+  also the only writer of `scale`. It is cleared after every dataset
+  count, before its result is read. So:
+  - after a count that counted both, it is `None`;
+  - after a count whose snapshot count failed, it holds that failure,
+    and the walks are on the limits it left;
+  - after a count whose dataset count failed, it is `None`, and the
+    scale is `Base`.
+
+  The engine counts at the start of every round, before the sweep
+  (`engine.rs:643`, `engine.rs:691`). Between two counts the scale
+  does not change, so the note is true of every walk it is added to.
+  Commands run without a count first (a fresh `ZfsCli`) have neither.
+  The clearing on a failed dataset count is not pinned (Q4, TG-C).
+- **No masking.** The walk's own error comes first and is kept whole;
+  the count's failure is added after it in parentheses. The test
+  checks that the walk's own words stay (Q5 is killed).
+- **Outside the ruling, for the record.** A failed dataset count
+  leaves every limit at its base, and the walks' errors then do not
+  say so. That was the lead's ruling on N2 of #153 (the round's own
+  calls say what is wrong). The dataset count does not walk the
+  snapshots and has 60 s, so I have no case where it times out on a
+  pool that answers. No change asked.
+
+### (3) `a_count_past_the_datasets_limit_is_not_cut_off` and its `Slow` host
+
+- **The host.** `Slow` times a command out when the limit given is
+  shorter than the time the test gives it. It records the call and
+  returns `TimedOut`, as `System::run` does at its limit. Otherwise
+  the `Fake` answers. Equal is not cut off, and the test uses 126.2 s
+  against 35 minutes, then 35 minutes and 1 ms.
+- **What it checks.** The count is given `full_most`. The three walks
+  then get their grown limits, worked out from the recorded figures.
+  When the count is cut off, the dataset count stands, the walks keep
+  a read's limit (the list the gets'), and each error holds the walk's
+  own words, the note and the count's command. A count that succeeds
+  again clears it.
+- **Would it fail if the count used the datasets' limit again?** Yes,
+  twice over. C1 (a read's limit, 70.1 s) is killed by it and by the
+  three tests that pin the count's limit. Q6 is C1 with the test's two
+  checks of the count's limit taken out of a scratch copy: Q6-RESULT
+  Q2 (the gets' limit, 80.2 s) and C2 (the count's 60 s) are killed
+  too.
+
+## What I checked at the first look, by the four questions
+
+### (1) `tagged_once` (`cli.rs:808-886`)
 
 - **No stall.** `zfs list -r -t snapshot` takes the pool for one
   `SNAPSHOT_LIST_NEXT` ioctl at a time (`dmu_objset_hold` and its
@@ -345,24 +433,26 @@ question goes to the lead with figures (R-COUNT); the rest is low.
 
 - **The arithmetic.** In seconds, with D datasets and S snapshots
   counted:
-  - the manifest's list (`list_limit`, `cli.rs:485-499`):
+  - the manifest's list (`list_limit`, `cli.rs:508-523`):
     `min(min(60 + 0.2·D, 2100) + 0.01·S, 2100)`;
-  - `holds -r` and the sweep's list (`walk_limit`, `cli.rs:511-520`):
+  - `holds -r` and the sweep's list (`walk_limit`, `cli.rs:534-543`):
     `min(min(60 + 0.1·D, 1200) + 0.01·S, 2100)`;
-  - each of the sweep's `zfs holds -H`: `min(60 + 0.1·D, 1200)`.
+  - each of the sweep's `zfs holds -H`: `min(60 + 0.1·D, 1200)`;
+  - the snapshot count, since `b83ac36`: 2100.
 - **Saturation.** `grown` takes `most` where S does not fit in a
   `u32` or the product overflows, then adds with `saturating_add` and
   caps. The cap is reached at about 204 000 snapshots with 10
   datasets, as the tests pin (203 700 under it, 203 900 at it).
-- **Every command that walks the snapshots** has a walk limit:
+- **Every command that walks the snapshots** has a limit that covers
+  it:
   - `holds -r` through `tagged_snapshots`, in `held`, `hold` and
     `release`;
   - the sweep's list;
-  - the manifest's list.
+  - the manifest's list;
+  - the snapshot count, at the cap (since `b83ac36`).
 
   The gets, `hold -r`, `release -r`, `destroy -r` and `snapshot -r`
-  walk the file systems only. The one walk without a walk limit is the
-  snapshot count itself: R-COUNT.
+  walk the file systems only.
 - **The figures behind 10 ms**, per snapshot on an idle pool (run
   45800940382):
 
@@ -382,9 +472,10 @@ question goes to the lead with figures (R-COUNT); the rest is low.
 
 ### (3) TG1 and TG2
 
-- **TG1.** `the_holds_limit_covers_its_recording` asserts 10 ms for
-  `holds_per_snapshot`, and `the_lists_limit_grows_...` asserts it for
-  `list_per_snapshot`. L3 (5 ms) and L4 (4 ms) are killed.
+- **TG1.** `the_holds_limit_covers_its_recording`
+  (`cli/tests.rs:2240`) asserts 10 ms for `holds_per_snapshot`, and
+  `the_lists_limit_grows_...` asserts it for `list_per_snapshot`. L3
+  (5 ms) and L4 (4 ms) are killed.
 - **TG2.** Each new case pins the pool passed to `confirm`:
   - the layout's `zpool status` (T1);
   - the `props` fallback's `zpool status` (T2);
@@ -417,12 +508,15 @@ question goes to the lead with figures (R-COUNT); the rest is low.
 
 ## Plants
 
-`review/m2.6c5d/plants162.py`, on a scratch worktree at the head.
-Each plant is applied alone as exact text (each site found once), then
-`cargo test -p skyzfs-agent -p skyzfs-agent-cli --features
-skyzfs-agent-cli/test-hooks` runs, with a 600 s limit, and the file is
-restored after. The baseline passed (204 + 7). The worktree was clean
-at the end. 31 plants.
+Each plant is applied alone as exact text (each site found once) on a
+scratch worktree at the head, then `cargo test -p skyzfs-agent -p
+skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks` runs, with a
+600 s limit, and the file is restored after. The worktree was clean at
+the end of each run.
+
+### First look, at `6e420dc` (`plants162.py`, 31 plants)
+
+The baseline passed (204 + 7).
 
 **The author's 21, my versions.** All are killed, by the tests the
 description names. L5 I made two ways, the inner and the outer cap
@@ -464,8 +558,15 @@ description names. L5 I made two ways, the inner and the outer cap
 | R5 a short holds line an error | **survives** (TG-B) |
 | R6 the sweep's list on the manifest list's limit | killed (three tests) |
 | R7 only `zpool status -g` on `status` | **survives** (TG-B) |
-| R8 the snapshot count on `full_most` | killed: a fix of R-COUNT shows in three tests, as it should |
+| R8 the snapshot count on `full_most` | killed at `6e420dc`: the fix of R-COUNT showed in three tests, as it should. It is `b83ac36`. |
 | R9 `rsplit_once('@')` for the name | survives; equivalent, a name has one `@` |
+
+The code these plants touch is the same at `b83ac36`, except the
+count (R8) and the sites `walked` now wraps.
+
+### Second look, at `b83ac36` (`plants162b.py`, 13 plants)
+
+SECOND-PLANTS
 
 ## Gates
 
