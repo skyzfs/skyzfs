@@ -5,11 +5,12 @@
 #
 #   zfs-cli-record.sh OUT LUA_DIR [WORK]
 #
-# LUA_DIR holds members.lua and tagged.lua, and snapshot.lua where the
-# adapter still has it, the programs as the adapter pipes them to `zfs
+# LUA_DIR holds members.lua, and snapshot.lua and tagged.lua where the
+# adapter still has them, the programs as the adapter pipes them to `zfs
 # program`. Without snapshot.lua (the take is `zfs snapshot -r` since
-# M2.6c-2b), the records that run it are not made, and about.txt says
-# so. Every command runs with
+# M2.6c-2b), or without tagged.lua (the sweep reads the holds by the CLI
+# since M2.6c-5d), the records that run it are not made, and about.txt
+# says so. Every command runs with
 # LC_ALL=C, as the adapter runs its commands (src/host.rs), unless its
 # record says otherwise. Each command is one record, OUT/NAME/ with:
 #
@@ -67,11 +68,21 @@
 #                               did not take the whole @t (as above);
 #                               about.txt then says how many it took
 #             members, hold, tagged, release
-#                               at @t, hold and release with -r
+#                               at @t, hold and release with -r (tagged
+#                               only with tagged.lua)
 #             holds             zfs holds -H -r P@t while @t is held,
 #                               the agent's read of the holds in each
 #                               round, with the load beside it (below);
 #                               about.txt gives its lines
+#             sweep-list        the sweep's list (M2.6c-5d): zfs list -H
+#                               -p -r -t snapshot -o name,userrefs P,
+#                               while @t is held, with the load beside
+#                               it; about.txt gives its lines
+#             sweep-holds       the sweep's read of the holds: zfs holds
+#                               -H on the snapshots sweep-list lists
+#                               with a hold, the first 1000 of them (the
+#                               adapter's HOLDS_AT_ONCE), with the load
+#                               beside it; about.txt gives its lines
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
@@ -98,7 +109,8 @@
 #           take-cli-members counted, which is what hold, tagged,
 #           release and destroy ran on, the datasets that take-cli-full
 #           listed, and the lines and seconds of count-snapshots, holds,
-#           take-cli-get, take-cli-get-pairs and take-cli-list; with
+#           sweep-list, sweep-holds, take-cli-get, take-cli-get-pairs and
+#           take-cli-list; with
 #           N:K, the K reached of each dataset ("K reached: R of the K
 #           asked"), since the room left can stop it first.
 #           The snapshot program is not run at a count above
@@ -156,7 +168,11 @@
 #                          only with snapshot.lua)
 #   members, members-absent, tagged
 #                          members.lua at t and at a t that is absent;
-#                          tagged.lua before any hold
+#                          tagged.lua before any hold (only with
+#                          tagged.lua)
+#   sweep-list             the sweep's list of the snapshots and their
+#                          count of holds (M2.6c-5d), before any hold:
+#                          zfs list -H -p -r -t snapshot -o name,userrefs
 #   members-full, members-full-absent
 #                          members.lua in its full mode (`POOL T full
 #                          ASSIST`) at t and at a t that is absent. Every
@@ -166,7 +182,22 @@
 #   hold-1, holds, holds-r, hold-2, tagged-held, release-1,
 #   holds-r-released, release-2
 #                          the holds, and hold and release twice for the
-#                          second's message (expected)
+#                          second's message (expected); tagged-held only
+#                          with tagged.lua
+#   sweep-list-held, sweep-holds, sweep-gone-take, sweep-gone-destroy,
+#   sweep-holds-gone, sweep-holds-gone-last
+#                          while @t is held: the sweep's list, then zfs
+#                          holds -H on the snapshots it lists with a
+#                          hold; then @gone taken and destroyed with -r,
+#                          and zfs holds -H on those snapshots with
+#                          P@gone among them, after the first and last
+#                          (a snapshot destroyed between the sweep's two
+#                          reads). about.txt says so where the list has
+#                          no snapshot with a hold
+#   sweep-hold-odd, sweep-list-odd, sweep-holds-odd, sweep-release-odd
+#                          a second hold on the first of them, whose tag
+#                          is not UTF-8 (caf and the byte 0xE9), the
+#                          sweep's two reads again, then that hold let go
 #   holds-absent, hold-absent, release-absent
 #                          on a snapshot that is not there, on a live pool
 #   hold-root, hold-r-partial, holds-r-partial
@@ -348,6 +379,17 @@ PROGRAM_LIMITS=(-t 100000000 -m 104857600)
 # Whether LUA_DIR has the snapshot program (main): 0 once the take is
 # `zfs snapshot -r` alone.
 SNAPSHOT_LUA=1
+# Whether LUA_DIR has the sweep's program (main): 0 once the sweep reads
+# the holds by the CLI (M2.6c-5d).
+TAGGED_LUA=1
+# The sweep's list (M2.6c-5d): every snapshot and its count of holds.
+SWEEP_LIST=(zfs list -H -p -r -t snapshot -o 'name,userrefs')
+# The most snapshots one zfs holds of the sweep names (the adapter's
+# HOLDS_AT_ONCE).
+HOLDS_AT_ONCE=1000
+# A hold tag that is not UTF-8 (caf and the byte 0xE9): the sweep reads
+# the holds as bytes (#162).
+ODD_TAG=$'caf\351'
 # Whether members.lua has its full mode (main): 0 for a members.lua from
 # before #153, whose answer to `... T full ASSIST` is the plain mode's,
 # so that no record is named for a mode that did not run.
@@ -701,6 +743,33 @@ lines_line() {
     echo "scale: $1: $(wc -l < "$OUT/$1/stdout" 2> /dev/null || echo no) lines in $(cat "$OUT/$1/secs" 2> /dev/null || echo '?') s" >> "$OUT/about.txt"
 }
 
+# held_names FILE: the snapshots a sweep's list (SWEEP_LIST) in FILE
+# gives with a hold, as the adapter reads them (userrefs above 0).
+held_names() {
+    awk -F '\t' 'NF == 2 && $1 ~ /@/ && $2 ~ /^[0-9]+$/ && $2 > 0 { print $1 }' "$1"
+}
+
+# sweep_holds X P: the sweep's second read on X-sweep-list-held, then
+# with a snapshot destroyed before it among the names.
+sweep_holds() {
+    local x=$1 p=$2 held
+    mapfile -t held < <(held_names "$OUT/$x-sweep-list-held/stdout")
+    if [ "${#held[@]}" = 0 ]; then
+        echo "$x: the sweep's holds not read: $x-sweep-list-held lists no snapshot with a hold" >> "$OUT/about.txt"
+        return 0
+    fi
+    rec "$x-sweep-holds" zfs holds -H "${held[@]}"
+    rec "$x-sweep-gone-take" zfs snapshot -r "$p@gone"
+    rec "$x-sweep-gone-destroy" zfs destroy -r "$p@gone"
+    rec "$x-sweep-holds-gone" zfs holds -H "${held[0]}" "$p@gone" "${held[@]:1}"
+    rec "$x-sweep-holds-gone-last" zfs holds -H "${held[@]}" "$p@gone"
+    # A second hold, whose tag is not UTF-8, on the first of them.
+    rec "$x-sweep-hold-odd" zfs hold "$ODD_TAG" "${held[0]}"
+    rec "$x-sweep-list-odd" "${SWEEP_LIST[@]}" "$p"
+    rec "$x-sweep-holds-odd" zfs holds -H "${held[@]}"
+    rec "$x-sweep-release-odd" zfs release "$ODD_TAG" "${held[0]}"
+}
+
 # Everything recorded on a live pool before the changes of its devices.
 record_pool() { # prefix pool
     local x=$1 p=$2
@@ -714,12 +783,19 @@ record_pool() { # prefix pool
     program "$x-members-absent" "$p" members.lua --expect '"absent"' -n "$p" absent
     full "$x-members-full" "$p" t
     full "$x-members-full-absent" "$p" absent
-    program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    if [ "$TAGGED_LUA" = 1 ]; then
+        program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    fi
+    rec "$x-sweep-list" "${SWEEP_LIST[@]}" "$p"
     rec "$x-hold-1" zfs hold -r "$TAG" "$p@t"
     rec "$x-holds" zfs holds -H "$p@t"
     rec "$x-holds-r" zfs holds -H -r "$p@t"
     rec "$x-hold-2" --expect 'tag already exists' zfs hold -r "$TAG" "$p@t"
-    program "$x-tagged-held" "$p" tagged.lua -n "$p" "$TAG"
+    if [ "$TAGGED_LUA" = 1 ]; then
+        program "$x-tagged-held" "$p" tagged.lua -n "$p" "$TAG"
+    fi
+    rec "$x-sweep-list-held" "${SWEEP_LIST[@]}" "$p"
+    sweep_holds "$x" "$p"
     rec "$x-release-1" zfs release -r "$TAG" "$p@t"
     rec "$x-holds-r-released" zfs holds -H -r "$p@t"
     rec "$x-release-2" --expect 'no such tag' zfs release -r "$TAG" "$p@t"
@@ -799,7 +875,11 @@ record_none() { # prefix pool
     agent_commands "$x" "$p"
     program "$x-members" "$p" members.lua -n "$p" t
     full "$x-members-full" "$p" t
-    program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    if [ "$TAGGED_LUA" = 1 ]; then
+        program "$x-tagged" "$p" tagged.lua -n "$p" "$TAG"
+    fi
+    rec "$x-sweep-list" "${SWEEP_LIST[@]}" "$p"
+    rec "$x-sweep-holds" zfs holds -H "$p@t" "$p@u"
     rec "$x-holds" zfs holds -H "$p@t"
     rec "$x-holds-r" zfs holds -H -r "$p@t"
     rec "$x-hold" zfs hold -r "$TAG" "$p@t"
@@ -1080,7 +1160,7 @@ retain() {
 # K retained snapshots of each dataset as well (retain), and its records
 # are named scale-N-sK.
 scale() {
-    local n=$1 k=${2:-0} lbl p=skzqs t0 made step cut="" rc wdir
+    local n=$1 k=${2:-0} lbl p=skzqs t0 made step cut="" rc wdir held
     local LIMIT FILL_SPAN=""
     lbl=$n
     [ "$k" = 0 ] || lbl=$n-s$k
@@ -1115,7 +1195,7 @@ scale() {
         echo "scale $lbl: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
     [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"
-    for step in count count-snapshots snapshot snapshot-cli members hold holds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
+    for step in count count-snapshots snapshot snapshot-cli members hold holds sweep-list sweep-holds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
             echo "scale $lbl: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
@@ -1149,7 +1229,27 @@ scale() {
                 writing "scale-$lbl-holds" "$wdir" "$p" rec "scale-$lbl-holds" zfs holds -H -r "$p@t"
                 lines_line "scale-$lbl-holds"
                 ;;
-            tagged) program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
+            # The sweep's two reads (M2.6c-5d), while @t is held.
+            sweep-list)
+                writing "scale-$lbl-sweep-list" "$wdir" "$p" rec "scale-$lbl-sweep-list" "${SWEEP_LIST[@]}" "$p"
+                lines_line "scale-$lbl-sweep-list"
+                ;;
+            sweep-holds)
+                mapfile -t held < <(held_names "$OUT/scale-$lbl-sweep-list/stdout")
+                if [ "${#held[@]}" = 0 ]; then
+                    echo "scale $lbl: the sweep's holds not read: its list gives no snapshot with a hold" >> "$OUT/about.txt"
+                else
+                    writing "scale-$lbl-sweep-holds" "$wdir" "$p" rec "scale-$lbl-sweep-holds" zfs holds -H "${held[@]:0:HOLDS_AT_ONCE}"
+                    lines_line "scale-$lbl-sweep-holds"
+                fi
+                ;;
+            tagged)
+                if [ "$TAGGED_LUA" = 1 ]; then
+                    program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG"
+                else
+                    echo "scale $lbl: the tagged program not run: there is no tagged.lua" >> "$OUT/about.txt"
+                fi
+                ;;
             release) rec "scale-$lbl-release" zfs release -r "$TAG" "$p@t" ;;
             destroy) rec "scale-$lbl-destroy" zfs destroy -r "$p@t" ;;
             take-cli) writing "scale-$lbl-take-cli" "$wdir" "$p" rec "scale-$lbl-take-cli" zfs snapshot -r "$p@c" ;;
@@ -1227,10 +1327,9 @@ main() {
     LUA_DIR=${2:?usage: zfs-cli-record.sh OUT LUA_DIR [WORK]}
     WORK=${3:-/mnt/skz-cli-record}
     [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
-    for f in members tagged; do
-        [ -r "$LUA_DIR/$f.lua" ] || { echo "no $f.lua in $LUA_DIR" >&2; exit 64; }
-    done
+    [ -r "$LUA_DIR/members.lua" ] || { echo "no members.lua in $LUA_DIR" >&2; exit 64; }
     [ -r "$LUA_DIR/snapshot.lua" ] || SNAPSHOT_LUA=0
+    [ -r "$LUA_DIR/tagged.lua" ] || TAGGED_LUA=0
     has_full "$LUA_DIR/members.lua" || MEMBERS_FULL=0
     mkdir -p "$OUT" "$WORK"
     OUT=$(cd "$OUT" && pwd)
@@ -1292,6 +1391,7 @@ main() {
         echo "zfs userland $(zfs version 2> /dev/null | head -n 1)"
         echo "lua from ${LUA_REF:-$LUA_DIR}"
         [ "$SNAPSHOT_LUA" = 1 ] || echo "no snapshot.lua: the take is zfs snapshot -r alone; the snapshot program's records are not made"
+        [ "$TAGGED_LUA" = 1 ] || echo "no tagged.lua: the sweep reads the holds by the CLI alone; the tagged program's records are not made"
         [ "$MEMBERS_FULL" = 1 ] || echo "members.lua has no full mode: the members-full records are not made"
         tail -n 1 "$OUT/ublksrv.ver"
     } > "$OUT/about.txt"

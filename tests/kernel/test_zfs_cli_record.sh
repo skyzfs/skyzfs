@@ -156,6 +156,18 @@ printf '%s %s\n' "${LC_ALL:-unset}" "$*"
 [ "$1" = snapshot ] && [ -n "${FAKE_SNAP_SLEEP:-}" ] && sleep "$FAKE_SNAP_SLEEP"
 # A snapshot call refused, when asked: from that name on.
 [ "$1" = snapshot ] && [ -n "${FAKE_SNAP_FAIL:-}" ] && [ "$3" = "$FAKE_SNAP_FAIL" ] && { echo "cannot create snapshots : out of space" >&2; exit 1; }
+# The sweep's list: the pool's @t and its child's with a hold (or
+# FAKE_HELD names with one, the most a test needs), and @r1 with none.
+case "$*" in
+    "list -H -p -r -t snapshot -o name,userrefs "*)
+        if [ -n "${FAKE_HELD:-}" ]; then
+            i=1
+            while [ "$i" -le "$FAKE_HELD" ]; do printf '%s@h%s\t1\n' "$9" "$i"; i=$((i + 1)); done
+        else
+            printf '%s@t\t%s\n%s/child@t\t1\n%s@r1\t0\n' "$9" "${FAKE_USERREFS:-2}" "$9" "$9"
+        fi
+        exit 0 ;;
+esac
 [ "$1" = list ] && exit "${FAKE_LIST_RC:-0}"
 # The snapshot program's answer, when one is given.
 case "$*" in
@@ -299,6 +311,51 @@ check "scale's holds while held" "$(order scale-3-hold scale-3-holds)$(order sca
 lines_said() { grep -cxF "scale: $1: $(wc -l < "$OUT/$1/stdout") lines in $(cat "$OUT/$1/secs") s" "$OUT/about.txt"; }
 check "lines said: holds" "$(lines_said scale-3-holds)" 1
 check "lines said: with the seconds" "$(grep -Ec '^scale: scale-3-holds: [0-9]+ lines in [0-9]+\.[0-9]{3} s$' "$OUT/about.txt")" 1
+# The sweep's two reads (M2.6c-5d): the list, then zfs holds -H on the
+# snapshots it gives with a hold, in its order; with a snapshot
+# destroyed between them, after the first and last.
+SWL="zfs list -H -p -r -t snapshot -o name,userrefs"
+check "pin sweep list" "$(words rig-sweep-list)/$(words rig-sweep-list-held)" "$SWL skzq /$SWL skzq "
+check "pin sweep holds" "$(words rig-sweep-holds)" "zfs holds -H skzq@t skzq/child@t "
+check "pin sweep gone" "$(words rig-sweep-gone-take)/$(words rig-sweep-gone-destroy)" "zfs snapshot -r skzq@gone /zfs destroy -r skzq@gone "
+check "pin sweep holds, one gone" "$(words rig-sweep-holds-gone)" "zfs holds -H skzq@t skzq@gone skzq/child@t "
+check "pin sweep holds, the last gone" "$(words rig-sweep-holds-gone-last)" "zfs holds -H skzq@t skzq/child@t skzq@gone "
+check "pin sweep odd tag" "$(words rig-sweep-hold-odd)/$(words rig-sweep-release-odd)" "zfs hold $ODD_TAG skzq@t /zfs release $ODD_TAG skzq@t "
+check "the odd tag's bytes" "$(printf '%s' "$ODD_TAG" | od -An -tx1 | tr -d ' ')" 636166e9
+check "pin sweep reads with the odd tag" "$(words rig-sweep-list-odd)/$(words rig-sweep-holds-odd)" "$SWL skzq /zfs holds -H skzq@t skzq/child@t "
+check "sweep: the odd tag after the gone, let go before the release" \
+    "$(order rig-sweep-holds-gone-last rig-sweep-hold-odd)$(order rig-sweep-hold-odd rig-sweep-list-odd)$(order rig-sweep-list-odd rig-sweep-holds-odd)$(order rig-sweep-holds-odd rig-sweep-release-odd)$(order rig-sweep-release-odd rig-release-1)" \
+    yesyesyesyesyes
+check "sweep: the odd tag's cmd quoted" "$(cat "$OUT/rig-sweep-hold-odd/cmd")" "zfs hold \$'caf\\351' skzq@t"
+check "sweep: the list before any hold, the rest while held" \
+    "$(order rig-sweep-list rig-hold-1)$(order rig-hold-1 rig-sweep-list-held)$(order rig-sweep-list-held rig-sweep-holds)$(order rig-sweep-holds rig-sweep-gone-take)$(order rig-sweep-gone-take rig-sweep-gone-destroy)$(order rig-sweep-gone-destroy rig-sweep-holds-gone)$(order rig-sweep-holds-gone rig-sweep-holds-gone-last)$(order rig-sweep-holds-gone-last rig-release-1)" \
+    yesyesyesyesyesyesyesyes
+check "pin none's sweep" "$(words none-sweep-list)/$(words none-sweep-holds)" "$SWL skznone /zfs holds -H skznone@t skznone@u "
+check "pin scale's sweep" "$(words scale-3-sweep-list)/$(words scale-3-sweep-holds)" "$SWL skzqs /zfs holds -H skzqs@t skzqs/child@t "
+check "scale's sweep while held" "$(order scale-3-hold scale-3-sweep-list)$(order scale-3-sweep-list scale-3-sweep-holds)$(order scale-3-sweep-holds scale-3-release)" yesyesyes
+check "scale's sweep with the load beside it" "$([ -s "$OUT/scale-3-sweep-list/writer.tsv" ] && [ -s "$OUT/scale-3-sweep-holds/writer.tsv" ] && echo yes || echo no)" yes
+check "lines said: sweep list, sweep holds" "$(lines_said scale-3-sweep-list)$(lines_said scale-3-sweep-holds)" 11
+# held_names: a hold count above 0 of a snapshot alone; the header line
+# of the fake, a count of 0, a dataset and a word are not.
+printf 'C list -H\na@t\t1\nb@t\t0\nc\t3\nd@t\tx\ne@t\t12\nf@t\t1\textra\n' > "$T/held.txt"
+check "held_names" "$(held_names "$T/held.txt" | tr '\n' ' ')" "a@t e@t "
+# No snapshot with a hold: no holds read, said.
+mkdir -p "$T/nohold"
+: > "$T/nohold/index.tsv"
+OUT=$T/nohold FAKE_USERREFS=0 FAKE_HELD=0 record_pool rig skzq > /dev/null 2> "$T/nohold.err"
+check "no hold: the holds not read" "$(find "$T/nohold" -mindepth 1 -maxdepth 1 -name 'rig-sweep-*' -printf '%f\n' | sort | tr '\n' ' ')" "rig-sweep-list rig-sweep-list-held "
+check "no hold: no odd tag either" "$(grep -c 'caf' "$T/nohold/index.tsv")" 0
+check "no hold: said" "$(grep -cx 'rig: the sweep.s holds not read: rig-sweep-list-held lists no snapshot with a hold' "$T/nohold/about.txt")" 1
+# At scale, HOLDS_AT_ONCE names at most, the first of the list's.
+mkdir -p "$T/many"
+: > "$T/many/index.tsv"
+OUT=$T/many FAKE_HELD=1002 FAKE_LIST_RC=1 ZCR_SCALE_LIMIT=7 scale 2 > /dev/null 2> "$T/many.err"
+check "scale's sweep: 1000 names at most" "$(tr '\0' '\n' < "$T/many/scale-2-sweep-holds/argv" | grep -c '@h')" 1000
+check "scale's sweep: the first" "$(tr '\0' '\n' < "$T/many/scale-2-sweep-holds/argv" | sed -n '4p;1003p' | tr '\n' ' ')" "skzqs@h1 skzqs@h1000 "
+mkdir -p "$T/nohs"
+: > "$T/nohs/index.tsv"
+OUT=$T/nohs FAKE_HELD=0 FAKE_LIST_RC=1 ZCR_SCALE_LIMIT=7 scale 2 > /dev/null 2> "$T/nohs.err"
+check "scale's sweep: none held, said" "$([ -e "$T/nohs/scale-2-sweep-holds" ] && echo yes || echo no)$(grep -cx "scale 2: the sweep's holds not read: its list gives no snapshot with a hold" "$T/nohs/about.txt")" no1
 check "scale's counts, then the snapshot" "$(order scale-3-count scale-3-count-snapshots)$(order scale-3-count-snapshots scale-3-snapshot)" yesyes
 check "lines said: count-snapshots" "$(lines_said scale-3-count-snapshots)" 1
 check "pin scale's get of the pairs" "$(words scale-3-take-cli-get-pairs)" "zfs get -r -H -p -t filesystem,volume -s local -o name,property all skzqs "
@@ -422,7 +479,7 @@ check "new data: the span said" "$(grep -c '^scale 3: zfs_dirty_data_max 1048576
 check "txg history: turned on, said" "$(cat "$ZCR_ZFS_PARAMS/zfs_txg_history"; grep -c '^scale 3: zfs_txg_history 0, set to 100' "$OUT/about.txt")" $'100\n1'
 check "writer: its file in the root" "$([ -s "$WORK/mnt/skzqs/writer.dat" ] && echo yes || echo no)" yes
 check "writer: nothing left behind" "$(find "$OUT" -maxdepth 1 -name '.writer-*' | wc -l)" 0
-check "writer: beside the takes, the holds and the reads after the take, at 3" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-3-holds scale-3-snapshot scale-3-take-cli scale-3-take-cli-get scale-3-take-cli-list scale-3-take-cli-members "
+check "writer: beside the takes, the holds, the sweep's reads and the reads after the take, at 3" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-3-holds scale-3-snapshot scale-3-sweep-holds scale-3-sweep-list scale-3-take-cli scale-3-take-cli-get scale-3-take-cli-list scale-3-take-cli-members "
 check "scale's limit is its own" "$LIMIT" 5
 check "scale's image removed" "$([ -e "$WORK/scale.img" ] && echo yes || echo no)" no
 check "scale's df" "$(grep -c '^scale 3: df: ' "$OUT/about.txt")" 2
@@ -460,6 +517,8 @@ for d in "$OUT"/*/; do
             case $n in
                 # A hold on one snapshot alone, on purpose.
                 *-hold-root | *-hold-child | *-destroy-held-hold) [ "${w[2]}" = skyzfs-publish ] || bad="$bad tag:$n" ;;
+                # The tag that is not UTF-8, on one snapshot.
+                *-sweep-hold-odd | *-sweep-release-odd) [ "${w[2]}" = "$ODD_TAG" ] && [ "${#w[@]}" = 4 ] || bad="$bad odd:$n" ;;
                 *) [ "${w[2]} ${w[3]}" = "-r skyzfs-publish" ] || bad="$bad -r:$n" ;;
             esac
             ;;
@@ -511,7 +570,7 @@ SCALE_END=$(($(date +%s) + 2))
 export FAKE_SLEEP=4
 ZCR_SCALE_LIMIT=7 scale 6 > /dev/null 2>> "$T/pins.err"
 check "budget: the hold cut at what was left" "$(cat "$OUT/scale-6-hold/rc")" 124
-check "budget: nothing after it" "$([ -e "$OUT/scale-6-holds" ] || [ -e "$OUT/scale-6-tagged" ] && echo yes || echo no)" no
+check "budget: nothing after it" "$([ -e "$OUT/scale-6-holds" ] || [ -e "$OUT/scale-6-sweep-list" ] || [ -e "$OUT/scale-6-tagged" ] && echo yes || echo no)" no
 check "budget: said" "$(grep -c '^scale 6: the budget was spent before holds' "$OUT/about.txt")" 1
 unset FAKE_SLEEP
 # Above ZCR_SCALE_LUA_MAX, no program: the CLI takes @t, and the rest
@@ -572,7 +631,7 @@ check "full read beside: said" "$(grep -c -e '^scale: writer beside scale-11-tak
 check "full read beside: its count still said" "$(grep -c '^scale: scale-11-take-cli-full: ' "$OUT/about.txt")" 1
 check "full read beside: settled after it" "$(grep -Ec ' settled=[0-9]+\.[0-9]{3} settle_rc=0$' "$OUT/scale-11-take-cli-full/fill")" 1
 check "full read beside: empty list, none" "$([ -e "$OUT/scale-12-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-12-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
-check "full read beside: the others' writers as without it" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-holds scale-11-snapshot scale-11-take-cli scale-11-take-cli-full scale-11-take-cli-get scale-11-take-cli-list scale-11-take-cli-members scale-12-holds scale-12-snapshot scale-12-take-cli scale-12-take-cli-get scale-12-take-cli-list scale-12-take-cli-members "
+check "full read beside: the others' writers as without it" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-holds scale-11-snapshot scale-11-sweep-holds scale-11-sweep-list scale-11-take-cli scale-11-take-cli-full scale-11-take-cli-get scale-11-take-cli-list scale-11-take-cli-members scale-12-holds scale-12-snapshot scale-12-sweep-holds scale-12-sweep-list scale-12-take-cli scale-12-take-cli-get scale-12-take-cli-list scale-12-take-cli-members "
 # A count that is part of a listed one is not listed (11 is in 110), and
 # an empty list is none, even at the default's own count.
 OUT=$T/beside-more
@@ -611,7 +670,7 @@ LIMIT=5
 
 # The window file: each line is its script's line on the record's own
 # log and window, and the logs run past the window by the margin.
-for r in snapshot holds take-cli take-cli-members take-cli-get take-cli-list; do
+for r in snapshot holds sweep-list sweep-holds take-cli take-cli-members take-cli-get take-cli-list; do
     IFS=$'\t' read -r w0 w1 < "$OUT/scale-3-$r/window"
     check "window beside $r: t0 before t1" "$(awk -v a="$w0" -v b="$w1" 'BEGIN { print (a < b) ? "yes" : "no" }')" yes
     check "window beside $r: the stall again" "$(python3 "$HERE/dsync_writer.py" stall "$OUT/scale-3-$r/writer.tsv" "$w0" "$w1")" "$(cat "$OUT/scale-3-$r/stall")"
@@ -628,7 +687,7 @@ done
 # (the take's, the holds' and each read's with the load beside it) and
 # before the next probe began.
 prev=snapshot
-for r in holds take-cli take-cli-members take-cli-get take-cli-list; do
+for r in holds sweep-list sweep-holds take-cli take-cli-members take-cli-get take-cli-list; do
     s0=$(tail -n 1 "$OUT/scale-3-$prev/txg.tsv" | cut -f2)
     s1=$(head -n 1 "$OUT/scale-3-$r/txg.tsv" | cut -f2)
     check "settle beside $prev: a sync after the probe" "$(awk -v a="$s0" -v b="$s1" '$2 == "sync" && $3 == "skzqs" && $1 >= a && $1 < b' "$T/zpool.calls" | wc -l)" 1
@@ -710,7 +769,25 @@ check "no lua: scale said" "$(grep -c '^scale 3: the snapshot program not run: t
 check "no lua: scale's @t by the CLI" "$(words scale-3-snapshot-cli)" "zfs snapshot -r skzqs@t "
 check "no lua: scale's full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
 check "no lua: members full, partial" "$(words rig-members-full-partial)" "zfs program -n $P skzq - skzq p full skyzfs:assist "
-check "no lua: main needs members and tagged alone" "$(grep -v '^ *#' "$HERE/zfs-cli-record.sh" | grep -c '^    for f in members tagged; do$')" 1
+check "no lua: main needs members alone" "$(code | grep -c 'no members.lua in')/$(code | grep -c 'no tagged.lua in\|no snapshot.lua in')" 1/0
+# Without tagged.lua (the sweep by the CLI since M2.6c-5d): no record
+# runs it, the sweep's records are made all the same, and each step
+# that would have run it says so.
+OUT=$T/notag
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+TAGGED_LUA=0
+SCALE_END=$(($(date +%s) + 600))
+record_pool rig skzq > /dev/null 2> "$T/notag.err"
+record_none none skznone > /dev/null 2>> "$T/notag.err"
+FAKE_LIST_RC=1 ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/notag.err"
+TAGGED_LUA=1
+check "no tagged: no name twice" "$(grep -c twice "$T/notag.err")" 0
+check "no tagged: tagged.lua run by none" "$(cat "$OUT"/*/cmd | grep -c 'tagged\.lua')" 0
+check "no tagged: none of its records" "$(find "$OUT" -mindepth 1 -maxdepth 1 -type d -name '*-tagged*' | wc -l)" 0
+check "no tagged: the sweep's records" "$(words rig-sweep-holds)/$(words none-sweep-list)/$(words scale-3-sweep-holds)" "zfs holds -H skzq@t skzq/child@t /$SWL skznone /zfs holds -H skzqs@t skzqs/child@t "
+check "no tagged: scale said" "$(grep -cx 'scale 3: the tagged program not run: there is no tagged.lua' "$OUT/about.txt")" 1
+check "no tagged: the holds as before" "$(words rig-holds-r)/$(words rig-release-1)" "zfs holds -H -r skzq@t /zfs release -r skyzfs-publish skzq@t "
 
 # A members.lua without the full mode (before #153): no members-full
 # record, as its answer would be the plain mode's under a full name.
