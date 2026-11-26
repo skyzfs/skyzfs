@@ -390,7 +390,7 @@ sweep() {
     rm -f "$T/calls"
 }
 is "sweep: the first publish, the stray hold, the scenario's publish" "$(sweep)" \
-    "acmd first publish --limit-s 600;zfs snapshot skzcut@sweep-w;zfs hold skyzfs-publish skzcut@sweep-w;acmd publish publish --limit-s 600 --kill-at sweep:before:1;"
+    "acmd first publish --limit-s 600;zfs snapshot skzcut@skz-sweep-w;zfs hold skyzfs-publish skzcut@skz-sweep-w;acmd publish publish --limit-s 600 --kill-at sweep:before:1;"
 
 # both: the daemon's status as the rig's SIGKILL left it (T30, T31).
 eval "$(fn scen_both)"

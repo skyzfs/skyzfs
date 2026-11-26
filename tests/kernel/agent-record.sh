@@ -504,16 +504,18 @@ scen_tooold() {
     thaw
     await_agent publish 400
 }
+# The stray snapshots of sweep and unmarked are named skz-*: the sweep
+# reads the holds of those names alone (A4 of #165's review).
 scen_sweep() {
     local id
     shift
     id=$(basename "$CDIR")
     # Its status is the check's to judge (pin_ID_first_publish).
     acmd first publish --limit-s 600
-    z 60 zfs snapshot "$POOL@sweep-$id"
-    z 60 zfs hold "$HOLD_TAG" "$POOL@sweep-$id"
+    z 60 zfs snapshot "$POOL@skz-sweep-$id"
+    z 60 zfs hold "$HOLD_TAG" "$POOL@skz-sweep-$id"
     acmd publish publish --limit-s 600 "$@"
-    zfs holds -H "$POOL@sweep-$id" > "$CDIR/stray-holds.txt"
+    zfs holds -H "$POOL@skz-sweep-$id" > "$CDIR/stray-holds.txt"
 }
 scen_gone() {
     local t
@@ -530,12 +532,12 @@ scen_unmarked() {
     local id
     shift
     id=$(basename "$CDIR")
-    z 60 zfs snapshot "$POOL@stray-$id"
-    z 60 zfs hold "$HOLD_TAG" "$POOL@stray-$id"
+    z 60 zfs snapshot "$POOL@skz-stray-$id"
+    z 60 zfs hold "$HOLD_TAG" "$POOL@skz-stray-$id"
     acmd publish publish --limit-s 120 "$@"
-    zfs holds -H "$POOL@stray-$id" > "$CDIR/stray-holds.txt"
+    zfs holds -H "$POOL@skz-stray-$id" > "$CDIR/stray-holds.txt"
     # The rig's own hold: let go, so that the retry can publish.
-    z 60 zfs release "$HOLD_TAG" "$POOL@stray-$id"
+    z 60 zfs release "$HOLD_TAG" "$POOL@skz-stray-$id"
 }
 scen_dhook() {
     local hook=$1 killed=$SERVE_K
