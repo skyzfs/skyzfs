@@ -273,10 +273,16 @@ for k in $ODD_KINDS; do
     check "odd $k: set on its own file system" "$(words "rig-odd-set-$k" | tr '\n' '|')" "zfs set skyzfs:v=$(odd_value "$k" skzq | tr '\n' '|') skzq/odd-$k "
     check "odd $k: made before its set" "$(grep -n -m 1 "^create -u skzq/odd-$k$" "$T/zfs.calls" | cut -d: -f1 | sed 's/^[0-9][0-9]*$/made/')" made
     check "odd $k: its value alone" "$(words "rig-odd-value-$k")" "zfs get -H -p -o value skyzfs:v skzq/odd-$k "
+    check "odd $k: its value alone in JSON" "$(words "rig-odd-json-$k")" "zfs get -j -p -o name,property,value skyzfs:v skzq/odd-$k "
     check "odd $k: set before the reads" "$(order "rig-odd-set-$k" rig-odd-get-local)" yes
     check "odd $k: destroyed after" "$(grep -c "^destroy -r skzq/odd-$k$" "$T/zfs.calls")" 1
 done
-check "odd: nine kinds" "$(wc -w <<< "$ODD_KINDS")" 9
+check "odd: fourteen kinds" "$(wc -w <<< "$ODD_KINDS")" 14
+check "odd: empty is no byte" "$(odd_value empty skzq | wc -c)" 0
+check "odd: dash" "$(odd_value dash skzq | od -An -c | tr -s ' ')" " -"
+check "odd: a carriage return" "$(odd_value cr skzq | od -An -c | tr -s ' ')" " o n e \r t w o"
+check "odd: a space at each end" "$(odd_value spaces skzq | od -An -tx1 | tr -s ' ')" " 20 6f 6e 65 20 74 77 6f 20"
+check "odd: a backslash and an n, not a newline" "$(odd_value bslash skzq | od -An -tx1 | tr -s ' ')" " 6f 6e 65 5c 6e 74 77 6f"
 check "odd: the newline's bytes" "$(odd_value nl skzq | od -An -c | tr -s ' ')" " o n e \n t w o"
 check "odd: the tab's bytes" "$(odd_value tab skzq | od -An -c | tr -s ' ')" " o n e \t t w o"
 check "odd: bytes that are not UTF-8" "$(odd_value raw skzq | od -An -tx1 | tr -s ' ')" " 61 ff fe 62 c3"
@@ -289,6 +295,12 @@ check "pin odd get" "$(words rig-odd-get-local)" "$GET skzq "
 check "pin odd get with its header" "$(words rig-odd-get-local-header)" "zfs get -r -p -t filesystem,volume -s local -o name,property,value all skzq "
 check "pin odd get in JSON" "$(words rig-odd-get-local-json)" "zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all skzq "
 check "pin odd take" "$(words rig-odd-take)" "zfs snapshot -r skzq@g "
+# shellcheck disable=SC2016 # the script bash -c runs, as written
+check "pin odd recv" "$(words rig-odd-recv)" 'bash -c zfs send -p "$1" | zfs recv -u "$2" odd-recv skzq/odd-nl@g skzq/odd-recv '
+check "odd recv: send and recv run" "$(grep -c -e '^send -p skzq/odd-nl@g$' -e '^recv -u skzq/odd-recv$' "$T/zfs.calls")" 2
+check "pin odd get with the received" "$(words rig-odd-get-received)" "zfs get -r -H -p -t filesystem,volume -s local,received -o name,property,value,source all skzq "
+check "odd recv: after the take, then the get, before the list" "$(order rig-odd-take rig-odd-recv)$(order rig-odd-recv rig-odd-get-received)$(order rig-odd-get-received rig-odd-list)" yesyesyes
+check "odd recv: destroyed, before @g" "$(grep -n -m 1 '^destroy -r skzq/odd-recv$' "$T/zfs.calls" | cut -d: -f1)" "$(($(grep -n -m 1 '^destroy -r skzq@g$' "$T/zfs.calls" | cut -d: -f1) - 1))"
 check "pin odd list" "$(words rig-odd-list)" "$LIST skzq "
 check "pin odd full" "$(words rig-odd-full)" "zfs program -n $P skzq - skzq g full skyzfs:assist "
 check "odd: reads, take, list, full in order" "$(order rig-odd-get-local rig-odd-get-local-header)$(order rig-odd-get-local-header rig-odd-get-local-json)$(order rig-odd-get-local-json rig-odd-value-nl)$(order rig-odd-value-len8192 rig-odd-take)$(order rig-odd-take rig-odd-list)$(order rig-odd-list rig-odd-full)" yesyesyesyesyesyes

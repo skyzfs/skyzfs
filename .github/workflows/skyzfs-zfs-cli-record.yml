@@ -24,7 +24,7 @@ on:
         description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
         default: ""
       scale_full_max:
-        description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). Empty: every count"
+        description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). 0: none. Empty: every count"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is

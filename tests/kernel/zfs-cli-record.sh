@@ -76,7 +76,7 @@
 #                               manifest's read after the take (only
 #                               where members.lua has that mode, and
 #                               not at a count above ZCR_SCALE_FULL_MAX
-#                               when set)
+#                               when set: 0 runs it at no count)
 #           Each file system is made with one user property set
 #           locally (skyzfs:note), so that take-cli-get has a line for
 #           each. about.txt gives the members that members and
@@ -210,24 +210,35 @@
 #                          UTF-8; raw, bytes that are not UTF-8; forge,
 #                          a newline followed by what reads as one more
 #                          line of odd-get-local (P/child, skyzfs:forged,
-#                          yes); len4095, len4096, len8191 and len8192,
-#                          that many bytes. A set that is refused is
-#                          recorded as such
+#                          yes); empty, no byte; dash, "-" (what the
+#                          get prints for no value); cr, a carriage
+#                          return inside; spaces, a space at each end;
+#                          bslash, a backslash and an n (not a
+#                          newline); len4095, len4096, len8191 and
+#                          len8192, that many bytes. A set that is
+#                          refused is recorded as such
 #   odd-get-local, odd-get-local-header, odd-get-local-json
 #                          the locally set properties of every file
 #                          system and volume, as take-cli-get reads them
 #                          at scale (-H -p), with its header (-p alone),
 #                          and in JSON (-j -p; ZFS 2.3 on)
-#   odd-value-K            zfs get -H -p -o value skyzfs:v P/odd-K: one
+#   odd-value-K, odd-json-K
+#                          zfs get -H -p -o value skyzfs:v P/odd-K: one
 #                          value alone, whose stdout is the value and a
-#                          newline
-#   odd-take, odd-list, odd-full
-#                          zfs snapshot -r P@g, then zfs list -r -H -p -t
-#                          filesystem,volume,snapshot -o
-#                          name,guid,type,createtxg P, and members.lua's
-#                          full mode at g: the same properties as the
-#                          program reads them. @g and the odd file
-#                          systems are then destroyed, with no record
+#                          newline; and the same file system's value in
+#                          JSON (-j -p -o name,property,value), apart
+#                          from the others' values
+#   odd-take, odd-recv, odd-get-received
+#                          zfs snapshot -r P@g, then zfs send -p of
+#                          P/odd-nl@g received as P/odd-recv (its
+#                          skyzfs:v is then received, not local), then
+#                          the get with -s local,received and the source
+#   odd-list, odd-full     zfs list -r -H -p -t filesystem,volume,snapshot
+#                          -o name,guid,type,createtxg P, and
+#                          members.lua's full mode at g: the same
+#                          properties as the program reads them. @g,
+#                          P/odd-recv and the odd file systems are then
+#                          destroyed, with no record
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -528,7 +539,7 @@ release_quietly() { # pool t
 
 # The kinds of value of odd-set-K, and each value (odd_value K POOL, on
 # stdout, with no newline at its end).
-ODD_KINDS="nl tab utf8 raw forge len4095 len4096 len8191 len8192"
+ODD_KINDS="nl tab utf8 raw forge empty dash cr spaces bslash len4095 len4096 len8191 len8192"
 odd_value() {
     case $1 in
         nl) printf 'one\ntwo' ;;
@@ -536,6 +547,11 @@ odd_value() {
         utf8) printf 'naïve, 日本, ∅' ;;
         raw) printf 'a\xff\xfeb\xc3' ;;
         forge) printf 'one\n%s/child\tskyzfs:forged\tyes' "$2" ;;
+        empty) ;;
+        dash) printf -- - ;;
+        cr) printf 'one\rtwo' ;;
+        spaces) printf ' one two ' ;;
+        bslash) printf 'one\\ntwo' ;;
         len*) head -c "${1#len}" /dev/zero | tr '\0' v ;;
     esac
 }
@@ -553,10 +569,15 @@ record_odd() {
     rec "$x-odd-get-local-json" zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all "$p"
     for k in $ODD_KINDS; do
         rec "$x-odd-value-$k" zfs get -H -p -o value skyzfs:v "$p/odd-$k"
+        rec "$x-odd-json-$k" zfs get -j -p -o name,property,value skyzfs:v "$p/odd-$k"
     done
     rec "$x-odd-take" zfs snapshot -r "$p@g"
+    # shellcheck disable=SC2016 # bash -c's own arguments
+    rec "$x-odd-recv" bash -c 'zfs send -p "$1" | zfs recv -u "$2"' odd-recv "$p/odd-nl@g" "$p/odd-recv"
+    rec "$x-odd-get-received" zfs get -r -H -p -t filesystem,volume -s local,received -o name,property,value,source all "$p"
     rec "$x-odd-list" zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg "$p"
     full "$x-odd-full" "$p" g
+    lim 120 zfs destroy -r "$p/odd-recv" > /dev/null 2>&1
     lim 120 zfs destroy -r "$p@g" > /dev/null 2>&1
     for k in $ODD_KINDS; do
         lim 120 zfs destroy -r "$p/odd-$k" > /dev/null 2>&1
