@@ -393,6 +393,13 @@ serve_start() {
     [ "$HOLD" != 1 ] || hold=(--hold-cuts)
     [ -z "$ack" ] || hold+=(--acknowledge-failure)
     hold+=("${SERVE_ARGS[@]}")
+    # Both made here and not by the child's redirections, which it makes
+    # after the fork: the loop below reads them at once, and a file not
+    # yet made ends the recording (sed's 2 under pipefail; run
+    # 45836590019), while a ready file not yet emptied names the last
+    # instance's device.
+    : > "$VOL.ready"
+    : > "$slog"
     "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${hold[@]}" --request-log "$RDIR/requests.tsv" > "$VOL.ready" 2> "$slog" &
     SERVE_PID=$!; DEV=""
     for _i in $(seq 1 480); do

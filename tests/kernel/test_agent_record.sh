@@ -680,6 +680,27 @@ is "serve_start: ended before ready, the hook's verdict first" "$(ss hook)" \
     "verdict daemon_ready: skyzfsd serve 2 ended (status 10) before it was ready: no lease
 rig error: skyzfsd serve 2 ended (status 10) before it was ready: no lease"
 
+# serve_start makes the ready file and the instance's log before the
+# fork: the child's redirections come after it, and the loop reads both
+# at once (run 45836590019: sed found no serve-7.log, and pipefail with
+# errexit ended the course).
+before_fork() { # FILE-WORD
+    awk -v w="$1" '/^serve_start\(\) \{/ { on = 1 } on && $0 == "    : > " w { made = NR }
+        on && /"\$SKYZFSD" serve --dir/ { print (made && made < NR) ? "made" : "not made"; exit }' "$HERE/cut-record.sh"
+}
+# shellcheck disable=SC2016 # the words as written in the script
+is "serve_start: the ready file before the fork" "$(before_fork '"$VOL.ready"')" made
+# shellcheck disable=SC2016
+is "serve_start: the log before the fork" "$(before_fork '"$slog"')" made
+# And with them made, a stale ready file is not read.
+is "serve_start: a stale ready file emptied" "$(
+    RDIR=$T/ss; rm -rf "${RDIR:?}"; mkdir -p "$RDIR"; VOL=$RDIR/vol; RUN=$RDIR/run; SKYZFSD=$T/skyzfsd-ends
+    echo 'ready /dev/stale' > "$VOL.ready"
+    HOLD=0; UPLOAD=0; SERVE_ARGS=(); SERVE_PID=""; ON_DAEMON_WRONG=""
+    log() { :; }; rig_error() { exit 2; }
+    eval "$(fnc serve_end)"; eval "$(fnc serve_start)"
+    (serve_start 2) > /dev/null; grep -c stale "$VOL.ready")" 0
+
 # end_daemon: a daemon that does not end 0 on SIGTERM; its log is the
 # current instance's (D10).
 printf '#!/bin/bash\n[ "$1" != status ] || echo "cut_state idle"\n' > "$T/skyzfsd-ok"; chmod +x "$T/skyzfsd-ok"
