@@ -4498,7 +4498,8 @@ fn counts_that_rise_with_a_take_do_not_fail_its_check() {
 /// -r` says what libzfs says of a snapshot gone between its open and
 /// its read (`no such pool or dataset`; testing's agent rig, case
 /// `destroy`), then, read again, what it says of a `pool@t` that is
-/// gone: exit 0, no line, `no datasets available`.
+/// gone: exit 0, no line, `no datasets available` (as read in OpenZFS
+/// 2.2's `zfs_do_holds`, not recorded: nit F of #161's review).
 struct DestroyedBetween {
     zfs: FakeZfs,
     armed: Rc<Cell<bool>>,

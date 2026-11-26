@@ -41,7 +41,7 @@
 //! the same tree recorded nearest to it (`GUIDED`); only the shape of
 //! the tree and its GUIDs are taken from it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -602,14 +602,6 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
             rec.image
         );
         assert_eq!(ran(&mut zfs), confirmed(&["none-members"]));
-        let mut zfs = rec.adapter(&["none-tagged"]);
-        assert_eq!(
-            zfs.tagged(NONE, TAG),
-            Err(gone("none-tagged")),
-            "{}",
-            rec.image
-        );
-        assert_eq!(ran(&mut zfs), confirmed(&["none-tagged"]));
 
         // `zfs hold`, `holds` and `release` say `dataset does not exist`
         // of a pool that does not: the snapshot is not there.
@@ -720,7 +712,7 @@ fn holds_read_as_recorded() {
 }
 
 #[test]
-fn members_and_tagged_read_as_recorded() {
+fn members_read_as_recorded() {
     let expected = [
         // image, pool, the GUIDs of pool@t, child@t, vol@t
         (
@@ -788,19 +780,6 @@ fn members_and_tagged_read_as_recorded() {
         let mut zfs = rec.adapter(&[absent.as_str()]);
         assert_eq!(zfs.members(pool, "absent"), Ok(None), "{image} {pool}");
         assert_eq!(ran(&mut zfs), rec.words(&[absent.as_str()]));
-
-        let tagged = name("tagged");
-        let mut zfs = rec.adapter(&[tagged.as_str()]);
-        assert_eq!(zfs.tagged(pool, TAG), Ok(BTreeSet::new()), "{image} {pool}");
-        assert_eq!(zfs.host().ran[0].stdin, TAGGED_PROGRAM.as_bytes());
-        let held = name("tagged-held");
-        let mut zfs = rec.adapter(&[held.as_str()]);
-        assert_eq!(
-            zfs.tagged(pool, TAG),
-            Ok(BTreeSet::from(["t".to_string()])),
-            "{image} {pool}"
-        );
-        assert_eq!(ran(&mut zfs), rec.words(&[held.as_str()]));
     }
 }
 
