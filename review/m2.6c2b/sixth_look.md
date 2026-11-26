@@ -104,7 +104,8 @@ starts after `DOWN`.
 There is also a knob that takes the daemon away for a window.
 
 **What the judge checks:**
-- every run ends: published, given up or stopped;
+- every run has exactly one end, published or given up, read from the
+  processes or else from the record and the refs;
 - the takes are at most 3 plus the uncounted retakes;
 - a take that is never whole is never retaken uncounted;
 - every report is `NotWhole`, and no publish follows one;
@@ -121,7 +122,9 @@ There is also a knob that takes the daemon away for a window.
 - **Never, under every schedule:**
   - at most 3 takes;
   - no uncounted retake;
-  - ends `NotWhole`, or still under way at the depth's last process.
+  - every run ends `NotWhole`. Where the process that committed the
+    end stopped before it said so, the judge reads the end from the
+    record; the harness's tally shows these as "none".
 - **NotAsBefore:** at most 6 takes at depth 3 and 7 at depth 4. That is
   always 3 plus the uncounted retakes, and each of those needs a stop
   between that take and its adoption.
@@ -193,8 +196,8 @@ record, after this PR, takes version 3 and a decode test of version 2.
   - `NotWhole`;
   - `ManifestLost`, where the destroy fails (documented, the report
     kept);
-  - or `TooOld`, where the next process starts after `AGE_MAX` and finds
-    the take. That give-up keeps the take, as the plan does for any
+  - or `TooOld`, where the next process starts after `AGE_MAX`. If the
+    take is still there, that give-up keeps it, as the plan does for any
     publish at Intent.
 
   No search run published after a `NotWhole` report.
@@ -244,8 +247,9 @@ record, after this PR, takes version 3 and a decode test of version 2.
     and a process that stops before the report. The next process has no
     reading. It destroys the take uncounted, renames it, and gives the
     publish up from `take`. Its `NotWhole([])` is then the only report
-    the person gets: 832 of 11 545 runs of SX1 NotAsBefore at depth 3.
-    With Q4 the publish is given up and never told.
+    the person gets. In 873 of the 11 545 runs of SX1 NotAsBefore at
+    depth 3, every report was `NotWhole([])` (832 with one, 40 with
+    two, 1 with three). With Q4 the publish is given up and never told.
   - **Q16 survives.** The same report is pushed but not given to the
     sink, so the CLI prints nothing.
   - **Q7 survives.** The report at `:1317` is moved after `abandon`.
@@ -307,8 +311,9 @@ record, after this PR, takes version 3 and a decode test of version 2.
 - **Scenario:** Q18 removes `Effect::Failed` from `ALL`. Every test
   passes, and `--kill-at failed:after` would then be refused as an
   unknown effect. Testing's rigs could not stop at the new count.
-- **Fix:** a test with an exhaustive `match` that maps every variant to
-  its index in `ALL`.
+- **Fix:** in `each_effect_is_named_by_a_word_of_its_own`
+  (`engine/tests.rs:3080`), an exhaustive `match` that maps every
+  variant to its index in `ALL`, checked for each variant.
 - **Sure:** high. It was there in #149; it is not new in this PR.
 
 ## Nits
@@ -413,9 +418,9 @@ All 37 check runs ended: 32 passed and 5 were skipped. None failed.
 - **Skipped:** "Publish badges", the replay rig's reference jobs, and
   `skyzfs-ci`'s lint, test and unit-arm64, which do not run where a
   pull request is open.
-- **Why the rigs ran.** This PR touches no file under `tests/`,
-  `bins/skyzfsd/` or `crates/skyzfs-local/`. The rigs ran because the
-  merge brought in #149's changes.
+- **Why the rigs ran.** Against its base, this PR touches
+  `bins/skyzfsd/src/kill.rs`: docs only, from 9717321, as noted in
+  `next_look.md`. It touches nothing under `tests/`.
 - **The daemon rig's tables.** I read the three summaries from the
   artifacts `daemon-rig-ubuntu-24.04-daemon`,
   `daemon-rig-ubuntu-26.04-daemon` and
@@ -436,3 +441,18 @@ All 37 check runs ended: 32 passed and 5 were skipped. None failed.
   The store was in-place on Ubuntu 24.04 and 26.04, amd64 and arm64.
 - **Codex** completed its code review and its security review on
   291746c, with no findings.
+
+## Files beside this note
+
+- `scratch153f.rs`, `scratch153f_patch.py`: the search harness and the
+  script that copies it into a scratch work tree. These were not added
+  to the product.
+- `search153f.out` holds SX0 to SX3, with `SX1_DEPTH=3` and
+  `SX3_RUNS=60000`. `search153f_d4.out` holds SX1 with `SX1_DEPTH=4`.
+  Both ran in release:
+  `cargo test -p skyzfs-agent --release --lib review_scratch -- --nocapture --test-threads=1`.
+- `plants153f.py`, `plants153f.out`, `plants153f_n.out`: the plants.
+- `record_compat153f.rs.txt`, `record_compat153f.out`: the decode test
+  of #149's `GOLDEN`, appended to `record/tests.rs` in a scratch work
+  tree.
+- `gates153f.sh`, `gates153f.out`: the gates.
