@@ -1154,14 +1154,27 @@ fn a_round_past_its_ticks_skips_all_but_the_last() {
     assert_eq!(world.borrow().refs.len(), 2);
 }
 
-/// The agent's directory in memory, whose `nth` save (from 1) is written
-/// and then fails, as a save whose rename landed and whose directory's
-/// sync failed: the record on the disk is the new one, and the engine
-/// was told it is not.
+/// The agent's directory in memory, whose first save that `fails` picks
+/// (by its number from 1 and the record it saves) is written and then
+/// fails, as a save whose rename landed and whose directory's sync
+/// failed: the record on the disk is the new one, and the engine was
+/// told it is not. `failed` is the record of that save.
 struct SaveFails {
     keep: MemKeep,
     saves: std::cell::Cell<usize>,
-    nth: usize,
+    fails: fn(usize, &Record) -> bool,
+    failed: RefCell<Option<Record>>,
+}
+
+impl SaveFails {
+    fn new(fails: fn(usize, &Record) -> bool) -> Self {
+        SaveFails {
+            keep: MemKeep::default(),
+            saves: std::cell::Cell::new(0),
+            fails,
+            failed: RefCell::new(None),
+        }
+    }
 }
 
 impl Keep for SaveFails {
@@ -1171,7 +1184,8 @@ impl Keep for SaveFails {
     fn save(&self, record: &Record) -> Result<(), crate::record::SaveError> {
         self.keep.save(record)?;
         self.saves.set(self.saves.get() + 1);
-        if self.saves.get() == self.nth {
+        if self.failed.borrow().is_none() && (self.fails)(self.saves.get(), record) {
+            *self.failed.borrow_mut() = Some(record.clone());
             return Err(io::Error::other("the directory's sync failed").into());
         }
         Ok(())
@@ -1203,11 +1217,7 @@ impl Keep for SaveFails {
 fn a_failed_round_is_told_and_the_next_starts_again_from_the_record() {
     let world = World::new(Mode::Busy);
     // The first save enrols the pool, the second records the intent.
-    let keep = SaveFails {
-        keep: MemKeep::default(),
-        saves: std::cell::Cell::new(0),
-        nth: 2,
-    };
+    let keep = SaveFails::new(|n, _| n == 2);
     let files = keep.keep.clone();
     let mut agent = Agent::new(
         FakeZfs(world.clone()),
@@ -1242,6 +1252,158 @@ fn a_failed_round_is_told_and_the_next_starts_again_from_the_record() {
         Err(why) => panic!("{why}"),
     };
     assert!(record.under_way.is_empty(), "{record:?}");
+}
+
+/// A begin whose save of the new intent failed after it was written,
+/// while another publish is under way, restarts the engine at once,
+/// before the round settles the other: settled from the engine's own
+/// copy, the other's next save would write the new intent out of the
+/// record on the disk, and the next round's restart would not find it
+/// (P2 of Codex on #167). Each publish recorded is published. Mutant:
+/// the restart left to the next round, after the settling.
+#[test]
+fn a_begin_whose_save_failed_restarts_before_the_round_settles() {
+    let world = World::new(Mode::Busy);
+    // Round 1's publish is still under way when round 2 begins its own.
+    world.borrow_mut().lag_ms = 90_000;
+    let keep = SaveFails::new(|_, record| record.under_way.len() == 2);
+    let mut agent = Agent::new(
+        FakeZfs(world.clone()),
+        FakeDaemon(world.clone()),
+        keep,
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent");
+    let start = mono(&world);
+    let every = Duration::from_secs(60);
+    let (code, out, err) = scheduled(&mut agent, every, &mut until(&world, start + 400_000));
+    assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    let (_, _, keep, _) = agent.parts();
+    let failed = keep.failed.borrow().clone().expect("a save failed");
+    let rounds = rounds(&out);
+    assert!(rounds[1].starts_with("round 2 failed "), "{out}");
+    assert!(
+        err.starts_with("skyzfs-agent: round 2: the record: ")
+            && err.contains("the directory's sync failed"),
+        "{err}"
+    );
+    // Both publishes of the failed save were published.
+    for publish in &failed.under_way {
+        let told = format!("snap/{} ", publish.name);
+        assert!(
+            out.lines().any(|line| line.starts_with(&told)),
+            "{} not told: {out}",
+            publish.name
+        );
+    }
+}
+
+/// A Zfs whose count takes `slow` on the clock, as on a large pool.
+struct SlowCount {
+    zfs: FakeZfs,
+    slow: Duration,
+}
+
+impl crate::zfs::Zfs for SlowCount {
+    fn layout(&mut self, pool: &str) -> Result<crate::zfs::Layout, crate::zfs::ZfsError> {
+        self.zfs.layout(pool)
+    }
+    fn props(&mut self, pool: &str) -> Result<crate::zfs::Props, crate::zfs::ZfsError> {
+        self.zfs.props(pool)
+    }
+    fn nocacheflush(&mut self) -> Result<bool, crate::zfs::ZfsError> {
+        self.zfs.nocacheflush()
+    }
+    fn count(&mut self, pool: &str) -> Result<u64, crate::zfs::ZfsError> {
+        self.zfs.0.borrow_mut().advance(self.slow);
+        self.zfs.count(pool)
+    }
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.snapshot(pool, t)
+    }
+    fn datasets(
+        &mut self,
+        pool: &str,
+        t: &str,
+    ) -> Result<Vec<crate::zfs::Dataset>, crate::zfs::ZfsError> {
+        self.zfs.datasets(pool, t)
+    }
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.destroy(pool, t)
+    }
+    fn members(
+        &mut self,
+        pool: &str,
+        t: &str,
+    ) -> Result<Option<Vec<Member>>, crate::zfs::ZfsError> {
+        self.zfs.members(pool, t)
+    }
+    fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.hold(pool, t, tag)
+    }
+    fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.release(pool, t, tag)
+    }
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[Member]>,
+    ) -> Result<crate::zfs::Held, crate::zfs::ZfsError> {
+        self.zfs.held(pool, t, tag, members)
+    }
+    fn tagged(
+        &mut self,
+        pool: &str,
+        tag: &str,
+    ) -> Result<std::collections::BTreeSet<String>, crate::zfs::ZfsError> {
+        self.zfs.tagged(pool, tag)
+    }
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.assist(pool, value)
+    }
+}
+
+/// A round settles at least one round of the engine however long the
+/// count before it took: with `--every-s 1` and a count of 2 s, the
+/// limit has passed before the publishes are looked at, and they would
+/// never move (P2 of Codex on #167). Mutant: the limit asked before the
+/// first pass.
+#[test]
+fn a_round_settles_once_however_long_the_count_took() {
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let mut agent = Agent::new(
+        SlowCount {
+            zfs: FakeZfs(world.clone()),
+            slow: Duration::from_secs(2),
+        },
+        FakeDaemon(world.clone()),
+        keep,
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent");
+    let start = mono(&world);
+    let (mut out, mut err) = (Shared::default(), Shared::default());
+    let code = schedule(
+        &mut agent,
+        Duration::from_secs(1),
+        &mut until(&world, start + 120_000),
+        &mut out,
+        &mut err,
+    );
+    let (out, err) = (out.text(), err.text());
+    assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    assert!(
+        world.borrow().refs.len() >= 2,
+        "{} published: {out}{err}",
+        world.borrow().refs.len()
+    );
 }
 
 /// `go` saying no in a round ends it between two rounds of the engine,

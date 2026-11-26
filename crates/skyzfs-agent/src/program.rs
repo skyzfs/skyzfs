@@ -924,9 +924,13 @@ pub fn round_line(round: &Round) -> String {
 ///   skipped in the line of the round that ran past them.
 /// - **A failed round**, where an engine call failed, is reported, and
 ///   the next tick tries again. Where the error may have left the engine
-///   unlike what it saved (`restarts`), the next round begins with
-///   [`Agent::restart`], so that the engine goes on as a new process
-///   would after a kill at that point. An error that ends `run`
+///   unlike what it saved (`restarts`), the engine is loaded anew
+///   ([`Agent::restart`]) before it is asked anything more, so that it
+///   goes on as a new process would after a kill at that point: at once
+///   where the begin failed so, before the round settles, and at the
+///   next round's beginning where the settling did. A restart that fails
+///   is tried again at the next round, which settles nothing until it
+///   succeeds. An error that ends `run`
 ///   (`ends_run`) ends it at once with [`exit::RECORD`].
 /// - **An end** is asked of `go` before each round, between the engine's
 ///   rounds within it, and every [`WAKE`] while it waits for a tick; it
@@ -964,14 +968,34 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         if !restart {
             match agent.begin() {
                 Ok(name) => begun = Some(name),
-                Err(e) => failed.push(e),
+                Err(e) => {
+                    // A begin that may have left the engine unlike what it
+                    // saved (a save whose rename landed) restarts at once,
+                    // before the engine settles anything: a save of the
+                    // publishes under way from its own copy would write the
+                    // new intent out of the record (P2 of Codex on #167).
+                    // A refusal (`Full`, `Premise`) changed nothing.
+                    let reload = restarts(&e);
+                    failed.push(e);
+                    if reload {
+                        if let Err(again) = agent.restart() {
+                            failed.push(again);
+                            restart = true;
+                        }
+                    }
+                }
             }
+        }
+        if !restart {
             let next = due.saturating_add(every_ms);
             let left = next.saturating_sub(agent.clock().mono_ms());
             let limit = Duration::from_millis(left).max(crate::engine::TICK);
             match agent.settle_while(limit, go) {
                 Ok(()) | Err(Error::Unsettled(_)) => {}
-                Err(e) => failed.push(e),
+                Err(e) => {
+                    restart = restarts(&e);
+                    failed.push(e);
+                }
             }
         }
         for e in &failed {
@@ -996,7 +1020,6 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         if let Some(code) = ended {
             return code;
         }
-        restart = restart || failed.iter().any(restarts);
         agent.forget();
         tick = tick.saturating_add(passed.max(1));
         let due = start.saturating_add(tick.saturating_mul(every_ms));

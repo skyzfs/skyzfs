@@ -735,8 +735,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     /// Drive every publish under way until each has left the record or
-    /// stopped, waiting [`TICK`] between rounds where none moved; at most
-    /// until `limit` has passed. Each that left or stopped is in
+    /// stopped, waiting [`TICK`] between rounds where none moved; until
+    /// `limit` has passed, and in any case one round of the publishes
+    /// under way, however long the count and the sweep before it took. Each that left or stopped is in
     /// [`Agent::outcomes`]. Each round begins with the count of the
     /// pool's datasets ([`Zfs::count`]), which sets the time limits of
     /// its calls, then the sweep (`Agent::sweep`).
@@ -756,6 +757,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         go: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
+        let mut passes = 0u64;
         loop {
             // Where the count fails, the limits are the bases, and the
             // round's own calls say what is wrong (no pool, or another
@@ -772,9 +774,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             if names.is_empty() {
                 return Ok(());
             }
-            if self.clock.mono_ms() >= end || !go() {
+            // The limit is asked after the first pass and not before
+            // it: a count and a sweep that take as long as the limit
+            // (a short `--every-s`, a large pool) would otherwise leave
+            // every publish unmoved, round after round (P2 of Codex on
+            // #167). `go` is asked before each pass, the first too.
+            if (passes > 0 && self.clock.mono_ms() >= end) || !go() {
                 return Err(Error::Unsettled(names));
             }
+            passes += 1;
             let mut moved = Moved::No;
             for name in names {
                 if self.round(&name)? == Moved::Yes {
