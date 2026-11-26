@@ -26,7 +26,10 @@ in DIR/cases.tsv. For each case:
   ended by SIGKILL (137) with the hook's line for that point on its
   standard error, and the trace's last point is that point at that
   reach. A point not reached is the rig's error (exit 2): the case did
-  not test what it names.
+  not test what it names. One exception: a later reach (N > 1) of a
+  point that the run did not make, ending by itself with no hook line
+  (how often an agent looks or syncs depends on time), is INFO
+  (obs_ID_not_reached) and the case is judged as one with no kill.
 - The scenario's own premises (rig): restart, the daemon killed with T
   not landed (node B's snap-row with the daemon down, between.txt);
   late, the agent stopped with T asked and not done (record-stopped.txt)
@@ -39,9 +42,10 @@ in DIR/cases.tsv. For each case:
   snap/T), or node B has no snap/T and the retry published (its `snap/`
   line, and node B has that name).
 - pin_ID_outcome (server): T's outcome is the one EXPECTED for the
-  scenario: `published`, or `abandoned WHY` in the agent's words. A plain
-  case with a kill is INFO (obs_ID_outcome): the criterion judges it, and
-  the outcome at each point is the first run's to show.
+  scenario: `published`, or `abandoned WHY` in the agent's words, on its
+  output or, for a run killed after it abandoned T, in its record. A
+  plain case with a kill, and a case killed before T had a name, are
+  INFO (obs_ID_outcome): the criterion judges them.
 - pin_ID_clean (server): after the last run, the record has nothing
   under way (the agent's dump), no hold of the agent's tag is on any
   snapshot, the manifests directory is empty, and `skyzfs:assist` is set
@@ -198,6 +202,18 @@ def killed_at(kill, rc, err, trace):
     return bad
 
 
+def not_reached(kill, rc, err, trace):
+    """Whether a kill at a later reach (N > 1) of a point was not reached:
+    the run ended by itself (no SIGKILL, no hook line) with fewer than N
+    reaches of it. How many looks or syncs a publish makes before an
+    answer depends on time (run 45747041657: a destroy case's agent looked
+    once, not twice), so such a case is judged as one with no kill and
+    says so; a first reach not made is still the rig's error."""
+    e, s, n = parse_kill(kill)
+    reach = sum(1 for _, e2, s2, _ in trace if (e2, s2) == (e, s))
+    return n > 1 and rc != '137' and not KILL_LINE.findall(err) and reach < n
+
+
 def read_outputs(text):
     """The agent's standard output -> {'published': {t: commit}, 'abandoned': {t: why}, 'stopped': {t: why},
     'unsettled': [t]}."""
@@ -217,21 +233,38 @@ def read_outputs(text):
     return out
 
 
-def outcome(t, outs, published):
+def record_abandoned(record):
+    """A record's dump (`skyzfs-agent record`) -> {t: why} of its lines
+    `abandoned T why=W at_ms=MS`."""
+    out = {}
+    for ln in record.splitlines():
+        f = ln.split()
+        if len(f) >= 3 and f[0] == 'abandoned' and f[2].startswith('why='):
+            out[f[1]] = f[2][len('why='):]
+    return out
+
+
+def outcome(t, outs, published, record=''):
     """T's outcome: 'published' where node B has it (published), else the
-    agent's last `abandoned T WHY`, else 'absent'."""
+    agent's last `abandoned T WHY` on its output, else the record's (a run
+    killed after it abandoned T printed nothing), else 'absent'."""
     if t and t in published:
         return 'published'
     why = None
     for o in outs:
         if t in o['abandoned']:
             why = o['abandoned'][t]
+    if t and not why:
+        why = record_abandoned(record).get(t)
     return f'abandoned {why}' if why else 'absent'
 
 
-def expected(scen, kill, destroyed):
+def expected(scen, kill, destroyed, t):
     """The outcome EXPECTED for a case, or None where the criterion
-    alone judges it."""
+    alone judges it: a plain publish killed, a case killed before its
+    publish had a name, a destroy that did not happen."""
+    if kill and not t:
+        return None
     if scen == 'plain':
         return None if kill else 'published'
     if scen in ('destroy', 'gone') and not destroyed:
@@ -431,9 +464,15 @@ def main():
                 txt = text_of(os.path.join(cd, f'{run}.out'), need=False)
                 if os.path.exists(os.path.join(rdir, cd, f'{run}.out')):
                     outs[run] = read_outputs(txt)
+            named = kill
+            perr = text_of(os.path.join(cd, 'publish.err'), need=False)
+            if kill and not_reached(kill, first_rc, perr, trace):
+                put(f'obs_{cid}_not_reached', 'INFO', 'rig',
+                    f'the run ended {first_rc} before reach {parse_kill(kill)[2]} of {":".join(kill.split(":")[:2])}: '
+                    'judged as a case with no kill')
+                kill = ''
             if kill:
-                premise(f'premise_{cid}_killed',
-                        killed_at(kill, first_rc, text_of(os.path.join(cd, 'publish.err'), need=False), trace),
+                premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),
                         f'killed at {kill}, as the trace and the hook\'s line say')
             destroyed = os.path.exists(os.path.join(rdir, cd, 'destroy.log'))
             # A case with no kill must have done what it names (a case
@@ -476,8 +515,8 @@ def main():
                 stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                 holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
                       'server', 'the publish released the hold that no publish named')
-            got = outcome(t, list(outs.values()), pub)
-            want = expected(scen, kill, destroyed)
+            got = outcome(t, list(outs.values()), pub, text_of(os.path.join(cd, 'record-after.txt')))
+            want = expected(scen, kill, destroyed, t)
             if want is None:
                 put(f'obs_{cid}_outcome', 'INFO', 'server', f'{t or "no name"}: {got}')
             else:
@@ -503,8 +542,9 @@ def main():
                 if both:
                     put(f'obs_{cid}_{run}_abandoned_published', 'INFO', 'server',
                         f'the agent gave up {", ".join(both)}, and node B has it published')
+            how = f' killed at {kill}' if kill else (f' ({named} not reached)' if named else '')
             put(f'case_{cid}', 'INFO', 'rig',
-                f"{scen}{' killed at ' + kill if kill else ''}: first run {first_rc}, T {t or 'none'}, {got}; settle "
+                f"{scen}{how}: first run {first_rc}, T {t or 'none'}, {got}; settle "
                 f"{text_of(os.path.join(cd, 'settle.rc'), need=False).strip() or '-'}, retry "
                 f"{text_of(os.path.join(cd, 'retry.rc'), need=False).strip() or '-'}")
         # Node B on each name published.

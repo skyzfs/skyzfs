@@ -72,7 +72,10 @@
 #   release nothing.
 # - dhook HOOK (d2 to d5): the daemon served again with `--kill-at-upload
 #   HOOK` (carry-put:1, carry-swap:1, manifest:1, publish:1); the daemon
-#   kills itself inside the publish, and the next instance serves. A
+#   kills itself inside the publish, and the next instance serves. For
+#   the carry hooks the store is frozen from 3 s before the agent starts
+#   until the publish is accepted, so that the uploader reads no cut that
+#   could carry it before (the hook does not choose such a cut). A
 #   killed instance with no kill line in its log is the rig's error
 #   (exit 2: the lead's ruling on #150).
 # - late (d6): the store frozen; the agent stopped (SIGSTOP) at
@@ -260,7 +263,7 @@ snaprow() {
 asettle() {
     local t n rc
     "$AGENT" record --dir "$ADIR" > "$CDIR/record-before.txt" 2>&1 || true
-    acmd settle settle --limit-s 600
+    acmd settle settle --limit-s 600 "${CASE_AGE[@]}"
     t=$(case_name)
     echo "${t:--}" > "$CDIR/names.txt"
     if [ -n "$t" ] && snaprow "$t" snaprow.txt; then
@@ -295,6 +298,9 @@ asettle() {
 acase() {
     local hooks=()
     CDIR=$RDIR/cases/$1; ADIR=$CDIR/agent; SCEN=$2; KILL=${3:-}
+    # The bound on a publish's age, for every run of the case but the
+    # retry (tooold's 8 s: a settle with the default bound publishes T).
+    CASE_AGE=()
     rm -rf "${CDIR:?}"; mkdir -p "$ADIR"
     hooks=(--trace-points "$CDIR/trace.tsv")
     [ -z "$KILL" ] || hooks+=(--kill-at "$KILL")
@@ -354,12 +360,13 @@ frozen_until_withdrawn() {
     wait_point withdraw after 120 && return 0
     ! kill -0 "$AGENT_PID" 2>/dev/null \
         || rig_error "case $(basename "$CDIR"): the agent did not withdraw in 120 s"
-    acmd settle-frozen settle --limit-s 30
+    acmd settle-frozen settle --limit-s 30 "${CASE_AGE[@]}"
 }
 scen_tooold() {
     shift
+    CASE_AGE=(--age-max-s 8)
     freeze
-    abg publish publish --limit-s 300 --age-max-s 8 "$@"
+    abg publish publish --limit-s 300 "${CASE_AGE[@]}" "$@"
     frozen_until_withdrawn
     thaw
     await_agent publish 300
@@ -399,7 +406,25 @@ scen_dhook() {
     shift
     reserve --kill-at-upload "$hook"
     killed=$SERVE_K
-    abg publish publish --limit-s 600 "$@"
+    case $hook in
+    carry-*)
+        # The hook never chooses a cut whose reading began before the
+        # publish was accepted, though it may carry it (kill.rs): the
+        # snapshot's own cut, read at once by an idle uploader while the
+        # agent holds, did so in run 45747041657 (no kill). The store
+        # frozen 3 s before the agent starts holds the uploader on a cut
+        # taken before the agent's count, a step it makes again after the
+        # thaw and does not read anew (uploader.rs); the store thaws once
+        # the publish is accepted, so the first cut read after it is the
+        # first that can carry it.
+        freeze
+        sleep 3
+        abg publish publish --limit-s 600 "$@"
+        wait_point asked after 60 || { thaw; rig_error "case $(basename "$CDIR"): the agent did not reach asked:after in 60 s"; }
+        thaw
+        ;;
+    *) abg publish publish --limit-s 600 "$@" ;;
+    esac
     local _i
     for _i in $(seq 1 1200); do
         kill -0 "$SERVE_PID" 2>/dev/null || break

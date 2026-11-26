@@ -304,14 +304,34 @@ class Parts(unittest.TestCase):
         self.assertEqual(ac.outcome('t', outs, {}), 'abandoned destroyed')
         self.assertEqual(ac.outcome('u', outs, {}), 'absent')
         self.assertEqual(ac.outcome('', outs, {}), 'absent')
+        # A run killed after it abandoned T printed nothing: the record says.
+        rec = RECORD + 'abandoned u why=too-old at_ms=17\n'
+        self.assertEqual(ac.outcome('u', [], {}, rec), 'abandoned too-old')
+        self.assertEqual(ac.outcome('t', outs, {}, rec), 'abandoned destroyed')
+        self.assertEqual(ac.outcome('', [], {}, rec), 'absent')
+        self.assertEqual(ac.record_abandoned(rec + 'publish v phase=held\n'), {'u': 'too-old'})
+
+    def test_not_reached(self):
+        t = ac.read_trace(trace('x', ('look', 'before'), ('look', 'after'), ('abandon', 'before')))
+        self.assertTrue(ac.not_reached('look:before:2', '3', '', t))
+        # The first reach, a SIGKILL, a hook line, or a reach made: not so.
+        self.assertFalse(ac.not_reached('look:before:1', '3', '', []))
+        self.assertFalse(ac.not_reached('look:before:2', '137', '', t))
+        line = 'skyzfs-agent: test hook --kill-at: killed at look before (2)\n'
+        self.assertFalse(ac.not_reached('look:before:2', '3', line, t))
+        t2 = ac.read_trace(trace('x', ('look', 'before'), ('look', 'before')))
+        self.assertFalse(ac.not_reached('look:before:2', '3', '', t2))
 
     def test_expected(self):
-        self.assertEqual(ac.expected('plain', '', False), 'published')
-        self.assertIsNone(ac.expected('plain', 'ask:after:1', False))
-        self.assertIsNone(ac.expected('destroy', 'ask:after:1', False))
-        self.assertEqual(ac.expected('destroy', '', True), 'abandoned destroyed')
-        self.assertEqual(ac.expected('tooold', '', False), 'abandoned too-old')
-        self.assertEqual(ac.expected('unmarked', '', False), 'absent')
+        self.assertEqual(ac.expected('plain', '', False, 't'), 'published')
+        self.assertIsNone(ac.expected('plain', 'ask:after:1', False, 't'))
+        self.assertIsNone(ac.expected('destroy', 'ask:after:1', False, 't'))
+        self.assertEqual(ac.expected('destroy', '', True, 't'), 'abandoned destroyed')
+        self.assertEqual(ac.expected('tooold', '', False, 't'), 'abandoned too-old')
+        self.assertEqual(ac.expected('unmarked', '', False, ''), 'absent')
+        # Killed before the publish had a name: the criterion alone.
+        self.assertIsNone(ac.expected('sweep', 'sweep:before:1', False, ''))
+        self.assertEqual(ac.expected('sweep', 'done:before:1', False, 't'), 'published')
 
     def test_clean(self):
         self.assertEqual(ac.clean(RECORD, '', '', ASSIST), [])
@@ -391,6 +411,47 @@ class Main(unittest.TestCase):
         self.assertEqual(lines['premise_A-asked-after-1_killed'][0], 'ERROR')
         # The other cases are still judged.
         self.assertEqual(lines['pin_a1_nodeb'][0], 'ok')
+
+    def test_a_later_reach_not_made_is_judged_as_no_kill(self):
+        # Run 45747041657: the agent looked once, abandoned and ended 3.
+        c = right()
+        c['cases'].append(('K-destroy-look-before-2', 'destroy', 'look:before:2', '3', 'k1', {
+            'trace.tsv': trace('k1', *upto('asked', 'after'), ('withdraw', 'before'), ('withdraw', 'after'),
+                               ('look', 'before'), ('look', 'after'), ('abandon', 'before'), ('abandon', 'after')),
+            'destroy.log': '', 'publish.out': 'abandoned k1 destroyed\n',
+            'retry.out': f'snap/a6 {commit_of("a6")}\n', 'retry.rc': '0\n'}))
+        c['pub'].append(('K-destroy-look-before-2', 'a6', 95, 506, commit_of('a6')))
+        c['rows']['a6'] = (10, 96)
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertEqual(lines['obs_K-destroy-look-before-2_not_reached'][0], 'INFO')
+        self.assertNotIn('premise_K-destroy-look-before-2_killed', lines)
+        self.assertEqual(lines['pin_K-destroy-look-before-2_outcome'][0], 'ok')
+        self.assertIn('look:before:2 not reached', lines['case_K-destroy-look-before-2'][1])
+        # Another point's later reach: the same.
+        c['cases'][-1] = c['cases'][-1][:2] + ('withdraw:before:2',) + c['cases'][-1][3:]
+        rc, lines = run_course(course=c)
+        self.assertEqual(lines['obs_K-destroy-look-before-2_not_reached'][0], 'INFO')
+        # A first reach not made is still the rig's error.
+        c['cases'][-1] = c['cases'][-1][:2] + ('look:after:1',) + c['cases'][-1][3:]
+        c['cases'][-1][5]['trace.tsv'] = trace('k1', *upto('asked', 'after'))
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_K-destroy-look-before-2_killed'][0]), (2, 'ERROR'))
+
+    def test_an_abandon_in_the_record_alone_is_the_outcome(self):
+        # Run 45747041657: killed after abandon, the settle had nothing to print.
+        c = right()
+        rec = RECORD + 'abandoned k2 why=too-old at_ms=5\n'
+        c['cases'].append(('K-tooold-abandon-after-1', 'tooold', 'abandon:after:1', '137', 'k2', {
+            'trace.tsv': trace('k2', *upto('asked', 'after'), ('withdraw', 'before'), ('withdraw', 'after'),
+                               ('abandon', 'before'), ('abandon', 'after')),
+            'publish.err': 'skyzfs-agent: test hook --kill-at: killed at abandon after (1)\n',
+            'record-after.txt': rec, 'retry.out': f'snap/a6 {commit_of("a6")}\n', 'retry.rc': '0\n'}))
+        c['pub'].append(('K-tooold-abandon-after-1', 'a6', 95, 506, commit_of('a6')))
+        c['rows']['a6'] = (10, 96)
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertEqual(lines['pin_K-tooold-abandon-after-1_outcome'], ('ok', '[server] k2: abandoned too-old'))
 
     def test_a_trace_that_goes_on_past_the_kill_is_the_rig_s_error(self):
         c = with_case('A-asked-after-1', **{'trace.tsv': trace('a2', *WHOLE)})
