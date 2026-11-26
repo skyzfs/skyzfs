@@ -6,7 +6,9 @@
 # The stand-ins' bodies are single-quoted: they expand in their own shell.
 # The script's functions, eval'd here, call the stand-ins defined beside
 # them and read the variables set for them, which shellcheck cannot see.
-# shellcheck disable=SC2016,SC2034,SC2329
+# A test that sets the script's variables does so in a subshell, so that
+# the next test starts from the file's own.
+# shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2329
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT=$HERE/agent-record.sh
 if ! T=$(mktemp -d) || [ -z "$T" ] || [ ! -d "$T" ]; then echo "no temporary directory"; exit 2; fi
@@ -254,6 +256,100 @@ is "arare: each point the check gives" "$(rare none)" \
     "trace destroy K-destroy-withdraw-before-1@withdraw:before:1 K-destroy-look-before-7@look:before:7 sweep K-sweep-sweep-before-1@sweep:before:1 gone@holding:before:1 unmarked "
 is "arare: a trace that gives no points" "$(rare destroy)" \
     "trace destroy sweep K-sweep-sweep-before-1@sweep:before:1 gone@holding:before:1 unmarked $(printf 'destroy\tthe trace reached no point ')"
+
+# G9 of #158's review: the shell plants that no test killed.
+# published: a snapshot of another name that holds T's, or T's name on a
+# descendant, is not T's (T02, T06).
+near() {
+    # shellcheck disable=SC2329
+    (
+        RDIR=$T/q; CDIR=$RDIR/cases/near; POOL=skzcut; rm -rf "$RDIR"; mkdir -p "$CDIR"; : > "$RDIR/published-gone.tsv"
+        zfs() { printf '%s\n' "$POOL@g10" "$POOL/fs@g1"; }
+        rig_error() { echo "rig error: $*"; exit 2; }
+        published g1; cat "$RDIR/published-gone.tsv"
+    )
+}
+is "published: g10, and g1 of a descendant, are not g1" "$(near)" "$(printf 'near\tg1')"
+
+# agent_begin: each course starts with empty lists (T07).
+begin() {
+    # shellcheck disable=SC2329
+    (
+        RDIR=$T/b; rm -rf "$RDIR"; mkdir -p "$RDIR/run"; RUN=$RDIR/run
+        python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$RDIR/run/control"
+        create_pool() { :; }; load() { :; }; writer_on() { :; }; vrun() { printf '%s' "$RUN"; }
+        rig_error() { echo "rig error: $*"; exit 2; }
+        for f in cases.tsv published.tsv published-gone.tsv points-error.tsv rig-error.tsv; do echo old > "$RDIR/$f"; done
+        eval "$(fn agent_begin)"
+        agent_begin
+        for f in cases.tsv published.tsv published-gone.tsv points-error.tsv rig-error.tsv; do
+            printf '%s:%s ' "$f" "$(cat "$RDIR/$f" 2>/dev/null || echo none)"
+        done
+        echo "$ON_RIG_ERROR"
+    )
+}
+is "agent_begin: the lists of the course before are gone" "$(begin)" \
+    "cases.tsv: published.tsv: published-gone.tsv: points-error.tsv:none rig-error.tsv:none agent_judged"
+
+# adump: the record's dump, its errors and its status kept apart (T10,
+# T11).
+eval "$(fn adump)"
+printf '#!/bin/bash\necho "volume aaaa"\necho "skyzfs-agent: d: the record is corrupt" >&2\nexit 6\n' > "$T/agent6"
+chmod +x "$T/agent6"
+rm -f "$CDIR"/*
+AGENT=$T/agent6 ADIR=x adump record-after
+is "adump: a record that does not read" \
+    "$(cat "$CDIR/record-after.txt") | $(cat "$CDIR/record-after.err") | $(cat "$CDIR/record-after.rc")" \
+    "volume aaaa | skyzfs-agent: d: the record is corrupt | 6"
+
+# asettle: the record dumped before the settle and after the case (T12).
+settle() {
+    # shellcheck disable=SC2329
+    (
+        RDIR=$T/s; CDIR=$RDIR/cases/k1; rm -rf "$RDIR"; mkdir -p "$CDIR"; : > "$RDIR/cases.tsv"
+        ADIR=$RDIR/agent; HOLD_TAG=skyzfs-publish; SCEN=plain; KILL=""; CASE_AGE=(); POOL=skzcut
+        echo 0 > "$CDIR/publish.rc"; echo 0 > "$CDIR/settle.rc"
+        adump() { echo "adump $1" >> "$T/calls"; }
+        acmd() { echo "acmd $1" >> "$T/calls"; }
+        case_name() { echo t1; }; snaprow() { return 0; }; published() { echo "published $1" >> "$T/calls"; }
+        zfs() { :; }; log() { :; }
+        rig_error() { echo "rig error: $*"; exit 2; }
+        eval "$(fn asettle)"
+        asettle
+        tr '\n' ';' < "$T/calls"; cat "$RDIR/cases.tsv"
+    )
+    rm -f "$T/calls"
+}
+is "asettle: dumps, settle, T published, the case's line" "$(settle)" \
+    "adump record-before;acmd settle;published t1;adump record-after;$(printf 'k1\tplain\t-\t0\tt1')"
+
+# sweep: the publish that marks the directory, then the scenario's (T20).
+sweep() {
+    # shellcheck disable=SC2329
+    (
+        CDIR=$T/w; rm -rf "$CDIR"; mkdir -p "$CDIR"; POOL=skzcut; HOLD_TAG=skyzfs-publish
+        acmd() { echo "acmd $*" >> "$T/calls"; }
+        z() { shift; echo "$*" >> "$T/calls"; }
+        zfs() { :; }
+        eval "$(fn scen_sweep)"
+        scen_sweep sweep --kill-at sweep:before:1
+        tr '\n' ';' < "$T/calls"
+    )
+    rm -f "$T/calls"
+}
+is "sweep: the first publish, the stray hold, the scenario's publish" "$(sweep)" \
+    "acmd first publish --limit-s 600;zfs snapshot skzcut@sweep-w;zfs hold skyzfs-publish skzcut@sweep-w;acmd publish publish --limit-s 600 --kill-at sweep:before:1;"
+
+# both: the daemon's status as the rig's SIGKILL left it (T30, T31).
+eval "$(fn scen_both)"
+abg() { :; }; await_agent() { :; }; serve_again() { :; }
+rm -f "$CDIR"/*
+sleep 30 & SERVE_PID=$!; scen_both x
+is "both: the daemon serving, killed by the rig" "$(cat "$CDIR/both-kill.tsv")" "$(printf 'killed_rc\t137')"
+(exit 0) & SERVE_PID=$!; sleep 0.3; scen_both x
+is "both: the daemon had ended 0" "$(cat "$CDIR/both-kill.tsv")" "$(printf 'killed_rc\t0')"
+(exit 7) & SERVE_PID=$!; sleep 0.3; scen_both x
+is "both: the daemon had ended 7" "$(cat "$CDIR/both-kill.tsv")" "$(printf 'killed_rc\t7')"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

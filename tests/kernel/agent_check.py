@@ -35,6 +35,8 @@ in DIR/cases.tsv. For each case:
   point that the run did not make, ending by itself with no hook line
   (how often an agent looks or syncs depends on time), is INFO
   (obs_ID_not_reached) and the case is judged as one with no kill.
+  gone and both always kill (KILLED_ONLY): one of them judged with no
+  kill is this premise's error.
 - The scenario's own premises (rig): restart, the daemon killed with T
   not landed (node B's snap-row with the daemon down, between.txt);
   late, the agent stopped with T asked and not done (record-stopped.txt)
@@ -175,7 +177,10 @@ DAEMON_KILLED = {
     'publish:1': re.compile(r'killed after the transaction of publish 1 \('),
 }
 # The scenario -> the first run's status where no kill fired (run
-# 45751597306's cases).
+# 45751597306's cases). gone and both always kill (KILLED_ONLY): one of
+# them with no kill is the rig's error. unmarked has its own pin
+# (pin_ID_refused).
+KILLED_ONLY = ('gone', 'both')
 FIRST_RC = {
     'plain': '0',
     'restart': '0',
@@ -183,11 +188,8 @@ FIRST_RC = {
     'destroy': '3',
     'tooold': '3',
     'sweep': '0',
-    'gone': '0',
-    'unmarked': '6',
     'dhook': '0',
     'late': '0',
-    'both': '0',
 }
 # The scenario -> T's outcome where the scenario's premise holds; None:
 # the criterion alone (INFO). A plain case with no kill must publish.
@@ -621,7 +623,10 @@ def main():
             if kill:
                 premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),
                         f'killed at {kill}, as the trace and the hook\'s line say')
-            elif scen != 'unmarked':
+            elif scen in KILLED_ONLY:
+                premise(f'premise_{cid}_killed', [f'a {scen} case with no kill: the run ended {first_rc} '
+                                                  'before its kill'], '')
+            elif scen in FIRST_RC:
                 holds(f'pin_{cid}_first_run', [] if first_rc == FIRST_RC[scen]
                       else [f'the first run ended {first_rc}, not {FIRST_RC[scen]}: {flat(perr)[-200:]}'],
                       'server', f'the first run ended {first_rc}, as a {scen} case with no kill does')

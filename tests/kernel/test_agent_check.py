@@ -799,6 +799,10 @@ class Main(unittest.TestCase):
         # D4 of #158's review: the publish that marks the directory failed.
         rc, lines = run_course(course=c, change=case_file('sweep', 'first.rc', '1\n'))
         self.assertEqual((rc, lines['pin_sweep_first_publish'][0]), (1, 'FAILED'))
+        # Its status missing is the rig's error, not a 0.
+        rc, lines = run_course(course=c, change=remove(os.path.join('cases', 'sweep', 'first.rc')))
+        self.assertEqual(rc, 2)
+        self.assertIn('rig_error', lines)
 
     def test_late_s_premise(self):
         c = right()
@@ -862,7 +866,12 @@ class Main(unittest.TestCase):
     def test_files_that_do_not_read_are_the_rig_s_error(self):
         for change in (write('cases.tsv', 'x\tplain\n', 'a'), write('cases.tsv', 'x\tnone\t-\t0\t-\n', 'a'),
                        write('published.tsv', 'x\ty\n', 'a'), remove('watch.log'),
-                       case_file('trace', 'publish.out', 'what\n')):
+                       case_file('trace', 'publish.out', 'what\n'),
+                       # The gone list missing, a line of one field or none
+                       # named, and a record's dump with no status.
+                       remove('published-gone.tsv'), write('published-gone.tsv', 'gone\n'),
+                       write('published-gone.tsv', 'gone\t\n'),
+                       remove(os.path.join('cases', 'trace', 'record-after.rc'))):
             rc, lines = run_course(change=change)
             self.assertEqual(rc, 2)
             self.assertIn('rig_error', lines)
@@ -875,6 +884,107 @@ class Main(unittest.TestCase):
         rc, lines = run_course(course=c)
         self.assertEqual(rc, 2)
         self.assertIn('the controls need two', lines['rig_error'][1])
+
+
+class Survivors(unittest.TestCase):
+    """G9 of #158's review: the plants that no test killed."""
+
+    def test_killed_at_reads_the_hook_s_line_for_the_point(self):
+        # P02: the trace ends where the case names, the hook's line names
+        # another point, or names two.
+        t = ac.read_trace(trace('x', ('ask', 'after'), ('asked', 'after'), ('ask', 'after')))
+        right_line = 'skyzfs-agent: test hook --kill-at: killed at ask after (2)\n'
+        other = 'skyzfs-agent: test hook --kill-at: killed at asked after (1)\n'
+        self.assertEqual(ac.killed_at('ask:after:2', '137', right_line, t), [])
+        self.assertTrue(ac.killed_at('ask:after:2', '137', other, t))
+        self.assertTrue(ac.killed_at('ask:after:2', '137', right_line + other, t))
+
+    def test_expected_of_each_scenario_that_publishes(self):
+        # P17, P18, P20, with and without a kill.
+        for scen in ('restart', 'assist', 'sweep', 'dhook', 'late', 'both'):
+            self.assertEqual(ac.expected(scen, '', False, 't'), 'published', scen)
+        self.assertEqual(ac.expected('both', 'ask:after:1', False, 't'), 'published')
+        self.assertEqual(ac.expected('late', 'asked:after:1', False, 't'), 'published')
+
+    def test_first_rc_names_each_scenario_judged_with_no_kill(self):
+        # N20, N23: gone and both always kill; unmarked has its own pin.
+        self.assertEqual(set(ac.FIRST_RC), set(ac.EXPECTED) - set(ac.KILLED_ONLY) - {'unmarked'})
+        self.assertEqual({k for k, v in ac.FIRST_RC.items() if v != '0'}, {'destroy', 'tooold'})
+
+    def test_a_tooold_case_with_no_kill_ends_its_first_run_3(self):
+        # N18.
+        def course(rc):
+            c = right()
+            c['cases'].append(('K-tooold', 'tooold', '-', rc, 'o1', {
+                'trace.tsv': trace('o1', ('enrol', 'before'), ('intent', 'after'), ('abandon', 'before')),
+                'publish.out': 'abandoned o1 too-old\n'}))
+            return c
+        rc, lines = run_course(course=course('3'))
+        self.assertEqual(lines['pin_K-tooold_first_run'][0], 'ok', not_ok(lines))
+        self.assertEqual(lines['pin_K-tooold_outcome'][0], 'ok', not_ok(lines))
+        rc, lines = run_course(course=course('0'))
+        self.assertEqual((rc, lines['pin_K-tooold_first_run'][0]), (1, 'FAILED'))
+
+    def test_a_gone_or_both_case_with_no_kill_is_the_rig_s_error(self):
+        # N20, N23: such a case has nothing to judge its first run by.
+        c = right()
+        c['cases'] = [(i, s, '-' if i == 'gone' else k, '0' if i == 'gone' else r, t, own)
+                      for i, s, k, r, t, own in c['cases']]
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_gone_killed'][0]), (2, 'ERROR'))
+        self.assertNotIn('pin_gone_first_run', lines)
+        c = right()
+        c['cases'].append(('b-x', 'both', '-', '0', 'a6', {
+            'trace.tsv': trace('a6', *WHOLE), 'publish.out': f'snap/a6 {commit_of("a6")}\n',
+            'both-kill.tsv': 'killed_rc\t137\n'}))
+        c['pub'].append(('b-x', 'a6', 90, 506, commit_of('a6')))
+        c['rows']['a6'] = (10, 91)
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_b-x_killed'][0]), (2, 'ERROR'))
+        self.assertNotIn('pin_b-x_first_run', lines)
+
+    def test_a_missed_control_beside_the_rig_s_error_ends_1(self):
+        # N62-N64, P58, Q17: a control missed is a verdict, whatever else
+        # the course had.
+        err = case_file('d-carry-swap', 'kill.tsv', 'killed_rc\tnone\nserve\t2\n')
+        rc, lines = run_course(change=err)
+        self.assertEqual((rc, lines['premise_d-carry-swap_daemon_killed'][0]), (2, 'ERROR'))
+        rc, lines = run_course(change=err, miss_files=True)
+        self.assertEqual((rc, lines['ctl_files'][0]), (1, 'MISSED'))
+        rc, lines = run_course(change=err, miss_snap=True)
+        self.assertEqual(rc, 1)
+        self.assertNotEqual(lines['ctl_early'][0], 'CAUGHT_AT_SNAPSHOT')
+        with mock.patch.object(ac, 'judge_manifest_json', return_value=[]):
+            rc, lines = run_course(change=err)
+        self.assertEqual((rc, lines['ctl_manifest'][0]), (1, 'MISSED'))
+        with mock.patch.object(ac, 'judge_manifest_json', return_value=[]):
+            rc, lines = run_course()
+        self.assertEqual((rc, lines['ctl_manifest'][0]), (1, 'MISSED'))
+
+    def test_the_carry_helpers(self):
+        # R03: a row on a cut that opens only with a rewind; R11: the first
+        # carrier opens as itself; R06: an ask refused, or of another name.
+        cuts = [(9, 90, False, 1, 'l9'), (10, 91, True, 1, 'l10'), (11, 92, True, 1, 'l11')]
+        ask = (5, 85, 8)
+        self.assertEqual(ac.judge_carried(cuts, {'number': 10, 'group': 91}, ask), [])
+        self.assertTrue(ac.judge_carried(cuts, {'number': 9, 'group': 90}, ask))
+        self.assertEqual(ac.first_carrier(cuts, ask), (10, 91))
+        self.assertIsNone(ac.first_carrier(cuts[:1], ask))
+
+        def asked(result, ns='5'):
+            return {'event': 'publish', 'op': 'asked', 'result': result, 'sector': '85', 'sectors': '8', 'ns': ns}
+        self.assertEqual(ac.last_ask([{'lines': [asked('a5 accepted')]}], 'a5'), ('5', 85, 8))
+        for result in ('a5 refused', 'a5x accepted', 'a55 accepted'):
+            self.assertIsNone(ac.last_ask([{'lines': [asked(result)]}], 'a5'), result)
+        self.assertEqual(ac.last_ask([{'lines': [asked('a5 accepted'), asked('a5 refused', '6')]}], 'a5'),
+                         ('5', 85, 8))
+
+    def test_a_carry_hook_whose_name_has_no_row_ends_1(self):
+        # R09.
+        c = right()
+        del c['rows']['a5']
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_last_request'][0]), (1, 'FAILED'))
 
 
 if __name__ == '__main__':
