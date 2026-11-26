@@ -1,0 +1,26 @@
+Q01 EXPECTED both wrong SURVIVED
+Q02 EXPECTED restart wrong KILLED
+Q03 EXPECTED late wrong KILLED
+Q04 EXPECTED assist wrong KILLED
+Q05 EXPECTED dhook wrong KILLED
+Q06 EXPECTED plain set SURVIVED
+Q07 drop pin_criterion line KILLED
+Q08 drop pin_clean line KILLED
+Q09 drop pin_outcome line KILLED
+Q10 drop pin_nodeb line KILLED
+Q11 drop pin_manifest line KILLED
+Q12 drop pin_row line KILLED
+Q13 drop watcher pin KILLED
+Q14 drop unmarked pin KILLED
+Q15 drop swept pin KILLED
+Q16 drop carry-swap pin KILLED
+Q17 ctl_manifest verdict SURVIVED
+Q18 ctl_early verdict word KILLED
+Q19 ctl_files verdict word KILLED
+Q20 premise word ok KILLED
+Q21 holds word ok KILLED
+Q22 not_reached premise skipped too KILLED
+Q23 premise skips rest of case SURVIVED
+Q24 carry-put becomes verdict KILLED
+Q25 assist local check root also KILLED
+Q26 not_reached any N KILLED

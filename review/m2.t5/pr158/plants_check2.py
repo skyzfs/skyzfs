@@ -1,0 +1,31 @@
+F = 'tests/kernel/agent_check.py'
+T = 'python3 -I tests/kernel/test_agent_check.py'
+P = [
+ ('Q01 EXPECTED both wrong', "'both': 'published',", "'both': 'abandoned destroyed',"),
+ ('Q02 EXPECTED restart wrong', "'restart': 'published',", "'restart': 'abandoned rewound',"),
+ ('Q03 EXPECTED late wrong', "'late': 'published',", "'late': 'absent',"),
+ ('Q04 EXPECTED assist wrong', "'assist': 'published',", "'assist': 'abandoned no-progress',"),
+ ('Q05 EXPECTED dhook wrong', "'dhook': 'published',", "'dhook': 'absent',"),
+ ('Q06 EXPECTED plain set', "'plain': None,", "'plain': 'absent',"),
+ ('Q07 drop pin_criterion line', "            holds(f'pin_{cid}_criterion', ok,", "            (lambda *a: None)(f'pin_{cid}_criterion', ok,"),
+ ('Q08 drop pin_clean line', "            holds(f'pin_{cid}_clean',", "            (lambda *a: None)(f'pin_{cid}_clean',"),
+ ('Q09 drop pin_outcome line', "                holds(f'pin_{cid}_outcome',", "                (lambda *a: None)(f'pin_{cid}_outcome',"),
+ ('Q10 drop pin_nodeb line', "            holds(f'pin_{n}_nodeb',", "            (lambda *a: None)(f'pin_{n}_nodeb',"),
+ ('Q11 drop pin_manifest line', "            holds(f'pin_{n}_manifest', mbad,", "            (lambda *a: None)(f'pin_{n}_manifest', mbad,"),
+ ('Q12 drop pin_row line', "            holds(f'pin_{n}_row', bad + publish_check.judge_cut(cuts, row),", "            (lambda *a: None)(f'pin_{n}_row', bad + publish_check.judge_cut(cuts, row),"),
+ ('Q13 drop watcher pin', "        holds('pin_watcher_reads', bad,", "        (lambda *a: None)('pin_watcher_reads', bad,"),
+ ('Q14 drop unmarked pin', "                holds(f'pin_{cid}_refused',", "                (lambda *a: None)(f'pin_{cid}_refused',"),
+ ('Q15 drop swept pin', "                holds(f'pin_{cid}_swept',", "                (lambda *a: None)(f'pin_{cid}_swept',"),
+ ('Q16 drop carry-swap pin', "                holds(f'pin_{cid}_carried_by_the_killed_cut',", "                (lambda *a: None)(f'pin_{cid}_carried_by_the_killed_cut',"),
+ ('Q17 ctl_manifest verdict', "        put('ctl_manifest', 'CAUGHT' if mbad else 'MISSED',", "        put('ctl_manifest', 'CAUGHT',"),
+ ('Q18 ctl_early verdict word', "        put('ctl_early', verdict.upper().replace(' ', '_'), 'check',", "        put('ctl_early', 'CAUGHT_AT_SNAPSHOT', 'check',"),
+ ('Q19 ctl_files verdict word', "        put('ctl_files', verdict.upper().replace(' ', '_'), 'check',", "        put('ctl_files', 'CAUGHT_AT_FILES', 'check',"),
+ ('Q20 premise word ok', "            put(key, 'ERROR', 'rig', '; '.join(bad))", "            put(key, 'ok', 'rig', '; '.join(bad))"),
+ ('Q21 holds word ok', "            put(key, 'FAILED', rests, '; '.join(bad))", "            put(key, 'ok', rests, '; '.join(bad))"),
+ ('Q22 not_reached premise skipped too', "            if kill and not_reached(kill, first_rc, perr, trace):", "            if kill and (not_reached(kill, first_rc, perr, trace) or first_rc != '137'):"),
+ ('Q23 premise skips rest of case', "            if kill:\n                premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),\n                        f'killed at {kill}, as the trace and the hook\\'s line say')", "            if kill:\n                if not premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),\n                        f'killed at {kill}, as the trace and the hook\\'s line say'):\n                    continue"),
+ ('Q24 carry-put becomes verdict', "            else:\n                put(f'obs_{cid}_carried_by', 'INFO',", "            else:\n                holds(f'obs_{cid}_carried_by', [] if same else [detail], 'server', detail)\n                (lambda *a: None)(f'obs_{cid}_carried_by', 'INFO',"),
+ ('Q25 assist local check root also', "        if f[2] == 'local' and f[0] != POOL:", "        if f[2] == 'local':"),
+ ('Q26 not_reached any N', "    return n > 1 and rc != '137' and not KILL_LINE.findall(err) and reach < n", "    return rc != '137' and not KILL_LINE.findall(err)"),
+]
+PLANTS = [(pid, F, old, new, T) for pid, old, new in P]

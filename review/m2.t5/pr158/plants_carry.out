@@ -1,0 +1,11 @@
+R01 number >= C KILLED
+R02 group > G KILLED
+R03 no judge_cut SURVIVED
+R04 first ask not last KILLED
+R05 G/C swapped KILLED
+R06 any result SURVIVED
+R07 older <= KILLED
+R08 swap pin on put too KILLED
+R09 no row passes SURVIVED
+R10 premise always ok KILLED
+R11 first_carrier itself ignored SURVIVED

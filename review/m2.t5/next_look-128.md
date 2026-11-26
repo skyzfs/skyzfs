@@ -2,7 +2,7 @@
 
 Pull request: skyzfs/skyzfs#128 (`skyzfs-testing` into `zfs-topology`).
 **Head reviewed: 73ebf56**, one commit on 0325c40, the head of my first
-look (`review.md` here). The base is still 65dcfd6. The commit changes
+look (`review-128.md` here). The base is still 65dcfd6. The commit changes
 test code only:
 
 - `tests/bench/bracket.py`, with `test_bracket.py`;

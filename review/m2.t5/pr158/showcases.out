@@ -1,0 +1,13 @@
+--- later reach not made, the agent panicked (101): exit 0
+    obs_A-look-before-2_not_reached ('INFO', '[rig] the run ended 101 before reach 2 of look:before: judged as a case with no kill')
+    pin_A-look-before-2_outcome ('ok', '[server] p1: published')
+    pin_A-look-before-2_criterion ('ok', '[kernel and server] p1 published')
+--- restart: first run ended 1, the settle published: exit 0
+    premise_d1_pending_at_the_loss ('ok', '[rig] no snap/a6 while the daemon was down: it was pending')
+    pin_d1_outcome ('ok', '[server] a6: published')
+    pin_d1_criterion ('ok', '[kernel and server] a6 published')
+--- record corrupt after the case: exit 0
+    pin_trace_clean ('ok', '[server] nothing under way, no hold of the tag, no manifest left, the assist on the root only')
+--- both, no trace of a daemon kill: exit 0 ['case_b-ask-after-1', 'pin_b-ask-after-1_clean', 'pin_b-ask-after-1_criterion', 'pin_b-ask-after-1_outcome', 'premise_b-ask-after-1_killed']
+--- retry printed a name node B lacks: exit 1
+    pin_unmarked_criterion ('FAILED', '[kernel and server] snap/T absent and the retry did not publish (exit 0)')

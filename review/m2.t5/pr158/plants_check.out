@@ -1,0 +1,74 @@
+P01 killed_at rc KILLED
+P02 killed_at any kill line SURVIVED
+P03 killed_at reach KILLED
+P04 killed_at last point KILLED
+P05 not_reached n>1 KILLED
+P06 not_reached rc KILLED
+P07 not_reached hook line KILLED
+P08 not_reached reach KILLED
+P09 premise exit KILLED
+P10 holds exit KILLED
+P11 EXPECTED destroy drift KILLED
+P12 EXPECTED gone None KILLED
+P13 EXPECTED restart None SURVIVED
+P14 EXPECTED dhook None SURVIVED
+P15 EXPECTED unmarked KILLED
+P16 EXPECTED tooold None KILLED
+P17 EXPECTED late None SURVIVED
+P18 EXPECTED both None SURVIVED
+P19 EXPECTED sweep None KILLED
+P20 EXPECTED assist None SURVIVED
+P21 expected: every kill INFO KILLED
+P22 expected: plain no kill INFO KILLED
+P23 expected: destroy not destroyed keeps KILLED
+P24 outcome record fallback KILLED
+P25 outcome abandoned first KILLED
+P26 clean under way KILLED
+P27 clean holds KILLED
+P28 clean manifests KILLED
+P29 clean assist KILLED
+P30 clean empty record KILLED
+P31 manifest createtxg KILLED
+P32 manifest root guid KILLED
+P33 manifest first member KILLED
+P34 daemon_kill rc KILLED
+P35 daemon_kill line KILLED
+P36 late phase KILLED
+P37 late continued KILLED
+P38 late done before look KILLED
+P39 restart between landed KILLED
+P40 restart not pending at loss KILLED
+P41 assist premise KILLED
+P42 unmarked rc KILLED
+P43 unmarked stray SURVIVED
+P44 unmarked record KILLED
+P45 sweep pin KILLED
+P46 criterion retry any SURVIVED
+P47 criterion always KILLED
+P48 row commit SURVIVED
+P49 printed commit KILLED
+P50 row group KILLED
+P51 judge_cut KILLED
+P52 manifest hash SURVIVED
+P53 nodeb failed KILLED
+P54 carry-swap same KILLED
+P55 carry-swap is INFO KILLED
+P56 ctl_early rc KILLED
+P57 ctl_files rc KILLED
+P58 ctl_manifest rc SURVIVED
+P59 watcher verdict KILLED
+P60 watcher error SURVIVED
+P61 destroyed premise SURVIVED
+P62 late no mark KILLED
+P63 read_outputs lax KILLED
+P64 published.tsv lax SURVIVED
+P65 scenario unknown SURVIVED
+P66 dhook rows KILLED
+P67 ctl_early b any SURVIVED
+P68 two names min KILLED
+P69 killed_at empty trace KILLED
+P70 killed premise skipped KILLED
+P71 outcome uses settle only KILLED
+P72 effects parse KILLED
+P73 row none SURVIVED
+P74 manifest absent SURVIVED
