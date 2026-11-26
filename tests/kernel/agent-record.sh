@@ -141,15 +141,15 @@ done
 acheck() { python3 -I "$HERE/agent_check.py" "$@"; }
 # LABEL CMD [OPTION...]: the agent, as the next start or tick runs it,
 # in the case's directory; its output in CDIR/LABEL.{out,err,rc}.
-# The agent's RUN: the directory of its socket `control`. The daemon makes
-# it per volume under its --run-dir, named by the volume directory's
-# device and inode numbers (skyzfs-ublk's records::volume_run_dir), and
-# not in --run-dir itself, which is what the agent's usage says RUN is.
-arun() { printf '%s/v-%x-%x' "$RUN" "$(stat -c %d "$VOL")" "$(stat -c %i "$VOL")"; }
+# The agent's RUN is the daemon's --run-dir, as on a node; the agent finds
+# the volume's socket under it itself. vrun is that socket's directory, as
+# the daemon names it (RUN/v-<dev>-<ino> of VOL in hex,
+# skyzfs_control::socket_path), for the rig's own check that it is there.
+vrun() { printf '%s/v-%x-%x' "$RUN" "$(stat -c %d "$VOL")" "$(stat -c %i "$VOL")"; }
 acmd() {
     local label=$1 cmd=$2 rc=0
     shift 2
-    timeout 900 "$AGENT" "$cmd" --volume "$VOL" --run "$(arun)" --device "$DEV" --pool "$POOL" --dir "$ADIR" "$@" \
+    timeout 900 "$AGENT" "$cmd" --volume "$VOL" --run "$RUN" --device "$DEV" --pool "$POOL" --dir "$ADIR" "$@" \
         > "$CDIR/$label.out" 2> "$CDIR/$label.err" || rc=$?
     echo "$rc" > "$CDIR/$label.rc"
 }
@@ -158,7 +158,7 @@ acmd() {
 abg() {
     local label=$1 cmd=$2
     shift 2
-    "$AGENT" "$cmd" --volume "$VOL" --run "$(arun)" --device "$DEV" --pool "$POOL" --dir "$ADIR" "$@" \
+    "$AGENT" "$cmd" --volume "$VOL" --run "$RUN" --device "$DEV" --pool "$POOL" --dir "$ADIR" "$@" \
         > "$CDIR/$label.out" 2> "$CDIR/$label.err" &
     AGENT_PID=$!
     echo "$AGENT_PID" > "$CDIR/$label.pid"
@@ -507,8 +507,8 @@ agent_begin() {
     load 1
     writer_on
     : > "$RDIR/cases.tsv"; : > "$RDIR/published.tsv"; : > "$RDIR/published-gone.tsv"
-    [ -S "$(arun)/control" ] || rig_error "no socket control in $(arun): under $RUN are $(find "$RUN" -maxdepth 2 | tr '\n' ' ')"
-    printf 'run-dir\t%s\nagent-run\t%s\n' "$RUN" "$(arun)" > "$RDIR/agent-run.tsv"
+    [ -S "$(vrun)/control" ] || rig_error "no socket control in $(vrun): under $RUN are $(find "$RUN" -maxdepth 2 | tr '\n' ' ')"
+    printf 'run-dir\t%s\nagent-run\t%s\n' "$RUN" "$(vrun)" > "$RDIR/agent-run.tsv"
 }
 agent_end() {
     writer_off
