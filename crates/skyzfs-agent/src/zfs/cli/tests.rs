@@ -1578,26 +1578,30 @@ fn hold_line(snapshot: &str, tag: &str) -> String {
 /// names `t` of those that have the tag, of any dataset: no channel
 /// program (S1 of #161's review, the lead's ruling). The list takes the
 /// list's limit on the snapshots counted, each `zfs holds` a read's.
-/// Mutants: a snapshot with no hold read, a hold of another tag kept
+/// Only snapshots whose name `t` begins with `skz-` are read (A4 of
+/// #165's review). Mutants: a snapshot with no hold read, a snapshot
+/// not the agent's read, a hold of another tag kept
 /// (one the agent's begins with, or one that begins with the agent's),
 /// the dataset's part kept in the name, the list on a read's limit, the
 /// holds on the list's.
 #[test]
 fn the_sweep_reads_the_holds_of_the_snapshots_that_have_one() {
+    // tank/db@mine and tank@skz are held but not names of the agent's:
+    // their holds are not read (A4 of #165's review).
     let snapshots = "tank@skz-1\t1\ntank/db@skz-1\t1\ntank@none\t0\n\
-                  tank/db@mine\t3\ntank/vol@skz-2\t1\n";
+                  tank/db@mine\t3\ntank/db@skz-3\t3\ntank@skz\t1\ntank/vol@skz-2\t1\n";
     let held = [
         "tank@skz-1",
         "tank/db@skz-1",
-        "tank/db@mine",
+        "tank/db@skz-3",
         "tank/vol@skz-2",
     ];
     let holds = [
         hold_line("tank@skz-1", HOLD_TAG),
         hold_line("tank/db@skz-1", HOLD_TAG),
-        hold_line("tank/db@mine", "keep"),
-        hold_line("tank/db@mine", "skyzfs-publish-not"),
-        hold_line("tank/db@mine", "skyzfs"),
+        hold_line("tank/db@skz-3", "keep"),
+        hold_line("tank/db@skz-3", "skyzfs-publish-not"),
+        hold_line("tank/db@skz-3", "skyzfs"),
         hold_line("tank/vol@skz-2", HOLD_TAG),
     ]
     .concat();
@@ -1754,7 +1758,7 @@ fn the_holds_batches_fill_up_to_the_bound() {
 /// message of a missing pool not confirmed.
 #[test]
 fn the_sweep_reads_again_what_vanished_under_it() {
-    let both = ["tank@skz-1", "tank@gone"];
+    let both = ["tank@skz-1", "tank@skz-gone"];
     // What `zfs holds -H` gives where one of its snapshots is gone, as
     // read in OpenZFS 2.2's `zfs_do_holds` and not recorded: the holds
     // of the others, the error of the one gone, exit 1 (`no datasets
@@ -1763,11 +1767,11 @@ fn the_sweep_reads_again_what_vanished_under_it() {
         Ok(crate::host::fake::output(
             1,
             &hold_line("tank@skz-1", HOLD_TAG),
-            "cannot open 'tank@gone': dataset does not exist\n",
+            "cannot open 'tank@skz-gone': dataset does not exist\n",
         ))
     };
     let mut fake = Fake::default();
-    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@gone\t1\n")
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@skz-gone\t1\n")
         .ok(TAGGED_LIST, "tank@skz-1\t1\n")
         .give(&holds_of(&both), gone())
         .ok(
@@ -1790,7 +1794,7 @@ fn the_sweep_reads_again_what_vanished_under_it() {
     );
     // Gone at every read: the error, after three.
     let mut fake = Fake::default();
-    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@gone\t1\n")
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@skz-gone\t1\n")
         .give(&holds_of(&both), gone());
     let mut zfs = cli(fake);
     let read = zfs.tagged("tank", HOLD_TAG);
@@ -1802,12 +1806,12 @@ fn the_sweep_reads_again_what_vanished_under_it() {
     // libzfs's other message of a snapshot gone during the read, where
     // `zpool list` lists the pool: read again (TG-A of #162's review).
     let mut fake = Fake::default();
-    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@gone\t1\n")
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@skz-gone\t1\n")
         .ok(TAGGED_LIST, "tank@skz-1\t1\n")
         .fails(
             &holds_of(&both),
             1,
-            "cannot get holds for 'tank@gone': no such pool or dataset\n",
+            "cannot get holds for 'tank@skz-gone': no such pool or dataset\n",
         )
         .ok(
             &holds_of(&["tank@skz-1"]),
@@ -1867,17 +1871,78 @@ fn the_sweep_reads_again_what_vanished_under_it() {
 /// UTF-8.
 #[test]
 fn another_holders_tag_is_read_as_bytes() {
-    let held = ["tank@skz-1", "tank/db@backup"];
+    let held = ["tank@skz-1", "tank/db@skz-2"];
     let mut holds = hold_line("tank@skz-1", HOLD_TAG).into_bytes();
-    holds.extend_from_slice(b"tank/db@backup\tcaf\xe9\tWed Nov 25 21:24 2026\n");
+    holds.extend_from_slice(b"tank/db@skz-2\tcaf\xe9\tWed Nov 25 21:24 2026\n");
     let mut fake = Fake::default();
-    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank/db@backup\t1\n")
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank/db@skz-2\t1\n")
         .give(&holds_of(&held), Ok(bytes_out(holds)));
     let mut zfs = cli(fake);
     assert_eq!(
         zfs.tagged("tank", HOLD_TAG),
         Ok(["skz-1".to_string()].into())
     );
+}
+
+/// The sweep reads the holds of the agent's own snapshots alone, those
+/// whose name `t` begins with `skz-` (A4 of #165's review, the lead's
+/// ruling): another holder's tag with a tab or a newline on a snapshot
+/// the agent did not take does not stop it, nor is that snapshot's
+/// `zfs holds` run at all. Names that only look like the agent's
+/// (`skzfoo`, `xskz-1`, `skz` alone) are not its; one in a dataset
+/// named `skz-db` is not either. A hold of the agent's tag that a person
+/// put on such a snapshot by hand is not the sweep's. Mutants: every
+/// held snapshot read (the base), the dataset's name matched, `skz`
+/// without its dash taken, the prefix found anywhere in `t`.
+#[test]
+fn another_holders_odd_tag_on_a_snapshot_not_the_agents_does_not_stop_the_sweep() {
+    let listed = "tank@skz-1\t1\ntank/db@backup\t2\ntank@skzfoo\t1\n\
+                  tank@xskz-1\t1\ntank@skz\t1\ntank/skz-db@daily\t1\n";
+    // Read as the base read them, every held snapshot at once, the
+    // holds would be an error: a tag with a newline that forges the
+    // agent's hold, and one with a tab.
+    let every = [
+        "tank@skz-1",
+        "tank/db@backup",
+        "tank@skzfoo",
+        "tank@xskz-1",
+        "tank@skz",
+        "tank/skz-db@daily",
+    ];
+    let odd = [
+        hold_line("tank@skz-1", HOLD_TAG),
+        hold_line("tank/db@backup", "x\ntank@skz-1\tskyzfs-publish"),
+        hold_line("tank/db@backup", "a\tb"),
+        hold_line("tank@skzfoo", HOLD_TAG),
+        hold_line("tank@xskz-1", HOLD_TAG),
+        hold_line("tank@skz", HOLD_TAG),
+        hold_line("tank/skz-db@daily", HOLD_TAG),
+    ]
+    .concat();
+    let mut fake = Fake::default();
+    fake.ok(TAGGED_LIST, listed).ok(&holds_of(&every), &odd).ok(
+        &holds_of(&["tank@skz-1"]),
+        &hold_line("tank@skz-1", HOLD_TAG),
+    );
+    let mut zfs = cli(fake);
+    assert_eq!(
+        zfs.tagged("tank", HOLD_TAG),
+        Ok(["skz-1".to_string()].into())
+    );
+    let read = holds_of(&["tank@skz-1"]);
+    assert_eq!(zfs.host().words(), [TAGGED_LIST, read.as_str()]);
+    for (name, agents) in [
+        ("tank@skz-1", true),
+        ("tank/db@skz-20261126T174000Z-2", true),
+        ("tank@skz-", true),
+        ("tank@skz", false),
+        ("tank@skzfoo", false),
+        ("tank@xskz-1", false),
+        ("tank/skz-db@daily", false),
+        ("skz-1", false),
+    ] {
+        assert_eq!(agents_name(name), agents, "{name}");
+    }
 }
 
 /// What a command printed on its standard output, exit 0.
@@ -1893,75 +1958,91 @@ fn bytes_out(stdout: Vec<u8>) -> crate::host::Output {
 /// holds the sweep reads, makes lines that are not a hold each: one that
 /// is not three fields, one of a snapshot not asked, or one forged whole
 /// that names a snapshot asked, which the count of holds (`userrefs`)
-/// finds. Each is read again, and then is an error that names the
-/// snapshot, and not skipped (F1-R of #162's review; the lead's ruling on
-/// M2.6c-5e). Mutants: a line skipped, a forged line kept (no count, or
-/// the count not compared), no reading again, an output cut short read.
+/// finds. Each is an error that names the snapshot, and not skipped
+/// (F1-R of #162's review; the lead's ruling on M2.6c-5e). More lines
+/// than holds are read again first, since a hold added between the two
+/// commands gives them too; a line that is not a hold is read once, as
+/// it comes from a tag (N2 of #165's review). Mutants: a line skipped, a
+/// forged line kept (no count, or the count not compared), no reading
+/// again, every error read again, an output cut short read.
 #[test]
 fn holds_that_do_not_add_up_are_an_error_that_names_the_snapshot() {
     const WHEN: &[u8] = b"\tWed Nov 25 21:24 2026\n";
-    let held = ["tank@skz-1", "tank/db@backup"];
+    let held = ["tank@skz-1", "tank/db@skz-2"];
     let agent = hold_line("tank@skz-1", HOLD_TAG).into_bytes();
-    // Another holder's hold on tank/db@backup, its tag `tag`.
+    // Another holder's hold on tank/db@skz-2, its tag `tag`.
     let with = |tag: &[u8]| {
         let mut holds = agent.clone();
-        holds.extend_from_slice(b"tank/db@backup\t");
+        holds.extend_from_slice(b"tank/db@skz-2\t");
         holds.extend_from_slice(tag);
         holds.extend_from_slice(WHEN);
         holds
     };
-    let cases: [(&str, Vec<u8>, &str); 6] = [
+    // (case, the holds read, what the error names, the reads)
+    let cases: [(&str, Vec<u8>, &str, usize); 6] = [
         (
             "a newline: a line of two fields",
             with(b"x\ntank/db@forged\tskyzfs-publish"),
-            "\"tank/db@backup\\tx\"",
+            "\"tank/db@skz-2\\tx\"",
+            1,
         ),
         (
             "two newlines: a line of one field",
             with(b"x\tY\nlonely\nz"),
-            "after a hold of `tank/db@backup`: \"lonely\"",
+            "after a hold of `tank/db@skz-2`: \"lonely\"",
+            1,
         ),
         (
             "a tab: a line of four fields, the agent's tag second",
             with(b"skyzfs-publish\tz"),
-            "\"tank/db@backup\\tskyzfs-publish\\tz\\tWed Nov 25 21:24 2026\"",
+            "\"tank/db@skz-2\\tskyzfs-publish\\tz\\tWed Nov 25 21:24 2026\"",
+            1,
         ),
         (
             "a line forged whole, of a snapshot not asked",
             with(b"x\tY\ntank/other@skz-9\tskyzfs-publish"),
-            "after a hold of `tank/db@backup`: \"tank/other@skz-9\\tskyzfs-publish",
+            "after a hold of `tank/db@skz-2`: \"tank/other@skz-9\\tskyzfs-publish",
+            1,
         ),
         (
             "a line forged whole, of the snapshot itself",
-            with(b"x\tY\ntank/db@backup\tskyzfs-publish"),
-            "`tank/db@backup` has 2 lines of holds and 1 holds (`userrefs`): a line is \
-             forged by a tag with a newline, on the hold just before one of them \
-             (of tank/db@backup, tank@skz-1)",
+            with(b"x\tY\ntank/db@skz-2\tskyzfs-publish"),
+            "`tank/db@skz-2` has 2 lines of holds and 1 holds (`userrefs`): holds were \
+             added between the two reads, again and again, or a line is forged by a tag \
+             with a newline, on the hold just before one of them (of tank/db@skz-2, \
+             tank@skz-1)",
+            3,
         ),
         (
             "a line forged whole, of another snapshot asked",
             with(b"x\tY\ntank@skz-1\tskyzfs-publish"),
-            "`tank@skz-1` has 2 lines of holds and 1 holds (`userrefs`): a line is \
-             forged by a tag with a newline, on the hold just before one of them \
-             (of tank/db@backup)",
+            "`tank@skz-1` has 2 lines of holds and 1 holds (`userrefs`): holds were \
+             added between the two reads, again and again, or a line is forged by a tag \
+             with a newline, on the hold just before one of them (of tank/db@skz-2)",
+            3,
         ),
     ];
-    for (case, holds, names) in cases {
+    for (case, holds, names, reads) in cases {
         let mut fake = Fake::default();
-        fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank/db@backup\t1\n")
+        fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank/db@skz-2\t1\n")
             .give(&holds_of(&held), Ok(bytes_out(holds)));
         let mut zfs = cli(fake);
+        let times = if reads == 1 {
+            "(read once)".to_string()
+        } else {
+            format!("(read {reads} times)")
+        };
         match zfs.tagged("tank", HOLD_TAG) {
             Err(ZfsError::Other(why)) => {
                 assert!(why.contains(names), "{case}: {why}");
                 assert!(why.contains("release that hold by hand"), "{case}: {why}");
-                assert!(why.ends_with("(read 3 times)"), "{case}: {why}");
+                assert!(why.ends_with(&times), "{case}: {why}");
             }
             other => panic!("{case}: {other:?}"),
         }
         let read = holds_of(&held);
         let once = [TAGGED_LIST, read.as_str()];
-        assert_eq!(zfs.host().words(), once.repeat(3), "{case}");
+        assert_eq!(zfs.host().words(), once.repeat(reads), "{case}");
     }
 
     // An output cut short, with no newline at its end.
@@ -1990,6 +2071,42 @@ fn holds_that_do_not_add_up_are_an_error_that_names_the_snapshot() {
     let read = holds_of(&["tank@skz-1"]);
     let once = [TAGGED_LIST, read.as_str()];
     assert_eq!(zfs.host().words(), once.repeat(2));
+
+    // The snapshots asked are those of the command, not of the sweep: a
+    // line in the second command's output that names a snapshot of the
+    // first is not a hold, though the count would add up for it (TG1 of
+    // #165's review).
+    let names: Vec<String> = (0..1001).map(|i| format!("tank/d{i}@skz-{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let listed: String = names.iter().map(|n| format!("{n}\t1\n")).collect();
+    let (first, second) = refs.split_at(HOLDS_AT_ONCE);
+    let mut fake = Fake::default();
+    fake.ok(TAGGED_LIST, &listed)
+        .ok(
+            &holds_of(first),
+            &first[1..]
+                .iter()
+                .map(|n| hold_line(n, HOLD_TAG))
+                .collect::<String>(),
+        )
+        .ok(
+            &holds_of(second),
+            &[
+                hold_line(second[0], HOLD_TAG),
+                hold_line(first[0], HOLD_TAG),
+            ]
+            .concat(),
+        );
+    let mut zfs = cli(fake);
+    match zfs.tagged("tank", HOLD_TAG) {
+        Err(ZfsError::Other(why)) => {
+            assert!(why.contains("\"tank/d0@skz-0\\tskyzfs-publish"), "{why}");
+            assert!(why.ends_with("(read once)"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let (a, b) = (holds_of(first), holds_of(second));
+    assert_eq!(zfs.host().words(), [TAGGED_LIST, a.as_str(), b.as_str()]);
 }
 
 /// `held`, the hold's check and the release's check read the holds under
@@ -2041,30 +2158,35 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
         line("tank/db@skz-1", &format!("x\tY\ntank/db@skz-1\t{HOLD_TAG}")),
     ]
     .concat();
-    let odd: [(&str, String, &str, &str); 5] = [
+    // (case, the holds read, the count, what the error names, the reads)
+    let odd: [(&str, String, &str, &str, usize); 5] = [
         (
             "a line forged whole",
             forged.clone(),
             "tank/db@skz-1\t1\ntank@skz-1\t1\n",
             "`tank/db@skz-1` has 2 lines of holds and 1 holds",
+            3,
         ),
         (
             "a snapshot left out of the count",
             both_held.clone(),
             "tank@skz-1\t1\n",
             "`tank/db@skz-1` has 1 lines of holds and 0 holds",
+            3,
         ),
         (
             "a snapshot of another `@t`",
             [both_held.clone(), line("tank/db@skz-12", HOLD_TAG)].concat(),
             "tank/db@skz-1\t1\ntank@skz-1\t1\n",
             "\"tank/db@skz-12\\tskyzfs-publish\\tWed Nov 25 10:00 2026\"",
+            1,
         ),
         (
             "a snapshot of a pool that the pool's name begins",
             [both_held.clone(), line("tankx/db@skz-1", HOLD_TAG)].concat(),
             "tank/db@skz-1\t1\ntank@skz-1\t1\n",
             "\"tankx/db@skz-1\\tskyzfs-publish\\tWed Nov 25 10:00 2026\"",
+            1,
         ),
         (
             "a line of four fields",
@@ -2075,9 +2197,10 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
             .concat(),
             "tank/db@skz-1\t1\ntank@skz-1\t1\n",
             "after a hold of `tank@skz-1`: \"tank/db@skz-1\\tskyzfs-publish\\tz",
+            1,
         ),
     ];
-    for (case, holds, refs, names) in odd {
+    for (case, holds, refs, names, reads) in odd {
         let mut fake = Fake::default();
         fake.ok(HOLDS_R, &holds).ok(&both, refs);
         let mut zfs = cli(fake);
@@ -2085,14 +2208,19 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
             Err(ZfsError::Other(why)) => {
                 assert!(why.contains(names), "{case}: {why}");
                 assert!(why.contains(HOLDS_R), "{case}: {why}");
-                assert!(why.ends_with("(read 3 times)"), "{case}: {why}");
+                let times = if reads == 1 {
+                    "(read once)".to_string()
+                } else {
+                    format!("(read {reads} times)")
+                };
+                assert!(why.ends_with(&times), "{case}: {why}");
             }
             other => panic!("{case}: {other:?}"),
         }
         let words = zfs.host().words();
         assert_eq!(
             words.iter().filter(|w| **w == HOLDS_R).count(),
-            3,
+            reads,
             "{case}: {words:?}"
         );
     }
@@ -2153,6 +2281,157 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
             refs_words(&["tank@skz-1"]).as_str()
         ]
     );
+}
+
+/// The holds' check of `zfs holds -H -r` in the cases TG1 of #165's
+/// review found untested, each its own mutant:
+/// - a tag that the agent's begins, or that begins the agent's, is not
+///   the agent's (a prefix matched);
+/// - fewer lines than holds is no error (`!=` for `>`);
+/// - the count's exit code is read (stdout taken from a count that
+///   failed), and its failures are as other reads': no pool where
+///   `zpool list` agrees, and an error that names the count otherwise;
+/// - the hold's and the release's checks read again a snapshot gone
+///   before its count (`again` dropped there);
+/// - the count names [`HOLDS_AT_ONCE`] snapshots at most (all in one),
+///   each on a read's limit.
+#[test]
+fn the_holds_check_reads_only_the_agents_tag_and_the_counts_answer() {
+    const WHEN: &str = "\tWed Nov 25 10:00 2026\n";
+    let line = |snapshot: &str, tag: &str| format!("{snapshot}\t{tag}{WHEN}");
+    let both = refs_words(&["tank/db@skz-1", "tank@skz-1"]);
+    let both_held = [
+        line("tank@skz-1", HOLD_TAG),
+        line("tank/db@skz-1", HOLD_TAG),
+    ]
+    .concat();
+    let gone = "cannot open 'tank/db@skz-1': dataset does not exist\n";
+
+    // A tag that the agent's begins, and one that begins the agent's.
+    let longer = format!("{HOLD_TAG}-x");
+    let shorter = &HOLD_TAG[..HOLD_TAG.len() - 1];
+    let mut fake = Fake::default();
+    fake.ok(
+        HOLDS_R,
+        &[line("tank@skz-1", &longer), line("tank/db@skz-1", shorter)].concat(),
+    )
+    .ok(&both, "tank/db@skz-1\t1\ntank@skz-1\t1\n");
+    assert_eq!(
+        cli(fake).held("tank", "skz-1", HOLD_TAG, Some(&[])),
+        Ok(Held::No)
+    );
+
+    // Fewer lines than holds: holds added between the two reads.
+    let mut fake = Fake::default();
+    fake.ok(HOLDS_R, &both_held)
+        .ok(&both, "tank/db@skz-1\t2\ntank@skz-1\t3\n");
+    let mut zfs = cli(fake);
+    assert_eq!(
+        zfs.held("tank", "skz-1", HOLD_TAG, Some(&[])),
+        Ok(Held::All)
+    );
+    assert_eq!(zfs.host().words(), [HOLDS_R, both.as_str()]);
+
+    // A count that fails, with an output that would add up.
+    let mut fake = Fake::default();
+    fake.ok(HOLDS_R, &both_held).give(
+        &both,
+        Ok(crate::host::fake::output(
+            1,
+            "tank/db@skz-1\t1\ntank@skz-1\t1\n",
+            "internal error: out of memory\n",
+        )),
+    );
+    match cli(fake).held("tank", "skz-1", HOLD_TAG, Some(&[])) {
+        Err(ZfsError::Other(why)) => {
+            assert!(why.contains(&both), "{why}");
+            assert!(why.contains("out of memory"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // The pool gone before the count: no pool, as `zpool list` agrees.
+    let mut fake = Fake::default();
+    fake.ok(HOLDS_R, &both_held)
+        .fails(&both, 1, "cannot open 'tank': no such pool\n")
+        .ok(POOLS, "other\n");
+    assert_eq!(
+        cli(fake).held("tank", "skz-1", HOLD_TAG, Some(&[])),
+        Err(ZfsError::NoPool(both.clone()))
+    );
+
+    // The hold's check: tank/db@skz-1 gone before its count, then read
+    // again without it; tank@skz-1, the one member, has the tag.
+    const EXISTS: &str = "cannot hold snapshot 'tank@skz-1': tag already exists on this dataset\n";
+    let counted = refs_words(&["tank@skz-1"]);
+    let mut fake = Fake::default();
+    fake.fails(HOLD, 1, EXISTS)
+        .ok(MEMBERS_WORDS, r#"{"return":{"members":{"tank":"11"}}}"#)
+        .ok(HOLDS_R, &both_held)
+        .fails(&both, 1, gone)
+        .ok(HOLDS_R, &line("tank@skz-1", HOLD_TAG))
+        .ok(&counted, "tank@skz-1\t1\n");
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.hold("tank", "skz-1", HOLD_TAG), Ok(()));
+    assert_eq!(
+        zfs.host().words(),
+        [
+            HOLD,
+            MEMBERS_WORDS,
+            HOLDS_R,
+            both.as_str(),
+            HOLDS_R,
+            counted.as_str()
+        ]
+    );
+
+    // The release's check: the same, and then no hold of the tag kept.
+    const NO_TAG: &str =
+        "cannot release hold from snapshot 'tank/db@skz-1': no such tag on this dataset\n";
+    let mut fake = Fake::default();
+    fake.fails(RELEASE, 1, NO_TAG)
+        .ok(HOLDS_R, &both_held)
+        .fails(&both, 1, gone)
+        .ok(HOLDS_R, &line("tank@skz-1", "other"))
+        .ok(&counted, "tank@skz-1\t1\n");
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.release("tank", "skz-1", HOLD_TAG), Ok(()));
+    assert_eq!(
+        zfs.host().words(),
+        [RELEASE, HOLDS_R, both.as_str(), HOLDS_R, counted.as_str()]
+    );
+
+    // 1001 snapshots under tank@skz-1: the count names 1000, then 1,
+    // in the names' order, each on a read's limit.
+    let mut names: Vec<String> = (0..1000).map(|i| format!("tank/d{i}@skz-1")).collect();
+    names.push("tank@skz-1".to_string());
+    names.sort();
+    let holds: String = names.iter().map(|n| line(n, HOLD_TAG)).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let chunks: Vec<String> = refs.chunks(HOLDS_AT_ONCE).map(refs_words).collect();
+    let mut fake = Fake::default();
+    fake.ok(HOLDS_R, &holds);
+    for (chunk, words) in refs.chunks(HOLDS_AT_ONCE).zip(&chunks) {
+        let listed: String = chunk.iter().map(|n| format!("{n}\t1\n")).collect();
+        fake.ok(words, &listed);
+    }
+    let mut zfs = cli(fake);
+    assert_eq!(
+        zfs.held("tank", "skz-1", HOLD_TAG, Some(&[])),
+        Ok(Held::All)
+    );
+    let mut expected = vec![HOLDS_R];
+    expected.extend(chunks.iter().map(String::as_str));
+    assert_eq!(zfs.host().words(), expected);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|c| c.split(' ').count() - 8)
+            .collect::<Vec<_>>(),
+        [1000, 1]
+    );
+    for ran in &zfs.host().ran[1..] {
+        assert_eq!(ran.limit, Limits::default().read, "the count");
+    }
 }
 
 /// The assist sets the property, then syncs, each within the limit of a
@@ -2524,6 +2803,23 @@ fn the_holds_and_the_tags_grow_with_the_snapshots_counted() {
         assert_eq!(ran[0].limit, holds, "{m}: holds -r");
         assert_eq!(ran[1].limit, tagged, "{m}: the sweep's list");
     }
+    // The count after `holds -r` stays on a read's limit while `holds
+    // -r` is on the longest (TG1 of #165's review).
+    zfs.host().commands.remove(HOLDS_R);
+    zfs.host()
+        .ok(HOLDS_R, &hold_line("tank@skz-1", HOLD_TAG))
+        .ok(&refs_words(&["tank@skz-1"]), "tank@skz-1\t1\n");
+    zfs.host().ran.clear();
+    assert_eq!(
+        zfs.held("tank", "skz-1", HOLD_TAG, Some(&[])),
+        Ok(Held::All)
+    );
+    let ran = &zfs.host().ran;
+    assert_eq!(ran.len(), 2);
+    assert_eq!(ran[0].limit, base.full_most, "holds -r");
+    assert_eq!(ran[1].limit, read, "the count on a read's limit");
+    zfs.host().commands.remove(HOLDS_R);
+    zfs.host().ok(HOLDS_R, "");
     zfs.host().commands.remove(SNAPSHOTS);
     zfs.host()
         .fails(SNAPSHOTS, 1, "cannot iterate filesystems: I/O error\n");

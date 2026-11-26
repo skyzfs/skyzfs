@@ -85,16 +85,25 @@
 //! snapshot may have more lines than its holds, its `userrefs`
 //! (`outnumbered`): the sweep's list gives them, and [`Zfs::held`],
 //! [`Zfs::hold`] and [`Zfs::release`] read them with `zfs list -H -p
-//! -o name,userrefs -t snapshot` after `zfs holds -H -r`. Holds that do
-//! not add up are read again, at most [`VANISHED_READS`] times in all
-//! (a hold added or released between the two commands), and are then
-//! [`ZfsError::Other`] that names the snapshot and says what a person
-//! does: release that hold by hand. They are never skipped, since a
-//! line skipped could hide a hold of the agent's (the lead's ruling on
-//! M2.6c-5e). The tags are read as bytes: one that is not UTF-8 is no
+//! -o name,userrefs -t snapshot` after `zfs holds -H -r`. More lines
+//! than holds are read again, at most [`VANISHED_READS`] times in all
+//! (a hold added between the two commands gives them too); a line that
+//! is not a hold is not, since a tag does not change while it is held
+//! (N2 of #165's review). Either is then [`ZfsError::Other`] that names
+//! the snapshot and says what a person does: release that hold by hand.
+//! A line that is not a hold is never skipped, since a skip takes a
+//! line out of the count: a tag `x\nS\tskyzfs-publish` on a hold of
+//! `S` makes the line `S\tx`, skipped, and a forged line that is then
+//! `S`'s one line for its one hold (N1 of #165's review; the lead's
+//! ruling on M2.6c-5e). The tags are read as bytes: one that is not UTF-8 is no
 //! error (D1 and G-UTF of #162's review). So a tag with a tab or a
 //! newline, of any holder, on a snapshot that the agent reads the holds
-//! of, fails that read until it is released.
+//! of, fails that read until it is released. The agent reads the holds
+//! of its own snapshots alone: those of `pool@t` for `held`, `hold` and
+//! `release`, and for the sweep those whose name `t` begins with
+//! [`crate::names::PREFIX`] (`agents_name`; A4 of #165's review, the
+//! lead's ruling). Another holder's odd tag on any other snapshot does
+//! not stop it.
 //!
 //! # The take
 //!
@@ -325,7 +334,7 @@
 //!   recorder (41.2 s for the manifest's list at 101 000 snapshots, run
 //!   45781769557; `holds -r` 37.3 s there, about 0.37 ms, run
 //!   45800940382). The sweep's `zfs holds -H` reads only the snapshots
-//!   that have a hold.
+//!   that have a hold and a name of the agent's.
 //!   The design's scale is tens to hundreds of datasets.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -394,11 +403,44 @@ pub fn holds_batches<'a, 'b>(names: &'b [&'a str]) -> Vec<&'b [&'a str]> {
     batches
 }
 
+/// Whether `snapshot`'s name `t`, after its `@`, is one the agent may
+/// have given ([`crate::names::PREFIX`]): the sweep reads the holds of
+/// those alone, so that another holder's tag with a tab or a newline on
+/// a snapshot the agent did not take does not stop it (A4 of #165's
+/// review, the lead's ruling). The prefix, and not the whole form of a
+/// name, the conservative reading: a hold of the agent's is never left
+/// unseen on a name of the agent's, whatever form it took. A hold of the
+/// agent's tag on a snapshot of another name, made by hand, is not the
+/// sweep's to release.
+fn agents_name(snapshot: &str) -> bool {
+    snapshot
+        .split_once('@')
+        .is_some_and(|(_, t)| t.starts_with(crate::names::PREFIX))
+}
+
 /// Holds read that do not add up ([`hold_lines`], [`outnumbered`]):
-/// why, naming the snapshot. Read again, then an error
-/// ([`ZfsCli::again_checked`]).
+/// why, naming the snapshot, and whether a read again may add up. An
+/// error, after any read again ([`ZfsCli::again_checked`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Odd(String);
+struct Odd {
+    why: String,
+    /// More lines than holds ([`outnumbered`]), which a hold added
+    /// between the two commands gives too: read again. A line that is
+    /// not a hold ([`hold_lines`]) comes from a tag, which does not
+    /// change while it is held: reading it again reads it again, a full
+    /// walk each time (N2 of #165's review).
+    again: bool,
+}
+
+impl Odd {
+    /// `why` prefixed with `what`, the command read.
+    fn of(self, what: &str) -> Odd {
+        Odd {
+            why: format!("{what}: {}", self.why),
+            ..self
+        }
+    }
+}
 
 /// What a person does about holds that do not add up.
 const ODD_HOLDS: &str = "another holder's tag may hold a tab or a newline: \
@@ -410,9 +452,10 @@ const ODD_HOLDS: &str = "another holder's tag may hold a tab or a newline: \
 /// any byte but NUL: a tag with a tab or a newline makes a line that is
 /// not three fields, or forges a whole line. Every line must be three
 /// fields, the first a snapshot that `asked` takes, and the output must
-/// end with a newline. Anything else is [`Odd`], and is not skipped: a
-/// line skipped could hide a hold of the agent's (the lead's ruling on
-/// M2.6c-5e). A forged line of three fields that names an asked
+/// end with a newline. Anything else is [`Odd`], not read again, and
+/// not skipped: a skip takes a line out of [`outnumbered`]'s count, so
+/// that a line forged on the same snapshot adds up (N1 of #165's
+/// review; the lead's ruling on M2.6c-5e). A forged line of three fields that names an asked
 /// snapshot is found by the count ([`outnumbered`]). The tags are bytes:
 /// another holder's that is not UTF-8 is no error (D1 and G-UTF of
 /// #162's review).
@@ -421,9 +464,10 @@ fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u
         return Ok(Vec::new());
     }
     let Some(body) = out.strip_suffix(b"\n") else {
-        return Err(Odd(format!(
-            "its output does not end with a newline; {ODD_HOLDS}"
-        )));
+        return Err(Odd {
+            why: format!("its output does not end with a newline; {ODD_HOLDS}"),
+            again: false,
+        });
     };
     let mut holds: Vec<(&str, &[u8])> = Vec::new();
     for line in body.split(|&b| b == b'\n') {
@@ -441,10 +485,14 @@ fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u
                 Some((snapshot, _)) => format!(", after a hold of `{snapshot}`"),
                 None => String::new(),
             };
-            return Err(Odd(format!(
-                "a line that is not a snapshot asked, a tag and a time{after}: {:?}; {ODD_HOLDS}",
-                String::from_utf8_lossy(line)
-            )));
+            return Err(Odd {
+                why: format!(
+                    "a line that is not a snapshot asked, a tag and a time{after}: {:?}; \
+                     {ODD_HOLDS}",
+                    String::from_utf8_lossy(line)
+                ),
+                again: false,
+            });
         };
         holds.push(hold);
     }
@@ -456,8 +504,11 @@ fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u
 /// that forges a whole line of three fields, naming a snapshot asked,
 /// adds a line and not a hold. The forging tag is on the line just
 /// before a forged one, so the error names the snapshots of those lines
-/// too. Fewer lines than holds is no error: a hold released between the
-/// two reads, or added between them, whichever came second.
+/// too. Holds added between the two reads give more lines too, held and
+/// released again and again (by `zfs send`, for one): the error says
+/// both, and is read again (N4 of #165's review). Fewer lines than holds
+/// is no error: a hold released between the two reads, or added between
+/// them, whichever came second.
 fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<(), Odd> {
     let mut lines: BTreeMap<&str, u64> = BTreeMap::new();
     for (snapshot, _) in holds {
@@ -472,17 +523,21 @@ fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<()
                 .map(|pair| pair[0].0)
                 .collect();
             let before: Vec<&str> = before.into_iter().collect();
-            return Err(Odd(format!(
-                "`{snapshot}` has {lines} lines of holds and {refs} holds (`userrefs`): \
-                 a line is forged by a tag with a newline, on the hold just before \
-                 one of them (of {}); read `zfs holds` of those snapshots and release \
-                 that hold by hand",
-                if before.is_empty() {
-                    "none".to_string()
-                } else {
-                    before.join(", ")
-                }
-            )));
+            return Err(Odd {
+                why: format!(
+                    "`{snapshot}` has {lines} lines of holds and {refs} holds (`userrefs`): \
+                     holds were added between the two reads, again and again, or a line \
+                     is forged by a tag with a newline, on the hold just before one of \
+                     them (of {}); read `zfs holds` of those snapshots and, where a tag \
+                     holds a newline, release that hold by hand",
+                    if before.is_empty() {
+                        "none".to_string()
+                    } else {
+                        before.join(", ")
+                    }
+                ),
+                again: true,
+            });
         }
     }
     Ok(())
@@ -908,11 +963,13 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// A read of holds, made again as [`ZfsCli::again`] makes one, and
-    /// also while the holds it read do not add up ([`Odd`]): a hold added
-    /// or released between its two commands. Holds that still do not add
-    /// up after [`VANISHED_READS`] reads are [`ZfsError::Other`], which
-    /// names the snapshot (the lead's ruling on M2.6c-5e: an error, not a
-    /// skip).
+    /// also while it reads more lines than holds ([`Odd`] `again`): a
+    /// hold added between its two commands. Holds that still do not add
+    /// up after [`VANISHED_READS`] reads, or that have a line that is not
+    /// a hold, read once, are [`ZfsError::Other`], which names the
+    /// snapshot (the lead's ruling on M2.6c-5e: an error, not a skip; N2
+    /// of #165's review: a line that is not a hold comes from a tag and
+    /// reads the same again).
     fn again_checked<T>(
         &mut self,
         mut read: impl FnMut(&mut Self) -> Result<Result<T, Odd>, ZfsError>,
@@ -921,11 +978,18 @@ impl<H: Host> ZfsCli<H> {
         loop {
             match read(self) {
                 Ok(Ok(done)) => return Ok(done),
-                Ok(Err(_)) | Err(ZfsError::Vanished(_)) if tries < VANISHED_READS => tries += 1,
-                Ok(Err(Odd(why))) => {
-                    return Err(ZfsError::Other(format!(
-                        "{why} (read {VANISHED_READS} times)"
-                    )))
+                Ok(Err(Odd { again: true, .. })) | Err(ZfsError::Vanished(_))
+                    if tries < VANISHED_READS =>
+                {
+                    tries += 1
+                }
+                Ok(Err(Odd { why, .. })) => {
+                    let times = if tries == 1 {
+                        "once".to_string()
+                    } else {
+                        format!("{tries} times")
+                    };
+                    return Err(ZfsError::Other(format!("{why} (read {times})")));
                 }
                 Err(e) => return Err(e),
             }
@@ -1037,7 +1101,7 @@ impl<H: Host> ZfsCli<H> {
         };
         let holds = match hold_lines(&output.stdout, under) {
             Ok(holds) => holds,
-            Err(Odd(why)) => return Ok(Err(Odd(format!("{}: {why}", command("zfs", &args))))),
+            Err(odd) => return Ok(Err(odd.of(&command("zfs", &args)))),
         };
         let names: BTreeSet<&str> = holds.iter().map(|(name, _)| *name).collect();
         let names: Vec<&str> = names.into_iter().collect();
@@ -1048,8 +1112,12 @@ impl<H: Host> ZfsCli<H> {
             let listed = self.exec("zfs", &list, &[], self.read_limit())?;
             if listed.code != Some(0) {
                 return Err(match self.failed("zfs", &list, &listed, true, pool) {
+                    // Or never was: a line forged by another holder's tag
+                    // that names a snapshot `@t` of a dataset with none
+                    // (N3 of #165's review).
                     ZfsError::NoSnapshot => ZfsError::Vanished(format!(
-                        "{}: a snapshot read with a hold is gone: {}",
+                        "{}: a snapshot read with a hold is gone, or a line forged by a \
+                         tag with a newline names a snapshot that never was: {}; {ODD_HOLDS}",
                         command("zfs", &list),
                         String::from_utf8_lossy(&listed.stderr).trim()
                     )),
@@ -1060,8 +1128,8 @@ impl<H: Host> ZfsCli<H> {
                 refs.insert(name.to_string(), count);
             }
         }
-        if let Err(Odd(why)) = outnumbered(&holds, |name| refs.get(name).copied().unwrap_or(0)) {
-            return Ok(Err(Odd(format!("{}: {why}", command("zfs", &args)))));
+        if let Err(odd) = outnumbered(&holds, |name| refs.get(name).copied().unwrap_or(0)) {
+            return Ok(Err(odd.of(&command("zfs", &args))));
         }
         Ok(Ok(Some(
             holds
@@ -1073,7 +1141,8 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// One read of [`Zfs::tagged`]: the snapshots in `pool` that have
-    /// any hold (`userrefs` above 0), by `zfs list` within the list's
+    /// any hold (`userrefs` above 0) and a name `t` of the agent's
+    /// ([`agents_name`]), by `zfs list` within the list's
     /// limit on the snapshots counted ([`ZfsCli::walk_limit`]), then their
     /// holds by `zfs holds -H`, at most [`HOLDS_AT_ONCE`] snapshots and
     /// [`HOLDS_ARG_BYTES`] of names a command ([`holds_batches`]), each
@@ -1111,9 +1180,12 @@ impl<H: Host> ZfsCli<H> {
             .map_err(|e| self.walked(e))?;
         let listed = String::from_utf8_lossy(&listed);
         let counted = userrefs(&listed, &list)?;
+        // The agent's own snapshots only (A4 of #165's review, the lead's
+        // ruling): another holder's odd tag on a snapshot the agent did not
+        // take does not stop the sweep.
         let held: Vec<&str> = counted
             .iter()
-            .filter(|(_, refs)| *refs > 0)
+            .filter(|(name, refs)| *refs > 0 && agents_name(name))
             .map(|(name, _)| *name)
             .collect();
         let refs: BTreeMap<&str, u64> = counted.iter().copied().collect();
@@ -1147,11 +1219,10 @@ impl<H: Host> ZfsCli<H> {
                 });
             let holds = match checked {
                 Ok(holds) => holds,
-                Err(Odd(why)) => {
-                    return Ok(Err(Odd(format!(
-                        "zfs holds -H of {} snapshots: {why}",
-                        names.len()
-                    ))))
+                Err(odd) => {
+                    return Ok(Err(
+                        odd.of(&format!("zfs holds -H of {} snapshots", names.len()))
+                    ))
                 }
             };
             for (snapshot, held_by) in holds {
