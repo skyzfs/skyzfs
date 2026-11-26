@@ -1,0 +1,40 @@
+head 5259bf5f0085de020cb22738648a2470d8ac481c
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+== cargo fmt --all --check
+exit 0
+== cargo clippy -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control --all-targets -- -D warnings
+exit 0
+== cargo clippy -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control --all-targets --features skyzfs-agent-cli/test-hooks -- -D warnings
+exit 0
+== cargo test -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control
+     Running unittests src/lib.rs (skyzfs_agent-75b41660cbd03d00)
+test result: ok. 158 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.48s
+     Running unittests src/main.rs (skyzfs_agent-220b6d9b4901a2ca)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/program.rs (program-51531448c7d6ec32)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (skyzfs_control-e1cfe4307ca4722f)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0
+== cargo test -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control --features skyzfs-agent-cli/test-hooks
+     Running unittests src/lib.rs (skyzfs_agent-9a76b596b09014ae)
+test result: ok. 158 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.40s
+     Running unittests src/main.rs (skyzfs_agent-62a01e7de3a607d2)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/program.rs (program-e3e125beb8bb7f8d)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running unittests src/lib.rs (skyzfs_control-3c4533eaaa323a14)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control
+exit 0
+== cargo doc --no-deps -p skyzfs-agent -p skyzfs-agent-cli -p skyzfs-control --features skyzfs-agent-cli/test-hooks
+exit 0
+== the new test alone, plain
+test engine::tests::a_withdraw_answered_does_not_count_for_the_request_asked_anew ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 157 filtered out; finished in 0.01s
+DONE

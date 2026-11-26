@@ -1,0 +1,87 @@
+# third149_scratch.rs re-run at 5259bf5 (release build): N1a (depth 4), N1b (N1_RANDOM=50), N5, N6, N2c
+=== n1a_give_up_bounded_exhaustive
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive ... N1a depth 4 (115 s): 114552 runs: 12272 published, 99448 given up; 0 wrong publishes, 2832 given up then made, 0 other
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 115.21s
+=== n1b_give_up_random
+test engine::tests::review_scratch::n1b_give_up_random ... N1b 50 seeds a case (80 s): 88800 runs: 5559 published, 81407 given up; 0 wrong publishes, 1834 given up then made, 0 other
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 80.34s
+=== n5_an_unanswered_ask
+test engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock ... N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published(..))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published(..))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published(..))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "snap/skz-20261125T010000Z made on cut 3", "cut 3 committed", "cut 1 committed", "publish answered
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+  log tail ["cut 5 committed", "cut 4 committed", "681000: group 9 (destroy): cut 5 group 9 itself true", "680000: group 8 (release): cut 4 group 8 itself true", "cut 3 abandoned", "cut 1 committed", "publish answered Ok(Accepted); the answer is lost", "0: gro
+=== n6_a_withdraw_answered
+test engine::tests::review_scratch::n6_a_withdraw_answered_then_an_ask_anew_whose_answer_is_lost ... N6 Idle no_answer=false moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; sn
+  log tail ["cut 5 committed", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish 1 answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true",
+N6 Idle no_answer=false moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+  log tail ["cut 6 committed", "cut 4 committed", "3000: group 10 (destroy): cut 6 group 10 itself true", "2000: group 9 (release): cut 5 group 9 itself true", "cut 1 committed", "publish 2 answered Ok(Accepted); the answer is lost", "0: group 8 (import): cut 
+N6 Idle no_answer=true moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+  log tail ["cut 5 committed", "cut 1 committed", "2000: group 9 (destroy): cut 5 group 9 itself true", "1000: group 8 (release): cut 4 group 8 itself true", "publish 1 answered Ok(Accepted); the answer is lost", "0: group 7 (hold): cut 3 group 7 itself true",
+N6 Idle no_answer=true moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+  log tail ["cut 6 committed", "cut 4 committed", "3000: group 10 (destroy): cut 6 group 10 itself true", "2000: group 9 (release): cut 5 group 9 itself true", "cut 1 committed", "publish 2 answered Ok(Accepted); the answer is lost", "0: group 8 (import): cut 
+N6 Busy no_answer=false moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=false moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=true moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=true moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 0.01s
+=== n2c_planner_with_the_hold
+N2c: a person's give-up, Part against All, differs in 0 rows:
+N2c: the age bound, Part against All, differs in 720 rows (#147's: hold again, withdraw)
+N2c: the report, Part against All, differs in 0 rows:
+N2c: given up with no hold while a request may land: 0 rows (hold No only)
+N2c: unsafe rows (a release while a request may land) (0):
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 0.01s
+
+
+=== n5 re-run alone (the section above is cut at 30 lines): each of the 24 rows, and the result
+N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()) wrong false
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()) wrong false
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()) wrong false
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()) wrong false
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()) wrong false
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()) wrong false
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()) wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()) wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()) wrong false
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()) wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()) wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()) wrong false
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()) wrong false
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()) wrong false
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()) wrong false
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()) wrong false
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()) wrong false
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()) wrong false
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()) wrong false
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 0.04s

@@ -1,0 +1,14 @@
+N6a the clearing at the asking commit removed (the author's mutant): KILLED [LIB: fail 12s engine::tests::a_withdraw_answered_does_not_count_for_the_request_asked_anew]
+N6b cleared only where the ask has no answer at all (Err): KILLED [LIB: fail 13s engine::tests::a_withdraw_answered_does_not_count_for_the_request_asked_anew]
+N6c cleared only where the ask has an answer (Ok, any): KILLED [LIB: fail 13s engine::tests::a_withdraw_answered_does_not_count_for_the_request_asked_anew]
+N6d the clearing at the asking commit removed, and the one at acceptance too: KILLED [LIB: fail 13s engine::tests::a_withdraw_answered_does_not_count_for_the_request_asked_anew]
+E1 equivalent: the clearing at acceptance removed (the asking commit clears it already): SURVIVED [LIB: pass 12s]
+N5a N5's fix removed: no reading of the clock that does not step at the asking commit: KILLED [LIB: fail 13s engine::tests::an_ask_whose_answer_is_lost_keeps_its_hold_on_the_clock_that_does_not_step]
+B1a P1: silent only for the daemon away (B1's fix reverted): KILLED [LIB: fail 13s engine::tests::a_person_s_give_up_keeps_the_hold_while_the_uploader_is_silent plan::tests::a_person_gives_up_in_the_order_of_every_give_up]
+B1f P1: silent: the withdraw's guard dropped: KILLED [LIB: fail 13s plan::tests::a_person_gives_up_in_the_order_of_every_give_up]
+D2a P2: execute looks the exit up by the name begun: KILLED [LIB: fail 13s program::tests::a_publish_made_under_its_next_name_exits_by_its_outcome]
+(the worktree was clean after the run)
+
+N6a re-run alone, the rows of a_withdraw_answered_does_not_count_for_the_request_asked_anew that fail:
+  Idle no_answer=false moved=true; Idle no_answer=true moved=true; Busy no_answer=false moved=true; Busy no_answer=true moved=true
+  (4 of 8: exactly the moved rows; each releases while request 2 pends, outcome Abandoned(Person))
