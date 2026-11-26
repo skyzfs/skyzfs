@@ -241,10 +241,11 @@ The figures below are from the run's artifacts: Ubuntu 26.04, kernel
     measurement at scale on 24.04: run 45720134548 had no scale step.
   - **A failed count gives the base limits** (`:588`), so the reads that
     follow have 60 s.
-    - At 10k datasets the sweep's `tagged` (55.5 s) barely fits. Above
-      about 11k datasets it would not.
-    - An error of the sweep fails the whole `settle` call (`settle` calls
-      `self.sweep()?` each round), so that run of the agent ends.
+    - The sweep reads `tagged` at a process's first round and after each
+      import. At 10k datasets `tagged` (55.5 s) barely fits the 60 s.
+      Above about 11k datasets it would not.
+    - An error of the sweep fails the whole `settle` call
+      (`self.sweep()?`), so that run of the agent ends.
     - This is as the lead ruled: the round's own calls say what is wrong,
       and the next run counts again. The lead should know where it bites.
   - **Time.** At 10k datasets one failed check costs about 32 minutes:
