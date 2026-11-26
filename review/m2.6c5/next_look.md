@@ -25,8 +25,8 @@ What is left is low:
 - one nit carried over (N3, documentation only);
 - two new nits.
 
-R1 is with the lead and I did not judge it again. The daemon rig and
-`coverage` were still running when I read CI (below).
+R1 is with the lead and I did not judge it again. Every CI run on the
+head is green (below).
 
 ## B1: fixed
 
@@ -40,8 +40,9 @@ R1 is with the lead and I did not judge it again. The daemon rig and
 - **Is the named list complete?** Yes, against both the recordings and
   libzfs.
   - **The recordings.** I listed every property with source `local` in
-    every `zfs get` of both artifacts (#156's run 45738224324 and #158's
-    run 45751625028, both images). They are:
+    every `zfs get` of the 24.04 artifact of each run (#156's run
+    45738224324 and #158's run 45751625028; the 26.04 artifacts are
+    covered by the before-and-after comparison below). They are:
     - `compression`, `mountpoint`, `refreservation`, `volsize`;
     - `snapshot_limit`, `filesystem_limit`;
     - the two counters;
@@ -52,12 +53,13 @@ R1 is with the lead and I did not judge it again. The daemon rig and
   - **Before and after a take.** I compared `*-odd-get-local` (before)
     with `*-odd-get-received` (after `zfs snapshot -r` and a receive),
     on both pools, both images and both runs. Every line that differs is
-    one of three kinds:
-    - `snapshot_count` (15 lines, each one higher);
-    - the received dataset's own lines;
-    - its parent's `filesystem_count`.
+    one of two kinds:
+    - `snapshot_count`: 15 lines, each exactly one higher;
+    - the received dataset's own new lines (its two counters and its
+      value).
 
-    No other local value changes at a take (`take_diff.py`).
+    The 15 `filesystem_count` lines are unchanged. No other local value
+    changes at a take (`take_diff.py`).
   - **libzfs.** OpenZFS zfs-2.4.1, `lib/libzfs/libzfs_dataset.c:2254-2270`,
     `get_numeric_property` gives a source of "not default, must be
     local" to exactly ten properties:
@@ -156,8 +158,8 @@ the agent's tests (`-p skyzfs-agent -p skyzfs-agent-cli`, features
 
 ## Ask 3: the macro for `Effect`: pinned by construction
 
-`effects!` (`engine.rs:165-188`) makes the enum, `ALL` (its length is
-the list's) and `word` from one list. An effect cannot exist outside
+`effects!` (`engine.rs:165-185`, its list at `:187`) makes the enum,
+`ALL` (its length is the list's) and `word` from one list. An effect cannot exist outside
 `ALL`.
 
 | Plant | Result |
@@ -213,8 +215,9 @@ T3 is closed. My plant Q19 from the review can no longer be written.
   - that needs write access to the property forged;
   - the check sees it where the two readings differ.
 - **N4:** done. `#[cfg(unix)]` is on `volume_run_dir`, `socket_path` and
-  their test. Nothing else in `skyzfs-control` uses `std::os::unix`.
-  I did not build for a non-unix target.
+  their test. The only other `std::os::unix` in the library is in
+  `client`, which is gated to Linux; the rest is in tests. I did not
+  build for a non-unix target.
 - **N5:** done. NoPool applies only to a line that is exactly
   `cannot open 'POOL': dataset does not exist` (`cli.rs:407-415`).
 
@@ -325,9 +328,45 @@ T3 is closed. My plant Q19 from the review can no longer be written.
   - the workspace with `skyzfs-agent-cli/test-hooks`;
   - `skyzfs-ublk-sys` with `control-test-program`.
 
-## CI at 4edc1b3 (read at about 05:10 UTC)
+## CI at 4edc1b3 (read at 05:25 UTC, every run finished)
 
-CI_PLACEHOLDER
+Every run on the head is green.
+
+- **Green:**
+  - `skyzfs-ci` (gate), `ci` (test, unit-arm64, lint, s3-backends,
+    chart-lint), `coverage`, `e2e`, `k3s-smoke`;
+  - the node B rig (26.04, 26.04-arm), the publish rig (26.04), and the
+    cut rig on the daemon (26.04, 26.04-arm, 26.04-upload).
+- **The control rig** (run 45757073876) is green on 24.04, 26.04 and
+  26.04-arm.
+- **The replay rig** (run 45757073913) ran its daemon jobs at the
+  pull-request budget, on both images:
+  - 24.04: 122 of 2097 prefixes checked;
+  - 26.04: 120 of 2013 prefixes checked;
+  - every checked prefix passed, every fsync mark (27) was checked, and
+    every flush boundary;
+  - both hole jobs are green.
+
+  That budget does not show design §9's criterion, and does not claim
+  to.
+- **The daemon rig** (run 45757073943, `skyzfsd` with its test hooks,
+  in-place store, checks a b c d e g) is green on 24.04, 26.04 and
+  26.04-arm. I read each image's `summary.md`. All three say "Every pin
+  and every control is as the table `EXPECTED` ... has it", and in each
+  of the 87 rows the result is the one expected. Each image has the
+  same counts:
+  - 54 PASS;
+  - 5 FAIL, all of them controls (`ctl_*`);
+  - 13 WEAKER and 12 NOT_EXERCISED;
+  - 2 NA;
+  - 1 WAITING, as before.
+
+  This PR does not touch the daemon's I/O path. The rig ran for
+  `crates/skyzfs-ublk/` (in the PR's diff against its base) and, at this
+  head, for `bins/skyzfsd/` (docs only).
+- **Codex:** its review of 4edc1b3 completed with no findings (summary
+  comment updated 04:48 UTC). Its P1 on e35f9e9 is B1, answered on its
+  thread.
 
 ## Files
 
