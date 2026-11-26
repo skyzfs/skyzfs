@@ -4490,3 +4490,151 @@ fn counts_that_rise_with_a_take_do_not_fail_its_check() {
         assert_eq!(takes, takes_made, "{create:?} {after_take}");
     }
 }
+
+/// The world's pool, with a person's `zfs release` and `zfs destroy -r
+/// pool@t` landing between the agent's two reads of a round, after its
+/// members' read found `pool@t` and before its holds' read
+/// (`armed`): that read goes through the CLI adapter, whose `zfs holds
+/// -r` says what libzfs says of a snapshot gone between its open and
+/// its read (`no such pool or dataset`; testing's agent rig, case
+/// `destroy`), then, read again, that `pool@t` does not exist.
+struct DestroyedBetween {
+    zfs: FakeZfs,
+    armed: Rc<Cell<bool>>,
+}
+
+impl Zfs for DestroyedBetween {
+    fn layout(&mut self, pool: &str) -> Result<zfs::Layout, ZfsError> {
+        self.zfs.layout(pool)
+    }
+    fn props(&mut self, pool: &str) -> Result<zfs::Props, ZfsError> {
+        self.zfs.props(pool)
+    }
+    fn nocacheflush(&mut self) -> Result<bool, ZfsError> {
+        self.zfs.nocacheflush()
+    }
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        self.zfs.count(pool)
+    }
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.zfs.snapshot(pool, t)
+    }
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<zfs::Dataset>, ZfsError> {
+        self.zfs.datasets(pool, t)
+    }
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.zfs.destroy(pool, t)
+    }
+    fn members(
+        &mut self,
+        pool: &str,
+        t: &str,
+    ) -> Result<Option<Vec<crate::record::Member>>, ZfsError> {
+        self.zfs.members(pool, t)
+    }
+    fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.zfs.hold(pool, t, tag)
+    }
+    fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.zfs.release(pool, t, tag)
+    }
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[crate::record::Member]>,
+    ) -> Result<zfs::Held, ZfsError> {
+        if !self.armed.replace(false) {
+            return self.zfs.held(pool, t, tag, members);
+        }
+        {
+            let mut world = self.zfs.0.borrow_mut();
+            let own = format!("@{t}");
+            if let Some(p) = &mut world.pool {
+                for (_, snap) in p.snaps.iter_mut().filter(|(name, _)| name.ends_with(&own)) {
+                    snap.holds.clear();
+                }
+            }
+            world.user(User::Destroy, t);
+            let gone = world
+                .pool
+                .as_ref()
+                .is_some_and(|p| !p.snaps.contains_key(&format!("{pool}@{t}")));
+            assert!(gone, "the person's destroy took");
+        }
+        let words = format!("zfs holds -H -r {pool}@{t}");
+        let mut host = crate::host::fake::Fake::default();
+        host.fails(
+            &words,
+            1,
+            &format!("cannot get holds for '{pool}/db@{t}': no such pool or dataset\n"),
+        );
+        host.fails(
+            &words,
+            1,
+            &format!("cannot open '{pool}@{t}': dataset does not exist\n"),
+        );
+        host.ok("zpool list -H -o name", &format!("{pool}\n"));
+        zfs::cli::ZfsCli::new(host, zfs::cli::Limits::default()).held(pool, t, tag, members)
+    }
+    fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+        self.zfs.tagged(pool, tag)
+    }
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
+        self.zfs.assist(pool, value)
+    }
+}
+
+/// A person destroys `pool@t` while its publish is asked, between the
+/// agent's read of its members and its read of its holds, which says
+/// `no such pool or dataset` (testing's agent rig, case `destroy`; the
+/// lead's ask): the pool is there, so that is no missing pool, and the
+/// holds are read again, which finds `pool@t` gone. The round goes on,
+/// and the publish is given up as destroyed in this process, not at its
+/// next start. Not under [`Mode::ErrLow`], whose daemon refuses the
+/// publish as rewound first. Mutants: any `no such pool` read as a
+/// missing pool without `zpool list`, a vanished read not read again.
+#[test]
+fn a_destroy_between_two_reads_is_no_missing_pool() {
+    for mode in [Mode::Busy, Mode::Idle, Mode::Abandoned] {
+        let world = World::new(mode);
+        let keep = MemKeep::default();
+        let asked = at(Effect::Asked, true);
+        let mut first = agent(&world, &keep).with_points(Box::new(move |p, _: &str| p == asked));
+        let name = first.begin().expect("begun");
+        assert!(
+            matches!(first.settle(LIMIT), Err(Error::Stopped)),
+            "{mode:?}"
+        );
+        drop(first);
+        let armed = Rc::new(Cell::new(true));
+        let mut again = Agent::new(
+            DestroyedBetween {
+                zfs: FakeZfs(world.clone()),
+                armed: armed.clone(),
+            },
+            FakeDaemon(world.clone()),
+            keep.clone(),
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        let settled = again.settle(LIMIT);
+        assert!(!armed.get(), "{mode:?}: the destroy landed");
+        assert!(
+            settled.is_ok(),
+            "{mode:?}: {settled:?}\n{}",
+            world.borrow().log.join("\n")
+        );
+        assert!(
+            matches!(
+                again.outcomes(),
+                [(n, Outcome::Abandoned(Why::Destroyed))] if *n == name
+            ),
+            "{mode:?}: {:?}",
+            again.outcomes()
+        );
+    }
+}
