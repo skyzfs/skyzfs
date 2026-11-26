@@ -4497,7 +4497,8 @@ fn counts_that_rise_with_a_take_do_not_fail_its_check() {
 /// (`armed`): that read goes through the CLI adapter, whose `zfs holds
 /// -r` says what libzfs says of a snapshot gone between its open and
 /// its read (`no such pool or dataset`; testing's agent rig, case
-/// `destroy`), then, read again, that `pool@t` does not exist.
+/// `destroy`), then, read again, what it says of a `pool@t` that is
+/// gone: exit 0, no line, `no datasets available`.
 struct DestroyedBetween {
     zfs: FakeZfs,
     armed: Rc<Cell<bool>>,
@@ -4570,10 +4571,9 @@ impl Zfs for DestroyedBetween {
             1,
             &format!("cannot get holds for '{pool}/db@{t}': no such pool or dataset\n"),
         );
-        host.fails(
+        host.give(
             &words,
-            1,
-            &format!("cannot open '{pool}@{t}': dataset does not exist\n"),
+            Ok(crate::host::fake::output(0, "", "no datasets available\n")),
         );
         host.ok("zpool list -H -o name", &format!("{pool}\n"));
         zfs::cli::ZfsCli::new(host, zfs::cli::Limits::default()).held(pool, t, tag, members)
