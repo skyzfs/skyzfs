@@ -431,9 +431,10 @@ pub struct Limits {
     /// 45800940382), on an idle pool, at 1000 snapshots a dataset. The
     /// cost of a snapshot grows with the snapshots a dataset holds: the
     /// review of #162 read 0.40 ms a line up to 5500 a dataset and
-    /// 1.06 ms at 12 500, beside writers, so at 12 500 a dataset on
-    /// 24.04 the margin may be about two (N-b, N-c of #162's review). Before this ruling, a snapshot
-    /// counted as a dataset: [`Limits::full_per_dataset`], 200 ms.
+    /// 1.06 ms at 12 500, beside writers, and run 45801291679 read
+    /// 1.56 ms a snapshot on 24.04: a margin of about six (N-b, N-c of
+    /// #162's review). Before this ruling, a snapshot counted as a
+    /// dataset: [`Limits::full_per_dataset`], 200 ms.
     pub list_per_snapshot: Duration,
 }
 
@@ -926,15 +927,19 @@ impl<H: Host> ZfsCli<H> {
             for line in output.stdout.split(|&b| b == b'\n') {
                 let mut fields = line.split(|&b| b == b'\t');
                 // A line of each hold: the snapshot, the tag, when. Only
-                // another holder's tag that holds a newline or a tab
-                // makes a line whose first field is not a snapshot this
-                // command asked for, or that has no second field: such a
-                // line is skipped (F1 and N-e of #162's review). The
-                // agent's own tag has neither, so no hold of the agent's
-                // is skipped. A tag made to forge a whole line can still
-                // name an asked snapshot with the agent's tag; the sweep
-                // then releases the agent's tag there, which only the
-                // agent sets, and nothing of another holder's.
+                // another holder's tag that holds a newline makes a line
+                // whose first field is not a snapshot this command asked
+                // for, or that has no second field: such a line is
+                // skipped (F1 and N-e of #162's review). The agent's own
+                // tag has no newline, so no hold of the agent's is
+                // skipped. Not guarded: another holder's tag that begins
+                // with the agent's and then a tab or a newline, or that
+                // forges a whole line naming an asked snapshot, reads as
+                // the agent's hold there. The sweep's release then fails
+                // with `no such tag`, its check reads the same line and
+                // says the hold was kept, and so the sweep fails at every
+                // start until a person releases that hold. Nothing of
+                // another holder's is released (F1-R of #162's review).
                 let (Some(snapshot), Some(held_by)) = (fields.next(), fields.next()) else {
                     continue;
                 };
