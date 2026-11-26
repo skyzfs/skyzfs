@@ -21,13 +21,20 @@ the end.
 
 ## Verdict
 
-- **Not ready to merge.** One blocking finding, B2: **CI's lint is red on
-  c580c72** (shellcheck on the new shell test). A few lines' fix.
-- **The lead's condition on the rigs is not met.** The cut rig, the
-  cut-daemon rig and the node B rig on c580c72 were cancelled by hand at
-  04:15, 30 to 50 s after they started (so were the daemon, replay,
-  kernel-probe and publish rigs). None of them has run on this head; they
-  must run, and be green, on the final head (a new one after B2's fix).
+- **No blocking finding in the code at ea39b27.** The one blocking
+  finding of this look, B2 (CI's lint red on c580c72, shellcheck on the
+  new test of `published()`), is settled by ea39b27: ci's `lint` is green
+  on it, shellcheck, fmt, the four clippy runs and cargo doc included, and
+  the rewritten test still fails when `published()` is wrong (set D, 7 of
+  10 plants killed, the old code among them).
+- **Not ready to merge all the same: the lead's condition on the rigs is
+  not met.** The cut rig, the cut-daemon rig and the node B rig were
+  cancelled by hand on both heads, 30 to 50 s after they started (c580c72
+  at 04:15, ea39b27 at 04:48; so were the daemon, replay, kernel-probe and
+  publish rigs). None of them has run on either head. They must run, and
+  be green, on the final head. The agent rig on ea39b27: see "CI".
+- Before "ready to merge" the author also owes an answer on Codex's P2
+  thread on 0604977 (nits).
 - **D1, D2, D3 are fixed as claimed**, and G3 holds in the judge. A
   destroyed published snapshot now ends FAILED, exit 1, in the judge even
   beside a premise ERROR (show-cases 1 and 2). D4, G2, G4 and the nit
@@ -41,10 +48,20 @@ the end.
 
 ## Blocking
 
-### B2. ci.yml's lint fails on c580c72: shellcheck on `test_agent_record.sh`
+None at ea39b27. B2 blocked c580c72 and is settled.
 
-Certainty: high (the CI log; reproduced with shellcheck 0.9.0, which
-names SC2329 by its older number SC2317).
+### B2. ci.yml's lint fails on c580c72: shellcheck on `test_agent_record.sh` (settled at ea39b27)
+
+**At ea39b27:** the test of `published()` (now 98-108) runs the stubs in
+a function `gone()` whose subshell carries `# shellcheck disable=SC2329`,
+as the `cases()` block does, and no longer keeps a counter across the
+subshell (SC2030 and SC2031 gone). ci run 45757467683, job `lint`:
+success, every step run (shellcheck, fmt, the four clippy runs, cargo
+doc). The test still kills the plants that matter (set D in ask 4).
+Settled.
+
+What c580c72 had. Certainty: high (the CI log; reproduced with
+shellcheck 0.9.0, which names SC2329 by its older number SC2317).
 File: `tests/kernel/test_agent_record.sh:98-106`, the test of
 `published()` added for D1.
 
@@ -293,6 +310,39 @@ Set B (37 plants on c580c72's judge changes, 25 killed):
   only in this workflow's `unit` job (not in ci.yml's lint job); the push
   trigger's `tests/kernel/agent*` does not match `test_agent_check.py`.
 
+## CI on ea39b27 (the head)
+
+| Run | Workflow | Result |
+|---|---|---|
+| 45757467513 | agent rig (pull request) | **success**: a1, a2, d, k all "checked exit 0"; FAILED 0, ERROR 0, NOT CHECKED 0; the three controls caught in each job |
+| 45757467683 | ci | **success**: lint (B2 settled), test, unit-arm64, s3-backends, chart-lint |
+| 45757467444 | coverage | success |
+| 45757467573 | e2e | success |
+| 45757462859 | skyzfs-ci (push) | success (gate only; its lint, test and arm64 jobs skip on a branch with a pull request open) |
+| 45757467460 | cut rig | **cancelled** by hand at 04:48:35, 42 s after it started |
+| 45757467555 | cut-daemon | **cancelled** by hand at 04:48:28, 35 s after it started |
+| 45757467567 | node B rig | **cancelled** by hand at 04:48:37, 44 s after it started |
+| 45757467453, 45757467550, 45757467608, 45757467562 | daemon, replay, publish rigs, kernel probe | cancelled by hand, 04:48:22 to 04:49:28 |
+
+The agent rig on ea39b27, from its four artifacts:
+
+- a1 and a2: 19 cases each, 166 lines (123 ok, 40 INFO, the three
+  controls caught), 21 names published, `published-gone.tsv` empty.
+- d: 10 cases, 104 lines (86 ok, 15 INFO, controls caught),
+  `pin_ID_daemon_killed` ok in the three both cases (137).
+- **k** (the rare scenarios; on c580c72 the push of ea39b27 cancelled
+  it): 32 cases, 287 lines (247 ok, 37 INFO, controls caught), 35 names
+  published, `published-gone.tsv` empty, `pin_published_snapshots_exist`
+  ok. `pin_ID_first_run` ok on its seven cases with no kill, which ended
+  as FIRST_RC says: trace 0, restart 0, assist 0, destroy 3, tooold 3,
+  sweep 0, unmarked 6 (the second run that bears out ask 2).
+  `pin_ID_first_publish` ok in sweep and both K-sweep cases; destroy,
+  tooold and gone "abandoned destroyed" / "abandoned too-old" with the
+  retry published; unmarked refused with 6.
+- Every `record-after.rc` is 0 (80 cases). Every settle ended 0, or 3 in
+  the seven cases whose T was given up (six of the eight K-destroy and
+  K-tooold cases, and gone): the pin G5 proposes fits this run too.
+
 ## CI on c580c72
 
 | Run | Workflow | Result |
@@ -315,7 +365,8 @@ traces, `pin_ID_daemon_killed` 137 three times,
 carry hooks: carry-put killed at cut 16, row cut 18 (C 17, G 21);
 carry-swap killed at cut 20, row cut 22 (C 21, G 25).
 
-K_RESULT
+k on c580c72 was cancelled by the push of ea39b27 (the workflow's
+concurrency); it ran on ea39b27, above.
 
 ## Local runs (c580c72, and again at ea39b27)
 
