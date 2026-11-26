@@ -454,6 +454,13 @@ pub enum Report {
     /// Empty where the last take was destroyed before a stop, and the
     /// give-up made by the next process (D2 of #153's next look).
     NotWhole(Vec<String>),
+    /// The pool's datasets could not be read for the manifest, before a
+    /// take or after it: the read's error, which names the command, and
+    /// the dataset and property where a value could not be read (the
+    /// lead's ruling on M2.6c-5). The publish is not given up for it: it
+    /// is read again at a later round, until the publish is too old. One
+    /// report for each error that differs, in a process.
+    Unreadable(String),
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held

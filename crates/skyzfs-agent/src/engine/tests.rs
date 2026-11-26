@@ -400,9 +400,11 @@ fn check(ran: &Ran) -> Result<(), String> {
                             .iter()
                             .any(|a| a.name == *t && a.why == Why::TooOld)
                     }) => {}
-            Report::NoProgress(_) | Report::Refused(_) | Report::HeldAway | Report::NotWhole(_) => {
-                return Err(format!("{t} reported: {report:?}"))
-            }
+            Report::NoProgress(_)
+            | Report::Refused(_)
+            | Report::HeldAway
+            | Report::NotWhole(_)
+            | Report::Unreadable(_) => return Err(format!("{t} reported: {report:?}")),
         }
     }
     // The other way: a publish recorded done with its snapshot gone is
@@ -2244,6 +2246,52 @@ fn a_late_take_not_whole_is_destroyed_and_taken_again() {
     );
     assert!(one.destroyed(&one.name));
     one.published_anew();
+}
+
+/// A read of the datasets that fails, before the take or after it, is
+/// reported with its error, which names the dataset and the property,
+/// and the publish goes on at a later round (the lead's ruling on
+/// M2.6c-5, option (a)): here the read before the take fails twice with
+/// one error and the read after it once with another, and the publish
+/// is made. The same error is reported once in a process. Mutants: no
+/// report before the take or after it, the error not carried, the
+/// publish given up or stopped on it, the take adopted without its
+/// read.
+#[test]
+fn a_read_that_fails_is_reported_and_read_again() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().unreadable = [(0, "user:odd"), (1, "user:odd"), (3, "user:late")]
+        .into_iter()
+        .map(|(read, property)| (read, property.to_string()))
+        .collect();
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep);
+    agent.begin().expect("begun");
+    if let Err(e) = agent.settle(LIMIT) {
+        panic!(
+            "{e}: {:?}\n{}",
+            agent.outcomes(),
+            world.borrow().log.join("\n")
+        );
+    }
+    let [(t, Outcome::Published(_))] = agent.outcomes() else {
+        panic!("{:?}\n{}", agent.outcomes(), world.borrow().log.join("\n"));
+    };
+    let [(first, Report::Unreadable(before)), (second, Report::Unreadable(after))] =
+        agent.reports()
+    else {
+        panic!("{:?}", agent.reports());
+    };
+    assert_eq!((first, second), (t, t));
+    for (why, property) in [(before, "`user:odd`"), (after, "`user:late`")] {
+        assert!(
+            why.contains(property) && why.contains(&format!("`{POOL}/vol`")),
+            "{why}"
+        );
+    }
+    let world = world.borrow();
+    assert!(world.datasets_read >= 5, "{}", world.datasets_read);
+    assert!(world.refs.contains_key(t));
 }
 
 /// What a run of one publish on a pool whose `pool/vol` every take

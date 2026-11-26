@@ -1154,8 +1154,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             return Ok(Moved::No);
         };
         self.commit(Effect::Intent, |r| set(r, name, |p| p.count = count))?;
-        let Ok(before) = self.zfs.datasets(&self.pool, name) else {
-            return Ok(Moved::No);
+        let before = match self.zfs.datasets(&self.pool, name) {
+            Ok(before) => before,
+            Err(e) => {
+                self.tell(name, Report::Unreadable(e.to_string()));
+                return Ok(Moved::No);
+            }
         };
         if zfs::taken(&before, &self.pool) != zfs::Taken::Absent {
             // A take of this name landed since the planner looked (one
@@ -1206,8 +1210,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// does not see a property changed and changed back between the two
     /// readings with the take between them.
     fn adopt(&mut self, name: &str, origin: Origin) -> Result<Moved, Error> {
-        let Ok(datasets) = self.zfs.datasets(&self.pool, name) else {
-            return Ok(Moved::No);
+        let datasets = match self.zfs.datasets(&self.pool, name) {
+            Ok(datasets) => datasets,
+            Err(e) => {
+                self.tell(name, Report::Unreadable(e.to_string()));
+                return Ok(Moved::No);
+            }
         };
         let program = match zfs::taken(&datasets, &self.pool) {
             zfs::Taken::Absent => {

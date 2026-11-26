@@ -378,6 +378,10 @@ fn each_outcome_report_and_exit_is_told_apart() {
         (Report::NoProgress(3), "no-progress 3:"),
         (Report::Refused(Code::Rewound), "refused rewound:"),
         (Report::HeldAway, "held-away:"),
+        (
+            Report::Unreadable("zfs get: exit 1:\ncannot open 'x'\n\nmore".into()),
+            "unreadable:",
+        ),
     ];
     for (report, word) in reports {
         let line = report_line("skz-t", &report);

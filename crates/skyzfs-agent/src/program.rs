@@ -547,8 +547,22 @@ pub fn report_line(name: &str, report: &Report) -> String {
              does not answer"
             .to_string(),
         Report::NotWhole(names) => not_whole(names),
+        Report::Unreadable(why) => format!(
+            "unreadable: the pool's datasets could not be read, read again at the next round: {}",
+            one_line(why)
+        ),
     };
     format!("skyzfs-agent: report {name} {what}\n")
+}
+
+/// `text` on one line: each line break, and the space about it, one
+/// `; `.
+fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The datasets named in a `not-whole` report at most (N7 of #153's

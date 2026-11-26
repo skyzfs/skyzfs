@@ -16,7 +16,10 @@
 //! the datasets and the members program in full, recorded later
 //! (testing's runs 45720134548 and 45720225770, on #153's `65d72ee`):
 //! the rest of those runs is not taken, since the tests above read the
-//! pools of the first runs by their GUIDs.
+//! pools of the first runs by their GUIDs. The members program in full
+//! is no longer run: the manifest is read by `zfs list` and `zfs get`
+//! (M2.6c-5), whose recordings are to come; its records are kept as
+//! they were recorded and not read.
 //!
 //! A `zpool status -P -g` was recorded beside some of the `-P` outputs
 //! only. A `-P` output without its own is read with the `-g` output of
@@ -30,7 +33,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::host::fake::{output, Fake};
-use crate::zfs::{premise, taken, Taken, HOLD_TAG};
+use crate::zfs::{premise, HOLD_TAG};
 
 /// The recordings, by image.
 const IMAGES: [(&str, &str); 2] = [
@@ -871,161 +874,5 @@ fn the_count_as_recorded() {
         let mut zfs = rec.adapter(&["none-count"]);
         assert!(zfs.count(NONE).is_err(), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&["none-count"]));
-    }
-}
-
-/// The members program in full, as recorded on each pool (T3 of #153's
-/// review), read through the adapter and judged by [`taken`]:
-///
-/// - after `zfs snapshot -r POOL@t`: three datasets, each with an `@t` of
-///   one group, a whole take whose members are the root, `child` and
-///   `vol`; a GUID above 2^63 written negative; each dataset's local
-///   properties (the volume's `volsize` and `refreservation`);
-/// - of an `@t` that no dataset has: none has one, and the take is
-///   [`Taken::Absent`];
-/// - of an `@p` that `child` alone has: [`Taken::Absent`] too, since the
-///   root has none (`pool@p` does not exist);
-/// - of values that are not printable ASCII, in the locale `C` and in
-///   `C.UTF-8`: the same bytes, sent in hex;
-/// - of a pool that does not exist: [`ZfsError::NoPool`].
-///
-/// After a count, the program runs within the full read's limit, not a
-/// read's. Mutants: a GUID read as signed, an `@t`'s group read from the
-/// dataset's, hex values taken as text, the full read given a read's
-/// limit.
-#[test]
-fn the_full_read_as_recorded() {
-    let base = Limits::default();
-    let raw: &[u8] = &[0x61, 0xff, 0xfe, 0x62, 0xc3];
-    let utf8 = "na\u{ef}ve, \u{65e5}\u{672c}, \u{2205}".as_bytes();
-    for rec in full_recordings() {
-        for pool in [RIG, MIRROR] {
-            let prefix = if pool == RIG { "rig" } else { "mirror" };
-            let name = |what: &str| format!("{prefix}-{what}");
-            let at = |what: &str| format!("{pool}{what}");
-            let context = format!("{} {pool}", rec.image);
-
-            let (count, full) = (name("count"), name("members-full"));
-            let mut zfs = rec.adapter(&[count.as_str(), full.as_str()]);
-            assert_eq!(zfs.count(pool), Ok(3), "{context}");
-            let datasets = zfs.datasets(pool, "t").expect("read in full");
-            assert_eq!(ran(&mut zfs), rec.words(&[count.as_str(), full.as_str()]));
-            assert_eq!(zfs.host().ran[1].stdin, MEMBERS_PROGRAM.as_bytes());
-            assert_eq!(
-                zfs.host().ran[1].limit,
-                base.read + base.full_per_dataset * 3,
-                "{context}"
-            );
-            let mut names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
-            names.sort_unstable();
-            assert_eq!(names, [at(""), at("/child"), at("/vol")], "{context}");
-            let get = |name: &str| {
-                datasets
-                    .iter()
-                    .find(|d| d.name == name)
-                    .expect("a dataset read")
-            };
-            let (root, child, vol) = (get(&at("")), get(&at("/child")), get(&at("/vol")));
-            assert_eq!(
-                (root.createtxg, child.createtxg, vol.createtxg),
-                (1, 9, 10),
-                "{context}"
-            );
-            assert_eq!(
-                (root.kind, child.kind, vol.kind),
-                (Kind::Filesystem, Kind::Filesystem, Kind::Volume)
-            );
-            let local = |d: &Dataset, key: &str| d.local.get(key).cloned();
-            assert_eq!(local(root, "compression"), Some(b"off".to_vec()));
-            assert_eq!(local(child, "skyzfs:note"), Some(b"local".to_vec()));
-            assert!(local(vol, "volsize").is_some() && local(vol, "refreservation").is_some());
-            let Taken::Whole(program) = taken(&datasets, pool) else {
-                panic!("{context}: not whole");
-            };
-            let group = root.at.expect("pool@t").createtxg;
-            assert_eq!(program.createtxg, group);
-            assert!(datasets
-                .iter()
-                .all(|d| d.at.map(|a| a.createtxg) == Some(group)));
-            let members: Vec<(&str, u64, u64)> = program
-                .members
-                .iter()
-                .map(|m| (m.name.as_str(), m.guid, m.snapshot_guid))
-                .collect();
-            let want: Vec<(&str, u64, u64)> = [root, child, vol]
-                .iter()
-                .map(|d| (d.name.as_str(), d.guid, d.at.expect("@t").guid))
-                .collect();
-            assert_eq!(members, want, "{context}");
-            if (rec.image, pool) == ("ubuntu-26.04", RIG) {
-                // As the record writes them: -5563034144446978196,
-                // 2776128052335566094, -1724167257921105538.
-                assert_eq!(
-                    program
-                        .members
-                        .iter()
-                        .map(|m| m.snapshot_guid)
-                        .collect::<Vec<_>>(),
-                    [
-                        12_883_709_929_262_573_420,
-                        2_776_128_052_335_566_094,
-                        16_722_576_815_788_446_078
-                    ]
-                );
-                assert_eq!((group, vol.guid), (34, 15_426_089_004_099_088_699));
-            }
-
-            for (what, t) in [
-                ("members-full-absent", "absent"),
-                ("members-full-partial", "p"),
-            ] {
-                let record = name(what);
-                let mut zfs = rec.adapter(&[record.as_str()]);
-                let datasets = zfs.datasets(pool, t).expect("read in full");
-                assert_eq!(ran(&mut zfs), rec.words(&[record.as_str()]));
-                assert_eq!(datasets.len(), 3, "{context} {what}");
-                let with: Vec<&str> = datasets
-                    .iter()
-                    .filter(|d| d.at.is_some())
-                    .map(|d| d.name.as_str())
-                    .collect();
-                let want: Vec<String> = if t == "p" { vec![at("/child")] } else { vec![] };
-                assert_eq!(with, want, "{context} {what}");
-                assert_eq!(taken(&datasets, pool), Taken::Absent, "{context} {what}");
-            }
-
-            for (what, t) in [("members-full-odd", "o0"), ("members-full-odd-utf8", "o2")] {
-                let record = name(what);
-                let mut zfs = rec.adapter(&[record.as_str()]);
-                let datasets = zfs.datasets(pool, t).expect("read in full");
-                assert_eq!(ran(&mut zfs), rec.words(&[record.as_str()]));
-                let child = datasets
-                    .iter()
-                    .find(|d| d.name == at("/child"))
-                    .expect("child");
-                assert_eq!(
-                    local(child, "skyzfs:raw").as_deref(),
-                    Some(raw),
-                    "{context} {what}"
-                );
-                assert_eq!(
-                    local(child, "skyzfs:utf8").as_deref(),
-                    Some(utf8),
-                    "{context} {what}"
-                );
-                assert!(
-                    matches!(taken(&datasets, pool), Taken::Whole(_)),
-                    "{context} {what}"
-                );
-            }
-        }
-        let mut zfs = rec.adapter(&["none-members-full"]);
-        assert_eq!(
-            zfs.datasets(NONE, "t"),
-            Err(ZfsError::NoPool),
-            "{}",
-            rec.image
-        );
-        assert_eq!(ran(&mut zfs), rec.words(&["none-members-full"]));
     }
 }

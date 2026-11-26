@@ -215,8 +215,8 @@ pub fn premise(
     Ok(leaf.guid)
 }
 
-/// A file system or volume of the pool, as the members program reads it
-/// in full ([`Zfs::datasets`]).
+/// A file system or volume of the pool, as the manifest's read gives it
+/// ([`Zfs::datasets`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dataset {
     /// Its name.
