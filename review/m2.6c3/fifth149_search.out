@@ -1,0 +1,129 @@
+# Fifth look at #149, head 6ec590973ca4adad241c1d1fec690a178b77ebd9: the third look's searches (third149_scratch.rs) and the fourth's D1-D3 (fourth149_scratch.rs), re-run at the head, release build
+# N3 fails as designed: it lists the known unobservable stops; its 'over' list is empty.
+# third149_scratch.rs and fourth149_scratch.rs re-run at 6ec5909 (release build): N1a (depth 4), N1b (N1_RANDOM=50), N5, N6, N2c, N2, N2b, N3, N4, N4b; D1, D2, D3
+=== n1a_give_up_bounded_exhaustive
+test engine::tests::review_scratch::n1a_give_up_bounded_exhaustive ... N1a depth 4 (119 s): 114552 runs: 12744 published, 99448 given up; 0 wrong publishes, 2360 given up then made, 0 other
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 119.05s
+=== n1b_give_up_random
+test engine::tests::review_scratch::n1b_give_up_random ... N1b 50 seeds a case (83 s): 88800 runs: 5832 published, 81407 given up; 0 wrong publishes, 1561 given up then made, 0 other
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 82.80s
+=== n5_an_unanswered_ask
+test engine::tests::review_scratch::n5_an_unanswered_ask_and_a_step_of_the_wall_clock ... N5 Idle no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+N5 Idle no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([3, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+N5 Idle no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(3), wrong false
+N5 Abandoned no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+N5 Abandoned no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Destroyed))], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+N5 Abandoned no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t None, wrong false
+N5 Busy no_answer=false skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+N5 Busy no_answer=false skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=0 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=false: settled Ok(()), outcomes [("skz-20261125T010000Z", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=0 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+N5 Busy no_answer=true skew=7200000 give_up=true: settled Ok(()), outcomes [("skz-20261125T010000Z", Abandoned(Person))], snap/t Some(4), wrong false
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.06s
+=== n6_a_withdraw_answered
+test engine::tests::review_scratch::n6_a_withdraw_answered_then_an_ask_anew_whose_answer_is_lost ... N6 Idle no_answer=false moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Idle no_answer=false moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Idle no_answer=true moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Idle no_answer=true moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=false moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=false moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=true moved=false: lost true after 1 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+N6 Busy no_answer=true moved=true: lost true after 2 s; settled Ok(()); outcomes ["skz-20261125T010000Z Abandoned(Person)"]; released while pending false; snap/t on None; wrong false; holds []
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.01s
+=== n2c_planner_with_the_hold
+test engine::tests::review_scratch::n2c_planner_with_the_hold_where_it_is ... N2c: 13440 rows
+N2c: a person's give-up, Part against All, differs in 0 rows:
+N2c: the age bound, Part against All, differs in 720 rows (#147's: hold again, withdraw)
+N2c: the report, Part against All, differs in 0 rows:
+N2c: given up with no hold while a request may land: 0 rows (hold No only)
+N2c: unsafe rows (a release while a request may land) (0):
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.01s
+=== n2_planner_person
+test engine::tests::review_scratch::n2_planner_person_against_age_bound ... N2: rows where one gives the hold up and the other does not (289):
+N2: unsafe rows (0):
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.00s
+=== n2b_may_pend
+test engine::tests::review_scratch::n2b_may_pend_against_silent ... N2b: name       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: attachment to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: state      to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: manifest   to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: expiry     to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: asked      to publish: stays asked | give-up from progress, asked: Withdraw; held: Withdraw
+N2b: busy       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: taken      to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: stopped    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: rewound    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: version    to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: malformed  to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: peer       to publish: held again | give-up from progress, asked: Release; held: Release
+N2b: no-upload  to publish: held again | give-up from progress, asked: Wait; held: Release
+N2b: ended      to publish: stays asked | give-up from progress, asked: Wait; held: Release
+N2b: no-answer  to publish: stays asked | give-up from progress, asked: Wait; held: Release
+N2b: store      to publish: held again | give-up from progress, asked: Release; held: Release
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.00s
+=== n3_stall_window
+test engine::tests::review_scratch::n3_stall_window_measured ... N3: 1094 points; (point, in window, extra stalls) -> stops:
+N3: in the window with none extra (slack): ["19 asking:after", "20 ask:before", "21 ask:after", "22 asked:before", "27 asking:after", "28 ask:before", "29 ask:after", "30 asked:before", "951 asking:after", "952 ask:before", "953 ask:after", "954 asked:before"]
+N3: over the allowance: []
+thread 'engine::tests::review_scratch::n3_stall_window_measured' (333) panicked at crates/skyzfs-agent/src/engine/review_scratch.rs:866:5:
+FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.65s
+=== n4_rename
+test engine::tests::review_scratch::n4_rename_chains_end_and_exit_by_their_outcome ... N4 execute n=1: code 0, programs 2, taken ["skz-20261125T010000Z"], made skz-20261125T010000Z-1
+N4 stop n=1 at program 1: first Err(Stopped), programs 3, taken ["skz-20261125T010000Z"], then Ok(Ok([("skz-20261125T010000Z-1", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=2: code 0, programs 3, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], made skz-20261125T010000Z-2
+N4 stop n=2 at program 1: first Err(Stopped), programs 4, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], then Ok(Ok([("skz-20261125T010000Z-2", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=2 at program 2: first Err(Stopped), programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1"], then Ok(Ok([("skz-20261125T010000Z-2", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=3: code 0, programs 4, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], made skz-20261125T010000Z-3
+N4 stop n=3 at program 1: first Err(Stopped), programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=3 at program 2: first Err(Stopped), programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=3 at program 3: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2"], then Ok(Ok([("skz-20261125T010000Z-3", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=4: code 0, programs 5, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], made skz-20261125T010000Z-4
+N4 stop n=4 at program 1: first Err(Stopped), programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 2: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 3: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=4 at program 4: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3"], then Ok(Ok([("skz-20261125T010000Z-4", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=5: code 0, programs 6, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], made skz-20261125T010000Z-5
+N4 stop n=5 at program 1: first Err(Stopped), programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 2: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 3: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 4: first Err(Stopped), programs 10, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=5 at program 5: first Err(Stopped), programs 11, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4"], then Ok(Ok([("skz-20261125T010000Z-5", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 execute n=6: code 0, programs 7, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], made skz-20261125T010000Z-6
+N4 stop n=6 at program 1: first Err(Stopped), programs 8, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 2: first Err(Stopped), programs 9, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 3: first Err(Stopped), programs 10, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 4: first Err(Stopped), programs 11, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 5: first Err(Stopped), programs 12, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+N4 stop n=6 at program 6: first Err(Stopped), programs 13, taken ["skz-20261125T010000Z", "skz-20261125T010000Z-1", "skz-20261125T010000Z-2", "skz-20261125T010000Z-3", "skz-20261125T010000Z-4", "skz-20261125T010000Z-5"], then Ok(Ok([("skz-20261125T010000Z-6", Published([4, 0, 0, 0, 0, 0, 0, 0, 115, 158, 203, 218, 184, 127, 162, 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))]))
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.00s
+=== n4b_recover
+test engine::tests::review_scratch::n4b_recover_follows_a_rename ... N4b: code 0 out "snap/skz-20261125T010000Z-1 0400000000000000739ecbdab87fa2da00000000000000000000000000000000\n" err ""
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.00s
+=== review_scratch_d::d1_
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.01s
+=== review_scratch_d::d2_
+D2: 36 runs, 0 bad
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.03s
+=== review_scratch_d::d3_
+D3 save 0 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 30 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 60 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 79 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 81 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 120 s: 216 runs, 0 released while pending, 0 wrong publishes
+D3 save 300 s: 216 runs, 0 released while pending, 0 wrong publishes
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 1.85s

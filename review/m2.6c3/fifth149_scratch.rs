@@ -33,6 +33,12 @@
 //!
 //! E5: every asking save slower than the slack: nothing is ever sent, and
 //! the publish ends by the planner's own bounds.
+//!
+//! E6: the author's C1 test with two rows' worth more: within the slack
+//! every `asking` record is sent (`askings == sent`), and the same rows
+//! again with the agent's wall clock stepped back by the save's length
+//! as it is saved. Run at the head, and with the plants C1d (`>=`) and
+//! C1e (the check on the wall clock).
 
 use std::io;
 
@@ -106,6 +112,9 @@ struct Cfg {
     step_ms: i64,
     /// The world's upload lag, where not the default.
     lag_ms: Option<u64>,
+    /// The agent's wall clock steps back by the slow save's length as it
+    /// is saved, so that the wall clock reads no time passed.
+    slow_step_back: bool,
 }
 
 impl Cfg {
@@ -122,6 +131,7 @@ impl Cfg {
             stop_s: 0,
             step_ms: 0,
             lag_ms: None,
+            slow_step_back: false,
         }
     }
 }
@@ -200,9 +210,11 @@ fn hook_for(
         }) {
             askings.set(askings.get() + 1);
             if askings.get() == 1 || cfg.every {
-                world
-                    .borrow_mut()
-                    .advance(Duration::from_secs(cfg.slow_s));
+                let mut w = world.borrow_mut();
+                if cfg.slow_step_back {
+                    w.agent_skew_ms -= i64::try_from(cfg.slow_s * 1000).unwrap_or(0);
+                }
+                w.advance(Duration::from_secs(cfg.slow_s));
             }
         }
         if p.effect == Effect::Release && !p.after {
@@ -734,4 +746,48 @@ fn e5_every_asking_save_slow() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+// ---------------------------------------------------------------------
+// E6: the C1 test, tightened.
+// ---------------------------------------------------------------------
+
+#[test]
+fn e6_the_c1_test_tightened() {
+    let slack = plan::ASKING_SLACK.as_secs();
+    let mut found = Vec::new();
+    let mut n = 0;
+    for step_back in [false, true] {
+        for slow_s in [0, slack, slack + 1, 41, 81, 200] {
+            for mode in MODES {
+                for loss in [Loss::Err, Loss::NoAnswer] {
+                    for (give_up, stuck) in [(false, false), (false, true), (true, false), (true, true)] {
+                        let mut cfg = Cfg::base(mode, loss, give_up, stuck);
+                        cfg.slow_s = slow_s;
+                        cfg.slow_step_back = step_back;
+                        let o = run(cfg);
+                        n += 1;
+                        let mut bad = o.bad();
+                        if slow_s <= slack {
+                            bad |= o.sent == 0 || o.sent != o.askings as usize;
+                        } else if give_up {
+                            bad |= o.sent != 0;
+                        } else {
+                            bad |= o.sent == 0 || o.sent + 1 > o.askings as usize;
+                        }
+                        if bad {
+                            found.push(format!("step_back={step_back} slow={slow_s}: {}", o.line));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut by = std::collections::BTreeMap::<String, u32>::new();
+    for l in &found {
+        let key = l.split(':').next().unwrap_or("").to_string();
+        *by.entry(key).or_default() += 1;
+    }
+    eprintln!("E6: {n} rows, {} failing, by row: {by:?}", found.len());
+    assert!(found.is_empty(), "{} failing", found.len());
 }
