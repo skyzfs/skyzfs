@@ -341,7 +341,7 @@ pub enum Held {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZfsError {
     /// The pool is not imported: the command's words, which said so,
-    /// where `zpool list` does not list a pool they name.
+    /// where `zpool list` does not list the pool it acts on.
     NoPool(String),
     /// The snapshot does not exist.
     NoSnapshot,
@@ -384,8 +384,9 @@ pub trait Zfs {
     /// (the adapter's `Limits`; the lead's rule on M2.6c-2b). Where it
     /// fails, they are the bases (N2 of #153's review: the round's own
     /// calls then say what is wrong). The adapter counts the snapshots
-    /// too, for the manifest's list alone (R1 of #157's review); that
-    /// count's failure is not returned. The engine counts once at the
+    /// too, for the reads that walk every snapshot: the manifest's list,
+    /// `zfs holds -r` and the sweep's list (R1 of #157's review and
+    /// R1-reach of #160's); that count's failure is not returned. The engine counts once at the
     /// start of each round, before the sweep.
     fn count(&mut self, pool: &str) -> Result<u64, ZfsError>;
     /// `zfs snapshot -r pool@t`: `@t` of the pool and every descendant

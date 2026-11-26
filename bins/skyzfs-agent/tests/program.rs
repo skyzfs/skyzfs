@@ -227,13 +227,18 @@ fn the_agent_traces_a_point_then_dies_of_sigkill_there() {
         "[ \"$1\" = get ] || exit 1\n\
          printf 'guid\\t11\\nload_guid\\t12\\nmultihost\\toff\\nreadonly\\toff\\ncheckpoint\\t-\\n'\n",
     );
-    // The count of the datasets (`zfs list`), read before each sweep,
-    // is not logged: `zfs.calls` holds what else the agent asked.
+    // The reads are not logged: the counts (`zfs list`) and the sweep's
+    // list of snapshots with their count of holds, then `zfs holds` of
+    // the one held, `tank@skz-old`. `zfs.calls` holds what else the
+    // agent asked.
     script(
         "zfs",
-        "[ \"$1\" = list ] && exit 0\n\
-         [ \"$1\" = program ] || { echo \"zfs $*\" >> \"$0.calls\"; exit 0; }\n\
-         printf '{\"return\": {\"tagged\": {\"skz-old\": \"1\"}}}\\n'\n",
+        "case \"$*\" in\n\
+         *name,userrefs*) printf 'tank@skz-old\\t1\\n'; exit 0 ;;\n\
+         list*) exit 0 ;;\n\
+         holds*) printf 'tank@skz-old\\tskyzfs-publish\\tWed Nov 25 21:24 2026\\n'; exit 0 ;;\n\
+         esac\n\
+         echo \"zfs $*\" >> \"$0.calls\"\n",
     );
     let trace = top.path().join("trace");
     let trace_arg = trace.display().to_string();

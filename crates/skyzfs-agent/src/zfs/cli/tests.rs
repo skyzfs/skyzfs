@@ -1511,29 +1511,207 @@ fn held_is_the_tag_on_every_members_snapshot() {
     );
 }
 
-const TAGGED_WORDS: &str = "zfs program -n -j -t 100000000 -m 104857600 tank - tank skyzfs-publish";
+const TAGGED_LIST: &str = "zfs list -H -p -r -t snapshot -o name,userrefs tank";
 
-/// The snapshots with the tag are read by a read-only program, by name;
-/// an empty table may come as an empty list. Mutant: the names not read.
+/// The sweep's `zfs holds -H` of `snapshots`.
+fn holds_of(snapshots: &[&str]) -> String {
+    format!("zfs holds -H {}", snapshots.join(" "))
+}
+
+/// A line of `zfs holds -H`: the snapshot, the tag and when it was held.
+fn hold_line(snapshot: &str, tag: &str) -> String {
+    format!("{snapshot}\t{tag}\tWed Nov 25 21:24 2026\n")
+}
+
+/// The sweep lists the pool's snapshots with their count of holds, reads
+/// with `zfs holds -H` the holds of those that have one, and keeps the
+/// names `t` of those that have the tag, of any dataset: no channel
+/// program (S1 of #161's review, the lead's ruling). The list takes the
+/// list's limit on the snapshots counted, each `zfs holds` a read's.
+/// Mutants: a snapshot with no hold read, a hold of another tag kept,
+/// the dataset's part kept in the name, the list on a read's limit, the
+/// holds on the list's.
 #[test]
-fn the_tagged_snapshots_are_read_by_name() {
+fn the_sweep_reads_the_holds_of_the_snapshots_that_have_one() {
+    let snapshots = "tank@skz-1\t1\ntank/db@skz-1\t1\ntank@none\t0\n\
+                  tank/db@mine\t2\ntank/vol@skz-2\t1\n";
+    let held = [
+        "tank@skz-1",
+        "tank/db@skz-1",
+        "tank/db@mine",
+        "tank/vol@skz-2",
+    ];
+    let holds = [
+        hold_line("tank@skz-1", HOLD_TAG),
+        hold_line("tank/db@skz-1", HOLD_TAG),
+        hold_line("tank/db@mine", "keep"),
+        hold_line("tank/db@mine", "skyzfs-publish-not"),
+        hold_line("tank/vol@skz-2", HOLD_TAG),
+    ]
+    .concat();
     let mut fake = Fake::default();
-    fake.ok(
-        TAGGED_WORDS,
-        r#"{"return":{"tagged":{"skz-2":"1","skz-1":"1"}}}"#,
-    );
+    fake.ok(COUNT, &listed(10))
+        .ok(SNAPSHOTS, &"tank@s\n".repeat(1000))
+        .ok(TAGGED_LIST, snapshots)
+        .ok(&holds_of(&held), &holds);
     let mut zfs = cli(fake);
+    assert_eq!(zfs.count("tank"), Ok(10));
+    zfs.host().ran.clear();
     assert_eq!(
         zfs.tagged("tank", HOLD_TAG),
         Ok(["skz-1".to_string(), "skz-2".to_string()].into())
     );
-    assert_eq!(zfs.host().ran[0].stdin, TAGGED_PROGRAM.as_bytes());
+    let base = Limits::default();
+    let read = base.read + base.per_dataset * 10;
+    let ran = &zfs.host().ran;
+    let words: Vec<&str> = ran.iter().map(|r| r.words.as_str()).collect();
+    assert_eq!(words, [TAGGED_LIST, holds_of(&held).as_str()]);
+    assert_eq!(
+        ran[0].limit,
+        read + base.list_per_snapshot * 1000,
+        "the list"
+    );
+    assert_eq!(ran[1].limit, read, "the holds");
+
+    // No snapshot with a hold: the list alone.
+    for listed in ["", "tank@a\t0\ntank/db@b\t0\n"] {
+        let mut fake = Fake::default();
+        fake.ok(TAGGED_LIST, listed);
+        let mut zfs = cli(fake);
+        assert_eq!(
+            zfs.tagged("tank", HOLD_TAG),
+            Ok(BTreeSet::new()),
+            "{listed:?}"
+        );
+        assert_eq!(zfs.host().words(), [TAGGED_LIST], "{listed:?}");
+    }
+    // A line that is not a snapshot and its count cannot be read.
+    for listed in ["tank@a\tx\n", "tank\t1\n", "tank@a\n", "tank@a\t-1\n"] {
+        let mut fake = Fake::default();
+        fake.ok(TAGGED_LIST, listed);
+        let read = cli(fake).tagged("tank", HOLD_TAG);
+        assert!(
+            matches!(&read, Err(ZfsError::Other(why)) if why.contains(TAGGED_LIST)),
+            "{listed:?}: {read:?}"
+        );
+    }
+}
+
+/// The sweep names [`HOLDS_AT_ONCE`] snapshots at most to each `zfs
+/// holds -H`, in the list's order. Mutants: another bound, all in one
+/// command, a chunk left out.
+#[test]
+fn the_sweep_reads_the_holds_a_thousand_snapshots_at_a_time() {
+    assert_eq!(HOLDS_AT_ONCE, 1000);
+    let names: Vec<String> = (0..2500).map(|i| format!("tank/d{i}@skz-{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let listed: String = names.iter().map(|n| format!("{n}\t1\n")).collect();
     let mut fake = Fake::default();
-    fake.ok(TAGGED_WORDS, r#"{"return":{"tagged":[]}}"#);
-    assert_eq!(cli(fake).tagged("tank", HOLD_TAG), Ok(BTreeSet::new()));
+    fake.ok(TAGGED_LIST, &listed);
+    for chunk in refs.chunks(1000) {
+        let holds: String = chunk.iter().map(|n| hold_line(n, HOLD_TAG)).collect();
+        fake.ok(&holds_of(chunk), &holds);
+    }
+    let mut zfs = cli(fake);
+    let tagged = zfs.tagged("tank", HOLD_TAG).expect("tagged");
+    assert_eq!(tagged.len(), 2500);
+    let words = zfs.host().words();
+    let chunks: Vec<String> = refs.chunks(1000).map(holds_of).collect();
+    assert_eq!(words.len(), 4);
+    assert_eq!(words[1..], chunks[..]);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|c| c.split(' ').count() - 3)
+            .collect::<Vec<_>>(),
+        [1000, 1000, 500]
+    );
+}
+
+/// A snapshot listed with a hold and gone before its holds are read, or
+/// a dataset gone during the list, makes the whole read again, at most
+/// [`VANISHED_READS`] times in all; a pool that is not there is a
+/// missing pool where `zpool list` agrees. Mutants: the holds' `dataset
+/// does not exist` taken as no hold, or as an error at once; the list's
+/// message of a missing pool not confirmed.
+#[test]
+fn the_sweep_reads_again_what_vanished_under_it() {
+    let both = ["tank@skz-1", "tank@gone"];
+    // What `zfs holds -H` gives where one of its snapshots is gone, as
+    // read in OpenZFS 2.2's `zfs_do_holds` and not recorded: the holds
+    // of the others, the error of the one gone, exit 1 (`no datasets
+    // available` only where none had a hold).
+    let gone = || {
+        Ok(crate::host::fake::output(
+            1,
+            &hold_line("tank@skz-1", HOLD_TAG),
+            "cannot open 'tank@gone': dataset does not exist\n",
+        ))
+    };
     let mut fake = Fake::default();
-    fake.ok(TAGGED_WORDS, r#"{"return":{}}"#);
-    assert!(cli(fake).tagged("tank", HOLD_TAG).is_err());
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@gone\t1\n")
+        .ok(TAGGED_LIST, "tank@skz-1\t1\n")
+        .give(&holds_of(&both), gone())
+        .ok(
+            &holds_of(&["tank@skz-1"]),
+            &hold_line("tank@skz-1", HOLD_TAG),
+        );
+    let mut zfs = cli(fake);
+    assert_eq!(
+        zfs.tagged("tank", HOLD_TAG),
+        Ok(["skz-1".to_string()].into())
+    );
+    assert_eq!(
+        zfs.host().words(),
+        [
+            TAGGED_LIST.to_string(),
+            holds_of(&both),
+            TAGGED_LIST.to_string(),
+            holds_of(&["tank@skz-1"])
+        ]
+    );
+    // Gone at every read: the error, after three.
+    let mut fake = Fake::default();
+    fake.ok(TAGGED_LIST, "tank@skz-1\t1\ntank@gone\t1\n")
+        .give(&holds_of(&both), gone());
+    let mut zfs = cli(fake);
+    let read = zfs.tagged("tank", HOLD_TAG);
+    assert!(
+        matches!(&read, Err(ZfsError::Vanished(why)) if why.contains(&holds_of(&both))),
+        "{read:?}"
+    );
+    assert_eq!(zfs.host().words().len(), 6);
+    // A dataset gone during the list, then not.
+    let mut fake = Fake::default();
+    fake.fails(
+        TAGGED_LIST,
+        1,
+        "cannot iterate filesystems: no such pool or dataset\n",
+    )
+    .ok(TAGGED_LIST, "")
+    .ok(POOLS, "tank\n");
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.tagged("tank", HOLD_TAG), Ok(BTreeSet::new()));
+    assert_eq!(zfs.host().words(), [TAGGED_LIST, POOLS, TAGGED_LIST]);
+    // The pool not there: `zfs list` names it.
+    for (pools, missing) in [("other\n", true), ("tank\n", false)] {
+        let mut fake = Fake::default();
+        fake.fails(
+            TAGGED_LIST,
+            1,
+            "cannot open 'tank': dataset does not exist\n",
+        )
+        .ok(POOLS, pools);
+        let read = cli(fake).tagged("tank", HOLD_TAG);
+        if missing {
+            assert_eq!(read, Err(ZfsError::NoPool(TAGGED_LIST.into())), "{pools:?}");
+        } else {
+            assert!(
+                matches!(read, Err(ZfsError::Vanished(_))),
+                "{pools:?}: {read:?}"
+            );
+        }
+    }
 }
 
 /// The assist sets the property, then syncs, each within the limit of a
@@ -1580,12 +1758,11 @@ fn a_command_past_its_limit_is_an_error() {
 #[test]
 fn the_programs_only_read_and_call_what_the_sandbox_has() {
     assert!(!MEMBERS_PROGRAM.contains("zfs.sync."));
-    assert!(!TAGGED_PROGRAM.contains("zfs.sync."));
     // Nothing the channel programs' sandbox leaves out: on ZFS 2.2 and
     // 2.4 a call of `pcall` failed the program (the recordings of Q10),
     // and the sandbox has no file, operating system or loading functions
     // either (zfs-program(8)).
-    for program in [MEMBERS_PROGRAM, TAGGED_PROGRAM] {
+    for program in [MEMBERS_PROGRAM] {
         for absent in [
             "pcall",
             "xpcall",
@@ -1682,7 +1859,7 @@ fn the_limits_grow_with_the_datasets_counted() {
                 .iter()
                 .map(|r| r.words.as_str())
                 .collect::<Vec<_>>(),
-            [MEMBERS_WORDS, TAGGED_WORDS, "zpool status -P tank"]
+            [MEMBERS_WORDS, TAGGED_LIST, "zpool status -P tank"]
         );
         for other in &ran[5..] {
             assert_eq!(other.limit, ran[1].limit, "{}", other.words);
@@ -1783,9 +1960,12 @@ fn the_limits_grow_with_the_datasets_counted() {
 /// with the snapshots counted as well as the datasets: the count also
 /// counts the snapshots (`zfs list -r -H -o name -t snapshot`, within a
 /// read's limit), and the list takes [`Limits::full_per_dataset`] for
-/// each dataset and each snapshot, at most [`Limits::full_most`]. The
+/// each dataset and [`Limits::list_per_snapshot`] (10 ms, the lead's
+/// ruling on M2.6c-5d) for each snapshot, at most [`Limits::full_most`]. The
 /// two gets, which read only file systems and volumes, and every other
-/// command keep the datasets' scale. A snapshot count that fails leaves
+/// command but `zfs holds -r` and the sweep's list (which grow too, by
+/// their own allowance: R1-reach of #160's review) keep the datasets'
+/// scale. A snapshot count that fails leaves
 /// the list on the datasets' scale (the conservative reading: no longer
 /// limit than before on a pool whose commands fail), and the count of
 /// the datasets stands. Mutants: the snapshots not counted, counted but
@@ -1795,7 +1975,9 @@ fn the_limits_grow_with_the_datasets_counted() {
 #[test]
 fn the_lists_limit_grows_with_the_snapshots_counted() {
     let base = Limits::default();
+    assert_eq!(base.list_per_snapshot, Duration::from_millis(10));
     let at = |n: u64, per_ms: u64| base.read + Duration::from_millis(per_ms * n);
+    let ms = Duration::from_millis;
     let snapshots = |n: usize| -> String { (0..n).map(|i| format!("tank@s{i}\n")).collect() };
     let mut fake = Fake::default();
     fake.ok(COUNT, &listed(10));
@@ -1807,11 +1989,13 @@ fn the_lists_limit_grows_with_the_snapshots_counted() {
     // (snapshots listed, the list's limit)
     for (m, list) in [
         (0, at(10, 200)),
-        (1, at(11, 200)),
-        (990, at(1000, 200)),
-        (20_000, at(20_010, 200)),
-        // 60 s + 200 ms × 10 500 is past 35 minutes.
-        (10_490, base.full_most),
+        (1, at(10, 200) + ms(10)),
+        (990, at(10, 200) + ms(9_900)),
+        (20_000, at(10, 200) + ms(200_000)),
+        // 62 s + 10 ms × 203 700 is just below 35 minutes, and 10 ms ×
+        // 203 900 past them.
+        (203_700, at(10, 200) + ms(2_037_000)),
+        (203_900, base.full_most),
         (1_000_000, base.full_most),
     ] {
         zfs.host().commands.remove(SNAPSHOTS);
@@ -1850,13 +2034,12 @@ fn the_lists_limit_grows_with_the_snapshots_counted() {
 }
 
 /// R1-reach of #160's review, the lead's ruling (b): `zfs holds -r`
-/// and `tagged.lua` walk every snapshot in the pool too, so their limits
-/// grow with the snapshots counted: a read's base and 100 ms a dataset
-/// as before (at most [`Limits::most`]), plus
-/// [`Limits::holds_per_snapshot`] for each snapshot
-/// (`holds -r`) or [`Limits::full_per_dataset`] (`tagged.lua`, which
-/// took about what the list did a snapshot in testing's recorder), at
-/// most [`Limits::full_most`]. A snapshot count that fails leaves both on
+/// and the sweep's list of snapshots walk every snapshot in the pool
+/// too, so their limits grow with the snapshots counted: a read's base
+/// and 100 ms a dataset as before (at most [`Limits::most`]), plus
+/// [`Limits::holds_per_snapshot`] for each snapshot (`holds -r`) or
+/// [`Limits::list_per_snapshot`] (the sweep's list, as the manifest's
+/// list), at most [`Limits::full_most`]. A snapshot count that fails leaves both on
 /// a read's limit, as before. Mutants: either read not grown, grown by
 /// the other's allowance, not capped, capped at `most`, or on the list's
 /// limit after a failed count.
@@ -1871,18 +2054,20 @@ fn the_holds_and_the_tags_grow_with_the_snapshots_counted() {
     let mut fake = Fake::default();
     fake.ok(COUNT, &listed(10));
     fake.ok(HOLDS_R, "");
-    fake.ok(TAGGED_WORDS, r#"{"return":{"tagged":{}}}"#);
+    fake.ok(TAGGED_LIST, "");
     let mut zfs = ZfsCli::new(fake, base);
     let read = base.read + ms(100 * 10);
-    // (snapshots counted, `holds -r`'s limit, `tagged.lua`'s limit)
+    // (snapshots counted, `holds -r`'s limit, the sweep's list's limit)
     for (m, holds, tagged) in [
         (0, read, read),
-        (1, read + ms(30), read + ms(200)),
-        (1000, read + ms(30_000), read + ms(200_000)),
-        // 61 s + 200 ms × 20 000 is past 35 minutes; 30 ms × 20 000 is not.
-        (20_000, read + ms(600_000), base.full_most),
-        // Past 20 minutes (`most`) and below 35 (`full_most`).
-        (40_000, read + ms(1_200_000), base.full_most),
+        (1, read + ms(30), read + ms(10)),
+        (1000, read + ms(30_000), read + ms(10_000)),
+        (20_000, read + ms(600_000), read + ms(200_000)),
+        // `holds -r` past 20 minutes (`most`) and below 35 (`full_most`).
+        (40_000, read + ms(1_200_000), read + ms(400_000)),
+        // 61 s + 30 ms × 150 000 is past 35 minutes; the sweep's list,
+        // 61 s + 10 ms × 150 000, past 20 and below 35.
+        (150_000, base.full_most, read + ms(1_500_000)),
         (1_000_000, base.full_most, base.full_most),
     ] {
         zfs.host().commands.remove(SNAPSHOTS);
@@ -1893,9 +2078,9 @@ fn the_holds_and_the_tags_grow_with_the_snapshots_counted() {
         let _ = zfs.tagged("tank", HOLD_TAG);
         let ran = &zfs.host().ran;
         let words: Vec<&str> = ran.iter().map(|r| r.words.as_str()).collect();
-        assert_eq!(words, [HOLDS_R, TAGGED_WORDS], "{m}");
+        assert_eq!(words, [HOLDS_R, TAGGED_LIST], "{m}");
         assert_eq!(ran[0].limit, holds, "{m}: holds -r");
-        assert_eq!(ran[1].limit, tagged, "{m}: tagged.lua");
+        assert_eq!(ran[1].limit, tagged, "{m}: the sweep's list");
     }
     zfs.host().commands.remove(SNAPSHOTS);
     zfs.host()
@@ -1906,15 +2091,67 @@ fn the_holds_and_the_tags_grow_with_the_snapshots_counted() {
     let _ = zfs.tagged("tank", HOLD_TAG);
     let ran = &zfs.host().ran;
     assert_eq!(ran[0].limit, read, "holds -r on a read's limit");
-    assert_eq!(ran[1].limit, read, "tagged.lua on a read's limit");
+    assert_eq!(ran[1].limit, read, "the sweep's list on a read's limit");
+}
+
+/// `zfs holds -r`'s default allowance against testing's recording of
+/// it at R1's scales (run 45800940382, Ubuntu 24.04 and 26.04, idle
+/// pool, one run on each image): at each scale the limit is a read's
+/// on the datasets plus 10 ms a snapshot (the lead's ruling on
+/// M2.6c-5d), and at least four times the seconds recorded; the
+/// sweep's list at least four times the snapshots' list recorded. Mutants: the
+/// allowance at another value, or not grown.
+#[test]
+fn the_holds_limit_covers_its_recording() {
+    let base = Limits::default();
+    assert_eq!(base.holds_per_snapshot, Duration::from_millis(10));
+    let snapshots = |n: usize| -> String { (0..n).map(|i| format!("tank@s{i}\n")).collect() };
+    // (datasets, snapshots in the pool, seconds `holds -r` took): 24.04,
+    // then 26.04.
+    for (datasets, m, took) in [
+        (11, 11_000, 18.909),
+        (101, 101_000, 174.178),
+        (11, 11_000, 3.933),
+        (11, 60_500, 21.903),
+        (101, 101_000, 37.272),
+    ] {
+        let mut fake = Fake::default();
+        fake.ok(COUNT, &listed(datasets));
+        fake.ok(SNAPSHOTS, &snapshots(m));
+        fake.ok(HOLDS_R, "");
+        let mut zfs = ZfsCli::new(fake, base);
+        assert_eq!(zfs.count("tank"), Ok(datasets as u64), "{m}");
+        zfs.host().ran.clear();
+        let _ = zfs.held("tank", "skz-1", HOLD_TAG, Some(&[]));
+        let limit = zfs.host().ran[0].limit;
+        let read = base.read + base.per_dataset * u32::try_from(datasets).expect("small");
+        let grown = Duration::from_millis(10 * u64::try_from(m).expect("small"));
+        assert_eq!(limit, read + grown, "{m}");
+        assert!(limit.as_secs_f64() >= 4.0 * took, "{m}: {limit:?}");
+    }
+    // The sweep's list against the snapshots' list recorded on 24.04,
+    // the slower image: (datasets, snapshots, seconds).
+    for (datasets, m, took) in [(11, 11_000, 20.3), (101, 101_000, 185.9)] {
+        let mut fake = Fake::default();
+        fake.ok(COUNT, &listed(datasets));
+        fake.ok(SNAPSHOTS, &snapshots(m));
+        fake.ok(TAGGED_LIST, "");
+        let mut zfs = ZfsCli::new(fake, base);
+        assert_eq!(zfs.count("tank"), Ok(datasets as u64), "{m}");
+        zfs.host().ran.clear();
+        assert_eq!(zfs.tagged("tank", HOLD_TAG), Ok(BTreeSet::new()), "{m}");
+        let limit = zfs.host().ran[0].limit;
+        assert!(limit.as_secs_f64() >= 4.0 * took, "{m}: {limit:?}");
+    }
 }
 
 /// What libzfs says of a snapshot gone between a command's open of it
 /// and its read, in the two shapes `no such pool` takes. The first is
 /// testing's agent rig's; the second, a channel program's, is not known
-/// to happen (a program runs in one sync task, which a destroy cannot
-/// split), so the reads of `members` and `tagged` again are defensive
-/// (#160's review).
+/// to happen: a read-only program holds the pool's configuration lock
+/// for its whole run, so a destroy, a sync task, cannot come in the
+/// middle of it (nit B of #161's review). The reading of `members` again
+/// is defensive (#160's review).
 const VANISHED: [&str; 2] = [
     "cannot get holds for 'tank/db@skz-1': no such pool or dataset\n",
     "Channel program execution failed: no such pool\n",
@@ -1945,7 +2182,8 @@ fn a_read_whose_snapshot_vanished_is_read_again() {
         fake.fails(HOLDS_R, 1, stderr)
             // What `zfs holds -r` of a snapshot that is gone gives: exit
             // 0, no line, and `no datasets available` (fidelity, #160's
-            // review).
+            // review), as read in OpenZFS 2.2's `zfs_do_holds` and not
+            // recorded (nit F of #161's review).
             .give(
                 HOLDS_R,
                 Ok(crate::host::fake::output(0, "", "no datasets available\n")),
@@ -1958,19 +2196,6 @@ fn a_read_whose_snapshot_vanished_is_read_again() {
             "{stderr}"
         );
         assert_eq!(zfs.host().words(), [HOLDS_R, POOLS, HOLDS_R], "{stderr}");
-
-        let mut fake = Fake::default();
-        fake.fails(TAGGED_WORDS, 1, stderr)
-            .ok(TAGGED_WORDS, r#"{"return":{"tagged":{"tank@skz-1":"1"}}}"#)
-            .ok(POOLS, "tank\n");
-        let mut zfs = cli(fake);
-        let tagged = zfs.tagged("tank", HOLD_TAG).expect("tagged");
-        assert_eq!(tagged.into_iter().collect::<Vec<_>>(), ["tank@skz-1"]);
-        assert_eq!(
-            zfs.host().words(),
-            [TAGGED_WORDS, POOLS, TAGGED_WORDS],
-            "{stderr}"
-        );
     }
 }
 
@@ -2008,8 +2233,8 @@ fn a_read_that_goes_on_vanishing_is_an_error_that_names_it() {
     assert_eq!(zfs.host().words(), [LIST_WORDS, POOLS]);
 }
 
-/// `no such pool` is a missing pool only where `zpool list` lists no
-/// pool the command names: a pool whose name only begins with the
+/// `no such pool` is a missing pool only where `zpool list` does not
+/// list the pool the command acts on: a pool whose name only begins with the
 /// command's is not it, nor is one whose name the command's only begins
 /// with. Where `zpool list` fails, an error that says both, and not a
 /// missing pool. A missing pool's message names the command. Mutants: a
@@ -2069,8 +2294,10 @@ fn no_such_pool_is_a_missing_pool_only_where_zpool_list_agrees() {
 /// Only the pool a command acts on is looked for in `zpool list`, not
 /// every word of the command: a pool named like a subcommand, an
 /// option's value or the take's name is another pool (Codex on #160).
-/// A value read alone acts on its dataset's pool. Mutants: any word
-/// matched, a value's dataset taken for its pool.
+/// A value read alone acts on its dataset's pool; the layout's `zpool
+/// status`, alone or after `zpool get`'s `missing pool name`, and the
+/// assist's `zpool sync` on theirs (TG2 of #161's review). Mutants: any word matched, a value's
+/// dataset taken for its pool.
 #[test]
 fn only_the_commands_own_pool_is_looked_for() {
     let said = "cannot open 'tank': no such pool\n";
@@ -2087,10 +2314,49 @@ fn only_the_commands_own_pool_is_looked_for() {
         Err(ZfsError::NoPool(MEMBERS_WORDS.into()))
     );
     let mut fake = Fake::default();
-    fake.fails(TAGGED_WORDS, 1, said).ok(POOLS, others);
+    fake.fails(TAGGED_LIST, 1, said).ok(POOLS, others);
     assert_eq!(
         cli(fake).tagged("tank", "skyzfs-publish"),
-        Err(ZfsError::NoPool(TAGGED_WORDS.into()))
+        Err(ZfsError::NoPool(TAGGED_LIST.into()))
+    );
+    // `zfs list` says `dataset does not exist` of a missing pool.
+    let mut fake = Fake::default();
+    fake.fails(
+        TAGGED_LIST,
+        1,
+        "cannot open 'tank': dataset does not exist\n",
+    )
+    .ok(POOLS, others);
+    assert_eq!(
+        cli(fake).tagged("tank", "skyzfs-publish"),
+        Err(ZfsError::NoPool(TAGGED_LIST.into()))
+    );
+    // The layout's `zpool status`, alone and after `zpool get`'s
+    // `missing pool name` (ZFS 2.2), with a pool named `status` listed
+    // (TG2 of #161's review).
+    let status = "zpool status -P tank";
+    let mut fake = Fake::default();
+    fake.fails(status, 1, said).ok(POOLS, others);
+    assert_eq!(
+        cli(fake).layout("tank"),
+        Err(ZfsError::NoPool(status.into()))
+    );
+    let mut fake = Fake::default();
+    fake.fails(props, 2, "missing pool name\n")
+        .fails(status, 1, said)
+        .ok(POOLS, others);
+    assert_eq!(
+        cli(fake).props("tank"),
+        Err(ZfsError::NoPool(status.into()))
+    );
+    // The assist's `zpool sync`, with a pool named `sync` listed.
+    let mut fake = Fake::default();
+    fake.ok("zfs set skyzfs:assist=1 tank", "")
+        .fails("zpool sync tank", 1, said)
+        .ok(POOLS, "sync\nskyzfs:assist=1\n");
+    assert_eq!(
+        cli(fake).assist("tank", 1),
+        Err(ZfsError::NoPool("zpool sync tank".into()))
     );
     let mut fake = Fake::default();
     fake.fails(
