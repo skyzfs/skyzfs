@@ -407,7 +407,23 @@ The worktree was clean after both runs.
 
 ## Gates
 
-GATES
+Run on a scratch worktree at 6752363 with rustc 1.100.0 (2026-11-09;
+`rustup update stable` found nothing newer), `CARGO_INCREMENTAL=0`,
+`CARGO_PROFILE_DEV_DEBUG=0`, and the target removed between sets.
+`cargo fmt --all -- --check` is clean. For each set:
+
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- `cargo test --workspace`;
+- `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`.
+
+| Features | clippy | tests | doc |
+|---|---|---|---|
+| plain | clean | 1966 passed, 0 failed, 16 ignored | clean |
+| `skyzfsd/test-hooks,skyzfs-local/test-hooks` | clean | 2024 passed, 0 failed, 16 ignored | clean |
+| `skyzfs-ublk-sys/control-test-program` | clean | 1990 passed, 0 failed, 18 ignored | clean |
+| `skyzfs-agent-cli/test-hooks` | clean | 1966 passed, 0 failed, 16 ignored | clean |
+
+The counts are the description's.
 
 ## CI at 6752363
 
