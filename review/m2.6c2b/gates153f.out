@@ -1,0 +1,15 @@
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+291746c Merge zfs-topology (M2.6c-3) into M2.6c-2b
+cargo fmt --all -- --check: rc=0
+cargo clippy --workspace --all-targets -- -D warnings: rc=0
+cargo test --workspace --no-fail-fast: rc=0; 1934 passed, 0 failed, 16 ignored in 120 binaries
+cargo doc --workspace --no-deps: rc=0
+cargo clippy --workspace --all-targets --features skyzfsd/test-hooks,skyzfs-local/test-hooks -- -D warnings: rc=0
+cargo test --workspace --no-fail-fast --features skyzfsd/test-hooks,skyzfs-local/test-hooks: rc=0; 1992 passed, 0 failed, 16 ignored in 120 binaries
+cargo doc --workspace --no-deps --features skyzfsd/test-hooks,skyzfs-local/test-hooks: rc=0
+cargo clippy --workspace --all-targets --features skyzfs-ublk-sys/control-test-program -- -D warnings: rc=0
+cargo test --workspace --no-fail-fast --features skyzfs-ublk-sys/control-test-program: rc=0; 1958 passed, 0 failed, 18 ignored in 121 binaries
+cargo doc --workspace --no-deps --features skyzfs-ublk-sys/control-test-program: rc=0
+cargo clippy --workspace --all-targets --features skyzfs-agent-cli/test-hooks -- -D warnings: rc=0
+cargo test --workspace --no-fail-fast --features skyzfs-agent-cli/test-hooks: rc=0; 1934 passed, 0 failed, 16 ignored in 120 binaries
+cargo doc --workspace --no-deps --features skyzfs-agent-cli/test-hooks: rc=0

@@ -1,0 +1,38 @@
+    Finished `release` profile [optimized] target(s) in 13.55s
+     Running unittests src/lib.rs (<target>)
+
+running 1 test
+test engine::tests::review_scratch::sx1_every_schedule_of_stops ... SX1 Never depth 4: 63953 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"NotWhole": 46313, "none": 17640}
+  takes asked: {0: 3, 1: 532, 2: 10388, 3: 53030}
+  uncounted retakes: {0: 63953}
+  reports: {"": 3, "NW[..]x1": 42416, "NW[..]x1,NW[]x1": 11272, "NW[..]x1,NW[]x2": 1116, "NW[..]x1,NW[]x3": 70, "NW[..]x1,NW[]x>3": 2, "NW[..]x2": 6900, "NW[..]x2,NW[]x1": 1264, "NW[..]x2,NW[]x2": 74, "NW[..]x2,NW[]x3": 2, "NW[..]x3": 710, "NW[..]x3,NW[]x1": 78, "NW[..]x3,NW[]x2": 2, "NW[..]x>3": 42, "NW[..]x>3,NW[]x1": 2}
+SX1 Held(1) depth 4: 3857 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"ManifestLost": 2489, "none": 1368}
+  takes asked: {0: 3, 1: 3854}
+  uncounted retakes: {0: 3857}
+  reports: {"": 1601, "NW[..]x1": 1392, "NW[..]x2": 720, "NW[..]x3": 144}
+SX1 Held(2) depth 4: 23885 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"ManifestLost": 16369, "NotWhole": 376, "none": 7140}
+  takes asked: {0: 3, 1: 532, 2: 23350}
+  uncounted retakes: {0: 23885}
+  reports: {"": 6379, "NW[..]x1": 10644, "NW[..]x1,NW[]x1": 104, "NW[..]x1,NW[]x2": 8, "NW[..]x2": 5172, "NW[..]x2,NW[]x1": 8, "NW[..]x3": 1408, "NW[..]x>3": 162}
+SX1 Held(3) depth 4: 69737 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"ManifestLost": 43409, "NotWhole": 7848, "none": 18480}
+  takes asked: {0: 3, 1: 532, 2: 10388, 3: 58814}
+  uncounted retakes: {0: 69737}
+  reports: {"": 3, "NW[..]x1": 42416, "NW[..]x1,NW[]x1": 1992, "NW[..]x1,NW[]x2": 184, "NW[..]x1,NW[]x3": 8, "NW[..]x2": 18308, "NW[..]x2,NW[]x1": 200, "NW[..]x2,NW[]x2": 8, "NW[..]x3": 5526, "NW[..]x3,NW[]x1": 8, "NW[..]x>3": 1084}
+SX1 NotAsBefore depth 4: 143225 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"NotWhole": 114617, "none": 28608}
+  takes asked: {0: 3, 3: 42760, 4: 66054, 5: 29448, 6: 4720, 7: 240}
+  uncounted retakes: {0: 16629, 1: 53616, 2: 52048, 3: 18736, 4: 2196}
+  reports: {"": 3, "NW[..]x1": 98350, "NW[..]x1,NW[]x1": 29388, "NW[..]x1,NW[]x2": 2076, "NW[..]x1,NW[]x3": 108, "NW[..]x1,NW[]x>3": 3, "NW[]x1": 12424, "NW[]x2": 832, "NW[]x3": 40, "NW[]x>3": 1}
+SX1 FirstWhole depth 4: 99777 runs, 0 with a problem, 3 not begun, at most 5 processes
+  ends: {"NotWhole": 48896, "none": 22032, "published": 28849}
+  takes asked: {0: 3, 1: 39922, 2: 400, 3: 9072, 4: 50380}
+  uncounted retakes: {0: 39925, 1: 55672, 2: 3992, 3: 184, 4: 4}
+  reports: {"": 39925, "NW[..]x1": 47672, "NW[..]x1,NW[]x1": 7248, "NW[..]x1,NW[]x2": 352, "NW[..]x1,NW[]x3": 8, "NW[..]x2": 3992, "NW[..]x2,NW[]x1": 368, "NW[..]x2,NW[]x2": 8, "NW[..]x3": 192, "NW[..]x3,NW[]x1": 8, "NW[..]x>3": 4}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 183 filtered out; finished in 26.54s
+

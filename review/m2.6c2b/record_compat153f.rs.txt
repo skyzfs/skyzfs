@@ -1,0 +1,37 @@
+
+/// Review scratch (sixth look at #153): #149's GOLDEN, from 6e1cc2a, read at
+/// this head is golden() without its last entry (w11, NotWhole), and
+/// that record encodes to #149's bytes again.
+#[test]
+fn review_compat_149_golden_reads_at_head() {
+    const OLD: [&str; 18] = [
+    "535a414702000000fb0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
+    "4141414141414141414141414141414141414141414141414141414141410001",
+    "1561000168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e03ad2102290103702f6402ac024242424242424242424242424242",
+    "4242424242424242424242424242424242420102166201000161a1a1a1a1a1a1",
+    "a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a01",
+    "03702f6403ac0243434343434343434343434343434343434343434343434343",
+    "4343434343434306070103176301010164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444",
+    "444444444444444444444444444444444444444444444444444444444444c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104",
+    "1864000b02773000e80702773101e90702773202ea0702773303eb0702773404",
+    "ec0702773505ed0702773606ee0702773707ef0702773808f00702773909f107",
+    "037731300af2073332f1873595cc4cd429cfa1d4877fb51fb1ef9c630afe29ac",
+    "a1c7cc220bd12c",
+    ];
+    let hex: String = OLD.concat();
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("hex"))
+        .collect();
+    let mut expected = golden();
+    let last = expected.abandoned.pop().expect("an entry");
+    assert_eq!(last.why, Why::NotWhole);
+    assert_eq!(Record::decode(&bytes), Ok(expected.clone()));
+    assert_eq!(expected.encode().expect("encoded"), bytes);
+}
