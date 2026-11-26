@@ -145,6 +145,10 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # ubuntu-26.04 does not do the GNU way: run "$DD" for them.
 # shellcheck source=tests/lib/gnu-dd.sh
 . "$HERE/../lib/gnu-dd.sh"
+# A pool command after a failure, under a limit that holds even where it
+# cannot be killed (CLAUDE.md).
+# shellcheck source=tests/lib/lim.sh
+. "$HERE/../lib/lim.sh"
 OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
@@ -211,7 +215,7 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # (cut_daemon_check.py's torn_line): say where the logs are written.
 [ "$SERVER" != daemon ] || log "request logs on $(stat -f -c %T "$OUT"), page size $(getconf PAGESIZE)"
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""; SERVE_PID=""
-VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
+VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; SERVE_LOG=""; HOLD_PID=""; WATCH_PID=""
 # The upload courses': extra options of the next serve, a function run
 # between the create and the first serve, the uploader's rest (drain), a
 # writer in the background.
@@ -225,6 +229,16 @@ NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # (the agent courses judge the cases done so far): where it returns 1, a
 # verdict it found, the recording ends 1, else 2.
 ON_RIG_ERROR=""
+# PIN TEXT: what the daemon did wrong in a step the courses share (a
+# serve that ended before it was ready, one that did not stop 0 on
+# SIGTERM). An agent course's ON_DAEMON_WRONG makes it a verdict and
+# returns (D10 of #159's review); elsewhere it is the rig's error, as it
+# was.
+ON_DAEMON_WRONG=""
+daemon_wrong() {
+    [ -n "$ON_DAEMON_WRONG" ] || rig_error "$2"
+    "$ON_DAEMON_WRONG" "$1" "$2"
+}
 rig_error() {
     local m h=$ON_RIG_ERROR rc=2
     m=$(printf '%s' "$*" | tr '\t\n' '  ')
@@ -298,6 +312,18 @@ committed() { awk 'NR > 2 && $3 == "C" { print $1 }' "/proc/spl/kstat/zfs/$POOL/
 cleanup() {
     local rc=$?
     set +e
+    # A command that failed under errexit, with no rig_error of its own,
+    # in a course with a hook: the hook still judges the cases done (D10
+    # of #159's review). rig_error clears the hook before it exits, and
+    # end() once the course is recorded.
+    if [ "$rc" != 0 ] && [ -n "$ON_RIG_ERROR" ]; then
+        local h=$ON_RIG_ERROR hrc=0
+        ON_RIG_ERROR=""
+        log "the rig's own error in $NAME: a command failed (status $rc); the log above names it"
+        printf '%s\trig error\ta command failed (status %s); the job log names it\n' "$NAME" "$rc" >> "$OUT/recordings.tsv"
+        "$h" "a command failed (status $rc); the job log names it" || hrc=$?
+        if [ "$hrc" = 1 ]; then rc=1; else rc=2; fi
+    fi
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
     [ -z "$WATCH_PID" ] || { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
@@ -362,6 +388,7 @@ serve_end() {
 serve_start() {
     local k=$1 ack=${2:-} slog=$RDIR/serve.log _i kind=""
     [ "$k" = 1 ] || slog=$RDIR/serve-$k.log
+    SERVE_LOG=$slog
     local hold=()
     [ "$HOLD" != 1 ] || hold=(--hold-cuts)
     [ -z "$ack" ] || hold+=(--acknowledge-failure)
@@ -372,7 +399,16 @@ serve_start() {
         DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$VOL.ready" | head -n 1)
         kind=$(sed -n 's/.*serving device [0-9]* (\(taken over\|added\)).*/\1/p' "$slog" | head -n 1)
         [ -z "$DEV" ] || [ ! -b "$DEV" ] || [ -z "$kind" ] || break
-        kill -0 "$SERVE_PID" 2>/dev/null || { SERVE_PID=""; rig_error "skyzfsd serve $k ended before it was ready: $(tail -n 3 "$slog")"; }
+        if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+            # A verdict as well in an agent course (a take-over that
+            # failed); the course cannot go on with no daemon either way.
+            local m st=unknown
+            if serve_end 1; then st=$SERVE_RC; fi
+            SERVE_PID=""
+            m="skyzfsd serve $k ended (status $st) before it was ready: $(tail -n 3 "$slog")"
+            [ -z "$ON_DAEMON_WRONG" ] || "$ON_DAEMON_WRONG" daemon_ready "$m"
+            rig_error "$m"
+        fi
         sleep 0.25
     done
     [ -n "$DEV" ] && [ -b "$DEV" ] && [ -n "$kind" ] || rig_error "skyzfsd serve $k was not ready, or did not say how, in 120 s"
@@ -547,8 +583,13 @@ end_daemon() {
     printf '%s\t%s\n' "$before" "$after" > "$RDIR/status-time.tsv"
     # serve ends on SIGTERM, with 0; detach then deletes the device.
     kill -TERM "$SERVE_PID" 2>/dev/null || true
-    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
-    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR/serve.log")"
+    if ! serve_end 60; then
+        daemon_wrong daemon_stopped "skyzfsd serve did not end 60 s after SIGTERM: $(tail -n 2 "$SERVE_LOG")"
+        kill -9 "$SERVE_PID" 2>/dev/null || true
+        serve_end 10 || rig_error "skyzfsd serve did not end 10 s after SIGKILL"
+    elif [ "$SERVE_RC" != 0 ]; then
+        daemon_wrong daemon_stopped "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$SERVE_LOG")"
+    fi
     timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > "$RDIR/detach.log" 2>&1 \
         || rig_error "skyzfsd detach failed: $(tail -n 2 "$RDIR/detach.log")"
     rm -rf "${VOL:?}" "$VOL.ready"
@@ -590,6 +631,8 @@ end() {
         log "$NAME: recorded, $(du -h "$record" | cut -f1) of record"
     fi
     echo "$NAME	recorded	$SESSION sessions" >> "$OUT/recordings.tsv"
+    # Recorded: a course's hooks are done, and its check is the end's.
+    ON_RIG_ERROR=""; ON_DAEMON_WRONG=""
     [ "$CHECK" = none ] && return 0
     local rc=0
     # shellcheck disable=SC2086 # CHECK is a command line

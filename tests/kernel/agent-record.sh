@@ -29,6 +29,8 @@
 # - first.{out,err,rc} (sweep): the publish that marks the directory;
 # - both-kill.tsv (both): the daemon's status after the rig's SIGKILL;
 # - snaprow.txt: node B's `snap-row` of T after the settle;
+# - snapshots-after.txt: the pool's snapshots after the last run (a take
+#   that the next start destroyed must be gone: pin_ID_moved);
 # - holds.txt: every hold on the pool's snapshots after the last run,
 #   read before the rig releases any it left (holds-released.txt);
 # - manifests.txt: the files left in the agent's manifests directory;
@@ -39,9 +41,11 @@
 # - verdicts.tsv: what the rig saw the agent or the daemon do wrong while
 #   it drove the case (PIN, what), which the check fails as
 #   pin_ID_PIN: an agent that did not end, ask or withdraw in time, a
-#   row that did not land, a daemon that did not stop on SIGTERM or had
-#   ended by itself (D5 of #158's review: a verdict, not the rig's
-#   error);
+#   row that did not land, a daemon that did not stop on SIGTERM, had
+#   ended by itself before the rig's kill, or ended before it was ready
+#   when served again (D5 of #158's review and D10 of #159's: a verdict,
+#   not the rig's error). The daemon's stop at the course's end goes to
+#   DIR/cases/course/verdicts.tsv, a directory that is no case;
 # - rig-error.txt: the rig's own error in the case (a snapshot it could
 #   not destroy, no name before the kill): the check's ERROR for the
 #   case, which it does not judge further; the next case still runs
@@ -54,10 +58,13 @@
 # killed, the store thawed and the daemon served again where the
 # scenario left any of them otherwise (recover), so that a case that
 # went wrong does not take the next with it. Where the rig fails outside
-# a case (a pool command, node B, the writer), the check still judges
-# the cases done before (agent_judged, cut-record.sh's ON_RIG_ERROR),
-# with DIR/rig-error.tsv (the case under way, the error); a verdict
-# among them ends the recording 1, else it ends 2. A trace that gives no
+# a case (a pool command, node B, the writer, a command that failed
+# under errexit), the check still judges the cases done before
+# (agent_judged, cut-record.sh's ON_RIG_ERROR), with DIR/rig-error.tsv
+# (the case under way or `none`, the error), once the agent is killed,
+# the store thawed, the writer stopped and the pool exported, so that
+# node B can look (agent_quiet); a verdict among them ends the recording
+# 1, else it ends 2. A trace that gives no
 # points is DIR/points-error.tsv (the traced case, the error), the
 # check's ERROR beside the traced case's own pins. Each name published in the
 # case (T where node B has it, the retry's, a scenario's own) is a line
@@ -265,13 +272,26 @@ reserve() {
     fi
     serve_again "$@"
 }
+# The daemon killed by the rig (restart, late). One that had ended by
+# itself before the kill is a verdict, with its status (D10 of #159's
+# review): kill -9 of a child not yet waited for succeeds, so the status
+# and not the kill's says so, as both's does.
+akill_serve() {
+    local rc=0 k=$SERVE_K
+    kill -9 "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || rc=$?
+    SERVE_PID=""
+    [ "$rc" = 137 ] || verdict daemon_serving "skyzfsd serve $k had ended (status $rc) before the rig's kill: $(tail -n 2 "$(serve_log "$k")")"
+}
 # K: the log of the daemon's Kth instance.
 serve_log() { if [ "$1" = 1 ]; then echo "$RDIR/serve.log"; else echo "$RDIR/serve-$1.log"; fi; }
 # After a case's scenario: whatever it left running or frozen is ended,
 # so that the next case starts as every case does (G6 of #158's review):
 # the agent killed, the store thawed, the daemon serving. A daemon that
-# had ended without a kill of the rig's or its hook's is a verdict,
-# unless the rig's own error in the case came first.
+# had ended without a kill of the rig's or its hook's is a verdict; in a
+# dhook case the rig's own error about the daemon's end comes first, and
+# only there (D9 of #159's review: in the other scenarios the rig never
+# stops the daemon, so one that ended did so by itself).
 recover() {
     if [ -n "$AGENT_PID" ]; then
         kill -CONT "$AGENT_PID" 2>/dev/null || true
@@ -288,7 +308,7 @@ recover() {
         local k=$SERVE_K st=unknown
         if [ -n "$SERVE_PID" ] && serve_end 5; then st=$SERVE_RC; fi
         SERVE_PID=""
-        if [ -s "$CDIR/rig-error.txt" ]; then
+        if [ "$SCEN" = dhook ] && [ -s "$CDIR/rig-error.txt" ]; then
             echo "skyzfsd serve $k had ended (status $st), after the rig's own error in the case" >> "$CDIR/recovered.txt"
         else
             verdict daemon_serving "skyzfsd serve $k had ended (status $st) with no kill of the rig's: $(tail -n 2 "$(serve_log "$k")")"
@@ -374,6 +394,8 @@ asettle() {
     cat "$CDIR"/*.out 2>/dev/null | awk '$1 ~ /^snap\// { sub(/^snap\//, "", $1); print $1 }' | sort -u > "$CDIR/printed.txt"
     while read -r n; do published "$n"; done < "$CDIR/printed.txt"
     adump record-after
+    zfs list -H -o name -t snapshot -r "$POOL" > "$CDIR/snapshots-after.txt" 2> "$CDIR/snapshots-after.err" \
+        || rig_error "zfs list of $POOL's snapshots after the case failed: $(tail -n 2 "$CDIR/snapshots-after.err")"
     zfs list -H -t snapshot -o name -r "$POOL" | xargs -r zfs holds -H > "$CDIR/holds.txt" 2> "$CDIR/holds.err" \
         || rig_error "zfs holds failed: $(tail -n 2 "$CDIR/holds.err")"
     find "$ADIR/manifests" -mindepth 1 -printf '%P\n' > "$CDIR/manifests.txt" 2>/dev/null || : > "$CDIR/manifests.txt"
@@ -403,6 +425,8 @@ acase() {
     "scen_$SCEN" "${4:-}" "${hooks[@]}"
     recover
     asettle
+    # No case under way: the rig's error after it names none.
+    CDIR=""
 }
 
 scen_plain() { shift; acmd publish publish --limit-s 600 "$@"; }
@@ -411,12 +435,15 @@ scen_restart() {
     freeze
     abg publish publish --limit-s 600 "$@"
     if wait_point asked after 60; then
-        kill_serve
+        akill_serve
         thaw
         local t; t=$(case_name)
         snaprow "$t" between.txt || true
         serve_again
     else
+        # A kill before asked never reaches it; with none, the agent
+        # must (as in late and dhook).
+        [ -n "$KILL" ] || verdict asked "the agent did not reach asked:after in 60 s"
         thaw
     fi
     await_agent publish 700
@@ -440,16 +467,18 @@ scen_destroy() {
     abg publish publish --limit-s 600 "$@"
     if wait_point asked after 60; then
         t=$(case_name)
-        if ! { zfs release "$HOLD_TAG" "$POOL@$t" && zfs destroy "$POOL@$t"; } > "$CDIR/destroy.log" 2>&1; then
+        if ! { lim 60 zfs release "$HOLD_TAG" "$POOL@$t" && lim 60 zfs destroy "$POOL@$t"; } > "$CDIR/destroy.log" 2>&1; then
             case_error "releasing and destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
             mv "$CDIR/destroy.log" "$CDIR/destroy-failed.log"
             return 0
         fi
         mark "destroyed-$id"
         frozen_until_withdrawn
+    else
+        [ -n "$KILL" ] || verdict asked "the agent did not reach asked:after in 60 s"
     fi
     thaw
-    await_agent publish 300
+    await_agent publish 700
 }
 # Frozen until the agent's withdrawal is answered, so that no cut after
 # the loss can carry T; then its look at snap/T needs the store (run
@@ -472,7 +501,7 @@ scen_tooold() {
     abg publish publish --limit-s 300 "${CASE_AGE[@]}" "$@"
     frozen_until_withdrawn
     thaw
-    await_agent publish 300
+    await_agent publish 400
 }
 scen_sweep() {
     local id
@@ -491,7 +520,7 @@ scen_gone() {
     acmd publish publish --limit-s 600 "$@"
     t=$(case_name)
     [ -n "$t" ] || { case_error "no name in the trace before the kill"; return 0; }
-    if ! zfs destroy "$POOL@$t" > "$CDIR/destroy.log" 2>&1; then
+    if ! lim 60 zfs destroy "$POOL@$t" > "$CDIR/destroy.log" 2>&1; then
         case_error "destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
         mv "$CDIR/destroy.log" "$CDIR/destroy-failed.log"
     fi
@@ -564,7 +593,7 @@ scen_late() {
     local _i
     for _i in $(seq 1 240); do snaprow "$t" landed.txt && break; sleep 0.5; done
     snaprow "$t" landed.txt || { verdict landed "snap/$t had not landed 120 s after the thaw"; return 0; }
-    kill_serve
+    akill_serve
     serve_again
     mark "continued-$(basename "$CDIR")"
     kill -CONT "$AGENT_PID"
@@ -574,7 +603,7 @@ scen_both() {
     local rc=0
     shift
     abg publish publish --limit-s 600 "$@"
-    await_agent publish 300
+    await_agent publish 700
     # As kill_serve, with the daemon's status kept: 137 where the SIGKILL
     # ended it, anything else where it had ended by itself.
     kill -9 "$SERVE_PID" 2>/dev/null || true
@@ -595,6 +624,15 @@ agent_begin() {
     [ -S "$(vrun)/control" ] || rig_error "no socket control in $(vrun): under $RUN are $(find "$RUN" -maxdepth 2 | tr '\n' ' ')"
     printf 'run-dir\t%s\nagent-run\t%s\n' "$RUN" "$(vrun)" > "$RDIR/agent-run.tsv"
     ON_RIG_ERROR=agent_judged
+    ON_DAEMON_WRONG=agent_daemon_wrong
+}
+# PIN TEXT: a verdict on the daemon in a step the courses share
+# (cut-record.sh's daemon_wrong): the case's under way, or the course's
+# (DIR/cases/course) after the cases, at the daemon's stop.
+agent_daemon_wrong() {
+    local c=${CDIR:-$RDIR/cases/course}
+    mkdir -p "$c"
+    CDIR=$c verdict "$1" "$2"
 }
 # MESSAGE: the rig failed outside a case's own steps (cut-record.sh's
 # rig_error): the check judges the cases done so far, with the error in
@@ -604,10 +642,44 @@ agent_judged() {
     local rc=0
     printf '%s\t%s\n' "$(basename "${CDIR:-none}")" "$1" > "$RDIR/rig-error.tsv"
     [ "$CHECK" != none ] || return 2
+    agent_quiet
     # shellcheck disable=SC2086 # CHECK is a command line
     $CHECK "$NAME" "$RDIR" "$RDIR/requests.tsv" - $((VDEV_MB << 20)) || rc=$?
     printf '%s\tchecked\texit %s\n' "$NAME" "$rc" >> "$OUT/recordings.tsv"
     return "$rc"
+}
+# Before the check after the rig's error: the agent killed, the store
+# thawed, the writer stopped and the pool exported, as agent_end does, so
+# that node B's stages and the controls are judged (D7 of #159's review:
+# node B refuses while node A has the pool). Each step is bounded and
+# none is an error of its own: the error is said already, and a pool
+# still imported leaves node B's stages to the check's own error.
+agent_quiet() {
+    local _i
+    if [ -n "$AGENT_PID" ]; then
+        kill -CONT "$AGENT_PID" 2>/dev/null || true
+        kill -9 "$AGENT_PID" 2>/dev/null || true
+        for _i in $(seq 1 20); do kill -0 "$AGENT_PID" 2>/dev/null || break; sleep 0.25; done
+        kill -0 "$AGENT_PID" 2>/dev/null || wait "$AGENT_PID" 2>/dev/null || true
+        AGENT_PID=""
+    fi
+    if [ -n "$S3_IS_DOWN" ]; then
+        bash -c "$S3_UP" >> "$RDIR/s3.log" 2>&1 && S3_IS_DOWN=""
+        rm -f "$WORK/watch.pause"
+    fi
+    if [ -n "$WRITER" ]; then
+        touch "$WORK/writer.stop"
+        for _i in $(seq 1 120); do kill -0 "$WRITER" 2>/dev/null || break; sleep 0.5; done
+        kill -9 "$WRITER" 2>/dev/null || true
+        kill -0 "$WRITER" 2>/dev/null || wait "$WRITER" 2>/dev/null || true
+        WRITER=""
+    fi
+    session_end
+    if lim 120 zpool export "$POOL" > "$RDIR/judged-export.log" 2>&1; then
+        log "$NAME: $POOL exported for the check after the rig's error"
+    else
+        log "$NAME: $POOL did not export for the check: $(tail -n 2 "$RDIR/judged-export.log")"
+    fi
 }
 agent_end() {
     writer_off

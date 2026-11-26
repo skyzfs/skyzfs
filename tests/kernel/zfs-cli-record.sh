@@ -70,7 +70,8 @@
 #                               at @t, hold and release with -r
 #             holds             zfs holds -H -r P@t while @t is held,
 #                               the agent's read of the holds in each
-#                               round; about.txt gives its lines
+#                               round, with the load beside it (below);
+#                               about.txt gives its lines
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
@@ -96,11 +97,14 @@
 #           each. about.txt gives the members that members and
 #           take-cli-members counted, which is what hold, tagged,
 #           release and destroy ran on, the datasets that take-cli-full
-#           listed and the lines of take-cli-get and take-cli-list.
+#           listed, and the lines and seconds of count-snapshots, holds,
+#           take-cli-get, take-cli-get-pairs and take-cli-list; with
+#           N:K, the K reached of each dataset ("K reached: R of the K
+#           asked"), since the room left can stop it first.
 #           The snapshot program is not run at a count above
 #           ZCR_SCALE_LUA_MAX, when set; snapshot-cli takes @t there.
-#           Beside the two takes (snapshot, take-cli), beside the reads
-#           after the take (take-cli-members, take-cli-get and
+#           Beside the two takes (snapshot, take-cli), beside holds and
+#           the reads after the take (take-cli-members, take-cli-get and
 #           take-cli-list) at every count, and beside take-cli-full at
 #           the counts in ZCR_SCALE_FULL_BESIDE (default 1000; empty:
 #           none), from 2 s before the command to
@@ -690,9 +694,11 @@ record_reads() {
     rec "$x-none-value" zfs get -H -p -o value skyzfs:note "$p/child"
 }
 
-# lines_line RECORD: how many lines RECORD's stdout has, in about.txt.
+# lines_line RECORD: how many lines RECORD's stdout has, and the seconds
+# it took (its secs), in about.txt: the summary then has what a cost per
+# line or per snapshot is read from.
 lines_line() {
-    echo "scale: $1: $(wc -l < "$OUT/$1/stdout" 2> /dev/null || echo no) lines" >> "$OUT/about.txt"
+    echo "scale: $1: $(wc -l < "$OUT/$1/stdout" 2> /dev/null || echo no) lines in $(cat "$OUT/$1/secs" 2> /dev/null || echo '?') s" >> "$OUT/about.txt"
 }
 
 # Everything recorded on a live pool before the changes of its devices.
@@ -1031,7 +1037,8 @@ fill_span() {
 # At each tenth of K and at the last, about.txt gets the pool's
 # allocated and free bytes and the time so far, which show how the
 # space grows with K; at the end, how many the pool has and how long
-# they took.
+# they took, and the K reached: a record named scale-N-sK holds K of
+# each dataset only when that line says so.
 retain() {
     local lbl=$1 p=$2 n=$3 k=$4 i=1 t0 rc cut="" have step free floor=${ZCR_RETAIN_FLOOR:-8589934592}
     step=$((k / 10))
@@ -1065,6 +1072,7 @@ retain() {
     done
     have=$(lim 600 zfs list -H -t snapshot -o name -r "$p" 2> /dev/null | wc -l)
     echo "scale $lbl: $have snapshots in the pool ($k of each of $((n + 1)) datasets asked, one name a call) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
+    echo "scale $lbl: K reached: $((i - 1)) of the $k asked" >> "$OUT/about.txt"
 }
 
 # scale N [K]: a pool with N file systems under its root, and the adapter's
@@ -1135,8 +1143,10 @@ scale() {
                 members_line "scale-$lbl-members"
                 ;;
             hold) rec "scale-$lbl-hold" zfs hold -r "$TAG" "$p@t" ;;
+            # The agent reads the holds in each round while the pool
+            # is written to: with the load beside it.
             holds)
-                rec "scale-$lbl-holds" zfs holds -H -r "$p@t"
+                writing "scale-$lbl-holds" "$wdir" "$p" rec "scale-$lbl-holds" zfs holds -H -r "$p@t"
                 lines_line "scale-$lbl-holds"
                 ;;
             tagged) program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
