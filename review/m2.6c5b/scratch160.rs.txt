@@ -1,0 +1,46 @@
+
+// ---- review scratch (#160), appended for one run, then removed ----
+
+/// S1: the rig's shape in one process: the agent is not stopped at
+/// `asked:after`; the person's destroy lands at the next round's first
+/// `held()`, in the same process (the plant is armed by the point hook,
+/// which does not stop). Printed per mode, not asserted beyond "settled
+/// without an error".
+#[test]
+fn review_s1_destroy_between_reads_in_one_process() {
+    for mode in [Mode::Busy, Mode::Idle, Mode::Abandoned, Mode::ErrLow] {
+        let world = World::new(mode);
+        let keep = MemKeep::default();
+        let armed = Rc::new(Cell::new(false));
+        let arm = armed.clone();
+        let asked = at(Effect::Asked, true);
+        let mut one = Agent::new(
+            DestroyedBetween {
+                zfs: FakeZfs(world.clone()),
+                armed: armed.clone(),
+            },
+            FakeDaemon(world.clone()),
+            keep.clone(),
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent")
+        .with_points(Box::new(move |p, _: &str| {
+            if p == asked {
+                arm.set(true);
+            }
+            false
+        }));
+        let name = one.begin().expect("begun");
+        let settled = one.settle(LIMIT);
+        let landed = !armed.get();
+        eprintln!(
+            "REVIEW-S1 {mode:?}: landed={landed} settled_ok={} err={:?} outcomes={:?} name={name}",
+            settled.is_ok(),
+            settled.as_ref().err(),
+            one.outcomes()
+        );
+        assert!(settled.is_ok(), "{mode:?}: {settled:?}");
+    }
+}
