@@ -1,0 +1,49 @@
+# ubuntu-26.04: run 45720225770, artifact zfs-cli-ubuntu-26.04 (zip sha256 11a569eb..., as the API gives it)
+fixture records 16 artifact records 169
+source starts with the artifact's: True | suffix: ; only the records of the count, the members program in full, the versions and zfs_nocacheflush are kept here
+  mirror-count: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-absent: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-odd: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-odd-utf8: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-partial: same as composed JSON True; same as raw files True; other keys []
+  nocacheflush: same as composed JSON True; same as raw files True; other keys []
+  none-count: same as composed JSON True; same as raw files True; other keys []
+  none-members-full: same as composed JSON True; same as raw files True; other keys []
+  rig-count: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-absent: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-odd: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-odd-utf8: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-partial: same as composed JSON True; same as raw files True; other keys []
+  version: same as composed JSON True; same as raw files True; other keys []
+fixture text = artifact JSON cut to these keys, indent=1 ensure_ascii=True sort_keys
+fixture text = artifact JSON cut to these keys, indent=1 ensure_ascii=False sort_keys
+artifact JSON layout: indent=1 ensure_ascii=False sort_keys
+records of those kinds left out: []
+ALL SAME
+
+# ubuntu-24.04: run 45720134548, artifact zfs-cli-ubuntu-24.04 (zip sha256 ddf2adfa..., as the API gives it)
+fixture records 16 artifact records 169
+source starts with the artifact's: True | suffix: ; only the records of the count, the members program in full, the versions and zfs_nocacheflush are kept here
+  mirror-count: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-absent: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-odd: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-odd-utf8: same as composed JSON True; same as raw files True; other keys []
+  mirror-members-full-partial: same as composed JSON True; same as raw files True; other keys []
+  nocacheflush: same as composed JSON True; same as raw files True; other keys []
+  none-count: same as composed JSON True; same as raw files True; other keys []
+  none-members-full: same as composed JSON True; same as raw files True; other keys []
+  rig-count: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-absent: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-odd: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-odd-utf8: same as composed JSON True; same as raw files True; other keys []
+  rig-members-full-partial: same as composed JSON True; same as raw files True; other keys []
+  version: same as composed JSON True; same as raw files True; other keys []
+fixture text = artifact JSON cut to these keys, indent=1 ensure_ascii=True sort_keys
+fixture text = artifact JSON cut to these keys, indent=1 ensure_ascii=False sort_keys
+artifact JSON layout: indent=1 ensure_ascii=False sort_keys
+records of those kinds left out: []
+ALL SAME

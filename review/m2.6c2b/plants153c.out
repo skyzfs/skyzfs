@@ -1,0 +1,28 @@
+{"id": "C1", "what": "the full read given a read's limit", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C2", "what": "the members program (plain) given the full read's limit", "result": "SURVIVED", "tests": ["test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.68s"]}
+{"id": "C3", "what": "the tagged program given the full read's limit", "result": "SURVIVED", "tests": ["test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.73s"]}
+{"id": "C4", "what": "`zfs holds -r` given a change's limit", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C5", "what": "the full read scaled on a change's base", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_datasets_read_make_the_manifests_members", "zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C6", "what": "the full read capped as a read", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C7", "what": "scaled() caps every call at the 20-minute cap", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C8", "what": "the full read's cap at 36 minutes", "result": "KILLED", "by": ["zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "C9", "what": "`zpool status` given the full read's limit", "result": "SURVIVED", "tests": ["test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s"]}
+{"id": "C10", "what": "the destroy given a read's limit", "result": "KILLED", "by": ["zfs::cli::tests::the_destroy_is_zfs_destroy_r"]}
+{"id": "C11", "what": "`zpool sync` (the assist) given a read's limit", "result": "KILLED", "by": ["zfs::cli::tests::the_assist_sets_the_property_then_syncs"]}
+{"id": "F1", "what": "a GUID written negative read as its absolute value", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_datasets_read_make_the_manifests_members", "zfs::cli::recordings::members_and_tagged_read_as_recorded", "zfs::cli::tests::the_members_are_read_by_a_read_only_program", "zfs::cli::tests::the_properties_read_as_they_are"]}
+{"id": "F2", "what": "an @t's group read from the dataset's", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "F3", "what": "a value in hex taken as its text", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex"]}
+{"id": "F4", "what": "local properties dropped", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::a_value_that_is_not_printable_ascii_comes_in_hex", "zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "F5", "what": "the count leaves out the first line (the root)", "result": "KILLED", "by": ["zfs::cli::recordings::the_count_as_recorded", "zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "F6", "what": "a failed count read as none", "result": "KILLED", "by": ["zfs::cli::recordings::the_count_as_recorded", "zfs::cli::tests::the_limits_grow_with_the_datasets_counted"]}
+{"id": "F7", "what": "a volume read as a file system", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "F8", "what": "an @t's GUID read from the dataset's", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "F9", "what": "a program's `no such pool` not read as no pool", "result": "KILLED", "by": ["zfs::cli::recordings::a_pool_that_does_not_exist_reads_as_recorded", "zfs::cli::recordings::the_full_read_as_recorded", "zfs::cli::tests::datasets_that_cannot_be_read_are_an_error", "zfs::cli::tests::no_such_pool_is_no_pool", "zfs::cli::tests::the_take_is_zfs_snapshot_r"]}
+{"id": "F10", "what": "the agent's own property not removed from a dataset's", "result": "KILLED", "by": ["zfs::cli::tests::the_datasets_read_make_the_manifests_members"]}
+{"id": "F11", "what": "a snapshot read in part taken as none", "result": "KILLED", "by": ["zfs::cli::tests::datasets_that_cannot_be_read_are_an_error"]}
+{"id": "X1", "what": "26.04: a snapshot GUID of the rig's full read changed by one", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded"]}
+{"id": "X2", "what": "24.04: the child's @t of another group in the rig's full read", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded"]}
+{"id": "X3", "what": "24.04: the raw value's last byte changed in the mirror's odd read", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded"]}
+{"id": "X4", "what": "26.04: the rig's count without `skzq/vol`", "result": "KILLED", "by": ["zfs::cli::recordings::the_count_as_recorded", "zfs::cli::recordings::the_full_read_as_recorded"]}
+{"id": "X5", "what": "24.04: the mirror's root given an @p in the partial read", "result": "KILLED", "by": ["zfs::cli::recordings::the_full_read_as_recorded"]}
+{"worktree after": "clean"}
