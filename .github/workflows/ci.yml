@@ -97,14 +97,17 @@ jobs:
       # The control test program and its tests are behind a feature, so
       # the workspace line above does not build them.
       - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
-      # The daemon's fault hooks, which the rigs build and the workspace
-      # line does not.
+      # The daemon's fault hooks and the agent program's test hooks
+      # (M2.6c-3), which the rigs build and the workspace line does not.
       - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfs-agent-cli --features test-hooks --all-targets -- -D warnings
       # The workspace's documentation, as M2.D1 left it: no rustdoc warning
       # (broken or private intra-doc links, bad code blocks). Plain and
       # with each of the two features, as clippy above: code behind a
       # feature that is off is not documented, so its links are not
-      # checked.
+      # checked. The agent program's test hooks have no line: its binary
+      # is built with `doc = false` (bins/skyzfs-agent/Cargo.toml), so
+      # cargo doc documents none of it.
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -188,6 +191,7 @@ jobs:
       # skyzfs-control-rig.yml.
       - run: cargo test -p skyzfs-ublk-sys --features control-test-program
       - run: cargo test -p skyzfsd --features test-hooks
+      - run: cargo test -p skyzfs-agent-cli --features test-hooks
 
 
   # The unit level on arm64 (M1.T21): clippy and the tests natively on
@@ -222,9 +226,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
       - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfs-agent-cli --features test-hooks --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo test -p skyzfs-ublk-sys --features control-test-program
       - run: cargo test -p skyzfsd --features test-hooks
+      - run: cargo test -p skyzfs-agent-cli --features test-hooks
 
   # S3 conformance against both real backends, one build (design §14.2
   # layer 3; previously two jobs compiling the same feature graph twice).
