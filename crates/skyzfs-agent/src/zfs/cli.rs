@@ -843,6 +843,10 @@ impl<H: Host> ZfsCli<H> {
             };
             for line in holds.lines() {
                 let mut fields = line.split('\t');
+                // A line with no snapshot and tag is skipped, not an
+                // error: the design is silent, and the conservative
+                // reading keeps the hold it might name until a later
+                // sweep reads it.
                 let (Some(snapshot), Some(held_by)) = (fields.next(), fields.next()) else {
                     continue;
                 };
