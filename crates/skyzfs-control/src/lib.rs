@@ -7,7 +7,7 @@
 //! agent of M2.6, links none of it.
 //!
 //! The daemon listens on a Unix stream socket, [`SOCKET`] in the
-//! volume's run directory, of mode 0600, and answers only a peer whose
+//! volume's run directory ([`socket_path`]), of mode 0600, and answers only a peer whose
 //! user is its own or root; it answers one request per connection and
 //! closes.
 //!
@@ -145,6 +145,7 @@
 
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Read};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -173,8 +174,31 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
-/// The socket's name in the volume's run directory.
+/// The socket's name in the volume's run directory ([`socket_path`]).
 pub const SOCKET: &str = "control";
+
+/// The directory, under `run_dir`, of the volume whose directory is
+/// `volume_dir`: `v-<dev>-<ino>`, the device and inode numbers of the
+/// volume's directory in hex. The run directory (`skyzfsd serve
+/// --run-dir`) is shared by every daemon on the node, so a daemon keeps
+/// what is its volume's own in this directory, its channel's
+/// [`SOCKET`] among it. The daemon's records name it with this function
+/// (`skyzfs_ublk::records::volume_run_dir` is this one), so that an agent
+/// given the same run directory and volume finds the same socket. The
+/// volume's directory is read (`stat`, through a symbolic link): any
+/// path to it names the same directory.
+pub fn volume_run_dir(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::metadata(volume_dir)?;
+    Ok(run_dir.join(format!("v-{:x}-{:x}", meta.dev(), meta.ino())))
+}
+
+/// The channel of the volume whose directory is `volume_dir`, served by a
+/// daemon whose run directory is `run_dir`: [`SOCKET`] in
+/// [`volume_run_dir`].
+pub fn socket_path(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
+    Ok(volume_run_dir(run_dir, volume_dir)?.join(SOCKET))
+}
 
 /// The greeting of version 2, the first line each way.
 pub const HELLO: &str = "skyzfs-control 2";

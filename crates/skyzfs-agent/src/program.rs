@@ -18,8 +18,12 @@
 //!
 //! - `VOL` is the volume's directory, as `skyzfsd create` made it: the
 //!   agent reads the volume's id from its file `remote` ([`volume_id`]).
-//! - `RUN` is the daemon's directory of its run: its channel is the
-//!   socket `RUN/control` ([`skyzfs_control::SOCKET`]).
+//! - `RUN` is the run directory the daemon serves with (`skyzfsd serve
+//!   --run-dir`), shared by every daemon on the node: the volume's
+//!   channel is the socket `RUN/v-<dev>-<ino>/control`, named by the
+//!   device and inode numbers of `VOL` in hex, as the daemon names it
+//!   ([`skyzfs_control::socket_path`]). A node passes the same run
+//!   directory to the daemon and to the agent.
 //! - `DEV` is the volume's block device, as `skyzfsd serve` prints it
 //!   (`ready /dev/ublkbN`).
 //! - `DIR` is the agent's own directory of the volume: its record and
@@ -230,6 +234,13 @@ usage:
   skyzfs-agent recover --volume VOL --run RUN --device DEV --pool POOL --dir DIR
                        --name T (--give-up | --retry) [--limit-s S]
   skyzfs-agent record  --dir DIR
+where:
+  VOL  the volume's directory, as skyzfsd create made it
+  RUN  the run directory of skyzfsd serve (its --run-dir, /run/skyzfsd by
+       default); the channel is RUN/v-<dev>-<ino>/control, <dev> and <ino>
+       those of VOL in hex
+  DEV  the volume's block device, as skyzfsd serve prints it
+  DIR  the agent's own directory of the volume
 test hooks (a build with the feature test-hooks):
   --kill-at EFFECT:before|after[:N]  --trace-points FILE
   --assist-after-s S  --age-max-s S
