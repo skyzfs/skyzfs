@@ -259,6 +259,34 @@ fn ran(zfs: &mut ZfsCli<Fake>) -> Vec<String> {
     zfs.host().words().into_iter().map(String::from).collect()
 }
 
+/// Not recorded: the count of holds that the holds' check reads after
+/// `zfs holds -H -r` (`zfs list -H -p -o name,userrefs -t snapshot` of
+/// the snapshots it names, M2.6c-5e), given to `zfs` as the record
+/// `holds_r` implies it, one hold a line. Its words, where the record
+/// names a snapshot.
+fn counted(zfs: &mut ZfsCli<Fake>, rec: &Recording, holds_r: &str) -> Option<String> {
+    let out = rec.get(holds_r).stdout;
+    let mut refs: BTreeMap<&str, u64> = BTreeMap::new();
+    for line in out.lines() {
+        let (name, _) = line.split_once('\t').expect("a hold's line");
+        *refs.entry(name).or_default() += 1;
+    }
+    if refs.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = refs.keys().copied().collect();
+    let words = format!(
+        "zfs list -H -p -o name,userrefs -t snapshot {}",
+        names.join(" ")
+    );
+    let listed: String = refs
+        .iter()
+        .map(|(name, n)| format!("{name}\t{n}\n"))
+        .collect();
+    zfs.host().ok(&words, &listed);
+    Some(words)
+}
+
 fn disk(guid: u64, rdev: u64) -> Vdev {
     Vdev {
         kind: VdevKind::Disk,
@@ -658,11 +686,14 @@ fn holds_read_as_recorded() {
             ];
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let mut zfs = rec.adapter(&names);
+            let count = counted(&mut zfs, &rec, &name("holds-r")).expect("held snapshots");
             assert_eq!(zfs.hold(pool, "t", TAG), Ok(()), "{} {pool}", rec.image);
             // The tag is there already, and every member has it (the
             // members and their holds as recorded): the hold is done.
             assert_eq!(zfs.hold(pool, "t", TAG), Ok(()), "{} {pool}", rec.image);
-            assert_eq!(ran(&mut zfs), rec.words(&names));
+            let mut words = rec.words(&names);
+            words.push(count.clone());
+            assert_eq!(ran(&mut zfs), words);
 
             // The members read in the round, then `held` reads the tagged
             // snapshots under the root: every member's `@t` carries the
@@ -670,6 +701,7 @@ fn holds_read_as_recorded() {
             let read = [name("members"), name("holds-r")];
             let read: Vec<&str> = read.iter().map(String::as_str).collect();
             let mut zfs = rec.adapter(&read);
+            counted(&mut zfs, &rec, &name("holds-r"));
             let members = zfs.members(pool, "t").expect("the members");
             assert!(members.is_some(), "{} {pool}", rec.image);
             assert_eq!(
@@ -685,7 +717,9 @@ fn holds_read_as_recorded() {
                 rec.image
             );
             let mut both = rec.words(&read);
+            both.push(count.clone());
             both.push(rec.words(&read[1..])[0].clone());
+            both.push(count.clone());
             assert_eq!(ran(&mut zfs), both);
 
             let release = name("release-1");
@@ -698,6 +732,7 @@ fn holds_read_as_recorded() {
             let names = [name("release-2"), name("holds-r")];
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let mut zfs = rec.adapter(&names);
+            counted(&mut zfs, &rec, &name("holds-r"));
             match zfs.release(pool, "t", TAG) {
                 Err(ZfsError::Other(why)) => {
                     // By name: `/` sorts before `@`.
@@ -706,7 +741,9 @@ fn holds_read_as_recorded() {
                 }
                 other => panic!("{} {pool}: {other:?}", rec.image),
             }
-            assert_eq!(ran(&mut zfs), rec.words(&names));
+            let mut words = rec.words(&names);
+            words.push(count);
+            assert_eq!(ran(&mut zfs), words);
         }
     }
 }
@@ -868,6 +905,7 @@ fn a_hold_on_a_part_of_the_take_as_recorded() {
     for rec in recordings() {
         let names = ["rig-hold-r-partial", "rig-members", "rig-holds-r-partial"];
         let mut zfs = rec.adapter(&names);
+        let count = counted(&mut zfs, &rec, "rig-holds-r-partial").expect("the root's hold");
         match zfs.hold(RIG, "t", TAG) {
             Err(ZfsError::Other(why)) => assert!(
                 why.ends_with("the tag is on some members and not on skzq/child@t, skzq/vol@t"),
@@ -876,10 +914,13 @@ fn a_hold_on_a_part_of_the_take_as_recorded() {
             ),
             other => panic!("{}: {other:?}", rec.image),
         }
-        assert_eq!(ran(&mut zfs), rec.words(&names));
+        let mut words = rec.words(&names);
+        words.push(count.clone());
+        assert_eq!(ran(&mut zfs), words);
 
         let read = ["rig-members", "rig-holds-r-partial"];
         let mut zfs = rec.adapter(&read);
+        counted(&mut zfs, &rec, "rig-holds-r-partial");
         let members = zfs.members(RIG, "t").expect("the members");
         assert_eq!(
             zfs.held(RIG, "t", TAG, members.as_deref()),
@@ -887,12 +928,15 @@ fn a_hold_on_a_part_of_the_take_as_recorded() {
             "{}",
             rec.image
         );
-        assert_eq!(ran(&mut zfs), rec.words(&read));
+        let mut words = rec.words(&read);
+        words.push(count);
+        assert_eq!(ran(&mut zfs), words);
 
         let mut zfs = rec.adapter(&["rig-release-r-partial"]);
         assert_eq!(zfs.release(RIG, "t", TAG), Ok(()), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&["rig-release-r-partial"]));
         let mut zfs = rec.adapter(&["rig-holds-r-after-partial"]);
+        counted(&mut zfs, &rec, "rig-holds-r-after-partial");
         assert_eq!(
             zfs.held(RIG, "t", TAG, members.as_deref()),
             Ok(Held::No),
