@@ -571,22 +571,28 @@ pub const NOT_WHOLE_NAMED: usize = 20;
 
 /// The text of a `not-whole` report: the datasets that broke the last
 /// take, at most [`NOT_WHOLE_NAMED`] of them.
+///
+/// The names are separated by `, ` and the count of those left out
+/// follows a `; `: a dataset's name may hold a space but neither a comma
+/// nor a semicolon (`zfs_namecheck`), so each name reads as one (N13 of
+/// #153's review).
 fn not_whole(names: &[String]) -> String {
-    let given_up = "given up after its takes in a row were not one whole take of the pool";
+    let given_up = "given up after its takes in a row were not one whole take of the pool \
+         or not as read before them";
     if names.is_empty() {
-        return format!("not-whole: {given_up}; the datasets are not known after a restart");
+        return format!("not-whole: {given_up}; the datasets are not known");
     }
     let shown = names
         .iter()
         .take(NOT_WHOLE_NAMED)
         .map(String::as_str)
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(", ");
     let more = names.len().saturating_sub(NOT_WHOLE_NAMED);
     if more == 0 {
         format!("not-whole: {given_up}; datasets: {shown}")
     } else {
-        format!("not-whole: {given_up}; datasets: {shown} and {more} more")
+        format!("not-whole: {given_up}; datasets: {shown}; and {more} more")
     }
 }
 

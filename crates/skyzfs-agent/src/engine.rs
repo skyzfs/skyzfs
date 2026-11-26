@@ -1133,7 +1133,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
         // The give-up at the last failed check was decided, and its take
         // destroyed, before a stop: no take is asked again (D2 of #153's
-        // next look). The datasets that broke it are not known now.
+        // next look). The datasets that broke it are not known now: the
+        // report's list is empty, as it is where the members differ from
+        // the reading only in their count ([`Report::NotWhole`]).
         if self
             .record
             .publish(name)
@@ -1295,8 +1297,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// A failed check is recorded before its take is destroyed (D2 of
     /// #153's next look, the lead's ruling), so a stop after it keeps the
     /// count. A stop between the record and the destroy has the next
-    /// process find the same take and count it again: the conservative
-    /// side, a give-up one check early, never a take more. A stop after
+    /// process find the same take. One that is not whole it counts
+    /// again: the conservative side, a give-up one check early, never a
+    /// take more. One whose members were not as read before it destroys
+    /// without counting, since it has no reading of its own (below): the
+    /// count already holds that check, so the bound is the same (N10 of
+    /// #153's review). A stop after
     /// the destroy at the last check has the next process give the
     /// publish up without a take ([`Agent::take`]). So the takes of one
     /// publish whose checks fail are at most

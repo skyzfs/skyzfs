@@ -444,10 +444,10 @@ pub struct World {
     pub pending_take: Option<(String, usize)>,
     /// How many times a person changed [`NOTE`].
     pub notes: u64,
-    /// A dataset that `zfs snapshot -r` skips, as libzfs skips one that
-    /// is inconsistent (a full `zfs receive` into it under way or
-    /// interrupted; D1 of #153's review): no take has its `@t`.
-    pub skip: Option<String>,
+    /// The datasets that `zfs snapshot -r` skips, as libzfs skips one
+    /// that is inconsistent (a full `zfs receive` into it under way or
+    /// interrupted; D1 of #153's review): no take has their `@t`.
+    pub skip: BTreeSet<String>,
     /// The reads of the datasets, counted from 0, that fail as a value
     /// that cannot be read fails them (M2.6c-5), with the property whose
     /// value on `pool/vol` cannot be read.
@@ -512,7 +512,7 @@ impl World {
             late_take: None,
             pending_take: None,
             notes: 0,
-            skip: None,
+            skip: BTreeSet::new(),
             unreadable: BTreeMap::new(),
             datasets_read: 0,
             after_take: None,
@@ -1158,7 +1158,7 @@ impl World {
         let datasets: Vec<Ds> = pool
             .datasets
             .iter()
-            .filter(|d| Some(&d.name) != skip.as_ref())
+            .filter(|d| !skip.contains(&d.name))
             .cloned()
             .collect();
         if datasets

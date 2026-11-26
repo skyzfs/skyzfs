@@ -451,8 +451,13 @@ pub enum Report {
     /// before them ([`crate::record::Why::NotWhole`]): the datasets that
     /// broke the last, those that lack its `@t` or have one of another
     /// group, or differ from the reading before it (D1 of #153's review).
-    /// Empty where the last take was destroyed before a stop, and the
-    /// give-up made by the next process (D2 of #153's next look).
+    /// Empty in two ways (N11 of #153's review): where the last take
+    /// was destroyed before a stop and the give-up made by the next
+    /// process, which cannot know them (D2 of #153's next look); and
+    /// where the last take's members differ from the reading before it
+    /// only in their count, every member the same as a dataset read and
+    /// every dataset read a member's GUID, which needs two datasets of
+    /// one GUID and which ZFS does not make.
     NotWhole(Vec<String>),
     /// The pool's datasets could not be read for the manifest, before a
     /// take or after it: the read's error, which names the command, and

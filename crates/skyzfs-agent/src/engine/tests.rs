@@ -2295,12 +2295,14 @@ fn a_read_that_fails_is_reported_and_read_again() {
 }
 
 /// What a run of one publish on a pool whose `pool/vol` every take
-/// skips left: the agent's outcomes and reports, the world's time at
-/// each take asked, and the processes it took.
+/// skips left: the agent's outcomes and reports, the reports given to
+/// the sink, the world's time at each take asked, and the processes it
+/// took.
 struct NeverWhole {
     world: Rc<RefCell<World>>,
     outcomes: Vec<(String, Outcome)>,
     reports: Vec<(String, Report)>,
+    told: Vec<(String, Report)>,
     takes_ms: Vec<u64>,
     processes: usize,
 }
@@ -2315,10 +2317,22 @@ const PROCESSES_MAX: usize = 20;
 fn never_whole(
     hook: impl FnMut(&Rc<RefCell<World>>, usize, Point) -> bool + 'static,
 ) -> NeverWhole {
+    never_whole_in(
+        |world| world.skip = BTreeSet::from([format!("{POOL}/vol")]),
+        hook,
+    )
+}
+
+/// [`never_whole`] on a world that `setup` makes.
+fn never_whole_in(
+    setup: impl FnOnce(&mut World),
+    hook: impl FnMut(&Rc<RefCell<World>>, usize, Point) -> bool + 'static,
+) -> NeverWhole {
     let world = World::new(Mode::Busy);
-    world.borrow_mut().skip = Some(format!("{POOL}/vol"));
+    setup(&mut world.borrow_mut());
     let keep = MemKeep::default();
     let takes_ms = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Vec::new()));
     let hook = Rc::new(RefCell::new(hook));
     let (mut outcomes, mut reports) = (Vec::new(), Vec::new());
     let mut processes = 0;
@@ -2335,7 +2349,13 @@ fn never_whole(
                 (hook.borrow_mut())(&world, process, p)
             }
         });
-        let mut agent = agent(&world, &keep).with_points(points);
+        let sink: Sink = Box::new({
+            let told = told.clone();
+            move |name: &str, report: &Report| {
+                told.borrow_mut().push((name.to_string(), report.clone()));
+            }
+        });
+        let mut agent = agent(&world, &keep).with_points(points).with_sink(sink);
         let settled = if process == 0 {
             agent.begin().and_then(|_| agent.settle(LIMIT))
         } else {
@@ -2351,10 +2371,12 @@ fn never_whole(
         }
     }
     let takes_ms = takes_ms.borrow().clone();
+    let told = told.borrow().clone();
     NeverWhole {
         world,
         outcomes,
         reports,
+        told,
         takes_ms,
         processes,
     }
@@ -2408,6 +2430,157 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let pool = world.pool.as_ref().expect("the pool");
     assert!(pool.snaps.is_empty(), "{:?}", pool.snaps.keys());
     assert!(world.refs.is_empty() && holds(&world).is_empty());
+}
+
+/// The give-up's report reaches the sink at least once, whatever the
+/// stops about the give-up: after the third failed check is recorded,
+/// about the destroy of its take, about the give-up's record and about
+/// the manifest's file removed (T12 of #153's review). Both kinds of
+/// failed check: a take that is not whole is judged again by the next
+/// process, and one that is not as read before is destroyed by it
+/// unjudged, so that the give-up is made with no take
+/// ([`Agent::take`]), its report naming nothing; that process is
+/// stopped again about its own give-up. Mutants: no report at the
+/// give-up with no take, the report kept from the sink, or made after
+/// the give-up's record, with a take or with none.
+#[test]
+fn a_give_up_is_told_at_least_once_whatever_the_stop() {
+    let about = [
+        at(Effect::Destroy, false),
+        at(Effect::Destroy, true),
+        at(Effect::Abandon, false),
+        at(Effect::Abandon, true),
+        at(Effect::Unlink, false),
+        at(Effect::Unlink, true),
+    ];
+    let mut cases: Vec<(bool, Vec<Point>)> = Vec::new();
+    for not_as_before in [false, true] {
+        cases.push((not_as_before, vec![at(Effect::Failed, true)]));
+        for stop in about {
+            cases.push((not_as_before, vec![stop]));
+        }
+    }
+    for stop in about.into_iter().filter(|p| p.effect != Effect::Destroy) {
+        cases.push((true, vec![at(Effect::Failed, true), stop]));
+    }
+    for (not_as_before, stops) in cases {
+        let (mut failed, mut left) = (0, stops.clone());
+        left.reverse();
+        let run = never_whole_in(
+            move |world| {
+                if !not_as_before {
+                    world.skip = BTreeSet::from([format!("{POOL}/vol")]);
+                }
+            },
+            move |world, _, p| {
+                if not_as_before && p == at(Effect::Take, false) {
+                    world.borrow_mut().after_take = Some(User::SetProperty);
+                }
+                if p == at(Effect::Failed, true) {
+                    failed += 1;
+                }
+                if failed >= plan::CHECKS_FAILED_MAX && left.last() == Some(&p) {
+                    left.pop();
+                    return true;
+                }
+                false
+            },
+        );
+        let world = run.world.borrow();
+        let case = format!(
+            "not as before {not_as_before}, stops {stops:?}: {} processes, {:?} {:?}\n{}",
+            run.processes,
+            run.outcomes,
+            run.told,
+            world.log.join("\n")
+        );
+        assert_eq!(run.processes, stops.len() + 1, "{case}");
+        // A stop after the give-up's record leaves no outcome to print:
+        // the next process finds the publish gone.
+        let recorded = stops
+            .last()
+            .is_some_and(|&p| p >= at(Effect::Abandon, true));
+        match run.outcomes.as_slice() {
+            [(_, outcome)] => assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole), "{case}"),
+            [] => assert!(recorded, "{case}"),
+            _ => panic!("{case}"),
+        }
+        let [(_, Report::NotWhole(_)), ..] = run.told.as_slice() else {
+            panic!("{case}");
+        };
+        assert!(world.refs.is_empty(), "{case}");
+    }
+}
+
+/// The report of a give-up names every dataset that broke the last
+/// take, in the order read (T8 of #153's review): here two that
+/// `zfs snapshot -r` skips. Mutants: one name only, or another order.
+#[test]
+fn a_take_left_out_by_two_datasets_names_both() {
+    let run = never_whole_in(
+        |world| world.skip = BTreeSet::from([format!("{POOL}/db"), format!("{POOL}/vol")]),
+        |_, _, _| false,
+    );
+    let world = run.world.borrow();
+    let [(t, outcome)] = run.outcomes.as_slice() else {
+        panic!("{:?}\n{}", run.outcomes, world.log.join("\n"));
+    };
+    assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole));
+    assert_eq!(
+        run.reports,
+        [(
+            t.clone(),
+            Report::NotWhole(vec![format!("{POOL}/db"), format!("{POOL}/vol")])
+        )]
+    );
+}
+
+/// The report of a give-up whose last take was whole but not as read
+/// before it names the datasets that differ (T8 of #153's review): a
+/// member whose property a person set as each take landed, then a
+/// dataset read before the third take and destroyed as it landed, which
+/// no member is. Each take is a failed check, the third gives the
+/// publish up. Mutants: the members that differ not named, the datasets
+/// with no member not named, the two in the other order, or nothing
+/// named for a take not as before.
+#[test]
+fn a_take_not_as_before_names_the_datasets_that_differ() {
+    let mut takes = 0;
+    let run = never_whole_in(
+        |_| {},
+        move |world, _, p| {
+            if p == at(Effect::Take, false) {
+                world.borrow_mut().after_take = Some(User::SetProperty);
+            }
+            if p == at(Effect::Take, true) {
+                takes += 1;
+                if takes == plan::CHECKS_FAILED_MAX {
+                    let mut world = world.borrow_mut();
+                    let t = world.programs.keys().last().cloned().unwrap_or_default();
+                    world.user(User::DestroyDataset, &t);
+                }
+            }
+            false
+        },
+    );
+    let world = run.world.borrow();
+    let [(t, outcome)] = run.outcomes.as_slice() else {
+        panic!("{:?}\n{}", run.outcomes, world.log.join("\n"));
+    };
+    assert_eq!(
+        *outcome,
+        Outcome::Abandoned(Why::NotWhole),
+        "{}",
+        world.log.join("\n")
+    );
+    assert_eq!(run.takes_ms.len(), plan::CHECKS_FAILED_MAX as usize);
+    assert_eq!(
+        run.reports,
+        [(
+            t.clone(),
+            Report::NotWhole(vec![format!("{POOL}/db"), format!("{POOL}/vol")])
+        )]
+    );
 }
 
 /// The give-up of [`a_take_never_whole_is_given_up_at_the_third_failed_check`]
@@ -2465,11 +2638,11 @@ fn a_take_retaken_after_a_restart_is_not_counted_as_failed() {
         if p == at(Effect::Take, false) {
             // The first take is whole; the dataset is skipped from the
             // next.
-            world.borrow_mut().skip = None;
+            world.borrow_mut().skip.clear();
         }
         let stop = p == at(Effect::Take, true);
         if stop {
-            world.borrow_mut().skip = Some(format!("{POOL}/vol"));
+            world.borrow_mut().skip = BTreeSet::from([format!("{POOL}/vol")]);
         }
         stopped |= stop;
         stop
@@ -3139,6 +3312,50 @@ fn each_effect_is_named_by_a_word_of_its_own() {
     assert_eq!(Effect::from_word("recover"), Some(Effect::Recover));
     assert_eq!(Effect::from_word("unwind"), None);
     assert_eq!(Effect::from_word(""), None);
+}
+
+/// [`Effect::ALL`] holds every effect once, in the order declared (T13
+/// of #153's review: an effect left out of it would be refused by
+/// `--kill-at`). The match below has no wildcard, so an effect added to
+/// the enum does not compile here until it is given its place.
+#[test]
+fn every_effect_is_in_the_list_of_all() {
+    fn place(effect: Effect) -> usize {
+        match effect {
+            Effect::Enrol => 0,
+            Effect::Intent => 1,
+            Effect::Take => 2,
+            Effect::Failed => 3,
+            Effect::Destroy => 4,
+            Effect::Manifest => 5,
+            Effect::Taken => 6,
+            Effect::Holding => 7,
+            Effect::Hold => 8,
+            Effect::Held => 9,
+            Effect::Count => 10,
+            Effect::Stalled => 11,
+            Effect::Asking => 12,
+            Effect::Ask => 13,
+            Effect::Asked => 14,
+            Effect::Unasked => 15,
+            Effect::Withdraw => 16,
+            Effect::Look => 17,
+            Effect::Assist => 18,
+            Effect::Release => 19,
+            Effect::Released => 20,
+            Effect::Done => 21,
+            Effect::Sweep => 22,
+            Effect::Forget => 23,
+            Effect::Abandon => 24,
+            Effect::Unlink => 25,
+            Effect::Stop => 26,
+            Effect::Recover => 27,
+        }
+    }
+    for (at, effect) in Effect::ALL.into_iter().enumerate() {
+        assert_eq!(place(effect), at, "{effect:?}");
+    }
+    assert_eq!(Effect::ALL.len(), place(Effect::Recover) + 1);
 }
 
 /// A person releases the agent's hold on `pool/db@t` once it is held:
