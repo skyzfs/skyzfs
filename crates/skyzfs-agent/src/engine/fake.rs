@@ -341,6 +341,15 @@ pub struct FakeDaemonState {
 }
 
 impl FakeDaemonState {
+    /// Bring the upload under way to its end at `now_ms`, as though it
+    /// had been asked with the world's lag as it is now (where that lag
+    /// was lowered while it ran).
+    pub fn upload_ends_at(&mut self, now_ms: u64) {
+        if let Some((_, at)) = self.uploading.as_mut() {
+            *at = (*at).min(now_ms);
+        }
+    }
+
     /// Whether any publish was asked of this daemon (it pends or ended).
     pub fn asked(&self) -> bool {
         !self.pending.is_empty() || !self.ended.is_empty()

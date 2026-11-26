@@ -22,6 +22,9 @@ doc = false
 test-hooks = ["dep:rustix", "rustix/time", "rustix/process"]
 
 [dependencies]
+# `run` ends on SIGTERM or SIGINT between two rounds, and at once on a
+# second one; the crate keeps the handlers safe (no `unsafe` here).
+signal-hook = "0.3"
 skyzfs-agent = { workspace = true }
 skyzfs-control = { workspace = true }
 

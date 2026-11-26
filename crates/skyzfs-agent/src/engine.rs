@@ -277,6 +277,11 @@ pub type Points = Box<dyn FnMut(Point, &str) -> bool>;
 /// it reports ([`Agent::with_sink`]).
 pub type Sink = Box<dyn FnMut(&str, &Report)>;
 
+/// Called with each outcome as it is made: a publish that left the
+/// record, or stopped for a person ([`Agent::set_outcome_sink`]; S1 of
+/// #149's review).
+pub type OutcomeSink = Box<dyn FnMut(&str, &Outcome)>;
+
 /// A person's choice for a publish under way ([`Agent::recover`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
@@ -481,6 +486,7 @@ pub struct Agent<Z, D, K, C> {
     daemon: D,
     keep: K,
     clock: C,
+    volume: [u8; 16],
     pool: String,
     expiry: Duration,
     age_max: Duration,
@@ -496,6 +502,7 @@ pub struct Agent<Z, D, K, C> {
     assist_after: Duration,
     points: Option<Points>,
     sink: Option<Sink>,
+    outcome_sink: Option<OutcomeSink>,
     /// The publish the next [`Point`] is for.
     at: String,
     /// The names publishes left in this process for the next one: a
@@ -517,24 +524,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         volume: [u8; 16],
         pool: &str,
     ) -> Result<Self, Error> {
-        let record = match keep.load().map_err(Error::Io)? {
-            Loaded::Absent => Record::new(volume),
-            Loaded::Corrupt(why) => return Err(Error::Corrupt(why)),
-            Loaded::Present(record) if record.volume != volume => {
-                return Err(Error::Volume(record.volume))
-            }
-            Loaded::Present(record) => record,
-        };
-        for name in keep.manifest_names().map_err(Error::Io)? {
-            if record.publish(&name).is_none() {
-                keep.remove_manifest(&name).map_err(Error::Io)?;
-            }
-        }
+        let record = loaded(&keep, volume)?;
         Ok(Agent {
             zfs,
             daemon,
             keep,
             clock,
+            volume,
             pool: pool.to_string(),
             expiry: EXPIRY_DEFAULT,
             age_max: plan::AGE_MAX,
@@ -551,8 +547,70 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             assist_after: plan::ASSIST_AFTER,
             points: None,
             sink: None,
+            outcome_sink: None,
             at: String::new(),
         })
+    }
+
+    /// Start again within the process, as a new process would
+    /// ([`Agent::new`]): the record loaded anew from the directory, and
+    /// everything the engine kept between rounds forgotten (its memory of
+    /// each publish, the stops and renames of this process, the sweep
+    /// done). The settings, the points and the sinks are kept, and so
+    /// are the outcomes and reports not yet forgotten ([`Agent::forget`]).
+    ///
+    /// For `skyzfs-agent run` after a round that failed. An error can
+    /// leave what the engine holds unlike what it saved: a save that
+    /// fails after its rename has the new record on the disk and the old
+    /// one here. Loaded anew, the agent is where a kill at that point and
+    /// a restart would leave it, which is what the crash matrix covers.
+    /// It costs what a restart costs (the module docs, "What the engine
+    /// remembers between rounds", and "Time": a hold is then reckoned on
+    /// the wall clock again).
+    pub fn restart(&mut self) -> Result<(), Error> {
+        self.record = loaded(&self.keep, self.volume)?;
+        self.device = None;
+        self.memory.clear();
+        self.swept = None;
+        self.stopped.clear();
+        self.reported.clear();
+        self.renamed.clear();
+        self.assists = 0;
+        self.at.clear();
+        Ok(())
+    }
+
+    /// Forget what this process keeps of the publishes no longer under
+    /// way: every outcome ([`Agent::outcomes`]), and the reports, stops
+    /// and renames of a publish that has left the record. `skyzfs-agent
+    /// run` calls it after each round, once the outcomes were told
+    /// ([`Agent::set_outcome_sink`]), so that what a long-lived agent
+    /// keeps does not grow with the publishes it has made. A rename is
+    /// kept while either of its names is under way, for
+    /// [`Agent::name_now`].
+    pub fn forget(&mut self) {
+        let record = &self.record;
+        let under_way = |name: &str| record.publish(name).is_some();
+        self.outcomes.clear();
+        self.reports.retain(|(name, _)| under_way(name));
+        self.reported.retain(|name| under_way(name));
+        self.stopped.retain(|name| under_way(name));
+        self.renamed
+            .retain(|from, to| under_way(from) || under_way(to));
+    }
+
+    /// The clock (`skyzfs-agent run` paces its rounds by it).
+    pub fn clock(&mut self) -> &mut C {
+        &mut self.clock
+    }
+
+    /// Tell each outcome to `sink` as it is made, as well as keeping it
+    /// in [`Agent::outcomes`]: a publish that left the record is told
+    /// before the next effect, so that a run killed after it has said
+    /// so (S1 of #149's review: the record no longer holds it, and no
+    /// later run can tell it).
+    pub fn set_outcome_sink(&mut self, sink: OutcomeSink) {
+        self.outcome_sink = Some(sink);
     }
 
     /// Stop at the points `points` chooses (the engine's tests).
@@ -683,6 +741,20 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// pool's datasets ([`Zfs::count`]), which sets the time limits of
     /// its calls, then the sweep (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
+        self.settle_while(limit, &mut || true)
+    }
+
+    /// [`Agent::settle`], asking `go` before each round of the publishes
+    /// under way: where it says no, the engine stops there, between two
+    /// rounds, with what is still under way ([`Error::Unsettled`]), as at
+    /// the time limit. `skyzfs-agent run` asks whether it was told to
+    /// end (`SIGTERM`), so that an end waits for one round and not for
+    /// the time left to the next tick.
+    pub fn settle_while(
+        &mut self,
+        limit: Duration,
+        go: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
             // Where the count fails, the limits are the bases, and the
@@ -700,7 +772,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             if names.is_empty() {
                 return Ok(());
             }
-            if self.clock.mono_ms() >= end {
+            if self.clock.mono_ms() >= end || !go() {
                 return Err(Error::Unsettled(names));
             }
             let mut moved = Moved::No;
@@ -1061,9 +1133,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     Phase::Done { commit, .. } => commit,
                     _ => [0; 32],
                 };
+                // Told before the publish leaves the record, which then
+                // holds nothing of it: so that a kill anywhere after has
+                // told it, and one before the save tells it again at the
+                // next run, as a report is told (S1 of #149's review).
+                // A publish done is published, whatever follows.
+                self.told(name.clone(), Outcome::Published(commit));
                 self.commit(Effect::Forget, |r| r.under_way.retain(|p| p.name != name))?;
+                self.memory.remove(&name);
                 self.unlink(&name)?;
-                self.leave(name, Outcome::Published(commit));
                 Ok(Moved::Yes)
             }
             Action::Abandon(why) => {
@@ -1626,8 +1704,17 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn abandon(&mut self, name: &str, why: Why) -> Result<(), Error> {
         let now = self.clock.now_ms();
         self.commit(Effect::Abandon, |r| r.abandon(name, why, now))?;
-        self.unlink(name)?;
+        // Told before the next effect. A kill before the save above
+        // leaves the publish under way, and its give-up is planned and
+        // told again. A kill between the save and this line loses the
+        // line: the record keeps the name and why among the abandoned
+        // (`skyzfs-agent record` prints them), and no later run tells
+        // it. Telling it before the save would tell a give-up that a
+        // later run might not make; closing the window needs a step of
+        // the record between the two, as a publish has (`Done`, then
+        // `Forget`).
         self.leave(name.to_string(), Outcome::Abandoned(why));
+        self.unlink(name)?;
         Ok(())
     }
 
@@ -1654,12 +1741,20 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// The publish of `name` stops for a person to judge.
     fn stop(&mut self, name: String, why: String) {
         self.stopped.insert(name.clone());
-        self.outcomes.push((name, Outcome::Stopped(why)));
+        self.told(name, Outcome::Stopped(why));
     }
 
     /// The publish of `name` has left the record.
     fn leave(&mut self, name: String, outcome: Outcome) {
         self.memory.remove(&name);
+        self.told(name, outcome);
+    }
+
+    /// Keep `outcome` of the publish of `name`, and tell it to the sink.
+    fn told(&mut self, name: String, outcome: Outcome) {
+        if let Some(sink) = &mut self.outcome_sink {
+            sink(&name, &outcome);
+        }
         self.outcomes.push((name, outcome));
     }
 
@@ -1709,6 +1804,26 @@ fn may_pend(answer: &Reply) -> bool {
         | Reply::Snap(_)
         | Reply::Unreadable(_) => true,
     }
+}
+
+/// The record of `volume` in `keep` (a new one where there is none),
+/// with each manifest's file that no publish under way names removed (a
+/// crash after the publish left the record).
+fn loaded<K: Keep>(keep: &K, volume: [u8; 16]) -> Result<Record, Error> {
+    let record = match keep.load().map_err(Error::Io)? {
+        Loaded::Absent => Record::new(volume),
+        Loaded::Corrupt(why) => return Err(Error::Corrupt(why)),
+        Loaded::Present(record) if record.volume != volume => {
+            return Err(Error::Volume(record.volume))
+        }
+        Loaded::Present(record) => record,
+    };
+    for name in keep.manifest_names().map_err(Error::Io)? {
+        if record.publish(&name).is_none() {
+            keep.remove_manifest(&name).map_err(Error::Io)?;
+        }
+    }
+    Ok(record)
 }
 
 fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
