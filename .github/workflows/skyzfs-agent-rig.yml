@@ -1,0 +1,224 @@
+name: skyzfs-agent-rig
+
+# The agent rig (M2.T5 stage 1; design §5.2, §5.4; M2.6's criterion on a
+# real pool): `skyzfs-agent publish` (bins/skyzfs-agent, built with its
+# test hooks) on a pool whose device skyzfsd serves with its uploads to an
+# object store (MinIO), as the cut rig's upload stage records it
+# (tests/kernel/cut-record.sh, CUT_UPLOAD=1; the agent's courses are in
+# tests/kernel/agent-record.sh). The agent is killed at each point its
+# engine reaches, the daemon at each of its upload hooks, and both lose
+# what they were doing in other ways (a restart, an answer lost, a
+# snapshot destroyed, a publish too old, a stray hold). After each loss
+# the agent is started again as a node's next start would, and
+# tests/kernel/agent_check.py holds what follows against the criterion:
+# snap/t is absent and a retry publishes, or it names a cut that holds
+# the snapshot; a snapshot destroyed before the hold is not published;
+# no hold is left. Node B (bins/skyzfs-nodeb) reads every name published
+# from the bucket alone: its ref, its row, the agent's manifest, and the
+# snapshot imported read-only, every copy of every block checked
+# (tests/kernel/nodeb_check.py's stages).
+#
+# The parts: a1 and a2 (aplain, the agent killed at each point a plain
+# publish reaches, in two shards), d (adaemon: the daemon restarted with
+# a publish pending, killed at carry-put, carry-swap, manifest and
+# publish, an answer lost to a stopped agent, both killed), k (arare: the
+# points only a restart, an assist, a destroyed snapshot, a publish too
+# old or a sweep reaches, a snapshot gone at a restart, a directory with
+# no marker). A Stalled point has no daemon hook to make it: the engine's
+# fakes cover it (crates/skyzfs-agent), and the power cut under the
+# record is #144's model's.
+#
+# Exit 1 is a verdict against the agent or the daemon, exit 2 the rig's
+# own error (a point not reached is one: the case did not test what it
+# names). Read the summary's table, not the colour.
+#
+# Runs on a pull request that touches the rig's files, the agent, the
+# daemon, its uploader or node B (ubuntu-26.04), on a push of the rig's
+# files to a testing branch (ubuntu-26.04), and by dispatch (24.04 and
+# the arm64 images by dispatch only).
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04"]'
+      parts:
+        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare)"
+        default: '["a1","a2","d","k"]'
+      points:
+        description: "aplain only: the points to kill at (EFFECT:before|after:N, separated by spaces) in place of those the trace reaches; empty: the trace's"
+        default: ""
+      daemon_ref:
+        description: "build skyzfsd from this commit (40 hex digits) and not from the checkout, under the checkout's rig and agent. Empty: the checkout"
+        default: ""
+  pull_request:
+    paths:
+      - tests/kernel/agent*
+      - tests/kernel/test_agent_*
+      - tests/kernel/cut-record.sh
+      - tests/kernel/nodeb_check.py
+      - tests/kernel/cut_daemon_check.py
+      - tests/kernel/publish_check.py
+      - tests/lib/**
+      - bins/skyzfs-agent/**
+      - crates/skyzfs-agent/**
+      - bins/skyzfs-nodeb/**
+      - bins/skyzfsd/**
+      - crates/skyzfs-upload/**
+      - crates/skyzfs-control/**
+      - crates/skyzfs-local/**
+      - crates/skynbd-engine/**
+      - crates/skynbd-refs/**
+      - crates/skynbd-store/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - .github/workflows/skyzfs-agent-rig.yml
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/agent*
+      - .github/workflows/skyzfs-agent-rig.yml
+
+concurrency:
+  group: agent-rig-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the check's logic (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_agent_check.py -v
+      - run: bash tests/kernel/test_agent_record.sh
+      - run: bash tests/kernel/test_cut_record.sh
+
+  plan:
+    name: which jobs
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.plan.outputs.images }}
+      parts: ${{ steps.plan.outputs.parts }}
+    steps:
+      - id: plan
+        env:
+          IMAGES: ${{ inputs.images || '' }}
+          PARTS: ${{ inputs.parts || '' }}
+        run: |
+          i=${IMAGES:-'["ubuntu-26.04"]'}
+          p=${PARTS:-'["a1","a2","d","k"]'}
+          python3 -c 'import json, sys
+          v = json.loads(sys.argv[1])
+          ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
+          assert isinstance(v, list) and v and all(x in ok for x in v), v
+          w = json.loads(sys.argv[2])
+          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k") for x in w), w' "$i" "$p"
+          echo "images=$i" >> "$GITHUB_OUTPUT"
+          echo "parts=$p" >> "$GITHUB_OUTPUT"
+
+  record:
+    name: the agent through skyzfsd, ${{ matrix.part }}, ${{ matrix.image }}
+    needs: plan
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+        part: ${{ fromJSON(needs.plan.outputs.parts) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS and the ublk driver
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p agent-out
+          if ! net_try sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy libdevmapper-dev libudev-dev libclang-dev' > agent-out/setup-apt.log 2>&1; then
+            tail -n 40 agent-out/setup-apt.log
+            { echo "## Agent rig: the rig's own error, not a verdict"; echo
+              echo "Installing the packages failed in $NET_TRIES tries: $(net_why agent-out/setup-apt.log)"; } > agent-out/summary.md
+            exit 2
+          fi
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          if ! sudo modprobe ublk_drv; then
+            { echo "## Agent rig: the rig's own error, not a verdict"; echo
+              echo "No ublk driver on this kernel ($(uname -r))."; } > agent-out/summary.md
+            exit 2
+          fi
+          uname -r; sudo zfs version
+      # pgsty/minio, pinned as in the cut rig's upload stage.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && exit 0 || sleep 1
+          done
+          { echo "## Agent rig: the rig's own error, not a verdict"; echo
+            echo "MinIO did not answer in 60 s."; docker logs minio 2>&1 | tail -n 20; } > agent-out/summary.md
+          exit 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cut-daemon-${{ matrix.image }}
+      - name: Build skyzfsd with its test hooks
+        env:
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+        run: |
+          if [ -z "$DAEMON_REF" ]; then
+            cargo build --release --locked -p skyzfsd --features test-hooks
+            echo "SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          else
+            [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+            git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+            (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+            echo "SKYZFSD=$RUNNER_TEMP/daemon-src/target/release/skyzfsd" >> "$GITHUB_ENV"
+            { echo "## The daemon"; echo; echo "Built from $DAEMON_REF (input daemon_ref), not the checkout."; echo; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Build the agent with its test hooks, and skyzfs-nodeb
+        run: |
+          cargo build --release --locked -p skyzfs-agent-cli --features test-hooks
+          cargo build --locked -p skyzfs-nodeb
+      - name: The agent through skyzfsd, and check
+        env:
+          PART: ${{ matrix.part }}
+          POINTS: ${{ inputs.points || '' }}
+        run: |
+          case $PART in
+            a1) rec=aplain shard=1/2 ;;
+            a2) rec=aplain shard=2/2 ;;
+            d) rec=adaemon shard=1/1 ;;
+            k) rec=arare shard=1/1 ;;
+            *) echo "::error::not a part: $PART"; exit 64 ;;
+          esac
+          sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
+            CUT_AGENT="$PWD/target/release/skyzfs-agent" CUT_AGENT_SHARD="$shard" CUT_AGENT_POINTS="$POINTS" \
+            CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" \
+            SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
+            SKZ_S3_BUCKET="skyzfs-agent-${{ github.run_id }}-${{ github.run_attempt }}" \
+            AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
+            CUT_CHECK="python3 -I $PWD/tests/kernel/agent_check.py" \
+            bash tests/kernel/cut-record.sh "$PWD/agent-out" /mnt/skz-cut "$rec"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX agent-out 2>/dev/null || true
+          if [ -s agent-out/summary.md ]; then cat agent-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 tests/kernel/cut_summary.py agent-out "${{ matrix.image }}" "Agent rig (M2.T5), ${{ matrix.part }}" >> "$GITHUB_STEP_SUMMARY" \
+            || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: agent-rig-${{ matrix.image }}-${{ matrix.part }}
+          path: agent-out/
+          retention-days: 90

@@ -107,6 +107,10 @@
 # snapshots of the pool, and
 # DIR/ends.tsv gets each answer under the course's label for it, for
 # publish_check.py (their CUT_CHECK).
+# The agent rig's courses (skyzfs-agent-rig.yml, M2.T5 stage 1; in
+# agent-record.sh, which says what they do) are made then too, by name
+# only: aplain, adaemon and arare, with agent_check.py as their
+# CUT_CHECK.
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -179,8 +183,10 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
 PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist"
+# The agent rig's (skyzfs-agent-rig.yml; agent-record.sh), by name only.
+AGENT_NAMED="aplain adaemon arare"
 KNOWN=$ALL
-[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED"; }
+[ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED $AGENT_NAMED"; }
 RECS=${*:-$ALL}
 case $SERVER in
     log-writes) ;;
@@ -196,6 +202,9 @@ if [ "$UPLOAD" = 1 ]; then
 fi
 for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 for r in $RECS; do [[ " $KNOWN " == *" $r "* ]] || { echo "no recording $r (there are: $KNOWN)" >&2; exit 64; }; done
+# The agent rig's courses and their checks of what they need.
+# shellcheck source=tests/kernel/agent-record.sh
+. "$HERE/agent-record.sh"
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 # A kill -9 cuts a line of the request log on a page of the file
@@ -206,7 +215,7 @@ VOL=$WORK/vol; RUN=$WORK/run; SERVE_RC=""; HOLD_PID=""; WATCH_PID=""
 # The upload courses': extra options of the next serve, a function run
 # between the create and the first serve, the uploader's rest (drain), a
 # writer in the background.
-SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""
+SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRITER=""; AGENT_PID=""
 # Set while a course has taken object storage down (CUT_S3_DOWN): the
 # cleanup brings it back.
 S3_IS_DOWN=""
@@ -278,6 +287,7 @@ cleanup() {
     [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; }
     [ -z "$WATCH_PID" ] || { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
     [ -z "$WRITER" ] || { touch "$WORK/writer.stop"; kill "$WRITER" 2>/dev/null; }
+    [ -z "$AGENT_PID" ] || { kill -9 "$AGENT_PID" 2>/dev/null; wait "$AGENT_PID" 2>/dev/null; }
     [ -z "$S3_IS_DOWN" ] || bash -c "$S3_UP" > /dev/null 2>&1
     [ -z "$SERVE_PID" ] || kill -CONT "$SERVE_PID" 2>/dev/null
     timeout 120 zpool export -f "$POOL" 2>/dev/null
@@ -1966,6 +1976,7 @@ record() {
         pkillman) SERVE_ARGS=(--kill-at-upload manifest:1) ;;
         pkillpub) SERVE_ARGS=(--kill-at-upload publish:1) ;;
         pchannel) PRE_SERVE=ulease_other ;;
+        aplain|adaemon|arare) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
     esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
