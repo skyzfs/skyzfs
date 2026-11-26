@@ -153,8 +153,8 @@ cat > "$T/bin/zfs" << 'FAKE'
 [ -n "${FAKE_ZFS_CALLS:-}" ] && printf '%s\n' "$*" >> "$FAKE_ZFS_CALLS"
 printf '%s %s\n' "${LC_ALL:-unset}" "$*"
 [ "$1" = hold ] && [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
-# A snapshot call of more than one name refused, when asked.
-[ "$1" = snapshot ] && [ -n "${FAKE_SNAP_ONE:-}" ] && [ $# -gt 3 ] && { echo "cannot create snapshots" >&2; exit 1; }
+# A snapshot call refused, when asked: from that name on.
+[ "$1" = snapshot ] && [ -n "${FAKE_SNAP_FAIL:-}" ] && [ "$3" = "$FAKE_SNAP_FAIL" ] && { echo "cannot create snapshots : out of space" >&2; exit 1; }
 [ "$1" = list ] && exit "${FAKE_LIST_RC:-0}"
 # The snapshot program's answer, when one is given.
 case "$*" in
@@ -164,6 +164,14 @@ exit 0
 FAKE
 cat > "$T/bin/zpool" << 'FAKE'
 #!/bin/sh
+# The pool's space, as retain reads it: FAKE_POOL_FREE bytes free, each
+# read logged to FAKE_ZPOOL_LISTS.
+case "$*" in
+    "list -Hp -o "*)
+        [ -n "${FAKE_ZPOOL_LISTS:-}" ] && printf '%s\n' "$*" >> "$FAKE_ZPOOL_LISTS"
+        [ "$4" = free ] && echo "${FAKE_POOL_FREE:-34359738368}" || printf '4096\t%s\n' "${FAKE_POOL_FREE:-34359738368}"
+        exit 0 ;;
+esac
 printf '%s %s\n' "${LC_ALL:-unset}" "$*"
 # Every call, with its time, when a log is given.
 [ -n "${FAKE_ZPOOL_CALLS:-}" ] && printf '%s %s\n' "$(date +%s.%N)" "$*" >> "$FAKE_ZPOOL_CALLS"
@@ -277,14 +285,15 @@ check "pin scale's get of the pairs" "$(words scale-3-take-cli-get-pairs)" "zfs 
 check "scale's reads after the take, in order" "$(order scale-3-take-cli scale-3-take-cli-members)$(order scale-3-take-cli-members scale-3-take-cli-get)$(order scale-3-take-cli-get scale-3-take-cli-get-pairs)$(order scale-3-take-cli-get-pairs scale-3-take-cli-get-json)$(order scale-3-take-cli-get-json scale-3-take-cli-list)$(order scale-3-take-cli-list scale-3-take-cli-full)" yesyesyesyesyesyes
 check "scale's get in JSON: no load beside it" "$([ -e "$OUT/scale-3-take-cli-get-json/writer.tsv" ] && echo yes || echo no)" no
 # With retained snapshots: the records named scale-N-sK, the snapshots
-# taken in one call before the take, and said.
+# taken one name a call before the take, and said.
 check "scale 3:2: its reads" "$(OUT=$T/pins-s words scale-3-s2-take-cli-list)/$(OUT=$T/pins-s words scale-3-s2-take-cli-get-pairs)" \
     "$LIST skzqs /zfs get -r -H -p -t filesystem,volume -s local -o name,property all skzqs "
 check "scale 3:2: the retained snapshots, then the take" \
     "$(grep -n '^snapshot ' "$T/zfs-s.calls" | grep -v '@t$' | tr '\n' '|')" \
-    "$(printf '%s|' "$(grep -n '^snapshot -r skzqs@r1 skzqs@r2$' "$T/zfs-s.calls")" "$(grep -n '^snapshot -r skzqs@c$' "$T/zfs-s.calls")")"
-check "scale 3:2: the snapshots before the take" "$(grep -n '^snapshot ' "$T/zfs-s.calls" | grep -v '@t$' | head -n 1 | cut -d: -f2-)" "snapshot -r skzqs@r1 skzqs@r2"
-check "scale 3:2: said" "$(grep -c '^scale 3-s2: [0-9]* snapshots in the pool (2 of each of 4 datasets asked, 2500 names a call) made in [0-9]* s$' "$T/pins-s/about.txt")" 1
+    "$(printf '%s|' "$(grep -n '^snapshot -r skzqs@r1$' "$T/zfs-s.calls")" "$(grep -n '^snapshot -r skzqs@r2$' "$T/zfs-s.calls")" "$(grep -n '^snapshot -r skzqs@c$' "$T/zfs-s.calls")")"
+check "scale 3:2: the snapshots before the take" "$(grep -n '^snapshot ' "$T/zfs-s.calls" | grep -v '@t$' | head -n 2 | cut -d: -f2- | tr '\n' '|')" "snapshot -r skzqs@r1|snapshot -r skzqs@r2|"
+check "scale 3:2: said" "$(grep -c '^scale 3-s2: [0-9]* snapshots in the pool (2 of each of 4 datasets asked, one name a call) made in [0-9]* s$' "$T/pins-s/about.txt")" 1
+check "scale 3:2: on a pool of 32 GiB" "$(grep -c 'truncate -s 32G' "$HERE/zfs-cli-record.sh")" 1
 for r in take-cli-get take-cli-get-pairs take-cli-list; do
     check "lines said: $r" "$(grep -c "^scale: scale-3-$r: $(wc -l < "$OUT/scale-3-$r/stdout") lines$" "$OUT/about.txt")" 1
 done
@@ -737,18 +746,29 @@ check "during: the command ended first" "$(cat "$OUT/d-bg/rc" 2>/dev/null)" 0
 check "during: watched" "$(cat "$OUT/d-st/note" "$OUT/d-st-g/note")" $'caught at try 1\ncaught at try 1'
 LIMIT=5
 
-# retain: as many names a call as make about 10000 snapshots; one a
-# call where a call of more is refused.
-retained() { # N K [FAKE_SNAP_ONE]
-    rm -f "$T/r.calls"
-    FAKE_SNAP_ONE=${3:-} FAKE_ZFS_CALLS=$T/r.calls retain "r$1" skzqs "$1" "$2" > /dev/null 2>&1
+# retain: one name a call (ZFS refuses two snapshots of one dataset in
+# a call); the space read every 100 calls and said at each tenth; a
+# stop under the floor, and at a call that fails.
+retained() { # N K
+    rm -f "$T/r.calls" "$T/r.lists"
+    FAKE_ZFS_CALLS=$T/r.calls FAKE_ZPOOL_LISTS=$T/r.lists retain "r$1-$2" skzqs "$1" "$2" > /dev/null 2>&1
     grep '^snapshot ' "$T/r.calls" | tr '\n' '|'
 }
-check "retain: all in one call" "$(retained 3 3)" "snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|"
-check "retain: two names a call at 4999 datasets" "$(retained 4999 3)" "snapshot -r skzqs@r1 skzqs@r2|snapshot -r skzqs@r3|"
-check "retain: one name a call once more is refused" "$(retained 3 3 1)" \
-    "snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|"
-check "retain: the refusal said" "$(grep -c '^scale r3: zfs snapshot -r of 2500 names ended 1 (retain-skzqs-r3.log); one name a call$' "$OUT/about.txt")" 1
+check "retain: one name a call" "$(retained 3 3)" "snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|"
+check "retain: said, with what the pool lists" "$(grep -c '^scale r3-3: [0-9]* snapshots in the pool (3 of each of 4 datasets asked, one name a call) made in [0-9]* s$' "$OUT/about.txt")" 1
+retained 3 250 > /dev/null
+check "retain: the space at each tenth" "$(grep '^scale r3-250: retained ' "$OUT/about.txt" | sed 's/ at [0-9]* s:/ at S s:/' | tr '\n' '|')" \
+    "$(for i in 25 50 75 100 125 150 175 200 225 250; do printf 'scale r3-250: retained @r%s at S s: allocated and free 4096 34359738368|' "$i"; done)"
+check "retain: free read before calls 1, 101 and 201" "$(grep -c -- '-o free skzqs$' "$T/r.lists")" 3
+check "retain: the tenths read" "$(grep -c -- '-o alloc,free skzqs$' "$T/r.lists")" 10
+check "retain: a step of 1 under ten" "$(retained 3 2 > /dev/null; grep -c '^scale r3-2: retained @r[12] ' "$OUT/about.txt")" 2
+check "retain: none under the floor" "$(FAKE_POOL_FREE=8589934591 retained 3 3)" ""
+check "retain: the floor said" "$(grep -c '^scale r3-3: [0-9]* snapshots in the pool (3 of each of 4 datasets asked, one name a call) made in [0-9]* s (stopped before @r1: 8589934591 bytes free, under 8589934592)$' "$OUT/about.txt")" 1
+check "retain: at the floor, made" "$(FAKE_POOL_FREE=8589934592 retained 3 1)" "snapshot -r skzqs@r1|"
+check "retain: a call that fails stops it" "$(FAKE_SNAP_FAIL=skzqs@r2 retained 3 4)" "snapshot -r skzqs@r1|snapshot -r skzqs@r2|"
+check "retain: the failure said" "$(grep -c '^scale r3-4: .* (stopped: zfs snapshot -r of @r2 ended 1, retain-skzqs-r3-4.log)$' "$OUT/about.txt")" 1
+check "retain: none once the budget is spent" "$(SCALE_END=$(($(date +%s) - 1)) retained 3 5)" ""
+check "retain: the budget said" "$(grep -c '^scale r3-5: .* made in [0-9]* s (stopped: the budget was spent)$' "$OUT/about.txt")" 1
 
 # scale_all: at most three entries, each once; a count at most 100000,
 # and N:K at most 200000 snapshots in all.
@@ -763,6 +783,10 @@ scale_all 10:1000 10:1000 10:02 10:x 0:5 100:2000 10:10000 99999:3 5:0 > /dev/nu
 check "scale_all: N:K entries run" "$(tr '\n' ' ' < "$T/scaled")" "10:1000 10:10000 5:0 "
 check "scale_all: N:K not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
 check "scale_all: too many snapshots, said" "$(grep -c 'makes more than 200000 snapshots' "$OUT/about.txt")" 2
+rm -f "$T/scaled"
+scale_all 1:20001 1:20000 1:100000 > /dev/null
+check "scale_all: K at most 20000" "$(tr '\n' ' ' < "$T/scaled")" "1:20000 "
+check "scale_all: K over 20000, said" "$(grep -c 'retains more than 20000 of each dataset; not run$' "$OUT/about.txt")" 2
 for v in abc 012 -1; do
     ZCR_SCALE_LUA_MAX=$v
     scale_all 5 > /dev/null

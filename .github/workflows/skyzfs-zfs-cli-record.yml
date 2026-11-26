@@ -18,7 +18,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000; an entry N:K also gives each dataset K retained snapshots before the take (e.g. '10:10000', at most 200000 snapshots in all; records scale-N-sK): the snapshot program, the holds, destroy -r, zfs snapshot -r and the manifest's reads after it (the members program, zfs get of the local properties, zfs list, the full members program) on a pool with that many, timed, with, beside each take and each read, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs (beside the full read at 1000 only); no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000; an entry N:K also gives each dataset K retained snapshots before the take, one zfs snapshot -r a snapshot, stopped while 8 GiB of the 32 GiB pool is free (e.g. '10:10000', K at most 20000, at most 200000 snapshots in all; records scale-N-sK): the snapshot program, the holds, destroy -r, zfs snapshot -r and the manifest's reads after it (the members program, zfs get of the local properties, zfs list, the full members program) on a pool with that many, timed, with, beside each take and each read, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs (beside the full read at 1000 only); no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
         default: ""
       scale_lua_max:
         description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
@@ -143,7 +143,8 @@ jobs:
             case $n in 0*|''|*:*) echo "::error::scale: not a count: $e"; exit 64 ;; esac
             case $k in 0) ;; 0*|''|*:*) echo "::error::scale: not a count of snapshots: $e"; exit 64 ;; esac
             if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then echo "::error::scale: $n is more than 100000"; exit 64; fi
-            if [ "${#k}" -gt 6 ] || [ $(((n + 1) * k)) -gt 200000 ]; then echo "::error::scale: $e makes more than 200000 snapshots"; exit 64; fi
+            if [ "${#k}" -gt 6 ] || [ "$k" -gt 20000 ]; then echo "::error::scale: $e retains more than 20000 of each dataset"; exit 64; fi
+            if [ $(((n + 1) * k)) -gt 200000 ]; then echo "::error::scale: $e makes more than 200000 snapshots"; exit 64; fi
           done
           case $ZCR_SCALE_LUA_MAX in
             *[!0-9]*|0?*) echo "::error::scale_lua_max is a count: $ZCR_SCALE_LUA_MAX"; exit 64 ;;

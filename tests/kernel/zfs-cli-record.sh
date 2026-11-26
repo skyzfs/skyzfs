@@ -53,7 +53,8 @@
 #           and on it, each with its wall time in secs (with an entry
 #           N:K, scale-N-sK: each dataset also has K retained snapshots,
 #           @r1 to @rK, taken before the steps below, so that the reads
-#           that list every snapshot read N+1 times K more; #157's R1):
+#           that list every snapshot read N+1 times K more, on a pool
+#           of 32 GiB, as many as leave 8 GiB free; #157's R1):
 #             count             zfs list -r -H -o name -t
 #                               filesystem,volume P, the adapter's count
 #             snapshot          the snapshot program at @t (only with
@@ -790,8 +791,10 @@ record_none() { # prefix pool
 
 # scale_all ENTRY...: scale for each entry, at most three, each once,
 # all within ZCR_SCALE_BUDGET seconds. An entry is a count N of file
-# systems, at most 100000, or N:K with K retained snapshots of each, at
-# most 200000 snapshots in all ((N+1)*K).
+# systems, at most 100000, or N:K with K retained snapshots of each, K
+# at most 20000 (one call each, about 0.12 s a call with two datasets in
+# run 45774416615: some 40 minutes at most), at most 200000 snapshots in
+# all ((N+1)*K).
 SCALE_END=0
 scale_all() {
     local e n r seen=" " k=0
@@ -822,7 +825,11 @@ scale_all() {
             echo "scale: $n is more than 100000; not run" >> "$OUT/about.txt"
             continue
         fi
-        if [ "${#r}" -gt 6 ] || [ $(((n + 1) * r)) -gt 200000 ]; then
+        if [ "${#r}" -gt 6 ] || [ "$r" -gt 20000 ]; then
+            echo "scale: $e retains more than 20000 of each dataset; not run" >> "$OUT/about.txt"
+            continue
+        fi
+        if [ $(((n + 1) * r)) -gt 200000 ]; then
             echo "scale: $e makes more than 200000 snapshots; not run" >> "$OUT/about.txt"
             continue
         fi
@@ -869,6 +876,18 @@ stop_bg() {
     return 0
 }
 
+# began FILE...: until each FILE has something in it, at most 10 s.
+began() {
+    local i=0 f ok
+    while [ "$i" -lt 100 ]; do
+        ok=1
+        for f in "$@"; do [ -s "$f" ] || ok=0; done
+        [ "$ok" = 0 ] || return 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+
 # writing NAME DIR POOL COMMAND...: the record NAME, made by COMMAND (rec
 # or program), with three things beside it, from ZCR_WRITER_MARGIN
 # seconds (default 2) before COMMAND to as long after:
@@ -902,6 +921,10 @@ writing() {
     fi
     python3 "$HERE/txg_probe.py" probe "${ZCR_KSTAT_DIR:-/proc/spl/kstat/zfs}/$pool/txgs" "$pool" "$log.txg.tsv" > /dev/null 2> "$log.txg.err" &
     qpid=$!
+    # The margin runs from when the logs have begun, not from when their
+    # programs were started: on a loaded machine a start can take longer
+    # than a short margin.
+    if [ -n "$fpid" ]; then began "$log.tsv" "$log.fill.tsv" "$log.txg.tsv"; else began "$log.tsv" "$log.txg.tsv"; fi
     sleep "$margin"
     t0=$(date +%s.%N)
     "$@"
@@ -984,43 +1007,50 @@ fill_span() {
 
 # retain LABEL POOL N K: K snapshots of the root, recursive (@r1 to
 # @rK), so that each of its N+1 datasets has K that no take names, for
-# the reads that list every snapshot (#157's R1). zfs snapshot -r takes
-# as many names a call as make about 10000 snapshots, or one name a call
-# where the first call with more is refused; each call is under the
-# scale's limit. about.txt says how many the pool then has, and how
-# long they took.
+# the reads that list every snapshot (#157's R1). One name a call: ZFS
+# refuses two snapshots of one dataset in one call ("multiple snapshots
+# of same fs not allowed", run 45774416615). Each call is under the
+# scale's limit. It stops, before a call, once the pool has less than
+# ZCR_RETAIN_FLOOR bytes free (8 GiB), read every 100 calls, so that the
+# takes and writers after it have room: in run 45774416615 a 16 GiB pool
+# was full at 9729 of each of 2 datasets, and the takes after it failed.
+# At each tenth of K and at the last, about.txt gets the pool's
+# allocated and free bytes and the time so far, which show how the
+# space grows with K; at the end, how many the pool has and how long
+# they took.
 retain() {
-    local lbl=$1 p=$2 n=$3 k=$4 per i j t0 rc cut="" have names
-    per=$((10000 / (n + 1)))
-    [ "$per" -ge 1 ] || per=1
+    local lbl=$1 p=$2 n=$3 k=$4 i=1 t0 rc cut="" have step free floor=${ZCR_RETAIN_FLOOR:-8589934592}
+    step=$((k / 10))
+    [ "$step" -ge 1 ] || step=1
     t0=$(date +%s)
-    i=1
     while [ "$i" -le "$k" ]; do
         if ! scale_limit; then
             cut=" (stopped: the budget was spent)"
             break
         fi
-        names=()
-        j=$i
-        while [ "$j" -le "$k" ] && [ "$j" -lt $((i + per)) ]; do
-            names+=("$p@r$j")
-            j=$((j + 1))
-        done
-        rc=0
-        lim "$LIMIT" zfs snapshot -r "${names[@]}" >> "$OUT/retain-$p-$lbl.log" 2>&1 || rc=$?
-        if [ "$rc" != 0 ] && [ "$i" = 1 ] && [ "$per" -gt 1 ]; then
-            echo "scale $lbl: zfs snapshot -r of $per names ended $rc (retain-$p-$lbl.log); one name a call" >> "$OUT/about.txt"
-            per=1
-            continue
+        if [ $(((i - 1) % 100)) = 0 ]; then
+            free=$(zpool list -Hp -o free "$p" 2> /dev/null)
+            case $free in
+                '' | *[!0-9]*) ;;
+                *) if [ "$free" -lt "$floor" ]; then
+                    cut=" (stopped before @r$i: $free bytes free, under $floor)"
+                    break
+                fi ;;
+            esac
         fi
+        rc=0
+        lim "$LIMIT" zfs snapshot -r "$p@r$i" >> "$OUT/retain-$p-$lbl.log" 2>&1 || rc=$?
         if [ "$rc" != 0 ]; then
-            cut=" (stopped: zfs snapshot -r of @r$i to @r$((j - 1)) ended $rc, retain-$p-$lbl.log)"
+            cut=" (stopped: zfs snapshot -r of @r$i ended $rc, retain-$p-$lbl.log)"
             break
         fi
-        i=$j
+        if [ $((i % step)) = 0 ] || [ "$i" = "$k" ]; then
+            echo "scale $lbl: retained @r$i at $(($(date +%s) - t0)) s: allocated and free $(zpool list -Hp -o alloc,free "$p" 2> /dev/null | tr '\t' ' ')" >> "$OUT/about.txt"
+        fi
+        i=$((i + 1))
     done
     have=$(lim 600 zfs list -H -t snapshot -o name -r "$p" 2> /dev/null | wc -l)
-    echo "scale $lbl: $have snapshots in the pool ($k of each of $((n + 1)) datasets asked, $per names a call) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
+    echo "scale $lbl: $have snapshots in the pool ($k of each of $((n + 1)) datasets asked, one name a call) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
 }
 
 # scale N [K]: a pool with N file systems under its root, and the adapter's
@@ -1037,7 +1067,8 @@ scale() {
         return 0
     fi
     df -h "$WORK" 2>&1 | sed "s/^/scale $lbl: df: /" >> "$OUT/about.txt"
-    truncate -s 16G "$WORK/scale.img"
+    # Retained snapshots take room of their own (retain).
+    if [ "$k" = 0 ]; then truncate -s 16G "$WORK/scale.img"; else truncate -s 32G "$WORK/scale.img"; fi
     if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$p" \
         -O compression=off "$p" "$WORK/scale.img" > "$OUT/create-$p-$lbl.log" 2>&1; then
         echo "scale $lbl: zpool create failed (create-$p-$lbl.log)" >> "$OUT/about.txt"
