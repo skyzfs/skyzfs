@@ -432,6 +432,19 @@ check "full read beside: its count still said" "$(grep -c '^scale: scale-11-take
 check "full read beside: settled after it" "$(grep -Ec ' settled=[0-9]+\.[0-9]{3} settle_rc=0$' "$OUT/scale-11-take-cli-full/fill")" 1
 check "full read beside: empty list, none" "$([ -e "$OUT/scale-12-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-12-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
 check "full read beside: the takes' writers as before" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-snapshot scale-11-take-cli scale-11-take-cli-full scale-12-snapshot scale-12-take-cli "
+# A count that is part of a listed one is not listed (11 is in 110), and
+# an empty list is none, even at the default's own count.
+OUT=$T/beside-more
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+export FAKE_LIST_RC=1 FAKE_MOUNTED=1
+ZCR_SCALE_FULL_BESIDE="110" scale 11 > /dev/null 2> "$T/beside-more.err"
+ZCR_SCALE_FULL_BESIDE="" scale 1000 > /dev/null 2>> "$T/beside-more.err"
+unset FAKE_LIST_RC FAKE_MOUNTED
+check "full read beside: no name twice, again" "$(grep -c twice "$T/beside-more.err")" 0
+check "full read beside: not at a count inside a listed one" "$([ -e "$OUT/scale-11-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-11-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+check "full read beside: an empty list, none at 1000" "$([ -e "$OUT/scale-1000-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-1000-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+check "full read beside: the takes still have theirs" "$([ -e "$OUT/scale-1000-take-cli/writer.tsv" ] && echo yes || echo no)" yes
 OUT=$T/pins
 # In record_pool too.
 OUT=$T/partial
