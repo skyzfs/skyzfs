@@ -301,7 +301,24 @@ within rustfmt's width, so the first look's point is met.
 Run on rustc 1.100.0 (current stable after `rustup update stable`),
 over the whole workspace. The target was cleaned between feature sets.
 
-GATES_TABLE
+`cargo fmt --all -- --check`: clean.
+
+| Features | `clippy --workspace --all-targets -D warnings` | `test --workspace` | `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` |
+|---|---|---|---|
+| none | clean | 1984 passed, 0 failed, 16 ignored | clean |
+| `skyzfsd/test-hooks,skyzfs-local/test-hooks` | clean | 2042 passed, 0 failed, 16 ignored | clean |
+| `skyzfs-ublk-sys/control-test-program` | clean | 2008 passed, 0 failed, 18 ignored | clean |
+| `skyzfs-agent-cli/test-hooks` | clean | 1984 passed, 0 failed, 16 ignored | clean |
+
+These equal the answer's figures. Each is 16f3b3b's plus the five new
+tests.
+
+`cargo doc -p skyzfs-agent -p skyzfs-agent-cli --no-deps` with
+`-D warnings` is clean plain and with `skyzfs-agent-cli/test-hooks`.
+With the other two feature sets, cargo refuses that command line ("none
+of the selected packages contains these features"). That is my script's
+error, not a gate: the workspace's doc with each of them, above,
+covers the agent's crates.
 
 The host tests (`cargo test -p skyzfs-agent --lib host::`) ran twenty
 times on the plain build: no failed run.

@@ -1,0 +1,26 @@
+head 28782cddb8423a5a05c9d34a60266e0075e32c8d
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
+test plain rc=0 1984 passed 0 failed 16 ignored
+doc workspace plain rc=0
+doc agent crates plain rc=0
+host tests x20: 0 failed runs (test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 219 filtered out; finished in 1.06s)
+build bin rc=0
+/dev/vda        252G   31G  8.1G  80% /
+clippy skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+test skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0 2042 passed 0 failed 16 ignored
+doc workspace skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+doc agent crates skyzfsd_test-hooks+skyzfs-local_test-hooks rc=101
+/dev/vda        252G   31G  8.3G  79% /
+clippy skyzfs-ublk-sys_control-test-program rc=0
+test skyzfs-ublk-sys_control-test-program rc=0 2008 passed 0 failed 18 ignored
+doc workspace skyzfs-ublk-sys_control-test-program rc=0
+doc agent crates skyzfs-ublk-sys_control-test-program rc=101
+/dev/vda        252G   31G  8.2G  79% /
+clippy skyzfs-agent-cli_test-hooks rc=0
+test skyzfs-agent-cli_test-hooks rc=0 1984 passed 0 failed 16 ignored
+doc workspace skyzfs-agent-cli_test-hooks rc=0
+doc agent crates skyzfs-agent-cli_test-hooks rc=0
+/dev/vda        252G   29G   11G  74% /
+done
