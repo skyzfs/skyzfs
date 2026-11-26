@@ -1,0 +1,27 @@
+N12a first_run only for a reach not made KILLED
+N13a first_run not for a reach not made KILLED
+S13a new_points first reach only KILLED
+K01 new_points from the start KILLED
+K02 new_points set difference (old) KILLED
+K03 new_points no last reach KILLED
+K04 NEW_REACHES 2 KILLED
+K05 NEW_REACHES 4 KILLED
+K06 last is the first reach KILLED
+K07 skip the first new point KILLED
+K08 an empty rare list is an error SURVIVED
+K09 last over the new part only KILLED
+K10 rig-error.tsv no exit 2 KILLED
+K11 rig-error.tsv ignored KILLED
+K12 points-error INFO KILLED
+K13 verdicts only for listed cases KILLED
+K14 verdicts as premises KILLED
+K15 verdict name not checked KILLED
+K16 case rig error silent KILLED
+K17 case rig error judged further KILLED
+K18 gone/both with no kill not an error KILLED
+K19 gone/both with no kill judged on FIRST_RC 0 KILLED
+K20 stays_absent never fails KILLED
+K21 stays_absent for every T SURVIVED
+K22 stays_absent: node B failure read as absent SURVIVED
+K23 stays_absent only without snaprow file KILLED
+K24 stays_absent skipped when the retry printed T SURVIVED

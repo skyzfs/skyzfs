@@ -1,0 +1,29 @@
+# R01-R13: plant2.py on b99f21a, retain.py (stopped after R13; R14 on in the second run)
+R01 per: 10000/N KILLED FAIL: scale 3:2: said: got '0', want '1' | FAIL: retain: the refusal said: got '0', want '1'
+R02 per may be 0 SURVIVED 
+R03 no fallback: stop KILLED FAIL: retain: one name a call once more is refused: got 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|', want 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|'
+R04 fallback on any batch SURVIVED 
+R05 fallback skips the first batch KILLED FAIL: retain: one name a call once more is refused: got 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|', want 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|'
+R06 one name too many a batch KILLED FAIL: retain: two names a call at 4999 datasets: got 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|', want 'snapshot -r skzqs@r1 skzqs@r2|snapshot -r skzqs@r3|' | FAIL: retain: one name a call once more is refused: got 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|snapshot -r skzqs@r1 skzqs@r2|', want 'snapshot
+R07 the last name dropped KILLED(timeout) 
+R08 a later failure goes on SURVIVED 
+R09 no budget check SURVIVED 
+R10 no time limit a call SURVIVED 
+R11 not recursive KILLED FAIL: scale 3:2: the retained snapshots, then the take: got '6:snapshot skzqs@r1 skzqs@r2|17:snapshot -r skzqs@c|', want '|17:snapshot -r skzqs@c|' | FAIL: scale 3:2: the snapshots before the take: got 'snapshot skzqs@r1 skzqs@r2', want 'snapshot -r skzqs@r1 skzqs@r2'
+R12 the line says the first per SURVIVED 
+R13 count not recursive SURVIVED 
+# R14-R18, A01-A10: plant2.py on b99f21a, retain_b.py
+R14 retain always SURVIVED 
+R15 retain never KILLED FAIL: scale 3:2: the retained snapshots, then the take: got '15:snapshot -r skzqs@c|', want '|15:snapshot -r skzqs@c|' | FAIL: scale 3:2: the snapshots before the take: got 'snapshot -r skzqs@c', want 'snapshot -r skzqs@r1 skzqs@r2'
+R16 label always -sK KILLED FAIL: pin scale snapshot: got '', want 'zfs program -j -t 100000000 -m 104857600 skzqs - skzqs t skyzfs:assist ' | FAIL: pin scale's own snapshot: got '', want 'zfs snapshot -r skzqs@t '
+R17 retain after the steps KILLED FAIL: scale 3:2: the retained snapshots, then the take: got '15:snapshot -r skzqs@c|', want '|15:snapshot -r skzqs@c|' | FAIL: scale 3:2: the snapshots before the take: got 'snapshot -r skzqs@c', want 'snapshot -r skzqs@r1 skzqs@r2'
+R18 same names every batch KILLED FAIL: retain: two names a call at 4999 datasets: got 'snapshot -r skzqs@r1 skzqs@r2|snapshot -r skzqs@r1|', want 'snapshot -r skzqs@r1 skzqs@r2|snapshot -r skzqs@r3|' | FAIL: retain: one name a call once more is refused: got 'snapshot -r skzqs@r1 skzqs@r2 skzqs@r3|snapshot -r skzqs@r1|snapshot -r sk
+A01 K 0 refused KILLED FAIL: scale_all: the counts run: got '', want '5:0 7:0 8:0 ' | FAIL: scale_all: what was not run, said: got '9', want '6'
+A02 K with a leading 0 accepted KILLED FAIL: scale_all: N:K entries run: got '10:1000 10:02 10:10000 ', want '10:1000 10:10000 5:0 '
+A03 bound 2000000 KILLED FAIL: scale_all: N:K entries run: got '10:1000 100:2000 10:10000 ', want '10:1000 10:10000 5:0 ' | FAIL: scale_all: too many snapshots, said: got '0', want '2'
+A04 no length check of K SURVIVED 
+A05 seen by N alone KILLED FAIL: scale_all: N:K entries run: got '10:1000 5:0 ', want '10:1000 10:10000 5:0 ' | FAIL: scale_all: N:K not run, said: got '7', want '6'
+A07 K the last field SURVIVED 
+A08 an empty N accepted SURVIVED 
+A09 an empty K accepted SURVIVED 
+A10 bound N*K KILLED FAIL: scale_all: N:K entries run: got '10:1000 100:2000 10:10000 ', want '10:1000 10:10000 5:0 ' | FAIL: scale_all: too many snapshots, said: got '1', want '2'

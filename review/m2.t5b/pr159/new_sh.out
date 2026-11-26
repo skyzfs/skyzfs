@@ -1,0 +1,38 @@
+S13b rare: first three reaches in the shell again KILLED
+S20a await_agent: no verdict KILLED
+S21a vrun: the run dir itself SURVIVED
+U01 verdict: tabs kept KILLED
+U02 case_error overwrites KILLED
+U03 await_agent: no timeout status KILLED
+U04 await_agent: pid kept KILLED
+U05 recover: no SIGCONT SURVIVED
+U06 recover: store not thawed KILLED
+U07 recover: verdict even after the rig error KILLED
+U08 recover: daemon not served again KILLED
+U09 recover: status never read KILLED
+U10 reserve: non-zero stop not a verdict KILLED
+U11 reserve: hung stop not killed SURVIVED
+U12 reserve: hung stop not a verdict SURVIVED
+U13 acase: recover not called SURVIVED
+U14 destroy: goes on after its error SURVIVED
+U15 destroy: log kept on error SURVIVED
+U16 gone: log kept on error SURVIVED
+U17 frozen: no verdict, settle KILLED
+U18 dhook: no asked verdict SURVIVED
+U19 late: no asked verdict, goes on SURVIVED
+U20 late: no landed verdict SURVIVED
+U21 dhook: lost pid not an error SURVIVED
+U22 agent_begin: no hook KILLED
+U23 agent_judged: status lost KILLED
+U24 agent_judged: no case in the line KILLED
+U25 agent_judged: no checked line KILLED
+U26 agent_judged: none is 0 KILLED
+U27 aplain: no points-error line KILLED
+U28 arare: no points-error line KILLED
+U29 agent_begin: lists of errors kept KILLED
+U30 serve_log: always serve-K SURVIVED
+V01 rig_error: hook 0 passes SURVIVED
+V02 rig_error: hook not cleared SURVIVED
+V03 rig_error: hook not called KILLED
+V04 rig_error: no line KILLED
+V05 rig_error: hook any non-zero kept SURVIVED

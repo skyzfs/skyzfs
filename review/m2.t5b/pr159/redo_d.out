@@ -1,0 +1,10 @@
+T01 published: no gone path (old code) KILLED
+T02 published: substring match KILLED
+T03 published: gone line not written KILLED
+T04 published: a list that fails goes on KILLED
+T05 published: no per-case early return KILLED
+T06 published: snapshot of a descendant counts KILLED
+T08 published: gone line without the case KILLED
+T09 published: gone line overwrites SURVIVED
+T13 published: list error message lost KILLED
+T14 published: gone check after the read (rig error) KILLED

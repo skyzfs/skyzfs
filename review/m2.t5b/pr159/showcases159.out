@@ -1,0 +1,6 @@
+--- the retry published T's name (a right run): exit 1
+    obs_A-intent-before-1_outcome ('INFO', '[server] x7: published')
+    pin_A-intent-before-1_criterion ('ok', '[kernel and server] x7 published')
+    pin_A-intent-before-1_stays_absent ('FAILED', '[kernel and server] node B had no snap/x7 after the settle and has it now, on 8cf3ebbdacdd')
+    pin_x7_row ('ok', '[server] ref and row on 8cf3ebbdacdd: cut 10 of group 96 (createtxg 95), which opens as itself')
+    pin_x7_nodeb ('ok', '[kernel and server] refs ok: refs of snap/x7; content ok: content of snap/x7; import ok: import of snap/x7; snapshot ok: snapshot of snap/x7; mount ok: mount of snap/x7; files ok: files of snap/x7; copies ok: copies of snap/x7')

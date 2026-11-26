@@ -1,0 +1,26 @@
+S03 case_name empty name SURVIVED
+S05 point_reached effect only SURVIVED
+S13 rare first three BADPLANT 0
+S14 retry always KILLED
+S15 retry never SURVIVED
+S16 dhook no freeze SURVIVED
+S17 holds not read before release SURVIVED
+S18 destroy keeps hold SURVIVED
+S20 await_agent no rig error BADPLANT 0
+S21 arun plain run BADPLANT 0
+S22 settle without age SURVIVED
+S23 cases.tsv kill dash SURVIVED
+T01 published: no gone path (old code) KILLED
+T02 published: substring match KILLED
+T03 published: gone line not written KILLED
+T04 published: a list that fails goes on KILLED
+T05 published: no per-case early return KILLED
+T06 published: snapshot of a descendant counts KILLED
+T07 agent_begin: gone file not reset KILLED
+T10 adump: status lost KILLED
+T11 adump: stderr into the dump KILLED
+T12 record-after not dumped KILLED
+T20 sweep: first publish not made KILLED
+T21 aplain: traced status a rig error again KILLED
+T30 both: status not kept KILLED
+T31 both: daemon not killed, status 137 written KILLED
