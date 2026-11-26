@@ -83,21 +83,21 @@
 //! landed) before the publish's step has made it on the earlier cut. The
 //! killed serve would have made it there; the earlier cut was let go
 //! before the kill, and a new uploader knows only the cuts it committed
-//! or found committed since it began, so after the restart the publish
-//! asked again is made on the cut the kill line names (reasoned from the
-//! code, not run). The course is still a kill between the acceptance and
-//! the ref, at a cut that comes to carry publish N. A rig that compares
-//! the kill line's cut with the cut the snapshot's row names after the
-//! restart sees the same cut in this course. Under `carry-swap`, a
-//! difference is a finding against the daemon: the named cut has
-//! committed and was not let go, so it is found committed after the
-//! restart. Under `carry-put` the named cut has not committed at the
-//! kill, and the restarted serve may abandon it (at the bound, or where
-//! its read or sync fails); the publish then lands on a later cut, which
-//! the design allows (§5.2, the lead's Q2 of M2.5;
-//! `skyzfs_upload::publish`'s docs). So under `carry-put` a difference is
-//! a finding only where the restarted serve did not abandon the cut the
-//! kill line names (D1 of the review of #150, the lead's ruling).
+//! or found committed since it began (reasoned from the code, not run).
+//! The course is still a kill between the acceptance and the ref, at a
+//! cut that comes to carry publish N.
+//!
+//! After the restart the cut the snapshot's row names need not be the
+//! one the kill line names, under either kill point (the lead's ruling,
+//! revised on the agent rig's first run, #158; it supersedes D1 of the
+//! review of #150). After a take-over the agent counts anew and asks
+//! again with a later *C*, so the row moves, as it may, to the first cut
+//! after the last accepted request for the name: count above that
+//! request's *C*, group at or above its *G*, opening as itself (§5.2,
+//! the lead's Q2 of M2.5; `skyzfs_upload::publish`'s docs). A difference
+//! from the kill line's cut is information. The finding against the
+//! daemon is a row that names a cut older than the kill line's, or a
+//! `snap/T` that node B does not verify.
 //!
 //! The kill line names the cut chosen by its number and group. The hook
 //! also says on standard error, without killing, when it arms (publish N

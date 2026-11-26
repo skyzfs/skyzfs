@@ -1298,8 +1298,8 @@ fn publish_step(driver: &mut Rig, seen: &mut Vec<String>) {
 /// longer than the cut's turns: cut 8 is checked, read (chosen) and
 /// committed before the publish's transaction. The hook kills at cut 8,
 /// and the publish's next step would make it on cut 7. No fault is
-/// needed. (After the restart, the publish asked again is made on cut 8,
-/// the cut the kill line names: the module docs.)
+/// needed. (After the restart the row may name cut 8, the cut the kill
+/// line names, or a later one, never an older one: the module docs.)
 #[test]
 fn the_uploaders_turns_can_have_the_hook_kill_at_a_cut_after_the_carrier() {
     for kill in [KillAt::CarrySwap(1), KillAt::CarryPut(1)] {
