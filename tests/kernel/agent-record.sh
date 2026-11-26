@@ -270,7 +270,9 @@ reserve() {
     elif ! serve_end 60; then
         verdict daemon_stopped "skyzfsd serve $SERVE_K did not end 60 s after SIGTERM"
         kill -9 "$SERVE_PID" 2>/dev/null || true
-        serve_end 10 || rig_error "skyzfsd serve $SERVE_K did not end 10 s after SIGKILL"
+        # Unreaped, it is not to be taken later for a daemon that ended
+        # by itself.
+        serve_end 10 || { SERVE_PID=""; rig_error "skyzfsd serve $SERVE_K did not end 10 s after SIGKILL"; }
     elif [ "$SERVE_RC" != 0 ]; then
         verdict daemon_stopped "skyzfsd serve $SERVE_K ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$(serve_log "$SERVE_K")")"
     fi

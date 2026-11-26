@@ -238,6 +238,16 @@ for st in 0 5; do
         "daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status $st) serve_again"
 done
 
+# A daemon that SIGKILL did not end in time is the rig's error, and its
+# pid is let go, so that no later check takes it for one that ended by
+# itself (Q3 of #169's review).
+rm -f "$CDIR"/* "$T/calls"
+bash -c 'trap "" TERM; sleep 30 & wait' & upid=$!; sleep 0.2
+is "reserve: unreaped after SIGKILL, its pid let go" \
+    "$(SERVE_PID=$upid; serve_end() { return 1; }; rig_error() { echo "rig_error [$SERVE_PID] $*" >> "$T/calls"; }; reserve; echo "$(cut -f1 "$CDIR/verdicts.tsv") $(tr '\n' ';' < "$T/calls")"; kill "$SERVE_PID" 2>/dev/null)" \
+    "daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;"
+wait "$upid" 2>/dev/null
+
 # frozen_until_withdrawn and gone, on a stand-in agent.
 acmd() { echo "acmd $*" >> "$T/calls"; }
 wait_point() { return 1; }
@@ -756,7 +766,7 @@ is "serve_start: a stale ready file emptied" "$(
 # end_daemon: a daemon that does not end 0 on SIGTERM; its log is the
 # current instance's (D10).
 printf '#!/bin/bash\n[ "$1" != status ] || echo "cut_state idle"\n' > "$T/skyzfsd-ok"; chmod +x "$T/skyzfsd-ok"
-ed_t() { # HOOK [hang|gone]
+ed_t() { # HOOK [hang|gone|unreaped]
     (
         RDIR=$T/ed; rm -rf "${RDIR:?}"; mkdir -p "$RDIR"; VOL=$RDIR/vol; RUN=$RDIR/run; SKYZFSD=$T/skyzfsd-ok
         HOLD_PID=""; WATCH_PID=""; SERVE_LOG=$RDIR/serve-3.log; echo "lease kept" > "$SERVE_LOG"
@@ -772,6 +782,13 @@ ed_t() { # HOOK [hang|gone]
             serve_end() { serve_end_real 1; }
             bash -c 'trap "" TERM; while :; do /bin/sleep 0.1; done' > /dev/null 2>&1 & SERVE_PID=$!
             echo "$SERVE_PID" > "$T/ed.pid"
+        elif [ "${2:-}" = unreaped ]; then
+            # A stop that neither SIGTERM nor SIGKILL ends in time, with a
+            # rig error that returns, to see what is left.
+            serve_end() { return 1; }
+            rig_error() { echo "rig error: $*"; }
+            bash -c 'trap "" TERM; while :; do /bin/sleep 0.1; done' > /dev/null 2>&1 & SERVE_PID=$!
+            echo "$SERVE_PID" > "$T/ed.pid"
         elif [ "${2:-}" = gone ]; then
             # Ended by itself, with 0, before the stop.
             eval "$(fnc serve_end)"
@@ -784,6 +801,7 @@ ed_t() { # HOOK [hang|gone]
         /bin/sleep 0.2
         end_daemon
         echo "went on, detached $([ -e "$RDIR/detach.log" ] && echo yes)"
+        [ "${2:-}" != unreaped ] || echo "pid [$SERVE_PID]"
     )
     # A stand-in left running by a stop that did not kill it.
     if [ -s "$T/ed.pid" ]; then kill -9 "$(cat "$T/ed.pid")" 2>/dev/null; rm -f "$T/ed.pid"; fi
@@ -797,6 +815,13 @@ went on, detached yes"
 is "end_daemon: a stop that hangs, the hook's verdict, killed, and on" "$(ed_t hook hang)" \
     "verdict daemon_stopped: skyzfsd serve did not end 60 s after SIGTERM: lease kept
 went on, detached yes"
+
+# Unreaped after SIGKILL: the rig's error, and the pid let go (Q3 of
+# #169's review).
+is "end_daemon: unreaped after SIGKILL, its pid let go" "$(ed_t '' unreaped | grep -v '^went on')" \
+    "rig error: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+rig error: skyzfsd serve did not end 10 s after SIGKILL
+pid []"
 
 # A daemon that had ended before the SIGTERM ended unasked, even with 0:
 # the hook's verdict, and on; with no hook, the rig's error (G-b of

@@ -355,6 +355,9 @@ check "pin counts on @c" "$(words rig-counts-take)/$(words rig-counts-hold)/$(wo
     "zfs snapshot -r skzq@c /zfs hold -r skyzfs-publish skzq@c /zfs holds -H -r skzq@c "
 check "pin counts, one gone" "$(words rig-counts-release-one)/$(words rig-counts-destroy-one)/$(words rig-holds-r-counts-gone)/$(words rig-counts-destroy)" \
     "zfs release skyzfs-publish skzq/child@c /zfs destroy skzq/child@c /$CL skzq@c skzq/child@c /zfs destroy -r skzq@c "
+# The take's holds let go before it is destroyed (K04 of #169's review):
+# release_quietly lists the pool's snapshots (the fake lists none @c).
+check "counts: released before the destroy" "$(awk '$0 == "holds -H -r skzq@c" { h = NR } h && $0 == "list -H -o name -t snapshot -r skzq" && !r { r = NR } h && $0 == "destroy -r skzq@c" { d = NR } END { print (h && r > h && d > r) ? "yes" : h " " r " " d }' "$T/zfs.calls")" yes
 check "counts: the gone one said" "$(grep -c '^rig: rig-holds-r-counts-gone names skzq/child@c, destroyed after rig-counts-holds-r$' "$OUT/about.txt")" 1
 check "counts: after holds-r, in order, before hold-2" \
     "$(order rig-holds-r rig-holds-r-counts)$(order rig-holds-r-counts rig-counts-take)$(order rig-counts-take rig-counts-hold)$(order rig-counts-hold rig-counts-holds-r)$(order rig-counts-holds-r rig-counts-release-one)$(order rig-counts-release-one rig-counts-destroy-one)$(order rig-counts-destroy-one rig-holds-r-counts-gone)$(order rig-holds-r-counts-gone rig-counts-destroy)$(order rig-counts-destroy rig-hold-2)" \
@@ -996,15 +999,24 @@ check "stall_of: no stall file" "$(OUT=$T/sr stall_of nothing)" "?"
 check "field_of: the first key" "$(OUT=$T/sr field_of none txg txgs)" 4
 check "field_of: a key inside, not its suffix's" "$(OUT=$T/sr field_of none txg sync_longest)/$(OUT=$T/sr field_of none txg longest_sync)" ">0.300/0.2"
 check "field_of: no key" "$(OUT=$T/sr field_of none txg nothing)" "?"
+mkdir -p "$T/sr/win"; printf '100.25\t110.5\n' > "$T/sr/win/window"
+check "window_of: its length" "$(OUT=$T/sr window_of win)" "10.25"
+check "window_of: no window" "$(OUT=$T/sr window_of none)" "?"
+# A NOT COVERED line's figures are not the window's (D3 of #169's review).
+mkdir -p "$T/sr/nc"; echo "NOT COVERED: the log runs from 1 to 2, the window from 0 to 3; longest=3.000 writes=1 before=0.000" > "$T/sr/nc/stall"
+check "field_of: a NOT COVERED line gives none" "$(OUT=$T/sr field_of nc stall longest)/$(OUT=$T/sr stall_of nc)" "?/?"
 # reading_for: back to back for the window, at least one run, the window
 # not overrun by a run that would take it past.
 rf() { local a b; a=$(date +%s.%N); reading_for "$@" > "$T/rf.out"; b=$(date +%s.%N); secs_between "$a" "$b"; }
 rfw=$(rf 1 sleep 0.1)
 check "reading_for: runs back to back" "$(sed -n 's/^runs=\([0-9]*\) failed=0 longest=0\.[0-9]*$/\1/p' "$T/rf.out" | awk '{ print ($1 >= 7 && $1 <= 10) ? "yes" : $0 }')" yes
-check "reading_for: within the window" "$(awk -v w="$rfw" 'BEGIN { print (w >= 0.85 && w <= 1.2) ? "yes" : w }')" yes
+check "reading_for: the window, no shorter" "$(awk -v w="$rfw" 'BEGIN { print (w >= 1.0 && w <= 1.2) ? "yes" : w }')" yes
 # Runs of 0.4 s in a window of 1 s: a third would end past it, so two.
 rfw=$(rf 1 sleep 0.4)
-check "reading_for: no run that would end past the window" "$(cut -d' ' -f1 "$T/rf.out")/$(awk -v w="$rfw" 'BEGIN { print (w < 1.0) ? "yes" : w }')" "runs=2/yes"
+check "reading_for: no run that would end past the window" "$(cut -d' ' -f1 "$T/rf.out")" "runs=2"
+# What the last run left of the window is waited out: as long as the
+# idle control's, whose groups it is compared with.
+check "reading_for: the rest of the window waited" "$(awk -v w="$rfw" 'BEGIN { print (w >= 1.0 && w < 1.2) ? "yes" : w }')" yes
 rfw=$(rf 1 sleep 1.5)
 check "reading_for: a run longer than the window, once" "$(cut -d' ' -f1,2 "$T/rf.out")/$(awk -v w="$rfw" 'BEGIN { print (w < 2.0) ? "yes" : w }')" "runs=1 failed=0/yes"
 rf 0 false > /dev/null
@@ -1036,13 +1048,15 @@ for kind in list holds; do
     # within one run of it (R2: each round's, not the step's first).
     check "rounds $kind: the windows" \
         "$(awk -v a="$(w_len "scale-3-sweep-$kind-idle-r1")" -v b="$(w_len "scale-3-sweep-$kind-idle-r2")" -v c="$(w_len "scale-3-sweep-$kind-r1")" -v d="$(w_len "scale-3-sweep-$kind-r2")" \
-            'BEGIN { print (a >= 1 && b >= 1 && a < 1.3 && b < 1.3 && c >= 0.6 && d >= 0.6 && c < 1.5 && d < 1.5) ? "yes" : a " " b " " c " " d }')" yes
+            'BEGIN { print (a >= 1 && b >= 1 && a < 1.3 && b < 1.3 && c >= 1 && d >= 1 && c < 1.5 && d < 1.5) ? "yes" : a " " b " " c " " d }')" yes
     check "rounds $kind: the reads back to back" "$(sed -n 's/^runs=\([0-9]*\) failed=0 .*/\1/p' "$T/rounds/scale-3-sweep-$kind-r1/stdout" | awk '{ print ($1 > 1) ? "yes" : $1 }')" yes
     f() { local x="" r; for r in r1 r2; do x="$x $(OUT=$T/rounds field_of "scale-3-sweep-$kind-$1$r" "$2" "$3")"; done; echo "${x# }"; }
-    xrn=$(f "" stdout runs) xrl=$(f "" stall longest) xil=$(f idle- stall longest) xrt=$(f "" txg txgs) xit=$(f idle- txg txgs) xrs=$(f "" txg sync_longest) xis=$(f idle- txg sync_longest)
+    xrn=$(f "" stdout runs) xrf=$(f "" stdout failed) xrl=$(f "" stall longest) xil=$(f idle- stall longest) xrt=$(f "" txg txgs) xit=$(f idle- txg txgs) xrs=$(f "" txg sync_longest) xis=$(f idle- txg sync_longest)
+    xrw="$(OUT=$T/rounds window_of "scale-3-sweep-$kind-r1") $(OUT=$T/rounds window_of "scale-3-sweep-$kind-r2")"
+    xiw="$(OUT=$T/rounds window_of "scale-3-sweep-$kind-idle-r1") $(OUT=$T/rounds window_of "scale-3-sweep-$kind-idle-r2")"
     # shellcheck disable=SC2086
     check "rounds $kind: said, with the medians" \
-        "$(grep -cxF "scale 3: sweep-$kind against an idle control, 2 rounds of 1 s (odd rounds idle first): reads run $xrn; longest write read $xrl (median $(median $xrl)), idle $xil (median $(median $xil)); groups committed read $xrt (median $(median $xrt)), idle $xit (median $(median $xit)); longest zpool sync read $xrs (median $(median $xrs)), idle $xis (median $(median $xis))" "$T/rounds/about.txt")" 1
+        "$(grep -cxF "scale 3: sweep-$kind against an idle control, 2 rounds of 1 s (odd rounds idle first): reads run $xrn, failed $xrf; longest write read $xrl (median $(median $xrl)), idle $xil (median $(median $xil)); groups committed read $xrt (median $(median $xrt)), idle $xit (median $(median $xit)); longest zpool sync read $xrs (median $(median $xrs)), idle $xis (median $(median $xis)); windows read $xrw s, idle $xiw s" "$T/rounds/about.txt")" 1
 done
 check "rounds: after the sweep's reads, before tagged" \
     "$(OUT=$T/rounds order scale-3-sweep-holds scale-3-sweep-list-r1)$(OUT=$T/rounds order scale-3-sweep-holds-r2 scale-3-tagged)" yesyes
@@ -1061,10 +1075,11 @@ rounds_t() { # ROUNDS WDIR [LIMIT_AFTER [notime|cut]]
     local d=$T/rt
     rm -rf "${d:?}"; mkdir -p "$d/scale-9-sweep-list" "$d/scale-9-sweep-holds"; : > "$d/index.tsv"
     printf 'P@t\t1\n' > "$d/scale-9-sweep-list/stdout"
-    echo 0.050 > "$d/scale-9-sweep-holds/secs"
+    echo 0.050 > "$d/scale-9-sweep-holds/secs"; echo 0 > "$d/scale-9-sweep-holds/rc"
     case ${4:-} in
         notime) ;;
         cut) echo "${RT_SECS:-0.050}" > "$d/scale-9-sweep-list/secs"; echo 124 > "$d/scale-9-sweep-list/rc" ;;
+        failed) echo "${RT_SECS:-0.050}" > "$d/scale-9-sweep-list/secs"; echo 1 > "$d/scale-9-sweep-list/rc" ;;
         *) echo "${RT_SECS:-0.050}" > "$d/scale-9-sweep-list/secs"; echo 0 > "$d/scale-9-sweep-list/rc" ;;
     esac
     (
@@ -1081,7 +1096,8 @@ rounds_t() { # ROUNDS WDIR [LIMIT_AFTER [notime|cut]]
             mkdir -p "$OUT/$1"
             echo "longest=$k.$r writes=3" > "$OUT/$1/stall"
             echo "txgs=$k$r longest_sync=9.9 syncs=2 sync_longest=0.$k$r sync_failed=0" > "$OUT/$1/txg"
-            [ "$k" = 2 ] || echo "runs=$r$r failed=0 longest=0.1" > "$OUT/$1/stdout"
+            [ "$k" = 2 ] || echo "runs=$r$r failed=$r longest=0.1" > "$OUT/$1/stdout"
+            printf '100.0\t%s.5\n' "$((100 + 10 * k + r))" > "$OUT/$1/window"
         }
         SCALE_END=$(($(date +%s) + ${RT_LEFT:-3600}))
         OUT=$d ZCR_SWEEP_ROUNDS=$1 ZCR_SWEEP_WINDOW=${RT_WIN:-10} ZCR_WRITER_MARGIN=0.3 sweep_rounds 9 "$2" P
@@ -1091,7 +1107,7 @@ rounds_t() { # ROUNDS WDIR [LIMIT_AFTER [notime|cut]]
 # Each side's figures from its own records, in round order.
 rounds_t 2 "$T/w" > /dev/null
 check "rounds: the line from each side's records" "$(grep -c . "$T/rt/about.txt")/$(grep -F 'scale 9: sweep-list' "$T/rt/about.txt")" \
-    "2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 22 (median 21.500); longest zpool sync read 0.11 0.12 (median 0.115), idle 0.21 0.22 (median 0.215)"
+    "2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads run 11 22, failed 1 2; longest write read 1.1 1.2 (median 1.150), idle 2.1 2.2 (median 2.150); groups committed read 11 12 (median 11.500), idle 21 22 (median 21.500); longest zpool sync read 0.11 0.12 (median 0.115), idle 0.21 0.22 (median 0.215); windows read 11.50 12.50 s, idle 21.50 22.50 s"
 check "rounds: not a count" "$(rounds_t x "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: x "
 check "rounds: 100 refused" "$(rounds_t 100 "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: 100 "
 check "rounds: 0, nothing" "$(rounds_t 0 "$T/w")" "|"
@@ -1106,6 +1122,13 @@ check "rounds: no time, said" "$(rounds_t 1 "$T/w" 99 notime)" \
 # R3: a read cut at its limit gives no rounds.
 check "rounds: the step's read cut, said" "$(rounds_t 1 "$T/w" 99 cut)" \
     "scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |scale 9: the sweep's list rounds not run: scale-9-sweep-list was cut at its limit "
+# A read that failed otherwise gives none either (R3, the review of #169).
+check "rounds: the step's read failed, said" "$(rounds_t 1 "$T/w" 99 failed)" \
+    "scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |scale 9: the sweep's list rounds not run: scale-9-sweep-list ended with status 1 "
+# ZCR_SETTLE_S with a leading zero is decimal in the budget: 2 * (10 + 2
+# + 8 + 2) = 44 s fits in 50.
+check "rounds: a settle of 08 s in the budget" "$(RT_LEFT=50 ZCR_SETTLE_S=08 rounds_t 1 "$T/w" 2>&1)" \
+    "scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |"
 check "rounds: the budget spent" "$(rounds_t 3 "$T/w" 1)" \
     "scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 |scale 9: the budget was spent before the sweep's list round 2; it and the rest were not run scale 9: the budget was spent before the sweep's holds round 1; it and the rest were not run "
 # R3: a round is not started that the budget cannot hold: two windows,
@@ -1168,6 +1191,14 @@ wait "$kpid"
 check "writing: settled before the window" "$(sed 's/settled=[0-9.]*/settled=S/; s/groups=[2-9]$/groups=N/' "$T/wst/w-settle/settled")" "settled=S groups=N"
 check "writing: the settle said" "$(grep -c '^scale: settle beside w-settle: settled=' "$T/wst/about.txt")" 1
 # The window opens after the second group's end in the probe's log.
+# The settle comes before the margin, not after it (S01 of #169's
+# review): the margin is what follows the settled groups.
+check "writing: the settle, then the margin" "$(
+    settle_txgs() { echo settle >> "$T/wso"; SETTLED=x; }
+    sleep() { [ "$1" != 0.77 ] || echo margin >> "$T/wso"; command sleep "$@"; }
+    rm -f "$T/wso"
+    OUT=$T/wst ZCR_KSTAT_DIR=$T/kst ZCR_WRITER_MARGIN=0.77 writing w-order "$WORK/mnt/skzqs" skzst true
+    tr '\n' ' ' < "$T/wso")" "settle margin margin "
 check "writing: the window after the groups" "$(awk -F '\t' -v t0="$(cut -f1 "$T/wst/w-settle/window")" '$1 == "start" { s = $2 } $1 == "txg" && $3 > s { n++; if (n == 2) e = $3 } END { print (e != "" && t0 > e) ? "yes" : "no " e " " t0 }' "$T/wst/w-settle/txg.tsv")" yes
 
 # scale_all: at most three entries, each once; a count at most 100000,
@@ -1177,6 +1208,11 @@ scale() { echo "$1${2:+:$2}" >> "$T/scaled"; }
 scale_all 5 100001 99999999999999999999 5 abc 012 7 8 9 > /dev/null
 check "scale_all: the counts run" "$(tr '\n' ' ' < "$T/scaled")" "5:0 7:0 8:0 "
 check "scale_all: the settle's setting said once" "$(grep -c '^scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=0 groups have committed since its probe began, waiting at most ZCR_SETTLE_S=30 s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=0.3 s alone)$' "$OUT/about.txt")" 1
+# The line's defaults are the code's (S10, S12 of #169's review).
+check "scale_all: the setting's defaults" "$(
+    unset ZCR_SETTLE_TXGS ZCR_SETTLE_S ZCR_WRITER_MARGIN
+    mkdir -p "$T/sad"; OUT=$T/sad scale_all 5 > /dev/null; cat "$T/sad/about.txt")" \
+    "scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=2 groups have committed since its probe began, waiting at most ZCR_SETTLE_S=30 s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=2 s alone)"
 check "scale_all: what was not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
 rm -f "$T/scaled"
 : > "$OUT/about.txt"

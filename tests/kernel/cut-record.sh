@@ -608,7 +608,9 @@ end_daemon() {
     elif ! serve_end 60; then
         daemon_wrong daemon_stopped "skyzfsd serve did not end 60 s after SIGTERM: $(tail -n 2 "$SERVE_LOG")"
         kill -9 "$SERVE_PID" 2>/dev/null || true
-        serve_end 10 || rig_error "skyzfsd serve did not end 10 s after SIGKILL"
+        # Unreaped, it is not to be taken later for a daemon that ended
+        # by itself.
+        serve_end 10 || { SERVE_PID=""; rig_error "skyzfsd serve did not end 10 s after SIGKILL"; }
     elif [ "$SERVE_RC" != 0 ]; then
         daemon_wrong daemon_stopped "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$SERVE_LOG")"
     fi
