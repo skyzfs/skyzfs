@@ -11,6 +11,7 @@ if ! T=$(mktemp -d) || [ -z "$T" ] || [ ! -d "$T" ]; then echo "no temporary dir
 trap 'rm -rf "$T"' EXIT
 fails=0
 is() { # name got want
+    if [ "$2" = "skipped: not root and no sudo" ]; then echo "skip $1: $2"; return; fi
     if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', want '$3'"; fails=$((fails + 1)); fi
 }
 # A function as the script has it: from `NAME() {` to the `}` that ends
@@ -24,8 +25,14 @@ for f in rec_aplain point_reached wait_point case_name; do
 done
 
 # The inputs: each refused before anything runs, with 64 and its reason.
+# cut-record.sh refuses first to run without root: on a runner the tests
+# are not root, and its sudo asks for no password.
+# Where neither holds, these six are skipped and say so.
+as_root=()
+[ "$(id -u)" = 0 ] || as_root=(sudo -n)
 refused() { # ENV... -> the status and the last line
-    env "$@" CUT_SERVER=daemon CUT_UPLOAD=1 CUT_SKYZFSD=/bin/true CUT_NODEB=/bin/true SKZ_S3_ENDPOINT=x \
+    if [ ${#as_root[@]} -gt 0 ] && ! sudo -n true 2>/dev/null; then echo "skipped: not root and no sudo"; return; fi
+    "${as_root[@]}" env "$@" CUT_SERVER=daemon CUT_UPLOAD=1 CUT_SKYZFSD=/bin/true CUT_NODEB=/bin/true SKZ_S3_ENDPOINT=x \
         SKZ_S3_BUCKET=b bash "$HERE/cut-record.sh" "$T/out" "$T/none" aplain > "$T/o" 2>&1
     echo "$? $(tail -n 1 "$T/o")"
 }
