@@ -675,6 +675,15 @@ agent_quiet() {
         WRITER=""
     fi
     session_end
+    # With no daemon (the error came while the rig had it down, as in a
+    # restart case), the export cannot write the pool's labels and waits
+    # its whole limit, leaving a command behind on a device with no
+    # server (run 45828678468). Said, and node B's stages are left to
+    # the check's own error, as when the export fails.
+    if [ -z "$SERVE_PID" ] || ! kill -0 "$SERVE_PID" 2>/dev/null; then
+        log "$NAME: $POOL not exported for the check: no daemon serves its device"
+        return 0
+    fi
     if lim 120 zpool export "$POOL" > "$RDIR/judged-export.log" 2>&1; then
         log "$NAME: $POOL exported for the check after the rig's error"
     else

@@ -730,8 +730,12 @@ cl() { # HOOK_RC|none fail|ok
     (
         OUT=$T/cl; rm -rf "${OUT:?}"; mkdir -p "$OUT"; : > "$OUT/recordings.tsv"; NAME=arare
         STRAY=""; HOLD_PID=""; WATCH_PID=""; WRITER=""; AGENT_PID=""; S3_IS_DOWN=""; SERVE_PID=""; LOWER_UP=""
-        VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; MH_SAVED=""; NOFLUSH=$T/none/x
-        timeout() { :; }; dmsetup() { :; }; log() { :; }
+        VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; MH_SAVED=""; NOFLUSH=$T/none/x; POOL=skzcut
+        # The export under lim, never timeout(1), which waits for a
+        # child that cannot be killed (run 45828678468).
+        timeout() { echo "timeout $*" >> "$T/calls"; }
+        lim() { echo "lim $*" >> "$T/calls"; }
+        dmsetup() { :; }; log() { :; }
         hook() { echo "hook: $1" >> "$T/calls"; return "$HOOK_RC"; }
         eval "$(fnc cleanup)"
         trap cleanup EXIT
@@ -746,11 +750,11 @@ cl() { # HOOK_RC|none fail|ok
     rm -f "${T:?}/calls"
 }
 is "cleanup: errexit with a hook that finds a verdict" "$(cl 1 fail)" \
-    "1 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it;"
+    "1 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;rig error,a command failed (status 1); the job log names it;"
 is "cleanup: errexit with a hook that finds none" "$(cl 0 fail)" \
-    "2 hook: a command failed (status 1); the job log names it;rig error,a command failed (status 1); the job log names it;"
-is "cleanup: errexit with no hook" "$(cl none fail)" "1 "
-is "cleanup: an end with no failure" "$(cl 1 ok)" "0 "
+    "2 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;rig error,a command failed (status 1); the job log names it;"
+is "cleanup: errexit with no hook" "$(cl none fail)" "1 lim 120 zpool export -f skzcut;"
+is "cleanup: an end with no failure" "$(cl 1 ok)" "0 lim 120 zpool export -f skzcut;"
 
 # end: the hooks cleared once the course is recorded, before its check
 # (the nit on ON_RIG_ERROR).
@@ -773,8 +777,14 @@ judged_order() {
 }
 is "agent_judged: quiet, then the check; no case under way named none" "$(judged_order)" "$(printf '1 quiet;check; none\tzfs failed')"
 eval "$(fn agent_quiet)"
-quiet_t() { # EXPORT_RC
+quiet_t() { # EXPORT_RC [serving|ended|none]
     (
+        case ${2:-serving} in
+            serving) sleep 30 > /dev/null 2>&1 & SERVE_PID=$! ;;
+            ended) true & SERVE_PID=$!; wait "$SERVE_PID" ;;
+            none) SERVE_PID="" ;;
+        esac
+        local serve=$SERVE_PID
         RDIR=$T/q2; WORK=$T/q2w; rm -rf "${RDIR:?}" "${WORK:?}"; mkdir -p "$RDIR" "$WORK"; touch "$WORK/watch.pause"; POOL=skzcut; NAME=arare
         sleep 30 > /dev/null 2>&1 & AGENT_PID=$!; kill -STOP "$AGENT_PID"; S3_IS_DOWN=1; S3_UP="echo up >> $T/calls"
         local agent=$AGENT_PID
@@ -787,6 +797,7 @@ quiet_t() { # EXPORT_RC
         EXPORT_RC=$1 agent_quiet
         local rc=$?
         kill -0 "$agent" 2>/dev/null && { kill -9 "$agent"; AGENT_PID="$agent left"; }
+        [ -z "$serve" ] || { kill -9 "$serve"; wait "$serve"; } 2>/dev/null || true
         echo "$rc ${AGENT_PID:-none} ${S3_IS_DOWN:-thawed} ${WRITER:-stopped} $([ -e "$WORK/watch.pause" ] && echo paused || echo watching) $(tr '\n' ';' < "$T/calls")"
         touch "$WORK/writer.stop"
     )
@@ -796,6 +807,13 @@ is "agent_quiet: everything put away, the pool exported" "$(quiet_t 0)" \
     "0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut exported for the check after the rig's error;"
 is "agent_quiet: a pool that does not export is said, not fatal" "$(quiet_t 1)" \
     "0 none thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut did not export for the check: ;"
+# With no daemon serving (the rig's error came while it was down), no
+# export is tried: it would wait its limit on a device with no server
+# (run 45828678468).
+is "agent_quiet: no export with the daemon ended" "$(quiet_t 0 ended)" \
+    "0 none thawed stopped watching up;session_end;log arare: skzcut not exported for the check: no daemon serves its device;"
+is "agent_quiet: no export with no daemon" "$(quiet_t 0 none)" \
+    "0 none thawed stopped watching up;session_end;log arare: skzcut not exported for the check: no daemon serves its device;"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

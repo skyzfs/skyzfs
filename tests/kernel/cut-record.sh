@@ -331,7 +331,10 @@ cleanup() {
     [ -z "$AGENT_PID" ] || { kill -9 "$AGENT_PID" 2>/dev/null; wait "$AGENT_PID" 2>/dev/null; }
     [ -z "$S3_IS_DOWN" ] || bash -c "$S3_UP" > /dev/null 2>&1
     [ -z "$SERVE_PID" ] || kill -CONT "$SERVE_PID" 2>/dev/null
-    timeout 120 zpool export -f "$POOL" 2>/dev/null
+    # lim and not timeout(1): timeout waits for a child that cannot be
+    # killed, and an export of a pool whose device has no server is one
+    # (run 45828678468 hung here until it was cancelled).
+    lim 120 zpool export -f "$POOL" > /dev/null 2>&1
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
         serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
