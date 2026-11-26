@@ -2,7 +2,8 @@
 //! ([`DaemonSocket`]).
 //!
 //! The channel is the socket [`skyzfs_control::SOCKET`] in the volume's
-//! directory, asked with [`skyzfs_control::ask`]: one deadline for each
+//! own directory under the daemon's run directory
+//! ([`skyzfs_control::socket_path`]), asked with [`skyzfs_control::ask`]: one deadline for each
 //! request, [`skyzfs_control::ASK_LIMIT`] by default. The device is the
 //! volume's `/dev/ublkbN`, as `skyzfsd serve` prints it (`ready
 //! /dev/ublkbN`): the agent links nothing of the daemon and does not read

@@ -143,12 +143,10 @@ pub fn note_path(run_dir: &Path, number: u32) -> PathBuf {
 
 /// Where the volume in `volume_dir` keeps what is its own under
 /// `run_dir`: named by the device and inode numbers of the volume's
-/// directory.
-pub fn volume_run_dir(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = fs::metadata(volume_dir)?;
-    Ok(run_dir.join(format!("v-{:x}-{:x}", meta.dev(), meta.ino())))
-}
+/// directory. The control crate's, so that the agent, which links
+/// nothing of the daemon's, finds the channel's socket in it as the
+/// daemon does.
+pub use skyzfs_control::volume_run_dir;
 
 fn not_whole(what: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)

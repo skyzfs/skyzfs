@@ -193,6 +193,9 @@ pub enum User {
     /// `zfs destroy -r pool/vol`: the volume and its snapshots; refused
     /// while one is held. Not in [`USERS`], as [`User::Rename`].
     DestroyDataset,
+    /// `zfs create pool/newN`: a new file system, N the number of
+    /// datasets before it. Not in [`USERS`], as [`User::Rename`].
+    CreateDataset,
 }
 
 /// The people's actions the matrix tries at each point.
@@ -444,10 +447,16 @@ pub struct World {
     pub pending_take: Option<(String, usize)>,
     /// How many times a person changed [`NOTE`].
     pub notes: u64,
-    /// A dataset that `zfs snapshot -r` skips, as libzfs skips one that
-    /// is inconsistent (a full `zfs receive` into it under way or
-    /// interrupted; D1 of #153's review): no take has its `@t`.
-    pub skip: Option<String>,
+    /// The datasets that `zfs snapshot -r` skips, as libzfs skips one
+    /// that is inconsistent (a full `zfs receive` into it under way or
+    /// interrupted; D1 of #153's review): no take has their `@t`.
+    pub skip: BTreeSet<String>,
+    /// The reads of the datasets, counted from 0, that fail as a value
+    /// that cannot be read fails them (M2.6c-5), with the property whose
+    /// value on `pool/vol` cannot be read.
+    pub unreadable: BTreeMap<usize, String>,
+    /// The reads of the datasets so far.
+    pub datasets_read: usize,
     /// A person's action as soon as the agent's next take lands, late or
     /// not (T1 of #153's review), on that take's name.
     pub after_take: Option<User>,
@@ -506,7 +515,9 @@ impl World {
             late_take: None,
             pending_take: None,
             notes: 0,
-            skip: None,
+            skip: BTreeSet::new(),
+            unreadable: BTreeMap::new(),
+            datasets_read: 0,
             after_take: None,
             log: Vec::new(),
             agent_skew_ms: 0,
@@ -1088,6 +1099,22 @@ impl World {
                 pool.datasets.retain(|d| d.name != vol);
                 self.sync("destroy dataset");
             }
+            User::CreateDataset => {
+                let guid = self.guid();
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                let name = format!("{POOL}/new{}", pool.datasets.len());
+                let createtxg = pool.next_txg.unwrap_or(pool.txg + 1);
+                pool.datasets.push(Ds {
+                    name,
+                    kind: Kind::Filesystem,
+                    guid,
+                    createtxg,
+                    local: BTreeMap::new(),
+                });
+                self.sync("create");
+            }
             User::Attach | User::Add => {
                 let Some(pool) = &mut self.pool else {
                     return;
@@ -1150,7 +1177,7 @@ impl World {
         let datasets: Vec<Ds> = pool
             .datasets
             .iter()
-            .filter(|d| Some(&d.name) != skip.as_ref())
+            .filter(|d| !skip.contains(&d.name))
             .cloned()
             .collect();
         if datasets
@@ -1426,6 +1453,18 @@ impl Zfs for FakeZfs {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         self.0.borrow_mut().zfs_call();
         self.0.borrow_mut().calls.push("datasets");
+        {
+            let mut world = self.0.borrow_mut();
+            let read = world.datasets_read;
+            world.datasets_read += 1;
+            if let Some(property) = world.unreadable.get(&read).cloned() {
+                world.log.push(format!("datasets read {read} fails"));
+                return Err(ZfsError::Other(format!(
+                    "zfs get -H -p -o value {property} {POOL}/vol: the value of `{property}` \
+                     on `{POOL}/vol` cannot be read (3 bytes, with no newline at its end)"
+                )));
+            }
+        }
         self.pool(pool, |p| {
             p.datasets
                 .iter()

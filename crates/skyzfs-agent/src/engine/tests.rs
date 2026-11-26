@@ -400,9 +400,11 @@ fn check(ran: &Ran) -> Result<(), String> {
                             .iter()
                             .any(|a| a.name == *t && a.why == Why::TooOld)
                     }) => {}
-            Report::NoProgress(_) | Report::Refused(_) | Report::HeldAway | Report::NotWhole(_) => {
-                return Err(format!("{t} reported: {report:?}"))
-            }
+            Report::NoProgress(_)
+            | Report::Refused(_)
+            | Report::HeldAway
+            | Report::NotWhole(_)
+            | Report::Unreadable(_) => return Err(format!("{t} reported: {report:?}")),
         }
     }
     // The other way: a publish recorded done with its snapshot gone is
@@ -2246,13 +2248,61 @@ fn a_late_take_not_whole_is_destroyed_and_taken_again() {
     one.published_anew();
 }
 
+/// A read of the datasets that fails, before the take or after it, is
+/// reported with its error, which names the dataset and the property,
+/// and the publish goes on at a later round (the lead's ruling on
+/// M2.6c-5, option (a)): here the read before the take fails twice with
+/// one error and the read after it once with another, and the publish
+/// is made. The same error is reported once in a process. Mutants: no
+/// report before the take or after it, the error not carried, the
+/// publish given up or stopped on it, the take adopted without its
+/// read.
+#[test]
+fn a_read_that_fails_is_reported_and_read_again() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().unreadable = [(0, "user:odd"), (1, "user:odd"), (3, "user:late")]
+        .into_iter()
+        .map(|(read, property)| (read, property.to_string()))
+        .collect();
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep);
+    agent.begin().expect("begun");
+    if let Err(e) = agent.settle(LIMIT) {
+        panic!(
+            "{e}: {:?}\n{}",
+            agent.outcomes(),
+            world.borrow().log.join("\n")
+        );
+    }
+    let [(t, Outcome::Published(_))] = agent.outcomes() else {
+        panic!("{:?}\n{}", agent.outcomes(), world.borrow().log.join("\n"));
+    };
+    let [(first, Report::Unreadable(before)), (second, Report::Unreadable(after))] =
+        agent.reports()
+    else {
+        panic!("{:?}", agent.reports());
+    };
+    assert_eq!((first, second), (t, t));
+    for (why, property) in [(before, "`user:odd`"), (after, "`user:late`")] {
+        assert!(
+            why.contains(property) && why.contains(&format!("`{POOL}/vol`")),
+            "{why}"
+        );
+    }
+    let world = world.borrow();
+    assert!(world.datasets_read >= 5, "{}", world.datasets_read);
+    assert!(world.refs.contains_key(t));
+}
+
 /// What a run of one publish on a pool whose `pool/vol` every take
-/// skips left: the agent's outcomes and reports, the world's time at
-/// each take asked, and the processes it took.
+/// skips left: the agent's outcomes and reports, the reports given to
+/// the sink, the world's time at each take asked, and the processes it
+/// took.
 struct NeverWhole {
     world: Rc<RefCell<World>>,
     outcomes: Vec<(String, Outcome)>,
     reports: Vec<(String, Report)>,
+    told: Vec<(String, Report)>,
     takes_ms: Vec<u64>,
     processes: usize,
 }
@@ -2267,10 +2317,22 @@ const PROCESSES_MAX: usize = 20;
 fn never_whole(
     hook: impl FnMut(&Rc<RefCell<World>>, usize, Point) -> bool + 'static,
 ) -> NeverWhole {
+    never_whole_in(
+        |world| world.skip = BTreeSet::from([format!("{POOL}/vol")]),
+        hook,
+    )
+}
+
+/// [`never_whole`] on a world that `setup` makes.
+fn never_whole_in(
+    setup: impl FnOnce(&mut World),
+    hook: impl FnMut(&Rc<RefCell<World>>, usize, Point) -> bool + 'static,
+) -> NeverWhole {
     let world = World::new(Mode::Busy);
-    world.borrow_mut().skip = Some(format!("{POOL}/vol"));
+    setup(&mut world.borrow_mut());
     let keep = MemKeep::default();
     let takes_ms = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Vec::new()));
     let hook = Rc::new(RefCell::new(hook));
     let (mut outcomes, mut reports) = (Vec::new(), Vec::new());
     let mut processes = 0;
@@ -2287,7 +2349,13 @@ fn never_whole(
                 (hook.borrow_mut())(&world, process, p)
             }
         });
-        let mut agent = agent(&world, &keep).with_points(points);
+        let sink: Sink = Box::new({
+            let told = told.clone();
+            move |name: &str, report: &Report| {
+                told.borrow_mut().push((name.to_string(), report.clone()));
+            }
+        });
+        let mut agent = agent(&world, &keep).with_points(points).with_sink(sink);
         let settled = if process == 0 {
             agent.begin().and_then(|_| agent.settle(LIMIT))
         } else {
@@ -2303,10 +2371,12 @@ fn never_whole(
         }
     }
     let takes_ms = takes_ms.borrow().clone();
+    let told = told.borrow().clone();
     NeverWhole {
         world,
         outcomes,
         reports,
+        told,
         takes_ms,
         processes,
     }
@@ -2360,6 +2430,157 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let pool = world.pool.as_ref().expect("the pool");
     assert!(pool.snaps.is_empty(), "{:?}", pool.snaps.keys());
     assert!(world.refs.is_empty() && holds(&world).is_empty());
+}
+
+/// The give-up's report reaches the sink at least once, whatever the
+/// stops about the give-up: after the third failed check is recorded,
+/// about the destroy of its take, about the give-up's record and about
+/// the manifest's file removed (T12 of #153's review). Both kinds of
+/// failed check: a take that is not whole is judged again by the next
+/// process, and one that is not as read before is destroyed by it
+/// unjudged, so that the give-up is made with no take
+/// ([`Agent::take`]), its report naming nothing; that process is
+/// stopped again about its own give-up. Mutants: no report at the
+/// give-up with no take, the report kept from the sink, or made after
+/// the give-up's record, with a take or with none.
+#[test]
+fn a_give_up_is_told_at_least_once_whatever_the_stop() {
+    let about = [
+        at(Effect::Destroy, false),
+        at(Effect::Destroy, true),
+        at(Effect::Abandon, false),
+        at(Effect::Abandon, true),
+        at(Effect::Unlink, false),
+        at(Effect::Unlink, true),
+    ];
+    let mut cases: Vec<(bool, Vec<Point>)> = Vec::new();
+    for not_as_before in [false, true] {
+        cases.push((not_as_before, vec![at(Effect::Failed, true)]));
+        for stop in about {
+            cases.push((not_as_before, vec![stop]));
+        }
+    }
+    for stop in about.into_iter().filter(|p| p.effect != Effect::Destroy) {
+        cases.push((true, vec![at(Effect::Failed, true), stop]));
+    }
+    for (not_as_before, stops) in cases {
+        let (mut failed, mut left) = (0, stops.clone());
+        left.reverse();
+        let run = never_whole_in(
+            move |world| {
+                if !not_as_before {
+                    world.skip = BTreeSet::from([format!("{POOL}/vol")]);
+                }
+            },
+            move |world, _, p| {
+                if not_as_before && p == at(Effect::Take, false) {
+                    world.borrow_mut().after_take = Some(User::SetProperty);
+                }
+                if p == at(Effect::Failed, true) {
+                    failed += 1;
+                }
+                if failed >= plan::CHECKS_FAILED_MAX && left.last() == Some(&p) {
+                    left.pop();
+                    return true;
+                }
+                false
+            },
+        );
+        let world = run.world.borrow();
+        let case = format!(
+            "not as before {not_as_before}, stops {stops:?}: {} processes, {:?} {:?}\n{}",
+            run.processes,
+            run.outcomes,
+            run.told,
+            world.log.join("\n")
+        );
+        assert_eq!(run.processes, stops.len() + 1, "{case}");
+        // A stop after the give-up's record leaves no outcome to print:
+        // the next process finds the publish gone.
+        let recorded = stops
+            .last()
+            .is_some_and(|&p| p >= at(Effect::Abandon, true));
+        match run.outcomes.as_slice() {
+            [(_, outcome)] => assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole), "{case}"),
+            [] => assert!(recorded, "{case}"),
+            _ => panic!("{case}"),
+        }
+        let [(_, Report::NotWhole(_)), ..] = run.told.as_slice() else {
+            panic!("{case}");
+        };
+        assert!(world.refs.is_empty(), "{case}");
+    }
+}
+
+/// The report of a give-up names every dataset that broke the last
+/// take, in the order read (T8 of #153's review): here two that
+/// `zfs snapshot -r` skips. Mutants: one name only, or another order.
+#[test]
+fn a_take_left_out_by_two_datasets_names_both() {
+    let run = never_whole_in(
+        |world| world.skip = BTreeSet::from([format!("{POOL}/db"), format!("{POOL}/vol")]),
+        |_, _, _| false,
+    );
+    let world = run.world.borrow();
+    let [(t, outcome)] = run.outcomes.as_slice() else {
+        panic!("{:?}\n{}", run.outcomes, world.log.join("\n"));
+    };
+    assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole));
+    assert_eq!(
+        run.reports,
+        [(
+            t.clone(),
+            Report::NotWhole(vec![format!("{POOL}/db"), format!("{POOL}/vol")])
+        )]
+    );
+}
+
+/// The report of a give-up whose last take was whole but not as read
+/// before it names the datasets that differ (T8 of #153's review): a
+/// member whose property a person set as each take landed, then a
+/// dataset read before the third take and destroyed as it landed, which
+/// no member is. Each take is a failed check, the third gives the
+/// publish up. Mutants: the members that differ not named, the datasets
+/// with no member not named, the two in the other order, or nothing
+/// named for a take not as before.
+#[test]
+fn a_take_not_as_before_names_the_datasets_that_differ() {
+    let mut takes = 0;
+    let run = never_whole_in(
+        |_| {},
+        move |world, _, p| {
+            if p == at(Effect::Take, false) {
+                world.borrow_mut().after_take = Some(User::SetProperty);
+            }
+            if p == at(Effect::Take, true) {
+                takes += 1;
+                if takes == plan::CHECKS_FAILED_MAX {
+                    let mut world = world.borrow_mut();
+                    let t = world.programs.keys().last().cloned().unwrap_or_default();
+                    world.user(User::DestroyDataset, &t);
+                }
+            }
+            false
+        },
+    );
+    let world = run.world.borrow();
+    let [(t, outcome)] = run.outcomes.as_slice() else {
+        panic!("{:?}\n{}", run.outcomes, world.log.join("\n"));
+    };
+    assert_eq!(
+        *outcome,
+        Outcome::Abandoned(Why::NotWhole),
+        "{}",
+        world.log.join("\n")
+    );
+    assert_eq!(run.takes_ms.len(), plan::CHECKS_FAILED_MAX as usize);
+    assert_eq!(
+        run.reports,
+        [(
+            t.clone(),
+            Report::NotWhole(vec![format!("{POOL}/db"), format!("{POOL}/vol")])
+        )]
+    );
 }
 
 /// The give-up of [`a_take_never_whole_is_given_up_at_the_third_failed_check`]
@@ -2417,11 +2638,11 @@ fn a_take_retaken_after_a_restart_is_not_counted_as_failed() {
         if p == at(Effect::Take, false) {
             // The first take is whole; the dataset is skipped from the
             // next.
-            world.borrow_mut().skip = None;
+            world.borrow_mut().skip.clear();
         }
         let stop = p == at(Effect::Take, true);
         if stop {
-            world.borrow_mut().skip = Some(format!("{POOL}/vol"));
+            world.borrow_mut().skip = BTreeSet::from([format!("{POOL}/vol")]);
         }
         stopped |= stop;
         stop
@@ -3091,6 +3312,50 @@ fn each_effect_is_named_by_a_word_of_its_own() {
     assert_eq!(Effect::from_word("recover"), Some(Effect::Recover));
     assert_eq!(Effect::from_word("unwind"), None);
     assert_eq!(Effect::from_word(""), None);
+}
+
+/// [`Effect::ALL`] holds every effect once, in the order declared (T13
+/// of #153's review: an effect left out of it would be refused by
+/// `--kill-at`). The match below has no wildcard, so an effect added to
+/// the enum does not compile here until it is given its place.
+#[test]
+fn every_effect_is_in_the_list_of_all() {
+    fn place(effect: Effect) -> usize {
+        match effect {
+            Effect::Enrol => 0,
+            Effect::Intent => 1,
+            Effect::Take => 2,
+            Effect::Failed => 3,
+            Effect::Destroy => 4,
+            Effect::Manifest => 5,
+            Effect::Taken => 6,
+            Effect::Holding => 7,
+            Effect::Hold => 8,
+            Effect::Held => 9,
+            Effect::Count => 10,
+            Effect::Stalled => 11,
+            Effect::Asking => 12,
+            Effect::Ask => 13,
+            Effect::Asked => 14,
+            Effect::Unasked => 15,
+            Effect::Withdraw => 16,
+            Effect::Look => 17,
+            Effect::Assist => 18,
+            Effect::Release => 19,
+            Effect::Released => 20,
+            Effect::Done => 21,
+            Effect::Sweep => 22,
+            Effect::Forget => 23,
+            Effect::Abandon => 24,
+            Effect::Unlink => 25,
+            Effect::Stop => 26,
+            Effect::Recover => 27,
+        }
+    }
+    for (at, effect) in Effect::ALL.into_iter().enumerate() {
+        assert_eq!(place(effect), at, "{effect:?}");
+    }
+    assert_eq!(Effect::ALL.len(), place(Effect::Recover) + 1);
 }
 
 /// A person releases the agent's hold on `pool/db@t` once it is held:
@@ -4021,4 +4286,207 @@ fn a_request_is_sent_within_the_slack_of_its_record_or_not_at_all() {
         }
     }
     assert!(found.is_empty(), "{found:#?}");
+}
+
+/// The world's pool read through the CLI adapter (B1 of #157's review):
+/// [`Zfs::datasets`] renders the pool as `zfs list` and the two `zfs
+/// get -s local` print it, with a snapshot limit set on the root, so
+/// that every dataset has `filesystem_count` and `snapshot_count` with
+/// the source `local`, counted as ZFS counts them (the datasets and the
+/// snapshots under it); and reads that output through
+/// [`crate::zfs::cli::ZfsCli`]. Every other call is the world's.
+struct ThroughCli(FakeZfs);
+
+impl ThroughCli {
+    /// The three reads' output of `pool`: the list, the pairs, the
+    /// values.
+    fn rendered(&self, pool: &str) -> (String, String, String) {
+        let world = self.0 .0.borrow();
+        let (mut list, mut pairs, mut values) = (String::new(), String::new(), String::new());
+        let Some(p) = &world.pool else {
+            return (list, pairs, values);
+        };
+        let mut datasets = p.datasets.clone();
+        datasets.sort_by(|a, b| a.name.cmp(&b.name));
+        for d in &datasets {
+            let kind = match d.kind {
+                crate::manifest::Kind::Filesystem => "filesystem",
+                crate::manifest::Kind::Volume => "volume",
+            };
+            list.push_str(&format!(
+                "{}\t{}\t{kind}\t{}\n",
+                d.name, d.guid, d.createtxg
+            ));
+            let own = format!("{}@", d.name);
+            for (name, snap) in p.snaps.iter().filter(|(name, _)| name.starts_with(&own)) {
+                list.push_str(&format!(
+                    "{name}\t{}\tsnapshot\t{}\n",
+                    snap.guid, snap.createtxg
+                ));
+            }
+            let under = |name: &str| name == d.name || name.starts_with(&format!("{}/", d.name));
+            let filesystems = datasets
+                .iter()
+                .filter(|e| e.name != d.name && under(&e.name))
+                .count();
+            let snapshots = p
+                .snaps
+                .keys()
+                .filter(|k| k.split_once('@').is_some_and(|(ds, _)| under(ds)))
+                .count();
+            let mut local: Vec<(String, String)> = d
+                .local
+                .iter()
+                .map(|(k, v)| (k.clone(), String::from_utf8_lossy(v).into_owned()))
+                .collect();
+            if d.name == pool {
+                local.push(("snapshot_limit".into(), "100".into()));
+            }
+            local.push(("filesystem_count".into(), filesystems.to_string()));
+            local.push(("snapshot_count".into(), snapshots.to_string()));
+            for (property, value) in local {
+                pairs.push_str(&format!("{}\t{property}\n", d.name));
+                values.push_str(&format!("{}\t{property}\t{value}\n", d.name));
+            }
+        }
+        (list, pairs, values)
+    }
+}
+
+impl Zfs for ThroughCli {
+    fn layout(&mut self, pool: &str) -> Result<zfs::Layout, ZfsError> {
+        self.0.layout(pool)
+    }
+    fn props(&mut self, pool: &str) -> Result<zfs::Props, ZfsError> {
+        self.0.props(pool)
+    }
+    fn nocacheflush(&mut self) -> Result<bool, ZfsError> {
+        self.0.nocacheflush()
+    }
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        self.0.count(pool)
+    }
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.snapshot(pool, t)
+    }
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<zfs::Dataset>, ZfsError> {
+        // The world's own read first: its calls and its faults.
+        self.0.datasets(pool, t)?;
+        let (list, pairs, values) = self.rendered(pool);
+        let mut host = crate::host::fake::Fake::default();
+        host.ok(
+            &format!("zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg {pool}"),
+            &list,
+        );
+        host.ok(
+            &format!("zfs get -r -H -p -s local -t filesystem,volume -o name,property all {pool}"),
+            &pairs,
+        );
+        host.ok(
+            &format!(
+                "zfs get -r -H -p -s local -t filesystem,volume -o name,property,value all {pool}"
+            ),
+            &values,
+        );
+        zfs::cli::ZfsCli::new(host, zfs::cli::Limits::default()).datasets(pool, t)
+    }
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.destroy(pool, t)
+    }
+    fn members(
+        &mut self,
+        pool: &str,
+        t: &str,
+    ) -> Result<Option<Vec<crate::record::Member>>, ZfsError> {
+        self.0.members(pool, t)
+    }
+    fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.0.hold(pool, t, tag)
+    }
+    fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.0.release(pool, t, tag)
+    }
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[crate::record::Member]>,
+    ) -> Result<zfs::Held, ZfsError> {
+        self.0.held(pool, t, tag, members)
+    }
+    fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+        self.0.tagged(pool, tag)
+    }
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
+        self.0.assist(pool, value)
+    }
+}
+
+/// A publish on a pool with a snapshot limit, read through the CLI, with
+/// a file system created at the point `create` (none where `None`): the
+/// takes it made and its outcomes.
+fn counted_publish(create: Option<Point>, after_take: bool) -> (usize, Vec<(String, Outcome)>) {
+    let world = World::new(Mode::Busy);
+    if after_take {
+        world.borrow_mut().after_take = Some(User::CreateDataset);
+    }
+    let keep = MemKeep::default();
+    let takes = Rc::new(Cell::new(0));
+    let points: Points = Box::new({
+        let (world, takes) = (world.clone(), takes.clone());
+        move |p: Point, _: &str| {
+            if p == at(Effect::Take, false) {
+                takes.set(takes.get() + 1);
+            }
+            if Some(p) == create && takes.get() == 1 {
+                world.borrow_mut().user(User::CreateDataset, "");
+            }
+            false
+        }
+    });
+    let mut agent = Agent::new(
+        ThroughCli(FakeZfs(world.clone())),
+        FakeDaemon(world.clone()),
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(points);
+    agent.begin().expect("begun");
+    if let Err(e) = agent.settle(LIMIT) {
+        panic!(
+            "{e}: {:?}\n{}",
+            agent.outcomes(),
+            world.borrow().log.join("\n")
+        );
+    }
+    (takes.get(), agent.outcomes().to_vec())
+}
+
+/// On a pool with a limit, `filesystem_count` and `snapshot_count` are
+/// read as local and rise with each take; the read leaves them out, so a
+/// take is as read before it (B1 of #157's review, the lead's test). A
+/// file system created after the take, before the read after it, has no
+/// `@t` and raises its parent's `filesystem_count`: the first take is
+/// published. One created between the read before the take and the take
+/// is a member not read before: that take is taken again, once, and the
+/// next is published; neither ends `NotWhole`. Mutants: either counter
+/// kept.
+#[test]
+fn counts_that_rise_with_a_take_do_not_fail_its_check() {
+    for (create, after_take, takes_made) in [
+        (None, false, 1),
+        (None, true, 1),
+        (Some(at(Effect::Take, false)), false, 2),
+    ] {
+        let (takes, outcomes) = counted_publish(create, after_take);
+        assert!(
+            matches!(outcomes[..], [(_, Outcome::Published(_))]),
+            "{create:?} {after_take}: {outcomes:?}"
+        );
+        assert_eq!(takes, takes_made, "{create:?} {after_take}");
+    }
 }

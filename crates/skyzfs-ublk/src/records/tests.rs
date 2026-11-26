@@ -342,6 +342,21 @@ fn the_failure_note_has_the_documented_layout() {
     assert_eq!(decode_failure(&bytes), Some(unknown));
 }
 
+/// The daemon's records and the agent name one channel: the socket is
+/// in the volume's own directory under the run directory, as
+/// `skyzfs_control::socket_path` gives it to the agent (the lead's
+/// ruling on the agent rig's first run).
+#[test]
+fn the_daemon_and_the_agent_name_one_socket() {
+    let dirs = dirs();
+    let here = Files::new(&dirs.volume, &dirs.run, BOOT, Duration::ZERO).expect("the volume");
+    assert_eq!(
+        here.volume_run_dir().join(skyzfs_control::SOCKET),
+        skyzfs_control::socket_path(&dirs.run, &dirs.volume).expect("the socket")
+    );
+    assert_eq!(here.volume_run_dir().parent(), Some(dirs.run.as_path()));
+}
+
 #[test]
 fn the_failure_note_counts_in_its_boot_and_a_torn_one_is_an_error() {
     let dirs = dirs();
