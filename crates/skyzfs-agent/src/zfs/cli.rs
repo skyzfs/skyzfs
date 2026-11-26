@@ -211,8 +211,9 @@
 //!   with a tab, a newline, a forged line, raw bytes and the longest
 //!   value ZFS sets ([`VALUE_MOST`]; one byte more is refused), and a
 //!   snapshot limit, under which `filesystem_count` and `snapshot_count`
-//!   are listed as local. The pairs pass was not recorded; its test makes
-//!   it from the values pass. `zfs get -H` writes a value's bytes as they
+//!   are listed as local; and again with the pairs pass, in four states
+//!   of one pool and with a pool that does not exist (run 45751625028,
+//!   #158; `recorded/cli-read-*.json`). `zfs get -H` writes a value's bytes as they
 //!   are, with a tab between the columns and a newline after each line.
 //! - The time limits ([`Limits`]), all provisional (the lead's rules on
 //!   M2.6c-2b and on N2 of #153's review):
