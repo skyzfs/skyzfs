@@ -51,7 +51,7 @@ The study also produced three rules that this design adopts: the log device must
 - Multi-writer access to one volume.
 - Application-consistent snapshots (VSS writers, database quiesce hooks). ZFS snapshots are atomic across the pool, which is crash consistency for every dataset at once.
 - zvols carrying NTFS or APFS. Clients expose ZFS datasets (decision D1, §10.1).
-- Kubernetes integration. `skynbd-csi-design.md` will need its own revision once M3 lands. Owner's requirement for that revision: the orchestration layer, the CSI driver above all, supports both node backends, `skyzfsd` (ZFS over ublk) and the existing `skynbdd` (NBD, dm-thin stack), and chooses per volume or per node; the two stay separate binaries (§3.1).
+- Kubernetes integration. `skynbd-csi-design.md` will need its own revision once M3 lands. Owner's requirement for that revision: the orchestration layer, the CSI driver above all, supports both node backends, `skyzfsd` (ZFS over ublk) and the existing `skynbdd` (NBD, dm-thin stack), and chooses by a StorageClass parameter (for example `backend: zfs` or `backend: nbd`), so one cluster can offer both classes; the two stay separate binaries (§3.1).
 - Client user interface design.
 
 ## 3. Architecture
