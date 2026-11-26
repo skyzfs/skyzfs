@@ -235,6 +235,14 @@
 //!   - the manifest's list, which lists every snapshot as well: the
 //!     same, with each snapshot counted as a dataset (R1 of #157's
 //!     review, the lead's ruling);
+//!   - `zfs holds -r` and `tagged.lua`, which walk every snapshot in the
+//!     pool: a read's limit (below), plus for each snapshot counted
+//!     [`Limits::holds_per_snapshot`] (`holds -r`; provisional at 200 ms
+//!     until testing's `holds -r` recording sets it) or 200 ms
+//!     (`tagged.lua`, which took about 0.37 ms a snapshot to the list's
+//!     0.40 in testing's recorder, run 45781769557), at most 35 minutes
+//!     (R1-reach of #160's review, the lead's ruling (b)); a read's limit
+//!     where the snapshots were not counted;
 //!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
 //!     dataset counted, at most 20 minutes;
 //!   - the count itself 60 s; a count that fails leaves the bases. After
@@ -263,6 +271,11 @@
 //!   datasets about 2 × 970 s and 172 s in testing's scale run. Each
 //!   round's count, members and `holds -r` reads, the hold, the release
 //!   and the sweep add some 4 to 5 minutes at 10 000 (review of #153).
+//!   Each round's count also lists the snapshots' names once (R1 of
+//!   #157's review), and the manifest's list, `holds -r` and the sweep's
+//!   `tagged.lua` walk every snapshot: about 0.4 ms a snapshot each in
+//!   testing's recorder (41.2 s for the list at 101 000 snapshots, run
+//!   45781769557).
 //!   The design's scale is tens to hundreds of datasets.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -299,8 +312,10 @@ pub const PROGRAM_MEMORY: u64 = 100 << 20;
 /// [`Zfs::count`] last read them, up to [`Limits::most`]; each of the
 /// manifest's reads take [`Limits::full_per_dataset`] more, up to
 /// [`Limits::full_most`], and its list as much again for each snapshot
-/// counted (the lead's rules on M2.6c-2b, on N2 of #153's review and on
-/// R1 of #157's; provisional; [module docs](self)).
+/// counted, as does `tagged.lua`; `zfs holds -r` takes
+/// [`Limits::holds_per_snapshot`] for each (the lead's rules on
+/// M2.6c-2b, on N2 of #153's review, on R1 of #157's and on R1-reach of
+/// #160's; provisional; [module docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// A command that reads, on a pool of no datasets: `zpool status`,
@@ -330,6 +345,12 @@ pub struct Limits {
     /// The count of the datasets itself ([`Zfs::count`]), whatever their
     /// number.
     pub count: Duration,
+    /// What each snapshot counted adds to `zfs holds -r`, which walks
+    /// every snapshot in the pool ([`Zfs::held`], [`Zfs::hold`],
+    /// [`Zfs::release`]). Provisional: the list's allowance until
+    /// testing's `holds -r` recording at R1's scales gives its own figure
+    /// (the lead's ruling on R1-reach of #160's review).
+    pub holds_per_snapshot: Duration,
 }
 
 impl Default for Limits {
@@ -342,6 +363,7 @@ impl Default for Limits {
             full_per_dataset: Duration::from_millis(200),
             full_most: Duration::from_secs(35 * 60),
             count: Duration::from_secs(60),
+            holds_per_snapshot: Duration::from_millis(200),
         }
     }
 }
@@ -438,6 +460,23 @@ impl<H: Host> ZfsCli<H> {
                 datasets.saturating_add(snapshots),
             ),
             _ => self.full_read_limit(),
+        }
+    }
+
+    /// The limit of a read that walks every snapshot in the pool as well
+    /// as its datasets, `zfs holds -r` and `tagged.lua`: a read's (at most
+    /// [`Limits::most`]), and `per_snapshot` more for each snapshot
+    /// counted, at most [`Limits::full_most`] (R1-reach of #160's review, the lead's
+    /// ruling (b)). Where the snapshots were not counted, a read's limit,
+    /// as before.
+    fn walk_limit(&self, per_snapshot: Duration) -> Duration {
+        let l = &self.limits;
+        match self.scale {
+            Scale::Counted {
+                snapshots: Some(snapshots),
+                ..
+            } => grown(self.read_limit(), per_snapshot, l.full_most, snapshots),
+            _ => self.read_limit(),
         }
     }
 
@@ -559,10 +598,14 @@ impl<H: Host> ZfsCli<H> {
     /// acts on, is not a line of it, and [`ZfsError::Vanished`] where it
     /// is. Only the target pool counts, and not any word of the command:
     /// a pool named like a subcommand or an option's value (`get`,
-    /// `name`) is not the command's (Codex on #160). libzfs says `no such pool or
-    /// dataset` of a dataset gone between a command's open of it and its
-    /// read (testing's agent rig, a snapshot destroyed during `zfs holds
-    /// -r`; the lead's ruling), and `no such pool` too in some commands.
+    /// `name`) is not the command's (Codex on #160). libzfs says `no such
+    /// pool or dataset` of a dataset gone between a command's open of it
+    /// and its read (testing's agent rig, a snapshot destroyed during `zfs
+    /// holds -r`; the lead's ruling). `zpool` and `zfs program` say `no
+    /// such pool` of a pool that is not there; a program whose pool is
+    /// listed is read as vanished too, which is not known to happen (a
+    /// program runs in one sync task), so its reading again is
+    /// defensive.
     /// Where `zpool list` does not answer, an error that says so, and not
     /// [`ZfsError::NoPool`]: the conservative reading.
     fn confirm(&mut self, program: &str, args: &[&str], output: &Output, pool: &str) -> ZfsError {
@@ -680,7 +723,8 @@ impl<H: Host> ZfsCli<H> {
         tag: &str,
     ) -> Result<Option<BTreeSet<String>>, ZfsError> {
         let args = ["holds", "-H", "-r", snapshot];
-        let holds = match self.zfs(&args, self.read_limit(), true, pool_of(snapshot)) {
+        let limit = self.walk_limit(self.limits.holds_per_snapshot);
+        let holds = match self.zfs(&args, limit, true, pool_of(snapshot)) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
             Err(e) => return Err(e),
@@ -1043,7 +1087,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
         let returned = self.again(|zfs| {
-            let limit = zfs.read_limit();
+            let limit = zfs.walk_limit(zfs.limits.full_per_dataset);
             zfs.program(pool, TAGGED_PROGRAM, &[pool, tag], true, limit)
         })?;
         match returned.get("tagged") {
