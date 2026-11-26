@@ -980,5 +980,162 @@ is "agent_quiet: an agent and a writer that do not end do not hold it" "$(quiet_
 # writer.
 is "agent_quiet: its bounds" "$(tr '\n' ';' < "$T/qh.seq")" "1 20;1 120;"
 
+# The run course (arun): its scenarios on a stand-in agent. The stand-in
+# is Python: bash starts a command in the background with SIGINT
+# ignored, and a bash stand-in could not trap it. FAKE_MODE: rounds
+# (FAKE_TOOK's rounds, FAKE_GAP s apart, then 0 on a signal), end (exit
+# 3 after them), killfirst (SIGKILL itself at its first start), twice
+# (the second signal ends it 1; FAKE_LINGER s after the signal that
+# ends it, in these three), bad (after them, waits for FAKE_SOCK
+# to go, keeps the record it then finds, prints a failed round, exit 6).
+cat > "$T/fake-agent" <<'EOF'
+#!/usr/bin/env python3
+import os, signal, sys, time
+d, mode = os.environ['FAKE_DIR'], os.environ.get('FAKE_MODE', 'rounds')
+took = [int(x) for x in os.environ.get('FAKE_TOOK', '3000 3000 3000').split()]
+gap = float(os.environ.get('FAKE_GAP', '0.15'))
+cnt = os.path.join(d, 'count')
+n = int(open(cnt).read()) if os.path.exists(cnt) else 0
+open(cnt, 'w').write(str(n + 1))
+with open(os.path.join(d, 'argv'), 'a') as f:
+    f.write(' '.join(sys.argv[1:]) + '\n')
+got = []
+def on(sig, _):
+    got.append(sig)
+    with open(os.path.join(d, 'signals'), 'a') as f:
+        f.write(signal.Signals(sig).name + '\n')
+    if mode != 'twice' or len(got) == 2:
+        time.sleep(float(os.environ.get('FAKE_LINGER', '0')))
+        sys.exit(1 if mode == 'twice' else 0)
+signal.signal(signal.SIGTERM, on)
+signal.signal(signal.SIGINT, on)
+if mode == 'killfirst' and n == 0:
+    os.kill(os.getpid(), signal.SIGKILL)
+for k, t in enumerate(took, 1):
+    print(f'round {k} ok took_ms={t} late_ms=0 skipped=0 begun=r{k} under_way=0', flush=True)
+    print(f'snap/r{k} c', flush=True)
+    time.sleep(gap)
+if mode == 'end':
+    sys.exit(3)
+if mode == 'bad':
+    while os.path.exists(os.environ['FAKE_SOCK']):
+        time.sleep(0.05)
+    with open(os.environ['FAKE_REC']) as f, open(os.path.join(d, 'seen'), 'w') as g:
+        g.write(f.read())
+    print(f'round {len(took) + 1} failed took_ms=1 late_ms=0 skipped=0 begun=- under_way=0', flush=True)
+    sys.exit(6)
+while True:
+    time.sleep(0.05)
+EOF
+chmod +x "$T/fake-agent"
+for f in await_rounds run_rounds_then_term scen_run scen_runkill scen_runtwice scen_runheld scen_runbad other_remote rec_arun; do
+    is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
+done
+is "RUN_EVERY is 10" "$(grep -c '^RUN_EVERY=10$' "$SCRIPT")" 1
+# SCENARIO MODE TOOK [ARG] [GAP]: the scenario on the stand-in, the run
+# directory left in $T/rc.
+runt() {
+    # shellcheck disable=SC2329
+    (
+        CDIR=$T/rc; ADIR=$CDIR/agent; VOL=$T/rvol; RUN=$T/rrun; DEV=/dev/null; POOL=skzcut; NAME=arun
+        AGENT=$T/fake-agent
+        rm -rf "${CDIR:?}" "${VOL:?}" "${RUN:?}"; mkdir -p "$ADIR" "$VOL" "$RUN/v"
+        printf 'skyzfs-remote 1\nendpoint e\nbucket b\nvolume v\nid 01ARZ3NDEKTSV4RRFFQ69G5FA0\n' > "$VOL/remote"
+        echo 'the record' > "$ADIR/record"; : > "$RUN/v/control"
+        export FAKE_DIR=$CDIR FAKE_MODE=$2 FAKE_TOOK=$3 FAKE_GAP=${5:-0.15} FAKE_SOCK=$RUN/v/control FAKE_REC=$ADIR/record
+        log() { :; }; vrun() { echo "$RUN/v"; }; wait_point() { sleep 0.3; }; case_name() { echo r1; }
+        for f in verdict case_error acmd abg await_agent await_rounds run_rounds_then_term other_remote "scen_$1"; do
+            eval "$(fn "$f")"
+        done
+        if [ -n "${RUNT_ACMD:-}" ]; then eval "acmd() { $RUNT_ACMD; }"; fi
+        RUN_EVERY=10
+        "scen_$1" "${4:-}" --trace-points x
+        echo "ADIR=${ADIR#"$T"/} VOL=${VOL#"$T"/}" > "$T/rc.vars"
+    )
+}
+# LABEL: what the test reads of a run: its status, the rounds the rig
+# saw come (numbered, in time order or not), the signals, whether the
+# end came after the signal, and the verdicts.
+seen() {
+    local d=$T/rc l=$1
+    printf 'rc=%s rounds=%s sig=%s ended=%s verdicts=%s' "$(cat "$d/$l.rc" 2>/dev/null)" \
+        "$(if [ -e "$d/$l.rounds.tsv" ]; then
+            cut -f1 "$d/$l.rounds.tsv" | tr '\n' ,
+            awk -F '\t' 'NR > 1 && $2 < p { bad = 1 } { p = $2 } END { print bad ? " unordered" : " ordered" }' "$d/$l.rounds.tsv"
+        else echo none; fi)" \
+        "$(sort "$d/signals" 2>/dev/null | tr '\n' ,)" \
+        "$(awk 'NR == FNR { t = $1; next } { print ($1 >= t ? "after" : "before") }' "$d/$l.term-at" "$d/$l.ended-at" 2>/dev/null)" \
+        "$(cut -f1 "$d/verdicts.tsv" 2>/dev/null | tr '\n' ,)"
+}
+runt run rounds "3000 3000 3000"
+is "run: three rounds seen, then SIGTERM, ended 0" "$(seen publish)" \
+    "rc=0 rounds=1,2,3, ordered sig=SIGTERM, ended=after verdicts="
+is "run: the run asked of the agent" "$(cat "$T/rc/argv")" \
+    "run --volume $T/rvol --run $T/rrun --device /dev/null --pool skzcut --dir $T/rc/agent --every-s 10 --trace-points x"
+FAKE_LINGER=0.6 runt run rounds "3000 3000 3000"
+is "run: its end is when the agent ended, not when it was told" \
+    "$(awk 'NR == FNR { t = $1; next } { print ($1 - t >= 0.5) ? "after its end" : $1 - t }' "$T/rc/publish.term-at" "$T/rc/publish.ended-at")" \
+    "after its end"
+runt run end "3000"
+is "run: a run that ends before its rounds is a verdict, no signal" "$(seen publish)" \
+    "rc=3 rounds=1, ordered sig= ended= verdicts=rounds,"
+runt runkill killfirst "3000 3000"
+is "runkill: the first run killed" "$(cat "$T/rc/publish.rc")" 137
+is "runkill: a run started again, two rounds, SIGTERM" "$(seen run2)" \
+    "rc=0 rounds=1,2, ordered sig=SIGTERM, ended=after verdicts="
+is "runkill: the run started again has no hooks" "$(sed -n 2p "$T/rc/argv")" \
+    "run --volume $T/rvol --run $T/rrun --device /dev/null --pool skzcut --dir $T/rc/agent --every-s 10"
+runt runtwice twice "3000"
+is "runtwice: two signals of two kinds; the second ends it 1" "$(seen publish)" \
+    "rc=1 rounds=none sig=SIGINT,SIGTERM, ended=after verdicts="
+RUNT_ACMD='echo "acmd $*" >> "$CDIR/calls"' runt runheld rounds "3000 3000 3000" "" 0.6
+is "runheld: recover and settle beside the run" "$(tr '\n' ';' < "$T/rc/calls")" \
+    "acmd held recover --name r1 --retry --limit-s 30;acmd held-settle settle --limit-s 30;"
+is "runheld: the rounds before the refusals ended" "$(cat "$T/rc/held.rounds")" 1
+is "runheld: then three rounds and SIGTERM" "$(seen publish)" \
+    "rc=0 rounds=1,2,3, ordered sig=SIGTERM, ended=after verdicts="
+is "other_remote: the id's last character changed" \
+    "$(eval "$(fn other_remote)"; other_remote "$T/rvol/remote" | tr '\n' ';')" \
+    "skyzfs-remote 1;endpoint e;bucket b;volume v;id 01ARZ3NDEKTSV4RRFFQ69G5FA1;"
+is "other_remote: a last character but 0 becomes 0" \
+    "$(eval "$(fn other_remote)"; printf 'skyzfs-remote 1\nid 01ARZ3NDEKTSV4RRFFQ69G5FAV\n' > "$T/rem"; other_remote "$T/rem" | tr '\n' ';')" \
+    "skyzfs-remote 1;id 01ARZ3NDEKTSV4RRFFQ69G5FA0;"
+# runbad: the rig acts after the first round with 3 s or more left to
+# its tick (round 1 took 8 s of 10: 2 s left; round 2 took 3 s).
+bad_seen() {
+    printf '%s bad=%s seen=%s record=%s sock=%s' "$(seen publish)" "$(cat "$T/rc/bad.rounds" 2>/dev/null || echo none)" \
+        "$(cat "$T/rc/seen" 2>/dev/null)" "$(cat "$T/rc/agent/record")" \
+        "$([ -e "$T/rrun/v/control" ] && [ ! -e "$T/rrun/v/control.away" ] && echo back)"
+}
+runt runbad bad "8000 3000" corrupt 0.6
+is "runbad corrupt: the record made corrupt after round 2, then put back" "$(bad_seen)" \
+    "rc=6 rounds=1,2, ordered sig= ended= verdicts= bad=2 seen=not a record record=the record sock=back"
+is "runbad corrupt: no other volume" "$(cat "$T/rc/bad.kind") $([ -e "$T/rc/other-vol" ] || echo none)" "corrupt none"
+RUNT_ACMD='echo "acmd $* ${ADIR#"$T"/} ${VOL#"$T"/}" >> "$CDIR/calls"; echo "volume other" > "$ADIR/record"' \
+    runt runbad bad "8000 3000" volume 0.6
+is "runbad volume: another volume's record in its place" "$(bad_seen)" \
+    "rc=6 rounds=1,2, ordered sig= ended= verdicts= bad=2 seen=volume other record=the record sock=back"
+is "runbad volume: the agent's own publish for the other volume" "$(cat "$T/rc/calls")" \
+    "acmd other publish --limit-s 30 rc/other rc/other-vol"
+is "runbad volume: the other volume's remote" "$(tail -n 1 "$T/rc/other-vol/remote")" "id 01ARZ3NDEKTSV4RRFFQ69G5FA1"
+is "runbad volume: the case's directories as they were" "$(cat "$T/rc.vars")" "ADIR=rc/agent VOL=rvol"
+RUNT_ACMD='echo "acmd $*" >> "$CDIR/calls"' runt runbad bad "8000 3000" volume 0.6
+is "runbad volume: no record of the other volume is the rig's error, no run" \
+    "$(cut -c1-34 "$T/rc/rig-error.txt"; [ -e "$T/rc/count" ] || echo none)" "no record of another volume: 
+none"
+runt runbad end "8000 8000 8000" corrupt 0.6
+is "runbad: no round with 3 s left is a verdict; nothing changed" "$(bad_seen)" \
+    "rc=3 rounds=1,2,3, ordered sig= ended= verdicts=rounds, bad=none seen= record=the record sock=back"
+arun_cases() {
+    (
+        agent_begin() { :; }; agent_end() { :; }
+        acase() { printf '%s|' "$*"; }
+        eval "$(fn rec_arun)"
+        rec_arun
+    )
+}
+is "arun: its cases" "$(arun_cases)" \
+    "R-run run|R-kill runkill intent:after:2|R-twice runtwice|R-held runheld|R-corrupt runbad  corrupt|R-volume runbad  volume|"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

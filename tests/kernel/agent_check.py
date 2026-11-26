@@ -9,7 +9,7 @@ Usage:
   agent_check.py points TRACE [BASE_TRACE]
 
 The first form is cut-record.sh's CUT_CHECK after the agent rig's courses
-(aplain, adaemon, arare; tests/kernel/agent-record.sh says what each
+(aplain, adaemon, arare, arun; tests/kernel/agent-record.sh says what each
 does), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG
 is the daemon's request log; BASE is `-`. Environment: as
 nodeb_check.py's. The volume in object storage is `cut-NAME`.
@@ -161,7 +161,7 @@ import nodeb_check  # noqa: E402
 import publish_check  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('aplain', 'adaemon', 'arare')
+COURSES = ('aplain', 'adaemon', 'arare', 'arun')
 POOL = nodeb_check.POOL
 HOLD_TAG = 'skyzfs-publish'
 ENGINE = os.path.join(HERE, '..', '..', 'crates', 'skyzfs-agent', 'src', 'engine.rs')
@@ -201,7 +201,7 @@ DAEMON_KILLED = {
 # 45751597306's cases). gone and both always kill (KILLED_ONLY): one of
 # them with no kill is the rig's error. unmarked has its own pin
 # (pin_ID_refused).
-KILLED_ONLY = ('gone', 'both')
+KILLED_ONLY = ('gone', 'both', 'runkill')
 FIRST_RC = {
     'plain': '0',
     'restart': '0',
@@ -211,6 +211,10 @@ FIRST_RC = {
     'sweep': '0',
     'dhook': '0',
     'late': '0',
+    'run': '0',
+    'runtwice': '1',
+    'runheld': '0',
+    'runbad': '6',
 }
 # The scenario -> T's outcome where the scenario's premise holds and the
 # case has no kill (expected: a kill leaves some to the criterion alone).
@@ -227,7 +231,21 @@ EXPECTED = {
     'dhook': 'published',
     'late': 'published',
     'both': 'published',
+    'run': 'published',
+    'runkill': 'published',
+    'runtwice': 'published',
+    'runheld': 'published',
+    'runbad': 'published',
 }
+# `skyzfs-agent run` (arun): the rig's --every-s, and how long after
+# the rig's SIGTERM (between two rounds) or its two signals the run may
+# end, on the rig's clock: run's WAKE (0.25 s) and the rig's own looks
+# (every 0.25 s) and writes. A round begins on its tick within
+# TICK_SLACK s on the rig's clock, which reads each round line within
+# 0.1 s of its arrival.
+RUN_EVERY = 10
+END_WITHIN = 2.0
+TICK_SLACK = 1.0
 
 
 def flat(text):
@@ -314,13 +332,24 @@ def not_reached(kill, rc, err, trace):
     return n > 1 and rc != '137' and not KILL_LINE.findall(err) and reach < n
 
 
+ROUND_LINE = re.compile(r'round ([1-9][0-9]*) (ok|failed) took_ms=([0-9]+) late_ms=([0-9]+) skipped=([0-9]+) '
+                        r'begun=(\S+) under_way=([0-9]+)')
+
+
 def read_outputs(text):
     """The agent's standard output -> {'published': {t: commit}, 'abandoned': {t: why}, 'stopped': {t: why},
-    'unsettled': [t]}."""
-    out = {'published': {}, 'abandoned': {}, 'stopped': {}, 'unsettled': []}
+    'unsettled': [t], 'rounds': [round]}: `run`'s round lines are its
+    fifth kind, each {'n', 'ok', 'took_ms', 'late_ms', 'skipped',
+    'begun' (None for -), 'under_way'}, in order."""
+    out = {'published': {}, 'abandoned': {}, 'stopped': {}, 'unsettled': [], 'rounds': []}
     for ln in text.splitlines():
         f = ln.split()
-        if len(f) == 2 and f[0].startswith('snap/'):
+        r = ROUND_LINE.fullmatch(ln)
+        if r:
+            out['rounds'].append({'n': int(r[1]), 'ok': r[2] == 'ok', 'took_ms': int(r[3]), 'late_ms': int(r[4]),
+                                  'skipped': int(r[5]), 'begun': None if r[6] == '-' else r[6],
+                                  'under_way': int(r[7])})
+        elif len(f) == 2 and f[0].startswith('snap/'):
             out['published'][f[0][len('snap/'):]] = f[1]
         elif len(f) == 3 and f[0] == 'abandoned':
             out['abandoned'][f[1]] = f[2]
@@ -329,7 +358,7 @@ def read_outputs(text):
         elif len(f) == 2 and f[0] == 'unsettled':
             out['unsettled'].append(f[1])
         elif ln.strip():
-            raise RigError(f'a line of the agent\'s output that is not one of its four: {ln!r}')
+            raise RigError(f'a line of the agent\'s output that is not one of its five: {ln!r}')
     return out
 
 
@@ -515,6 +544,145 @@ def late_premise(stopped, t, trace, continued):
     return bad
 
 
+def read_arrivals(text):
+    """LABEL.rounds.tsv -> [seconds]: the rig's time at which each round
+    line came, in order (the line's number, the time)."""
+    out = []
+    for k, ln in enumerate(text.splitlines(), 1):
+        f = ln.split('\t')
+        try:
+            ok = len(f) == 2 and int(f[0]) == k
+            at = float(f[1]) if ok else 0.0
+        except ValueError:
+            ok = False
+        if not ok:
+            raise RigError(f'rounds.tsv: line {k} is not {k}, seconds: {ln!r}')
+        out.append(at)
+    return out
+
+
+def judge_rounds(rounds, arrivals, want, every=RUN_EVERY):
+    """`run`'s round lines and the rig's arrival times of them -> [what is
+    not so]: at least WANT rounds, numbered from 1, each ok, each
+    beginning a publish of a name of its own; a round that ended before
+    the next tick skips none, and the next begins within TICK_SLACK s
+    of that tick; and on the rig's clock each round begins (its line's
+    arrival less its took_ms) EVERY s times the ticks it took after the
+    one before, give or take the rounds' own late_ms and TICK_SLACK."""
+    bad = []
+    if len(rounds) < want:
+        bad.append(f'{len(rounds)} rounds, not {want} or more')
+    nums = [r['n'] for r in rounds]
+    if nums != list(range(1, len(rounds) + 1)):
+        bad.append(f'the rounds are numbered {nums}, not from 1 on')
+    failed = [r['n'] for r in rounds if not r['ok']]
+    if failed:
+        bad.append(f'round(s) {failed} failed')
+    names = [r['begun'] for r in rounds]
+    if None in names:
+        bad.append(f'round(s) {[r["n"] for r in rounds if r["begun"] is None]} began no publish')
+    given = [n for n in names if n is not None]
+    if len(set(given)) != len(given):
+        bad.append(f'a name begun twice: {given}')
+    if len(arrivals) < len(rounds):
+        bad.append(f'the rig saw {len(arrivals)} of the {len(rounds)} round lines come')
+        return bad
+    began = [a - r['took_ms'] / 1000 for a, r in zip(arrivals, rounds)]
+    for a, b, ta, tb in zip(rounds, rounds[1:], began, began[1:]):
+        if a['late_ms'] + a['took_ms'] < every * 1000:
+            if a['skipped']:
+                bad.append(f"round {a['n']} ended before its next tick and says it skipped {a['skipped']}")
+            if b['late_ms'] > TICK_SLACK * 1000:
+                bad.append(f"round {b['n']} began {b['late_ms']} ms after its tick, round {a['n']} having ended "
+                           'before it')
+        want_gap = every * (a['skipped'] + 1) + (b['late_ms'] - a['late_ms']) / 1000
+        if abs((tb - ta) - want_gap) > TICK_SLACK:
+            bad.append(f"round {b['n']} began {tb - ta:.2f} s after round {a['n']} on the rig's clock, not "
+                       f'{want_gap:.2f} s')
+    return bad
+
+
+def ended_within(term, ended, limit=END_WITHIN):
+    """LABEL.term-at and LABEL.ended-at -> [what is not so]: the run ended
+    within LIMIT s of the rig's signal."""
+    try:
+        gap = float(ended) - float(term)
+    except ValueError:
+        raise RigError(f'term-at, ended-at: not times: {term!r}, {ended!r}') from None
+    return [] if gap <= limit else [f'it ended {gap:.2f} s after the signal, not within {limit} s']
+
+
+RUN_SCENARIOS = ('run', 'runkill', 'runtwice', 'runheld', 'runbad')
+
+
+def judge_run(cid, cd, scen, outs, holds, premise, text):
+    """The pins of a case of `skyzfs-agent run` (agent-record.sh's run
+    scenarios); TEXT reads a file of the run's directory, '' where there
+    is none. The first run's status is FIRST_RC's pin (runkill's is the
+    kill's premise)."""
+    def at(path):
+        return os.path.join(cd, path)
+
+    def ended(label, what):
+        term, end = text(at(f'{label}.term-at')).strip(), text(at(f'{label}.ended-at')).strip()
+        if term and end:
+            holds(f'pin_{cid}_ended_on_{what}', ended_within(term, end), 'server',
+                  f'it ended within {END_WITHIN} s of the {what.replace("_", " ")}')
+
+    rounds = outs.get('publish', {}).get('rounds', [])
+    if scen in ('run', 'runheld'):
+        holds(f'pin_{cid}_rounds', judge_rounds(rounds, read_arrivals(text(at('publish.rounds.tsv'))), 3), 'server',
+              f'{len(rounds)} rounds, every {RUN_EVERY} s on the rig\'s clock, each ok and beginning its own publish')
+        ended('publish', 'sigterm')
+    if scen == 'runheld':
+        before = text(at('held.rounds')).strip()
+        hrc, src = text(at('held.rc')).strip(), text(at('held-settle.rc')).strip()
+        bad = ([] if hrc == '8' else [f'recover beside the run ended {hrc or "with no status"}, not 8: '
+                                      f'{flat(text(at("held.err")))[-200:]}'])
+        bad += ([] if src == '8' else [f'settle beside the run ended {src or "with no status"}, not 8: '
+                                       f'{flat(text(at("held-settle.err")))[-200:]}'])
+        bad += ([f'recover printed {flat(text(at("held.out")))[:200]!r}'] if text(at('held.out')).strip() else [])
+        if not before.isdigit() or int(before) >= len(rounds):
+            bad.append(f'no round line after the refusals ({before or "no count"} before them, {len(rounds)} in all)')
+        holds(f'pin_{cid}_held', bad, 'server',
+              f'recover and settle beside the run ended 8; the run went on to round {len(rounds)}')
+    if scen == 'runkill':
+        r2 = outs.get('run2', {}).get('rounds', [])
+        rrc = text(at('run2.rc')).strip()
+        holds(f'pin_{cid}_restarted',
+              ([] if rrc == '0' else [f'the run started again ended {rrc or "with no status"}, not 0: '
+                                      f'{flat(text(at("run2.err")))[-200:]}'])
+              + judge_rounds(r2, read_arrivals(text(at('run2.rounds.tsv'))), 2), 'server',
+              f'a run started again in the same directory: {len(r2)} rounds, ended {rrc} on SIGTERM')
+        ended('run2', 'sigterm')
+    if scen == 'runtwice':
+        ended('publish', 'second_signal')
+    if scen == 'runbad':
+        kind = text(at('bad.kind')).strip()
+        if kind not in ('corrupt', 'volume'):
+            raise RigError(f'bad.kind: {kind!r}, not corrupt or volume')
+        if kind == 'volume':
+            orc = text(at('other.rc')).strip()
+            premise(f'premise_{cid}_other_record', [] if orc == '1' else
+                    [f'the publish of another volume ended {orc or "with no status"}, not 1 (no daemon there)'],
+                    'a record of another volume, saved by the agent itself')
+        before = text(at('bad.rounds')).strip()
+        last = text(at('publish.out')).splitlines()[-1:] or ['']
+        r = ROUND_LINE.fullmatch(last[0])
+        bad = []
+        if not before.isdigit():
+            raise RigError(f'bad.rounds: {before!r}, not a count')
+        n = int(before) + 1
+        if not r or int(r[1]) != n or r[2] != 'failed':
+            bad.append(f'the last line is {last[0]!r}, not round {n} failed')
+        words = 'the record is corrupt' if kind == 'corrupt' else 'the record is of volume '
+        if f'skyzfs-agent: round {n}: {words}' not in text(at('publish.err')):
+            bad.append(f'standard error does not say "round {n}: {words}": {flat(text(at("publish.err")))[-200:]}')
+        holds(f'pin_{cid}_record_judged', bad, 'server',
+              f'the record {"made corrupt" if kind == "corrupt" else "of another volume"} met at round {n}\'s '
+              'restart: the round\'s line, failed, was the last; then exit 6')
+
+
 def main_points(argv):
     global EFFECTS
     try:
@@ -662,7 +830,7 @@ def main():
                 trace = read_trace(text_of(os.path.join(cd, 'trace.tsv'), need=False))
                 reached.update(e for _, e, _, _ in trace)
                 outs = {}
-                for run in ('publish', 'first', 'settle-frozen', 'settle', 'retry'):
+                for run in ('publish', 'first', 'run2', 'settle-frozen', 'settle', 'retry'):
                     txt = text_of(os.path.join(cd, f'{run}.out'), need=False)
                     if os.path.exists(os.path.join(rdir, cd, f'{run}.out')):
                         outs[run] = read_outputs(txt)
@@ -736,6 +904,8 @@ def main():
                     holds(f'pin_{cid}_daemon_killed', [] if krc == '137' else
                           [f'the daemon ended {krc or "with no status"}, not by the rig\'s SIGKILL (137): it had '
                            'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
+                if scen in RUN_SCENARIOS:
+                    judge_run(cid, cd, scen, outs, holds, premise, lambda path: text_of(path, need=False))
                 if scen == 'sweep' and not kill:
                     stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                     holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
