@@ -636,10 +636,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             return Err(Error::Full);
         }
         // The count first, as each round of `settle` does: it sets the
-        // limits of the sweep's read of the holds, which grows with the
-        // datasets (a failed count leaves the bases, and the calls after
-        // it say what is wrong). Then the sweep, before anything is
-        // written in the directory ([`Agent::sweep`]).
+        // limits of the sweep's reads, which grow with the datasets and
+        // the snapshots counted (a failed count leaves the bases, and
+        // the calls after it say what is wrong). Then the sweep, before
+        // anything is written in the directory ([`Agent::sweep`]).
         let _counted = self.zfs.count(&self.pool);
         self.sweep()?;
         let props = self.zfs.props(&self.pool)?;

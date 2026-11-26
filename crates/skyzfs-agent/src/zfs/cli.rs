@@ -18,9 +18,15 @@
 //! - [`Zfs::nocacheflush`]: the module parameter's file,
 //!   [`NOCACHEFLUSH`].
 //! - [`Zfs::snapshot`]: `zfs snapshot -r POOL@T` ("The take", below).
-//! - [`Zfs::members`] and [`Zfs::tagged`]: read-only channel programs
-//!   (`zfs program -n -j`), `members.lua` and `tagged.lua`, beside this
-//!   file, on their standard input.
+//! - [`Zfs::members`]: a read-only channel program (`zfs program -n
+//!   -j`), `members.lua`, beside this file, on its standard input.
+//! - [`Zfs::tagged`]: `zfs list -H -p -r -t snapshot -o name,userrefs
+//!   POOL`, then `zfs holds -H` on the snapshots it lists with a hold, at
+//!   most [`HOLDS_AT_ONCE`] and [`HOLDS_ARG_BYTES`] of names a command.
+//!   No channel program: a read-only program may hold up the pool's
+//!   sync for as long as it runs (#155), and this read walks every
+//!   snapshot in the pool (S1 of #161's review; the lead's ruling,
+//!   M2.6c-5d).
 //! - [`Zfs::datasets`]: `zfs list` and twice `zfs get` ("The manifest's
 //!   read", below).
 //! - [`Zfs::destroy`]: `zfs destroy -r POOL@T`.
@@ -160,8 +166,8 @@
 //!
 //! - `zfs program` reads a script named `-` from its standard input, and
 //!   writes a returned GUID above 2^63 as a negative number.
-//! - The members and tagged programs run and return what the parsers
-//!   read, on the rig's pool and on a mirror of two files.
+//! - The members program runs and returns what the parser reads, on the
+//!   rig's pool and on a mirror of two files.
 //! - The channel-program sandbox has no `pcall` (a take program of
 //!   `366b217`, since dropped, failed on it on both images).
 //! - The count of the datasets (`zfs list -r -H -o name -t
@@ -233,24 +239,35 @@
 //!     200 ms for each of the pool's datasets as last counted, at most 35
 //!     minutes; a value read alone is a read as below;
 //!   - the manifest's list, which lists every snapshot as well: the
-//!     same, with each snapshot counted as a dataset (R1 of #157's
-//!     review, the lead's ruling);
-//!   - `zfs holds -r` and `tagged.lua`, which walk every snapshot in the
-//!     pool: a read's limit (below), plus for each snapshot counted
-//!     [`Limits::holds_per_snapshot`] (`holds -r`; provisional at 200 ms
-//!     until testing's `holds -r` recording sets it) or 200 ms
-//!     (`tagged.lua`, which took about 0.37 ms a snapshot to the list's
-//!     0.40 in testing's recorder, run 45781769557), at most 35 minutes
-//!     (R1-reach of #160's review, the lead's ruling (b)); a read's limit
-//!     where the snapshots were not counted;
+//!     same, plus [`Limits::list_per_snapshot`], 10 ms, for each snapshot
+//!     counted, at most 35 minutes (R1 of #157's review and the lead's
+//!     ruling on M2.6c-5d);
+//!   - `zfs holds -r` and the sweep's list of snapshots with their holds
+//!     ([`Zfs::tagged`]), which walk every snapshot in the pool: a read's
+//!     limit (below), plus for each snapshot counted 10 ms
+//!     ([`Limits::holds_per_snapshot`] for `holds -r`,
+//!     [`Limits::list_per_snapshot`] for the list), at most 35 minutes
+//!     (R1-reach of #160's review, the lead's ruling (b)); a read's
+//!     limit where the snapshots were not counted. Each of the sweep's
+//!     `zfs holds -H` takes a read's limit;
+//!   - the 10 ms a snapshot is about five times the slowest seen, on an
+//!     idle pool in testing's recorder (run 45800940382, one run on each
+//!     image): on Ubuntu 24.04 at 101 000 snapshots, `holds -r` 1.72 ms
+//!     a snapshot, the snapshots' list 1.84 ms and their count 1.25 ms;
+//!     on 26.04, `holds -r` 0.37 ms and the list 0.41 ms (the lead's
+//!     ruling on M2.6c-5d);
 //!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
 //!     dataset counted, at most 20 minutes;
 //!   - the count itself 60 s; a count that fails leaves the bases. After
 //!     a dataset count, `zfs list -r -H -o name -t snapshot` counts the
-//!     snapshots, within a read's limit. Where that fails, the list takes
-//!     the gets' limit: the conservative reading (the design is silent),
-//!     which gives no longer a limit than before on a pool whose commands
-//!     fail, and the list's own failure then names the read each round.
+//!     snapshots, within 35 minutes: it took 1.25 ms a snapshot on
+//!     Ubuntu 24.04 (126.2 s at 101 000), past a read's limit on the
+//!     datasets, and a limit that rests on the count it makes would cut
+//!     it off (the lead's ruling on M2.6c-5d). Where it fails, the list
+//!     takes the gets' limit and the other walks a read's: the
+//!     conservative reading (the design is silent), which gives no longer
+//!     a limit than before on a pool whose commands fail. A walk that
+//!     then fails says that the snapshots were not counted, and why.
 //!
 //!   They come from testing's recordings on Ubuntu 26.04 (run
 //!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
@@ -260,7 +277,8 @@
 //!   2.2 and 21.5 s; the count 0.23, 1.7 and 16.4 s; `zfs snapshot -r`
 //!   2.2, 4.4 and 46.3 s. In #152, at 10 001 file systems on a slow
 //!   runner, `zfs snapshot -r` took 391 s under a heavy write load, and
-//!   `tagged.lua` 68.7 s with none. In testing's scale run 45733395008
+//!   the sweep's channel program then (`tagged.lua`, since replaced by
+//!   the CLI) 68.7 s with none. In testing's scale run 45733395008
 //!   (26.04, under a write load) at 10 000 datasets, `zfs get -H` took
 //!   468.2 s and `zfs list` 33.8 s, so the manifest's read about 970 s,
 //!   less than one of its reads' limits (2060 s). Correctness does not
@@ -273,9 +291,11 @@
 //!   and the sweep add some 4 to 5 minutes at 10 000 (review of #153).
 //!   Each round's count also lists the snapshots' names once (R1 of
 //!   #157's review), and the manifest's list, `holds -r` and the sweep's
-//!   `tagged.lua` walk every snapshot: about 0.4 ms a snapshot each in
-//!   testing's recorder (41.2 s for the list at 101 000 snapshots, run
-//!   45781769557).
+//!   list walk every snapshot: about 0.4 ms a snapshot each in testing's
+//!   recorder (41.2 s for the manifest's list at 101 000 snapshots, run
+//!   45781769557; `holds -r` 37.3 s there, about 0.37 ms, run
+//!   45800940382). The sweep's `zfs holds -H` reads only the snapshots
+//!   that have a hold.
 //!   The design's scale is tens to hundreds of datasets.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -296,8 +316,53 @@ pub const NOCACHEFLUSH: &str = "/sys/module/zfs/parameters/zfs_nocacheflush";
 /// docs](self)).
 pub const MEMBERS_PROGRAM: &str = include_str!("cli/members.lua");
 
-/// The channel program that finds the snapshots with a hold.
-pub const TAGGED_PROGRAM: &str = include_str!("cli/tagged.lua");
+/// How many snapshots one `zfs holds -H` of the sweep names at most
+/// ([`Zfs::tagged`]). [`HOLDS_ARG_BYTES`] bounds a command too, and
+/// first where the names are long.
+pub const HOLDS_AT_ONCE: usize = 1000;
+
+/// How many bytes of snapshot names one `zfs holds -H` of the sweep
+/// carries at most, counting each name with its NUL and its argument
+/// pointer ([`arg_cost`]). The kernel counts the same against its limit
+/// on a command's arguments and environment together (`fs/exec.c`,
+/// `bprm_stack_limits`): a quarter of the stack limit (2 MiB with the
+/// default 8 MiB, 256 KiB at `LimitSTACK=1M`), and never less than
+/// `ARG_MAX`, 128 KiB. 64 KiB is half that floor, so the command's other words
+/// and the agent's environment have 64 KiB whatever the stack limit:
+/// about 248 names of 255 bytes, the longest ZFS allows. The design is
+/// silent on the agent's environment; half the floor is the
+/// conservative reading. Codex's P2 on #162 found 1000 such names
+/// (264 000 bytes) over the 256 KiB of `LimitSTACK=1M`.
+pub const HOLDS_ARG_BYTES: usize = 64 << 10;
+
+/// What one argument costs against the kernel's limit on a command's
+/// arguments: its bytes, its NUL, and its pointer in `argv`.
+pub fn arg_cost(arg: &str) -> usize {
+    arg.len() + 1 + std::mem::size_of::<usize>()
+}
+
+/// The sweep's commands of `zfs holds -H`: `names` cut, in their order,
+/// into runs of at most [`HOLDS_AT_ONCE`] names and at most
+/// [`HOLDS_ARG_BYTES`] of [`arg_cost`], each run at least one name. A
+/// name longer than the bound alone (ZFS allows none) is a run alone.
+pub fn holds_batches<'a, 'b>(names: &'b [&'a str]) -> Vec<&'b [&'a str]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, name) in names.iter().enumerate() {
+        let cost = arg_cost(name);
+        if i > start && (i - start == HOLDS_AT_ONCE || bytes + cost > HOLDS_ARG_BYTES) {
+            batches.push(&names[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += cost;
+    }
+    if start < names.len() {
+        batches.push(&names[start..]);
+    }
+    batches
+}
 
 /// The most instructions a channel program is let run: the default of
 /// `zfs_lua_max_instrlim`.
@@ -311,11 +376,12 @@ pub const PROGRAM_MEMORY: u64 = 100 << 20;
 /// takes [`Limits::per_dataset`] more for each of the pool's datasets as
 /// [`Zfs::count`] last read them, up to [`Limits::most`]; each of the
 /// manifest's reads take [`Limits::full_per_dataset`] more, up to
-/// [`Limits::full_most`], and its list as much again for each snapshot
-/// counted, as does `tagged.lua`; `zfs holds -r` takes
-/// [`Limits::holds_per_snapshot`] for each (the lead's rules on
-/// M2.6c-2b, on N2 of #153's review, on R1 of #157's and on R1-reach of
-/// #160's; provisional; [module docs](self)).
+/// [`Limits::full_most`], and its list [`Limits::list_per_snapshot`]
+/// for each snapshot counted, as does the sweep's list of snapshots;
+/// `zfs holds -r` takes [`Limits::holds_per_snapshot`] for each (the
+/// lead's rules on M2.6c-2b, on N2 of #153's review, on R1 of #157's,
+/// on R1-reach of #160's and on M2.6c-5d; provisional; [module
+/// docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// A command that reads, on a pool of no datasets: `zpool status`,
@@ -330,8 +396,7 @@ pub struct Limits {
     /// The most a read or a change is let run, however many datasets.
     pub most: Duration,
     /// What each of the pool's datasets adds to each of the manifest's
-    /// reads ([`Zfs::datasets`]), whose base is [`Limits::read`], and
-    /// what each snapshot adds to its list. It was
+    /// reads ([`Zfs::datasets`]), whose base is [`Limits::read`]. It was
     /// set at about twice the 90 ms a dataset the members program in full
     /// took on Ubuntu 26.04 (testing's run 45720225770), which the
     /// manifest's reads replaced; it is kept (the lead's ruling on
@@ -347,10 +412,30 @@ pub struct Limits {
     pub count: Duration,
     /// What each snapshot counted adds to `zfs holds -r`, which walks
     /// every snapshot in the pool ([`Zfs::held`], [`Zfs::hold`],
-    /// [`Zfs::release`]). Provisional: the list's allowance until
-    /// testing's `holds -r` recording at R1's scales gives its own figure
-    /// (the lead's ruling on R1-reach of #160's review).
+    /// [`Zfs::release`]). Set from testing's `holds -r` recording at
+    /// R1's scales (the lead's ruling on M2.6c-5d): it grew with every
+    /// snapshot in the pool, not with the members it printed. On an idle
+    /// pool, Ubuntu 24.04 took about 1.72 ms a snapshot (18.9 s at
+    /// 11 000 snapshots, 174.2 s at 101 000) and 26.04 0.36 to 0.37 ms
+    /// (3.9 s at 11 000, 21.9 s at 60 500, 37.3 s at 101 000). 10 ms is
+    /// about five times the slower. The figures rest on one run on each
+    /// image (run 45800940382), not under a write load.
     pub holds_per_snapshot: Duration,
+    /// What each snapshot counted adds to the manifest's list
+    /// ([`Zfs::datasets`]) and to the sweep's list of snapshots
+    /// ([`Zfs::tagged`]), which list every snapshot in the pool (the
+    /// lead's ruling on M2.6c-5d). The snapshots' list took about
+    /// 1.84 ms a snapshot on Ubuntu 24.04 (185.9 s at 101 000 snapshots)
+    /// and 0.41 ms on 26.04 (41.6 s); 10 ms is about five times the
+    /// slower. The figures rest on one run on each image (run
+    /// 45800940382), on an idle pool, at 1000 snapshots a dataset. The
+    /// cost of a snapshot grows with the snapshots a dataset holds: the
+    /// review of #162 read 0.40 ms a line up to 5500 a dataset and
+    /// 1.06 ms at 12 500, beside writers, and run 45801291679 read
+    /// 1.56 ms a snapshot on 24.04: a margin of about six (N-b, N-c of
+    /// #162's review). Before this ruling, a snapshot counted as a
+    /// dataset: [`Limits::full_per_dataset`], 200 ms.
+    pub list_per_snapshot: Duration,
 }
 
 impl Default for Limits {
@@ -363,7 +448,8 @@ impl Default for Limits {
             full_per_dataset: Duration::from_millis(200),
             full_most: Duration::from_secs(35 * 60),
             count: Duration::from_secs(60),
-            holds_per_snapshot: Duration::from_millis(200),
+            holds_per_snapshot: Duration::from_millis(10),
+            list_per_snapshot: Duration::from_millis(10),
         }
     }
 }
@@ -402,6 +488,9 @@ pub struct ZfsCli<H> {
     host: H,
     limits: Limits,
     scale: Scale,
+    /// Why the last count did not count the snapshots, where it counted
+    /// the datasets and not them: the walks' errors name it.
+    uncounted: Option<String>,
 }
 
 impl<H: Host> ZfsCli<H> {
@@ -411,6 +500,22 @@ impl<H: Host> ZfsCli<H> {
             host,
             limits,
             scale: Scale::Base,
+            uncounted: None,
+        }
+    }
+
+    /// `e`, a walk's error, with the reason its limit did not grow with
+    /// the snapshots where their count failed (the lead's ruling on
+    /// M2.6c-5d: an error that names the count, and not exit 1 on every
+    /// round with no reason). A missing pool or a vanished snapshot is
+    /// returned as it is.
+    fn walked(&self, e: ZfsError) -> ZfsError {
+        match (e, &self.uncounted) {
+            (ZfsError::Other(why), Some(count)) => ZfsError::Other(format!(
+                "{why} (on a limit that did not grow with the snapshots, since \
+                 their count failed: {count})"
+            )),
+            (e, _) => e,
         }
     }
 
@@ -443,8 +548,9 @@ impl<H: Host> ZfsCli<H> {
 
     /// The limit of the manifest's list ([`Zfs::datasets`]), which lists
     /// every snapshot in the pool as well as its datasets: each snapshot
-    /// counted adds what a dataset does (R1 of #157's review, the lead's
-    /// ruling). Where the snapshots' count failed, the datasets' scale:
+    /// counted adds [`Limits::list_per_snapshot`] (R1 of #157's review,
+    /// the lead's ruling on M2.6c-5d), at most [`Limits::full_most`].
+    /// Where the snapshots' count failed, the datasets' scale:
     /// the conservative reading, no longer a limit than before on a pool
     /// whose commands fail.
     fn list_limit(&self) -> Duration {
@@ -454,21 +560,25 @@ impl<H: Host> ZfsCli<H> {
                 datasets,
                 snapshots: Some(snapshots),
             } => grown(
-                l.read,
-                l.full_per_dataset,
+                grown(l.read, l.full_per_dataset, l.full_most, datasets),
+                l.list_per_snapshot,
                 l.full_most,
-                datasets.saturating_add(snapshots),
+                snapshots,
             ),
             _ => self.full_read_limit(),
         }
     }
 
     /// The limit of a read that walks every snapshot in the pool as well
-    /// as its datasets, `zfs holds -r` and `tagged.lua`: a read's (at most
-    /// [`Limits::most`]), and `per_snapshot` more for each snapshot
-    /// counted, at most [`Limits::full_most`] (R1-reach of #160's review, the lead's
-    /// ruling (b)). Where the snapshots were not counted, a read's limit,
-    /// as before.
+    /// as its datasets, `zfs holds -r` and the sweep's list of snapshots
+    /// ([`Zfs::tagged`]): a read's (at most [`Limits::most`]), and
+    /// `per_snapshot` more for each snapshot counted, at most
+    /// [`Limits::full_most`] (R1-reach of #160's review, the lead's ruling
+    /// (b)). Where the snapshots were not counted, a read's limit, as
+    /// before. A read's limit is its floor only while `most` is at most
+    /// `full_most`, as in the defaults (20 and 35 min): with a larger
+    /// `most`, the cap could cut it below a read's (nit E of #161's
+    /// review).
     fn walk_limit(&self, per_snapshot: Duration) -> Duration {
         let l = &self.limits;
         match self.scale {
@@ -603,8 +713,10 @@ impl<H: Host> ZfsCli<H> {
     /// and its read (testing's agent rig, a snapshot destroyed during `zfs
     /// holds -r`; the lead's ruling). `zpool` and `zfs program` say `no
     /// such pool` of a pool that is not there; a program whose pool is
-    /// listed is read as vanished too, which is not known to happen (a
-    /// program runs in one sync task), so its reading again is
+    /// listed is read as vanished too, which is not known to happen: a
+    /// read-only program holds the pool's configuration lock for its
+    /// whole run (`dsl_pool_hold`), and a destroy, a sync task, takes it
+    /// to write (nit B of #161's review), so its reading again is
     /// defensive.
     /// Where `zpool list` does not answer, an error that says so, and not
     /// [`ZfsError::NoPool`]: the conservative reading.
@@ -727,7 +839,7 @@ impl<H: Host> ZfsCli<H> {
         let holds = match self.zfs(&args, limit, true, pool_of(snapshot)) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
-            Err(e) => return Err(e),
+            Err(e) => return Err(self.walked(e)),
         };
         Ok(Some(
             holds
@@ -739,6 +851,107 @@ impl<H: Host> ZfsCli<H> {
                 })
                 .collect(),
         ))
+    }
+
+    /// One read of [`Zfs::tagged`]: the snapshots in `pool` that have
+    /// any hold (`userrefs` above 0), by `zfs list` within the list's
+    /// limit on the snapshots counted ([`ZfsCli::walk_limit`]), then their
+    /// holds by `zfs holds -H`, at most [`HOLDS_AT_ONCE`] snapshots and
+    /// [`HOLDS_ARG_BYTES`] of names a command ([`holds_batches`]), each
+    /// within a read's limit. `zfs holds -r` would not do: it reads
+    /// the snapshots of one name `t` alone. A snapshot gone between the
+    /// two reads (`dataset does not exist`, or libzfs's `no such pool or
+    /// dataset` where `zpool list` lists the pool) is
+    /// [`ZfsError::Vanished`], and the whole read is made again. A
+    /// dataset gone during the list is no error: libzfs ends its walk
+    /// there and the list exits 0 without that dataset's snapshots,
+    /// whose holds are gone with them, which is right for the sweep; the
+    /// list's own `no such pool or dataset` is read again all the same,
+    /// defensively (N-a of #162's review). A pool that is not there is [`ZfsError::NoPool`] where
+    /// `zpool list` agrees: `zfs list POOL` says `cannot open 'POOL':
+    /// dataset does not exist` of it.
+    fn tagged_once(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+        let list = [
+            "list",
+            "-H",
+            "-p",
+            "-r",
+            "-t",
+            "snapshot",
+            "-o",
+            "name,userrefs",
+            pool,
+        ];
+        let limit = self.walk_limit(self.limits.list_per_snapshot);
+        let listed = self
+            .zfs_bytes(&list, limit, pool, true)
+            .map_err(|e| self.walked(e))?;
+        let listed = String::from_utf8_lossy(&listed);
+        let mut held = Vec::new();
+        for line in listed.lines() {
+            let refs = line
+                .rsplit_once('\t')
+                .and_then(|(name, refs)| Some((name, refs.parse::<u64>().ok()?)));
+            match refs {
+                Some((name, refs)) if name.contains('@') => {
+                    if refs > 0 {
+                        held.push(name);
+                    }
+                }
+                _ => {
+                    return Err(ZfsError::Other(format!(
+                        "{}: a line that is not a snapshot and its count of holds: {line:?}",
+                        command("zfs", &list)
+                    )))
+                }
+            }
+        }
+        let mut tagged = BTreeSet::new();
+        for names in holds_batches(&held) {
+            let mut args = vec!["holds", "-H"];
+            args.extend_from_slice(names);
+            // Read as bytes: another holder's tag may hold any byte but
+            // NUL, and one that is not UTF-8 must not fail the sweep (D1
+            // of #162's review).
+            let output = self.exec("zfs", &args, &[], self.read_limit())?;
+            if output.code != Some(0) {
+                return Err(match self.failed("zfs", &args, &output, true, pool) {
+                    ZfsError::NoSnapshot => ZfsError::Vanished(format!(
+                        "{}: a snapshot listed with a hold is gone",
+                        command("zfs", &args)
+                    )),
+                    e => e,
+                });
+            }
+            let asked: BTreeSet<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+            for line in output.stdout.split(|&b| b == b'\n') {
+                let mut fields = line.split(|&b| b == b'\t');
+                // A line of each hold: the snapshot, the tag, when. Only
+                // another holder's tag that holds a newline makes a line
+                // whose first field is not a snapshot this command asked
+                // for, or that has no second field: such a line is
+                // skipped (F1 and N-e of #162's review). The agent's own
+                // tag has no newline, so no hold of the agent's is
+                // skipped. Not guarded: another holder's tag that begins
+                // with the agent's and then a tab or a newline, or that
+                // forges a whole line naming an asked snapshot, reads as
+                // the agent's hold there. The sweep's release then fails
+                // with `no such tag`, its check reads the same line and
+                // says the hold was kept, and so the sweep fails at every
+                // start until a person releases that hold. Nothing of
+                // another holder's is released (F1-R of #162's review).
+                let (Some(snapshot), Some(held_by)) = (fields.next(), fields.next()) else {
+                    continue;
+                };
+                if held_by != tag.as_bytes() || !asked.contains(snapshot) {
+                    continue;
+                }
+                if let Some((_, t)) = String::from_utf8_lossy(snapshot).split_once('@') {
+                    tagged.insert(t.to_string());
+                }
+            }
+        }
+        Ok(tagged)
     }
 
     /// A channel program's standard output, where it exits 0 within
@@ -904,6 +1117,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
         let counted = self
             .run("zfs", &args, &[], self.limits.count, false, pool)
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        self.uncounted = None;
         let datasets = match counted {
             Ok(n) => n,
             Err(e) => {
@@ -915,13 +1129,18 @@ impl<H: Host> Zfs for ZfsCli<H> {
             datasets,
             snapshots: None,
         };
-        // The snapshots, for the list's limit alone, within a read's
-        // limit on the datasets' scale.
+        // The snapshots, for the limits of the reads that walk them (the
+        // manifest's list, `zfs holds -r` and the sweep's list), within
+        // the longest limit: not within one that hangs on the count it
+        // makes (the lead's ruling on M2.6c-5d).
         let args = ["list", "-r", "-H", "-o", "name", "-t", "snapshot", pool];
-        let snapshots = self
-            .run("zfs", &args, &[], self.read_limit(), false, pool)
-            .ok()
-            .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        let snapshots = match self.run("zfs", &args, &[], self.limits.full_most, false, pool) {
+            Ok(out) => Some(out.lines().filter(|line| !line.is_empty()).count() as u64),
+            Err(e) => {
+                self.uncounted = Some(e.to_string());
+                None
+            }
+        };
         self.scale = Scale::Counted {
             datasets,
             snapshots,
@@ -945,7 +1164,9 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         let limit = self.full_read_limit();
         let list = list_words(pool);
-        let listed = self.zfs_bytes(&list, self.list_limit(), pool, true)?;
+        let listed = self
+            .zfs_bytes(&list, self.list_limit(), pool, true)
+            .map_err(|e| self.walked(e))?;
         let mut datasets = parse_listed(&listed, pool, t)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
         let get = get_words(pool, PAIRS);
@@ -1086,18 +1307,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
-        let returned = self.again(|zfs| {
-            let limit = zfs.walk_limit(zfs.limits.full_per_dataset);
-            zfs.program(pool, TAGGED_PROGRAM, &[pool, tag], true, limit)
-        })?;
-        match returned.get("tagged") {
-            Some(Value::Object(names)) => Ok(names.keys().cloned().collect()),
-            // An empty table: ZFS may write it as an empty list.
-            Some(Value::Array(names)) if names.is_empty() => Ok(BTreeSet::new()),
-            _ => Err(ZfsError::Other(
-                "zfs program (tagged): no `tagged` object returned".into(),
-            )),
-        }
+        self.again(|zfs| zfs.tagged_once(pool, tag))
     }
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
