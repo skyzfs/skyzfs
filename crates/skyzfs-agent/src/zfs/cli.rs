@@ -23,6 +23,7 @@
 //! - [`Zfs::tagged`]: `zfs list -H -p -r -t snapshot -o name,userrefs
 //!   POOL`, then `zfs holds -H` on the snapshots it lists with a hold, at
 //!   most [`HOLDS_AT_ONCE`] and [`HOLDS_ARG_BYTES`] of names a command.
+//!   Each command's holds are checked ("The holds' check", below).
 //!   No channel program: a read-only program may hold up the pool's
 //!   sync for as long as it runs (#155), and this read walks every
 //!   snapshot in the pool (S1 of #161's review; the lead's ruling,
@@ -30,8 +31,10 @@
 //! - [`Zfs::datasets`]: `zfs list` and twice `zfs get` ("The manifest's
 //!   read", below).
 //! - [`Zfs::destroy`]: `zfs destroy -r POOL@T`.
-//! - [`Zfs::held`]: `zfs holds -H -r POOL@T`, and the members program
-//!   where `POOL@T` has the tag.
+//! - [`Zfs::held`]: `zfs holds -H -r POOL@T`, then `zfs list -H -p -o
+//!   name,userrefs -t snapshot` of the snapshots it names, for the
+//!   holds' check (below), and the members program where `POOL@T` has
+//!   the tag.
 //! - [`Zfs::hold`] and [`Zfs::release`]: `zfs hold -r` and `zfs release
 //!   -r`. A hold that ZFS refuses because a member has the tag already
 //!   held nothing (ZFS holds all or none): the members are read with the
@@ -39,6 +42,7 @@
 //!   it is held only where every member's `@t` has the tag (F3 of the
 //!   review of #147). A release that ZFS refuses for want of the tag is
 //!   checked with `zfs holds -H -r pool@t`: no member may keep the tag.
+//!   Both read the holds as [`Zfs::held`] does, with their check.
 //!   A message is matched on the command's standard error, on the words
 //!   after a line's last `: `, so that a dataset's name is never read as
 //!   one (S1).
@@ -56,7 +60,8 @@
 //! said `no such pool or dataset` of a dataset or snapshot destroyed
 //! as the command read it (testing's agent rig, `zfs holds -r` of a
 //! `@t` being destroyed): [`ZfsError::Vanished`], which the reads of
-//! [`Zfs::members`], [`Zfs::held`] and [`Zfs::tagged`] make again, at
+//! [`Zfs::members`], [`Zfs::held`] and [`Zfs::tagged`], and the holds'
+//! reads of [`Zfs::hold`] and [`Zfs::release`], make again, at
 //! most [`VANISHED_READS`] times in all; a read that goes on vanishing
 //! is that error. Where `zpool list` fails, an error that says so: a
 //! pool is never taken for gone on a message alone.
@@ -65,6 +70,31 @@
 //! [`ZfsError::NoPool`] (recorded on both images).
 //! A command past its limit is killed and not waited for ([`Host`]), and
 //! gives [`ZfsError::Other`].
+//!
+//! # The holds' check
+//!
+//! `zfs holds -H` prints each hold as a line `SNAPSHOT\tTAG\tWHEN`, and
+//! a tag may hold any byte but NUL. Another holder's tag with a tab or a
+//! newline makes lines that are not three fields, or forges a whole
+//! line: `x\tY\nPOOL@T\tskyzfs-publish\tWHEN` reads as a hold of the
+//! agent's on `POOL@T`. Read as it came, such a line would make the
+//! sweep and the release's check see a hold that is not there, and the
+//! hold's check and [`Zfs::held`] a hold that is not there (F1-R of
+//! #162's review). So every line must be three fields and name a
+//! snapshot that the command asked for (`hold_lines`), and no
+//! snapshot may have more lines than its holds, its `userrefs`
+//! (`outnumbered`): the sweep's list gives them, and [`Zfs::held`],
+//! [`Zfs::hold`] and [`Zfs::release`] read them with `zfs list -H -p
+//! -o name,userrefs -t snapshot` after `zfs holds -H -r`. Holds that do
+//! not add up are read again, at most [`VANISHED_READS`] times in all
+//! (a hold added or released between the two commands), and are then
+//! [`ZfsError::Other`] that names the snapshot and says what a person
+//! does: release that hold by hand. They are never skipped, since a
+//! line skipped could hide a hold of the agent's (the lead's ruling on
+//! M2.6c-5e). The tags are read as bytes: one that is not UTF-8 is no
+//! error (D1 and G-UTF of #162's review). So a tag with a tab or a
+//! newline, of any holder, on a snapshot that the agent reads the holds
+//! of, fails that read until it is released.
 //!
 //! # The take
 //!
@@ -362,6 +392,119 @@ pub fn holds_batches<'a, 'b>(names: &'b [&'a str]) -> Vec<&'b [&'a str]> {
         batches.push(&names[start..]);
     }
     batches
+}
+
+/// Holds read that do not add up ([`hold_lines`], [`outnumbered`]):
+/// why, naming the snapshot. Read again, then an error
+/// ([`ZfsCli::again_checked`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Odd(String);
+
+/// What a person does about holds that do not add up.
+const ODD_HOLDS: &str = "another holder's tag may hold a tab or a newline: \
+     read `zfs holds` of that snapshot and release that hold by hand";
+
+/// The holds in `zfs holds -H`'s standard output `out`, each a snapshot
+/// and its tag. OpenZFS prints each hold as `NAME\tTAG\tTIMESTAMP\n`
+/// (`print_holds`, `zfs_main.c`) and nothing else, and a tag may hold
+/// any byte but NUL: a tag with a tab or a newline makes a line that is
+/// not three fields, or forges a whole line. Every line must be three
+/// fields, the first a snapshot that `asked` takes, and the output must
+/// end with a newline. Anything else is [`Odd`], and is not skipped: a
+/// line skipped could hide a hold of the agent's (the lead's ruling on
+/// M2.6c-5e). A forged line of three fields that names an asked
+/// snapshot is found by the count ([`outnumbered`]). The tags are bytes:
+/// another holder's that is not UTF-8 is no error (D1 and G-UTF of
+/// #162's review).
+fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u8])>, Odd> {
+    if out.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(body) = out.strip_suffix(b"\n") else {
+        return Err(Odd(format!(
+            "its output does not end with a newline; {ODD_HOLDS}"
+        )));
+    };
+    let mut holds: Vec<(&str, &[u8])> = Vec::new();
+    for line in body.split(|&b| b == b'\n') {
+        let fields: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
+        let hold = match fields[..] {
+            [snapshot, tag, _] => std::str::from_utf8(snapshot)
+                .ok()
+                .filter(|snapshot| asked(snapshot))
+                .map(|snapshot| (snapshot, tag)),
+            _ => None,
+        };
+        let Some(hold) = hold else {
+            // The line before is the hold whose tag holds the newline.
+            let after = match holds.last() {
+                Some((snapshot, _)) => format!(", after a hold of `{snapshot}`"),
+                None => String::new(),
+            };
+            return Err(Odd(format!(
+                "a line that is not a snapshot asked, a tag and a time{after}: {:?}; {ODD_HOLDS}",
+                String::from_utf8_lossy(line)
+            )));
+        };
+        holds.push(hold);
+    }
+    Ok(holds)
+}
+
+/// [`Odd`] where a snapshot has more lines in `holds`, in their order,
+/// than it has holds, its `userrefs` by `refs`: a tag with a newline
+/// that forges a whole line of three fields, naming a snapshot asked,
+/// adds a line and not a hold. The forging tag is on the line just
+/// before a forged one, so the error names the snapshots of those lines
+/// too. Fewer lines than holds is no error: a hold released between the
+/// two reads, or added between them, whichever came second.
+fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<(), Odd> {
+    let mut lines: BTreeMap<&str, u64> = BTreeMap::new();
+    for (snapshot, _) in holds {
+        *lines.entry(snapshot).or_default() += 1;
+    }
+    for (snapshot, lines) in lines {
+        let refs = refs(snapshot);
+        if lines > refs {
+            let before: BTreeSet<&str> = holds
+                .windows(2)
+                .filter(|pair| pair[1].0 == snapshot)
+                .map(|pair| pair[0].0)
+                .collect();
+            let before: Vec<&str> = before.into_iter().collect();
+            return Err(Odd(format!(
+                "`{snapshot}` has {lines} lines of holds and {refs} holds (`userrefs`): \
+                 a line is forged by a tag with a newline, on the hold just before \
+                 one of them (of {}); read `zfs holds` of those snapshots and release \
+                 that hold by hand",
+                if before.is_empty() {
+                    "none".to_string()
+                } else {
+                    before.join(", ")
+                }
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The lines of `zfs list -H -p -o name,userrefs` (the command's words
+/// `list`): each snapshot and its count of holds.
+fn userrefs<'a>(listed: &'a str, list: &[&str]) -> Result<Vec<(&'a str, u64)>, ZfsError> {
+    listed
+        .lines()
+        .map(|line| {
+            line.rsplit_once('\t')
+                .and_then(|(name, refs)| Some((name, refs.parse::<u64>().ok()?)))
+                .filter(|(name, _)| name.contains('@'))
+                .ok_or_else(|| {
+                    ZfsError::Other(format!(
+                        "{}: a line that is not a snapshot and its count of holds: {line:?}",
+                        command("zfs", list)
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// The most instructions a channel program is let run: the default of
@@ -764,6 +907,31 @@ impl<H: Host> ZfsCli<H> {
         }
     }
 
+    /// A read of holds, made again as [`ZfsCli::again`] makes one, and
+    /// also while the holds it read do not add up ([`Odd`]): a hold added
+    /// or released between its two commands. Holds that still do not add
+    /// up after [`VANISHED_READS`] reads are [`ZfsError::Other`], which
+    /// names the snapshot (the lead's ruling on M2.6c-5e: an error, not a
+    /// skip).
+    fn again_checked<T>(
+        &mut self,
+        mut read: impl FnMut(&mut Self) -> Result<Result<T, Odd>, ZfsError>,
+    ) -> Result<T, ZfsError> {
+        let mut tries = 1;
+        loop {
+            match read(self) {
+                Ok(Ok(done)) => return Ok(done),
+                Ok(Err(_)) | Err(ZfsError::Vanished(_)) if tries < VANISHED_READS => tries += 1,
+                Ok(Err(Odd(why))) => {
+                    return Err(ZfsError::Other(format!(
+                        "{why} (read {VANISHED_READS} times)"
+                    )))
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     fn zpool(&mut self, args: &[&str], limit: Duration, pool: &str) -> Result<String, ZfsError> {
         self.run("zpool", args, &[], limit, false, pool)
     }
@@ -827,30 +995,81 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// The snapshots under `snapshot` (`pool@t` and its members' `@t`)
-    /// that have a hold of `tag`, by `zfs holds -H -r`; `None` where
-    /// `snapshot` does not exist.
+    /// that have a hold of `tag`, by `zfs holds -H -r`, read as bytes
+    /// (G-UTF of #162's review); `None` where `snapshot` does not exist.
+    /// The holds are checked ([`hold_lines`]): every line names `pool@t`
+    /// or the `@t` of a dataset under the pool. Then the count of holds
+    /// of each snapshot named, by `zfs list -H -p -o name,userrefs -t
+    /// snapshot` (at most [`HOLDS_AT_ONCE`] and [`HOLDS_ARG_BYTES`] of
+    /// names a command, each on a read's limit), must not be fewer than
+    /// its lines ([`outnumbered`]): another holder's tag cannot forge
+    /// the agent's hold, nor hide one (F1-R of #162's review; the lead's
+    /// ruling on M2.6c-5e). A snapshot named and gone before its count
+    /// is [`ZfsError::Vanished`].
     fn tagged_snapshots(
         &mut self,
         snapshot: &str,
         tag: &str,
-    ) -> Result<Option<BTreeSet<String>>, ZfsError> {
+    ) -> Result<Result<Option<BTreeSet<String>>, Odd>, ZfsError> {
+        let pool = pool_of(snapshot);
         let args = ["holds", "-H", "-r", snapshot];
         let limit = self.walk_limit(self.limits.holds_per_snapshot);
-        let holds = match self.zfs(&args, limit, true, pool_of(snapshot)) {
-            Ok(holds) => holds,
-            Err(ZfsError::NoSnapshot) => return Ok(None),
+        let output = match self.exec("zfs", &args, &[], limit) {
+            Ok(output) => output,
             Err(e) => return Err(self.walked(e)),
         };
-        Ok(Some(
+        if output.code != Some(0) {
+            return match self.failed("zfs", &args, &output, true, pool) {
+                ZfsError::NoSnapshot => Ok(Ok(None)),
+                e => Err(self.walked(e)),
+            };
+        }
+        let t = snapshot.split_once('@').map_or("", |(_, t)| t);
+        let under = |name: &str| match name.split_once('@') {
+            Some((dataset, at)) => {
+                at == t
+                    && (dataset == pool
+                        || dataset
+                            .strip_prefix(pool)
+                            .is_some_and(|rest| rest.starts_with('/')))
+            }
+            None => false,
+        };
+        let holds = match hold_lines(&output.stdout, under) {
+            Ok(holds) => holds,
+            Err(Odd(why)) => return Ok(Err(Odd(format!("{}: {why}", command("zfs", &args))))),
+        };
+        let names: BTreeSet<&str> = holds.iter().map(|(name, _)| *name).collect();
+        let names: Vec<&str> = names.into_iter().collect();
+        let mut refs: BTreeMap<String, u64> = BTreeMap::new();
+        for batch in holds_batches(&names) {
+            let mut list = vec!["list", "-H", "-p", "-o", "name,userrefs", "-t", "snapshot"];
+            list.extend_from_slice(batch);
+            let listed = self.exec("zfs", &list, &[], self.read_limit())?;
+            if listed.code != Some(0) {
+                return Err(match self.failed("zfs", &list, &listed, true, pool) {
+                    ZfsError::NoSnapshot => ZfsError::Vanished(format!(
+                        "{}: a snapshot read with a hold is gone: {}",
+                        command("zfs", &list),
+                        String::from_utf8_lossy(&listed.stderr).trim()
+                    )),
+                    e => e,
+                });
+            }
+            for (name, count) in userrefs(&String::from_utf8_lossy(&listed.stdout), &list)? {
+                refs.insert(name.to_string(), count);
+            }
+        }
+        if let Err(Odd(why)) = outnumbered(&holds, |name| refs.get(name).copied().unwrap_or(0)) {
+            return Ok(Err(Odd(format!("{}: {why}", command("zfs", &args)))));
+        }
+        Ok(Ok(Some(
             holds
-                .lines()
-                .filter_map(|line| {
-                    let mut fields = line.split('\t');
-                    let name = fields.next()?;
-                    (fields.next() == Some(tag)).then(|| name.to_string())
-                })
+                .into_iter()
+                .filter(|(_, held_by)| *held_by == tag.as_bytes())
+                .map(|(name, _)| name.to_string())
                 .collect(),
-        ))
+        )))
     }
 
     /// One read of [`Zfs::tagged`]: the snapshots in `pool` that have
@@ -870,7 +1089,11 @@ impl<H: Host> ZfsCli<H> {
     /// defensively (N-a of #162's review). A pool that is not there is [`ZfsError::NoPool`] where
     /// `zpool list` agrees: `zfs list POOL` says `cannot open 'POOL':
     /// dataset does not exist` of it.
-    fn tagged_once(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+    fn tagged_once(
+        &mut self,
+        pool: &str,
+        tag: &str,
+    ) -> Result<Result<BTreeSet<String>, Odd>, ZfsError> {
         let list = [
             "list",
             "-H",
@@ -887,25 +1110,13 @@ impl<H: Host> ZfsCli<H> {
             .zfs_bytes(&list, limit, pool, true)
             .map_err(|e| self.walked(e))?;
         let listed = String::from_utf8_lossy(&listed);
-        let mut held = Vec::new();
-        for line in listed.lines() {
-            let refs = line
-                .rsplit_once('\t')
-                .and_then(|(name, refs)| Some((name, refs.parse::<u64>().ok()?)));
-            match refs {
-                Some((name, refs)) if name.contains('@') => {
-                    if refs > 0 {
-                        held.push(name);
-                    }
-                }
-                _ => {
-                    return Err(ZfsError::Other(format!(
-                        "{}: a line that is not a snapshot and its count of holds: {line:?}",
-                        command("zfs", &list)
-                    )))
-                }
-            }
-        }
+        let counted = userrefs(&listed, &list)?;
+        let held: Vec<&str> = counted
+            .iter()
+            .filter(|(_, refs)| *refs > 0)
+            .map(|(name, _)| *name)
+            .collect();
+        let refs: BTreeMap<&str, u64> = counted.iter().copied().collect();
         let mut tagged = BTreeSet::new();
         for names in holds_batches(&held) {
             let mut args = vec!["holds", "-H"];
@@ -923,35 +1134,35 @@ impl<H: Host> ZfsCli<H> {
                     e => e,
                 });
             }
-            let asked: BTreeSet<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
-            for line in output.stdout.split(|&b| b == b'\n') {
-                let mut fields = line.split(|&b| b == b'\t');
-                // A line of each hold: the snapshot, the tag, when. Only
-                // another holder's tag that holds a newline makes a line
-                // whose first field is not a snapshot this command asked
-                // for, or that has no second field: such a line is
-                // skipped (F1 and N-e of #162's review). The agent's own
-                // tag has no newline, so no hold of the agent's is
-                // skipped. Not guarded: another holder's tag that begins
-                // with the agent's and then a tab or a newline, or that
-                // forges a whole line naming an asked snapshot, reads as
-                // the agent's hold there. The sweep's release then fails
-                // with `no such tag`, its check reads the same line and
-                // says the hold was kept, and so the sweep fails at every
-                // start until a person releases that hold. Nothing of
-                // another holder's is released (F1-R of #162's review).
-                let (Some(snapshot), Some(held_by)) = (fields.next(), fields.next()) else {
-                    continue;
-                };
-                if held_by != tag.as_bytes() || !asked.contains(snapshot) {
-                    continue;
+            // Each line a snapshot this command asked for, its tag and
+            // when, and no snapshot with more lines than holds: another
+            // holder's tag with a tab or a newline is an error that names
+            // the snapshot, after a read again, and neither forges the
+            // agent's hold nor hides one (F1-R of #162's review; the
+            // lead's ruling on M2.6c-5e).
+            let asked: BTreeSet<&str> = names.iter().copied().collect();
+            let checked =
+                hold_lines(&output.stdout, |name| asked.contains(name)).and_then(|holds| {
+                    outnumbered(&holds, |name| refs.get(name).copied().unwrap_or(0)).map(|()| holds)
+                });
+            let holds = match checked {
+                Ok(holds) => holds,
+                Err(Odd(why)) => {
+                    return Ok(Err(Odd(format!(
+                        "zfs holds -H of {} snapshots: {why}",
+                        names.len()
+                    ))))
                 }
-                if let Some((_, t)) = String::from_utf8_lossy(snapshot).split_once('@') {
-                    tagged.insert(t.to_string());
+            };
+            for (snapshot, held_by) in holds {
+                if held_by == tag.as_bytes() {
+                    if let Some((_, t)) = snapshot.split_once('@') {
+                        tagged.insert(t.to_string());
+                    }
                 }
             }
         }
-        Ok(tagged)
+        Ok(Ok(tagged))
     }
 
     /// A channel program's standard output, where it exits 0 within
@@ -1224,7 +1435,9 @@ impl<H: Host> Zfs for ZfsCli<H> {
         let Some(members) = self.members(pool, t)? else {
             return Err(ZfsError::NoSnapshot);
         };
-        let tagged = self.tagged_snapshots(&snapshot, tag)?.unwrap_or_default();
+        let tagged = self
+            .again_checked(|zfs| zfs.tagged_snapshots(&snapshot, tag))?
+            .unwrap_or_default();
         let lacking: Vec<String> = members
             .iter()
             .map(|m| format!("{}@{t}", m.name))
@@ -1255,7 +1468,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
         }
         // `-r` releases what has the tag and refuses for what has not:
         // that no member keeps it is checked.
-        let Some(tagged) = self.tagged_snapshots(&snapshot, tag)? else {
+        let Some(tagged) = self.again_checked(|zfs| zfs.tagged_snapshots(&snapshot, tag))? else {
             return Ok(());
         };
         if tagged.is_empty() {
@@ -1283,7 +1496,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
         // the hold's check refuses it (NL-F1 of #147's review); and it is
         // a part, which is released when the publish ends (TL-F1).
         let snapshot = format!("{pool}@{t}");
-        let Some(tagged) = self.again(|zfs| zfs.tagged_snapshots(&snapshot, tag))? else {
+        let Some(tagged) = self.again_checked(|zfs| zfs.tagged_snapshots(&snapshot, tag))? else {
             return Ok(Held::No);
         };
         if tagged.is_empty() {
@@ -1307,7 +1520,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
-        self.again(|zfs| zfs.tagged_once(pool, tag))
+        self.again_checked(|zfs| zfs.tagged_once(pool, tag))
     }
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
@@ -1337,7 +1550,9 @@ fn says(stderr: &[u8], what: &str) -> bool {
 
 /// How many times a read whose dataset vanished
 /// ([`ZfsError::Vanished`]) is made in all, by [`Zfs::members`],
-/// [`Zfs::held`] and [`Zfs::tagged`].
+/// [`Zfs::held`] and [`Zfs::tagged`], and the holds' check of
+/// [`Zfs::hold`] and [`Zfs::release`]; and a read of holds that do not
+/// add up (`ZfsCli::again_checked`).
 pub const VANISHED_READS: u32 = 3;
 
 /// The pool a dataset's or snapshot's `name` is in: the name up to its
