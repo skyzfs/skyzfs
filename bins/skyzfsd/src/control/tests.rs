@@ -467,14 +467,32 @@ mod socket {
     /// client queued behind it, still waiting, is answered, and the
     /// dropped one is not counted as answered.
     ///
-    /// Mutant: the client not looked at (the publish is handed on).
+    /// The count is read from the channel's posts and not from its
+    /// figures once the clients have their answers: the channel counts a
+    /// connection after its answer is written, so a read of the figures
+    /// as soon as the second client has its answer can come before the
+    /// count (9 runs in 401 did, in the review of #166). The channel
+    /// posts after each count, so the test waits for the post of one and
+    /// then of two answered, and then for no third post: a dropped
+    /// request counted as answered would make one.
+    ///
+    /// Mutants: the client not looked at (the publish is handed on); a
+    /// dropped request counted as answered.
     #[test]
     fn a_publish_whose_client_gave_up_in_the_queue_is_dropped() {
         let dir = dir();
         let path = dir.path().join(SOCKET);
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (release, gate) = std::sync::mpsc::channel();
-        let channel = Channel::open(&path, holding(&asked, gate)).expect("open");
+        let (posted, posts) = std::sync::mpsc::channel();
+        let channel = Channel::open_posting(
+            &path,
+            holding(&asked, gate),
+            Box::new(move |figures| {
+                let _ = posted.send(figures);
+            }),
+        )
+        .expect("open");
         let first = {
             let path = path.clone();
             std::thread::spawn(move || ask(&path, &Request::Progress("hold".into()), &[], IO_LIMIT))
@@ -501,7 +519,15 @@ mod socket {
             asked_at_least(&asked, 2),
             vec!["hold".to_string(), "waits".to_string()]
         );
-        assert_eq!(channel.figures().answered, 2);
+        let answered = |posts: &std::sync::mpsc::Receiver<ChannelFigures>| {
+            posts.recv_timeout(IO_LIMIT).map(|figures| figures.answered)
+        };
+        assert_eq!(answered(&posts), Ok(1));
+        assert_eq!(answered(&posts), Ok(2));
+        assert!(
+            posts.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a third connection was counted"
+        );
         assert!(channel.close());
     }
 
@@ -529,6 +555,45 @@ mod socket {
         stream.read_to_string(&mut back).expect("read");
         assert_eq!(back, format!("{HELLO}\naccepted\n"));
         assert_eq!(asked.count.load(Ordering::SeqCst), 1);
+        assert!(channel.close());
+    }
+
+    /// The same, for a client whose request waits in the queue: one that
+    /// sent its request and shut its writing down while another was
+    /// handled is answered when its turn comes, and its request handed
+    /// on. The case above reaches the channel at once, before its
+    /// shutdown can be seen; this one is looked at well after it.
+    ///
+    /// Mutant: `POLLRDHUP` taken as hung up.
+    #[test]
+    fn a_queued_client_that_only_stops_writing_is_answered() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel();
+        let channel = Channel::open(&path, holding(&asked, gate)).expect("open");
+        let first = {
+            let path = path.clone();
+            std::thread::spawn(move || ask(&path, &Request::Progress("hold".into()), &[], IO_LIMIT))
+        };
+        assert_eq!(asked_at_least(&asked, 1), vec!["hold".to_string()]);
+        let mut stream = UnixStream::connect(&path).expect("connect");
+        stream
+            .write_all(format!("{HELLO}\n{}\n", Request::Progress("half".into()).line()).as_bytes())
+            .expect("write");
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("shutdown");
+        release.send(()).expect("release");
+        assert_eq!(first.join().expect("first").ok(), Some(Reply::Pending));
+        stream.set_read_timeout(Some(IO_LIMIT)).expect("timeout");
+        let mut back = String::new();
+        stream.read_to_string(&mut back).expect("read");
+        assert_eq!(back, format!("{HELLO}\n{}\n", Reply::Pending.line()));
+        assert_eq!(
+            asked_at_least(&asked, 2),
+            vec!["hold".to_string(), "half".to_string()]
+        );
         assert!(channel.close());
     }
 

@@ -324,12 +324,20 @@ fn serve(
             stream: &stream,
             until,
         };
-        if let Ok(reply) = answer(&mut timed, handler, || hung_up(&stream)) {
-            counts.answered.fetch_add(1, Ordering::Relaxed);
-            if matches!(reply, Reply::Refused(Code::Malformed | Code::Version, _)) {
-                counts.malformed.fetch_add(1, Ordering::Relaxed);
+        match answer(&mut timed, handler, || hung_up(&stream)) {
+            Ok(reply) => {
+                counts.answered.fetch_add(1, Ordering::Relaxed);
+                if matches!(reply, Reply::Refused(Code::Malformed | Code::Version, _)) {
+                    counts.malformed.fetch_add(1, Ordering::Relaxed);
+                }
+                post(counts.figures());
             }
-            post(counts.figures());
+            // A request dropped for a client that hung up is told on
+            // standard error: it reached the daemon and was not handled.
+            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
+                eprintln!("skyzfsd: control: {e}");
+            }
+            Err(_) => {}
         }
     }
 }

@@ -36,7 +36,8 @@
 //! gave up (F1 of the review of #149). A request whose client has closed
 //! its end by the time the request is read whole is therefore dropped
 //! before the handler is asked: it is not answered, not counted in
-//! `control_answered`, and makes no line in the request log. The test is
+//! `control_answered`, and makes no line in the request log; the daemon
+//! writes a line to its standard error that names it. The test is
 //! `POLLHUP` on the daemon's end, which Linux sets on a Unix stream
 //! socket once its peer has closed (both ways); a client that only shuts
 //! its writing down still waits for its answer and gets it.
@@ -151,10 +152,13 @@ pub fn answer(
     let mut reader = BufReader::new(&mut *stream);
     let reply = match read_request(&mut reader)? {
         Err(reply) => reply,
-        Ok(_) if hung_up() => {
+        Ok((request, _)) if hung_up() => {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                "the client hung up before its request was handled",
+                format!(
+                    "the client hung up before its request `{}` was handled; it was dropped",
+                    request.line()
+                ),
             ))
         }
         Ok((request, manifest)) => handler(&request, manifest),
