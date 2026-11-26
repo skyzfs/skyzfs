@@ -50,9 +50,11 @@ in DIR/cases.tsv. For each case:
   line, and node B has that name).
 - pin_ID_outcome (server): T's outcome is the one EXPECTED for the
   scenario: `published`, or `abandoned WHY` in the agent's words, on its
-  output or, for a run killed after it abandoned T, in its record. A
-  plain case with a kill, and a case killed before T had a name, are
-  INFO (obs_ID_outcome): the criterion judges them.
+  output or, for a run killed after it abandoned T, in its record; and
+  `absent` for a case killed between the take and `taken` (MOVED) of a
+  scenario that publishes T. Any other plain case with a kill, a case
+  killed before T had a name, and one killed at intent:before:1 (T not
+  yet recorded) are INFO (obs_ID_outcome): the criterion judges them.
 - pin_ID_first_run (server): a case judged with no kill (none named,
   or a later reach not made) ended its first run as FIRST_RC says for
   its scenario: 0, 3 where T is abandoned (destroy, tooold); unmarked's
@@ -82,15 +84,26 @@ in DIR/cases.tsv. For each case:
 - pin_ID_stays_absent (kernel and server): where node B had no snap/T
   after the settle (snaprow.txt), it still has none when the check runs,
   after the uploads came to rest: a publish given up is never published
-  by a later cut (G7).
+  by a later cut (G7). Where the retry published under T's own name (T
+  not recorded, or its take destroyed, and the name free again), node B
+  has the retry's publish under it and no other; T's outcome is then
+  not `published`, and obs_ID_name_reused says so.
+- pin_ID_moved (server): a case killed between the take and `taken`
+  (MOVED): the settle published a name other than T, the publish going
+  on after its take was destroyed; T's outcome is `absent` where the
+  scenario publishes T.
 - pin_ID_PIN (server): each verdict the rig wrote while it drove the
   case (DIR/cases/ID/verdicts.tsv: an agent that did not end, ask or
   withdraw in time, a row that did not land, a daemon that did not stop
   on SIGTERM or had ended by itself), for every case directory, listed
   in cases.tsv or not (D5).
 - premise_ID_rig (rig): the rig's own error in the case
-  (DIR/cases/ID/rig-error.txt); the case is not judged further, and the
-  next ones are (G6).
+  (DIR/cases/ID/rig-error.txt), or the check's own in judging it (a file
+  of the case that does not read); the case is not judged further, and
+  the next ones are (G6, D8).
+- premise_ID_verdicts (rig): a line of the case's verdicts.tsv that is
+  not PIN and WHAT; the other lines are still verdicts. The verdicts are
+  read before anything else, so that no error of the rig hides one.
 
 The rig's errors outside a case: rig_error_in_the_course (DIR/rig-error.tsv,
 written where the recorder failed and ran this check on the cases done
@@ -337,12 +350,32 @@ def outcome(t, outs, published, record=''):
     return f'abandoned {why}' if why else 'absent'
 
 
+# Kill points from the take to `taken` (the take exists, Phase::Taken is
+# not recorded): the next start finds pool@T at Phase::Intent, cannot
+# adopt it (what the pool was before the take is not kept across a
+# restart), destroys it and publishes under a new name (engine.rs, step
+# 5). T is then absent, and the settle publishes another name.
+MOVED = {('take', 'after'), ('failed', 'before'), ('failed', 'after'), ('destroy', 'before'),
+         ('destroy', 'after'), ('manifest', 'before'), ('manifest', 'after'), ('taken', 'before')}
+
+
+def moved(kill):
+    """Whether a kill at KILL ('EFFECT:SIDE:N') leaves a take that the
+    next start destroys (MOVED)."""
+    return bool(kill) and tuple(kill.split(':')[:2]) in MOVED
+
+
 def expected(scen, kill, destroyed, t):
     """The outcome EXPECTED for a case, or None where the criterion
     alone judges it: a plain publish killed, a case killed before its
-    publish had a name, a destroy that did not happen."""
-    if kill and not t:
+    publish had a name or before T was recorded (intent:before:1: a later
+    publish may take the same name), a destroy that did not happen. A
+    publish that must publish T, killed between the take and `taken`:
+    'absent' (MOVED)."""
+    if kill and (not t or kill == 'intent:before:1'):
         return None
+    if moved(kill) and (scen == 'plain' or EXPECTED[scen] == 'published'):
+        return 'absent'
     if scen == 'plain':
         return None if kill else 'published'
     if scen in ('destroy', 'gone') and not destroyed:
@@ -484,7 +517,9 @@ def main_points(argv):
     except (RigError, OSError) as e:
         print(f'agent_check.py points: {e}', file=sys.stderr)
         sys.exit(2)
-    if not out and len(argv) == 1:
+    # A trace with no line reached no point, with a base or not: the
+    # scenario's cases would be dropped with no word.
+    if not trace or (not out and len(argv) == 1):
         print('agent_check.py points: the trace reached no point', file=sys.stderr)
         sys.exit(2)
     print('\n'.join(out))
@@ -540,6 +575,16 @@ def main():
         EFFECTS = engine_effects()
         if name not in COURSES:
             raise RigError(f'not an agent course: {name}')
+        # The verdicts the recorder wrote while it drove the cases come
+        # first: no error of the rig read after them hides one.
+        cdir = os.path.join(rdir, 'cases')
+        for cid in sorted(os.listdir(cdir)) if os.path.isdir(cdir) else []:
+            for ln in text_of(os.path.join('cases', cid, 'verdicts.tsv'), need=False).splitlines():
+                pin, _, what = ln.partition('\t')
+                if not re.fullmatch(r'[a-z][a-z_]*', pin) or not what:
+                    premise(f'premise_{cid}_verdicts', [f'cases/{cid}/verdicts.tsv: not pin, what: {ln!r}'], '')
+                    continue
+                holds(f'pin_{cid}_{pin}', [what], 'server', '')
         nb = nodeb_check.NodeB(rdir, None)
         vol = f'cut-{name}'
         torn = []
@@ -580,13 +625,6 @@ def main():
         for ln in text_of('points-error.tsv', need=False).splitlines():
             c, _, m = ln.partition('\t')
             premise(f'premise_{c}_points', [f'no points from the trace of case {c}: {m}'], '')
-        cdir = os.path.join(rdir, 'cases')
-        for cid in sorted(os.listdir(cdir)) if os.path.isdir(cdir) else []:
-            for ln in text_of(os.path.join('cases', cid, 'verdicts.tsv'), need=False).splitlines():
-                pin, _, what = ln.partition('\t')
-                if not re.fullmatch(r'[a-z][a-z_]*', pin) or not what:
-                    raise RigError(f'cases/{cid}/verdicts.tsv: not pin, what: {ln!r}')
-                holds(f'pin_{cid}_{pin}', [what], 'server', '')
         cases = [ln.split('\t') for ln in text_of('cases.tsv').splitlines() if ln]
         if not cases:
             raise RigError('no case in cases.tsv')
@@ -595,150 +633,179 @@ def main():
         for c in cases:
             if len(c) != 5:
                 raise RigError(f'cases.tsv: not id, scenario, kill, status, name: {c!r}')
-            cid, scen, kill, first_rc, t = c
-            kill = '' if kill == '-' else kill
-            t = '' if t == '-' else t
-            if scen not in EXPECTED:
-                raise RigError(f'case {cid}: no scenario {scen}')
-            cd = os.path.join('cases', cid)
-            cerr = text_of(os.path.join(cd, 'rig-error.txt'), need=False).strip()
-            if cerr:
-                premise(f'premise_{cid}_rig', [f"the rig's own error in the case: {cerr}"], '')
-                put(f'case_{cid}', 'INFO', 'rig', f'{scen}{" killed at " + kill if kill else ""}: not judged')
-                continue
-            trace = read_trace(text_of(os.path.join(cd, 'trace.tsv'), need=False))
-            reached.update(e for _, e, _, _ in trace)
-            outs = {}
-            for run in ('publish', 'first', 'settle-frozen', 'settle', 'retry'):
-                txt = text_of(os.path.join(cd, f'{run}.out'), need=False)
-                if os.path.exists(os.path.join(rdir, cd, f'{run}.out')):
-                    outs[run] = read_outputs(txt)
-            named = kill
-            perr = text_of(os.path.join(cd, 'publish.err'), need=False)
-            if kill and not_reached(kill, first_rc, perr, trace):
-                put(f'obs_{cid}_not_reached', 'INFO', 'rig',
-                    f'the run ended {first_rc} before reach {parse_kill(kill)[2]} of {":".join(kill.split(":")[:2])}: '
-                    'judged as a case with no kill')
-                kill = ''
-            if kill:
-                premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),
-                        f'killed at {kill}, as the trace and the hook\'s line say')
-            elif scen in KILLED_ONLY:
-                premise(f'premise_{cid}_killed', [f'a {scen} case with no kill: the run ended {first_rc} '
-                                                  'before its kill'], '')
-            elif scen in FIRST_RC:
-                holds(f'pin_{cid}_first_run', [] if first_rc == FIRST_RC[scen]
-                      else [f'the first run ended {first_rc}, not {FIRST_RC[scen]}: {flat(perr)[-200:]}'],
-                      'server', f'the first run ended {first_rc}, as a {scen} case with no kill does')
-            destroyed = os.path.exists(os.path.join(rdir, cd, 'destroy.log'))
-            # A case with no kill must have done what it names (a case
-            # killed early may not have, and is the kill's to judge).
-            if scen == 'restart' and not kill and not os.path.exists(os.path.join(rdir, cd, 'between.txt')):
-                premise(f'premise_{cid}_pending_at_the_loss', ['the agent did not reach asked: the daemon was not '
-                                                               'restarted with a publish pending'], '')
-            if scen == 'assist' and not kill:
-                premise(f'premise_{cid}_assisted', [] if any(e == 'assist' for _, e, _, _ in trace)
-                        else ['the trace has no assist point'], 'the agent assisted while the store was frozen')
-            if scen == 'restart' and os.path.exists(os.path.join(rdir, cd, 'between.txt')):
-                got = publish_check.read_snap_row(text_of(os.path.join(cd, 'between.txt')))
-                premise(f'premise_{cid}_pending_at_the_loss', ['snap/T had landed before the daemon was killed']
-                        if got['ref'] is not None else [], f'no snap/{t} while the daemon was down: it was pending')
-            if scen == 'late':
-                cont = marks.get(f'continued-{cid}')
-                premise(f'premise_{cid}_answer_lost',
-                        late_premise(text_of(os.path.join(cd, 'record-stopped.txt')), t, trace, cont or 0)
-                        + ([] if text_of(os.path.join(cd, 'record-stopped.rc')).strip() == '0'
-                           else ['the record did not read when the agent was stopped'])
-                        if cont else ['no mark continued-' + cid],
-                        f'{t} asked and not done when the agent stopped; it looked after it went on')
-            if scen == 'dhook':
-                hook = cid[2:] + ':1'
-                if hook not in DAEMON_KILLED:
-                    raise RigError(f'case {cid}: no daemon hook {hook}')
-                kbad, kcut = daemon_kill(hook, text_of(os.path.join(cd, 'kill.tsv')),
-                                         text_of(os.path.join(cd, 'serve-killed.log')))
-                premise(f'premise_{cid}_daemon_killed', kbad,
-                        f'the daemon killed itself at {hook}' + (f', at cut {kcut[0]} of group {kcut[1]}' if kcut else ''))
-                rows[cid] = (hook, kcut)
-            if scen in ('destroy', 'gone') and kill == '' and not destroyed:
-                premise(f'premise_{cid}_destroyed', ['the rig did not destroy the snapshot'], '')
-            if scen == 'unmarked':
-                stray = text_of(os.path.join(cd, 'stray-holds.txt'))
-                holds(f'pin_{cid}_refused', ([f'the publish ended {first_rc}, not 6'] if first_rc != '6' else [])
-                      + ([] if HOLD_TAG in stray else ['the stray hold was released'])
-                      + ([] if text_of(os.path.join(cd, 'record-before.txt')).strip() == 'absent'
-                         and text_of(os.path.join(cd, 'record-before.rc')).strip() == '0'
-                         else ['the refused run wrote a record']),
-                      'server', 'a fresh directory with a hold of the tag: exit 6, nothing released, no record written')
-            if scen == 'sweep':
-                frc = text_of(os.path.join(cd, 'first.rc')).strip()
-                holds(f'pin_{cid}_first_publish', [] if frc == '0' else
-                      [f'the publish that marks the directory ended {frc or "with no status"}: '
-                       f'{flat(text_of(os.path.join(cd, "first.err"), need=False))[-200:]}'],
-                      'server', 'the publish that marks the directory ended 0')
-            if scen == 'both':
-                kt = dict(ln.split('\t', 1) for ln in text_of(os.path.join(cd, 'both-kill.tsv')).splitlines()
-                          if '\t' in ln)
-                krc = kt.get('killed_rc', '')
-                holds(f'pin_{cid}_daemon_killed', [] if krc == '137' else
-                      [f'the daemon ended {krc or "with no status"}, not by the rig\'s SIGKILL (137): it had '
-                       'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
-            if scen == 'sweep' and not kill:
-                stray = text_of(os.path.join(cd, 'stray-holds.txt'))
-                holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
-                      'server', 'the publish released the hold that no publish named')
-            if 'settle' in outs:
-                src = text_of(os.path.join(cd, 'settle.rc')).strip()
-                want_rc = '3' if outs['settle']['abandoned'] else '0'
-                holds(f'pin_{cid}_settle', [] if src == want_rc else
-                      [f'the settle ended {src or "with no status"}, not {want_rc}: '
-                       f'{flat(text_of(os.path.join(cd, "settle.err"), need=False))[-200:]}'],
-                      'server', f'the settle ended {src}' + (', giving up ' + ', '.join(outs['settle']['abandoned'])
-                                                              if outs['settle']['abandoned'] else ''))
-            got = outcome(t, list(outs.values()), set(pub) | set(gone), text_of(os.path.join(cd, 'record-after.txt')))
-            want = expected(scen, kill, destroyed, t)
-            if want is None:
-                put(f'obs_{cid}_outcome', 'INFO', 'server', f'{t or "no name"}: {got}')
-            else:
-                holds(f'pin_{cid}_outcome', [] if got == want else [f'{t or "no name"}: {got}, not {want}'],
-                      'server', f'{t or "no name"}: {got}')
-            retry = outs.get('retry', {}).get('published', {})
-            if got == 'published':
-                ok = []
-            elif retry and all(n in pub or n in gone for n in retry):
-                ok = []
-            else:
-                ok = [f'snap/{t or "T"} absent and the retry did not publish '
-                      f'(exit {text_of(os.path.join(cd, "retry.rc"), need=False).strip() or "none"})']
-            holds(f'pin_{cid}_criterion', ok, 'kernel and server',
-                  f'{t} published' if got == 'published' else f'snap/{t or "T"} absent; the retry published '
-                  f'{", ".join(retry)}')
-            srow = os.path.join(cd, 'snaprow.txt')
-            if t and os.path.exists(os.path.join(rdir, srow)) \
-                    and publish_check.read_snap_row(text_of(srow)).get('ref') is None:
-                rc_, text = nb.tool_run(['snap-row', '--volume', vol, '--snapshot', t])
-                if rc_:
-                    raise RigError(f'skyzfs-nodeb snap-row {t}: exit {rc_}: {flat(text)[-300:]}')
-                later = publish_check.read_snap_row(text).get('ref')
-                holds(f'pin_{cid}_stays_absent', [] if later is None else
-                      [f'node B had no snap/{t} after the settle and has it now, on {later[0][:12]}'],
-                      'kernel and server', f'snap/{t}, absent after the settle, is still absent at the check')
-            holds(f'pin_{cid}_clean',
-                  clean(text_of(os.path.join(cd, 'record-after.txt')), text_of(os.path.join(cd, 'holds.txt')),
-                        text_of(os.path.join(cd, 'manifests.txt')), text_of(os.path.join(cd, 'assist.txt')),
-                        text_of(os.path.join(cd, 'record-after.rc')),
-                        text_of(os.path.join(cd, 'record-after.err'), need=False)),
-                  'server', 'nothing under way, no hold of the tag, no manifest left, the assist on the root only')
-            for run, o in outs.items():
-                both = [n for n in o['abandoned'] if n in pub]
-                if both:
-                    put(f'obs_{cid}_{run}_abandoned_published', 'INFO', 'server',
-                        f'the agent gave up {", ".join(both)}, and node B has it published')
-            how = f' killed at {kill}' if kill else (f' ({named} not reached)' if named else '')
-            put(f'case_{cid}', 'INFO', 'rig',
-                f"{scen}{how}: first run {first_rc}, T {t or 'none'}, {got}; settle "
-                f"{text_of(os.path.join(cd, 'settle.rc'), need=False).strip() or '-'}, retry "
-                f"{text_of(os.path.join(cd, 'retry.rc'), need=False).strip() or '-'}")
+            cid = c[0]
+            try:
+                cid, scen, kill, first_rc, t = c
+                kill = '' if kill == '-' else kill
+                t = '' if t == '-' else t
+                if scen not in EXPECTED:
+                    raise RigError(f'case {cid}: no scenario {scen}')
+                cd = os.path.join('cases', cid)
+                cerr = text_of(os.path.join(cd, 'rig-error.txt'), need=False).strip()
+                if cerr:
+                    premise(f'premise_{cid}_rig', [f"the rig's own error in the case: {cerr}"], '')
+                    put(f'case_{cid}', 'INFO', 'rig', f'{scen}{" killed at " + kill if kill else ""}: not judged')
+                    continue
+                trace = read_trace(text_of(os.path.join(cd, 'trace.tsv'), need=False))
+                reached.update(e for _, e, _, _ in trace)
+                outs = {}
+                for run in ('publish', 'first', 'settle-frozen', 'settle', 'retry'):
+                    txt = text_of(os.path.join(cd, f'{run}.out'), need=False)
+                    if os.path.exists(os.path.join(rdir, cd, f'{run}.out')):
+                        outs[run] = read_outputs(txt)
+                named = kill
+                perr = text_of(os.path.join(cd, 'publish.err'), need=False)
+                if kill and not_reached(kill, first_rc, perr, trace):
+                    put(f'obs_{cid}_not_reached', 'INFO', 'rig',
+                        f'the run ended {first_rc} before reach {parse_kill(kill)[2]} of {":".join(kill.split(":")[:2])}: '
+                        'judged as a case with no kill')
+                    kill = ''
+                if kill:
+                    premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),
+                            f'killed at {kill}, as the trace and the hook\'s line say')
+                elif scen in KILLED_ONLY:
+                    premise(f'premise_{cid}_killed', [f'a {scen} case with no kill: the run ended {first_rc} '
+                                                      'before its kill'], '')
+                elif scen in FIRST_RC:
+                    holds(f'pin_{cid}_first_run', [] if first_rc == FIRST_RC[scen]
+                          else [f'the first run ended {first_rc}, not {FIRST_RC[scen]}: {flat(perr)[-200:]}'],
+                          'server', f'the first run ended {first_rc}, as a {scen} case with no kill does')
+                destroyed = os.path.exists(os.path.join(rdir, cd, 'destroy.log'))
+                # A case with no kill must have done what it names (a case
+                # killed early may not have, and is the kill's to judge).
+                if scen == 'restart' and not kill and not os.path.exists(os.path.join(rdir, cd, 'between.txt')):
+                    premise(f'premise_{cid}_pending_at_the_loss', ['the agent did not reach asked: the daemon was not '
+                                                                   'restarted with a publish pending'], '')
+                if scen == 'assist' and not kill:
+                    premise(f'premise_{cid}_assisted', [] if any(e == 'assist' for _, e, _, _ in trace)
+                            else ['the trace has no assist point'], 'the agent assisted while the store was frozen')
+                if scen == 'restart' and os.path.exists(os.path.join(rdir, cd, 'between.txt')):
+                    got = publish_check.read_snap_row(text_of(os.path.join(cd, 'between.txt')))
+                    premise(f'premise_{cid}_pending_at_the_loss', ['snap/T had landed before the daemon was killed']
+                            if got['ref'] is not None else [], f'no snap/{t} while the daemon was down: it was pending')
+                if scen == 'late':
+                    cont = marks.get(f'continued-{cid}')
+                    premise(f'premise_{cid}_answer_lost',
+                            late_premise(text_of(os.path.join(cd, 'record-stopped.txt')), t, trace, cont or 0)
+                            + ([] if text_of(os.path.join(cd, 'record-stopped.rc')).strip() == '0'
+                               else ['the record did not read when the agent was stopped'])
+                            if cont else ['no mark continued-' + cid],
+                            f'{t} asked and not done when the agent stopped; it looked after it went on')
+                if scen == 'dhook':
+                    hook = cid[2:] + ':1'
+                    if hook not in DAEMON_KILLED:
+                        raise RigError(f'case {cid}: no daemon hook {hook}')
+                    kbad, kcut = daemon_kill(hook, text_of(os.path.join(cd, 'kill.tsv')),
+                                             text_of(os.path.join(cd, 'serve-killed.log')))
+                    premise(f'premise_{cid}_daemon_killed', kbad,
+                            f'the daemon killed itself at {hook}' + (f', at cut {kcut[0]} of group {kcut[1]}' if kcut else ''))
+                    rows[cid] = (hook, kcut)
+                if scen in ('destroy', 'gone') and kill == '' and not destroyed:
+                    premise(f'premise_{cid}_destroyed', ['the rig did not destroy the snapshot'], '')
+                if scen == 'unmarked':
+                    stray = text_of(os.path.join(cd, 'stray-holds.txt'))
+                    holds(f'pin_{cid}_refused', ([f'the publish ended {first_rc}, not 6'] if first_rc != '6' else [])
+                          + ([] if HOLD_TAG in stray else ['the stray hold was released'])
+                          + ([] if text_of(os.path.join(cd, 'record-before.txt')).strip() == 'absent'
+                             and text_of(os.path.join(cd, 'record-before.rc')).strip() == '0'
+                             else ['the refused run wrote a record']),
+                          'server', 'a fresh directory with a hold of the tag: exit 6, nothing released, no record written')
+                if scen == 'sweep':
+                    frc = text_of(os.path.join(cd, 'first.rc')).strip()
+                    holds(f'pin_{cid}_first_publish', [] if frc == '0' else
+                          [f'the publish that marks the directory ended {frc or "with no status"}: '
+                           f'{flat(text_of(os.path.join(cd, "first.err"), need=False))[-200:]}'],
+                          'server', 'the publish that marks the directory ended 0')
+                if scen == 'both':
+                    kt = dict(ln.split('\t', 1) for ln in text_of(os.path.join(cd, 'both-kill.tsv')).splitlines()
+                              if '\t' in ln)
+                    krc = kt.get('killed_rc', '')
+                    holds(f'pin_{cid}_daemon_killed', [] if krc == '137' else
+                          [f'the daemon ended {krc or "with no status"}, not by the rig\'s SIGKILL (137): it had '
+                           'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
+                if scen == 'sweep' and not kill:
+                    stray = text_of(os.path.join(cd, 'stray-holds.txt'))
+                    holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
+                          'server', 'the publish released the hold that no publish named')
+                if 'settle' in outs:
+                    src = text_of(os.path.join(cd, 'settle.rc')).strip()
+                    want_rc = '3' if outs['settle']['abandoned'] else '0'
+                    holds(f'pin_{cid}_settle', [] if src == want_rc else
+                          [f'the settle ended {src or "with no status"}, not {want_rc}: '
+                           f'{flat(text_of(os.path.join(cd, "settle.err"), need=False))[-200:]}'],
+                          'server', f'the settle ended {src}' + (', giving up ' + ', '.join(outs['settle']['abandoned'])
+                                                                  if outs['settle']['abandoned'] else ''))
+                retry = outs.get('retry', {}).get('published', {})
+                # A retry that published under T's own name made a new
+                # snapshot: T was not recorded, or its take was destroyed. It
+                # is the retry's publish, not T's.
+                reused = retry.get(t) if t else None
+                if reused:
+                    put(f'obs_{cid}_name_reused', 'INFO', 'server',
+                        f'the retry published a new snapshot under {t}\'s name, {reused[:12]}')
+                got = outcome(t, list(outs.values()), (set(pub) | set(gone)) - ({t} if reused else set()),
+                              text_of(os.path.join(cd, 'record-after.txt')))
+                want = expected(scen, kill, destroyed, t)
+                if want is None:
+                    put(f'obs_{cid}_outcome', 'INFO', 'server', f'{t or "no name"}: {got}')
+                else:
+                    holds(f'pin_{cid}_outcome', [] if got == want else [f'{t or "no name"}: {got}, not {want}'],
+                          'server', f'{t or "no name"}: {got}')
+                if moved(kill) and t:
+                    new = sorted(n for n in outs.get('settle', {}).get('published', {}) if n != t)
+                    holds(f'pin_{cid}_moved', [] if new else
+                          [f'the settle published no name but {t}: '
+                           f'{flat(text_of(os.path.join(cd, "settle.out"), need=False))[-200:] or "nothing"}'],
+                          'server', f'{t}\'s take destroyed at the next start; the publish went on as {", ".join(new)}')
+                if got == 'published':
+                    ok = []
+                elif retry and all(n in pub or n in gone for n in retry):
+                    ok = []
+                else:
+                    ok = [f'snap/{t or "T"} absent and the retry did not publish '
+                          f'(exit {text_of(os.path.join(cd, "retry.rc"), need=False).strip() or "none"})']
+                holds(f'pin_{cid}_criterion', ok, 'kernel and server',
+                      f'{t} published' if got == 'published' else f'snap/{t or "T"} absent; the retry published '
+                      f'{", ".join(retry)}')
+                srow = os.path.join(cd, 'snaprow.txt')
+                if t and os.path.exists(os.path.join(rdir, srow)) \
+                        and publish_check.read_snap_row(text_of(srow)).get('ref') is None:
+                    rc_, text = nb.tool_run(['snap-row', '--volume', vol, '--snapshot', t])
+                    if rc_:
+                        raise RigError(f'skyzfs-nodeb snap-row {t}: exit {rc_}: {flat(text)[-300:]}')
+                    later = publish_check.read_snap_row(text).get('ref')
+                    if reused:
+                        holds(f'pin_{cid}_stays_absent', [] if later is not None and later[0] == reused else
+                              [f'node B has snap/{t} on {later[0][:12] if later else "nothing"}, not on the retry\'s '
+                               f'{reused[:12]}'],
+                              'kernel and server', f'snap/{t}, absent after the settle, is the retry\'s publish at the '
+                              'check')
+                    else:
+                        holds(f'pin_{cid}_stays_absent', [] if later is None else
+                              [f'node B had no snap/{t} after the settle and has it now, on {later[0][:12]}'],
+                              'kernel and server', f'snap/{t}, absent after the settle, is still absent at the check')
+                holds(f'pin_{cid}_clean',
+                      clean(text_of(os.path.join(cd, 'record-after.txt')), text_of(os.path.join(cd, 'holds.txt')),
+                            text_of(os.path.join(cd, 'manifests.txt')), text_of(os.path.join(cd, 'assist.txt')),
+                            text_of(os.path.join(cd, 'record-after.rc')),
+                            text_of(os.path.join(cd, 'record-after.err'), need=False)),
+                      'server', 'nothing under way, no hold of the tag, no manifest left, the assist on the root only')
+                for run, o in outs.items():
+                    both = [n for n in o['abandoned'] if n in pub]
+                    if both:
+                        put(f'obs_{cid}_{run}_abandoned_published', 'INFO', 'server',
+                            f'the agent gave up {", ".join(both)}, and node B has it published')
+                how = f' killed at {kill}' if kill else (f' ({named} not reached)' if named else '')
+                put(f'case_{cid}', 'INFO', 'rig',
+                    f"{scen}{how}: first run {first_rc}, T {t or 'none'}, {got}; settle "
+                    f"{text_of(os.path.join(cd, 'settle.rc'), need=False).strip() or '-'}, retry "
+                    f"{text_of(os.path.join(cd, 'retry.rc'), need=False).strip() or '-'}")
+            except RigError as e:
+                # D8 of #159's review: the check's own error in judging a
+                # case ends that case, and the next ones are judged.
+                premise(f'premise_{cid}_rig', [f'the check could not judge the case: {e}'], '')
+                put(f'case_{cid}', 'INFO', 'rig', 'not judged further')
+
         # Node B on each name published.
         names = list(pub)
         checked = {}

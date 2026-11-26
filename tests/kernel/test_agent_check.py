@@ -295,6 +295,14 @@ class Points(unittest.TestCase):
                 f.write('')
             p = subprocess.run(run + [b], capture_output=True, text=True)
             self.assertEqual(p.returncode, 2)
+            # An empty scenario trace, with a base: the rig's error, not
+            # no cases (a review comment on #159).
+            p = subprocess.run(run + [b, a], capture_output=True, text=True)
+            self.assertEqual((p.returncode, p.stdout), (2, ''))
+            self.assertIn('reached no point', p.stderr)
+            # Two traces of the same points: no new point, and no error.
+            p = subprocess.run(run + [a, a], capture_output=True, text=True)
+            self.assertEqual((p.returncode, p.stdout), (0, '\n'))
             with open(b, 'w') as f:
                 f.write('1\tnot\tbefore\tt\n')
             p = subprocess.run(run + [b], capture_output=True, text=True)
@@ -583,7 +591,34 @@ class Main(unittest.TestCase):
     def test_a_verdict_line_that_does_not_read_is_the_rig_s_error(self):
         for bad in ('no tab\n', 'Bad-Pin\twhat\n', 'pin\t\n'):
             rc, lines = run_course(change=case_file('trace', 'verdicts.tsv', bad))
-            self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), bad)
+            self.assertEqual((rc, lines['premise_trace_verdicts'][0]), (2, 'ERROR'), bad)
+        # The lines that read beside it are still verdicts.
+        rc, lines = run_course(change=case_file('trace', 'verdicts.tsv', 'no tab\nlanded\tsnap/a1 had not landed\n'))
+        self.assertEqual((rc, lines['pin_trace_landed'][0]), (1, 'FAILED'))
+
+    def test_a_verdict_is_read_before_the_watcher_s_error(self):
+        # Codex on #159: the watcher's error raised before the verdicts
+        # were read, and the run ended 2 with the verdict lost.
+        rc, lines = run_course(change=lambda d: (
+            case_file('trace', 'verdicts.tsv', 'landed\tsnap/a1 had not landed 120 s after the thaw\n')(d),
+            write('watch.log', '1001\tERROR the store did not answer\n', 'a')(d)))
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_trace_landed'][0], 'FAILED')
+        self.assertEqual(lines['rig_error'][0], 'ERROR')
+
+    def test_the_check_s_own_error_in_a_case_ends_that_case(self):
+        # D8 of #159's review: an output line the check cannot read.
+        rc, lines = run_course(change=case_file('trace', 'publish.out', 'what\n'))
+        self.assertEqual(rc, 2)
+        self.assertEqual(lines['premise_trace_rig'][0], 'ERROR')
+        self.assertIn('not one of its four', lines['premise_trace_rig'][1])
+        self.assertNotIn('pin_trace_criterion', lines)
+        for k in ('pin_gone_criterion', 'pin_unmarked_refused', 'pin_A-asked-after-1_clean', 'ctl_manifest'):
+            self.assertIn(lines[k][0], ('ok', 'CAUGHT'), k)
+        # A verdict in a later case still ends 1.
+        rc, lines = run_course(change=lambda d: (case_file('trace', 'publish.out', 'what\n')(d),
+                                                 case_file('gone', 'manifests.txt', 'g1\n')(d)))
+        self.assertEqual((rc, lines['pin_gone_clean'][0]), (1, 'FAILED'))
 
     def test_a_timed_out_first_run_fails(self):
         def change(d):
@@ -630,6 +665,79 @@ class Main(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(lines['pin_gone_stays_absent'][0], 'FAILED')
         self.assertIn('snap/g1', lines['pin_gone_stays_absent'][1])
+
+    def test_a_retry_under_t_s_own_name(self):
+        # Run 45774302182 (a1, A-intent-before-1): killed before T was
+        # recorded, the retry took T's name in the same second. Node B has
+        # the retry's publish under it; T is not published.
+        def course(printed):
+            c = right()
+            c['cases'].append(('A-intent-before-1', 'plain', 'intent:before:1', '137', 'a9', {
+                'trace.tsv': trace('a9', *upto('intent', 'before')),
+                'publish.err': 'skyzfs-agent: test hook --kill-at: killed at intent before (1)\n',
+                'snaprow.txt': 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n',
+                'retry.out': f'snap/a9 {printed}\n', 'retry.rc': '0\n'}))
+            c['pub'].append(('A-intent-before-1', 'a9', 95, 509, printed))
+            c['rows']['a9'] = (10, 96)
+            return c
+        rc, lines = run_course(course=course(commit_of('a9')))
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertEqual(lines['obs_A-intent-before-1_name_reused'][0], 'INFO')
+        self.assertEqual(lines['pin_A-intent-before-1_stays_absent'][0], 'ok')
+        self.assertEqual(lines['obs_A-intent-before-1_outcome'], ('INFO', '[server] a9: absent'))
+        self.assertEqual(lines['pin_A-intent-before-1_criterion'][0], 'ok')
+        # Node B has another publish under the name.
+        rc, lines = run_course(course=course('e' * 64))
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_A-intent-before-1_stays_absent'][0], 'FAILED')
+        self.assertIn('not on the retry', lines['pin_A-intent-before-1_stays_absent'][1])
+
+    def test_a_kill_between_the_take_and_taken(self):
+        # Run 45774302182 (k, K-sweep-take-after-1): the next start
+        # destroys the take and publishes under a new name.
+        self.assertTrue(ac.moved('take:after:1') and ac.moved('taken:before:1') and ac.moved('manifest:after:2'))
+        self.assertFalse(ac.moved('take:before:1') or ac.moved('taken:after:1') or ac.moved('intent:after:1')
+                         or ac.moved(''))
+        self.assertEqual(ac.expected('sweep', 'take:after:1', False, 'k5'), 'absent')
+        self.assertEqual(ac.expected('plain', 'manifest:before:1', False, 'k5'), 'absent')
+        self.assertEqual(ac.expected('sweep', 'taken:after:1', False, 'k5'), 'published')
+        self.assertIsNone(ac.expected('sweep', 'intent:before:1', False, 'k5'))
+        self.assertEqual(ac.expected('sweep', 'intent:before:2', False, 'k5'), 'published')
+        self.assertEqual(ac.expected('destroy', 'take:after:1', True, 'k5'), 'abandoned destroyed')
+
+        def course(**files):
+            c = right()
+            own = {'trace.tsv': trace('k5', ('sweep', 'before'), ('sweep', 'after'), ('enrol', 'before'),
+                                      ('enrol', 'after'), ('intent', 'before'), ('intent', 'after'),
+                                      ('take', 'before'), ('take', 'after')),
+                   'publish.err': 'skyzfs-agent: test hook --kill-at: killed at take after (1)\n',
+                   'first.out': f'snap/a7 {commit_of("a7")}\n', 'first.rc': '0\n',
+                   'settle.out': f'snap/k6 {commit_of("k6")}\n',
+                   'snaprow.txt': 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n',
+                   'retry.out': f'snap/k7 {commit_of("k7")}\n', 'retry.rc': '0\n', 'stray-holds.txt': ''}
+            own.update(files)
+            c['cases'].append(('K-sweep-take-after-1', 'sweep', 'take:after:1', '137', 'k5', own))
+            c['pub'] += [('K-sweep-take-after-1', 'k7', 92, 510, commit_of('k7')),
+                         ('K-sweep-take-after-1', 'k6', 91, 511, commit_of('k6')),
+                         ('K-sweep-take-after-1', 'a7', 88, 508, commit_of('a7'))]
+            c['rows'].update({'k6': (10, 92), 'k7': (11, 93), 'a7': (12, 89)})
+            return c
+        rc, lines = run_course(course=course())
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertEqual(lines['pin_K-sweep-take-after-1_outcome'], ('ok', '[server] k5: absent'))
+        self.assertEqual(lines['pin_K-sweep-take-after-1_moved'][0], 'ok')
+        self.assertIn('as k6', lines['pin_K-sweep-take-after-1_moved'][1])
+        # The settle published nothing: the publish did not go on.
+        rc, lines = run_course(course=course(**{'settle.out': ''}))
+        self.assertEqual((rc, lines['pin_K-sweep-take-after-1_moved'][0]), (1, 'FAILED'))
+        # T published after all: its take was adopted across a restart.
+        c = course(**{'settle.out': f'snap/k5 {commit_of("k5")}\n', 'snaprow.txt': ''})
+        c['pub'].append(('K-sweep-take-after-1', 'k5', 90, 512, commit_of('k5')))
+        c['rows']['k5'] = (13, 94)
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_K-sweep-take-after-1_outcome'][0], 'FAILED')
+        self.assertEqual(lines['pin_K-sweep-take-after-1_moved'][0], 'FAILED')
 
     def test_a_verdict_is_not_hidden_by_the_rig_s_error(self):
         # G3 of #158's review: a premise that does not hold and a pin that
@@ -801,8 +909,8 @@ class Main(unittest.TestCase):
         self.assertEqual((rc, lines['pin_sweep_first_publish'][0]), (1, 'FAILED'))
         # Its status missing is the rig's error, not a 0.
         rc, lines = run_course(course=c, change=remove(os.path.join('cases', 'sweep', 'first.rc')))
-        self.assertEqual(rc, 2)
-        self.assertIn('rig_error', lines)
+        self.assertEqual((rc, lines['premise_sweep_rig'][0]), (2, 'ERROR'))
+        self.assertIn('first.rc', lines['premise_sweep_rig'][1])
 
     def test_late_s_premise(self):
         c = right()
@@ -874,7 +982,8 @@ class Main(unittest.TestCase):
                        remove(os.path.join('cases', 'trace', 'record-after.rc'))):
             rc, lines = run_course(change=change)
             self.assertEqual(rc, 2)
-            self.assertIn('rig_error', lines)
+            self.assertTrue([k for k, v in lines.items() if v[0] == 'ERROR'], lines)
+            self.assertNotIn('FAILED', [v[0] for v in lines.values()])
 
     def test_one_name_published_is_too_few_for_the_controls(self):
         c = right()
