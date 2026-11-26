@@ -317,8 +317,10 @@ pub const MEMBERS_PROGRAM: &str = include_str!("cli/members.lua");
 
 /// How many snapshots one `zfs holds -H` of the sweep names
 /// ([`Zfs::tagged`]): at most about 256 KiB of names (255 bytes a name
-/// and its separator), far below the kernel's limit on a command's
-/// arguments.
+/// and its separator). The kernel's limit on a command's arguments is a
+/// quarter of the stack limit: 2 MiB with the default stack limit of
+/// 8 MiB, and 256 KiB, just enough, at a stack limit of 1 MiB
+/// (`LimitSTACK=1M`; N-d of #162's review).
 pub const HOLDS_AT_ONCE: usize = 1000;
 
 /// The most instructions a channel program is let run: the default of
@@ -383,9 +385,13 @@ pub struct Limits {
     /// ([`Zfs::tagged`]), which list every snapshot in the pool (the
     /// lead's ruling on M2.6c-5d). The snapshots' list took about
     /// 1.84 ms a snapshot on Ubuntu 24.04 (185.9 s at 101 000 snapshots)
-    /// and 0.41 ms on 26.04 (41.2 s); 10 ms is about five times the
+    /// and 0.41 ms on 26.04 (41.6 s); 10 ms is about five times the
     /// slower. The figures rest on one run on each image (run
-    /// 45800940382), on an idle pool. Before this ruling, a snapshot
+    /// 45800940382), on an idle pool, at 1000 snapshots a dataset. The
+    /// cost of a snapshot grows with the snapshots a dataset holds: the
+    /// review of #162 read 0.40 ms a line up to 5500 a dataset and
+    /// 1.06 ms at 12 500, beside writers, so at 12 500 a dataset on
+    /// 24.04 the margin may be about two (N-b, N-c of #162's review). Before this ruling, a snapshot
     /// counted as a dataset: [`Limits::full_per_dataset`], 200 ms.
     pub list_per_snapshot: Duration,
 }
@@ -811,9 +817,14 @@ impl<H: Host> ZfsCli<H> {
     /// holds by `zfs holds -H`, [`HOLDS_AT_ONCE`] snapshots a command,
     /// each within a read's limit. `zfs holds -r` would not do: it reads
     /// the snapshots of one name `t` alone. A snapshot gone between the
-    /// two reads (`dataset does not exist`), or a dataset gone during
-    /// either, is [`ZfsError::Vanished`], and the whole read is made
-    /// again. A pool that is not there is [`ZfsError::NoPool`] where
+    /// two reads (`dataset does not exist`, or libzfs's `no such pool or
+    /// dataset` where `zpool list` lists the pool) is
+    /// [`ZfsError::Vanished`], and the whole read is made again. A
+    /// dataset gone during the list is no error: libzfs ends its walk
+    /// there and the list exits 0 without that dataset's snapshots,
+    /// whose holds are gone with them, which is right for the sweep; the
+    /// list's own `no such pool or dataset` is read again all the same,
+    /// defensively (N-a of #162's review). A pool that is not there is [`ZfsError::NoPool`] where
     /// `zpool list` agrees: `zfs list POOL` says `cannot open 'POOL':
     /// dataset does not exist` of it.
     fn tagged_once(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
@@ -856,29 +867,40 @@ impl<H: Host> ZfsCli<H> {
         for names in held.chunks(HOLDS_AT_ONCE) {
             let mut args = vec!["holds", "-H"];
             args.extend_from_slice(names);
-            let holds = match self.zfs(&args, self.read_limit(), true, pool) {
-                Ok(holds) => holds,
-                Err(ZfsError::NoSnapshot) => {
-                    return Err(ZfsError::Vanished(format!(
+            // Read as bytes: another holder's tag may hold any byte but
+            // NUL, and one that is not UTF-8 must not fail the sweep (D1
+            // of #162's review).
+            let output = self.exec("zfs", &args, &[], self.read_limit())?;
+            if output.code != Some(0) {
+                return Err(match self.failed("zfs", &args, &output, true, pool) {
+                    ZfsError::NoSnapshot => ZfsError::Vanished(format!(
                         "{}: a snapshot listed with a hold is gone",
                         command("zfs", &args)
-                    )))
-                }
-                Err(e) => return Err(e),
-            };
-            for line in holds.lines() {
-                let mut fields = line.split('\t');
-                // A line with no snapshot and tag is skipped, not an
-                // error: the design is silent, and the conservative
-                // reading keeps the hold it might name until a later
-                // sweep reads it.
+                    )),
+                    e => e,
+                });
+            }
+            let asked: BTreeSet<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+            for line in output.stdout.split(|&b| b == b'\n') {
+                let mut fields = line.split(|&b| b == b'\t');
+                // A line of each hold: the snapshot, the tag, when. Only
+                // another holder's tag that holds a newline or a tab
+                // makes a line whose first field is not a snapshot this
+                // command asked for, or that has no second field: such a
+                // line is skipped (F1 and N-e of #162's review). The
+                // agent's own tag has neither, so no hold of the agent's
+                // is skipped. A tag made to forge a whole line can still
+                // name an asked snapshot with the agent's tag; the sweep
+                // then releases the agent's tag there, which only the
+                // agent sets, and nothing of another holder's.
                 let (Some(snapshot), Some(held_by)) = (fields.next(), fields.next()) else {
                     continue;
                 };
-                if held_by == tag {
-                    if let Some((_, t)) = snapshot.split_once('@') {
-                        tagged.insert(t.to_string());
-                    }
+                if held_by != tag.as_bytes() || !asked.contains(snapshot) {
+                    continue;
+                }
+                if let Some((_, t)) = String::from_utf8_lossy(snapshot).split_once('@') {
+                    tagged.insert(t.to_string());
                 }
             }
         }
