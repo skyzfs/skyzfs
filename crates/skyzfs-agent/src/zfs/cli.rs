@@ -17,12 +17,15 @@
 //!   is asked, and its `no such pool` gives [`ZfsError::NoPool`].
 //! - [`Zfs::nocacheflush`]: the module parameter's file,
 //!   [`NOCACHEFLUSH`].
-//! - [`Zfs::snapshot`]: a channel program, `snapshot.lua` beside this
-//!   file, on its standard input: `zfs program -j POOL - POOL T
-//!   skyzfs:assist`.
+//! - [`Zfs::snapshot`]: `zfs snapshot -r POOL@T` ("The take", below).
 //! - [`Zfs::members`] and [`Zfs::tagged`]: read-only channel programs
-//!   (`zfs program -n -j`), `members.lua` and `tagged.lua`.
-//! - [`Zfs::held`]: `zfs holds -H pool@t`.
+//!   (`zfs program -n -j`), `members.lua` and `tagged.lua`, beside this
+//!   file, on their standard input.
+//! - [`Zfs::datasets`]: `members.lua` in full (`zfs program -n -j POOL -
+//!   POOL T full skyzfs:assist`).
+//! - [`Zfs::destroy`]: `zfs destroy -r POOL@T`.
+//! - [`Zfs::held`]: `zfs holds -H -r POOL@T`, and the members program
+//!   where `POOL@T` has the tag.
 //! - [`Zfs::hold`] and [`Zfs::release`]: `zfs hold -r` and `zfs release
 //!   -r`. A hold that ZFS refuses because a member has the tag already
 //!   held nothing (ZFS holds all or none): the members are read with the
@@ -46,40 +49,33 @@
 //! A command past its limit is killed and not waited for ([`Host`]), and
 //! gives [`ZfsError::Other`].
 //!
-//! # The channel program
+//! # The take
 //!
-//! It walks the pool's file systems and volumes from its root, checks
-//! that each member's `@t` can be taken, and reads every member's type,
-//! GUID and locally set properties before it takes any; then it takes
-//! them all, in one sync task and so in one transaction group, and reads
-//! each `@t`'s GUID and `createtxg` of `pool@t`. A member's `@t` that
-//! exists, or any check that fails, returns before anything is taken
-//! ([`ZfsError::Exists`] for `EEXIST`). A property that cannot be read
-//! raises, and fails the program before anything is taken: none is left
-//! out of the manifest without a word. (The sandbox has no `pcall`, so
-//! nothing is caught.)
+//! `zfs snapshot -r pool@t` lists the pool's file systems and volumes,
+//! then asks for every `@t` in one ioctl, which ZFS does in one sync
+//! task: all are taken, in one transaction group, or none is (design
+//! §6.2; the lead's decision on Q10). A member's `@t` that exists fails
+//! it as a whole: [`ZfsError::Exists`], read from `dataset already
+//! exists`. Any other failure took nothing either, and is
+//! [`ZfsError::Other`].
 //!
-//! Some failures come after a take has begun, and leave some or all
-//! members' `@t` taken: a take that fails on space (`ENOSPC`, each
-//! check and take counting its own) or on a snapshot limit (`EDQUOT`),
-//! a take that raises (`EIO`), the instruction limit reached in the take
-//! loop or in the reads after it, and a returned value larger than the
-//! memory limit. The program says so where it can (`taken`), and each
-//! is [`ZfsError::Other`]. Where it says it took some (`taken` above 0)
-//! and failed on any errno but `EEXIST`, `pool@t` is destroyed with what
-//! it took, as for an output that cannot be read, and the error says
-//! what became of it (the lead's decision on testing's scale run, where
-//! 10000 file systems failed on `ENOSPC` after 4563 were taken; it
-//! withdraws F9 of #147's first review for this case): a partial take
-//! is never published, so nothing relies on it. Where it could not say
-//! (an instruction or memory limit, or the command's time limit: a
-//! take past [`Limits::change`] is killed on this side while its sync task
-//! may go on in the pool, so no output is read and no destroy is run;
-//! TL-F2 of #147's review), the engine's next round finds `pool@t` and
-//! gives the publish up as `ManifestLost`, the snapshots kept for a
-//! person.
+//! **A take killed at its limit is not cancelled.** [`Limits::change`]
+//! kills the command, not the ioctl it is waiting in: the sync task ends
+//! in its own time, and takes every `@t` or none. The engine's next round
+//! then finds `pool@t`, or its next take finds `EEXIST` at the name its
+//! record holds, and adopts it after the checks ([`super::taken`]; the
+//! lead's rule for M2.6c-2b), since the agent's names are its own and
+//! one agent holds the pool's lock.
 //!
-//! The program's values are all strings (`tostring`), and its tables
+//! The manifest is read after the take, by the members program in full
+//! ([`Zfs::datasets`]), which only reads: every dataset's type, GUID,
+//! `createtxg` and locally set properties, and its `@t`'s GUID and
+//! `createtxg`. The properties are read from the datasets, as they are
+//! at the read: ZFS keeps on a snapshot only the properties set on the
+//! snapshot itself (`dsl_prop_get_ds` reads any other through the
+//! dataset's directory).
+//!
+//! The programs' values are all strings (`tostring`), and its tables
 //! are keyed by name: `zfs program -j` writes a Lua number as a signed
 //! 64-bit one (a GUID above 2^63 negative) and a list as an object keyed
 //! by position, so names and strings are what reads the same on every
@@ -94,11 +90,7 @@
 //! #147). Names are ASCII by ZFS's rules; values are not.
 //!
 //! Output that cannot be read after the program exited 0 (cut off, not
-//! UTF-8, or not a whole result and not a failure the program reported)
-//! means that what it took cannot be known: `zfs destroy -r pool@t` is
-//! run before anything relies on it, and the error says whether the
-//! snapshots were destroyed, were not taken, or could not be destroyed
-//! (the lead's L1 on #147).
+//! UTF-8, or not a whole result) is an error: the programs only read.
 //!
 //! # What was checked on ZFS, and what was not
 //!
@@ -112,9 +104,14 @@
 //!   writes a returned GUID above 2^63 as a negative number.
 //! - The members and tagged programs run and return what the parsers
 //!   read, on the rig's pool and on a mirror of two files.
-//! - The channel-program sandbox has no `pcall`: the snapshot program at
-//!   `366b217` failed on it on both images before it took anything. It
-//!   no longer calls it; the program as it is now has not run on ZFS.
+//! - The channel-program sandbox has no `pcall` (a take program of
+//!   `366b217`, since dropped, failed on it on both images).
+//! - The members program in full and the count of the datasets (`zfs
+//!   list -r -H -o name -t filesystem,volume`) read what the parsers
+//!   read, on both pools and both images (`recorded/full-<image>.json`):
+//!   a take, an `@t` none has, an `@p` only a child has, values that
+//!   are not ASCII in the locales `C` and `C.UTF-8`, and a pool that
+//!   does not exist.
 //! - A checkpoint is none where `zpool get -p` gives `-`; one that exists
 //!   gives its size.
 //! - A resilver under way says `resilver in progress` on its `scan:`
@@ -125,19 +122,34 @@
 //!   already exists` and holds nothing; `zfs release -r` of a tag no
 //!   member has fails with `no such tag`.
 //! - A pool that does not exist, for each command (above): `zpool` and
-//!   `zfs program` say `no such pool`, `zfs hold`, `holds` and `release`
-//!   say `dataset does not exist`.
+//!   `zfs program` say `no such pool`, `zfs hold`, `holds`, `release`
+//!   and `destroy -r` say `dataset does not exist`; `zfs snapshot -r`
+//!   says it too, with its usage, and exits 2: [`ZfsError::Other`], which
+//!   the engine tries again at its next round, where it reads no pool.
+//! - `zfs snapshot -r` (testing's #152): taken, exit 0 with no output,
+//!   even with `snapshot_limit=0` set on a member (as root). A member's
+//!   `@t` that exists fails it with one `dataset already exists` line for
+//!   each such member, in an order that varies, then `no snapshots were
+//!   created`; nothing was taken.
+//! - `zfs destroy -r` of a snapshot that is not there says `could not
+//!   find any snapshots to destroy`. A member's `@t` with a hold fails it
+//!   and destroys none; ZFS 2.2's userland says `dataset is busy` of it,
+//!   and 2.4.1's `it's being held`.
+//! - `zfs hold -r` where the root's `@t` alone has the tag fails with
+//!   `tag already exists`, and `zfs holds -r` then lists the root's alone
+//!   (TL-T2 of #147's review); `zfs release -r` then releases it.
 //!
 //! **Readings not checked on ZFS:**
 //!
 //! - "Set locally" is a property whose source, as `zfs.get_prop` and the
 //!   user-property list give it, is the member itself. A received value
 //!   is not local here.
-//! - The program's limits are the module's defaults for the most a
+//! - The programs' limits are the module's defaults for the most a
 //!   program may ask: 100 000 000 instructions and 100 MiB of memory
 //!   ([`PROGRAM_INSTRUCTIONS`], [`PROGRAM_MEMORY`]). A pool with more
-//!   members than that allows fails the program; it takes nothing only
-//!   where the limit is reached before the take loop (above).
+//!   datasets than that allows fails the program, which only reads.
+//! - `zfs snapshot -r`'s messages: `dataset already exists` for a member's
+//!   `@t` that exists.
 //! - A checkpoint is none where `zpool get -p` gives `0`.
 //! - A rebuild under way: the `scan:` line names a rebuild, or a
 //!   resilver with its vdev in brackets. A removal: any `remove:` line,
@@ -145,8 +157,41 @@
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
 //! - Property values that are not printable ASCII, in hex as above.
-//! - The time limits ([`Limits`]): a read 60 s, a change 120 s. They are
-//!   provisional.
+//! - The time limits ([`Limits`]), all provisional (the lead's rules on
+//!   M2.6c-2b and on N2 of #153's review):
+//!   - the members program in full ([`Zfs::datasets`]): 60 s plus 200 ms
+//!     for each of the pool's datasets as last counted, at most 35
+//!     minutes;
+//!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
+//!     dataset counted, at most 20 minutes;
+//!   - the count itself 60 s; a count that fails leaves the bases.
+//!
+//!   They come from testing's recordings on Ubuntu 26.04 (run
+//!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
+//!   members program in full 8.7, 88.2 and 911.8 s (about 90 ms a
+//!   dataset, linear), so its 200 ms is about twice that; plain 0.34,
+//!   2.2 and 21.5 s; the count 0.23, 1.7 and 16.4 s; `zfs snapshot -r`
+//!   2.2, 4.4 and 46.3 s. In #152, at 10 001 file systems on a slow
+//!   runner, `zfs snapshot -r` took 391 s under a heavy write load, and
+//!   `tagged.lua` 68.7 s with none. Correctness does not rest on them: a
+//!   take killed at its limit is adopted at a later round (above).
+//! - **What a publish costs.** A publish reads the pool in full twice
+//!   (before its take and after) and takes it once: about 20 s at 100
+//!   datasets and about 30 minutes at 10 000, from the figures above.
+//!   Each round's count, members and `holds -r` reads, the hold, the
+//!   release and the sweep add some 4 to 5 minutes at 10 000 (review of
+//!   #153). The design's scale is tens to hundreds of datasets.
+//! - **A known cost of the full read.** The full read holds the pool's
+//!   config lock for its whole run (N6 of #153's review, from the OpenZFS
+//!   source), and the pool's transaction group does not complete
+//!   meanwhile. Testing's measurement (#155, Ubuntu 26.04, 1 001
+//!   datasets): the read took 31 s, a writer
+//!   of buffered data made no write during it, `zpool sync` took 33 s,
+//!   and an `O_DSYNC` writer was not stalled; beside `zfs snapshot -r`
+//!   the stall was 3.7 s. Two full reads a publish make about 6 s of
+//!   such a stall at 100 datasets. M2.6c-5 replaces the full read by
+//!   `zfs get` and `zfs list` (the lead's decision); until then this is
+//!   accepted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -154,7 +199,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Held, Layout, Program, Props, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
+use super::{Dataset, Held, Layout, Props, Snap, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
 use crate::host::{Host, Node, Output};
 use crate::manifest::{self, Kind};
 use crate::record::Member;
@@ -162,10 +207,8 @@ use crate::record::Member;
 /// The module parameter that says whether ZFS sends cache flushes.
 pub const NOCACHEFLUSH: &str = "/sys/module/zfs/parameters/zfs_nocacheflush";
 
-/// The channel program that takes the snapshots ([module docs](self)).
-pub const SNAPSHOT_PROGRAM: &str = include_str!("cli/snapshot.lua");
-
-/// The channel program that reads each member's `@t`.
+/// The channel program that reads each member's `@t`, or in full every
+/// dataset ([module docs](self)).
 pub const MEMBERS_PROGRAM: &str = include_str!("cli/members.lua");
 
 /// The channel program that finds the snapshots with a hold.
@@ -179,19 +222,37 @@ pub const PROGRAM_INSTRUCTIONS: u64 = 100_000_000;
 /// `zfs_lua_max_memlimit`.
 pub const PROGRAM_MEMORY: u64 = 100 << 20;
 
-/// `EEXIST`, as a channel program's check gives it.
-const EEXIST: i64 = 17;
-
-/// How long a command may run before it is killed.
+/// How long a command may run before it is killed. A read or a change
+/// takes [`Limits::per_dataset`] more for each of the pool's datasets as
+/// [`Zfs::count`] last read them, up to [`Limits::most`]; the members
+/// program in full takes [`Limits::full_per_dataset`] more, up to
+/// [`Limits::full_most`] (the lead's rules on M2.6c-2b and on N2 of
+/// #153's review; provisional; [module docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// A command that reads: `zpool status`, `zpool get`, `zfs holds`,
-    /// a read-only program.
+    /// A command that reads, on a pool of no datasets: `zpool status`,
+    /// `zpool get`, `zfs holds`, a read-only program.
     pub read: Duration,
     /// A command that changes the pool and waits for a group to be
-    /// written: the snapshot program, `zfs hold`, `zfs release`, `zfs
-    /// set`, `zpool sync`.
+    /// written, on a pool of no datasets: `zfs snapshot -r`, `zfs
+    /// destroy -r`, `zfs hold`, `zfs release`, `zfs set`, `zpool sync`.
     pub change: Duration,
+    /// What each of the pool's datasets adds to a read or a change.
+    pub per_dataset: Duration,
+    /// The most a read or a change is let run, however many datasets.
+    pub most: Duration,
+    /// What each of the pool's datasets adds to the members program in
+    /// full ([`Zfs::datasets`]), whose base is [`Limits::read`]: about
+    /// twice the 90 ms a dataset it took on Ubuntu 26.04 (911.8 s at
+    /// 10 001 datasets, testing's run 45720225770).
+    pub full_per_dataset: Duration,
+    /// The most the members program in full is let run, however many
+    /// datasets: above its limit at 10 001 datasets (2060.2 s; the
+    /// lead's ruling on N2 of #153's review).
+    pub full_most: Duration,
+    /// The count of the datasets itself ([`Zfs::count`]), whatever their
+    /// number.
+    pub count: Duration,
 }
 
 impl Default for Limits {
@@ -199,8 +260,26 @@ impl Default for Limits {
         Limits {
             read: Duration::from_secs(60),
             change: Duration::from_secs(120),
+            per_dataset: Duration::from_millis(100),
+            most: Duration::from_secs(20 * 60),
+            full_per_dataset: Duration::from_millis(200),
+            full_most: Duration::from_secs(35 * 60),
+            count: Duration::from_secs(60),
         }
     }
+}
+
+/// What the limits are scaled by ([`Zfs::count`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    /// Not counted yet, or the last count failed: the bases. A failed
+    /// count does not give the round the longest limits: its own calls
+    /// then say what is wrong, and one round does not wait an hour on a
+    /// pool that holds every command (the lead's ruling on N2 of #153's
+    /// review, which reverses the longest limits first ruled).
+    Base,
+    /// The pool's datasets as last counted.
+    Datasets(u64),
 }
 
 /// [`Zfs`] on the commands ([module docs](self)).
@@ -208,12 +287,51 @@ impl Default for Limits {
 pub struct ZfsCli<H> {
     host: H,
     limits: Limits,
+    scale: Scale,
 }
 
 impl<H: Host> ZfsCli<H> {
     /// The commands on `host`, each within `limits`.
     pub fn new(host: H, limits: Limits) -> Self {
-        ZfsCli { host, limits }
+        ZfsCli {
+            host,
+            limits,
+            scale: Scale::Base,
+        }
+    }
+
+    /// The limit of a command whose base is `base`, `per` more for each
+    /// dataset counted, at most `most` ([`Limits`]).
+    fn scaled(&self, base: Duration, per: Duration, most: Duration) -> Duration {
+        let limit = match self.scale {
+            Scale::Base => base,
+            Scale::Datasets(n) => {
+                let more = u32::try_from(n)
+                    .ok()
+                    .and_then(|n| per.checked_mul(n))
+                    .unwrap_or(most);
+                base.saturating_add(more)
+            }
+        };
+        limit.min(most)
+    }
+
+    /// The limit of a command that reads.
+    fn read_limit(&self) -> Duration {
+        let l = &self.limits;
+        self.scaled(l.read, l.per_dataset, l.most)
+    }
+
+    /// The limit of a command that changes the pool.
+    fn change_limit(&self) -> Duration {
+        let l = &self.limits;
+        self.scaled(l.change, l.per_dataset, l.most)
+    }
+
+    /// The limit of the members program in full ([`Zfs::datasets`]).
+    fn full_read_limit(&self) -> Duration {
+        let l = &self.limits;
+        self.scaled(l.read, l.full_per_dataset, l.full_most)
     }
 
     /// The host, for the tests.
@@ -272,58 +390,44 @@ impl<H: Host> ZfsCli<H> {
         text: &str,
         args: &[&str],
         read_only: bool,
+        limit: Duration,
     ) -> Result<serde_json::Map<String, Value>, ZfsError> {
-        let out = self.program_output(pool, text, args, read_only)?;
+        let out = self.program_output(pool, text, args, read_only, limit)?;
         readable(&out).map_err(|why| ZfsError::Other(format!("zfs program: {why}")))
     }
 
-    /// The snapshot program's output could not be read after it exited 0
-    /// (`why`): `zfs destroy -r pool@t`. The error says what became of
-    /// the snapshots. `zfs destroy -r` of a snapshot that is not there
-    /// says `could not find any snapshots to destroy` (`zfs_main.c`; not
-    /// recorded on ZFS), or `dataset does not exist` of a pool that is
-    /// not; the second can also be a pool exported in between, so it
-    /// reads "was not found". `zfs destroy` takes `%` ranges and `,`
-    /// lists after the `@`: a `t` that is not a snapshot's name
-    /// ([`skyzfs_control::valid_name`]) is not destroyed at all.
-    fn destroy_taken(&mut self, pool: &str, t: &str, why: &str) -> ZfsError {
-        let gone = self.destroy(pool, t);
-        ZfsError::Other(format!(
-            "zfs program (snapshot) exited 0 and its output cannot be read: {why}; {gone}"
-        ))
-    }
-
-    /// `pool@t` destroyed with what a take that failed part way took
-    /// (the lead's decision on testing's scale run for #147): `said` is
-    /// what the program said, and the error says what became of it.
-    fn destroy_partial(&mut self, pool: &str, t: &str, said: &str) -> ZfsError {
-        let gone = self.destroy(pool, t);
-        ZfsError::Other(format!("{said}; {gone}"))
-    }
-
-    /// `zfs destroy -r pool@t`, and what became of it, in words.
-    fn destroy(&mut self, pool: &str, t: &str) -> String {
+    /// `zfs destroy -r pool@t`. `zfs destroy -r` of a snapshot that is
+    /// not there says `could not find any snapshots to destroy`, or
+    /// `dataset does not exist` of a pool that is not (both recorded):
+    /// both are destroyed. `zfs destroy` takes `%`
+    /// ranges and `,` lists after the `@`: a `t` that is not a snapshot's
+    /// name ([`skyzfs_control::valid_name`]) is not destroyed at all.
+    fn destroy_r(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
-        let args = ["destroy", "-r", snapshot.as_str()];
         if !skyzfs_control::valid_name(t) {
-            format!("{snapshot} was not destroyed: `{t}` is not a snapshot's name")
-        } else {
-            self.destroyed(&snapshot, &args)
+            return Err(ZfsError::Other(format!(
+                "{snapshot} was not destroyed: `{t}` is not a snapshot's name"
+            )));
         }
-    }
-
-    /// What became of `snapshot` by `zfs destroy -r` ([`Self::destroy_taken`]).
-    fn destroyed(&mut self, snapshot: &str, args: &[&str]) -> String {
-        match self.exec("zfs", args, &[], self.limits.change) {
-            Ok(output) if output.code == Some(0) => format!("{snapshot} destroyed"),
-            Ok(output) if says(&output.stderr, "could not find any snapshots to destroy") => {
-                format!("{snapshot} was not taken")
-            }
-            Ok(output) => match failure("zfs", args, &output, true) {
-                ZfsError::NoSnapshot => format!("{snapshot} was not found"),
-                e => format!("{snapshot} could not be destroyed: {e}"),
-            },
-            Err(e) => format!("{snapshot} could not be destroyed: {e}"),
+        let args = ["destroy", "-r", snapshot.as_str()];
+        // Killed at its limit, or not run to its end: the destroy's ioctl
+        // goes on in the kernel and may finish in its own time (TL-F3 of
+        // #147's review).
+        let output = self
+            .exec("zfs", &args, &[], self.change_limit())
+            .map_err(|e| match e {
+                ZfsError::Other(why) => {
+                    ZfsError::Other(format!("{snapshot} may not have been destroyed: {why}"))
+                }
+                e => e,
+            })?;
+        if output.code == Some(0) || says(&output.stderr, "could not find any snapshots to destroy")
+        {
+            return Ok(());
+        }
+        match failure("zfs", &args, &output, true) {
+            ZfsError::NoSnapshot => Ok(()),
+            e => Err(e),
         }
     }
 
@@ -335,7 +439,7 @@ impl<H: Host> ZfsCli<H> {
         snapshot: &str,
         tag: &str,
     ) -> Result<Option<BTreeSet<String>>, ZfsError> {
-        let holds = match self.zfs(&["holds", "-H", "-r", snapshot], self.limits.read, true) {
+        let holds = match self.zfs(&["holds", "-H", "-r", snapshot], self.read_limit(), true) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
             Err(e) => return Err(e),
@@ -352,13 +456,15 @@ impl<H: Host> ZfsCli<H> {
         ))
     }
 
-    /// A channel program's standard output, where it exits 0.
+    /// A channel program's standard output, where it exits 0 within
+    /// `limit`.
     fn program_output(
         &mut self,
         pool: &str,
         text: &str,
         args: &[&str],
         read_only: bool,
+        limit: Duration,
     ) -> Result<Vec<u8>, ZfsError> {
         let instructions = PROGRAM_INSTRUCTIONS.to_string();
         let memory = PROGRAM_MEMORY.to_string();
@@ -368,11 +474,6 @@ impl<H: Host> ZfsCli<H> {
         }
         all.extend(["-j", "-t", &instructions, "-m", &memory, pool, "-"]);
         all.extend(args);
-        let limit = if read_only {
-            self.limits.read
-        } else {
-            self.limits.change
-        };
         let output = self.exec("zfs", &all, text.as_bytes(), limit)?;
         if output.code == Some(0) {
             Ok(output.stdout)
@@ -388,7 +489,7 @@ impl<H: Host> ZfsCli<H> {
             args.push("-g");
         }
         args.push(pool);
-        let out = self.zpool(&args, self.limits.read)?;
+        let out = self.zpool(&args, self.read_limit())?;
         parse_status(&out, pool).map_err(|why| ZfsError::Other(format!("zpool status: {why}")))
     }
 
@@ -469,14 +570,15 @@ impl<H: Host> Zfs for ZfsCli<H> {
             "guid,load_guid,multihost,readonly,checkpoint",
             pool,
         ];
-        let output = self.exec("zpool", &args, &[], self.limits.read)?;
+        let output = self.exec("zpool", &args, &[], self.read_limit())?;
         if output.code != Some(0) {
             let error = failure("zpool", &args, &output, false);
             // ZFS 2.2's `zpool get` takes a name that is no pool's for no
             // pool named at all ([module docs](self)): `zpool status`
             // says whether the pool is there.
             if matches!(error, ZfsError::Other(_)) && says(&output.stderr, "missing pool name") {
-                if let Err(ZfsError::NoPool) = self.zpool(&["status", "-P", pool], self.limits.read)
+                if let Err(ZfsError::NoPool) =
+                    self.zpool(&["status", "-P", pool], self.read_limit())
                 {
                     return Err(ZfsError::NoPool);
                 }
@@ -503,32 +605,58 @@ impl<H: Host> Zfs for ZfsCli<H> {
         }
     }
 
-    fn snapshot(&mut self, pool: &str, t: &str) -> Result<super::Program, ZfsError> {
-        let out =
-            self.program_output(pool, SNAPSHOT_PROGRAM, &[pool, t, ASSIST_PROPERTY], false)?;
-        // It exited 0, so it ran to its end. Where its output cannot be
-        // read, or does not say it failed and is not a whole result, what
-        // it took cannot be known ([module docs](self)): `pool@t` is
-        // destroyed with whatever it took, before anything relies on it.
-        let returned = match readable(&out) {
-            Ok(returned) => returned,
-            Err(why) => return Err(self.destroy_taken(pool, t, &why)),
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        let args = [
+            "list",
+            "-r",
+            "-H",
+            "-o",
+            "name",
+            "-t",
+            "filesystem,volume",
+            pool,
+        ];
+        let counted = self
+            .run("zfs", &args, &[], self.limits.count, false)
+            .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        self.scale = match counted {
+            Ok(n) => Scale::Datasets(n),
+            Err(_) => Scale::Base,
         };
-        match parse_program(&returned, pool) {
-            Err(ZfsError::Other(why)) if !returned.contains_key("failed") => {
-                // The error already names the program once.
-                let why = why.strip_prefix(PROGRAM_SAYS).unwrap_or(&why);
-                Err(self.destroy_taken(pool, t, why))
-            }
-            Err(ZfsError::Other(said)) if partly_taken(&returned) => {
-                Err(self.destroy_partial(pool, t, &said))
-            }
-            done => done,
+        counted
+    }
+
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        let snapshot = format!("{pool}@{t}");
+        let args = ["snapshot", "-r", snapshot.as_str()];
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
+        if output.code == Some(0) {
+            return Ok(());
         }
+        if says(&output.stderr, "dataset already exists") {
+            return Err(ZfsError::Exists);
+        }
+        Err(failure("zfs", &args, &output, false))
+    }
+
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
+        let returned = self.program(
+            pool,
+            MEMBERS_PROGRAM,
+            &[pool, t, "full", ASSIST_PROPERTY],
+            true,
+            self.full_read_limit(),
+        )?;
+        parse_datasets(&returned)
+            .map_err(|why| ZfsError::Other(format!("zfs program (members, full): {why}")))
+    }
+
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.destroy_r(pool, t)
     }
 
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError> {
-        let returned = self.program(pool, MEMBERS_PROGRAM, &[pool, t], true)?;
+        let returned = self.program(pool, MEMBERS_PROGRAM, &[pool, t], true, self.read_limit())?;
         parse_members(&returned, pool)
             .map_err(|why| ZfsError::Other(format!("zfs program (members): {why}")))
     }
@@ -536,7 +664,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
         let args = ["hold", "-r", tag, &snapshot];
-        let output = self.exec("zfs", &args, &[], self.limits.change)?;
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
         if output.code == Some(0) {
             return Ok(());
         }
@@ -568,7 +696,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
         let snapshot = format!("{pool}@{t}");
         let args = ["release", "-r", tag, &snapshot];
-        let output = self.exec("zfs", &args, &[], self.limits.change)?;
+        let output = self.exec("zfs", &args, &[], self.change_limit())?;
         if output.code == Some(0) {
             return Ok(());
         }
@@ -595,7 +723,13 @@ impl<H: Host> Zfs for ZfsCli<H> {
         }
     }
 
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError> {
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[Member]>,
+    ) -> Result<Held, ZfsError> {
         // Every member's `@t`, not only the root's: a hold on some members
         // only (made by hand, or by a `hold -r` that a member's snapshot
         // came after) is not held, so that the planner holds again and
@@ -611,8 +745,8 @@ impl<H: Host> Zfs for ZfsCli<H> {
         if !tagged.contains(&snapshot) {
             return Ok(Held::Part);
         }
-        // `pool@t` gone since: the tags read are released all the same.
-        let Some(members) = self.members(pool, t)? else {
+        // `pool@t` gone: the tags read are released all the same.
+        let Some(members) = members else {
             return Ok(Held::Part);
         };
         if members
@@ -626,7 +760,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
-        let returned = self.program(pool, TAGGED_PROGRAM, &[pool, tag], true)?;
+        let returned = self.program(pool, TAGGED_PROGRAM, &[pool, tag], true, self.read_limit())?;
         match returned.get("tagged") {
             Some(Value::Object(names)) => Ok(names.keys().cloned().collect()),
             // An empty table: ZFS may write it as an empty list.
@@ -639,8 +773,8 @@ impl<H: Host> Zfs for ZfsCli<H> {
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         let set = format!("{ASSIST_PROPERTY}={value}");
-        self.zfs(&["set", &set, pool], self.limits.change, false)?;
-        self.zpool(&["sync", pool], self.limits.change)?;
+        self.zfs(&["set", &set, pool], self.change_limit(), false)?;
+        self.zpool(&["sync", pool], self.change_limit())?;
         Ok(())
     }
 }
@@ -938,7 +1072,7 @@ fn table<'a>(
     }
 }
 
-/// A local property's value as the snapshot program gives it ([module
+/// A local property's value as the members program gives it ([module
 /// docs](self)): printable ASCII as a string, any other value as its
 /// lower-case hex under `encoding`. Anything the program never gives (a
 /// string that is not printable ASCII, hex of the wrong case or of a
@@ -970,96 +1104,62 @@ fn member_order(pool: &str, a: &str, b: &str) -> std::cmp::Ordering {
     (a != pool, a).cmp(&(b != pool, b))
 }
 
-/// Whether the snapshot program failed after it took some members' `@t`
-/// (`taken` above 0), on any errno but `EEXIST`: what it took is
-/// destroyed ([module docs](self)). After `EEXIST` a snapshot of that
-/// name exists that the program did not take, and `zfs destroy -r`
-/// would destroy it too; the program checks every member before it
-/// takes any, so this cannot come from the program as written, and is
-/// kept for a person (the conservative reading).
-fn partly_taken(returned: &serde_json::Map<String, Value>) -> bool {
-    let taken = returned
-        .get("taken")
-        .and_then(Value::as_str)
-        .and_then(|n| n.parse::<u64>().ok());
-    let errno = returned
-        .get("errno")
-        .and_then(Value::as_str)
-        .and_then(|e| e.parse::<i64>().ok());
-    returned.contains_key("failed") && taken.is_some_and(|n| n > 0) && errno != Some(EEXIST)
-}
-
-/// The start of an error about what the snapshot program returned.
-const PROGRAM_SAYS: &str = "zfs program (snapshot): ";
-
-/// What the snapshot program returned ([module docs](self)).
-pub(crate) fn parse_program(
+/// What the members program returned in full ([`Zfs::datasets`]), by
+/// name.
+pub(crate) fn parse_datasets(
     returned: &serde_json::Map<String, Value>,
-    pool: &str,
-) -> Result<Program, ZfsError> {
-    let other = |why: String| ZfsError::Other(format!("{PROGRAM_SAYS}{why}"));
-    if let Some(failed) = returned.get("failed").and_then(Value::as_str) {
-        if let Some(errno) = returned.get("errno").and_then(Value::as_str) {
-            if errno.parse::<i64>() == Ok(EEXIST) && !returned.contains_key("taken") {
-                return Err(ZfsError::Exists);
-            }
-            let taken = match returned.get("taken").and_then(Value::as_str) {
-                Some(n) => format!(", after {n} were taken"),
-                None => ", before any was taken".into(),
+) -> Result<Vec<Dataset>, String> {
+    let datasets = table(returned, "datasets")?.ok_or("no datasets")?;
+    let mut out = Vec::with_capacity(datasets.len());
+    for (name, value) in datasets {
+        let Value::Object(dataset) = value else {
+            return Err(format!("the dataset `{name}` is not a table"));
+        };
+        let number = |key: &str, guid: bool| {
+            let text = string(dataset, key)?;
+            let n = if guid {
+                parse_guid(text)
+            } else {
+                text.parse::<u64>().ok()
             };
-            return Err(other(format!("{failed}: errno {errno}{taken}")));
-        }
-        return Err(other(format!("{failed}: failed with no errno")));
-    }
-    let createtxg = string(returned, "createtxg")
-        .and_then(|t| {
-            t.parse::<u64>()
-                .map_err(|_| format!("`createtxg` is `{t}`"))
-        })
-        .map_err(other)?;
-    let members = table(returned, "members")
-        .map_err(other)?
-        .ok_or_else(|| other("no members".into()))?;
-    let mut out = Vec::with_capacity(members.len());
-    for (name, value) in members {
-        let Value::Object(member) = value else {
-            return Err(other(format!("the member `{name}` is not a table")));
+            n.ok_or_else(|| format!("`{name}`: `{key}` is `{text}`"))
         };
-        let guid = |key: &str| {
-            let text = string(member, key)?;
-            parse_guid(text).ok_or_else(|| format!("`{name}`: `{key}` is `{text}`"))
-        };
-        let kind = match string(member, "type").map_err(other)? {
+        let kind = match string(dataset, "type")? {
             "filesystem" => Kind::Filesystem,
             "volume" => Kind::Volume,
-            kind => return Err(other(format!("`{name}` is a {kind}"))),
+            kind => return Err(format!("`{name}` is a {kind}")),
         };
         let mut local = BTreeMap::new();
-        if let Some(set) = table(member, "local").map_err(other)? {
+        if let Some(set) = table(dataset, "local")? {
             for (property, value) in set {
-                let value = local_value(value)
-                    .map_err(|why| other(format!("`{name}`: `{property}` {why}")))?;
+                let value =
+                    local_value(value).map_err(|why| format!("`{name}`: `{property}` {why}"))?;
                 local.insert(property.clone(), value);
             }
         }
         // The agent's own property, should a program let it through.
         local.remove(ASSIST_PROPERTY);
-        out.push(manifest::Member {
+        let at = match (
+            dataset.contains_key("snapshot_guid"),
+            dataset.contains_key("snapshot_createtxg"),
+        ) {
+            (false, false) => None,
+            (true, true) => Some(Snap {
+                guid: number("snapshot_guid", true)?,
+                createtxg: number("snapshot_createtxg", false)?,
+            }),
+            _ => return Err(format!("`{name}`: its snapshot is read in part")),
+        };
+        out.push(Dataset {
             name: name.clone(),
             kind,
-            guid: guid("guid").map_err(other)?,
-            snapshot_guid: guid("snapshot_guid").map_err(other)?,
+            guid: number("guid", true)?,
+            createtxg: number("createtxg", false)?,
             local,
+            at,
         });
     }
-    out.sort_by(|a, b| member_order(pool, &a.name, &b.name));
-    if out.first().map(|m| m.name.as_str()) != Some(pool) {
-        return Err(other(format!("no member is the pool's root `{pool}`")));
-    }
-    Ok(Program {
-        createtxg,
-        members: out,
-    })
+    Ok(out)
 }
 
 /// What the members program returned: `None` where `pool@t` does not

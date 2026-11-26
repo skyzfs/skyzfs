@@ -268,18 +268,20 @@ fn at_the_intent_the_snapshot_is_taken_or_given_up() {
             none().no_premise().away(),
             Action::Wait,
         ),
+        // The agent's own take, landed and not recorded, is adopted
+        // (the lead's rule for M2.6c-2b).
         (
             "a snapshot with no manifest",
             intent(),
             seen().unheld(),
-            Action::Abandon(Why::ManifestLost),
+            Action::Adopt,
         ),
-        ("the same, held", intent(), seen(), Action::Release),
+        ("the same, held", intent(), seen(), Action::Adopt),
         (
             "the same, the daemon away",
             intent(),
             seen().unheld().away(),
-            Action::Abandon(Why::ManifestLost),
+            Action::Adopt,
         ),
     ]);
 }
@@ -354,6 +356,15 @@ fn taken_it_is_held_once_its_members_and_load_guid_are_verified() {
             taken_phase(),
             seen().gone(),
             Action::Abandon(Why::Destroyed),
+        ),
+        // `pool@t` destroyed and a descendant's `@t` still tagged: the
+        // tag is released before the publish is given up (FL-F1 of
+        // #147's review).
+        (
+            "gone, a descendant still held",
+            taken_phase(),
+            seen().gone().partly(),
+            Action::Release,
         ),
         (
             "a member's @t replaced",
@@ -1259,10 +1270,18 @@ fn a_hold_on_some_members_is_released_where_the_publish_ends() {
             seen().members(replaced()).partly(),
             Action::Release,
         ),
+        // A take not recorded is adopted, held or not (M2.6c-2b); too
+        // old, it is released.
         (
             "a snapshot with no manifest",
             intent(),
             seen().partly(),
+            Action::Adopt,
+        ),
+        (
+            "a snapshot with no manifest, too old",
+            intent(),
+            seen().partly().too_old(),
             Action::Release,
         ),
         (
@@ -1512,7 +1531,13 @@ fn a_publish_older_than_its_bound_is_given_up_once_no_request_can_pend() {
             "intent, a snapshot with no manifest",
             intent(),
             old().unheld(),
-            Action::Abandon(Why::ManifestLost),
+            gave_up(),
+        ),
+        (
+            "intent, a snapshot with no manifest, held",
+            intent(),
+            old(),
+            Action::Release,
         ),
         ("taken", taken_phase(), old(), Action::Release),
         (

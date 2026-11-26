@@ -1,0 +1,101 @@
+{
+ "records": {
+  "mirror-count": {
+   "cmd": "zfs list -r -H -o name -t filesystem\\,volume skzqm\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzqm\nskzqm/child\nskzqm/vol\n"
+  },
+  "mirror-members-full": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm t full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzqm/vol\":{\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"snapshot_guid\":\"-579587769305153024\",\"createtxg\":\"10\",\"guid\":\"7802313337774648694\",\"type\":\"volume\",\"snapshot_createtxg\":\"32\"},\"skzqm/child\":{\"local\":{\"skyzfs:note\":\"local\"},\"snapshot_guid\":\"1875930225338277804\",\"createtxg\":\"9\",\"guid\":\"-1602378213749451544\",\"type\":\"filesystem\",\"snapshot_createtxg\":\"32\"},\"skzqm\":{\"local\":{\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzqm\",\"compression\":\"off\"},\"snapshot_guid\":\"-450143380624065293\",\"createtxg\":\"1\",\"guid\":\"6695831223584604943\",\"type\":\"filesystem\",\"snapshot_createtxg\":\"32\"}}}}"
+  },
+  "mirror-members-full-absent": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm absent full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzqm\":{\"local\":{\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzqm\",\"compression\":\"off\"},\"createtxg\":\"1\",\"type\":\"filesystem\",\"guid\":\"6695831223584604943\"},\"skzqm/vol\":{\"local\":{\"volsize\":\"268435456\",\"refreservation\":\"274726912\"},\"createtxg\":\"10\",\"type\":\"volume\",\"guid\":\"7802313337774648694\"},\"skzqm/child\":{\"local\":{\"skyzfs:note\":\"local\"},\"createtxg\":\"9\",\"type\":\"filesystem\",\"guid\":\"-1602378213749451544\"}}}}"
+  },
+  "mirror-members-full-odd": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm o0 full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzqm\":{\"type\":\"filesystem\",\"snapshot_createtxg\":\"43\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzqm\"},\"guid\":\"6695831223584604943\",\"snapshot_guid\":\"-6498891632465528577\",\"createtxg\":\"1\"},\"skzqm/child\":{\"type\":\"filesystem\",\"snapshot_createtxg\":\"43\",\"local\":{\"skyzfs:raw\":{\"value\":\"61fffe62c3\",\"encoding\":\"hex\"},\"skyzfs:note\":\"local\",\"skyzfs:utf8\":{\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\",\"encoding\":\"hex\"}},\"guid\":\"-1602378213749451544\",\"snapshot_guid\":\"-7964687219269472071\",\"createtxg\":\"9\"},\"skzqm/vol\":{\"type\":\"volume\",\"snapshot_createtxg\":\"43\",\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"guid\":\"7802313337774648694\",\"snapshot_guid\":\"-1200932634245698644\",\"createtxg\":\"10\"}}}}"
+  },
+  "mirror-members-full-odd-utf8": {
+   "cmd": "env LC_ALL=C.UTF-8 zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm o2 full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzqm/vol\":{\"createtxg\":\"10\",\"type\":\"volume\",\"local\":{\"volsize\":\"268435456\",\"refreservation\":\"274726912\"},\"snapshot_guid\":\"6527010220688949291\",\"guid\":\"7802313337774648694\",\"snapshot_createtxg\":\"44\"},\"skzqm\":{\"createtxg\":\"1\",\"type\":\"filesystem\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzqm\"},\"snapshot_guid\":\"-4944195172147724081\",\"guid\":\"6695831223584604943\",\"snapshot_createtxg\":\"44\"},\"skzqm/child\":{\"createtxg\":\"9\",\"type\":\"filesystem\",\"local\":{\"skyzfs:raw\":{\"value\":\"61fffe62c3\",\"encoding\":\"hex\"},\"skyzfs:note\":\"local\",\"skyzfs:utf8\":{\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\",\"encoding\":\"hex\"}},\"snapshot_guid\":\"6224858592992657512\",\"guid\":\"-1602378213749451544\",\"snapshot_createtxg\":\"44\"}}}}"
+  },
+  "mirror-members-full-partial": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzqm - skzqm p full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzqm/vol\":{\"guid\":\"7802313337774648694\",\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"type\":\"volume\",\"createtxg\":\"10\"},\"skzqm\":{\"guid\":\"6695831223584604943\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzqm\"},\"type\":\"filesystem\",\"createtxg\":\"1\"},\"skzqm/child\":{\"snapshot_createtxg\":\"45\",\"type\":\"filesystem\",\"createtxg\":\"9\",\"local\":{\"skyzfs:utf8\":{\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\",\"encoding\":\"hex\"},\"skyzfs:raw\":{\"value\":\"61fffe62c3\",\"encoding\":\"hex\"},\"skyzfs:note\":\"local\"},\"snapshot_guid\":\"-4894923839644128908\",\"guid\":\"-1602378213749451544\"}}}}"
+  },
+  "nocacheflush": {
+   "cmd": "cat /sys/module/zfs/parameters/zfs_nocacheflush\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "0\n"
+  },
+  "none-count": {
+   "cmd": "zfs list -r -H -o name -t filesystem\\,volume skznone\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': dataset does not exist\n",
+   "stdout": ""
+  },
+  "none-members-full": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skznone - skznone t full skyzfs:assist < members.lua\n",
+   "rc": 1,
+   "stderr": "cannot open 'skznone': no such pool\ncannot open pool 'skznone'\n",
+   "stdout": ""
+  },
+  "rig-count": {
+   "cmd": "zfs list -r -H -o name -t filesystem\\,volume skzq\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "skzq\nskzq/child\nskzq/vol\n"
+  },
+  "rig-members-full": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq t full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzq/child\":{\"type\":\"filesystem\",\"snapshot_createtxg\":\"32\",\"local\":{\"skyzfs:note\":\"local\"},\"createtxg\":\"9\",\"snapshot_guid\":\"1433604597936867604\",\"guid\":\"-2850953689765343062\"},\"skzq/vol\":{\"type\":\"volume\",\"snapshot_createtxg\":\"32\",\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"createtxg\":\"10\",\"snapshot_guid\":\"-2856529849732229690\",\"guid\":\"-4994272565800583491\"},\"skzq\":{\"type\":\"filesystem\",\"snapshot_createtxg\":\"32\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzq\"},\"createtxg\":\"1\",\"snapshot_guid\":\"1028546429522107296\",\"guid\":\"3235713082832380614\"}}}}"
+  },
+  "rig-members-full-absent": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq absent full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzq/vol\":{\"createtxg\":\"10\",\"type\":\"volume\",\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"guid\":\"-4994272565800583491\"},\"skzq/child\":{\"createtxg\":\"9\",\"type\":\"filesystem\",\"local\":{\"skyzfs:note\":\"local\"},\"guid\":\"-2850953689765343062\"},\"skzq\":{\"createtxg\":\"1\",\"type\":\"filesystem\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzq\"},\"guid\":\"3235713082832380614\"}}}}"
+  },
+  "rig-members-full-odd": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq o0 full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzq/vol\":{\"snapshot_createtxg\":\"43\",\"createtxg\":\"10\",\"guid\":\"-4994272565800583491\",\"type\":\"volume\",\"local\":{\"volsize\":\"268435456\",\"refreservation\":\"274726912\"},\"snapshot_guid\":\"8009514477348918435\"},\"skzq\":{\"snapshot_createtxg\":\"43\",\"createtxg\":\"1\",\"guid\":\"3235713082832380614\",\"type\":\"filesystem\",\"local\":{\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzq\",\"compression\":\"off\"},\"snapshot_guid\":\"-3472886851892224773\"},\"skzq/child\":{\"snapshot_createtxg\":\"43\",\"createtxg\":\"9\",\"guid\":\"-2850953689765343062\",\"type\":\"filesystem\",\"local\":{\"skyzfs:note\":\"local\",\"skyzfs:utf8\":{\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\",\"encoding\":\"hex\"},\"skyzfs:raw\":{\"value\":\"61fffe62c3\",\"encoding\":\"hex\"}},\"snapshot_guid\":\"-4344451810698169198\"}}}}"
+  },
+  "rig-members-full-odd-utf8": {
+   "cmd": "env LC_ALL=C.UTF-8 zfs program -n -j -t 100000000 -m 104857600 skzq - skzq o2 full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzq/vol\":{\"snapshot_guid\":\"-3799182571091538106\",\"guid\":\"-4994272565800583491\",\"type\":\"volume\",\"snapshot_createtxg\":\"44\",\"createtxg\":\"10\",\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"}},\"skzq\":{\"snapshot_guid\":\"6515287571756455359\",\"guid\":\"3235713082832380614\",\"type\":\"filesystem\",\"snapshot_createtxg\":\"44\",\"createtxg\":\"1\",\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzq\"}},\"skzq/child\":{\"snapshot_guid\":\"-4527920374246135937\",\"guid\":\"-2850953689765343062\",\"type\":\"filesystem\",\"snapshot_createtxg\":\"44\",\"createtxg\":\"9\",\"local\":{\"skyzfs:note\":\"local\",\"skyzfs:utf8\":{\"encoding\":\"hex\",\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\"},\"skyzfs:raw\":{\"encoding\":\"hex\",\"value\":\"61fffe62c3\"}}}}}}"
+  },
+  "rig-members-full-partial": {
+   "cmd": "zfs program -n -j -t 100000000 -m 104857600 skzq - skzq p full skyzfs:assist < members.lua\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\"return\":{\"datasets\":{\"skzq\":{\"local\":{\"compression\":\"off\",\"mountpoint\":\"/mnt/skz-cli-record/mnt/skzq\"},\"guid\":\"3235713082832380614\",\"createtxg\":\"1\",\"type\":\"filesystem\"},\"skzq/child\":{\"createtxg\":\"9\",\"type\":\"filesystem\",\"snapshot_guid\":\"2560203823210839513\",\"local\":{\"skyzfs:note\":\"local\",\"skyzfs:utf8\":{\"encoding\":\"hex\",\"value\":\"6e61c3af76652c20e697a5e69cac2c20e28885\"},\"skyzfs:raw\":{\"encoding\":\"hex\",\"value\":\"61fffe62c3\"}},\"snapshot_createtxg\":\"45\",\"guid\":\"-2850953689765343062\"},\"skzq/vol\":{\"local\":{\"refreservation\":\"274726912\",\"volsize\":\"268435456\"},\"guid\":\"-4994272565800583491\",\"createtxg\":\"10\",\"type\":\"volume\"}}}}"
+  },
+  "version": {
+   "cmd": "zfs version\n",
+   "rc": 0,
+   "stderr": "",
+   "stdout": "zfs-2.2.2-0ubuntu9.5\nzfs-kmod-2.4.1-1ubuntu5.1\n"
+  }
+ },
+ "source": "testing's recorder tests/kernel/zfs-cli-record.sh (skyzfs/skyzfs 6d886de), run https://github.com/skyzfs/skyzfs/actions/runs/45720134548, artifact zfs-cli-ubuntu-24.04; Lua at 65d72ee; only the records of the count, the members program in full, the versions and zfs_nocacheflush are kept here"
+}

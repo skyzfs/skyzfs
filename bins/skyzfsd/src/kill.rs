@@ -21,7 +21,10 @@
 //!   has landed, and before the cut is let go in the store (M2.6c-4).
 //!
 //! Only a PUT, a commit or a publish that came back as landed is counted:
-//! one that failed or was refused is not, and is not killed at.
+//! one that failed or was refused is not, and is not killed at, but for
+//! the commit of `carry-swap`'s chosen cut, which is seen as the cut is
+//! let go where its call failed but it landed (below; D2 of the review of
+//! #150).
 //!
 //! The daemon says on its standard error which point it reached, then
 //! sends itself SIGKILL.
@@ -85,8 +88,16 @@
 //! code, not run). The course is still a kill between the acceptance and
 //! the ref, at a cut that comes to carry publish N. A rig that compares
 //! the kill line's cut with the cut the snapshot's row names after the
-//! restart sees the same cut in this course; a difference is a finding
-//! against the daemon.
+//! restart sees the same cut in this course. Under `carry-swap`, a
+//! difference is a finding against the daemon: the named cut has
+//! committed and was not let go, so it is found committed after the
+//! restart. Under `carry-put` the named cut has not committed at the
+//! kill, and the restarted serve may abandon it (at the bound, or where
+//! its read or sync fails); the publish then lands on a later cut, which
+//! the design allows (§5.2, the lead's Q2 of M2.5;
+//! `skyzfs_upload::publish`'s docs). So under `carry-put` a difference is
+//! a finding only where the restarted serve did not abandon the cut the
+//! kill line names (D1 of the review of #150, the lead's ruling).
 //!
 //! The kill line names the cut chosen by its number and group. The hook
 //! also says on standard error, without killing, when it arms (publish N

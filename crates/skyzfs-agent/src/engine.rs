@@ -11,8 +11,12 @@
 //!    pool and its leaf enrolled at the first publish (the lead's Q4).
 //! 2. `cuts`, with `load_guid` read before it (rule (L)).
 //! 3. Recorded [`Phase::Intent`].
-//! 4. The channel program, with the count read anew and recorded first.
-//! 5. The manifest's file, then recorded [`Phase::Taken`].
+//! 4. The take (`zfs snapshot -r`), with the count read anew and recorded
+//!    first, and the pool's datasets read before it.
+//! 5. The take adopted: its members read, whole and as before it; the
+//!    manifest's file, then recorded [`Phase::Taken`]. A take that is
+//!    not is destroyed, and the publish takes the next name
+//!    (`Agent::adopt`).
 //! 6. The hold, recorded as believed placed before it is placed.
 //! 7. The members, the hold and `load_guid` seen as recorded: recorded
 //!    [`Phase::Held`].
@@ -161,8 +165,14 @@ pub enum Effect {
     Enrol,
     /// The record saved with a publish at [`Phase::Intent`].
     Intent,
-    /// The channel program.
-    Program,
+    /// `zfs snapshot -r` (the take).
+    Take,
+    /// The record saved with a failed check of a take counted, at
+    /// [`Phase::Intent`], before the take is destroyed.
+    Failed,
+    /// `zfs destroy -r` of a take that is not whole or not as read
+    /// before it.
+    Destroy,
     /// The manifest's file written.
     Manifest,
     /// The record saved at [`Phase::Taken`].
@@ -217,10 +227,12 @@ pub enum Effect {
 
 impl Effect {
     /// Every effect, in order.
-    pub const ALL: [Effect; 26] = [
+    pub const ALL: [Effect; 28] = [
         Effect::Enrol,
         Effect::Intent,
-        Effect::Program,
+        Effect::Take,
+        Effect::Failed,
+        Effect::Destroy,
         Effect::Manifest,
         Effect::Taken,
         Effect::Holding,
@@ -251,7 +263,9 @@ impl Effect {
         match self {
             Effect::Enrol => "enrol",
             Effect::Intent => "intent",
-            Effect::Program => "program",
+            Effect::Take => "take",
+            Effect::Failed => "failed",
+            Effect::Destroy => "destroy",
             Effect::Manifest => "manifest",
             Effect::Taken => "taken",
             Effect::Holding => "holding",
@@ -427,6 +441,68 @@ struct Memory {
     /// itself; for one read from the record, the wall clock at the first
     /// round that read its age.
     begun: Option<(u64, u64, u64)>,
+    /// The pool's datasets as read in this process before a take of the
+    /// publish's name was asked, with no `pool@t` then: what an adoption
+    /// compares the take's members with ([`Agent::adopt`]).
+    before: Option<Vec<zfs::Dataset>>,
+    /// [`Clock::mono_ms`] before which the publish is not taken again:
+    /// set where a take was destroyed for not being whole or not as read
+    /// before it ([`Agent::retake`], D1 of #153's review), carried with
+    /// the memory to the next name.
+    retake_after: Option<u64>,
+}
+
+/// How the engine came to adopt a take ([`Agent::adopt`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// `zfs snapshot -r` exited 0.
+    Took,
+    /// `zfs snapshot -r` said a dataset of that name exists.
+    Exists,
+    /// The planner saw `pool@t` with the publish at [`Phase::Intent`].
+    Seen,
+}
+
+/// Whether the take's `members` are the datasets of `before`, the pool
+/// as read before the take was asked, each with the same name, type and
+/// local properties (by GUID; [`Agent::adopt`], "The members as read
+/// before"). No reading is not the same.
+fn as_before(members: &[manifest::Member], before: Option<&Vec<zfs::Dataset>>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    members.len() == before.len()
+        && members
+            .iter()
+            .all(|member| before.iter().any(|dataset| same(dataset, member)))
+}
+
+/// Whether `member` is `dataset` as read before the take: the same GUID,
+/// name, type and local properties.
+fn same(dataset: &zfs::Dataset, member: &manifest::Member) -> bool {
+    dataset.guid == member.guid
+        && dataset.name == member.name
+        && dataset.kind == member.kind
+        && dataset.local == member.local
+}
+
+/// The names of the datasets by which the take's `members` are not
+/// `before` ([`as_before`]): each member with no dataset the same in
+/// `before`, then each dataset of `before` that no member has the GUID
+/// of, in the order read.
+fn differing(members: &[manifest::Member], before: &[zfs::Dataset]) -> Vec<String> {
+    let mut names: Vec<String> = members
+        .iter()
+        .filter(|member| !before.iter().any(|dataset| same(dataset, member)))
+        .map(|member| member.name.clone())
+        .collect();
+    names.extend(
+        before
+            .iter()
+            .filter(|dataset| !members.iter().any(|m| m.guid == dataset.guid))
+            .map(|dataset| dataset.name.clone()),
+    );
+    names
 }
 
 /// Whether a round changed anything.
@@ -459,10 +535,10 @@ pub struct Agent<Z, D, K, C> {
     sink: Option<Sink>,
     /// The publish the next [`Point`] is for.
     at: String,
-    /// The names publishes left in this process for the next one, when
-    /// a member's `@t` of the name was found ([`Agent::name_now`]). No
-    /// name left is chosen again ([`Agent::fresh_name`]), so they make
-    /// chains and no cycle.
+    /// The names publishes left in this process for the next one: a
+    /// member's `@t` of the name found, or its take destroyed
+    /// ([`Agent::rename`], [`Agent::name_now`]). No name left is chosen
+    /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
     renamed: BTreeMap<String, String>,
 }
 
@@ -596,7 +672,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if self.record.under_way.len() >= UNDER_WAY_MAX {
             return Err(Error::Full);
         }
-        // Before anything is written in the directory ([`Agent::sweep`]).
+        // The count first, as each round of `settle` does: it sets the
+        // limits of the sweep's read of the holds, which grows with the
+        // datasets (a failed count leaves the bases, and the calls after
+        // it say what is wrong). Then the sweep, before anything is
+        // written in the directory ([`Agent::sweep`]).
+        let _counted = self.zfs.count(&self.pool);
         self.sweep()?;
         let props = self.zfs.props(&self.pool)?;
         let leaf = self.premise(&props)?.map_err(Error::Premise)?;
@@ -635,11 +716,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Drive every publish under way until each has left the record or
     /// stopped, waiting [`TICK`] between rounds where none moved; at most
     /// until `limit` has passed. Each that left or stopped is in
-    /// [`Agent::outcomes`]. Each round begins with the sweep
-    /// (`Agent::sweep`).
+    /// [`Agent::outcomes`]. Each round begins with the count of the
+    /// pool's datasets ([`Zfs::count`]), which sets the time limits of
+    /// its calls, then the sweep (`Agent::sweep`).
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
+            // Where the count fails, the limits are the bases, and the
+            // round's own calls say what is wrong (no pool, or another
+            // error): the count is not an error of the round.
+            let _counted = self.zfs.count(&self.pool);
             self.sweep()?;
             let names: Vec<String> = self
                 .record
@@ -784,7 +870,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(e) => return Err(e),
         };
         let snapshot = self.zfs.members(pool, name)?;
-        let hold = self.zfs.held(pool, name, HOLD_TAG)?;
+        let hold = self.zfs.held(pool, name, HOLD_TAG, snapshot.as_deref())?;
         let now_ms = self.now_for(publish);
         let too_old = plan::too_old(publish.begun_ms, self.age_now(publish), self.age_max);
         let memory = self.memory.entry(name.clone()).or_default();
@@ -893,6 +979,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
         match action {
             Action::Take => self.take(&name),
+            Action::Adopt => self.adopt(&name, Origin::Seen),
             Action::Hold => {
                 self.commit(Effect::Holding, |r| set(r, &name, |p| p.held = true))?;
                 self.point(Effect::Hold, false)?;
@@ -1040,35 +1127,112 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
     }
 
-    /// Take the snapshot: the count read anew and recorded, the program,
-    /// the manifest's file, and the record at [`Phase::Taken`].
+    /// Take the snapshot: the count read anew and recorded, the pool's
+    /// datasets read, `zfs snapshot -r`, and the take adopted
+    /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
+        // The give-up at the last failed check was decided, and its take
+        // destroyed, before a stop: no take is asked again (D2 of #153's
+        // next look). The datasets that broke it are not known now.
+        if self
+            .record
+            .publish(name)
+            .is_some_and(|p| p.attempts >= plan::CHECKS_FAILED_MAX)
+        {
+            self.tell(name, Report::NotWhole(Vec::new()));
+            self.abandon(name, Why::NotWhole)?;
+            return Ok(Moved::Yes);
+        }
+        // The pause after a take that failed its check (D1 of #153's
+        // review): no take of the next name before it has passed.
+        let retake_after = self.memory.get(name).and_then(|m| m.retake_after);
+        if retake_after.is_some_and(|after| self.clock.mono_ms() < after) {
+            return Ok(Moved::No);
+        }
         let props = self.zfs.props(&self.pool)?;
         let Ok(count) = self.count(props.load_guid) else {
             return Ok(Moved::No);
         };
         self.commit(Effect::Intent, |r| set(r, name, |p| p.count = count))?;
-        self.point(Effect::Program, false)?;
-        let program = self.zfs.snapshot(&self.pool, name);
-        self.point(Effect::Program, true)?;
-        let program = match program {
-            Ok(program) => program,
-            Err(ZfsError::Exists) => {
-                // A member's `@t` of this name exists: nothing was taken,
-                // and the publish takes the next name.
-                let next = self.fresh_name()?;
-                self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
-                // What this process knows of the publish goes with it: its
-                // age is still read from its anchor (N2 of #144's next
-                // look).
-                if let Some(memory) = self.memory.remove(name) {
-                    self.memory.insert(next.clone(), memory);
-                }
-                self.renamed.insert(name.to_string(), next);
-                return Ok(Moved::Yes);
-            }
-            Err(_) => return Ok(Moved::No),
+        let Ok(before) = self.zfs.datasets(&self.pool, name) else {
+            return Ok(Moved::No);
         };
+        if zfs::taken(&before, &self.pool) != zfs::Taken::Absent {
+            // A take of this name landed since the planner looked (one
+            // killed at its limit ends in its own time): the next round
+            // adopts it, against the reading kept from before it.
+            return Ok(Moved::Yes);
+        }
+        self.memory.entry(name.to_string()).or_default().before = Some(before);
+        self.point(Effect::Take, false)?;
+        let took = self.zfs.snapshot(&self.pool, name);
+        self.point(Effect::Take, true)?;
+        match took {
+            Ok(()) => self.adopt(name, Origin::Took),
+            Err(ZfsError::Exists) => self.adopt(name, Origin::Exists),
+            Err(_) => Ok(Moved::No),
+        }
+    }
+
+    /// Adopt the take of `name`: read the pool's datasets, and record the
+    /// publish [`Phase::Taken`] where its `@t`s are one whole take of the
+    /// pool ([`zfs::taken`]) and its members are as read before the take
+    /// in this process; otherwise destroy them and take under another
+    /// name ([`Agent::retake`]). The lead's rule for an `EEXIST` at the
+    /// take (M2.6c-2b): the name is the one the record holds, so a
+    /// `pool@t` of it is the agent's own take, landed late.
+    ///
+    /// "The agent's own" is decided by the name alone: a person's take
+    /// under the agent's exact name is adopted where it passes the
+    /// check, or destroyed (`zfs destroy -r`, a member's `@t` of another
+    /// group with it). One agent holds the pool's lock, and names are
+    /// the agent's own (`skz-` and the second, [`names`]), so the name is accepted as the
+    /// mark; a nonce set on the take (`zfs snapshot -r -o
+    /// skyzfs:take=<nonce>`) is not built (the lead's ruling on N1 of
+    /// #153's review).
+    ///
+    /// # The members as read before
+    ///
+    /// ZFS keeps on a snapshot only the properties set on the snapshot
+    /// itself, and reads any other through its dataset as it is now: the
+    /// properties the manifest records are read after the take, and are
+    /// the take's only where they did not change around it. So the
+    /// members are compared, by GUID, with the reading taken before the
+    /// take was asked (name, type and local properties), and must be the
+    /// same datasets. A dataset that is not in that reading (created
+    /// between it and the take), a difference, or no reading in this
+    /// process (a take landed before a restart) destroys the take, and
+    /// the publish takes the next name. The conservative reading; it
+    /// does not see a property changed and changed back between the two
+    /// readings with the take between them.
+    fn adopt(&mut self, name: &str, origin: Origin) -> Result<Moved, Error> {
+        let Ok(datasets) = self.zfs.datasets(&self.pool, name) else {
+            return Ok(Moved::No);
+        };
+        let program = match zfs::taken(&datasets, &self.pool) {
+            zfs::Taken::Absent => {
+                return match origin {
+                    // `EEXIST` with no `pool@t`: a member's `@t` of this
+                    // name is someone else's, and nothing was taken. The
+                    // publish takes the next name.
+                    Origin::Exists => self.rename(name, false),
+                    Origin::Took | Origin::Seen => Ok(Moved::No),
+                };
+            }
+            zfs::Taken::NotWhole(breaking) => return self.failed(name, breaking),
+            zfs::Taken::Whole(program) => program,
+        };
+        match self.memory.get(name).and_then(|m| m.before.as_ref()) {
+            // No reading in this process: the take is not judged, and is
+            // taken again without counting a failed check.
+            None => return self.retake(name, false),
+            Some(before) if !as_before(&program.members, Some(before)) => {
+                let differ = differing(&program.members, before);
+                return self.failed(name, differ);
+            }
+            Some(_) => {}
+        }
+        let props = self.zfs.props(&self.pool)?;
         let manifest = Manifest {
             pool: self.pool.clone(),
             pool_guid: props.guid,
@@ -1099,6 +1263,111 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.commit(Effect::Taken, |r| {
             set(r, name, |p| p.phase = Phase::Taken(taken))
         })?;
+        if let Some(memory) = self.memory.get_mut(name) {
+            memory.before = None;
+        }
+        Ok(Moved::Yes)
+    }
+
+    /// The take of `name` failed its check: not one whole take of the
+    /// pool, or its members not as read before it; `names` are the
+    /// datasets that break it. Destroyed and taken again under the next
+    /// name after a pause ([`plan::RETAKE_PAUSE`]); the
+    /// [`plan::CHECKS_FAILED_MAX`]-th failed check in a row gives the
+    /// publish up as [`Why::NotWhole`], reported with `names`
+    /// ([`Report::NotWhole`]), and its take destroyed (the lead's ruling
+    /// on D1 of #153's review).
+    ///
+    /// The failed checks are counted in [`Publish::attempts`], which at
+    /// [`Phase::Intent`] counts nothing else: "in a row", since a check
+    /// that passes leaves Intent for good.
+    ///
+    /// # Across restarts
+    ///
+    /// A failed check is recorded before its take is destroyed (D2 of
+    /// #153's next look, the lead's ruling), so a stop after it keeps the
+    /// count. A stop between the record and the destroy has the next
+    /// process find the same take and count it again: the conservative
+    /// side, a give-up one check early, never a take more. A stop after
+    /// the destroy at the last check has the next process give the
+    /// publish up without a take ([`Agent::take`]). So the takes of one
+    /// publish whose checks fail are at most
+    /// [`plan::CHECKS_FAILED_MAX`] whatever the stops.
+    ///
+    /// A whole take retaken where this process has no reading from
+    /// before it (a restart between the take and its adoption) is not
+    /// counted: it was not judged, and the next take has a reading. A
+    /// process that stops at that point every time takes once each, and
+    /// only [`plan::AGE_MAX`] bounds the publish then, as it bounds a
+    /// process that stops at any one point every time.
+    ///
+    /// A take that cannot be destroyed when it is given up still gives
+    /// the publish up, as [`Why::ManifestLost`], the snapshot kept, with
+    /// the report made.
+    fn failed(&mut self, name: &str, names: Vec<String>) -> Result<Moved, Error> {
+        let failed = self
+            .record
+            .publish(name)
+            .map_or(0, |p| p.attempts)
+            .saturating_add(1);
+        self.commit(Effect::Failed, |r| set(r, name, |p| p.attempts = failed))?;
+        if failed < plan::CHECKS_FAILED_MAX {
+            return self.retake(name, true);
+        }
+        self.tell(name, Report::NotWhole(names));
+        self.point(Effect::Destroy, false)?;
+        let destroyed = self.zfs.destroy(&self.pool, name);
+        self.point(Effect::Destroy, true)?;
+        let why = if destroyed.is_ok() {
+            Why::NotWhole
+        } else {
+            Why::ManifestLost
+        };
+        self.abandon(name, why)?;
+        Ok(Moved::Yes)
+    }
+
+    /// Destroy the take of `name` (`zfs destroy -r`), and take the next
+    /// name; where the take failed its check (`failed`, counted by
+    /// [`Agent::failed`]), after a pause.
+    ///
+    /// A take that cannot be destroyed (a person's hold on one of its
+    /// `@t`s, a clone of one) gives the publish up as
+    /// [`Why::ManifestLost`], the snapshot kept and unpublished: the
+    /// lead's ruling (M2.6c-2b). Any error of the destroy does: the agent
+    /// does not tell a lasting refusal from one that would pass on a
+    /// retry. A destroy killed at its limit may still go through in its
+    /// own time; the outcome then says kept of a snapshot that is gone.
+    fn retake(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
+        self.point(Effect::Destroy, false)?;
+        let destroyed = self.zfs.destroy(&self.pool, name);
+        self.point(Effect::Destroy, true)?;
+        if destroyed.is_err() {
+            self.abandon(name, Why::ManifestLost)?;
+            return Ok(Moved::Yes);
+        }
+        self.rename(name, failed)
+    }
+
+    /// The publish of `name` takes the next free name, recorded at
+    /// [`Phase::Intent`]; after a pause where its take `failed` its check
+    /// (counted by [`Agent::failed`]).
+    fn rename(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
+        let next = self.fresh_name()?;
+        self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
+        self.renamed.insert(name.to_string(), next.clone());
+        // What this process knows of the publish goes with it: its age is
+        // still read from its anchor (N2 of #144's next look). Not the
+        // reading before a take, which was of the old name.
+        let mut memory = self.memory.remove(name).unwrap_or_default();
+        memory.before = None;
+        if failed {
+            memory.retake_after = Some(self.clock.mono_ms().saturating_add(ms(plan::RETAKE_PAUSE)));
+        }
+        self.memory.insert(next, memory);
+        // A manifest's file written for the old name before a stop (the
+        // take destroyed in the next process): no publish names it now.
+        self.unlink(name)?;
         Ok(Moved::Yes)
     }
 
@@ -1251,7 +1520,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         };
         let before = self.zfs.props(&self.pool)?.load_guid;
         let members = self.zfs.members(&self.pool, &name)?;
-        let held = self.zfs.held(&self.pool, &name, HOLD_TAG)? == Held::All;
+        let held = self
+            .zfs
+            .held(&self.pool, &name, HOLD_TAG, members.as_deref())?
+            == Held::All;
         let whole = members.is_some_and(|members| plan::same_snapshot(&members, &taken));
         if !whole || !held {
             // Seen again at the next round, which plans from it.
@@ -1276,10 +1548,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         match plan::stalls_report(stalls) {
             Some(report) => {
                 if self.reported.insert(name.clone()) {
-                    self.reports.push((name.clone(), report));
                     if let Some(sink) = &mut self.sink {
                         sink(&name, &report);
                     }
+                    self.reports.push((name.clone(), report));
                 }
             }
             None => {
@@ -1394,7 +1666,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             return;
         }
         if let Some(sink) = &mut self.sink {
-            sink(name, &report);
+            sink(name, &made.1);
         }
         self.reports.push(made);
     }
