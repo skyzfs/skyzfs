@@ -1983,14 +1983,69 @@ fn no_such_pool_is_a_missing_pool_only_where_zpool_list_agrees() {
     }
     let message = ZfsError::NoPool("zpool status -P tank".into()).to_string();
     assert_eq!(message, "zpool status -P tank: no such pool");
-    for (arg, pool, named) in [
-        ("tank", "tank", true),
-        ("tank@t", "tank", true),
-        ("tank/db@t", "tank", true),
-        ("tank2", "tank", false),
-        ("tan", "tank", false),
-        ("-r", "tank", false),
+    for (name, pool) in [
+        ("tank", "tank"),
+        ("tank@t", "tank"),
+        ("tank/db@t", "tank"),
+        ("tank/a@b/c", "tank"),
+        ("tank2/db", "tank2"),
     ] {
-        assert_eq!(names(arg, pool), named, "{arg} {pool}");
+        assert_eq!(pool_of(name), pool, "{name}");
     }
+}
+
+/// Only the pool a command acts on is looked for in `zpool list`, not
+/// every word of the command: a pool named like a subcommand, an
+/// option's value or the take's name is another pool (Codex on #160).
+/// A value read alone acts on its dataset's pool. Mutants: any word
+/// matched, a value's dataset taken for its pool.
+#[test]
+fn only_the_commands_own_pool_is_looked_for() {
+    let said = "cannot open 'tank': no such pool\n";
+    let others = "get\nproperty\nstatus\nskz-1\nskyzfs-publish\nprogram\nholds\n";
+    let props =
+        "zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank";
+    let mut fake = Fake::default();
+    fake.fails(props, 1, said).ok(POOLS, others);
+    assert_eq!(cli(fake).props("tank"), Err(ZfsError::NoPool(props.into())));
+    let mut fake = Fake::default();
+    fake.fails(MEMBERS_WORDS, 1, said).ok(POOLS, others);
+    assert_eq!(
+        cli(fake).members("tank", "skz-1"),
+        Err(ZfsError::NoPool(MEMBERS_WORDS.into()))
+    );
+    let mut fake = Fake::default();
+    fake.fails(TAGGED_WORDS, 1, said).ok(POOLS, others);
+    assert_eq!(
+        cli(fake).tagged("tank", "skyzfs-publish"),
+        Err(ZfsError::NoPool(TAGGED_WORDS.into()))
+    );
+    let mut fake = Fake::default();
+    fake.fails(
+        HOLDS_R,
+        1,
+        "cannot open 'tank@skz-1': no such pool or dataset\n",
+    )
+    .ok(POOLS, "skz-1\nholds\n");
+    assert_eq!(
+        cli(fake).held("tank", "skz-1", "skyzfs-publish", None),
+        Err(ZfsError::NoPool(HOLDS_R.into()))
+    );
+
+    // A value read alone acts on the pool of its dataset: `tank`, listed,
+    // so the dataset vanished, which is no missing pool.
+    let pairs = "tank/db\ta:b\n";
+    let values = "tank/db\ta:b\tc\nd\n";
+    let mut fake = manifest_reads(pairs, values.as_bytes());
+    fake.fails(
+        &alone("a:b", "tank/db"),
+        1,
+        "cannot open 'tank/db': no such pool or dataset\n",
+    )
+    .ok(POOLS, "tank\n");
+    let read = cli(fake).datasets("tank", "skz-1");
+    assert!(
+        matches!(&read, Err(ZfsError::Vanished(why)) if why.contains(&alone("a:b", "tank/db"))),
+        "{read:?}"
+    );
 }

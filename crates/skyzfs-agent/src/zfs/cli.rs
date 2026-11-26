@@ -45,7 +45,8 @@
 //! anything else [`ZfsError::Other`] with the command and its message.
 //! A command that says its pool is not there gives
 //! [`ZfsError::NoPool`], with its words, only where `zpool list -H -o
-//! name` lists no pool the command names. Where it lists one, libzfs
+//! name` does not list the pool the command acts on (that pool alone,
+//! not any word of the command). Where it lists it, libzfs
 //! said `no such pool or dataset` of a dataset or snapshot destroyed
 //! as the command read it (testing's agent rig, `zfs holds -r` of a
 //! `@t` being destroyed): [`ZfsError::Vanished`], which the reads of
@@ -440,31 +441,34 @@ impl<H: Host> ZfsCli<H> {
         }
     }
 
-    /// `zfs` with `args` within `limit`: its output's bytes where it
-    /// exits 0. Where the command names a `pool`, `cannot open 'POOL':
-    /// dataset does not exist` is [`ZfsError::NoPool`]: `zfs list` and
-    /// `zfs get` say so of a pool that does not exist. The same message
-    /// of a child or a snapshot is an error (N5 of #157's review).
+    /// `zfs` with `args`, which read in `pool`, within `limit`: its
+    /// output's bytes where it exits 0. Where the command names the pool
+    /// itself (`names_pool`), `cannot open 'POOL': dataset does not
+    /// exist` is [`ZfsError::NoPool`] where `zpool list` agrees
+    /// ([`ZfsCli::confirm`]): `zfs list` and `zfs get` say so of a pool
+    /// that does not exist. The same message of a child or a snapshot is
+    /// an error (N5 of #157's review).
     fn zfs_bytes(
         &mut self,
         args: &[&str],
         limit: Duration,
-        pool: Option<&str>,
+        pool: &str,
+        names_pool: bool,
     ) -> Result<Vec<u8>, ZfsError> {
         let output = self.exec("zfs", args, &[], limit)?;
         if output.code == Some(0) {
             return Ok(output.stdout);
         }
-        if let Some(pool) = pool {
+        if names_pool {
             let gone = format!("cannot open '{pool}': dataset does not exist");
             if String::from_utf8_lossy(&output.stderr)
                 .lines()
                 .any(|line| line == gone)
             {
-                return Err(self.confirm("zfs", args, &output));
+                return Err(self.confirm("zfs", args, &output, pool));
             }
         }
-        Err(self.failed("zfs", args, &output, false))
+        Err(self.failed("zfs", args, &output, false, pool))
     }
 
     /// One local property's value alone ([module docs](self), "The
@@ -473,7 +477,7 @@ impl<H: Host> ZfsCli<H> {
     /// value longer than ZFS lets one be ([`VALUE_MOST`]), cannot be read.
     fn value(&mut self, name: &str, property: &str) -> Result<Vec<u8>, ZfsError> {
         let args = ["get", "-H", "-p", "-o", "value", property, name];
-        let out = self.zfs_bytes(&args, self.read_limit(), None)?;
+        let out = self.zfs_bytes(&args, self.read_limit(), pool_of(name), false)?;
         match out.strip_suffix(b"\n") {
             Some(value) if value.len() <= VALUE_MOST => Ok(value.to_vec()),
             _ => Err(ZfsError::Other(format!(
@@ -508,8 +512,9 @@ impl<H: Host> ZfsCli<H> {
             .map_err(|e| ZfsError::Other(format!("{}: {e}", command(program, args))))
     }
 
-    /// Run `program` with `args` within `limit`; its standard output
-    /// where it exits 0, and otherwise the error its message says.
+    /// Run `program` with `args`, which act on `pool`, within `limit`;
+    /// its standard output where it exits 0, and otherwise the error its
+    /// message says.
     fn run(
         &mut self,
         program: &str,
@@ -517,6 +522,7 @@ impl<H: Host> ZfsCli<H> {
         stdin: &[u8],
         limit: Duration,
         snapshot: bool,
+        pool: &str,
     ) -> Result<String, ZfsError> {
         let output = self.exec(program, args, stdin, limit)?;
         if output.code == Some(0) {
@@ -527,11 +533,12 @@ impl<H: Host> ZfsCli<H> {
                 ))
             });
         }
-        Err(self.failed(program, args, &output, snapshot))
+        Err(self.failed(program, args, &output, snapshot, pool))
     }
 
     /// The error a command that did not exit 0 gives ([`failure`]); one
     /// that says the pool is not there only where `zpool list` agrees
+    /// that `pool`, the one the command acts on, is not
     /// ([`ZfsCli::confirm`]).
     fn failed(
         &mut self,
@@ -539,23 +546,26 @@ impl<H: Host> ZfsCli<H> {
         args: &[&str],
         output: &Output,
         snapshot: bool,
+        pool: &str,
     ) -> ZfsError {
         match failure(program, args, output, snapshot) {
-            ZfsError::NoPool(_) => self.confirm(program, args, output),
+            ZfsError::NoPool(_) => self.confirm(program, args, output, pool),
             e => e,
         }
     }
 
     /// A command that said its pool is not there, by `zpool list -H -o
-    /// name`: [`ZfsError::NoPool`] where no pool listed is named by the
-    /// command's words (as itself, or before a `/` or `@`), and
-    /// [`ZfsError::Vanished`] where one is. libzfs says `no such pool or
+    /// name`: [`ZfsError::NoPool`] where `pool`, the pool the command
+    /// acts on, is not a line of it, and [`ZfsError::Vanished`] where it
+    /// is. Only the target pool counts, and not any word of the command:
+    /// a pool named like a subcommand or an option's value (`get`,
+    /// `name`) is not the command's (Codex on #160). libzfs says `no such pool or
     /// dataset` of a dataset gone between a command's open of it and its
     /// read (testing's agent rig, a snapshot destroyed during `zfs holds
     /// -r`; the lead's ruling), and `no such pool` too in some commands.
     /// Where `zpool list` does not answer, an error that says so, and not
     /// [`ZfsError::NoPool`]: the conservative reading.
-    fn confirm(&mut self, program: &str, args: &[&str], output: &Output) -> ZfsError {
+    fn confirm(&mut self, program: &str, args: &[&str], output: &Output, pool: &str) -> ZfsError {
         let said = format!(
             "{}: {}",
             command(program, args),
@@ -572,12 +582,10 @@ impl<H: Host> ZfsCli<H> {
             }
             Err(e) => return ZfsError::Other(format!("{said}; and {e}")),
         };
-        let listed = String::from_utf8_lossy(&listed);
-        let named = listed
+        if String::from_utf8_lossy(&listed)
             .lines()
-            .filter(|pool| !pool.is_empty())
-            .any(|pool| args.iter().any(|arg| names(arg, pool)));
-        if named {
+            .any(|line| line == pool)
+        {
             ZfsError::Vanished(format!("{said} (`zpool list` lists its pool)"))
         } else {
             ZfsError::NoPool(command(program, args))
@@ -601,12 +609,18 @@ impl<H: Host> ZfsCli<H> {
         }
     }
 
-    fn zpool(&mut self, args: &[&str], limit: Duration) -> Result<String, ZfsError> {
-        self.run("zpool", args, &[], limit, false)
+    fn zpool(&mut self, args: &[&str], limit: Duration, pool: &str) -> Result<String, ZfsError> {
+        self.run("zpool", args, &[], limit, false, pool)
     }
 
-    fn zfs(&mut self, args: &[&str], limit: Duration, snapshot: bool) -> Result<String, ZfsError> {
-        self.run("zfs", args, &[], limit, snapshot)
+    fn zfs(
+        &mut self,
+        args: &[&str],
+        limit: Duration,
+        snapshot: bool,
+        pool: &str,
+    ) -> Result<String, ZfsError> {
+        self.run("zfs", args, &[], limit, snapshot, pool)
     }
 
     /// A channel program's returned value, the object under `return`.
@@ -651,7 +665,7 @@ impl<H: Host> ZfsCli<H> {
         {
             return Ok(());
         }
-        match self.failed("zfs", &args, &output, true) {
+        match self.failed("zfs", &args, &output, true, pool) {
             ZfsError::NoSnapshot => Ok(()),
             e => Err(e),
         }
@@ -665,7 +679,8 @@ impl<H: Host> ZfsCli<H> {
         snapshot: &str,
         tag: &str,
     ) -> Result<Option<BTreeSet<String>>, ZfsError> {
-        let holds = match self.zfs(&["holds", "-H", "-r", snapshot], self.read_limit(), true) {
+        let args = ["holds", "-H", "-r", snapshot];
+        let holds = match self.zfs(&args, self.read_limit(), true, pool_of(snapshot)) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
             Err(e) => return Err(e),
@@ -704,7 +719,7 @@ impl<H: Host> ZfsCli<H> {
         if output.code == Some(0) {
             Ok(output.stdout)
         } else {
-            Err(self.failed("zfs", &all, &output, false))
+            Err(self.failed("zfs", &all, &output, false, pool))
         }
     }
 
@@ -715,7 +730,7 @@ impl<H: Host> ZfsCli<H> {
             args.push("-g");
         }
         args.push(pool);
-        let out = self.zpool(&args, self.read_limit())?;
+        let out = self.zpool(&args, self.read_limit(), pool)?;
         parse_status(&out, pool).map_err(|why| ZfsError::Other(format!("zpool status: {why}")))
     }
 
@@ -798,13 +813,13 @@ impl<H: Host> Zfs for ZfsCli<H> {
         ];
         let output = self.exec("zpool", &args, &[], self.read_limit())?;
         if output.code != Some(0) {
-            let error = self.failed("zpool", &args, &output, false);
+            let error = self.failed("zpool", &args, &output, false, pool);
             // ZFS 2.2's `zpool get` takes a name that is no pool's for no
             // pool named at all ([module docs](self)): `zpool status`
             // says whether the pool is there.
             if matches!(error, ZfsError::Other(_)) && says(&output.stderr, "missing pool name") {
                 if let Err(gone @ ZfsError::NoPool(_)) =
-                    self.zpool(&["status", "-P", pool], self.read_limit())
+                    self.zpool(&["status", "-P", pool], self.read_limit(), pool)
                 {
                     return Err(gone);
                 }
@@ -843,7 +858,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
             pool,
         ];
         let counted = self
-            .run("zfs", &args, &[], self.limits.count, false)
+            .run("zfs", &args, &[], self.limits.count, false, pool)
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
         let datasets = match counted {
             Ok(n) => n,
@@ -860,7 +875,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
         // limit on the datasets' scale.
         let args = ["list", "-r", "-H", "-o", "name", "-t", "snapshot", pool];
         let snapshots = self
-            .run("zfs", &args, &[], self.read_limit(), false)
+            .run("zfs", &args, &[], self.read_limit(), false, pool)
             .ok()
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
         self.scale = Scale::Counted {
@@ -880,20 +895,20 @@ impl<H: Host> Zfs for ZfsCli<H> {
         if says(&output.stderr, "dataset already exists") {
             return Err(ZfsError::Exists);
         }
-        Err(self.failed("zfs", &args, &output, false))
+        Err(self.failed("zfs", &args, &output, false, pool))
     }
 
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         let limit = self.full_read_limit();
         let list = list_words(pool);
-        let listed = self.zfs_bytes(&list, self.list_limit(), Some(pool))?;
+        let listed = self.zfs_bytes(&list, self.list_limit(), pool, true)?;
         let mut datasets = parse_listed(&listed, pool, t)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
         let get = get_words(pool, PAIRS);
-        let pairs = self.zfs_bytes(&get, limit, Some(pool))?;
+        let pairs = self.zfs_bytes(&get, limit, pool, true)?;
         let pairs = parse_pairs(&pairs)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &get))))?;
-        let values = self.zfs_bytes(&get_words(pool, VALUES), limit, Some(pool))?;
+        let values = self.zfs_bytes(&get_words(pool, VALUES), limit, pool, true)?;
         let (mut read, again) = match_values(&pairs, &values);
         let again = pairs
             .iter()
@@ -936,7 +951,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
             return Ok(());
         }
         if !says(&output.stderr, "tag already exists") {
-            return Err(self.failed("zfs", &args, &output, true));
+            return Err(self.failed("zfs", &args, &output, true, pool));
         }
         // A member has the tag, and so the command held none (ZFS holds
         // all or none): the hold is there only where every member's `@t`
@@ -968,7 +983,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
             return Ok(());
         }
         if !says(&output.stderr, "no such tag") {
-            return match self.failed("zfs", &args, &output, true) {
+            return match self.failed("zfs", &args, &output, true, pool) {
                 ZfsError::NoSnapshot => Ok(()),
                 e => Err(e),
             };
@@ -1043,8 +1058,8 @@ impl<H: Host> Zfs for ZfsCli<H> {
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         let set = format!("{ASSIST_PROPERTY}={value}");
-        self.zfs(&["set", &set, pool], self.change_limit(), false)?;
-        self.zpool(&["sync", pool], self.change_limit())?;
+        self.zfs(&["set", &set, pool], self.change_limit(), false, pool)?;
+        self.zpool(&["sync", pool], self.change_limit(), pool)?;
         Ok(())
     }
 }
@@ -1071,11 +1086,10 @@ fn says(stderr: &[u8], what: &str) -> bool {
 /// [`Zfs::held`] and [`Zfs::tagged`].
 pub const VANISHED_READS: u32 = 3;
 
-/// Whether the word `arg` of a command names `pool`: the pool itself, or
-/// a dataset or snapshot in it.
-fn names(arg: &str, pool: &str) -> bool {
-    arg.strip_prefix(pool)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with('@'))
+/// The pool a dataset's or snapshot's `name` is in: the name up to its
+/// first `/` or `@`.
+fn pool_of(name: &str) -> &str {
+    name.split(['/', '@']).next().unwrap_or(name)
 }
 
 /// The error a command that did not exit 0 gives, by its message.
