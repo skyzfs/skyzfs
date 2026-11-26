@@ -770,7 +770,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn sweep(&mut self) -> Result<(), Error> {
         let load_guid = match self.zfs.props(&self.pool) {
             Ok(props) => props.load_guid,
-            Err(ZfsError::NoPool) => return Ok(()),
+            Err(ZfsError::NoPool(_)) => return Ok(()),
             Err(e) => return Err(e.into()),
         };
         if self.swept == Some(load_guid) {
@@ -823,12 +823,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let name = &publish.name;
         let props = match self.zfs.props(pool) {
             Ok(props) => props,
-            Err(ZfsError::NoPool) => return Ok(None),
+            Err(ZfsError::NoPool(_)) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
         let premise = match self.premise(&props) {
             Ok(verdict) => verdict.is_ok(),
-            Err(Error::Zfs(ZfsError::NoPool)) => return Ok(None),
+            Err(Error::Zfs(ZfsError::NoPool(_))) => return Ok(None),
             Err(Error::Daemon(_)) => return Ok(None),
             Err(e) => return Err(e),
         };

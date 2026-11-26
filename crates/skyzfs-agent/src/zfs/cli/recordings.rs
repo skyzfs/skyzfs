@@ -115,6 +115,9 @@ const RIG: &str = "skzq";
 const MIRROR: &str = "skzqm";
 /// The pool that does not exist.
 const NONE: &str = "skznone";
+
+/// What the adapter asks where a command says its pool is not there.
+const POOLS: &str = "zpool list -H -o name";
 /// The tag the recorder held with: the agent's.
 const TAG: &str = HOLD_TAG;
 /// The device number the fake gives the rig's leaf.
@@ -221,6 +224,9 @@ impl Recording {
             PathBuf::from(NOCACHEFLUSH),
             self.get("nocacheflush").stdout.into_bytes(),
         );
+        // Not recorded: the recorder's two pools, as `zpool list` would
+        // list them where a command says its pool is not there.
+        fake.ok(POOLS, &format!("{RIG}\n{MIRROR}\n"));
         ZfsCli::new(fake, Limits::default())
     }
 
@@ -547,9 +553,16 @@ fn a_resilver_is_busy_and_a_scrub_is_not_as_recorded() {
 #[test]
 fn a_pool_that_does_not_exist_reads_as_recorded() {
     for rec in recordings() {
+        // Each says no pool only once `zpool list` lists none it names.
+        let gone = |name: &str| ZfsError::NoPool(rec.get(name).words());
+        let confirmed = |names: &[&str]| {
+            let mut words = rec.words(names);
+            words.push(POOLS.to_string());
+            words
+        };
         let mut zfs = rec.adapter(&["none-status"]);
-        assert_eq!(zfs.layout(NONE), Err(ZfsError::NoPool), "{}", rec.image);
-        assert_eq!(ran(&mut zfs), rec.words(&["none-status"]));
+        assert_eq!(zfs.layout(NONE), Err(gone("none-status")), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), confirmed(&["none-status"]));
 
         // ZFS 2.2's `zpool get` says `missing pool name.`: the adapter
         // asks `zpool status`, as recorded beside it.
@@ -559,8 +572,9 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
             vec!["none-get"]
         };
         let mut zfs = rec.adapter(&get);
-        assert_eq!(zfs.props(NONE), Err(ZfsError::NoPool), "{}", rec.image);
-        assert_eq!(ran(&mut zfs), rec.words(&get), "{}", rec.image);
+        let last = get[get.len() - 1];
+        assert_eq!(zfs.props(NONE), Err(gone(last)), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), confirmed(&get), "{}", rec.image);
 
         // `zfs snapshot -r` of a pool that does not exist says `dataset
         // does not exist` with its usage (exit 2): an error, neither a
@@ -583,17 +597,19 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         let mut zfs = rec.adapter(&["none-members"]);
         assert_eq!(
             zfs.members(NONE, "t"),
-            Err(ZfsError::NoPool),
+            Err(gone("none-members")),
             "{}",
             rec.image
         );
+        assert_eq!(ran(&mut zfs), confirmed(&["none-members"]));
         let mut zfs = rec.adapter(&["none-tagged"]);
         assert_eq!(
             zfs.tagged(NONE, TAG),
-            Err(ZfsError::NoPool),
+            Err(gone("none-tagged")),
             "{}",
             rec.image
         );
+        assert_eq!(ran(&mut zfs), confirmed(&["none-tagged"]));
 
         // `zfs hold`, `holds` and `release` say `dataset does not exist`
         // of a pool that does not: the snapshot is not there.
@@ -1343,10 +1359,12 @@ fn the_three_reads_as_recorded() {
         let none_list = recording.get("read-none-list");
         let mut fake = Fake::default();
         fake.give(&none_list.words(), Ok(given(&none_list)));
+        // Not recorded: no pool, as `zpool list` would list it.
+        fake.ok(POOLS, "");
         let mut zfs = ZfsCli::new(fake, Limits::default());
         assert_eq!(
             zfs.datasets(READ_POOL, "t"),
-            Err(ZfsError::NoPool),
+            Err(ZfsError::NoPool(none_list.words())),
             "{image}"
         );
         let gone = recording.get("read-none-value");

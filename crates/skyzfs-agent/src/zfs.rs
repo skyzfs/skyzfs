@@ -340,12 +340,18 @@ pub enum Held {
 /// Why ZFS did not do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZfsError {
-    /// The pool is not imported.
-    NoPool,
+    /// The pool is not imported: the command's words, which said so,
+    /// where `zpool list` does not list a pool they name.
+    NoPool(String),
     /// The snapshot does not exist.
     NoSnapshot,
     /// A member's `@t` exists already: `zfs snapshot -r` took nothing.
     Exists,
+    /// A dataset or snapshot the command read was not there while its
+    /// pool is (it said `no such pool` or `no such pool or dataset`,
+    /// and `zpool list` lists the pool): one destroyed as it was read.
+    /// The command's words and message.
+    Vanished(String),
     /// Anything else, in words.
     Other(String),
 }
@@ -353,7 +359,8 @@ pub enum ZfsError {
 impl fmt::Display for ZfsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ZfsError::NoPool => write!(f, "no such pool"),
+            ZfsError::NoPool(command) => write!(f, "{command}: no such pool"),
+            ZfsError::Vanished(what) => write!(f, "{what}"),
             ZfsError::NoSnapshot => write!(f, "no such snapshot"),
             ZfsError::Exists => write!(f, "a snapshot of that name exists"),
             ZfsError::Other(what) => write!(f, "{what}"),

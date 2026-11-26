@@ -100,6 +100,9 @@ fn guided(text: &str) -> String {
     out
 }
 
+/// What the adapter asks where a command says its pool is not there.
+const POOLS: &str = "zpool list -H -o name";
+
 fn cli(fake: Fake) -> ZfsCli<Fake> {
     ZfsCli::new(fake, Limits::default())
 }
@@ -338,7 +341,11 @@ fn no_such_pool_is_no_pool() {
         1,
         "cannot open 'tank': no such pool\n",
     );
-    assert_eq!(cli(fake).layout("tank"), Err(ZfsError::NoPool));
+    fake.ok(POOLS, "");
+    let mut zfs = cli(fake);
+    let gone = Err(ZfsError::NoPool("zpool status -P tank".into()));
+    assert_eq!(zfs.layout("tank"), gone);
+    assert_eq!(zfs.host().words(), ["zpool status -P tank", POOLS]);
 }
 
 const PROPS: &str =
@@ -426,10 +433,14 @@ fn the_take_is_zfs_snapshot_r() {
             "cannot create snapshot 'tank/db@skz-1': dataset already exists\nno snapshots were created\n",
             Err(ZfsError::Exists),
         ),
-        ("cannot open 'tank': no such pool\n", Err(ZfsError::NoPool)),
+        (
+            "cannot open 'tank': no such pool\n",
+            Err(ZfsError::NoPool(TAKE.into())),
+        ),
     ] {
         let mut fake = Fake::default();
         fake.fails(TAKE, 1, stderr);
+        fake.ok(POOLS, "other\n");
         assert_eq!(cli(fake).snapshot("tank", "skz-1"), want, "{stderr}");
     }
     let mut fake = Fake::default();
@@ -1096,9 +1107,24 @@ fn datasets_that_cannot_be_read_are_an_error() {
         let words = [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS][at];
         fake.commands.remove(words);
         fake.fails(words, 1, gone);
+        fake.ok(POOLS, "");
         assert_eq!(
             cli(fake).datasets("tank", "skz-1"),
-            Err(ZfsError::NoPool),
+            Err(ZfsError::NoPool(words.into())),
+            "{at}"
+        );
+        // The same message while `zpool list` lists the pool (a read
+        // racing an import or an export) is no missing pool: the pool
+        // is there, so the read failed.
+        let mut fake = manifest_reads(PAIRS, VALUES.as_bytes());
+        fake.commands.remove(words);
+        fake.fails(words, 1, gone);
+        fake.ok(POOLS, "tank\n");
+        assert!(
+            matches!(
+                cli(fake).datasets("tank", "skz-1"),
+                Err(ZfsError::Vanished(why)) if why.contains(words) && why.contains(gone.trim_end())
+            ),
             "{at}"
         );
     }
@@ -1126,7 +1152,11 @@ fn datasets_that_cannot_be_read_are_an_error() {
     }
     let mut fake = Fake::default();
     fake.fails(LIST_WORDS, 1, "cannot open 'tank': no such pool\n");
-    assert_eq!(cli(fake).datasets("tank", "skz-1"), Err(ZfsError::NoPool));
+    fake.ok(POOLS, "");
+    assert_eq!(
+        cli(fake).datasets("tank", "skz-1"),
+        Err(ZfsError::NoPool(LIST_WORDS.into()))
+    );
     let mut fake = Fake::default();
     fake.fails(LIST_WORDS, 1, "cannot iterate filesystems: I/O error\n");
     assert!(matches!(
@@ -1815,4 +1845,152 @@ fn the_lists_limit_grows_with_the_snapshots_counted() {
     assert_eq!(ran[0].words, LIST_WORDS);
     assert_eq!(ran[0].limit, at(10, 200), "the datasets' scale");
     assert_eq!(ran[1].limit, at(10, 200));
+}
+
+/// What libzfs says of a snapshot gone between a command's open of it
+/// and its read, in the two shapes `no such pool` takes.
+const VANISHED: [&str; 2] = [
+    "cannot get holds for 'tank/db@skz-1': no such pool or dataset\n",
+    "Channel program execution failed: no such pool\n",
+];
+
+/// A read that says `no such pool` while `zpool list` lists the pool is
+/// a dataset gone during the read, a destroy's (testing's agent rig,
+/// case `destroy`; the lead's ask): the members, the holds and the tags
+/// are read again, and the second read is what comes back. Mutants: any
+/// `no such pool` read as a missing pool without `zpool list`, a read
+/// not made again.
+#[test]
+fn a_read_whose_snapshot_vanished_is_read_again() {
+    for stderr in VANISHED {
+        let mut fake = Fake::default();
+        fake.fails(MEMBERS_WORDS, 1, stderr)
+            .ok(MEMBERS_WORDS, r#"{"return":{"absent":"1"}}"#)
+            .ok(POOLS, "tank\n");
+        let mut zfs = cli(fake);
+        assert_eq!(zfs.members("tank", "skz-1"), Ok(None), "{stderr}");
+        assert_eq!(
+            zfs.host().words(),
+            [MEMBERS_WORDS, POOLS, MEMBERS_WORDS],
+            "{stderr}"
+        );
+
+        let mut fake = Fake::default();
+        fake.fails(HOLDS_R, 1, stderr)
+            .fails(
+                HOLDS_R,
+                1,
+                "cannot open 'tank@skz-1': dataset does not exist\n",
+            )
+            .ok(POOLS, "other\ntank\n");
+        let mut zfs = cli(fake);
+        assert_eq!(
+            zfs.held("tank", "skz-1", HOLD_TAG, None),
+            Ok(Held::No),
+            "{stderr}"
+        );
+        assert_eq!(zfs.host().words(), [HOLDS_R, POOLS, HOLDS_R], "{stderr}");
+
+        let mut fake = Fake::default();
+        fake.fails(TAGGED_WORDS, 1, stderr)
+            .ok(TAGGED_WORDS, r#"{"return":{"tagged":{"tank@skz-1":"1"}}}"#)
+            .ok(POOLS, "tank\n");
+        let mut zfs = cli(fake);
+        let tagged = zfs.tagged("tank", HOLD_TAG).expect("tagged");
+        assert_eq!(tagged.into_iter().collect::<Vec<_>>(), ["tank@skz-1"]);
+        assert_eq!(
+            zfs.host().words(),
+            [TAGGED_WORDS, POOLS, TAGGED_WORDS],
+            "{stderr}"
+        );
+    }
+}
+
+/// A read that goes on vanishing is made [`VANISHED_READS`] times in
+/// all, then fails with an error that names the command and what it
+/// said: not a missing pool. Mutants: no bound, one read more or less.
+#[test]
+fn a_read_that_goes_on_vanishing_is_an_error_that_names_it() {
+    assert_eq!(VANISHED_READS, 3);
+    let mut fake = Fake::default();
+    fake.fails(HOLDS_R, 1, VANISHED[0]).ok(POOLS, "tank\n");
+    let mut zfs = cli(fake);
+    let read = zfs.held("tank", "skz-1", HOLD_TAG, None);
+    assert!(
+        matches!(&read, Err(ZfsError::Vanished(why))
+            if why.contains(HOLDS_R) && why.contains("no such pool or dataset")),
+        "{read:?}"
+    );
+    assert_eq!(
+        zfs.host().words(),
+        [HOLDS_R, POOLS, HOLDS_R, POOLS, HOLDS_R, POOLS]
+    );
+    // Commands that are not read again: one try.
+    let mut fake = Fake::default();
+    fake.fails(LIST_WORDS, 1, VANISHED[1]).ok(POOLS, "tank\n");
+    let mut zfs = cli(fake);
+    assert!(matches!(
+        zfs.datasets("tank", "skz-1"),
+        Err(ZfsError::Vanished(_))
+    ));
+    assert_eq!(zfs.host().words(), [LIST_WORDS, POOLS]);
+}
+
+/// `no such pool` is a missing pool only where `zpool list` lists no
+/// pool the command names: a pool whose name only begins with the
+/// command's is not it, nor is one whose name the command's only begins
+/// with. Where `zpool list` fails, an error that says both, and not a
+/// missing pool. A missing pool's message names the command. Mutants: a
+/// name matched as a prefix, `zpool list`'s failure read as no pool.
+#[test]
+fn no_such_pool_is_a_missing_pool_only_where_zpool_list_agrees() {
+    let said = "cannot open 'tank': no such pool\n";
+    for (listed, gone) in [
+        ("", true),
+        ("tank2\nta\nother\n", true),
+        ("tank\n", false),
+        ("tank2\ntank\n", false),
+    ] {
+        let mut fake = Fake::default();
+        fake.fails(MEMBERS_WORDS, 1, said).ok(POOLS, listed);
+        let read = cli(fake).members("tank", "skz-1");
+        if gone {
+            assert_eq!(
+                read,
+                Err(ZfsError::NoPool(MEMBERS_WORDS.into())),
+                "{listed:?}"
+            );
+        } else {
+            assert!(matches!(read, Err(ZfsError::Vanished(_))), "{listed:?}");
+        }
+    }
+    for list in [
+        Ok(crate::host::fake::output(
+            1,
+            "",
+            "internal error: out of memory\n",
+        )),
+        Err(std::io::ErrorKind::TimedOut),
+    ] {
+        let mut fake = Fake::default();
+        fake.fails(MEMBERS_WORDS, 1, said).give(POOLS, list.clone());
+        let read = cli(fake).members("tank", "skz-1");
+        assert!(
+            matches!(&read, Err(ZfsError::Other(why))
+                if why.contains(MEMBERS_WORDS) && why.contains("no such pool")),
+            "{list:?}: {read:?}"
+        );
+    }
+    let message = ZfsError::NoPool("zpool status -P tank".into()).to_string();
+    assert_eq!(message, "zpool status -P tank: no such pool");
+    for (arg, pool, named) in [
+        ("tank", "tank", true),
+        ("tank@t", "tank", true),
+        ("tank/db@t", "tank", true),
+        ("tank2", "tank", false),
+        ("tan", "tank", false),
+        ("-r", "tank", false),
+    ] {
+        assert_eq!(names(arg, pool), named, "{arg} {pool}");
+    }
 }
