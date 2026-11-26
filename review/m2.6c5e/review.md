@@ -388,11 +388,18 @@ The worktree was clean after both runs.
 - **Bytes.** The count's output is read lossily, and names are ASCII.
   The holds are bytes, and tags are compared as bytes (`cli.rs:1069`).
 - **On a real pool.** Not recorded, as the description says. But the
-  agent rig's jobs a1, a2 and d passed on the head (Ubuntu 26.04, ZFS
-  2.4.1). Each publish there passes `held` with `Held::All` before it
-  asks (`plan.rs:921`, `engine.rs:1505`). That runs this count after
-  `holds -r`, and needs it to add up. So the count parses and adds up
-  on 2.4.1 for the agent's own holds. Not shown:
+  agent rig's four jobs passed on the head (Ubuntu 26.04, ZFS 2.4.1):
+  - Each publish there passes `held` with `Held::All` before it asks
+    (`plan.rs:921`, `engine.rs:1505`). That runs this count after
+    `holds -r`, and needs it to add up.
+  - Job k's sweep cases run the sweep's new reading (the list with
+    `userrefs`, then the holds, then `outnumbered`) and pin its
+    outcome: `pin_sweep_swept` ("the publish released the hold that no
+    publish named"), the `K-sweep-sweep-*` kills, and
+    `pin_unmarked_refused` (exit 6, nothing released).
+
+  So both counts parse and add up on 2.4.1 for the agent's own holds.
+  Not shown:
   - 24.04 (the 2.2 userland);
   - a name gone;
   - tags with a tab or a newline as ZFS prints them, which the
@@ -404,7 +411,19 @@ GATES
 
 ## CI at 6752363
 
-CI
+Read from the head's check runs; every run is complete and green.
+
+| Workflow | Run | Jobs |
+|---|---|---|
+| `ci` | 45858921484 | test, lint, unit-arm64, chart-lint, s3-backends: success |
+| `coverage` | 45858921334 | success (Publish badges skipped, as on any pull request) |
+| `e2e` | 45858921402 | e2e-tier-a: success |
+| `k3s-smoke` | 45858921314 | install and UDS smokes: success |
+| `skyzfs-agent-rig` | 45858921309 | the check's logic; a1, a2, d and k on ubuntu-26.04: success. Job k's log ends "done: worst exit 0", with 917 pins ok and its three controls caught |
+| `skyzfs-ci` (the push) | 45858813293 | gate: success; test, lint and unit-arm64 skipped, since the branch has a pull request open and `ci` runs them |
+
+Codex reviewed 6752363 and has no findings (its summary comment's
+state: `has_any_findings: false`).
 
 ## What was not checked
 
