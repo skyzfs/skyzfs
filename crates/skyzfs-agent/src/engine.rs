@@ -158,140 +158,98 @@ impl Clock for SystemClock {
     }
 }
 
-/// An effect of the engine, at which its tests can stop it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Effect {
+/// Makes [`Effect`] from one list, so that [`Effect::ALL`] and
+/// [`Effect::word`] cannot leave out an effect the type has (T3 of
+/// #157's review: a test that names the effects cannot see one left out
+/// of `ALL` when it names the new one too).
+macro_rules! effects {
+    ($($(#[$doc:meta])* $effect:ident => $word:literal,)*) => {
+        /// An effect of the engine, at which its tests can stop it.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum Effect {
+            $($(#[$doc])* $effect,)*
+        }
+
+        impl Effect {
+            /// Every effect, in order.
+            pub const ALL: [Effect; [$(Effect::$effect),*].len()] = [$(Effect::$effect),*];
+
+            /// Its name, in lower case (the rigs' hooks name it so).
+            pub fn word(self) -> &'static str {
+                match self {
+                    $(Effect::$effect => $word,)*
+                }
+            }
+        }
+    };
+}
+
+effects! {
     /// The record saved with the pool enrolled.
-    Enrol,
+    Enrol => "enrol",
     /// The record saved with a publish at [`Phase::Intent`].
-    Intent,
+    Intent => "intent",
     /// `zfs snapshot -r` (the take).
-    Take,
+    Take => "take",
     /// The record saved with a failed check of a take counted, at
     /// [`Phase::Intent`], before the take is destroyed.
-    Failed,
+    Failed => "failed",
     /// `zfs destroy -r` of a take that is not whole or not as read
     /// before it.
-    Destroy,
+    Destroy => "destroy",
     /// The manifest's file written.
-    Manifest,
+    Manifest => "manifest",
     /// The record saved at [`Phase::Taken`].
-    Taken,
+    Taken => "taken",
     /// The record saved with the hold believed placed.
-    Holding,
+    Holding => "holding",
     /// `zfs hold`.
-    Hold,
+    Hold => "hold",
     /// The record saved at [`Phase::Held`].
-    Held,
+    Held => "held",
     /// The record saved with a count read anew, at [`Phase::Held`].
-    Count,
+    Count => "count",
     /// The record saved with the publish's last stall, at
     /// [`Phase::Held`].
-    Stalled,
+    Stalled => "stalled",
     /// The record saved at [`Phase::Asked`] before `publish` is asked.
-    Asking,
+    Asking => "asking",
     /// `publish` asked.
-    Ask,
+    Ask => "ask",
     /// The record saved at [`Phase::Asked`], the request accepted.
-    Asked,
+    Asked => "asked",
     /// The record saved back at [`Phase::Held`], the request refused
     /// with a code that says none of it pends.
-    Unasked,
+    Unasked => "unasked",
     /// `withdraw` asked.
-    Withdraw,
+    Withdraw => "withdraw",
     /// `look` asked.
-    Look,
+    Look => "look",
     /// The agent's sync task ([`Zfs::assist`]).
-    Assist,
+    Assist => "assist",
     /// `zfs release`.
-    Release,
+    Release => "release",
     /// The record saved with the hold released.
-    Released,
+    Released => "released",
     /// The record saved at [`Phase::Done`].
-    Done,
+    Done => "done",
     /// `zfs release` of a hold that no publish under way names, after an
     /// import ([`Agent::settle`]).
-    Sweep,
+    Sweep => "sweep",
     /// The record saved with the publish removed.
-    Forget,
+    Forget => "forget",
     /// The record saved with the publish given up.
-    Abandon,
+    Abandon => "abandon",
     /// The manifest's file removed.
-    Unlink,
+    Unlink => "unlink",
     /// The record saved with the publish stopped for a person
     /// ([`Person::Stopped`]).
-    Stop,
+    Stop => "stop",
     /// The record saved with a person's choice ([`Agent::recover`]).
-    Recover,
+    Recover => "recover",
 }
 
 impl Effect {
-    /// Every effect, in order.
-    pub const ALL: [Effect; 28] = [
-        Effect::Enrol,
-        Effect::Intent,
-        Effect::Take,
-        Effect::Failed,
-        Effect::Destroy,
-        Effect::Manifest,
-        Effect::Taken,
-        Effect::Holding,
-        Effect::Hold,
-        Effect::Held,
-        Effect::Count,
-        Effect::Stalled,
-        Effect::Asking,
-        Effect::Ask,
-        Effect::Asked,
-        Effect::Unasked,
-        Effect::Withdraw,
-        Effect::Look,
-        Effect::Assist,
-        Effect::Release,
-        Effect::Released,
-        Effect::Done,
-        Effect::Sweep,
-        Effect::Forget,
-        Effect::Abandon,
-        Effect::Unlink,
-        Effect::Stop,
-        Effect::Recover,
-    ];
-
-    /// Its name, in lower case (the rigs' hooks name it so).
-    pub fn word(self) -> &'static str {
-        match self {
-            Effect::Enrol => "enrol",
-            Effect::Intent => "intent",
-            Effect::Take => "take",
-            Effect::Failed => "failed",
-            Effect::Destroy => "destroy",
-            Effect::Manifest => "manifest",
-            Effect::Taken => "taken",
-            Effect::Holding => "holding",
-            Effect::Hold => "hold",
-            Effect::Held => "held",
-            Effect::Count => "count",
-            Effect::Stalled => "stalled",
-            Effect::Asking => "asking",
-            Effect::Ask => "ask",
-            Effect::Asked => "asked",
-            Effect::Unasked => "unasked",
-            Effect::Withdraw => "withdraw",
-            Effect::Look => "look",
-            Effect::Assist => "assist",
-            Effect::Release => "release",
-            Effect::Released => "released",
-            Effect::Done => "done",
-            Effect::Sweep => "sweep",
-            Effect::Forget => "forget",
-            Effect::Abandon => "abandon",
-            Effect::Unlink => "unlink",
-            Effect::Stop => "stop",
-            Effect::Recover => "recover",
-        }
-    }
-
     /// The effect named `word`, in any case.
     pub fn from_word(word: &str) -> Option<Effect> {
         Effect::ALL
@@ -489,7 +447,12 @@ fn same(dataset: &zfs::Dataset, member: &manifest::Member) -> bool {
 /// The names of the datasets by which the take's `members` are not
 /// `before` ([`as_before`]): each member with no dataset the same in
 /// `before`, then each dataset of `before` that no member has the GUID
-/// of, in the order read.
+/// of, in the order read. Empty where the two differ only in their
+/// count, each member the same as a dataset read and each dataset read
+/// a member's GUID, which needs two datasets of one GUID and which ZFS
+/// does not make; the report's list is then empty, as it is where a
+/// give-up is made by a process after a stop ([`Agent::take`]; N11 of
+/// #153's review).
 fn differing(members: &[manifest::Member], before: &[zfs::Dataset]) -> Vec<String> {
     let mut names: Vec<String> = members
         .iter()
@@ -1133,7 +1096,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
         // The give-up at the last failed check was decided, and its take
         // destroyed, before a stop: no take is asked again (D2 of #153's
-        // next look). The datasets that broke it are not known now.
+        // next look). The datasets that broke it are not known now: the
+        // report's list is empty, as it is where the members differ from
+        // the reading only in their count ([`Report::NotWhole`]).
         if self
             .record
             .publish(name)
@@ -1154,8 +1119,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             return Ok(Moved::No);
         };
         self.commit(Effect::Intent, |r| set(r, name, |p| p.count = count))?;
-        let Ok(before) = self.zfs.datasets(&self.pool, name) else {
-            return Ok(Moved::No);
+        let before = match self.zfs.datasets(&self.pool, name) {
+            Ok(before) => before,
+            Err(e) => {
+                self.tell(name, Report::Unreadable(e.to_string()));
+                return Ok(Moved::No);
+            }
         };
         if zfs::taken(&before, &self.pool) != zfs::Taken::Absent {
             // A take of this name landed since the planner looked (one
@@ -1206,8 +1175,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// does not see a property changed and changed back between the two
     /// readings with the take between them.
     fn adopt(&mut self, name: &str, origin: Origin) -> Result<Moved, Error> {
-        let Ok(datasets) = self.zfs.datasets(&self.pool, name) else {
-            return Ok(Moved::No);
+        let datasets = match self.zfs.datasets(&self.pool, name) {
+            Ok(datasets) => datasets,
+            Err(e) => {
+                self.tell(name, Report::Unreadable(e.to_string()));
+                return Ok(Moved::No);
+            }
         };
         let program = match zfs::taken(&datasets, &self.pool) {
             zfs::Taken::Absent => {
@@ -1287,8 +1260,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// A failed check is recorded before its take is destroyed (D2 of
     /// #153's next look, the lead's ruling), so a stop after it keeps the
     /// count. A stop between the record and the destroy has the next
-    /// process find the same take and count it again: the conservative
-    /// side, a give-up one check early, never a take more. A stop after
+    /// process find the same take. One that is not whole it counts
+    /// again: the conservative side, a give-up one check early, never a
+    /// take more. One whose members were not as read before it destroys
+    /// without counting, since it has no reading of its own (below): the
+    /// count already holds that check, so the bound is the same (N10 of
+    /// #153's review). A stop after
     /// the destroy at the last check has the next process give the
     /// publish up without a take ([`Agent::take`]). So the takes of one
     /// publish whose checks fail are at most

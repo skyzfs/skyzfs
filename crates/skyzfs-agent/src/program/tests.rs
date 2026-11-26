@@ -342,6 +342,44 @@ fn the_points_trace_then_kill_at_the_nth_reach() {
     assert!(points(None, None, || 0, |_: &str| {}, Box::new(io::sink())).is_none());
 }
 
+/// The `not-whole` line (T11, N12 and N13 of #153's review): its word,
+/// the datasets that broke the last take, at most
+/// [`NOT_WHOLE_NAMED`] of them and the count of the others, each name
+/// read as one where it holds a space.
+#[test]
+fn a_not_whole_report_names_its_datasets() {
+    let line = |names: Vec<String>| report_line("skz-t", &Report::NotWhole(names));
+    let given_up = "skyzfs-agent: report skz-t not-whole: given up after its takes in a row \
+         were not one whole take of the pool or not as read before them";
+    assert_eq!(
+        outcome_line("skz-t", &Outcome::Abandoned(Why::NotWhole)),
+        "abandoned skz-t not-whole\n"
+    );
+    assert_eq!(
+        line(Vec::new()),
+        format!("{given_up}; the datasets are not known\n")
+    );
+    assert_eq!(
+        line(vec!["tank/a b".into(), "tank/c".into()]),
+        format!("{given_up}; datasets: tank/a b, tank/c\n")
+    );
+    let names = |n: usize| (0..n).map(|i| format!("tank/d {i}")).collect::<Vec<_>>();
+    let shown = names(NOT_WHOLE_NAMED).join(", ");
+    assert_eq!(
+        line(names(NOT_WHOLE_NAMED)),
+        format!("{given_up}; datasets: {shown}\n")
+    );
+    assert_eq!(
+        line(names(NOT_WHOLE_NAMED + 1)),
+        format!("{given_up}; datasets: {shown}; and 1 more\n")
+    );
+    assert_eq!(
+        line(names(NOT_WHOLE_NAMED + 37)),
+        format!("{given_up}; datasets: {shown}; and 37 more\n")
+    );
+    assert_eq!(NOT_WHOLE_NAMED, 20);
+}
+
 /// Mutant: two outcomes or reasons printed alike, or two exit codes the
 /// same.
 #[test]
@@ -358,6 +396,7 @@ fn each_outcome_report_and_exit_is_told_apart() {
         Why::TooOld,
         Why::Stopped,
         Why::Person,
+        Why::NotWhole,
     ];
     let words: std::collections::BTreeSet<&str> = whys.iter().map(|&w| why_word(w)).collect();
     assert_eq!(words.len(), whys.len());
@@ -378,6 +417,12 @@ fn each_outcome_report_and_exit_is_told_apart() {
         (Report::NoProgress(3), "no-progress 3:"),
         (Report::Refused(Code::Rewound), "refused rewound:"),
         (Report::HeldAway, "held-away:"),
+        (Report::NotWhole(Vec::new()), "not-whole:"),
+        (Report::NotWhole(vec!["tank/a b".into()]), "not-whole:"),
+        (
+            Report::Unreadable("zfs get: exit 1:\ncannot open 'x'\n\nmore".into()),
+            "unreadable:",
+        ),
     ];
     for (report, word) in reports {
         let line = report_line("skz-t", &report);

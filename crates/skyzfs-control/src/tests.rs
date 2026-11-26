@@ -793,3 +793,43 @@ mod socket {
         panic!("the backlog took 64 connections");
     }
 }
+
+/// The volume's channel is in its own directory under the run directory,
+/// named by the device and inode numbers of the volume's directory in
+/// hex, whatever path names that directory; another volume's is
+/// another; a volume's directory that is not there is an error, and
+/// no socket is named (the lead's ruling on the agent rig's first run:
+/// the agent finds the socket as the daemon names it).
+#[cfg(unix)]
+#[test]
+fn the_socket_is_in_the_volumes_own_run_directory() {
+    use std::os::unix::fs::MetadataExt as _;
+    let top = tempfile::tempdir().expect("tmp");
+    let run = top.path().join("run");
+    let volume = top.path().join("vol");
+    let other = top.path().join("other");
+    for dir in [&run, &volume, &other] {
+        std::fs::create_dir(dir).expect("a directory");
+    }
+    let meta = std::fs::metadata(&volume).expect("stat");
+    let own = run.join(format!("v-{:x}-{:x}", meta.dev(), meta.ino()));
+    assert_eq!(volume_run_dir(&run, &volume).expect("the volume"), own);
+    assert_eq!(
+        socket_path(&run, &volume).expect("the socket"),
+        own.join("control")
+    );
+    let link = top.path().join("link");
+    std::os::unix::fs::symlink(&volume, &link).expect("a link");
+    for path in [link, top.path().join("other/../vol")] {
+        assert_eq!(
+            socket_path(&run, &path).expect("the socket"),
+            own.join(SOCKET)
+        );
+    }
+    assert_ne!(
+        socket_path(&run, &other).expect("the socket"),
+        own.join(SOCKET)
+    );
+    let gone = socket_path(&run, &top.path().join("gone")).expect_err("no volume");
+    assert_eq!(gone.kind(), io::ErrorKind::NotFound);
+}

@@ -16,21 +16,36 @@
 //! the datasets and the members program in full, recorded later
 //! (testing's runs 45720134548 and 45720225770, on #153's `65d72ee`):
 //! the rest of those runs is not taken, since the tests above read the
-//! pools of the first runs by their GUIDs.
+//! pools of the first runs by their GUIDs. The members program in full
+//! is no longer run: the manifest is read by `zfs list` and `zfs get`
+//! (M2.6c-5), whose recordings are to come; its records are kept as
+//! they were recorded and not read.
+//!
+//! `recorded/read-<image>.json` holds the manifest's read by `zfs list`
+//! and `zfs get` (M2.6c-5), recorded by testing's run 45738224324 (#156):
+//! each pool's list, its values pass, and each odd value read alone. The
+//! pairs pass (`-o name,property`) was not recorded: the test makes it
+//! from the values pass ([`pairs_of`]).
+//!
+//! `recorded/cli-read-<image>.json` holds testing's second recording of
+//! the three reads (run 45751625028, #158) on one pool in four states,
+//! with the pairs pass, a pool that does not exist, and output that is
+//! not UTF-8 kept exact (`stdout_hex`). Its test also checks that the
+//! pairs [`pairs_of`] makes are the recorded pairs.
 //!
 //! A `zpool status -P -g` was recorded beside some of the `-P` outputs
 //! only. A `-P` output without its own is read with the `-g` output of
 //! the same tree recorded nearest to it (`GUIDED`); only the shape of
 //! the tree and its GUIDs are taken from it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
 
 use super::*;
 use crate::host::fake::{output, Fake};
-use crate::zfs::{premise, taken, Taken, HOLD_TAG};
+use crate::zfs::{premise, HOLD_TAG};
 
 /// The recordings, by image.
 const IMAGES: [(&str, &str); 2] = [
@@ -51,6 +66,47 @@ const FULL_IMAGES: [(&str, &str); 2] = [
     ),
 ];
 
+/// The recordings of the manifest's read by `zfs list` and `zfs get`
+/// (testing's run 45738224324, #156), by image: each pool's list, its
+/// values pass and each odd value read alone.
+const READ_IMAGES: [(&str, &str); 2] = [
+    (
+        "ubuntu-24.04",
+        include_str!("recorded/read-ubuntu-24.04.json"),
+    ),
+    (
+        "ubuntu-26.04",
+        include_str!("recorded/read-ubuntu-26.04.json"),
+    ),
+];
+
+/// The recordings of the manifest's three reads on the pool `skzrd`
+/// (testing's run 45751625028, #158), by image: each in the states
+/// `tree`, `not` (`@t` destroyed), `odd` (one file system per odd value)
+/// and `counts` (a file system and a snapshot limit set on `child`),
+/// each odd value read alone, and the reads of a pool that does not
+/// exist (`none`).
+const CLI_READ_IMAGES: [(&str, &str); 2] = [
+    (
+        "ubuntu-24.04",
+        include_str!("recorded/cli-read-ubuntu-24.04.json"),
+    ),
+    (
+        "ubuntu-26.04",
+        include_str!("recorded/cli-read-ubuntu-26.04.json"),
+    ),
+];
+
+/// The pool of [`CLI_READ_IMAGES`].
+const READ_POOL: &str = "skzrd";
+
+/// The odd values the recorder set as `skyzfs:v`, by the name of their
+/// dataset after `odd-`. `len8192` is too long: its set was refused.
+const ODD: [&str; 14] = [
+    "bslash", "cr", "dash", "empty", "forge", "len4095", "len4096", "len8191", "len8192", "nl",
+    "raw", "spaces", "tab", "utf8",
+];
+
 /// The rig's pool and the mirror's.
 const RIG: &str = "skzq";
 const MIRROR: &str = "skzqm";
@@ -68,11 +124,16 @@ struct Recording {
 }
 
 /// One command as recorded.
+#[derive(Clone)]
 struct Record {
     cmd: String,
     rc: i32,
+    /// Standard output, its bytes that are not UTF-8 replaced.
     stdout: String,
     stderr: String,
+    /// Standard output exactly: a record keeps output that is not UTF-8
+    /// as `stdout_hex`.
+    stdout_bytes: Vec<u8>,
 }
 
 fn recordings() -> Vec<Recording> {
@@ -104,13 +165,20 @@ impl Recording {
             .records
             .get(name)
             .unwrap_or_else(|| panic!("{}: no record `{name}`", self.image));
-        let text = |key: &str| {
-            record
-                .get(key)
+        let bytes = |key: &str| -> Vec<u8> {
+            if let Some(text) = record.get(key).and_then(Value::as_str) {
+                return text.as_bytes().to_vec();
+            }
+            let hex = record
+                .get(format!("{key}_hex"))
                 .and_then(Value::as_str)
-                .unwrap_or_else(|| panic!("{}: `{name}` has no `{key}`", self.image))
-                .to_string()
+                .unwrap_or_else(|| panic!("{}: `{name}` has no `{key}`", self.image));
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+                .collect()
         };
+        let text = |key: &str| String::from_utf8_lossy(&bytes(key)).into_owned();
         let rc = record
             .get("rc")
             .and_then(Value::as_i64)
@@ -120,6 +188,7 @@ impl Recording {
             rc: i32::try_from(rc).expect("an exit code"),
             stdout: text("stdout"),
             stderr: text("stderr"),
+            stdout_bytes: bytes("stdout"),
         }
     }
 
@@ -874,158 +943,389 @@ fn the_count_as_recorded() {
     }
 }
 
-/// The members program in full, as recorded on each pool (T3 of #153's
-/// review), read through the adapter and judged by [`taken`]:
-///
-/// - after `zfs snapshot -r POOL@t`: three datasets, each with an `@t` of
-///   one group, a whole take whose members are the root, `child` and
-///   `vol`; a GUID above 2^63 written negative; each dataset's local
-///   properties (the volume's `volsize` and `refreservation`);
-/// - of an `@t` that no dataset has: none has one, and the take is
-///   [`Taken::Absent`];
-/// - of an `@p` that `child` alone has: [`Taken::Absent`] too, since the
-///   root has none (`pool@p` does not exist);
-/// - of values that are not printable ASCII, in the locale `C` and in
-///   `C.UTF-8`: the same bytes, sent in hex;
-/// - of a pool that does not exist: [`ZfsError::NoPool`].
-///
-/// After a count, the program runs within the full read's limit, not a
-/// read's. Mutants: a GUID read as signed, an `@t`'s group read from the
-/// dataset's, hex values taken as text, the full read given a read's
-/// limit.
-#[test]
-fn the_full_read_as_recorded() {
-    let base = Limits::default();
-    let raw: &[u8] = &[0x61, 0xff, 0xfe, 0x62, 0xc3];
-    let utf8 = "na\u{ef}ve, \u{65e5}\u{672c}, \u{2205}".as_bytes();
-    for rec in full_recordings() {
-        for pool in [RIG, MIRROR] {
-            let prefix = if pool == RIG { "rig" } else { "mirror" };
-            let name = |what: &str| format!("{prefix}-{what}");
-            let at = |what: &str| format!("{pool}{what}");
-            let context = format!("{} {pool}", rec.image);
+/// The pairs pass that the values pass `values` goes with: each line's
+/// name and property, the lines that continue a value left out. `zfs
+/// get` prints both passes from one walk of the same properties; a value
+/// read alone (`alone`, by name and property) shows how many lines it
+/// has. A value not read alone is taken to have one line.
+fn pairs_of(values: &str, alone: &BTreeMap<(String, String), String>) -> String {
+    let mut pairs = String::new();
+    let mut lines = values.split_inclusive('\n');
+    while let Some(line) = lines.next() {
+        let mut columns = line.splitn(3, '\t');
+        let (Some(name), Some(property), Some(_)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            panic!("not a line of the values pass: {line:?}");
+        };
+        pairs.push_str(&format!("{name}\t{property}\n"));
+        let continued = alone
+            .get(&(name.to_string(), property.to_string()))
+            .map_or(0, |value| value.matches('\n').count().saturating_sub(1));
+        for _ in 0..continued {
+            lines.next();
+        }
+    }
+    pairs
+}
 
-            let (count, full) = (name("count"), name("members-full"));
-            let mut zfs = rec.adapter(&[count.as_str(), full.as_str()]);
-            assert_eq!(zfs.count(pool), Ok(3), "{context}");
-            let datasets = zfs.datasets(pool, "t").expect("read in full");
-            assert_eq!(ran(&mut zfs), rec.words(&[count.as_str(), full.as_str()]));
-            assert_eq!(zfs.host().ran[1].stdin, MEMBERS_PROGRAM.as_bytes());
-            assert_eq!(
-                zfs.host().ran[1].limit,
-                base.read + base.full_per_dataset * 3,
-                "{context}"
+/// The manifest's read on the recorded pools (T1 and B1 of #157's
+/// review): each odd value is what the value read alone gives, a value
+/// that holds a newline included (`nl`, `forge`, which forges a line of
+/// `child`); the longest value (T4: [`VALUE_MOST`] is 8191, and a longer
+/// one cannot be set) is read; the datasets a forged line puts in doubt
+/// are read again alone; and `filesystem_count` and
+/// `snapshot_count`, which the recording lists as local on every
+/// dataset under the limit once set on `child`, are left out, while
+/// `snapshot_limit` is kept. The values pass's words are the record's
+/// with its options in the adapter's order. Mutants: either counter
+/// kept, the limit dropped, the bound one more or one less.
+#[test]
+fn the_manifests_read_as_recorded() {
+    assert_eq!(VALUE_MOST, 8191);
+    for recording in parse(&READ_IMAGES) {
+        for (pool, prefix) in [(RIG, "rig"), (MIRROR, "mirror")] {
+            let image = recording.image;
+            let get = |what: &str| recording.get(&format!("{prefix}-odd-{what}"));
+            let (list, values) = (get("list"), get("get-local"));
+            assert!(
+                values.stdout.contains("\tsnapshot_count\t"),
+                "{image} {pool}"
             );
-            let mut names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
-            names.sort_unstable();
-            assert_eq!(names, [at(""), at("/child"), at("/vol")], "{context}");
-            let get = |name: &str| {
-                datasets
+            assert!(
+                values.stdout.contains("\tfilesystem_count\t"),
+                "{image} {pool}"
+            );
+            let mut alone = BTreeMap::new();
+            for odd in ODD {
+                let record = get(&format!("value-{odd}"));
+                assert_eq!(record.rc, 0, "{image} {pool} {odd}");
+                alone.insert(
+                    (format!("{pool}/odd-{odd}"), "skyzfs:v".to_string()),
+                    record.stdout,
+                );
+            }
+            let pairs = pairs_of(&values.stdout, &alone);
+            let get_words = |columns: &str| {
+                format!("zfs get -r -H -p -s local -t filesystem,volume -o {columns} all {pool}")
+            };
+            let sorted = |words: &str| {
+                let mut words: Vec<String> = words.split(' ').map(String::from).collect();
+                words.sort();
+                words
+            };
+            assert_eq!(
+                sorted(&values.words()),
+                sorted(&get_words("name,property,value")),
+                "{image} {pool}"
+            );
+            let mut fake = Fake::default();
+            fake.ok(&list.words(), &list.stdout);
+            fake.ok(&get_words("name,property"), &pairs);
+            fake.ok(&get_words("name,property,value"), &values.stdout);
+            for ((name, property), value) in &alone {
+                fake.ok(&format!("zfs get -H -p -o value {property} {name}"), value);
+            }
+            // A value not recorded alone is one line of the values pass;
+            // read alone, it is that line's value.
+            for line in pairs.lines() {
+                let (name, property) = line.split_once('\t').unwrap_or((line, ""));
+                if alone.contains_key(&(name.to_string(), property.to_string())) {
+                    continue;
+                }
+                let value = values
+                    .stdout
+                    .lines()
+                    .find_map(|l| l.strip_prefix(&format!("{line}\t")))
+                    .unwrap_or_else(|| panic!("{image}: no value of {line}"));
+                fake.ok(
+                    &format!("zfs get -H -p -o value {property} {name}"),
+                    &format!("{value}\n"),
+                );
+            }
+            let mut zfs = ZfsCli::new(fake, Limits::default());
+            let datasets = zfs
+                .datasets(pool, "g")
+                .unwrap_or_else(|e| panic!("{image} {pool}: {e:?}"));
+            let alone_read: Vec<String> = ran(&mut zfs).into_iter().skip(3).collect();
+            for dataset in &datasets {
+                for counter in ["filesystem_count", "snapshot_count"] {
+                    assert!(
+                        !dataset.local.contains_key(counter),
+                        "{image} {}: {counter}",
+                        dataset.name
+                    );
+                }
+            }
+            let local = |name: &str| {
+                &datasets
                     .iter()
                     .find(|d| d.name == name)
-                    .expect("a dataset read")
+                    .unwrap_or_else(|| panic!("{image}: no {name}"))
+                    .local
             };
-            let (root, child, vol) = (get(&at("")), get(&at("/child")), get(&at("/vol")));
-            assert_eq!(
-                (root.createtxg, child.createtxg, vol.createtxg),
-                (1, 9, 10),
-                "{context}"
+            assert!(
+                local(&format!("{pool}/child")).contains_key("snapshot_limit"),
+                "{image} {pool}"
             );
-            assert_eq!(
-                (root.kind, child.kind, vol.kind),
-                (Kind::Filesystem, Kind::Filesystem, Kind::Volume)
+            assert!(
+                !local(&format!("{pool}/child")).contains_key("skyzfs:forged"),
+                "{image} {pool}"
             );
-            let local = |d: &Dataset, key: &str| d.local.get(key).cloned();
-            assert_eq!(local(root, "compression"), Some(b"off".to_vec()));
-            assert_eq!(local(child, "skyzfs:note"), Some(b"local".to_vec()));
-            assert!(local(vol, "volsize").is_some() && local(vol, "refreservation").is_some());
-            let Taken::Whole(program) = taken(&datasets, pool) else {
-                panic!("{context}: not whole");
-            };
-            let group = root.at.expect("pool@t").createtxg;
-            assert_eq!(program.createtxg, group);
-            assert!(datasets
-                .iter()
-                .all(|d| d.at.map(|a| a.createtxg) == Some(group)));
-            let members: Vec<(&str, u64, u64)> = program
-                .members
-                .iter()
-                .map(|m| (m.name.as_str(), m.guid, m.snapshot_guid))
-                .collect();
-            let want: Vec<(&str, u64, u64)> = [root, child, vol]
-                .iter()
-                .map(|d| (d.name.as_str(), d.guid, d.at.expect("@t").guid))
-                .collect();
-            assert_eq!(members, want, "{context}");
-            if (rec.image, pool) == ("ubuntu-26.04", RIG) {
-                // As the record writes them: -5563034144446978196,
-                // 2776128052335566094, -1724167257921105538.
-                assert_eq!(
-                    program
-                        .members
-                        .iter()
-                        .map(|m| m.snapshot_guid)
-                        .collect::<Vec<_>>(),
-                    [
-                        12_883_709_929_262_573_420,
-                        2_776_128_052_335_566_094,
-                        16_722_576_815_788_446_078
-                    ]
-                );
-                assert_eq!((group, vol.guid), (34, 15_426_089_004_099_088_699));
+            for odd in ODD {
+                let name = format!("{pool}/odd-{odd}");
+                let value = local(&name).get("skyzfs:v");
+                if odd == "len8192" {
+                    assert_eq!(value, None, "{image} {name}");
+                    continue;
+                }
+                let recorded = &alone[&(name.clone(), "skyzfs:v".to_string())];
+                let want = recorded.strip_suffix('\n').unwrap_or(recorded).as_bytes();
+                assert_eq!(value.map(Vec::as_slice), Some(want), "{image} {name}");
             }
-
-            for (what, t) in [
-                ("members-full-absent", "absent"),
-                ("members-full-partial", "p"),
-            ] {
-                let record = name(what);
-                let mut zfs = rec.adapter(&[record.as_str()]);
-                let datasets = zfs.datasets(pool, t).expect("read in full");
-                assert_eq!(ran(&mut zfs), rec.words(&[record.as_str()]));
-                assert_eq!(datasets.len(), 3, "{context} {what}");
-                let with: Vec<&str> = datasets
-                    .iter()
-                    .filter(|d| d.at.is_some())
-                    .map(|d| d.name.as_str())
-                    .collect();
-                let want: Vec<String> = if t == "p" { vec![at("/child")] } else { vec![] };
-                assert_eq!(with, want, "{context} {what}");
-                assert_eq!(taken(&datasets, pool), Taken::Absent, "{context} {what}");
+            assert_eq!(
+                local(&format!("{pool}/odd-len8191"))["skyzfs:v"].len(),
+                VALUE_MOST,
+                "{image} {pool}"
+            );
+            // The forged line names `child`, so `child`, `odd-forge` and
+            // `odd-nl` are read again alone, and no counter is.
+            for odd in ["forge", "nl"] {
+                let words = format!("zfs get -H -p -o value skyzfs:v {pool}/odd-{odd}");
+                assert!(alone_read.contains(&words), "{image}: {alone_read:?}");
             }
-
-            for (what, t) in [("members-full-odd", "o0"), ("members-full-odd-utf8", "o2")] {
-                let record = name(what);
-                let mut zfs = rec.adapter(&[record.as_str()]);
-                let datasets = zfs.datasets(pool, t).expect("read in full");
-                assert_eq!(ran(&mut zfs), rec.words(&[record.as_str()]));
-                let child = datasets
-                    .iter()
-                    .find(|d| d.name == at("/child"))
-                    .expect("child");
-                assert_eq!(
-                    local(child, "skyzfs:raw").as_deref(),
-                    Some(raw),
-                    "{context} {what}"
-                );
-                assert_eq!(
-                    local(child, "skyzfs:utf8").as_deref(),
-                    Some(utf8),
-                    "{context} {what}"
-                );
+            let child = format!("zfs get -H -p -o value snapshot_limit {pool}/child");
+            assert!(alone_read.contains(&child), "{image}: {alone_read:?}");
+            for words in &alone_read {
                 assert!(
-                    matches!(taken(&datasets, pool), Taken::Whole(_)),
-                    "{context} {what}"
+                    !words.contains("_count "),
+                    "{image}: a counter read alone: {words}"
                 );
             }
         }
-        let mut zfs = rec.adapter(&["none-members-full"]);
+    }
+}
+
+/// The output a record gives, its bytes exact.
+fn given(record: &Record) -> crate::host::Output {
+    let mut given = output(record.rc, "", &record.stderr);
+    given.stdout = record.stdout_bytes.clone();
+    given
+}
+
+/// The manifest's read of [`READ_POOL`] in `state` on a fake that gives
+/// the three reads as recorded, a value read alone as `alone` gives it,
+/// and any other value read alone as its line of the recorded values
+/// pass; with the commands run after the three reads.
+fn read_recorded(
+    recording: &Recording,
+    state: &str,
+    alone: &BTreeMap<(String, String), Record>,
+) -> (Result<Vec<Dataset>, ZfsError>, Vec<String>) {
+    let mut fake = Fake::default();
+    let names = recording.get(&format!("read-{state}-get-names"));
+    let values = recording.get(&format!("read-{state}-get-values"));
+    for read in ["list", "get-names", "get-values"] {
+        let record = recording.get(&format!("read-{state}-{read}"));
+        fake.give(&record.words(), Ok(given(&record)));
+    }
+    for line in names.stdout.lines() {
+        let (name, property) = line.split_once('\t').unwrap_or((line, ""));
+        let words = format!("zfs get -H -p -o value {property} {name}");
+        if let Some(record) = alone.get(&(name.to_string(), property.to_string())) {
+            fake.give(&words, Ok(given(record)));
+            continue;
+        }
+        let prefix = format!("{line}\t");
+        let value = values
+            .stdout_bytes
+            .split(|b| *b == b'\n')
+            .find_map(|l| l.strip_prefix(prefix.as_bytes()))
+            .unwrap_or_else(|| panic!("{}: no value of {line}", recording.image));
+        let mut out = output(0, "", "");
+        out.stdout = [value, b"\n"].concat();
+        fake.give(&words, Ok(out));
+    }
+    let mut zfs = ZfsCli::new(fake, Limits::default());
+    let read = zfs.datasets(READ_POOL, "t");
+    let after = ran(&mut zfs).into_iter().skip(3).collect();
+    (read, after)
+}
+
+/// The manifest's read on testing's second recording (#158), whose pairs
+/// pass is recorded too: the tree (the root, a child, a volume, all with
+/// `@t`, and a file system created after it) is read as one whole take
+/// of three members, with the agent's own property left out; the pool
+/// with `@t` destroyed has none; each odd value is the value read alone,
+/// its bytes exact; the counters are left out where a limit is set, the
+/// limits kept; the pairs that [`pairs_of`] makes from the values pass
+/// are the recorded pairs pass; and a pool that does not exist is
+/// [`ZfsError::NoPool`], where a dataset that goes with it while a value
+/// is read alone is an error that names it (N5 of #157's review).
+#[test]
+fn the_three_reads_as_recorded() {
+    for recording in parse(&CLI_READ_IMAGES) {
+        let image = recording.image;
+        let none = BTreeMap::new();
+        let local = |datasets: &[Dataset], name: &str| -> BTreeMap<String, Vec<u8>> {
+            datasets
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{image}: no {name}"))
+                .local
+                .clone()
+        };
+        let set = |pairs: &[(&str, &str)]| -> BTreeMap<String, Vec<u8>> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
+                .collect()
+        };
+
+        // The tree.
+        let (read, after) = read_recorded(&recording, "tree", &none);
+        let tree = read.unwrap_or_else(|e| panic!("{image} tree: {e:?}"));
+        assert!(after.is_empty(), "{image}: {after:?}");
+        let mut names: Vec<&str> = tree.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
         assert_eq!(
-            zfs.datasets(NONE, "t"),
-            Err(ZfsError::NoPool),
-            "{}",
-            rec.image
+            names,
+            ["skzrd", "skzrd/child", "skzrd/late", "skzrd/vol"],
+            "{image}"
         );
-        assert_eq!(ran(&mut zfs), rec.words(&["none-members-full"]));
+        let root = &tree
+            .iter()
+            .find(|d| d.name == READ_POOL)
+            .expect("root")
+            .local;
+        assert_eq!(
+            root.get("compression").map(Vec::as_slice),
+            Some(&b"off"[..])
+        );
+        assert!(!root.contains_key(ASSIST_PROPERTY), "{image}");
+        assert_eq!(
+            local(&tree, "skzrd/child"),
+            set(&[("skyzfs:note", "local")])
+        );
+        assert_eq!(
+            local(&tree, "skzrd/vol").keys().collect::<Vec<_>>(),
+            ["refreservation", "volsize"],
+            "{image}"
+        );
+        match crate::zfs::taken(&tree, READ_POOL) {
+            crate::zfs::Taken::Whole(program) => {
+                let members: Vec<&str> = program.members.iter().map(|m| m.name.as_str()).collect();
+                assert_eq!(members, ["skzrd", "skzrd/child", "skzrd/vol"], "{image}");
+            }
+            other => panic!("{image} tree: {other:?}"),
+        }
+
+        // `@t` destroyed.
+        let (read, _) = read_recorded(&recording, "not", &none);
+        let not = read.unwrap_or_else(|e| panic!("{image} not: {e:?}"));
+        assert!(not.iter().all(|d| d.at.is_none()), "{image}");
+        assert_eq!(
+            crate::zfs::taken(&not, READ_POOL),
+            crate::zfs::Taken::Absent
+        );
+
+        // The limits.
+        let (read, after) = read_recorded(&recording, "counts", &none);
+        let counts = read.unwrap_or_else(|e| panic!("{image} counts: {e:?}"));
+        assert!(after.is_empty(), "{image}: {after:?}");
+        assert!(recording
+            .get("read-counts-get-values")
+            .stdout
+            .contains("skzrd/child\tsnapshot_count\t"));
+        assert_eq!(
+            local(&counts, "skzrd/child"),
+            set(&[
+                ("filesystem_limit", "100"),
+                ("skyzfs:note", "local"),
+                ("snapshot_limit", "100"),
+            ]),
+            "{image}"
+        );
+
+        // The odd values.
+        let mut alone = BTreeMap::new();
+        for odd in ODD {
+            let Some(record) = recording.records.get(&format!("read-odd-value-{odd}")) else {
+                continue;
+            };
+            assert!(record.is_object());
+            let record = recording.get(&format!("read-odd-value-{odd}"));
+            assert_eq!(record.rc, 0, "{image} {odd}");
+            alone.insert(
+                (format!("{READ_POOL}/odd-{odd}"), "skyzfs:v".to_string()),
+                record,
+            );
+        }
+        assert_eq!(alone.len(), 11, "{image}");
+        let values = recording.get("read-odd-get-values");
+        let texts: BTreeMap<(String, String), String> = alone
+            .iter()
+            .map(|(k, r)| (k.clone(), r.stdout.clone()))
+            .collect();
+        assert_eq!(
+            pairs_of(&values.stdout, &texts),
+            recording.get("read-odd-get-names").stdout,
+            "{image}"
+        );
+        let (read, after) = read_recorded(&recording, "odd", &alone);
+        let odd = read.unwrap_or_else(|e| panic!("{image} odd: {e:?}"));
+        for ((name, _), record) in &alone {
+            let want = record
+                .stdout_bytes
+                .strip_suffix(b"\n")
+                .unwrap_or(&record.stdout_bytes);
+            assert_eq!(
+                local(&odd, name).get("skyzfs:v").map(Vec::as_slice),
+                Some(want),
+                "{image} {name}"
+            );
+        }
+        assert_eq!(
+            local(&odd, "skzrd/odd-len8191")["skyzfs:v"].len(),
+            VALUE_MOST,
+            "{image}"
+        );
+        assert!(local(&odd, "skzrd/odd-raw")["skyzfs:v"]
+            .iter()
+            .any(|b| *b > 0x7f));
+        assert_eq!(local(&odd, "skzrd/child"), set(&[("skyzfs:note", "local")]));
+        for words in [
+            "zfs get -H -p -o value skyzfs:v skzrd/odd-forge",
+            "zfs get -H -p -o value skyzfs:v skzrd/odd-nl",
+            "zfs get -H -p -o value skyzfs:note skzrd/child",
+        ] {
+            assert!(after.iter().any(|w| w == words), "{image}: {after:?}");
+        }
+
+        // A pool that does not exist, and a dataset gone while a value is
+        // read alone.
+        let none_list = recording.get("read-none-list");
+        let mut fake = Fake::default();
+        fake.give(&none_list.words(), Ok(given(&none_list)));
+        let mut zfs = ZfsCli::new(fake, Limits::default());
+        assert_eq!(
+            zfs.datasets(READ_POOL, "t"),
+            Err(ZfsError::NoPool),
+            "{image}"
+        );
+        let gone = recording.get("read-none-value");
+        assert_eq!(
+            gone.words(),
+            "zfs get -H -p -o value skyzfs:note skzrd/child"
+        );
+        let mut alone_gone = alone.clone();
+        alone_gone.insert(("skzrd/child".to_string(), "skyzfs:note".to_string()), gone);
+        match read_recorded(&recording, "odd", &alone_gone).0 {
+            Err(ZfsError::Other(why)) => assert!(
+                why.contains("skzrd/child") && why.contains("dataset does not exist"),
+                "{image}: {why}"
+            ),
+            other => panic!("{image}: {other:?}"),
+        }
     }
 }

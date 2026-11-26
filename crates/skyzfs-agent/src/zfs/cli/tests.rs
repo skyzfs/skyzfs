@@ -1,12 +1,13 @@
 //! The adapter on a fake host: the commands it runs, and its parsers on
 //! output written by hand after OpenZFS's `zpool status`, `zpool get`
-//! and `zfs program -j`. The parsers on output recorded from ZFS are
+//! `zfs program -j`, `zfs list -H` and `zfs get -H`. The parsers on output recorded from ZFS are
 //! in `recordings.rs`.
 
 use std::path::PathBuf;
 
 use super::*;
 use crate::host::fake::Fake;
+use crate::manifest;
 use crate::zfs::{premise, Held, HOLD_TAG};
 
 const RIG: &str = "  pool: tank
@@ -443,28 +444,68 @@ fn the_take_is_zfs_snapshot_r() {
     ));
 }
 
-const DATASETS_WORDS: &str =
-    "zfs program -n -j -t 100000000 -m 104857600 tank - tank skz-1 full skyzfs:assist";
+const LIST_WORDS: &str =
+    "zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg tank";
+const PAIRS_WORDS: &str =
+    "zfs get -r -H -p -s local -t filesystem,volume -o name,property all tank";
+const VALUES_WORDS: &str =
+    "zfs get -r -H -p -s local -t filesystem,volume -o name,property,value all tank";
 
-const DATASETS: &str = r#"{"return":{"datasets":{"tank/vol":{"guid":"-2","createtxg":"40","local":{"volsize":"1073741824"},"snapshot_guid":"33","snapshot_createtxg":"812","type":"volume"},"tank":{"guid":"11","createtxg":"1","local":{"compression":"lz4","skyzfs:assist":"7"},"snapshot_guid":"12","snapshot_createtxg":"812","type":"filesystem"},"tank/db":{"guid":"21","createtxg":"30","local":[],"snapshot_guid":"22","snapshot_createtxg":"812","type":"filesystem"},"tank/new":{"guid":"41","createtxg":"813","local":[],"type":"filesystem"}}}}"#;
+/// `zfs list` of the pool: other snapshots, before `@t` and after it,
+/// which are no `@t`; a dataset created after the take, with none; a GUID above 2^63.
+const LISTED: &str = "tank\t11\tfilesystem\t1
+tank@skz-0\t5\tsnapshot\t700
+tank@skz-1\t12\tsnapshot\t812
+tank/db\t21\tfilesystem\t30
+tank/db@skz-1\t22\tsnapshot\t812
+tank/db@skz-2\t23\tsnapshot\t820
+tank/new\t41\tfilesystem\t813
+tank/vol\t18446744073709551614\tvolume\t40
+tank/vol@skz-1\t33\tsnapshot\t812
+";
 
-/// The pool's datasets are read by the members program in full, read
-/// only, with the pool, the name and the agent's property; a GUID
-/// above 2^63 is read from its signed form, the agent's own property is
-/// left out, and a dataset with no `@t` has none. One whole take of
+const PAIRS: &str = "tank\tcompression\ntank\tskyzfs:assist\ntank/vol\tvolsize\n";
+
+const VALUES: &str =
+    "tank\tcompression\tlz4\ntank\tskyzfs:assist\t7\ntank/vol\tvolsize\t1073741824\n";
+
+/// A fake with the manifest's three reads, giving `pairs` and `values`.
+fn manifest_reads(pairs: &str, values: &[u8]) -> Fake {
+    let mut fake = Fake::default();
+    fake.ok(LIST_WORDS, LISTED);
+    fake.ok(PAIRS_WORDS, pairs);
+    fake.give(
+        VALUES_WORDS,
+        Ok(Output {
+            code: Some(0),
+            stdout: values.to_vec(),
+            stderr: Vec::new(),
+        }),
+    );
+    fake
+}
+
+/// The words of a value read alone.
+fn alone(property: &str, name: &str) -> String {
+    format!("zfs get -H -p -o value {property} {name}")
+}
+
+/// The pool's datasets are read by `zfs list` and twice `zfs get`, in
+/// that order, within the full read's limit (the lead's ruling on
+/// M2.6c-5); the other snapshots are not `@t`, the agent's own property
+/// is left out, and a dataset with no `@t` has none. One whole take of
 /// them makes the manifest's members, root first and then by name.
-/// Mutants: the sign, the property kept, the program run to change the
-/// pool, the order.
+/// Mutants: the property kept, the other snapshot taken for `@t`, the
+/// order, a read past the three.
 #[test]
 fn the_datasets_read_make_the_manifests_members() {
-    let mut fake = Fake::default();
-    fake.ok(DATASETS_WORDS, DATASETS);
-    let mut zfs = cli(fake);
+    let mut zfs = cli(manifest_reads(PAIRS, VALUES.as_bytes()));
     let datasets = zfs.datasets("tank", "skz-1").expect("read");
-    let ran = &zfs.host().ran;
-    assert_eq!(ran.len(), 1);
-    assert_eq!(ran[0].stdin, MEMBERS_PROGRAM.as_bytes());
-    assert_eq!(ran[0].limit, Limits::default().read);
+    assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]);
+    for ran in &zfs.host().ran {
+        assert_eq!(ran.limit, Limits::default().read, "{}", ran.words);
+        assert!(ran.stdin.is_empty());
+    }
     let new = datasets
         .iter()
         .find(|d| d.name == "tank/new")
@@ -515,6 +556,386 @@ fn the_datasets_read_make_the_manifests_members() {
         members: program.members,
     };
     assert!(manifest.encode().is_ok());
+}
+
+/// `filesystem_count` and `snapshot_count` are counters, not settings,
+/// but libzfs gives them the source `local` wherever ZFS keeps them
+/// (once a limit is set on the dataset or above it), so `zfs get -s
+/// local` lists them; and `snapshot_count` grows with the take itself.
+/// They are left out, from the one pass and where the dataset is read
+/// again alone, and are not read alone (Codex on #157). Mutants: either
+/// counter kept, a counter read alone.
+#[test]
+fn the_counters_libzfs_calls_local_are_left_out() {
+    let pairs = "tank\tcompression\ntank\tsnapshot_count\ntank\tfilesystem_count\n\
+                 tank/db\tsnapshot_limit\ntank/db\tsnapshot_count\ntank/db\ta:b\n";
+    // In the one pass every value is plain.
+    let values = "tank\tcompression\tlz4\ntank\tsnapshot_count\t3\ntank\tfilesystem_count\t2\n\
+                  tank/db\tsnapshot_limit\t10\ntank/db\tsnapshot_count\t1\ntank/db\ta:b\tc\n";
+    let mut zfs = cli(manifest_reads(pairs, values.as_bytes()));
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]);
+    assert_eq!(
+        local_of(&datasets, "tank").keys().collect::<Vec<_>>(),
+        ["compression"]
+    );
+    assert_eq!(
+        local_of(&datasets, "tank/db").keys().collect::<Vec<_>>(),
+        ["a:b", "snapshot_limit"]
+    );
+
+    // tank/db's value of a:b holds a newline: tank/db is read again
+    // alone, and its counter is not read.
+    let values = "tank\tcompression\tlz4\ntank\tsnapshot_count\t3\ntank\tfilesystem_count\t2\n\
+                  tank/db\tsnapshot_limit\t10\ntank/db\tsnapshot_count\t1\ntank/db\ta:b\tc\nd\n";
+    let mut fake = manifest_reads(pairs, values.as_bytes());
+    fake.ok(&alone("snapshot_limit", "tank/db"), "10\n");
+    fake.ok(&alone("a:b", "tank/db"), "c\nd\n");
+    let mut zfs = cli(fake);
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(
+        zfs.host().words(),
+        [
+            LIST_WORDS.to_string(),
+            PAIRS_WORDS.to_string(),
+            VALUES_WORDS.to_string(),
+            alone("snapshot_limit", "tank/db"),
+            alone("a:b", "tank/db"),
+        ]
+    );
+    let db = local_of(&datasets, "tank/db");
+    assert_eq!(db.keys().collect::<Vec<_>>(), ["a:b", "snapshot_limit"]);
+    assert_eq!(db["a:b"], b"c\nd");
+}
+
+/// The local properties of `name` in `datasets`.
+fn local_of<'a>(datasets: &'a [Dataset], name: &str) -> &'a BTreeMap<String, Vec<u8>> {
+    &datasets
+        .iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("no {name}"))
+        .local
+}
+
+/// A value holds any byte but NUL: a tab, bytes that are not UTF-8 or
+/// not printable, a value empty, all as `zfs get -H` prints them, read
+/// in one pass where no value holds a newline. Mutants: a line split at
+/// every tab, the value made UTF-8, a value read again where none needs
+/// it.
+#[test]
+fn values_with_tabs_and_any_bytes_are_read_as_they_are() {
+    let pairs = "tank\ta:tab\ntank\ta:bin\ntank\ta:empty\ntank\ta:tabs\n";
+    let mut values = Vec::new();
+    values.extend_from_slice(b"tank\ta:tab\tx\ty\n");
+    values.extend_from_slice(b"tank\ta:bin\t\xff\x01\xe9 \x7f\n");
+    values.extend_from_slice(b"tank\ta:empty\t\n");
+    values.extend_from_slice(b"tank\ta:tabs\t\t\t\n");
+    let mut zfs = cli(manifest_reads(pairs, &values));
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]);
+    let local = local_of(&datasets, "tank");
+    assert_eq!(local["a:tab"], b"x\ty");
+    assert_eq!(local["a:bin"], b"\xff\x01\xe9 \x7f");
+    assert_eq!(local["a:empty"], b"");
+    assert_eq!(local["a:tabs"], b"\t\t");
+    assert_eq!(local.len(), 4);
+}
+
+/// A value that holds a newline cuts its line, and what follows is a
+/// line of its own, which may even read as another dataset's property
+/// (the lead's ruling on M2.6c-5). The datasets whose lines cannot be
+/// trusted are read again one value at a time, with a read's limit;
+/// the others are taken from the one pass. Each case: the pairs, the
+/// values as printed, the values read alone, the datasets read again.
+/// Mutants: no read alone, the line before a suspect one not read
+/// again, a pair twice not suspect, a pair missing not read again, the
+/// order not compared, or compared by dataset only, the last newline not
+/// taken off, all of it taken off.
+#[test]
+fn a_value_with_a_newline_is_read_again_alone() {
+    struct Case {
+        what: &'static str,
+        pairs: &'static str,
+        values: &'static [u8],
+        alone: &'static [(&'static str, &'static str, &'static [u8])],
+        want: &'static [(&'static str, &'static str, &'static [u8])],
+    }
+    let cases = [
+        Case {
+            what: "a newline that forges the next dataset's line",
+            pairs: "tank\ta:nl\ntank/db\ta:x\ntank/db\ta:y\ntank/vol\tvolsize\n",
+            values: b"tank\ta:nl\tone\ntank/db\ta:y\tforged\ntank/db\ta:x\t1\ntank/db\ta:y\t2\ntank/vol\tvolsize\t8192\n",
+            alone: &[
+                ("tank", "a:nl", b"one\ntank/db\ta:y\tforged\n"),
+                ("tank/db", "a:x", b"1\n"),
+                ("tank/db", "a:y", b"2\n"),
+            ],
+            want: &[
+                ("tank", "a:nl", b"one\ntank/db\ta:y\tforged"),
+                ("tank/db", "a:x", b"1"),
+                ("tank/db", "a:y", b"2"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "a value that ends in a newline, and one of two newlines",
+            pairs: "tank\ta:end\ntank\ta:two\ntank/vol\tvolsize\n",
+            values: b"tank\ta:end\tv\n\ntank\ta:two\t\n\n\ntank/vol\tvolsize\t8192\n",
+            alone: &[
+                ("tank", "a:end", b"v\n\n"),
+                ("tank", "a:two", b"\n\n\n"),
+            ],
+            want: &[
+                ("tank", "a:end", b"v\n"),
+                ("tank", "a:two", b"\n\n"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "a line that names a pair not listed",
+            pairs: "tank\ta:nl\ntank/vol\tvolsize\n",
+            values: b"tank\ta:nl\tx\ntank/zz\ta:q\ty\ntank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:nl", b"x\ntank/zz\ta:q\ty\n")],
+            want: &[
+                ("tank", "a:nl", b"x\ntank/zz\ta:q\ty"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "a pair listed and not read (inherited between the gets)",
+            pairs: "tank\ta:gone\ntank/vol\tvolsize\n",
+            values: b"tank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:gone", b"-\n")],
+            want: &[("tank", "a:gone", b"-"), ("tank/vol", "volsize", b"8192")],
+        },
+        Case {
+            what: "the pairs read in another order",
+            pairs: "tank\ta:1\ntank/db\ta:2\ntank/vol\tvolsize\n",
+            values: b"tank/db\ta:2\tq\ntank\ta:1\tp\ntank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:1", b"p\n"), ("tank/db", "a:2", b"q\n")],
+            want: &[
+                ("tank", "a:1", b"p"),
+                ("tank/db", "a:2", b"q"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "one dataset's pairs read in another order (T2 of #157's review)",
+            pairs: "tank\ta:1\ntank\ta:2\ntank/vol\tvolsize\n",
+            values: b"tank\ta:2\tq\ntank\ta:1\tp\ntank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:1", b"p\n"), ("tank", "a:2", b"q\n")],
+            want: &[
+                ("tank", "a:1", b"p"),
+                ("tank", "a:2", b"q"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "a line that is not a name, a property and a value",
+            pairs: "tank\ta:1\ntank/vol\tvolsize\n",
+            values: b"tank\ta:1\tp\nno tab here\ntank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:1", b"p\nno tab here\n")],
+            want: &[
+                ("tank", "a:1", b"p\nno tab here"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+    ];
+    for case in cases {
+        let mut fake = manifest_reads(case.pairs, case.values);
+        for (name, property, out) in case.alone {
+            fake.give(
+                &alone(property, name),
+                Ok(Output {
+                    code: Some(0),
+                    stdout: out.to_vec(),
+                    stderr: Vec::new(),
+                }),
+            );
+        }
+        let mut zfs = cli(fake);
+        let datasets = zfs.datasets("tank", "skz-1").expect(case.what);
+        let mut words = vec![
+            LIST_WORDS.to_string(),
+            PAIRS_WORDS.to_string(),
+            VALUES_WORDS.to_string(),
+        ];
+        // In the order the pairs are listed.
+        for line in case.pairs.lines() {
+            let (name, property) = line.split_once('\t').expect("pair");
+            if case
+                .alone
+                .iter()
+                .any(|(n, p, _)| *n == name && *p == property)
+            {
+                words.push(alone(property, name));
+            }
+        }
+        assert_eq!(zfs.host().words(), words, "{}", case.what);
+        for ran in &zfs.host().ran[3..] {
+            assert_eq!(ran.limit, Limits::default().read, "{}", case.what);
+        }
+        let mut got = Vec::new();
+        for dataset in &datasets {
+            for (property, value) in &dataset.local {
+                got.push((dataset.name.as_str(), property.as_str(), value.as_slice()));
+            }
+        }
+        assert_eq!(got, case.want, "{}", case.what);
+    }
+}
+
+/// A value read alone that is not one value and its newline fails the
+/// read, and so does a value read alone that fails, even of a dataset
+/// that is gone: neither a pool nor a snapshot missing. A value of
+/// 8191 bytes, the most there can be, is read. Mutants: the newline not
+/// required, the length not bounded, bounded one short, a failure read
+/// as no pool.
+#[test]
+fn a_value_that_cannot_be_read_alone_fails_the_read() {
+    let pairs = "tank\ta:nl\n";
+    let values = b"tank\ta:nl\tx\ny\n";
+    let most = format!("{}\n", "v".repeat(VALUE_MOST));
+    let over = format!("{}\n", "v".repeat(VALUE_MOST + 1));
+    let gives: [(Output, bool); 5] = [
+        (crate::host::fake::output(0, &most, ""), true),
+        (crate::host::fake::output(0, "x\ny", ""), false),
+        (crate::host::fake::output(0, &over, ""), false),
+        (crate::host::fake::output(0, "", ""), false),
+        (
+            crate::host::fake::output(1, "", "cannot open 'tank': dataset does not exist\n"),
+            false,
+        ),
+    ];
+    for (given, readable) in gives {
+        let shown = format!("{given:?}");
+        let mut fake = manifest_reads(pairs, values);
+        fake.give(&alone("a:nl", "tank"), Ok(given));
+        let read = cli(fake).datasets("tank", "skz-1");
+        if readable {
+            let datasets = read.expect("8191 bytes");
+            assert_eq!(local_of(&datasets, "tank")["a:nl"].len(), VALUE_MOST);
+        } else {
+            assert!(matches!(read, Err(ZfsError::Other(_))), "{shown}: {read:?}");
+        }
+    }
+    // A line longer than a value can be is read again alone.
+    let long = format!("tank\ta:nl\t{}\n", "v".repeat(VALUE_MOST + 1));
+    let mut fake = manifest_reads(pairs, long.as_bytes());
+    fake.ok(&alone("a:nl", "tank"), &most);
+    let mut zfs = cli(fake);
+    assert!(zfs.datasets("tank", "skz-1").is_ok());
+    assert_eq!(zfs.host().words().len(), 4);
+}
+
+/// After a count, the manifest's three reads take the full read's limit
+/// and a value read alone a read's. Mutants: the value alone given the
+/// full read's limit, a get given a read's.
+#[test]
+fn a_value_read_alone_takes_a_reads_limit() {
+    let mut fake = manifest_reads("tank\ta:nl\n", b"tank\ta:nl\tx\ny\n");
+    fake.ok(COUNT, &listed(1000));
+    fake.ok(&alone("a:nl", "tank"), "x\ny\n");
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.count("tank"), Ok(1000));
+    let datasets = zfs.datasets("tank", "skz-1").expect("read");
+    assert_eq!(local_of(&datasets, "tank")["a:nl"], b"x\ny");
+    let base = Limits::default();
+    let limits: Vec<Duration> = zfs.host().ran.iter().map(|r| r.limit).collect();
+    let full = base.read + base.full_per_dataset * 1000;
+    let read = base.read + base.per_dataset * 1000;
+    assert_eq!(limits, [base.count, full, full, full, read]);
+}
+
+/// A tiny generator of the tests' worlds (xorshift64).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// The matching against its oracle, on worlds of up to four datasets of
+/// up to three properties whose values are made of newlines, tabs,
+/// bytes that are not UTF-8, and other lines' names and properties:
+/// the values as `zfs get -H` prints them, with nothing changed between
+/// the gets. Every value taken from the one pass is the dataset's, every
+/// pair of a dataset read again is listed, and where no value holds a
+/// newline none is read again. Mutants: any rule of [`match_values`]
+/// dropped.
+#[test]
+fn the_values_matched_are_the_values_set() {
+    let names = ["tank", "tank/a", "tank/a b", "tank/c"];
+    let properties = ["p:x", "p:y", "volsize"];
+    let pieces: [&[u8]; 10] = [
+        b"\n",
+        b"\t",
+        b"v",
+        b"\xff",
+        b"tank/a",
+        b"tank/a b",
+        b"p:y",
+        b"\tp:x\t",
+        b"\n\n",
+        b"",
+    ];
+    let mut rng = Rng(0x5eed_1234_abcd_0001);
+    let mut read_again = 0;
+    for world in 0..20_000 {
+        let mut truth: Vec<(String, String, Vec<u8>)> = Vec::new();
+        for name in &names[..1 + rng.below(names.len())] {
+            for property in &properties[..rng.below(properties.len() + 1)] {
+                let mut value = Vec::new();
+                for _ in 0..rng.below(5) {
+                    value.extend_from_slice(pieces[rng.below(pieces.len())]);
+                }
+                truth.push(((*name).into(), (*property).into(), value));
+            }
+        }
+        let pairs: Vec<(String, String)> = truth
+            .iter()
+            .map(|(n, p, _)| (n.clone(), p.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for (name, property, value) in &truth {
+            out.extend_from_slice(format!("{name}\t{property}\t").as_bytes());
+            out.extend_from_slice(value);
+            out.push(b'\n');
+        }
+        let (read, again) = match_values(&pairs, &out);
+        let newline = truth.iter().any(|(_, _, v)| v.contains(&b'\n'));
+        if !newline {
+            assert!(again.is_empty(), "world {world}: {truth:?}");
+        }
+        if !again.is_empty() {
+            read_again += 1;
+        }
+        for ((name, property), value) in &read {
+            assert!(!again.contains(name), "world {world}");
+            let set = truth
+                .iter()
+                .find(|(n, p, _)| n == name && p == property)
+                .unwrap_or_else(|| panic!("world {world}: {name} {property} not set"));
+            assert_eq!(value, &set.2, "world {world}: {name} {property}: {truth:?}");
+        }
+        // Every pair is read: taken here, or its dataset read again.
+        for (name, property, _) in &truth {
+            assert!(
+                again.contains(name) || read.contains_key(&(name.clone(), property.clone())),
+                "world {world}: {name} {property} not read: {truth:?}"
+            );
+        }
+    }
+    // The worlds reach the reads alone.
+    assert!(read_again > 1000, "{read_again}");
 }
 
 /// A dataset as [`crate::zfs::taken`] reads it.
@@ -591,31 +1012,33 @@ fn a_take_is_whole_where_every_dataset_older_has_its_t_of_one_group() {
     }
 }
 
-/// Output of the members program that cannot be read is an error, and
-/// nothing is run after it: the read changes nothing (cut off, as `zfs
-/// program -j` cuts it at a byte it cannot print and still exits 0; not
-/// UTF-8; a number that is not one; a snapshot read in part; no
-/// datasets). Mutant: a cut-off output taken as a result.
+/// Output of `zfs list` or of the pairs' get that cannot be read is an
+/// error, and nothing is run after it; a pool that does not exist is no
+/// pool, whichever of the reads finds it gone. Mutants: a line of the
+/// list with fields short or over taken, a number that is not one, a
+/// snapshot of a dataset not listed, the pool's root not required, a
+/// name listed twice taken, a pair not split at one tab, a pair twice.
 #[test]
 fn datasets_that_cannot_be_read_are_an_error() {
-    let cut = &DATASETS.as_bytes()[..DATASETS.len() / 2];
-    let shapes: [&[u8]; 7] = [
-        cut,
-        b"",
-        b"{\"return\":{\"datasets\":{\"tank\":\xff}}}",
-        br#"{"return":{"datasets":{"tank":{"guid":"x","createtxg":"1","local":[],"type":"filesystem"}}}}"#,
-        br#"{"return":{"datasets":{"tank":{"guid":"1","createtxg":"1","local":[],"snapshot_guid":"2","type":"filesystem"}}}}"#,
-        br#"{"return":{"datasets":{"tank":{"guid":"1","createtxg":"1","local":[],"type":"snapshot"}}}}"#,
-        br#"{"return":{"absent":"1"}}"#,
+    let lists: [&[u8]; 9] = [
+        b"tank\t11\tfilesystem\n",
+        b"tank\t11\tfilesystem\t1\tx\n",
+        b"tank\tx\tfilesystem\t1\n",
+        b"tank\t11\tfilesystem\t-1\n",
+        b"tank\t11\tbookmark\t1\n",
+        b"tank\t11\tfilesystem\t1\ntank/x@skz-1\t3\tsnapshot\t9\n",
+        b"tank/db\t21\tfilesystem\t30\n",
+        b"tank\t11\tfilesystem\t1\ntank\t11\tfilesystem\t1\n",
+        b"tank\t11\tfilesystem\t1\ntank/\xff\t3\tfilesystem\t9\n",
     ];
-    for stdout in shapes {
-        let shown = String::from_utf8_lossy(stdout);
+    for list in lists {
+        let shown = String::from_utf8_lossy(list);
         let mut fake = Fake::default();
         fake.give(
-            DATASETS_WORDS,
+            LIST_WORDS,
             Ok(Output {
                 code: Some(0),
-                stdout: stdout.to_vec(),
+                stdout: list.to_vec(),
                 stderr: Vec::new(),
             }),
         );
@@ -624,11 +1047,92 @@ fn datasets_that_cannot_be_read_are_an_error() {
             matches!(zfs.datasets("tank", "skz-1"), Err(ZfsError::Other(_))),
             "{shown}"
         );
-        assert_eq!(zfs.host().words(), [DATASETS_WORDS], "{shown}");
+        assert_eq!(zfs.host().words(), [LIST_WORDS], "{shown}");
+    }
+    for pairs in [
+        "tank\n",
+        "tank\ta\tb\n",
+        "\ta\n",
+        "tank\t\n",
+        "tank\ta\ntank\ta\n",
+    ] {
+        let mut zfs = cli(manifest_reads(pairs, b""));
+        assert!(
+            matches!(zfs.datasets("tank", "skz-1"), Err(ZfsError::Other(_))),
+            "{pairs:?}"
+        );
+        assert_eq!(zfs.host().words(), [LIST_WORDS, PAIRS_WORDS], "{pairs:?}");
+    }
+    let gone = "cannot open 'tank': dataset does not exist\n";
+    for at in 0..3 {
+        let mut fake = manifest_reads(PAIRS, VALUES.as_bytes());
+        let words = [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS][at];
+        fake.commands.remove(words);
+        fake.fails(words, 1, gone);
+        assert_eq!(
+            cli(fake).datasets("tank", "skz-1"),
+            Err(ZfsError::NoPool),
+            "{at}"
+        );
+    }
+    // A child that does not exist, named by the same message, is no
+    // pool that does not exist (N5 of #157's review): an error that
+    // names the command and the child.
+    for gone in [
+        "cannot open 'tank/db': dataset does not exist\n",
+        "cannot open 'tank@skz-1': dataset does not exist\n",
+        "cannot open 'tank ': dataset does not exist\n",
+    ] {
+        for at in 0..3 {
+            let mut fake = manifest_reads(PAIRS, VALUES.as_bytes());
+            let words = [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS][at];
+            fake.commands.remove(words);
+            fake.fails(words, 1, gone);
+            assert!(
+                matches!(
+                    cli(fake).datasets("tank", "skz-1"),
+                    Err(ZfsError::Other(why)) if why.contains(words) && why.contains(gone.trim_end())
+                ),
+                "{gone} {at}"
+            );
+        }
     }
     let mut fake = Fake::default();
-    fake.fails(DATASETS_WORDS, 1, "cannot open 'tank': no such pool\n");
+    fake.fails(LIST_WORDS, 1, "cannot open 'tank': no such pool\n");
     assert_eq!(cli(fake).datasets("tank", "skz-1"), Err(ZfsError::NoPool));
+    let mut fake = Fake::default();
+    fake.fails(LIST_WORDS, 1, "cannot iterate filesystems: I/O error\n");
+    assert!(matches!(
+        cli(fake).datasets("tank", "skz-1"),
+        Err(ZfsError::Other(why)) if why.contains(LIST_WORDS) && why.contains("I/O error")
+    ));
+}
+
+/// A dataset that the gets name and the list did not, created between
+/// them, is no member of the take and is left out; `@t` of a dataset is
+/// found wherever the list prints it. Mutant: a dataset made from the
+/// gets alone.
+#[test]
+fn a_dataset_created_after_the_list_is_left_out() {
+    let mut fake = Fake::default();
+    fake.ok(
+        LIST_WORDS,
+        "tank/db@skz-1\t22\tsnapshot\t812\ntank\t11\tfilesystem\t1\ntank/db\t21\tfilesystem\t30\n",
+    );
+    fake.ok(PAIRS_WORDS, "tank\ta\ntank/later\tb\n");
+    fake.ok(VALUES_WORDS, "tank\ta\t1\ntank/later\tb\t2\n");
+    let datasets = cli(fake).datasets("tank", "skz-1").expect("read");
+    let names: Vec<_> = datasets.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["tank", "tank/db"]);
+    assert_eq!(
+        datasets[1].at,
+        Some(Snap {
+            guid: 22,
+            createtxg: 812
+        })
+    );
+    assert_eq!(datasets[0].at, None);
+    assert_eq!(local_of(&datasets, "tank")["a"], b"1");
 }
 
 const DESTROY: &str = "zfs destroy -r tank@skz-1";
@@ -691,69 +1195,6 @@ fn what_is_not_a_snapshots_name_is_not_destroyed() {
         };
         assert!(why.contains("was not destroyed"), "{t}: {why}");
         assert!(zfs.host().words().is_empty(), "{t}");
-    }
-}
-
-/// A local property's value comes as it is when it is printable ASCII
-/// and in hex under `encoding` otherwise; a byte above 0x7f and bytes
-/// that are not UTF-8 reach the manifest as they were. A string that is
-/// not printable ASCII, a hex value of the wrong case, length or form,
-/// and an unknown encoding are refused. Mutants: hex not decoded, a
-/// non-ASCII string let through, an extra key let through.
-#[test]
-fn a_value_that_is_not_printable_ascii_comes_in_hex() {
-    let with = |local: &str| {
-        format!(
-            r#"{{"return":{{"datasets":{{"tank":{{"guid":"11","createtxg":"1","local":{local},"snapshot_guid":"12","snapshot_createtxg":"812","type":"filesystem"}}}}}}}}"#
-        )
-    };
-    let read = |local: &str| {
-        let mut fake = Fake::default();
-        fake.ok(DATASETS_WORDS, &with(local));
-        cli(fake).datasets("tank", "skz-1")
-    };
-    let datasets = read(
-        r#"{"a:latin1":{"encoding":"hex","value":"e9"},"a:bad":{"encoding":"hex","value":"ff00fe"},"a:tab":{"encoding":"hex","value":"0961"},"a:plain":"x y~","a:del":{"encoding":"hex","value":"7f"},"a:us":{"encoding":"hex","value":"1f"},"a:space":" "}"#,
-    )
-    .expect("read");
-    let local = &datasets[0].local;
-    assert_eq!(local["a:latin1"], [0xe9]);
-    assert_eq!(local["a:bad"], [0xff, 0x00, 0xfe]);
-    assert_eq!(local["a:tab"], b"\ta");
-    assert_eq!(local["a:plain"], b"x y~");
-    // The edges of printable, where the program and the adapter must
-    // agree (NL-F3): 0x1f and 0x7f in hex, 0x20 as it is.
-    assert_eq!(local["a:del"], [0x7f]);
-    assert_eq!(local["a:us"], [0x1f]);
-    assert_eq!(local["a:space"], b" ");
-    for bad in [
-        r#"{"a":"café"}"#,
-        r#"{"a":"a\tb"}"#,
-        r#"{"a":{"encoding":"hex","value":"E9"}}"#,
-        r#"{"a":{"encoding":"hex","value":"e"}}"#,
-        r#"{"a":{"encoding":"hex","value":"+e"}}"#,
-        r#"{"a":{"encoding":"hex","value":"61"}}"#,
-        r#"{"a":{"encoding":"hex","value":"20"}}"#,
-        r#"{"a":{"encoding":"hex","value":"7e"}}"#,
-        r#"{"a":"\u007f"}"#,
-        r#"{"a":"\u001f"}"#,
-        r#"{"a":{"encoding":"hex","value":"zz"}}"#,
-        r#"{"a":{"encoding":"base64","value":"6Q=="}}"#,
-        r#"{"a":{"encoding":"hex","value":"e9","x":"1"}}"#,
-        r#"{"a":["e9"]}"#,
-    ] {
-        assert!(matches!(read(bad), Err(ZfsError::Other(_))), "{bad}");
-    }
-}
-
-/// The program and the manifest decide what is printable in the same
-/// place (NL-F3): the program's pattern is `[^\32-\126]`, and
-/// `manifest::plain` takes 0x20 to 0x7e. Mutant: `plain` widened to 0x7f.
-#[test]
-fn the_program_and_the_manifest_agree_on_what_is_printable() {
-    assert!(MEMBERS_PROGRAM.contains(r#"string.find(v, "[^\32-\126]")"#));
-    for b in 0..=u8::MAX {
-        assert_eq!(manifest::plain(&[b]), (32..=126).contains(&b), "{b:#04x}");
     }
 }
 
@@ -1121,14 +1562,18 @@ fn listed(n: usize) -> String {
 /// The lead's rules on M2.6c-2b and on N2 of #153's review: the count
 /// is `zfs list -r` of the file systems and volumes, within its own
 /// fixed limit; a read or a change then takes 100 ms more for each
-/// dataset counted, at most 20 minutes, and the members program in full
-/// 200 ms more on the read's base, at most 35 minutes; a count that
-/// fails sets the bases, as before any count. The full read's limit at
-/// 10 001 datasets is at least twice what it took there on Ubuntu 26.04
-/// (911.8 s, run 45720225770). Mutants: the limits not scaled, scaled
-/// but not capped, the full read scaled or capped as a read, a read
-/// scaled as the full read, a failed count keeping the last or setting
-/// the longest, the count's own limit scaled.
+/// dataset counted, at most 20 minutes, and each of the manifest's three
+/// reads 200 ms more on the read's base, at most 35 minutes; a count
+/// that fails sets the bases, as before any count. The limit of one of
+/// the manifest's reads at 10 000 datasets is more than the whole read
+/// took there on Ubuntu 26.04 under a write load (two gets of 468.2 s
+/// and a list of 33.8 s, run 45733395008; the lead's ruling on M2.6c-5),
+/// and at 10 001 at least twice what the members program in full took
+/// (911.8 s, run 45720225770), which it replaced. Mutants: the limits
+/// not scaled, scaled but not capped, the manifest's reads scaled or
+/// capped as a read, a read scaled as the manifest's, a failed count
+/// keeping the last or setting the longest, the count's own limit
+/// scaled.
 #[test]
 fn the_limits_grow_with_the_datasets_counted() {
     let base = Limits::default();
@@ -1146,7 +1591,9 @@ fn the_limits_grow_with_the_datasets_counted() {
     let mut fake = Fake::default();
     fake.ok(TAKE, "");
     fake.ok(HOLDS_R, "");
-    fake.ok(DATASETS_WORDS, DATASETS);
+    fake.ok(LIST_WORDS, LISTED);
+    fake.ok(PAIRS_WORDS, PAIRS);
+    fake.ok(VALUES_WORDS, VALUES);
     let mut zfs = cli(fake);
     let limits = |zfs: &mut ZfsCli<Fake>| {
         zfs.host().ran.clear();
@@ -1161,15 +1608,24 @@ fn the_limits_grow_with_the_datasets_counted() {
         let ran = &zfs.host().ran;
         assert_eq!(ran[0].words, TAKE);
         assert_eq!(ran[1].words, HOLDS_R);
-        assert_eq!(ran[2].words, DATASETS_WORDS);
         assert_eq!(
-            ran[3..]
+            ran[2..5]
+                .iter()
+                .map(|r| r.words.as_str())
+                .collect::<Vec<_>>(),
+            [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS]
+        );
+        for manifests in &ran[3..5] {
+            assert_eq!(manifests.limit, ran[2].limit, "{}", manifests.words);
+        }
+        assert_eq!(
+            ran[5..]
                 .iter()
                 .map(|r| r.words.as_str())
                 .collect::<Vec<_>>(),
             [MEMBERS_WORDS, TAGGED_WORDS, "zpool status -P tank"]
         );
-        for other in &ran[3..] {
+        for other in &ran[5..] {
             assert_eq!(other.limit, ran[1].limit, "{}", other.words);
         }
         (ran[0].limit, ran[1].limit, ran[2].limit)
@@ -1181,6 +1637,9 @@ fn the_limits_grow_with_the_datasets_counted() {
     );
     let full_read_10001 = Duration::from_millis(911_828);
     assert!(at(10_001, base.read, 200) >= full_read_10001 * 2);
+    let manifest_read_10000 = ms(468_190) * 2 + ms(33_797);
+    assert!(at(10_000, base.read, 200) > manifest_read_10000);
+    assert!(at(10_000, base.read, 200) < base.full_most);
     for (n, change, read, full) in [
         (
             3,

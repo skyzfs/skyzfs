@@ -451,9 +451,21 @@ pub enum Report {
     /// before them ([`crate::record::Why::NotWhole`]): the datasets that
     /// broke the last, those that lack its `@t` or have one of another
     /// group, or differ from the reading before it (D1 of #153's review).
-    /// Empty where the last take was destroyed before a stop, and the
-    /// give-up made by the next process (D2 of #153's next look).
+    /// Empty in two ways (N11 of #153's review): where the last take
+    /// was destroyed before a stop and the give-up made by the next
+    /// process, which cannot know them (D2 of #153's next look); and
+    /// where the last take's members differ from the reading before it
+    /// only in their count, every member the same as a dataset read and
+    /// every dataset read a member's GUID, which needs two datasets of
+    /// one GUID and which ZFS does not make.
     NotWhole(Vec<String>),
+    /// The pool's datasets could not be read for the manifest, before a
+    /// take or after it: the read's error, which names the command, and
+    /// the dataset and property where a value could not be read (the
+    /// lead's ruling on M2.6c-5). The publish is not given up for it: it
+    /// is read again at a later round, until the publish is too old. One
+    /// report for each error that differs, in a process.
+    Unreadable(String),
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held

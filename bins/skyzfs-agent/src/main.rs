@@ -110,6 +110,15 @@ fn settle(run: &Run, task: &Task) -> i32 {
             return exit::ERROR;
         }
     };
+    // The daemon's channel, in the volume's own directory under the run
+    // directory, named as the daemon names it.
+    let socket = match skyzfs_control::socket_path(&run.run, &run.volume) {
+        Ok(socket) => socket,
+        Err(e) => {
+            eprintln!("skyzfs-agent: {}: {e}", run.volume.display());
+            return exit::ERROR;
+        }
+    };
     let store = match Store::open(&run.dir) {
         Ok(store) => store,
         Err(e) => {
@@ -122,7 +131,7 @@ fn settle(run: &Run, task: &Task) -> i32 {
     };
     let zfs = ZfsCli::new(System, Limits::default());
     let daemon = DaemonSocket::new(
-        run.run.join(skyzfs_control::SOCKET),
+        socket,
         run.device.clone(),
         skyzfs_control::ASK_LIMIT,
         System,

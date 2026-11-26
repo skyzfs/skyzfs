@@ -21,8 +21,8 @@
 //! - [`Zfs::members`] and [`Zfs::tagged`]: read-only channel programs
 //!   (`zfs program -n -j`), `members.lua` and `tagged.lua`, beside this
 //!   file, on their standard input.
-//! - [`Zfs::datasets`]: `members.lua` in full (`zfs program -n -j POOL -
-//!   POOL T full skyzfs:assist`).
+//! - [`Zfs::datasets`]: `zfs list` and twice `zfs get` ("The manifest's
+//!   read", below).
 //! - [`Zfs::destroy`]: `zfs destroy -r POOL@T`.
 //! - [`Zfs::held`]: `zfs holds -H -r POOL@T`, and the members program
 //!   where `POOL@T` has the tag.
@@ -67,14 +67,6 @@
 //! lead's rule for M2.6c-2b), since the agent's names are its own and
 //! one agent holds the pool's lock.
 //!
-//! The manifest is read after the take, by the members program in full
-//! ([`Zfs::datasets`]), which only reads: every dataset's type, GUID,
-//! `createtxg` and locally set properties, and its `@t`'s GUID and
-//! `createtxg`. The properties are read from the datasets, as they are
-//! at the read: ZFS keeps on a snapshot only the properties set on the
-//! snapshot itself (`dsl_prop_get_ds` reads any other through the
-//! dataset's directory).
-//!
 //! The programs' values are all strings (`tostring`), and its tables
 //! are keyed by name: `zfs program -j` writes a Lua number as a signed
 //! 64-bit one (a GUID above 2^63 negative) and a list as an object keyed
@@ -82,15 +74,69 @@
 //! version. A GUID is read as unsigned, or as signed and taken modulo
 //! 2^64.
 //!
-//! A property's value that is not printable ASCII comes in hex: `{
-//! "encoding": "hex", "value": "..." }`, lower case, as the manifest
-//! writes it ([`crate::manifest`]). `zfs program -j` prints strings
-//! through `mbrtowc`, which in the locale `C` stops at a byte above 0x7f:
-//! it cuts the output there, and still exits 0 (B2 of the review of
-//! #147). Names are ASCII by ZFS's rules; values are not.
-//!
 //! Output that cannot be read after the program exited 0 (cut off, not
 //! UTF-8, or not a whole result) is an error: the programs only read.
+//!
+//! # The manifest's read
+//!
+//! The manifest is read before the take and after it ([`Zfs::datasets`];
+//! the lead's ruling on M2.6c-5), by commands that only read and never
+//! by a program over the whole pool, which holds the pool's sync for its
+//! whole run (N6 of #153's review):
+//!
+//! 1. `zfs list -r -H -p -t filesystem,volume,snapshot -o
+//!    name,guid,type,createtxg POOL`: each file system's and volume's
+//!    type, GUID and `createtxg`, and those of its `@t` where it has one
+//!    (`parse_listed`).
+//! 2. `zfs get -r -H -p -s local -t filesystem,volume -o name,property
+//!    all POOL`: the properties set locally, by dataset (`parse_pairs`).
+//! 3. The same with `-o name,property,value`: their values, each line
+//!    split at its first two tabs only, since a value may hold a tab
+//!    (`match_values`).
+//!
+//! A value may hold a newline too, which `zfs get -H` prints as it is.
+//! The values are taken only where the lines of (3) name exactly the
+//! pairs of (2), in their order: a newline adds a line. Otherwise the
+//! datasets whose lines cannot be trusted (`match_values`) are read
+//! again one value at a time, `zfs get -H -p -o value PROPERTY NAME`,
+//! which prints the value and one newline: that newline alone is taken
+//! off. A value that still cannot be read (no newline at its end, longer
+//! than [`VALUE_MOST`], or the command fails) fails the read: the
+//! engine reports the error, which names the dataset and the property
+//! ([`crate::plan::Report::Unreadable`]), and reads the pool again at a
+//! later round, until the publish is too old (the lead's ruling on
+//! M2.6c-5).
+//!
+//! - Names (of datasets and of properties) can hold neither a tab nor a
+//!   newline, by ZFS's rules; values can hold any byte but NUL.
+//! - Every command runs in the locale `C`. `zfs get -H` prints a value's
+//!   bytes as they are, unlike `zfs program -j`.
+//! - The properties are the datasets' as they are at the read: ZFS keeps
+//!   on a snapshot only the properties set on the snapshot itself
+//!   (`dsl_prop_get_ds` reads any other through the dataset's directory).
+//!   Only those set locally are carried, not received ones.
+//! - `skyzfs:assist`, the agent's own ([`ASSIST_PROPERTY`]), is left out,
+//!   and so are `filesystem_count` and `snapshot_count`, which libzfs
+//!   calls local though they are counters, and which no read alone
+//!   fetches (`COUNTERS`).
+//! - A dataset that (2) or (3) names and (1) did not list was created
+//!   after the list: it is no member of the take, and is left out. The
+//!   engine's check reads the pool again after its take, and a pool that
+//!   changed between the two reads is taken again.
+//! - (2), (3) and a value read alone are three reads, and the rule
+//!   above is exact only where nothing changes between them. A property
+//!   set or inherited between them can make a line of (3), or a value
+//!   read alone, wrong, and a value set between (2) and (3) whose
+//!   newlines make lines of other datasets can give a dataset a value
+//!   nobody set (N2 of #157's review). That needs write access to the
+//!   property it forges, and a change between the gets: the engine's
+//!   check sees it where the read before the take and the read after
+//!   it then differ, which is where the change does not land between
+//!   the gets of both reads alike. A value of `-` read alone may be a
+//!   property inherited meanwhile, and is found the same way.
+//! - A pool that does not exist: `zfs list` and `zfs get` say `dataset
+//!   does not exist` of the pool's name, which is [`ZfsError::NoPool`]
+//!   here; the same message of another name is an error.
 //!
 //! # What was checked on ZFS, and what was not
 //!
@@ -106,12 +152,14 @@
 //!   read, on the rig's pool and on a mirror of two files.
 //! - The channel-program sandbox has no `pcall` (a take program of
 //!   `366b217`, since dropped, failed on it on both images).
-//! - The members program in full and the count of the datasets (`zfs
-//!   list -r -H -o name -t filesystem,volume`) read what the parsers
-//!   read, on both pools and both images (`recorded/full-<image>.json`):
-//!   a take, an `@t` none has, an `@p` only a child has, values that
-//!   are not ASCII in the locales `C` and `C.UTF-8`, and a pool that
-//!   does not exist.
+//! - The count of the datasets (`zfs list -r -H -o name -t
+//!   filesystem,volume`) reads what the parser reads, on both pools and
+//!   both images (`recorded/full-<image>.json`), and a pool that does not
+//!   exist.
+//! - The manifest's read ("The manifest's read"): testing's scale run
+//!   45733395008 (Ubuntu 26.04) shows that `zfs get -H` and `zfs list`
+//!   do not hold the pool's sync: 707 groups were written during the get
+//!   at 10 000 datasets.
 //! - A checkpoint is none where `zpool get -p` gives `-`; one that exists
 //!   gives its size.
 //! - A resilver under way says `resilver in progress` on its `scan:`
@@ -156,42 +204,46 @@
 //!   under way or done, which the premise refuses (the lead's L4 on
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
-//! - Property values that are not printable ASCII, in hex as above.
+//! - The manifest's read by `zfs list` and `zfs get` ("The manifest's
+//!   read"), recorded on Ubuntu 24.04 and 26.04 (testing's run
+//!   45738224324, #156; `recorded/read-*.json`): the list, the values
+//!   pass and each odd value read alone, on two pools that hold values
+//!   with a tab, a newline, a forged line, raw bytes and the longest
+//!   value ZFS sets ([`VALUE_MOST`]; one byte more is refused), and a
+//!   snapshot limit, under which `filesystem_count` and `snapshot_count`
+//!   are listed as local; and again with the pairs pass, in four states
+//!   of one pool and with a pool that does not exist (run 45751625028,
+//!   #158; `recorded/cli-read-*.json`). `zfs get -H` writes a value's bytes as they
+//!   are, with a tab between the columns and a newline after each line.
 //! - The time limits ([`Limits`]), all provisional (the lead's rules on
 //!   M2.6c-2b and on N2 of #153's review):
-//!   - the members program in full ([`Zfs::datasets`]): 60 s plus 200 ms
-//!     for each of the pool's datasets as last counted, at most 35
-//!     minutes;
+//!   - each of the manifest's three reads ([`Zfs::datasets`]): 60 s plus
+//!     200 ms for each of the pool's datasets as last counted, at most 35
+//!     minutes; a value read alone is a read as below;
 //!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
 //!     dataset counted, at most 20 minutes;
 //!   - the count itself 60 s; a count that fails leaves the bases.
 //!
 //!   They come from testing's recordings on Ubuntu 26.04 (run
 //!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
-//!   members program in full 8.7, 88.2 and 911.8 s (about 90 ms a
-//!   dataset, linear), so its 200 ms is about twice that; plain 0.34,
+//!   members program in full (which the manifest's read replaced) 8.7,
+//!   88.2 and 911.8 s (about 90 ms a dataset, linear), so its 200 ms is
+//!   about twice that; the members program plain 0.34,
 //!   2.2 and 21.5 s; the count 0.23, 1.7 and 16.4 s; `zfs snapshot -r`
 //!   2.2, 4.4 and 46.3 s. In #152, at 10 001 file systems on a slow
 //!   runner, `zfs snapshot -r` took 391 s under a heavy write load, and
-//!   `tagged.lua` 68.7 s with none. Correctness does not rest on them: a
-//!   take killed at its limit is adopted at a later round (above).
-//! - **What a publish costs.** A publish reads the pool in full twice
-//!   (before its take and after) and takes it once: about 20 s at 100
-//!   datasets and about 30 minutes at 10 000, from the figures above.
-//!   Each round's count, members and `holds -r` reads, the hold, the
-//!   release and the sweep add some 4 to 5 minutes at 10 000 (review of
-//!   #153). The design's scale is tens to hundreds of datasets.
-//! - **A known cost of the full read.** The full read holds the pool's
-//!   config lock for its whole run (N6 of #153's review, from the OpenZFS
-//!   source), and the pool's transaction group does not complete
-//!   meanwhile. Testing's measurement (#155, Ubuntu 26.04, 1 001
-//!   datasets): the read took 31 s, a writer
-//!   of buffered data made no write during it, `zpool sync` took 33 s,
-//!   and an `O_DSYNC` writer was not stalled; beside `zfs snapshot -r`
-//!   the stall was 3.7 s. Two full reads a publish make about 6 s of
-//!   such a stall at 100 datasets. M2.6c-5 replaces the full read by
-//!   `zfs get` and `zfs list` (the lead's decision); until then this is
-//!   accepted.
+//!   `tagged.lua` 68.7 s with none. In testing's scale run 45733395008
+//!   (26.04, under a write load) at 10 000 datasets, `zfs get -H` took
+//!   468.2 s and `zfs list` 33.8 s, so the manifest's read about 970 s,
+//!   less than one of its reads' limits (2060 s). Correctness does not
+//!   rest on them: a take killed at its limit is adopted at a later round
+//!   (above).
+//! - **What a publish costs.** A publish reads the manifest twice
+//!   (before its take and after) and takes the pool once: at 10 000
+//!   datasets about 2 × 970 s and 172 s in testing's scale run. Each
+//!   round's count, members and `holds -r` reads, the hold, the release
+//!   and the sweep add some 4 to 5 minutes at 10 000 (review of #153).
+//!   The design's scale is tens to hundreds of datasets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -201,14 +253,14 @@ use serde_json::Value;
 
 use super::{Dataset, Held, Layout, Props, Snap, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
 use crate::host::{Host, Node, Output};
-use crate::manifest::{self, Kind};
+use crate::manifest::Kind;
 use crate::record::Member;
 
 /// The module parameter that says whether ZFS sends cache flushes.
 pub const NOCACHEFLUSH: &str = "/sys/module/zfs/parameters/zfs_nocacheflush";
 
-/// The channel program that reads each member's `@t`, or in full every
-/// dataset ([module docs](self)).
+/// The channel program that reads each member's `@t` ([module
+/// docs](self)).
 pub const MEMBERS_PROGRAM: &str = include_str!("cli/members.lua");
 
 /// The channel program that finds the snapshots with a hold.
@@ -224,8 +276,8 @@ pub const PROGRAM_MEMORY: u64 = 100 << 20;
 
 /// How long a command may run before it is killed. A read or a change
 /// takes [`Limits::per_dataset`] more for each of the pool's datasets as
-/// [`Zfs::count`] last read them, up to [`Limits::most`]; the members
-/// program in full takes [`Limits::full_per_dataset`] more, up to
+/// [`Zfs::count`] last read them, up to [`Limits::most`]; each of the
+/// manifest's reads take [`Limits::full_per_dataset`] more, up to
 /// [`Limits::full_most`] (the lead's rules on M2.6c-2b and on N2 of
 /// #153's review; provisional; [module docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,12 +293,15 @@ pub struct Limits {
     pub per_dataset: Duration,
     /// The most a read or a change is let run, however many datasets.
     pub most: Duration,
-    /// What each of the pool's datasets adds to the members program in
-    /// full ([`Zfs::datasets`]), whose base is [`Limits::read`]: about
-    /// twice the 90 ms a dataset it took on Ubuntu 26.04 (911.8 s at
-    /// 10 001 datasets, testing's run 45720225770).
+    /// What each of the pool's datasets adds to each of the manifest's
+    /// reads ([`Zfs::datasets`]), whose base is [`Limits::read`]. It was
+    /// set at about twice the 90 ms a dataset the members program in full
+    /// took on Ubuntu 26.04 (testing's run 45720225770), which the
+    /// manifest's reads replaced; it is kept (the lead's ruling on
+    /// M2.6c-5): `zfs get -H` took about 47 ms a dataset under a write
+    /// load (468.2 s at 10 000 datasets, run 45733395008).
     pub full_per_dataset: Duration,
-    /// The most the members program in full is let run, however many
+    /// The most each of the manifest's reads is let run, however many
     /// datasets: above its limit at 10 001 datasets (2060.2 s; the
     /// lead's ruling on N2 of #153's review).
     pub full_most: Duration,
@@ -328,10 +383,59 @@ impl<H: Host> ZfsCli<H> {
         self.scaled(l.change, l.per_dataset, l.most)
     }
 
-    /// The limit of the members program in full ([`Zfs::datasets`]).
+    /// The limit of each of the manifest's reads ([`Zfs::datasets`]).
     fn full_read_limit(&self) -> Duration {
         let l = &self.limits;
         self.scaled(l.read, l.full_per_dataset, l.full_most)
+    }
+
+    /// `zfs` with `args` within `limit`: its output's bytes where it
+    /// exits 0. Where the command names a `pool`, `cannot open 'POOL':
+    /// dataset does not exist` is [`ZfsError::NoPool`]: `zfs list` and
+    /// `zfs get` say so of a pool that does not exist. The same message
+    /// of a child or a snapshot is an error (N5 of #157's review).
+    fn zfs_bytes(
+        &mut self,
+        args: &[&str],
+        limit: Duration,
+        pool: Option<&str>,
+    ) -> Result<Vec<u8>, ZfsError> {
+        let output = self.exec("zfs", args, &[], limit)?;
+        if output.code == Some(0) {
+            return Ok(output.stdout);
+        }
+        if let Some(pool) = pool {
+            let gone = format!("cannot open '{pool}': dataset does not exist");
+            if String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .any(|line| line == gone)
+            {
+                return Err(ZfsError::NoPool);
+            }
+        }
+        Err(failure("zfs", args, &output, false))
+    }
+
+    /// One local property's value alone ([module docs](self), "The
+    /// manifest's read"): `zfs get -H -p -o value PROPERTY NAME`, which
+    /// prints the value and one newline, exactly. Anything else, or a
+    /// value longer than ZFS lets one be ([`VALUE_MOST`]), cannot be read.
+    fn value(&mut self, name: &str, property: &str) -> Result<Vec<u8>, ZfsError> {
+        let args = ["get", "-H", "-p", "-o", "value", property, name];
+        let out = self.zfs_bytes(&args, self.read_limit(), None)?;
+        match out.strip_suffix(b"\n") {
+            Some(value) if value.len() <= VALUE_MOST => Ok(value.to_vec()),
+            _ => Err(ZfsError::Other(format!(
+                "{}: the value of `{property}` on `{name}` cannot be read ({} bytes, {})",
+                command("zfs", &args),
+                out.len(),
+                if out.ends_with(b"\n") {
+                    "longer than a value can be"
+                } else {
+                    "with no newline at its end"
+                }
+            ))),
+        }
     }
 
     /// The host, for the tests.
@@ -640,15 +744,35 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
-        let returned = self.program(
-            pool,
-            MEMBERS_PROGRAM,
-            &[pool, t, "full", ASSIST_PROPERTY],
-            true,
-            self.full_read_limit(),
-        )?;
-        parse_datasets(&returned)
-            .map_err(|why| ZfsError::Other(format!("zfs program (members, full): {why}")))
+        let limit = self.full_read_limit();
+        let list = list_words(pool);
+        let listed = self.zfs_bytes(&list, limit, Some(pool))?;
+        let mut datasets = parse_listed(&listed, pool, t)
+            .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
+        let get = get_words(pool, PAIRS);
+        let pairs = self.zfs_bytes(&get, limit, Some(pool))?;
+        let pairs = parse_pairs(&pairs)
+            .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &get))))?;
+        let values = self.zfs_bytes(&get_words(pool, VALUES), limit, Some(pool))?;
+        let (mut read, again) = match_values(&pairs, &values);
+        let again = pairs
+            .iter()
+            .filter(|(name, property)| again.contains(name) && carried(property));
+        for (name, property) in again {
+            let value = self.value(name, property)?;
+            read.insert((name.clone(), property.clone()), value);
+        }
+        for ((name, property), value) in read {
+            if !carried(&property) {
+                continue;
+            }
+            // A dataset created after the list is not a member of the
+            // take; the engine's check sees it in the next read.
+            if let Some(dataset) = datasets.get_mut(&name) {
+                dataset.local.insert(property, value);
+            }
+        }
+        Ok(datasets.into_values().collect())
     }
 
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
@@ -1052,13 +1176,6 @@ pub(crate) fn returned(text: &str) -> Result<serde_json::Map<String, Value>, Str
     }
 }
 
-/// A string of a channel program's table.
-fn string<'a>(map: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str, String> {
-    map.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("`{key}` is not a string"))
-}
-
 /// A table of a channel program's table: an object, or an empty list for
 /// an empty table.
 fn table<'a>(
@@ -1072,94 +1189,281 @@ fn table<'a>(
     }
 }
 
-/// A local property's value as the members program gives it ([module
-/// docs](self)): printable ASCII as a string, any other value as its
-/// lower-case hex under `encoding`. Anything the program never gives (a
-/// string that is not printable ASCII, hex of the wrong case or of a
-/// printable value) is refused.
-fn local_value(value: &Value) -> Result<Vec<u8>, String> {
-    match value {
-        Value::String(text) if manifest::plain(text.as_bytes()) => Ok(text.as_bytes().to_vec()),
-        Value::String(_) => Err("is a string that is not printable ASCII".into()),
-        Value::Object(map) => {
-            if map.len() != 2 || string(map, "encoding")? != "hex" {
-                return Err("is not a value in hex".into());
-            }
-            let hex = string(map, "value")?;
-            match manifest::unhex(hex) {
-                Some(bytes) if manifest::hex(&bytes) == hex && !manifest::plain(&bytes) => {
-                    Ok(bytes)
-                }
-                _ => Err(format!(
-                    "is `{hex}`, not the lower-case hex of a value that is not printable"
-                )),
-            }
-        }
-        _ => Err("is not a string or a value in hex".into()),
-    }
-}
-
 /// Root first, then sorted by name: the order of the manifest's members.
 fn member_order(pool: &str, a: &str, b: &str) -> std::cmp::Ordering {
     (a != pool, a).cmp(&(b != pool, b))
 }
 
-/// What the members program returned in full ([`Zfs::datasets`]), by
-/// name.
-pub(crate) fn parse_datasets(
-    returned: &serde_json::Map<String, Value>,
-) -> Result<Vec<Dataset>, String> {
-    let datasets = table(returned, "datasets")?.ok_or("no datasets")?;
-    let mut out = Vec::with_capacity(datasets.len());
-    for (name, value) in datasets {
-        let Value::Object(dataset) = value else {
-            return Err(format!("the dataset `{name}` is not a table"));
+/// The most bytes a property's value can have: `ZFS_MAXPROPLEN` less
+/// its terminating NUL.
+pub const VALUE_MOST: usize = 8191;
+
+/// Properties that `zfs get -s local` lists but the manifest does not
+/// carry. `filesystem_count` and `snapshot_count` are counters, not
+/// settings: libzfs gives them the source `local` wherever ZFS keeps
+/// them (`get_numeric_property` in `libzfs_dataset.c`: "not default,
+/// must be local"), which it does once a limit is set on the dataset or
+/// above it. `snapshot_count` grows with the take itself, so that the
+/// reads before and after it would never agree (Codex on #157).
+const COUNTERS: [&str; 2] = ["filesystem_count", "snapshot_count"];
+
+/// Whether the manifest carries a property that `zfs get -s local`
+/// lists: not the agent's own (it is not the pool's), not a counter.
+fn carried(property: &str) -> bool {
+    property != ASSIST_PROPERTY && !COUNTERS.contains(&property)
+}
+
+/// The columns of `zfs get` that list the local properties.
+const PAIRS: &str = "name,property";
+
+/// The columns of `zfs get` that read their values.
+const VALUES: &str = "name,property,value";
+
+/// `zfs list` of every dataset and snapshot under `pool`, with the
+/// columns [`parse_listed`] reads.
+fn list_words(pool: &str) -> [&str; 9] {
+    [
+        "list",
+        "-r",
+        "-H",
+        "-p",
+        "-t",
+        "filesystem,volume,snapshot",
+        "-o",
+        "name,guid,type,createtxg",
+        pool,
+    ]
+}
+
+/// `zfs get` of every local property of the filesystems and volumes
+/// under `pool`, with the columns `columns`.
+fn get_words<'a>(pool: &'a str, columns: &'a str) -> [&'a str; 12] {
+    [
+        "get",
+        "-r",
+        "-H",
+        "-p",
+        "-s",
+        "local",
+        "-t",
+        "filesystem,volume",
+        "-o",
+        columns,
+        "all",
+        pool,
+    ]
+}
+
+/// The lines of a command's output: split at each newline, the empty
+/// line after the last one left out.
+fn output_lines(out: &[u8]) -> Vec<&[u8]> {
+    let mut lines: Vec<&[u8]> = out.split(|&b| b == b'\n').collect();
+    if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// `zfs list -r -H -p -t filesystem,volume,snapshot -o
+/// name,guid,type,createtxg POOL`'s output: the filesystems and volumes
+/// by name, each with its `@t` where it has one, and no property read
+/// yet. The other snapshots are left out. A name cannot hold a tab or a
+/// newline, so each line is split at its tabs.
+pub(crate) fn parse_listed(
+    out: &[u8],
+    pool: &str,
+    t: &str,
+) -> Result<BTreeMap<String, Dataset>, String> {
+    let text = std::str::from_utf8(out).map_err(|_| "its output is not UTF-8".to_string())?;
+    let mut datasets = BTreeMap::new();
+    let mut snaps = Vec::new();
+    for line in text.split_terminator('\n') {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [name, guid, kind, createtxg] = fields[..] else {
+            return Err(format!("a line of {} fields: `{line}`", fields.len()));
         };
-        let number = |key: &str, guid: bool| {
-            let text = string(dataset, key)?;
-            let n = if guid {
-                parse_guid(text)
-            } else {
-                text.parse::<u64>().ok()
-            };
-            n.ok_or_else(|| format!("`{name}`: `{key}` is `{text}`"))
-        };
-        let kind = match string(dataset, "type")? {
+        let guid = parse_guid(guid).ok_or_else(|| format!("`{name}`: its GUID is `{guid}`"))?;
+        let createtxg = createtxg
+            .parse::<u64>()
+            .map_err(|_| format!("`{name}`: its createtxg is `{createtxg}`"))?;
+        let kind = match kind {
             "filesystem" => Kind::Filesystem,
             "volume" => Kind::Volume,
+            "snapshot" => {
+                let (of, snap) = name
+                    .split_once('@')
+                    .ok_or_else(|| format!("the snapshot `{name}` has no `@`"))?;
+                if snap == t {
+                    snaps.push((of.to_string(), Snap { guid, createtxg }));
+                }
+                continue;
+            }
             kind => return Err(format!("`{name}` is a {kind}")),
         };
-        let mut local = BTreeMap::new();
-        if let Some(set) = table(dataset, "local")? {
-            for (property, value) in set {
-                let value =
-                    local_value(value).map_err(|why| format!("`{name}`: `{property}` {why}"))?;
-                local.insert(property.clone(), value);
+        let dataset = Dataset {
+            name: name.to_string(),
+            kind,
+            guid,
+            createtxg,
+            local: BTreeMap::new(),
+            at: None,
+        };
+        if datasets.insert(name.to_string(), dataset).is_some() {
+            return Err(format!("`{name}` is listed twice"));
+        }
+    }
+    if !datasets.contains_key(pool) {
+        return Err(format!("`{pool}` itself is not listed"));
+    }
+    for (of, snap) in snaps {
+        let dataset = datasets
+            .get_mut(&of)
+            .ok_or_else(|| format!("`{of}@{t}` is listed and `{of}` is not"))?;
+        dataset.at = Some(snap);
+    }
+    Ok(datasets)
+}
+
+/// `zfs get -r -H -p -s local -t filesystem,volume -o name,property all
+/// POOL`'s output: each local property, by dataset, in the order listed.
+/// Neither a name nor a property's name can hold a tab or a newline, so
+/// each line is one tab between the two.
+pub(crate) fn parse_pairs(out: &[u8]) -> Result<Vec<(String, String)>, String> {
+    let text = std::str::from_utf8(out).map_err(|_| "its output is not UTF-8".to_string())?;
+    let mut seen = BTreeSet::new();
+    let mut pairs = Vec::new();
+    for line in text.split_terminator('\n') {
+        let pair = match line.split_once('\t') {
+            Some((name, property))
+                if !name.is_empty() && !property.is_empty() && !property.contains('\t') =>
+            {
+                (name.to_string(), property.to_string())
+            }
+            _ => {
+                return Err(format!(
+                    "a line that is not a name and a property: `{line}`"
+                ))
+            }
+        };
+        if !seen.insert(pair.clone()) {
+            return Err(format!("`{}` of `{}` is listed twice", pair.1, pair.0));
+        }
+        pairs.push(pair);
+    }
+    Ok(pairs)
+}
+
+/// Values read, by dataset and property.
+pub(crate) type Values = BTreeMap<(String, String), Vec<u8>>;
+
+/// A line of `zfs get ... -o name,property,value`: split at its first
+/// two tabs only, since a value may hold tabs. `None` where it is not
+/// UTF-8 before its second tab or has fewer than two.
+fn value_line(line: &[u8]) -> Option<(String, String, Vec<u8>)> {
+    let mut parts = line.splitn(3, |&b| b == b'\t');
+    let name = std::str::from_utf8(parts.next()?).ok()?;
+    let property = std::str::from_utf8(parts.next()?).ok()?;
+    let value = parts.next()?;
+    Some((name.to_string(), property.to_string(), value.to_vec()))
+}
+
+/// The values read by `zfs get ... -o name,property,value` against the
+/// pairs `zfs get ... -o name,property` listed ([module docs](self), "The
+/// manifest's read"): each value whose line can be trusted, and the
+/// datasets whose values must be read again one at a time.
+///
+/// A value may hold a newline, which `zfs get -H` prints as it is: the
+/// value's line then ends early, and what follows it is a line of its
+/// own. Where the lines name exactly the pairs listed, in their order,
+/// no value held a newline (a newline adds a line), and every value is
+/// taken. Otherwise a line is suspect where it does not split, or names
+/// a pair not listed, or one that another line names too, or holds more
+/// than [`VALUE_MOST`] bytes. Read again are the datasets that a suspect
+/// line names; that of the nearest line before each suspect line that
+/// splits (the line whose value went on); those of the
+/// pairs listed that no line names; and, while the lines that are left
+/// are not the pairs left in their order, the two datasets where they
+/// first differ.
+pub(crate) fn match_values(pairs: &[(String, String)], out: &[u8]) -> (Values, BTreeSet<String>) {
+    let lines: Vec<_> = output_lines(out).into_iter().map(value_line).collect();
+    let listed: BTreeSet<(&str, &str)> = pairs
+        .iter()
+        .map(|(name, property)| (name.as_str(), property.as_str()))
+        .collect();
+    let mut named: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (name, property, _) in lines.iter().flatten() {
+        *named.entry((name.as_str(), property.as_str())).or_default() += 1;
+    }
+    let suspect: Vec<bool> = lines
+        .iter()
+        .map(|line| match line {
+            None => true,
+            Some((name, property, value)) => {
+                let pair = (name.as_str(), property.as_str());
+                !listed.contains(&pair)
+                    || named.get(&pair).copied().unwrap_or(0) != 1
+                    || value.len() > VALUE_MOST
+            }
+        })
+        .collect();
+    let mut again = BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        if !suspect[i] {
+            continue;
+        }
+        if let Some((name, _, _)) = line {
+            again.insert(name.clone());
+        }
+        // The line whose value went on into this one: the nearest before
+        // it that split. (A run of suspect lines comes from the line
+        // before the run's first, which that first line finds.)
+        if let Some((name, _, _)) = lines[..i].iter().rev().flatten().next() {
+            again.insert(name.clone());
+        }
+    }
+    for (name, property) in pairs {
+        if !named.contains_key(&(name.as_str(), property.as_str())) {
+            again.insert(name.clone());
+        }
+    }
+    // The lines left must be the pairs left, in their order: where they
+    // first differ, both datasets are read again, until they agree.
+    loop {
+        let read_left = lines
+            .iter()
+            .zip(&suspect)
+            .filter_map(|(line, suspect)| match line {
+                Some((name, property, _)) if !*suspect && !again.contains(name) => {
+                    Some((name.as_str(), property.as_str()))
+                }
+                _ => None,
+            });
+        let left = pairs
+            .iter()
+            .filter(|(name, _)| !again.contains(name))
+            .map(|(name, property)| (name.as_str(), property.as_str()));
+        let mut read_left = read_left.fuse();
+        let mut left = left.fuse();
+        let differ = loop {
+            match (read_left.next(), left.next()) {
+                (None, None) => break None,
+                (a, b) if a == b => continue,
+                (a, b) => break Some((a.map(|(n, _)| n), b.map(|(n, _)| n))),
+            }
+        };
+        let Some((a, b)) = differ else { break };
+        let names: Vec<String> = [a, b].into_iter().flatten().map(str::to_string).collect();
+        again.extend(names);
+    }
+    let mut read = BTreeMap::new();
+    for (line, suspect) in lines.into_iter().zip(suspect) {
+        if let Some((name, property, value)) = line {
+            if !suspect && !again.contains(&name) {
+                read.insert((name, property), value);
             }
         }
-        // The agent's own property, should a program let it through.
-        local.remove(ASSIST_PROPERTY);
-        let at = match (
-            dataset.contains_key("snapshot_guid"),
-            dataset.contains_key("snapshot_createtxg"),
-        ) {
-            (false, false) => None,
-            (true, true) => Some(Snap {
-                guid: number("snapshot_guid", true)?,
-                createtxg: number("snapshot_createtxg", false)?,
-            }),
-            _ => return Err(format!("`{name}`: its snapshot is read in part")),
-        };
-        out.push(Dataset {
-            name: name.clone(),
-            kind,
-            guid: number("guid", true)?,
-            createtxg: number("createtxg", false)?,
-            local,
-            at,
-        });
     }
-    Ok(out)
+    (read, again)
 }
 
 /// What the members program returned: `None` where `pool@t` does not
