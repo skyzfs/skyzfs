@@ -411,7 +411,22 @@ same command at the head passed: 201 and 7 tests.
 
 These ran on a scratch worktree at the head.
 
-GATES_TABLE
+The workspace tests and the docs ran with `CARGO_INCREMENTAL=0` and
+no debug info (`CARGO_PROFILE_DEV_DEBUG=0`). The container's disk could
+not hold a build with debug info. The code and the tests were the same.
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| the same with `--features skyzfsd/test-hooks` | clean |
+| the same with `--features skyzfs-ublk-sys/control-test-program` | clean |
+| the same with `--features skyzfs-agent-cli/test-hooks` | clean |
+| `cargo test --workspace` | 1957 passed, 0 failed, 16 ignored |
+| `cargo test -p skyzfsd --features test-hooks` | 200 passed |
+| `cargo test -p skyzfs-ublk-sys --features control-test-program` | 37 passed, 11 ignored |
+| `cargo test -p skyzfs-agent -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks` | 208 passed |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace`: plain, and with each of the three features | clean, all four |
 
 ## CI at 3ea9be9 (every run ended)
 
