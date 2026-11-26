@@ -165,9 +165,60 @@ fn answered(sent: &[u8]) -> (io::Result<Reply>, String, Arc<Asked>) {
         input: Cursor::new(sent.to_vec()),
         output: Vec::new(),
     };
-    let reply = answer(&mut stream, &mut handler);
+    let reply = answer(&mut stream, &mut handler, || false);
     let written = String::from_utf8_lossy(&stream.output).into_owned();
     (reply, written, asked)
+}
+
+/// A request whose client has hung up by the time it is read whole is
+/// not handed to the handler and gets no answer (F1 (a) of the review of
+/// #149): a client that gave up while its connection waited in the
+/// queue must not have its publish made behind its back. A request that
+/// is refused before the handler is not asked about its client.
+///
+/// Mutant: the client not looked at, or looked at only after the
+/// handler.
+#[test]
+fn a_request_whose_client_hung_up_is_not_handled() {
+    for sent in [
+        format!("{HELLO}\n{}\nhello", publish(None).line()),
+        format!("{HELLO}\ncuts\n"),
+        format!("{HELLO}\nprogress name=t\n"),
+    ] {
+        let asked = Arc::new(Asked::default());
+        let mut handler = recording(&asked, Reply::Accepted);
+        let mut stream = Duplex {
+            input: Cursor::new(sent.clone().into_bytes()),
+            output: Vec::new(),
+        };
+        let looked = AtomicU64::new(0);
+        let reply = answer(&mut stream, &mut handler, || {
+            looked.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let Err(e) = reply else {
+            panic!("{sent:?}: {reply:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::ConnectionAborted, "{sent:?}");
+        assert!(e.to_string().contains("hung up"), "{e}");
+        assert_eq!(asked.count.load(Ordering::SeqCst), 0, "{sent:?}");
+        assert!(stream.output.is_empty(), "{sent:?}");
+        assert_eq!(looked.load(Ordering::SeqCst), 1, "{sent:?}");
+    }
+    let asked = Arc::new(Asked::default());
+    let mut handler = recording(&asked, Reply::Accepted);
+    let mut stream = Duplex {
+        input: Cursor::new(format!("{HELLO}\ncuts please\n").into_bytes()),
+        output: Vec::new(),
+    };
+    let reply = answer(&mut stream, &mut handler, || {
+        panic!("a refusal does not look at the client")
+    });
+    assert!(
+        matches!(reply, Ok(Reply::Refused(Code::Malformed, _))),
+        "{reply:?}"
+    );
+    assert_eq!(asked.count.load(Ordering::SeqCst), 0);
 }
 
 /// Mutant: the manifest not read, read short, or the answer written
@@ -363,6 +414,121 @@ mod socket {
         assert_eq!(asked.count.load(Ordering::SeqCst), 0);
         assert_eq!(channel.figures().peer, 1);
         assert_eq!(channel.figures().answered, 0);
+        assert!(channel.close());
+    }
+
+    /// A handler that holds the channel's thread on `progress name=hold`
+    /// until `gate` gives way, and records the names it was asked.
+    fn holding(
+        asked: &Arc<std::sync::Mutex<Vec<String>>>,
+        gate: std::sync::mpsc::Receiver<()>,
+    ) -> Handler {
+        let asked = Arc::clone(asked);
+        let gate = std::sync::Mutex::new(gate);
+        Box::new(move |request: &Request, _| {
+            let name = match request {
+                Request::Cuts => "cuts".to_string(),
+                Request::Publish(p) => format!("publish {}", p.name),
+                Request::Progress(name) | Request::Withdraw(name) | Request::Look(name) => {
+                    name.clone()
+                }
+            };
+            if let Ok(mut names) = asked.lock() {
+                names.push(name.clone());
+            }
+            if name == "hold" {
+                if let Ok(gate) = gate.lock() {
+                    let _ = gate.recv_timeout(Duration::from_secs(30));
+                }
+            }
+            Reply::Pending
+        })
+    }
+
+    /// Wait until `asked` holds `n` names, for at most ten seconds.
+    fn asked_at_least(asked: &std::sync::Mutex<Vec<String>>, n: usize) -> Vec<String> {
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let names = asked.lock().map(|names| names.clone()).unwrap_or_default();
+            if names.len() >= n || std::time::Instant::now() > until {
+                return names;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// One connection at a time is answered, and Linux keeps a queued
+    /// connection, and the request its client wrote, after the client
+    /// has closed it. A publish whose client gave up while it waited in
+    /// the queue is dropped when its turn comes: the handler is not
+    /// asked, so no publish is made behind the back of a client that
+    /// stopped waiting (F1 (a) of the review of #149, where a queued
+    /// publish reached the handler 1.47 s after its client gave up). A
+    /// client queued behind it, still waiting, is answered, and the
+    /// dropped one is not counted as answered.
+    ///
+    /// Mutant: the client not looked at (the publish is handed on).
+    #[test]
+    fn a_publish_whose_client_gave_up_in_the_queue_is_dropped() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel();
+        let channel = Channel::open(&path, holding(&asked, gate)).expect("open");
+        let first = {
+            let path = path.clone();
+            std::thread::spawn(move || ask(&path, &Request::Progress("hold".into()), &[], IO_LIMIT))
+        };
+        assert_eq!(asked_at_least(&asked, 1), vec!["hold".to_string()]);
+        // Queued behind the held request: a whole publish, whose client
+        // then gives up and closes.
+        let mut gone = UnixStream::connect(&path).expect("connect");
+        gone.write_all(format!("{HELLO}\n{}\nhello", publish(None).line()).as_bytes())
+            .expect("write");
+        drop(gone);
+        let waiting = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                ask(&path, &Request::Progress("waits".into()), &[], IO_LIMIT)
+            })
+        };
+        // Give the waiting client the time to connect behind the other.
+        std::thread::sleep(Duration::from_millis(200));
+        release.send(()).expect("release");
+        assert_eq!(first.join().expect("first").ok(), Some(Reply::Pending));
+        assert_eq!(waiting.join().expect("waiting").ok(), Some(Reply::Pending));
+        assert_eq!(
+            asked_at_least(&asked, 2),
+            vec!["hold".to_string(), "waits".to_string()]
+        );
+        assert_eq!(channel.figures().answered, 2);
+        assert!(channel.close());
+    }
+
+    /// A client that only shuts its writing down, once its request is
+    /// sent, still waits for the answer and gets it: the channel drops a
+    /// request only when its client has closed both ways (`POLLHUP`),
+    /// not when it has stopped writing (`POLLRDHUP`).
+    ///
+    /// Mutant: `POLLRDHUP` taken as hung up.
+    #[test]
+    fn a_client_that_only_stops_writing_is_answered() {
+        let dir = dir();
+        let path = dir.path().join(SOCKET);
+        let asked = Arc::new(Asked::default());
+        let channel = Channel::open(&path, recording(&asked, Reply::Accepted)).expect("open");
+        let mut stream = UnixStream::connect(&path).expect("connect");
+        stream
+            .write_all(format!("{HELLO}\n{}\nhello", publish(None).line()).as_bytes())
+            .expect("write");
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("shutdown");
+        stream.set_read_timeout(Some(IO_LIMIT)).expect("timeout");
+        let mut back = String::new();
+        stream.read_to_string(&mut back).expect("read");
+        assert_eq!(back, format!("{HELLO}\naccepted\n"));
+        assert_eq!(asked.count.load(Ordering::SeqCst), 1);
         assert!(channel.close());
     }
 

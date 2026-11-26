@@ -25,6 +25,31 @@
 //! its bytes come (F3 of the review of #127), and the answer is written
 //! with [`IO_LIMIT`] for each write.
 //!
+//! # A client that hung up
+//!
+//! While a request is answered, the next connections wait in the
+//! socket's queue, and Linux keeps a queued connection, with the request
+//! its client wrote, after the client has closed it. So a client that
+//! gave up waiting, such as the agent at the end of its asking budget,
+//! could still have its publish made once its turn came: on the real
+//! channel a queued publish reached the handler 1.47 s after its client
+//! gave up (F1 of the review of #149). A request whose client has closed
+//! its end by the time the request is read whole is therefore dropped
+//! before the handler is asked: it is not answered, not counted in
+//! `control_answered`, and makes no line in the request log. The test is
+//! `POLLHUP` on the daemon's end, which Linux sets on a Unix stream
+//! socket once its peer has closed (both ways); a client that only shuts
+//! its writing down still waits for its answer and gets it.
+//!
+//! *Where the design is silent, the conservative reading:* this catches
+//! a client that is gone before its request is handled, not one that
+//! gives up while it is. The handler's own limit (`ANSWER_LIMIT`) runs
+//! from when the handler is asked, not from the client's send, so a
+//! client whose budget ends while the handler works can still have its
+//! publish made after it stopped waiting. Only a deadline carried in the request
+//! closes that (F1 (b)), which is a change of the protocol. A `poll`
+//! that fails is taken as a client still there, as before this check.
+//!
 //! `status` says what the channel is (`control`: `uploads` where the
 //! uploader answers it, `no_upload` where every request is refused
 //! `no-upload`, `failed` where the socket could not be made) and what it
@@ -111,10 +136,27 @@ pub type Handler = Box<dyn FnMut(&Request, Vec<u8>) -> Reply + Send>;
 
 /// Answer one connection whose peer passed the check: read the greeting,
 /// the request and its manifest, ask `handler`, and write the answer.
-pub fn answer(stream: &mut (impl Read + Write), handler: &mut Handler) -> io::Result<Reply> {
+///
+/// Once a request that `handler` would be asked is read whole, and
+/// before it is asked, `hung_up` says whether its client has gone. If it
+/// has, nothing is asked or written, and the error is
+/// [`io::ErrorKind::ConnectionAborted`]: see "A client that hung up" in
+/// the module's documentation. A request refused before the handler is
+/// answered without asking `hung_up`, since a refusal does nothing.
+pub fn answer(
+    stream: &mut (impl Read + Write),
+    handler: &mut Handler,
+    hung_up: impl FnOnce() -> bool,
+) -> io::Result<Reply> {
     let mut reader = BufReader::new(&mut *stream);
     let reply = match read_request(&mut reader)? {
         Err(reply) => reply,
+        Ok(_) if hung_up() => {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "the client hung up before its request was handled",
+            ))
+        }
         Ok((request, manifest)) => handler(&request, manifest),
     };
     drop(reader);
