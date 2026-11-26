@@ -1,0 +1,10 @@
+R13 the count not recursive KILLED FAIL: scale 3:2: the count lists every dataset's snapshots: got '0', want '1'
+R14 retain always KILLED FAIL: scale 3: none retained, none said: got '1', want '0'
+A07 K the last field KILLED FAIL: scale_all: N:K entries run: got '10:1000 10:3 10:10000 ', want '10:1000 10:10000 5:0 ' | FAIL: scale_all: an empty or a second count, said: got '2', want '3'
+A08 an empty N accepted KILLED FAIL: scale_all: N:K entries run: got '10:1000 :5 10:10000 ', want '10:1000 10:10000 5:0 ' | FAIL: scale_all: an empty or a second count, said: got '2', want '3'
+A09 an empty K accepted KILLED FAIL: no lua: count: got 'zfs list -r -H -o name -t filesystem,volume skzq /', want 'zfs list -r -H -o name -t filesystem,volume skzq /zfs list -r -H -o name -t filesystem,volume skznone ' | FAIL: no lua: none's take: got '', want 'zfs snapshot -r skznone@t '
+L1 the free read with no limit SURVIVED 
+L2 the tenth read with no limit SURVIVED 
+P1 pools-one not recorded SURVIVED 
+P2 pools-three of skzq alone SURVIVED 
+P3 none-pools-named with no pool KILLED FAIL: pin none's pools named: got 'zpool list -H -o name ', want 'zpool list -H -o name skznone '

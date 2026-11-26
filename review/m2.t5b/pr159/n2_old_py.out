@@ -1,0 +1,18 @@
+P43 unmarked stray SURVIVED 
+P46 criterion retry any SURVIVED 
+P48 row commit SURVIVED 
+P52 manifest hash SURVIVED 
+P61 destroyed premise SURVIVED 
+P64 published.tsv lax SURVIVED 
+P65 scenario unknown (re-indented) SURVIVED 
+P67 ctl_early b any SURVIVED 
+P73 row none SURVIVED 
+P74 manifest absent SURVIVED 
+Q06 EXPECTED plain set SURVIVED 
+Q23 premise skips rest of case (re-indented) SURVIVED 
+N05 criterion: a gone retry fails SURVIVED 
+N07 gone keyed by case, last wins SURVIVED 
+K21 stays_absent for every T (re-indented) SURVIVED 
+K22 stays_absent: node B failure read as absent (re-indented) SURVIVED 
+N05p probe: no reuse of an abandoned T SURVIVED 
+M02 MOVED without destroy:after (the engine takes T again there) BADPLANT 0
