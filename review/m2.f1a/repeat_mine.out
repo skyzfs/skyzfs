@@ -1,0 +1,5 @@
+control::tests::socket::review166::r1_hung_up_on_real_sockets: 0 of 50 runs failed (load 4 busy loops, 4 cores)
+control::tests::socket::review166::r1b_a_closed_client_is_gone: 0 of 50 runs failed (load 4 busy loops, 4 cores)
+control::tests::socket::review166::r2_a_half_closed_client_queued_is_answered: 0 of 50 runs failed (load 4 busy loops, 4 cores)
+control::tests::socket::review166::r3_a_withdraw_and_a_refusal_whose_clients_gave_up: 0 of 50 runs failed (load 4 busy loops, 4 cores)
+control::tests::socket::review166::r4_a_client_that_gives_up_while_handled_is_still_handled: 0 of 50 runs failed (load 4 busy loops, 4 cores)

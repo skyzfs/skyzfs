@@ -1,0 +1,25 @@
+kernel 6.18.44-fc-v880  python 3.13.18
+1 client sent, still connected (waits for answer)          read= 48  events=0: 0          events=RDHUP: 0              events=IN|RDHUP: 0              SO_ERROR=0  hung_up=present
+                                                           answer: write ok (26)
+2 client sent, then shutdown(SHUT_WR) (half-close)         read= 48  events=0: 0          events=RDHUP: RDHUP          events=IN|RDHUP: IN|RDHUP       SO_ERROR=0  hung_up=present
+                                                           answer: write ok (26)
+3 client sent, then close()                                read= 48  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+4 client sent, then close(); server polls before reading   read=  0  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+5 client sent more than the request, then close()          read= 48  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+6 client sent, then shutdown(SHUT_RD)                      read= 48  events=0: 0          events=RDHUP: 0              events=IN|RDHUP: 0              SO_ERROR=0  hung_up=present
+                                                           answer: write BrokenPipeError errno=32
+7 client sent, then shutdown(SHUT_RDWR) (not closed)       read= 48  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+8 queued in backlog: client sent, then close(), then accept read= 48  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+9 queued in backlog: client sent, then SHUT_WR, then accept read= 48  events=0: 0          events=RDHUP: RDHUP          events=IN|RDHUP: IN|RDHUP       SO_ERROR=0  hung_up=present
+                                                           answer: write ok (26)
+10 server wrote first, client sent and closed unread       read= 48  events=0: ERR|HUP    events=RDHUP: ERR|HUP|RDHUP  events=IN|RDHUP: IN|ERR|HUP|RDHUP SO_ERROR=104  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32
+11 client forked a child holding the fd, parent closed     read= 48  events=0: 0          events=RDHUP: 0              events=IN|RDHUP: 0              SO_ERROR=0  hung_up=present
+                                                           answer: write ok (26)
+12 client process killed (SIGKILL) after sending           read= 48  events=0: HUP        events=RDHUP: HUP|RDHUP      events=IN|RDHUP: IN|HUP|RDHUP   SO_ERROR=0  hung_up=hung_up
+                                                           answer: write BrokenPipeError errno=32

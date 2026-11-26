@@ -1,0 +1,12 @@
+head 7d98b26a99ba673346685cf08a0c46d2be8507b4  rustc 1.100.0 (0ef1bc386 2026-11-09)  clippy 0.1.100 (0ef1bc3860 2026-11-09)
+fmt	rc=0	1s	cargo fmt --all -- --check
+clippy-skyzfsd	rc=0	84s	cargo clippy -p skyzfsd --all-targets -- -D warnings
+clippy-skyzfsd-hooks	rc=0	3s	cargo clippy -p skyzfsd --all-targets --features test-hooks -- -D warnings
+clippy-ws	rc=0	82s	cargo clippy --workspace --all-targets -- -D warnings
+test-skyzfsd	rc=101	212s	cargo test -p skyzfsd --no-fail-fast
+test-skyzfsd-hooks	rc=0	55s	cargo test -p skyzfsd --features test-hooks --no-fail-fast
+test-ws	rc=0	812s	cargo test --workspace --no-fail-fast
+doc-skyzfsd	rc=0	4s	cargo doc -p skyzfsd --no-deps
+doc-skyzfsd-hooks	rc=0	3s	cargo doc -p skyzfsd --no-deps --features test-hooks
+doc-ws	rc=0	39s	cargo doc --workspace --no-deps
+done

@@ -1,0 +1,3 @@
+P2 POLLRDHUP asked for and taken as hung up: control::tests::socket::a_client_that_only_stops_writing_is_answered failed 100 of 100 runs
+Q4 POLLIN asked for and taken as hung up (readable = gone): control::tests::socket::a_client_that_only_stops_writing_is_answered failed 99 of 100 runs
+P2 POLLRDHUP asked for and taken as hung up: control::tests::socket::review166::r2_a_half_closed_client_queued_is_answered failed 100 of 100 runs
