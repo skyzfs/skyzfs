@@ -1,0 +1,26 @@
+P02 killed_at any kill line SURVIVED
+P13 EXPECTED restart None KILLED
+P14 EXPECTED dhook None KILLED
+P17 EXPECTED late None SURVIVED
+P18 EXPECTED both None SURVIVED
+P20 EXPECTED assist None SURVIVED
+P43 unmarked stray SURVIVED
+P46 criterion retry any SURVIVED
+P48 row commit SURVIVED
+P52 manifest hash SURVIVED
+P58 ctl_manifest rc SURVIVED
+P60 watcher error SURVIVED
+P61 destroyed premise SURVIVED
+P64 published.tsv lax SURVIVED
+P65 scenario unknown SURVIVED
+P67 ctl_early b any SURVIVED
+P73 row none SURVIVED
+P74 manifest absent SURVIVED
+Q01 EXPECTED both wrong KILLED
+Q06 EXPECTED plain set SURVIVED
+Q17 ctl_manifest verdict SURVIVED
+Q23 premise skips rest of case SURVIVED
+R03 no judge_cut SURVIVED
+R06 any result SURVIVED
+R09 no row passes SURVIVED
+R11 first_carrier itself ignored SURVIVED

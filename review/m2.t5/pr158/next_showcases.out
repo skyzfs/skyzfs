@@ -1,0 +1,26 @@
+--- D1: destroy, T published and gone: exit 1
+    pin_published_snapshots_exist ('FAILED', '[kernel and server] d1 (case destroy) is published and skzcut@d1 is not on node A')
+    pin_destroy_first_run ('ok', '[server] the first run ended 3, as a destroy case with no kill does')
+    pin_destroy_outcome ('FAILED', '[server] d1: published, not abandoned destroyed')
+    pin_destroy_criterion ('ok', '[kernel and server] d1 published')
+--- D1 with a premise ERROR elsewhere: exit 1
+    pin_published_snapshots_exist ('FAILED', '[kernel and server] d1 (case destroy) is published and skzcut@d1 is not on node A')
+    premise_A-asked-after-1_killed ('ERROR', "[rig] the hook's lines say nothing, not asked after (1)")
+--- settle panicked (101), the retry published: exit 0
+    obs_A-asked-after-1_outcome ('INFO', '[server] a2: absent')
+    pin_A-asked-after-1_criterion ('ok', '[kernel and server] snap/a2 absent; the retry published a9')
+    pin_A-asked-after-1_clean ('ok', '[server] nothing under way, no hold of the tag, no manifest left, the assist on the root only')
+    case_A-asked-after-1 ('INFO', '[rig] plain killed at asked:after:1: first run 137, T a2, absent; settle 101, retry 0')
+--- settle unsettled (7), the retry published: exit 0
+    pin_A-asked-after-1_criterion ('ok', '[kernel and server] snap/a2 absent; the retry published a9')
+    case_A-asked-after-1 ('INFO', '[rig] plain killed at asked:after:1: first run 137, T a2, absent; settle 7, retry 0')
+--- missed ctl_files and a premise ERROR: exit 1
+    ctl_files ('MISSED', '[check] w0 with another digest: refs ok: refs of snap/a1; content ok: content of snap/a1; import ok: import of snap/a1; snapshot ok: snapshot of snap/a1; mount ok: mount of snap/a1; files ok: files of snap/a1; copies ok: copies of snap/a1; DIFFERS from caught at files')
+    premise_A-asked-after-1_killed ('ERROR', "[rig] the hook's lines say nothing, not asked after (1)")
+--- a later case hidden by an earlier case's RigError: exit 2
+    rig_error ('ERROR', '[rig] no cases/A-asked-after-1/holds.txt')
+    pin_gone_clean None
+    pin_gone_outcome None
+    lines judged: ['pin_A-asked-after-1_criterion', 'pin_published_snapshots_exist', 'pin_trace_clean', 'pin_trace_criterion', 'pin_trace_first_run', 'pin_trace_outcome', 'pin_watcher_reads']
+--- the same, no RigError: exit 1
+    pin_gone_clean ('FAILED', '[server] holds of skyzfs-publish: skzcut@g1')

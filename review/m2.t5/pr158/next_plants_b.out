@@ -1,0 +1,37 @@
+N01 gone pin never fails KILLED
+N02 outcome ignores gone KILLED
+N03 gone line lax SURVIVED
+N04 gone file optional SURVIVED
+N05 criterion: a gone retry fails SURVIVED
+N06 gone pin is a premise (exit 2) KILLED
+N07 gone keyed by case, last wins SURVIVED
+N10 first_run pin dropped KILLED
+N11 first_run any status but 137 KILLED
+N12 first_run only for a reach not made KILLED
+N13 first_run not for a reach not made KILLED
+N14 FIRST_RC plain 1 KILLED
+N15 FIRST_RC restart 7 KILLED
+N16 FIRST_RC assist 1 KILLED
+N17 FIRST_RC destroy 0 KILLED
+N18 FIRST_RC tooold 0 SURVIVED
+N19 FIRST_RC sweep 4 KILLED
+N20 FIRST_RC gone 1 SURVIVED
+N21 FIRST_RC dhook 7 KILLED
+N22 FIRST_RC late 4 KILLED
+N23 FIRST_RC both 1 SURVIVED
+N30 clean ignores the dump status KILLED
+N31 clean status passed as 0 KILLED
+N32 clean: no status accepted KILLED
+N33 unmarked record-before.rc ignored KILLED
+N34 clean status file optional SURVIVED
+N40 sweep first publish never fails KILLED
+N41 sweep first.rc optional SURVIVED
+N50 both pin never fails KILLED
+N51 both any non-zero KILLED
+N52 both: no status accepted KILLED
+N60 final override removed KILLED
+N61 holds does not mark failed KILLED
+N62 ctl_early not marked SURVIVED
+N63 ctl_files not marked SURVIVED
+N64 ctl_manifest not marked SURVIVED
+N65 override is max (old rule) KILLED

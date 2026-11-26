@@ -1,0 +1,4 @@
+adump, a record that does not read: txt 'volume aaaa', err 'skyzfs-agent: d: the record is corrupt', rc 6
+scen_both, the daemon serving: killed_rc 137
+scen_both, the daemon had ended 0: killed_rc 0
+scen_both, the daemon had ended 7: killed_rc 7
