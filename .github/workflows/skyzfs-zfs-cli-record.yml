@@ -26,6 +26,9 @@ on:
       scale_full_max:
         description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). 0: none. Empty: every count"
         default: ""
+      sweep_rounds:
+        description: "at each scale count, how many times each of the sweep's two reads runs again beside an idle control of the same length (the writer alone), the two in turn, to tell whether the read stalls the writer; 0: none, at most 20. Empty: 5"
+        default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
   # dispatch only). ci.yml runs the unit tests on a pull request.
@@ -99,6 +102,7 @@ jobs:
       ZCR_SCALE: ${{ inputs.scale }}
       ZCR_SCALE_LUA_MAX: ${{ inputs.scale_lua_max }}
       ZCR_SCALE_FULL_MAX: ${{ inputs.scale_full_max }}
+      ZCR_SWEEP_ROUNDS: ${{ inputs.sweep_rounds }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -161,7 +165,12 @@ jobs:
             *[!0-9]*|0?*) echo "::error::scale_full_max is a count: $ZCR_SCALE_FULL_MAX"; exit 64 ;;
           esac
           if [ "${#ZCR_SCALE_FULL_MAX}" -gt 6 ]; then echo "::error::scale_full_max: at most 999999"; exit 64; fi
-          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX,ZCR_SCALE_FULL_MAX tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+          case $ZCR_SWEEP_ROUNDS in
+            '') unset ZCR_SWEEP_ROUNDS ;;
+            *[!0-9]*|0?*|???*) echo "::error::sweep_rounds is a count of at most 20: $ZCR_SWEEP_ROUNDS"; exit 64 ;;
+            *) if [ "$ZCR_SWEEP_ROUNDS" -gt 20 ]; then echo "::error::sweep_rounds: at most 20"; exit 64; fi ;;
+          esac
+          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX,ZCR_SCALE_FULL_MAX,ZCR_SWEEP_ROUNDS tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |

@@ -205,6 +205,8 @@ exec $(command -v truncate) "\$@"
 FAKE
 chmod +x "$T/bin/zfs" "$T/bin/zpool" "$T/bin/mountpoint" "$T/bin/truncate"
 adapter_env
+# The sweep's rounds (sweep-rounds) only where a test asks for them.
+export ZCR_SWEEP_ROUNDS=0
 OUT=$T/pins
 mkdir -p "$OUT"
 : > "$OUT/index.tsv"
@@ -920,6 +922,86 @@ check "retain: the call past the limit said" "$(grep -c '^scale r3-2: .* (stoppe
 check "retain: a free past the limit, made" "$(FAKE_LIST_SLEEP=5 FAKE_POOL_FREE=1 ZCR_SCALE_LIMIT=1 retained 3 1)" "snapshot -r skzqs@r1|"
 check "retain: a tenth past the limit, said empty" "$(grep -cx 'scale r3-1: retained @r1 at [0-9]* s: allocated and free ' "$OUT/about.txt")" 1
 
+# sweep-rounds: each sweep read again beside an idle control of the
+# load alone, as long as the step's read took, the control first in odd
+# rounds and second in even ones (design §5.2, the coding session's ask
+# after run 45843435778).
+check "median: odd" "$(median 3 1 2)" 2.000
+check "median: even" "$(median 1 2)" 1.500
+check "median: <x read as x" "$(median '<0.1' 0.3)" 0.200
+check "median: none a number" "$(median '?' 'NOT')" "?"
+check "median: none" "$(median)" "?"
+mkdir -p "$T/sr/none"
+printf 'longest=1.250 writes=3 before=0.100\n' > "$T/sr/none/stall"
+check "stall_of: the longest" "$(OUT=$T/sr stall_of none)" 1.250
+check "stall_of: no stall file" "$(OUT=$T/sr stall_of nothing)" "?"
+mkdir -p "$T/rounds"
+: > "$T/rounds/index.tsv"
+OUT=$T/rounds SCALE_END=$(($(date +%s) + 600)) FAKE_LIST_RC=1 FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3 ZCR_SWEEP_ROUNDS=2 ZCR_SCALE_LIMIT=7 \
+    scale 3 > /dev/null 2> "$T/rounds.err"
+check "rounds: no name twice" "$(grep -c twice "$T/rounds.err")" 0
+check "rounds: the records" \
+    "$(find "$T/rounds" -mindepth 1 -maxdepth 1 -name 'scale-3-sweep-*' -printf '%f\n' | sort | tr '\n' ' ')" \
+    "scale-3-sweep-holds scale-3-sweep-holds-idle-r1 scale-3-sweep-holds-idle-r2 scale-3-sweep-holds-r1 scale-3-sweep-holds-r2 scale-3-sweep-list scale-3-sweep-list-idle-r1 scale-3-sweep-list-idle-r2 scale-3-sweep-list-r1 scale-3-sweep-list-r2 "
+check "rounds: the reads are the step's" \
+    "$(cd "$T/rounds" && cmp -s scale-3-sweep-list/argv scale-3-sweep-list-r1/argv && cmp -s scale-3-sweep-list/argv scale-3-sweep-list-r2/argv && cmp -s scale-3-sweep-holds/argv scale-3-sweep-holds-r1/argv && cmp -s scale-3-sweep-holds/argv scale-3-sweep-holds-r2/argv && echo same)" same
+check "rounds: the controls run no command" "$(cut -f1 "$T/rounds/index.tsv" | grep -c idle)" 0
+# t0 of a record's window.
+w0() { cut -f1 "$T/rounds/$1/window"; }
+w_len() { awk -F '\t' '{ printf "%.3f\n", $2 - $1 }' "$T/rounds/$1/window"; }
+before() { awk -v a="$(w0 "$1")" -v b="$(w0 "$2")" 'BEGIN { print (a < b) ? "yes" : "no" }'; }
+for kind in list holds; do
+    check "rounds $kind: round 1, the control first" "$(before "scale-3-sweep-$kind-idle-r1" "scale-3-sweep-$kind-r1")" yes
+    check "rounds $kind: round 2, the read first" "$(before "scale-3-sweep-$kind-r2" "scale-3-sweep-$kind-idle-r2")" yes
+    check "rounds $kind: round 1 before round 2" "$(before "scale-3-sweep-$kind-r1" "scale-3-sweep-$kind-r2")" yes
+    for r in r1 idle-r1 r2 idle-r2; do
+        check "rounds $kind $r: the load beside it" "$([ -s "$T/rounds/scale-3-sweep-$kind-$r/writer.tsv" ] && [ -s "$T/rounds/scale-3-sweep-$kind-$r/stall" ] && echo yes || echo no)" yes
+    done
+    s=$(cat "$T/rounds/scale-3-sweep-$kind/secs")
+    check "rounds $kind: the control as long as the read" \
+        "$(awk -v l="$(w_len "scale-3-sweep-$kind-idle-r1")" -v m="$(w_len "scale-3-sweep-$kind-idle-r2")" -v s="$s" 'BEGIN { print (l >= s && m >= s && l < s + 0.5 && m < s + 0.5) ? "yes" : "no" }')" yes
+    sreads="$(OUT=$T/rounds stall_of "scale-3-sweep-$kind-r1") $(OUT=$T/rounds stall_of "scale-3-sweep-$kind-r2")"
+    sidles="$(OUT=$T/rounds stall_of "scale-3-sweep-$kind-idle-r1") $(OUT=$T/rounds stall_of "scale-3-sweep-$kind-idle-r2")"
+    # shellcheck disable=SC2086
+    check "rounds $kind: said, with the medians" \
+        "$(grep -cxF "scale 3: sweep-$kind against an idle control of $s s, 2 rounds (odd rounds idle first): read longest $sreads (median $(median $sreads)); idle longest $sidles (median $(median $sidles))" "$T/rounds/about.txt")" 1
+done
+check "rounds: after the sweep's reads, before tagged" \
+    "$(OUT=$T/rounds order scale-3-sweep-holds scale-3-sweep-list-r1)$(OUT=$T/rounds order scale-3-sweep-holds-r2 scale-3-tagged)" yesyes
+# None held: no holds rounds, said; the list's rounds run.
+mkdir -p "$T/rnh"
+: > "$T/rnh/index.tsv"
+OUT=$T/rnh SCALE_END=$(($(date +%s) + 600)) FAKE_HELD=0 FAKE_LIST_RC=1 FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3 ZCR_SWEEP_ROUNDS=1 ZCR_SCALE_LIMIT=7 \
+    scale 2 > /dev/null 2> "$T/rnh.err"
+check "rounds, none held: the list's alone" \
+    "$(find "$T/rnh" -mindepth 1 -maxdepth 1 -name 'scale-2-sweep-*-r*' -printf '%f\n' | sort | tr '\n' ' ')" "scale-2-sweep-list-idle-r1 scale-2-sweep-list-r1 "
+check "rounds, none held: said" "$(grep -cx "scale 2: the sweep's holds rounds not run: its list gives no snapshot with a hold" "$T/rnh/about.txt")" 1
+# Not a count, no writer, no time, the budget: said, nothing run.
+rounds_t() { # ROUNDS WDIR [LIMIT_AFTER [notime]]
+    local d=$T/rt
+    rm -rf "${d:?}"; mkdir -p "$d/scale-9-sweep-list" "$d/scale-9-sweep-holds"; : > "$d/index.tsv"
+    printf 'P@t\t1\n' > "$d/scale-9-sweep-list/stdout"
+    echo 0.050 > "$d/scale-9-sweep-holds/secs"
+    [ "${4:-}" = notime ] || echo 0.050 > "$d/scale-9-sweep-list/secs"
+    (
+        n=0 most=${3:-99}
+        scale_limit() { n=$((n + 1)); [ "$n" -le "$most" ]; }
+        writing() { echo "$1" >> "$T/rt/calls"; }
+        OUT=$d ZCR_SWEEP_ROUNDS=$1 sweep_rounds 9 "$2" P
+    )
+    echo "$(cat "$d/calls" 2> /dev/null | tr '\n' ' ')|$(grep -v ': sweep-' "$d/about.txt" 2> /dev/null | tr '\n' ' ')"
+}
+check "rounds: not a count" "$(rounds_t x "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: x "
+check "rounds: 100 refused" "$(rounds_t 100 "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: 100 "
+check "rounds: 0, nothing" "$(rounds_t 0 "$T/w")" "|"
+# 0 turns the step off: no line at all, not even the writer's absence.
+check "rounds: 0, no line" "$(rounds_t 0 ""; cat "$T/rt/about.txt" 2> /dev/null)" "|"
+check "rounds: no writer" "$(rounds_t 1 "")" "|scale 9: the sweep's rounds not run: no writer "
+check "rounds: no time, said" "$(rounds_t 1 "$T/w" 99 notime)" \
+    "scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |scale 9: the sweep's list rounds not run: scale-9-sweep-list has no time "
+check "rounds: the budget spent" "$(rounds_t 3 "$T/w" 1)" \
+    "scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 |scale 9: the budget was spent before the sweep's list round 2; it and the rest were not run scale 9: the budget was spent before the sweep's holds round 1; it and the rest were not run "
+
 # scale_all: at most three entries, each once; a count at most 100000,
 # and N:K at most 200000 snapshots in all.
 # shellcheck disable=SC2329 # run through scale_all
@@ -968,5 +1050,6 @@ check "scale_all: a long ZCR_SCALE_FULL_MAX capped" "$ZCR_SCALE_FULL_MAX" 999999
 ZCR_SCALE_FULL_MAX=0
 scale_all 5 > /dev/null
 check "scale_all: ZCR_SCALE_FULL_MAX 0 kept" "$ZCR_SCALE_FULL_MAX" 0
+
 
 exit "$fail"
