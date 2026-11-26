@@ -16,8 +16,13 @@ nodeb_check.py's. The volume in object storage is `cut-NAME`.
 
 The second prints the points a trace reached (`--trace-points`), one
 `EFFECT:SIDE:N` a line in the order reached, N its reach of that point
-(from 1): the `--kill-at` of a case at each. With BASE_TRACE, only those
-BASE_TRACE did not reach (by effect, side and reach).
+(from 1): the `--kill-at` of a case at each. With BASE_TRACE (a rare
+scenario's trace against the plain one), the points from the first that
+BASE_TRACE did not reach (by effect, side and reach) on, the steps they
+share after it included (G1 of #158's review: a look, release or unlink
+after a withdrawal is not the plain publish's), each at its first
+NEW_REACHES reaches and its last: a look while the store is frozen is
+reached again and again, and its last reach is the one after the thaw.
 
 What each case left is in DIR/cases/ID (agent-record.sh), and its line
 in DIR/cases.tsv. For each case:
@@ -71,6 +76,24 @@ in DIR/cases.tsv. For each case:
   cut is also no older than the killed cut, which had committed
   (pin_ID_no_older_than_the_killed_cut). The killed cut and the first
   cut the last request accepts are INFO (obs_ID_carried_by).
+
+- pin_ID_stays_absent (kernel and server): where node B had no snap/T
+  after the settle (snaprow.txt), it still has none when the check runs,
+  after the uploads came to rest: a publish given up is never published
+  by a later cut (G7).
+- pin_ID_PIN (server): each verdict the rig wrote while it drove the
+  case (DIR/cases/ID/verdicts.tsv: an agent that did not end, ask or
+  withdraw in time, a row that did not land, a daemon that did not stop
+  on SIGTERM or had ended by itself), for every case directory, listed
+  in cases.tsv or not (D5).
+- premise_ID_rig (rig): the rig's own error in the case
+  (DIR/cases/ID/rig-error.txt); the case is not judged further, and the
+  next ones are (G6).
+
+The rig's errors outside a case: rig_error_in_the_course (DIR/rig-error.tsv,
+written where the recorder failed and ran this check on the cases done
+before it) and premise_TRACE_points (DIR/points-error.tsv, a trace that
+gave no points), each an ERROR.
 
 For each name published (DIR/published.tsv), node B: snap-row's ref and
 row on one commit, the commit the agent printed (where it printed one),
@@ -207,10 +230,25 @@ def points(trace):
     return out
 
 
+NEW_REACHES = 3
+
+
 def new_points(trace, base):
-    """The points of TRACE that BASE did not reach, in TRACE's order."""
+    """The points of TRACE from the first BASE did not reach on, in
+    TRACE's order, each at its first NEW_REACHES reaches and its last."""
     had = set(points(base))
-    return [p for p in points(trace) if p not in had]
+    pts = points(trace)
+    first = next((i for i, p in enumerate(pts) if p not in had), len(pts))
+    last = {}
+    for p in pts:
+        e, s, n = p.split(':')
+        last[(e, s)] = int(n)
+    out = []
+    for p in pts[first:]:
+        e, s, n = p.split(':')
+        if int(n) <= NEW_REACHES or int(n) == last[(e, s)]:
+            out.append(p)
+    return out
 
 
 def parse_kill(kill):
@@ -533,6 +571,20 @@ def main():
         holds('pin_published_snapshots_exist',
               [f'{n} (case {c}) is published and {POOL}@{n} is not on node A' for n, c in gone.items()],
               'kernel and server', 'every name published is a snapshot on node A')
+        for ln in text_of('rig-error.tsv', need=False).splitlines():
+            c, _, m = ln.partition('\t')
+            rc = max(rc, 2)
+            put('rig_error_in_the_course', 'ERROR', 'rig', f'in case {c}: {m}; the cases before it are judged')
+        for ln in text_of('points-error.tsv', need=False).splitlines():
+            c, _, m = ln.partition('\t')
+            premise(f'premise_{c}_points', [f'no points from the trace of case {c}: {m}'], '')
+        cdir = os.path.join(rdir, 'cases')
+        for cid in sorted(os.listdir(cdir)) if os.path.isdir(cdir) else []:
+            for ln in text_of(os.path.join('cases', cid, 'verdicts.tsv'), need=False).splitlines():
+                pin, _, what = ln.partition('\t')
+                if not re.fullmatch(r'[a-z][a-z_]*', pin) or not what:
+                    raise RigError(f'cases/{cid}/verdicts.tsv: not pin, what: {ln!r}')
+                holds(f'pin_{cid}_{pin}', [what], 'server', '')
         cases = [ln.split('\t') for ln in text_of('cases.tsv').splitlines() if ln]
         if not cases:
             raise RigError('no case in cases.tsv')
@@ -547,6 +599,11 @@ def main():
             if scen not in EXPECTED:
                 raise RigError(f'case {cid}: no scenario {scen}')
             cd = os.path.join('cases', cid)
+            cerr = text_of(os.path.join(cd, 'rig-error.txt'), need=False).strip()
+            if cerr:
+                premise(f'premise_{cid}_rig', [f"the rig's own error in the case: {cerr}"], '')
+                put(f'case_{cid}', 'INFO', 'rig', f'{scen}{" killed at " + kill if kill else ""}: not judged')
+                continue
             trace = read_trace(text_of(os.path.join(cd, 'trace.tsv'), need=False))
             reached.update(e for _, e, _, _ in trace)
             outs = {}
@@ -651,6 +708,16 @@ def main():
             holds(f'pin_{cid}_criterion', ok, 'kernel and server',
                   f'{t} published' if got == 'published' else f'snap/{t or "T"} absent; the retry published '
                   f'{", ".join(retry)}')
+            srow = os.path.join(cd, 'snaprow.txt')
+            if t and os.path.exists(os.path.join(rdir, srow)) \
+                    and publish_check.read_snap_row(text_of(srow)).get('ref') is None:
+                rc_, text = nb.tool_run(['snap-row', '--volume', vol, '--snapshot', t])
+                if rc_:
+                    raise RigError(f'skyzfs-nodeb snap-row {t}: exit {rc_}: {flat(text)[-300:]}')
+                later = publish_check.read_snap_row(text).get('ref')
+                holds(f'pin_{cid}_stays_absent', [] if later is None else
+                      [f'node B had no snap/{t} after the settle and has it now, on {later[0][:12]}'],
+                      'kernel and server', f'snap/{t}, absent after the settle, is still absent at the check')
             holds(f'pin_{cid}_clean',
                   clean(text_of(os.path.join(cd, 'record-after.txt')), text_of(os.path.join(cd, 'holds.txt')),
                         text_of(os.path.join(cd, 'manifests.txt')), text_of(os.path.join(cd, 'assist.txt')),

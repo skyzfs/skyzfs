@@ -90,6 +90,7 @@ def right():
                 'trace.tsv': trace('g1', *upto('holding', 'before')),
                 'publish.err': 'skyzfs-agent: test hook --kill-at: killed at holding before (1)\n',
                 'destroy.log': '', 'settle.out': 'abandoned g1 destroyed\n', 'settle.rc': '3\n',
+                'snaprow.txt': 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n',
                 'retry.out': f'snap/a4 {commit_of("a4")}\n', 'retry.rc': '0\n'}),
             ('d-carry-swap', 'dhook', '-', '0', 'a5', {
                 'trace.tsv': trace('a5', *WHOLE), 'publish.out': f'snap/a5 {commit_of("a5")}\n',
@@ -123,13 +124,13 @@ class FakeNodeB:
     def tool_run(self, args, timeout=600):
         assert args[0] == 'snap-row', args
         t = args[args.index('--snapshot') + 1]
-        out = args[args.index('--out') + 1]
         if t not in self.ROWS:
             return 0, 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n'
         n, g, c = self.ROWS[t]
-        m = manifest_of(t, *self.PUB[t])
-        with open(out, 'wb') as f:
-            f.write(m)
+        m = manifest_of(t, *self.PUB.get(t, (1, 1)))
+        if '--out' in args:
+            with open(args[args.index('--out') + 1], 'wb') as f:
+                f.write(m)
         h = hashlib.sha256(m).hexdigest()
         return 0, (f'ref\t{c}\t3\nsnaprow\t{S}\t{n}\t{g}\t{c}\t{ULID}\t{len(m)}\t{h}\n'
                    f'manifest\t{len(m)}\t{h}\tmatches\n')
@@ -238,7 +239,25 @@ class Points(unittest.TestCase):
     def test_new_points_leave_out_what_the_base_reached(self):
         base = ac.read_trace(trace('x', ('ask', 'before'), ('done', 'before')))
         t = ac.read_trace(trace('y', ('ask', 'before'), ('ask', 'before'), ('sweep', 'before'), ('done', 'before')))
-        self.assertEqual(ac.new_points(t, base), ['ask:before:2', 'sweep:before:1'])
+        # The shared step after the scenario's own (done) is kept (G1).
+        self.assertEqual(ac.new_points(t, base), ['ask:before:2', 'sweep:before:1', 'done:before:1'])
+        self.assertEqual(ac.new_points(base, base), [])
+
+    def test_new_points_keep_the_shared_steps_after_the_scenario_s_own(self):
+        # G1 of #158's review: destroy's trace shares look, release and
+        # unlink with the plain one, after its withdrawal.
+        base = ac.read_trace(trace('x', ('ask', 'before'), ('look', 'before'), ('release', 'before'),
+                                   ('unlink', 'before')))
+        t = ac.read_trace(trace('y', ('ask', 'before'), ('look', 'before'), ('withdraw', 'before'),
+                                ('look', 'before'), ('release', 'before'), ('unlink', 'before')))
+        self.assertEqual(ac.new_points(t, base), ['withdraw:before:1', 'look:before:2', 'release:before:1',
+                                                  'unlink:before:1'])
+
+    def test_new_points_keep_three_reaches_and_the_last(self):
+        base = ac.read_trace(trace('x', ('ask', 'before')))
+        t = ac.read_trace(trace('y', ('ask', 'before'), *[('look', 'before')] * 7, ('release', 'before')))
+        self.assertEqual(ac.new_points(t, base), ['look:before:1', 'look:before:2', 'look:before:3',
+                                                  'look:before:7', 'release:before:1'])
 
     def test_a_trace_line_that_does_not_read_is_the_rig_s_error(self):
         for bad in ('1\task\tbefore', 'x\task\tbefore\tt', '1\tasks\tbefore\tt', '1\task\tduring\tt'):
@@ -542,6 +561,75 @@ class Main(unittest.TestCase):
         self.assertIn('torn', lines['pin_trace_clean'][1])
         rc, lines = run_course(change=case_file('unmarked', 'record-before.rc', '1\n'))
         self.assertEqual((rc, lines['pin_unmarked_refused'][0]), (1, 'FAILED'))
+
+    def test_a_verdict_the_rig_wrote_fails_its_case(self):
+        # D5 of #158's review: what the recorder saw the agent or the
+        # daemon do wrong is FAILED (exit 1), not the rig's error.
+        rc, lines = run_course(change=case_file('A-asked-after-1', 'verdicts.tsv',
+                                                'landed\tsnap/a2 had not landed 120 s after the thaw\n'))
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_A-asked-after-1_landed'][0], 'FAILED')
+        self.assertIn('had not landed', lines['pin_A-asked-after-1_landed'][1])
+        self.assertEqual(lines['pin_gone_criterion'][0], 'ok')
+
+    def test_a_verdict_in_a_case_cases_tsv_does_not_list(self):
+        # The case under way when the rig failed has no line yet.
+        def change(d):
+            os.makedirs(os.path.join(d, 'cases', 'K-x'))
+            write(os.path.join('cases', 'K-x', 'verdicts.tsv'), 'daemon_stopped\tserve 3 ended with 1\n')(d)
+        rc, lines = run_course(change=change)
+        self.assertEqual((rc, lines['pin_K-x_daemon_stopped'][0]), (1, 'FAILED'))
+
+    def test_a_verdict_line_that_does_not_read_is_the_rig_s_error(self):
+        for bad in ('no tab\n', 'Bad-Pin\twhat\n', 'pin\t\n'):
+            rc, lines = run_course(change=case_file('trace', 'verdicts.tsv', bad))
+            self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), bad)
+
+    def test_a_timed_out_first_run_fails(self):
+        def change(d):
+            with open(os.path.join(d, 'cases.tsv')) as f:
+                text = f.read()
+            write('cases.tsv', text.replace('trace\tplain\t-\t0', 'trace\tplain\t-\ttimeout'))(d)
+            case_file('trace', 'verdicts.tsv', "publish_ended\tthe agent's publish had not ended 700 s on\n")(d)
+        rc, lines = run_course(change=change)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_trace_first_run'][0], 'FAILED')
+        self.assertEqual(lines['pin_trace_publish_ended'][0], 'FAILED')
+
+    def test_the_rig_s_error_in_one_case_leaves_the_others_judged(self):
+        # G6 of #158's review.
+        rc, lines = run_course(change=case_file('A-asked-after-1', 'rig-error.txt',
+                                                'releasing and destroying skzcut@a2 failed: busy\n'))
+        self.assertEqual(rc, 2)
+        self.assertEqual(lines['premise_A-asked-after-1_rig'][0], 'ERROR')
+        self.assertNotIn('pin_A-asked-after-1_criterion', lines)
+        for k in ('pin_gone_criterion', 'pin_unmarked_refused', 'pin_trace_clean'):
+            self.assertEqual(lines[k][0], 'ok', k)
+        # A verdict in another case still ends 1.
+        rc, lines = run_course(change=lambda d: (
+            case_file('A-asked-after-1', 'rig-error.txt', 'busy\n')(d),
+            case_file('trace', 'manifests.txt', 'a1\n')(d)))
+        self.assertEqual((rc, lines['pin_trace_clean'][0]), (1, 'FAILED'))
+
+    def test_the_rig_s_error_in_the_course_and_in_a_trace(self):
+        rc, lines = run_course(change=write('rig-error.tsv', 'K-destroy-x\tzfs holds failed: no pool\n'))
+        self.assertEqual(rc, 2)
+        self.assertEqual(lines['rig_error_in_the_course'][0], 'ERROR')
+        self.assertIn('K-destroy-x', lines['rig_error_in_the_course'][1])
+        self.assertEqual(lines['pin_gone_criterion'][0], 'ok')
+        rc, lines = run_course(change=write('points-error.tsv', 'destroy\tthe trace reached no point\n'))
+        self.assertEqual((rc, lines['premise_destroy_points'][0]), (2, 'ERROR'))
+
+    def test_a_name_absent_after_the_settle_stays_absent(self):
+        # G7 of #158's review: node B read again at the check.
+        rc, lines = run_course()
+        self.assertEqual((rc, lines['pin_gone_stays_absent'][0]), (0, 'ok'))
+        c = right()
+        c['rows']['g1'] = (10, 95)
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_gone_stays_absent'][0], 'FAILED')
+        self.assertIn('snap/g1', lines['pin_gone_stays_absent'][1])
 
     def test_a_verdict_is_not_hidden_by_the_rig_s_error(self):
         # G3 of #158's review: a premise that does not hold and a pin that

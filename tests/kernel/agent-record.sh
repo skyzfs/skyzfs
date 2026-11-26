@@ -35,10 +35,31 @@
 # - assist.txt: `skyzfs:assist` on the pool and every descendant, with
 #   its source;
 # - names.txt: T, the case's own publish (the last name its first run's
-#   trace gives; none when it was killed before it had one).
+#   trace gives; none when it was killed before it had one);
+# - verdicts.tsv: what the rig saw the agent or the daemon do wrong while
+#   it drove the case (PIN, what), which the check fails as
+#   pin_ID_PIN: an agent that did not end, ask or withdraw in time, a
+#   row that did not land, a daemon that did not stop on SIGTERM or had
+#   ended by itself (D5 of #158's review: a verdict, not the rig's
+#   error);
+# - rig-error.txt: the rig's own error in the case (a snapshot it could
+#   not destroy, no name before the kill): the check's ERROR for the
+#   case, which it does not judge further; the next case still runs
+#   (G6);
+# - recovered.txt: what was left running or frozen when the scenario
+#   ended, and ended (recover).
 #
 # The case's line in DIR/cases.tsv: ID, scenario, kill point (`-` for
-# none), the first run's status, T (`-`). Each name published in the
+# none), the first run's status, T (`-`). After each case the agent is
+# killed, the store thawed and the daemon served again where the
+# scenario left any of them otherwise (recover), so that a case that
+# went wrong does not take the next with it. Where the rig fails outside
+# a case (a pool command, node B, the writer), the check still judges
+# the cases done before (agent_judged, cut-record.sh's ON_RIG_ERROR),
+# with DIR/rig-error.tsv (the case under way, the error); a verdict
+# among them ends the recording 1, else it ends 2. A trace that gives no
+# points is DIR/points-error.tsv (the traced case, the error), the
+# check's ERROR beside the traced case's own pins. Each name published in the
 # case (T where node B has it, the retry's, a scenario's own) is a line
 # of DIR/published.tsv: ID, name, the snapshot's createtxg and guid on
 # node A, and the commit the agent printed for it (`-` where it printed
@@ -100,8 +121,11 @@
 #   (late), and both lost at ask:after:1, asked:after:1, done:before:1.
 # - arare (job K): `trace` (plain), then each of restart, assist,
 #   destroy, tooold and sweep traced, and a case at each point its trace
-#   reached that the plain trace did not (by effect, side and reach, the
-#   first three reaches of each); then gone and unmarked.
+#   reached from the first the plain trace did not reach (by effect,
+#   side and reach) on, the steps it shares with a plain publish after
+#   its own included (G1 of #158's review), each point at its first
+#   three reaches and its last (agent_check.py points); then gone and
+#   unmarked.
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -139,6 +163,17 @@ done
 
 # The agent's own records and the pool's state for the check.
 acheck() { python3 -I "$HERE/agent_check.py" "$@"; }
+# PIN TEXT: a verdict on the agent or the daemon in the case, for the
+# check to fail (pin_ID_PIN).
+verdict() {
+    printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ')" >> "$CDIR/verdicts.tsv"
+    log "$NAME: case $(basename "$CDIR"): verdict $1: $2"
+}
+# TEXT: the rig's own error in the case; the scenario returns after it.
+case_error() {
+    printf '%s\n' "$(printf '%s' "$*" | tr '\t\n' '  ')" >> "$CDIR/rig-error.txt"
+    log "$NAME: case $(basename "$CDIR"): the rig's own error: $*"
+}
 # LABEL CMD [OPTION...]: the agent, as the next start or tick runs it,
 # in the case's directory; its output in CDIR/LABEL.{out,err,rc}.
 # The agent's RUN is the daemon's --run-dir, as on a node; the agent finds
@@ -164,14 +199,16 @@ abg() {
     echo "$AGENT_PID" > "$CDIR/$label.pid"
 }
 # LABEL SECONDS: wait for the agent in the background to end; its status
-# in CDIR/LABEL.rc. One that has not ended is killed, and that is the
-# rig's error.
+# in CDIR/LABEL.rc. One that has not ended is killed (status `timeout`),
+# and that is a verdict.
 await_agent() {
     local _i rc=0
     for _i in $(seq 1 $(($2 * 4))); do kill -0 "$AGENT_PID" 2>/dev/null || break; sleep 0.25; done
     if kill -0 "$AGENT_PID" 2>/dev/null; then
         kill -9 "$AGENT_PID" 2>/dev/null; wait "$AGENT_PID" 2>/dev/null || true; AGENT_PID=""
-        rig_error "the agent's $1 in case $(basename "$CDIR") had not ended $2 s on: $(tail -n 2 "$CDIR/$1.err")"
+        verdict "$1_ended" "the agent's $1 had not ended $2 s on: $(tail -n 2 "$CDIR/$1.err")"
+        echo timeout > "$CDIR/$1.rc"
+        return 0
     fi
     wait "$AGENT_PID" 2>/dev/null || rc=$?
     AGENT_PID=""
@@ -219,9 +256,46 @@ serve_again() {
 # options given: how a hook is armed between cases.
 reserve() {
     kill -TERM "$SERVE_PID" 2>/dev/null || true
-    serve_end 60 || rig_error "skyzfsd serve did not end 60 s after SIGTERM"
-    [ "$SERVE_RC" = 0 ] || rig_error "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$RDIR"/serve*.log)"
+    if ! serve_end 60; then
+        verdict daemon_stopped "skyzfsd serve $SERVE_K did not end 60 s after SIGTERM"
+        kill -9 "$SERVE_PID" 2>/dev/null || true
+        serve_end 10 || rig_error "skyzfsd serve $SERVE_K did not end 10 s after SIGKILL"
+    elif [ "$SERVE_RC" != 0 ]; then
+        verdict daemon_stopped "skyzfsd serve $SERVE_K ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$(serve_log "$SERVE_K")")"
+    fi
     serve_again "$@"
+}
+# K: the log of the daemon's Kth instance.
+serve_log() { if [ "$1" = 1 ]; then echo "$RDIR/serve.log"; else echo "$RDIR/serve-$1.log"; fi; }
+# After a case's scenario: whatever it left running or frozen is ended,
+# so that the next case starts as every case does (G6 of #158's review):
+# the agent killed, the store thawed, the daemon serving. A daemon that
+# had ended without a kill of the rig's or its hook's is a verdict,
+# unless the rig's own error in the case came first.
+recover() {
+    if [ -n "$AGENT_PID" ]; then
+        kill -CONT "$AGENT_PID" 2>/dev/null || true
+        kill -9 "$AGENT_PID" 2>/dev/null || true
+        wait "$AGENT_PID" 2>/dev/null || true
+        AGENT_PID=""
+        echo "the agent killed" >> "$CDIR/recovered.txt"
+    fi
+    if [ -n "$S3_IS_DOWN" ]; then
+        thaw
+        echo "the store thawed" >> "$CDIR/recovered.txt"
+    fi
+    if [ -z "$SERVE_PID" ] || ! kill -0 "$SERVE_PID" 2>/dev/null; then
+        local k=$SERVE_K st=unknown
+        if [ -n "$SERVE_PID" ] && serve_end 5; then st=$SERVE_RC; fi
+        SERVE_PID=""
+        if [ -s "$CDIR/rig-error.txt" ]; then
+            echo "skyzfsd serve $k had ended (status $st), after the rig's own error in the case" >> "$CDIR/recovered.txt"
+        else
+            verdict daemon_serving "skyzfsd serve $k had ended (status $st) with no kill of the rig's: $(tail -n 2 "$(serve_log "$k")")"
+        fi
+        echo "the daemon served again" >> "$CDIR/recovered.txt"
+        serve_again
+    fi
 }
 # A writer beside the publishes: 32 KiB to one of eight files every
 # half second, synced, so that groups and the intent log go on.
@@ -327,6 +401,7 @@ acase() {
     hooks=(--trace-points "$CDIR/trace.tsv")
     [ -z "$KILL" ] || hooks+=(--kill-at "$KILL")
     "scen_$SCEN" "${4:-}" "${hooks[@]}"
+    recover
     asettle
 }
 
@@ -365,8 +440,11 @@ scen_destroy() {
     abg publish publish --limit-s 600 "$@"
     if wait_point asked after 60; then
         t=$(case_name)
-        { zfs release "$HOLD_TAG" "$POOL@$t" && zfs destroy "$POOL@$t"; } > "$CDIR/destroy.log" 2>&1 \
-            || rig_error "releasing and destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
+        if ! { zfs release "$HOLD_TAG" "$POOL@$t" && zfs destroy "$POOL@$t"; } > "$CDIR/destroy.log" 2>&1; then
+            case_error "releasing and destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
+            mv "$CDIR/destroy.log" "$CDIR/destroy-failed.log"
+            return 0
+        fi
         mark "destroyed-$id"
         frozen_until_withdrawn
     fi
@@ -377,11 +455,14 @@ scen_destroy() {
 # the loss can carry T; then its look at snap/T needs the store (run
 # 45745575500: frozen, the agent looked for 300 s). An agent killed
 # before it withdrew: its next start withdraws, the store still frozen
-# (a settle of 30 s, which ends unsettled while it cannot look).
+# (a settle of 30 s, which ends unsettled while it cannot look). An agent
+# still running that has not withdrawn in 120 s is a verdict.
 frozen_until_withdrawn() {
     wait_point withdraw after 120 && return 0
-    ! kill -0 "$AGENT_PID" 2>/dev/null \
-        || rig_error "case $(basename "$CDIR"): the agent did not withdraw in 120 s"
+    if kill -0 "$AGENT_PID" 2>/dev/null; then
+        verdict withdrew "the agent ran on and did not withdraw in 120 s"
+        return 0
+    fi
     acmd settle-frozen settle --limit-s 30 "${CASE_AGE[@]}"
 }
 scen_tooold() {
@@ -409,8 +490,11 @@ scen_gone() {
     shift
     acmd publish publish --limit-s 600 "$@"
     t=$(case_name)
-    [ -n "$t" ] || rig_error "case $(basename "$CDIR"): no name in the trace before the kill"
-    zfs destroy "$POOL@$t" > "$CDIR/destroy.log" 2>&1 || rig_error "destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
+    [ -n "$t" ] || { case_error "no name in the trace before the kill"; return 0; }
+    if ! zfs destroy "$POOL@$t" > "$CDIR/destroy.log" 2>&1; then
+        case_error "destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
+        mv "$CDIR/destroy.log" "$CDIR/destroy-failed.log"
+    fi
 }
 scen_unmarked() {
     local id
@@ -442,7 +526,7 @@ scen_dhook() {
         freeze
         sleep 3
         abg publish publish --limit-s 600 "$@"
-        wait_point asked after 60 || { thaw; rig_error "case $(basename "$CDIR"): the agent did not reach asked:after in 60 s"; }
+        wait_point asked after 60 || verdict asked "the agent did not reach asked:after in 60 s"
         thaw
         ;;
     *) abg publish publish --limit-s 600 "$@" ;;
@@ -454,7 +538,7 @@ scen_dhook() {
         sleep 0.25
     done
     if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-        serve_end 5 || rig_error "the daemon's pid went away and serve_end did not see it end"
+        serve_end 5 || { case_error "the daemon's pid went away and serve_end did not see it end"; return 0; }
         printf 'killed_rc\t%s\nserve\t%s\n' "$SERVE_RC" "$killed" > "$CDIR/kill.tsv"
         cp "$RDIR/serve-$killed.log" "$CDIR/serve-killed.log"
         serve_again
@@ -471,7 +555,7 @@ scen_late() {
     shift
     freeze
     abg publish publish --limit-s 600 "$@"
-    wait_point asked after 60 || { thaw; rig_error "case $(basename "$CDIR"): the agent did not reach asked:after in 60 s"; }
+    wait_point asked after 60 || { verdict asked "the agent did not reach asked:after in 60 s"; return 0; }
     kill -STOP "$AGENT_PID"
     mark "stopped-$(basename "$CDIR")"
     adump record-stopped
@@ -479,7 +563,7 @@ scen_late() {
     t=$(case_name)
     local _i
     for _i in $(seq 1 240); do snaprow "$t" landed.txt && break; sleep 0.5; done
-    snaprow "$t" landed.txt || { kill -CONT "$AGENT_PID"; rig_error "case $(basename "$CDIR"): snap/$t had not landed 120 s after the thaw"; }
+    snaprow "$t" landed.txt || { verdict landed "snap/$t had not landed 120 s after the thaw"; return 0; }
     kill_serve
     serve_again
     mark "continued-$(basename "$CDIR")"
@@ -507,8 +591,23 @@ agent_begin() {
     load 1
     writer_on
     : > "$RDIR/cases.tsv"; : > "$RDIR/published.tsv"; : > "$RDIR/published-gone.tsv"
+    rm -f "$RDIR/points-error.tsv" "$RDIR/rig-error.tsv"
     [ -S "$(vrun)/control" ] || rig_error "no socket control in $(vrun): under $RUN are $(find "$RUN" -maxdepth 2 | tr '\n' ' ')"
     printf 'run-dir\t%s\nagent-run\t%s\n' "$RUN" "$(vrun)" > "$RDIR/agent-run.tsv"
+    ON_RIG_ERROR=agent_judged
+}
+# MESSAGE: the rig failed outside a case's own steps (cut-record.sh's
+# rig_error): the check judges the cases done so far, with the error in
+# DIR/rig-error.tsv; its status is the recording's (1 where it found a
+# verdict, else 2).
+agent_judged() {
+    local rc=0
+    printf '%s\t%s\n' "$(basename "${CDIR:-none}")" "$1" > "$RDIR/rig-error.tsv"
+    [ "$CHECK" != none ] || return 2
+    # shellcheck disable=SC2086 # CHECK is a command line
+    $CHECK "$NAME" "$RDIR" "$RDIR/requests.tsv" - $((VDEV_MB << 20)) || rc=$?
+    printf '%s\tchecked\texit %s\n' "$NAME" "$rc" >> "$OUT/recordings.tsv"
+    return "$rc"
 }
 agent_end() {
     writer_off
@@ -521,7 +620,8 @@ rec_aplain() {
     # the points come from its trace either way.
     acase trace plain
     i=${AGENT_SHARD%/*}; n=${AGENT_SHARD#*/}
-    points=${AGENT_POINTS:-$(acheck points "$RDIR/cases/trace/trace.tsv")} || rig_error "no points from the trace"
+    points=${AGENT_POINTS:-$(acheck points "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err")} \
+        || { printf 'trace\t%s\n' "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"; points=""; }
     for p in $points; do
         k=$((k + 1))
         [ $(((k - 1) % n)) = $((i - 1)) ] || continue
@@ -545,14 +645,9 @@ rec_arare() {
     acase trace plain
     for s in $AGENT_RARE; do
         acase "$s" "$s"
-        pts=$(acheck points "$RDIR/cases/$s/trace.tsv" "$RDIR/cases/trace/trace.tsv") \
-            || rig_error "no points from $s's trace"
-        for p in $pts; do
-            # A point reached again and again (a look while the store is
-            # frozen) is killed at its first three reaches.
-            [ "${p##*:}" -le 3 ] || continue
-            acase "K-$s-${p//:/-}" "$s" "$p"
-        done
+        pts=$(acheck points "$RDIR/cases/$s/trace.tsv" "$RDIR/cases/trace/trace.tsv" 2> "$RDIR/points.err") \
+            || { printf '%s\t%s\n' "$s" "$(tr '\t\n' '  ' < "$RDIR/points.err")" >> "$RDIR/points-error.tsv"; pts=""; }
+        for p in $pts; do acase "K-$s-${p//:/-}" "$s" "$p"; done
     done
     acase gone gone holding:before:1
     acase unmarked unmarked

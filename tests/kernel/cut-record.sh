@@ -220,8 +220,23 @@ SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRI
 # cleanup brings it back.
 S3_IS_DOWN=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
-# One line in recordings.tsv whatever the message holds.
-rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
+# One line in recordings.tsv whatever the message holds. A course may
+# set ON_RIG_ERROR to a function that is then given the message, once
+# (the agent courses judge the cases done so far): where it returns 1, a
+# verdict it found, the recording ends 1, else 2.
+ON_RIG_ERROR=""
+rig_error() {
+    local m h=$ON_RIG_ERROR rc=2
+    m=$(printf '%s' "$*" | tr '\t\n' '  ')
+    log "the rig's own error in $NAME: $m"
+    echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"
+    if [ -n "$h" ]; then
+        ON_RIG_ERROR=""
+        "$h" "$m" || rc=$?
+        [ "$rc" = 1 ] || rc=2
+    fi
+    exit "$rc"
+}
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
     local secs=$1; shift
     timeout "$secs" "$@" || rig_error "$* failed (status $?)"
