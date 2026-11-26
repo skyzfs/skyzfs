@@ -87,17 +87,17 @@
 //! 1. `zfs list -r -H -p -t filesystem,volume,snapshot -o
 //!    name,guid,type,createtxg POOL`: each file system's and volume's
 //!    type, GUID and `createtxg`, and those of its `@t` where it has one
-//!    ([`parse_listed`]).
+//!    (`parse_listed`).
 //! 2. `zfs get -r -H -p -s local -t filesystem,volume -o name,property
-//!    all POOL`: the properties set locally, by dataset ([`parse_pairs`]).
+//!    all POOL`: the properties set locally, by dataset (`parse_pairs`).
 //! 3. The same with `-o name,property,value`: their values, each line
 //!    split at its first two tabs only, since a value may hold a tab
-//!    ([`match_values`]).
+//!    (`match_values`).
 //!
 //! A value may hold a newline too, which `zfs get -H` prints as it is.
 //! The values are taken only where the lines of (3) name exactly the
 //! pairs of (2), in their order: a newline adds a line. Otherwise the
-//! datasets whose lines cannot be trusted ([`match_values`]) are read
+//! datasets whose lines cannot be trusted (`match_values`) are read
 //! again one value at a time, `zfs get -H -p -o value PROPERTY NAME`,
 //! which prints the value and one newline: that newline alone is taken
 //! off. A value that still cannot be read (no newline at its end, longer
