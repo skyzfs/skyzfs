@@ -95,15 +95,17 @@ kill "$AGENT_PID"; wait "$AGENT_PID" 2>/dev/null
 # published-gone.tsv, not the rig's error (D1 of #158's review); a list
 # that fails is the rig's error.
 eval "$(fn published)"
-(
-    fails=0; RDIR=$T/p; CDIR=$RDIR/cases/gone; POOL=skzcut; mkdir -p "$CDIR"; : > "$RDIR/published-gone.tsv"
-    zfs() { [ -n "${ZFS_FAILS:-}" ] && { echo "no pool" >&2; return 1; }; printf '%s\n' "$POOL@other"; }
-    rig_error() { echo "rig error: $*"; exit 2; }
-    published g1; published g1
-    is "published: a name node A has no snapshot of" "$(cat "$RDIR/published-gone.tsv")" "$(printf 'gone\tg1')"
-    is "published: a list that fails" "$(ZFS_FAILS=1 published g2)" "rig error: zfs list of skzcut's snapshots failed: no pool"
-    exit "$fails"
-) || fails=$((fails + $?))
+gone() { # [ZFS_FAILS]: published g1 twice, then the gone list; or g2 with a list that fails
+    # shellcheck disable=SC2329
+    (
+        RDIR=$T/p; CDIR=$RDIR/cases/gone; POOL=skzcut; rm -rf "$RDIR"; mkdir -p "$CDIR"; : > "$RDIR/published-gone.tsv"
+        zfs() { [ -n "${1+x}" ] && [ -n "${ZFS_FAILS:-}" ] && { echo "no pool" >&2; return 1; }; printf '%s\n' "$POOL@other"; }
+        rig_error() { echo "rig error: $*"; exit 2; }
+        if [ -n "${1:-}" ]; then ZFS_FAILS=1 published g2; else published g1; published g1; cat "$RDIR/published-gone.tsv"; fi
+    )
+}
+is "published: a name node A has no snapshot of" "$(gone)" "$(printf 'gone\tg1')"
+is "published: a list that fails" "$(gone fails)" "rig error: zfs list of skzcut's snapshots failed: no pool"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
