@@ -149,6 +149,8 @@ unset -f zfs
 cat > "$T/bin/zfs" << 'FAKE'
 #!/bin/sh
 printf '%s %s\n' "${LC_ALL:-unset}" "$*"
+# Every call, when a log is given.
+[ -n "${FAKE_ZFS_CALLS:-}" ] && printf '%s\n' "$*" >> "$FAKE_ZFS_CALLS"
 [ "$1" = hold ] && [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
 [ "$1" = list ] && exit "${FAKE_LIST_RC:-0}"
 # The snapshot program's answer, when one is given.
@@ -179,7 +181,7 @@ printf -- '-- lua\n' > "$LUA_DIR/tagged.lua"
 WORK=$T/work
 mkdir -p "$WORK"
 SCALE_END=$(($(date +%s) + 600))
-record_pool rig skzq > /dev/null 2> "$T/pins.err"
+FAKE_ZFS_CALLS=$T/zfs.calls record_pool rig skzq > /dev/null 2> "$T/pins.err"
 record_none none skznone > /dev/null 2>> "$T/pins.err"
 export FAKE_LIST_RC=1 # the program took no @t: the CLI's
 export FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3
@@ -198,6 +200,18 @@ ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/pins.err"
 unset FAKE_LIST_RC FAKE_MOUNTED FAKE_ZPOOL_CALLS
 check "pins: no name twice" "$(grep -c twice "$T/pins.err")" 0
 words() { tr '\0' ' ' < "$OUT/$1/argv"; }
+# order A B: yes when A's line of the index comes before B's, each looked
+# up by itself (one grep for both would give them in the file's order).
+line_of() { grep -n -m 1 "^$1	" "$OUT/index.tsv" | cut -d: -f1; }
+order() {
+    local a b
+    a=$(line_of "$1")
+    b=$(line_of "$2")
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo yes || echo no
+}
+mkdir -p "$T/ord"
+printf 'x\t0\t\tx\ny\t0\t\ty\n' > "$T/ord/index.tsv"
+check "order: x before y, y not before x, a missing one not" "$(OUT=$T/ord order x y; OUT=$T/ord order y x; OUT=$T/ord order x z)" $'yes\nno\nno'
 P="-j -t 100000000 -m 104857600"
 check "pin status" "$(words rig-status)" "zpool status -P skzq "
 check "pin status -g" "$(words rig-status-g)" "zpool status -P -g skzq "
@@ -243,20 +257,46 @@ check "pin members full, odd" "$(words rig-members-full-odd)" "zfs program -n $P
 check "pin members full, odd in C.UTF-8" "$(words rig-members-full-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program -n $P skzq - skzq o2 full skyzfs:assist "
 check "pin none's members full" "$(words none-members-full)" "zfs program -n $P skznone - skznone t full skyzfs:assist "
 check "pin scale's members full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+# The manifest's read by the CLI (M2.6c-5), at scale and on the odd
+# values.
+GET="zfs get -r -H -p -t filesystem,volume -s local -o name,property,value all"
+LIST="zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg"
+check "pin scale's get" "$(words scale-3-take-cli-get)" "$GET skzqs "
+check "pin scale's get in JSON" "$(words scale-3-take-cli-get-json)" "zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all skzqs "
+check "pin scale's list" "$(words scale-3-take-cli-list)" "$LIST skzqs "
+check "scale's reads after the take, in order" "$(order scale-3-take-cli scale-3-take-cli-members)$(order scale-3-take-cli-members scale-3-take-cli-get)$(order scale-3-take-cli-get scale-3-take-cli-get-json)$(order scale-3-take-cli-get-json scale-3-take-cli-list)$(order scale-3-take-cli-list scale-3-take-cli-full)" yesyesyesyesyes
+check "scale's get in JSON: no load beside it" "$([ -e "$OUT/scale-3-take-cli-get-json/writer.tsv" ] && echo yes || echo no)" no
+for r in take-cli-get take-cli-list; do
+    check "lines said: $r" "$(grep -c "^scale: scale-3-$r: $(wc -l < "$OUT/scale-3-$r/stdout") lines$" "$OUT/about.txt")" 1
+done
+for k in $ODD_KINDS; do
+    check "odd $k: set on its own file system" "$(words "rig-odd-set-$k" | tr '\n' '|')" "zfs set skyzfs:v=$(odd_value "$k" skzq | tr '\n' '|') skzq/odd-$k "
+    check "odd $k: made before its set" "$(grep -n -m 1 "^create -u skzq/odd-$k$" "$T/zfs.calls" | cut -d: -f1 | sed 's/^[0-9][0-9]*$/made/')" made
+    check "odd $k: its value alone" "$(words "rig-odd-value-$k")" "zfs get -H -p -o value skyzfs:v skzq/odd-$k "
+    check "odd $k: set before the reads" "$(order "rig-odd-set-$k" rig-odd-get-local)" yes
+    check "odd $k: destroyed after" "$(grep -c "^destroy -r skzq/odd-$k$" "$T/zfs.calls")" 1
+done
+check "odd: nine kinds" "$(wc -w <<< "$ODD_KINDS")" 9
+check "odd: the newline's bytes" "$(odd_value nl skzq | od -An -c | tr -s ' ')" " o n e \n t w o"
+check "odd: the tab's bytes" "$(odd_value tab skzq | od -An -c | tr -s ' ')" " o n e \t t w o"
+check "odd: bytes that are not UTF-8" "$(odd_value raw skzq | od -An -tx1 | tr -s ' ')" " 61 ff fe 62 c3"
+check "odd: UTF-8 above 0x7f" "$(odd_value utf8 skzq | iconv -f UTF-8 -t UTF-8 > /dev/null && odd_value utf8 skzq | LC_ALL=C grep -c '[^ -~]')" 1
+check "odd: a forged line after the newline" "$(odd_value forge skzq | sed -n 2p)" "skzq/child	skyzfs:forged	yes"
+for k in 4095 4096 8191 8192; do
+    check "odd: len$k is $k bytes" "$(odd_value "len$k" skzq | wc -c)" "$k"
+done
+check "pin odd get" "$(words rig-odd-get-local)" "$GET skzq "
+check "pin odd get with its header" "$(words rig-odd-get-local-header)" "zfs get -r -p -t filesystem,volume -s local -o name,property,value all skzq "
+check "pin odd get in JSON" "$(words rig-odd-get-local-json)" "zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all skzq "
+check "pin odd take" "$(words rig-odd-take)" "zfs snapshot -r skzq@g "
+check "pin odd list" "$(words rig-odd-list)" "$LIST skzq "
+check "pin odd full" "$(words rig-odd-full)" "zfs program -n $P skzq - skzq g full skyzfs:assist "
+check "odd: reads, take, list, full in order" "$(order rig-odd-get-local rig-odd-get-local-header)$(order rig-odd-get-local-header rig-odd-get-local-json)$(order rig-odd-get-local-json rig-odd-value-nl)$(order rig-odd-value-len8192 rig-odd-take)$(order rig-odd-take rig-odd-list)$(order rig-odd-list rig-odd-full)" yesyesyesyesyesyes
+check "odd: after the limit is lifted, before the checkpoint" "$(order rig-cli-limit-after rig-odd-set-nl)$(order rig-odd-full rig-checkpoint)" yesyes
+check "odd: @g destroyed" "$(grep -c '^destroy -r skzq@g$' "$T/zfs.calls")" 1
+check "odd: @g destroyed before the file systems" "$(grep -n -m 1 '^destroy -r skzq@g$' "$T/zfs.calls" | cut -d: -f1)" "$(($(grep -n -m 1 '^destroy -r skzq/odd-nl$' "$T/zfs.calls" | cut -d: -f1) - 1))"
 # Each full record after what it reads: odd after the takes of o0 and
 # o2, and before their destroy.
-# order A B: yes when A's line of the index comes before B's, each looked
-# up by itself (one grep for both would give them in the file's order).
-line_of() { grep -n -m 1 "^$1	" "$OUT/index.tsv" | cut -d: -f1; }
-order() {
-    local a b
-    a=$(line_of "$1")
-    b=$(line_of "$2")
-    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo yes || echo no
-}
-mkdir -p "$T/ord"
-printf 'x\t0\t\tx\ny\t0\t\ty\n' > "$T/ord/index.tsv"
-check "order: x before y, y not before x, a missing one not" "$(OUT=$T/ord order x y; OUT=$T/ord order y x; OUT=$T/ord order x z)" $'yes\nno\nno'
 check "members full after the take" "$(order rig-snapshot-1 rig-members-full)" yes
 check "members full, odd after its take" "$(order rig-snapshot-odd rig-members-full-odd)" yes
 check "members full, odd in C.UTF-8 after its take" "$(order rig-snapshot-odd-utf8 rig-members-full-odd-utf8)" yes
@@ -288,7 +328,7 @@ check "new data: the span said" "$(grep -c '^scale 3: zfs_dirty_data_max 1048576
 check "txg history: turned on, said" "$(cat "$ZCR_ZFS_PARAMS/zfs_txg_history"; grep -c '^scale 3: zfs_txg_history 0, set to 100' "$OUT/about.txt")" $'100\n1'
 check "writer: its file in the root" "$([ -s "$WORK/mnt/skzqs/writer.dat" ] && echo yes || echo no)" yes
 check "writer: nothing left behind" "$(find "$OUT" -maxdepth 1 -name '.writer-*' | wc -l)" 0
-check "writer: none beside the others" "$(find "$OUT" -name writer.tsv | wc -l)" 2
+check "writer: beside the takes and the reads after the take, at 3" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-3-snapshot scale-3-take-cli scale-3-take-cli-get scale-3-take-cli-list scale-3-take-cli-members "
 check "scale's limit is its own" "$LIMIT" 5
 check "scale's image removed" "$([ -e "$WORK/scale.img" ] && echo yes || echo no)" no
 check "scale's df" "$(grep -c '^scale 3: df: ' "$OUT/about.txt")" 2
@@ -390,8 +430,15 @@ check "lua max: not run, said" "$(grep -c '^scale 5: the snapshot program not ru
 check "lua max: no program" "$([ -e "$OUT/scale-5-snapshot" ] && echo yes || echo no)" no
 check "lua max: the CLI's @t" "$(words scale-5-snapshot-cli)" "zfs snapshot -r skzqs@t "
 check "lua max: the rest on it" "$(words scale-5-members)" "zfs program -n $P skzqs - skzqs t "
-ZCR_SCALE_LUA_MAX=9 scale 9 > /dev/null 2>> "$T/pins.err"
+ZCR_SCALE_LUA_MAX=9 ZCR_SCALE_FULL_MAX=9 scale 9 > /dev/null 2>> "$T/pins.err"
 check "lua max: at the count itself, run" "$(words scale-9-snapshot)" "zfs program $P skzqs - skzqs t skyzfs:assist "
+# Above ZCR_SCALE_FULL_MAX, no full read, said; at it, run.
+ZCR_SCALE_FULL_MAX=4 scale 7 > /dev/null 2>> "$T/pins.err"
+check "full max: not run, said" "$(grep -c '^scale 7: the full mode not run: 7 is more than ZCR_SCALE_FULL_MAX (4)$' "$OUT/about.txt")" 1
+check "full max: no full read" "$([ -e "$OUT/scale-7-take-cli-full" ] && echo yes || echo no)" no
+check "full max: no count line for it" "$(grep -c '^scale: scale-7-take-cli-full' "$OUT/about.txt")" 0
+check "full max: the CLI's reads still run" "$(words scale-7-take-cli-get)" "$GET skzqs "
+check "full max: at the count itself, run" "$(words scale-9-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
 SCALE_END=$(($(date +%s) - 1))
 scale 8 > /dev/null 2>> "$T/pins.err"
 check "budget spent: not run" "$(grep -c '^scale 8: not run' "$OUT/about.txt")" 1
@@ -431,7 +478,7 @@ check "full read beside: said" "$(grep -c -e '^scale: writer beside scale-11-tak
 check "full read beside: its count still said" "$(grep -c '^scale: scale-11-take-cli-full: ' "$OUT/about.txt")" 1
 check "full read beside: settled after it" "$(grep -Ec ' settled=[0-9]+\.[0-9]{3} settle_rc=0$' "$OUT/scale-11-take-cli-full/fill")" 1
 check "full read beside: empty list, none" "$([ -e "$OUT/scale-12-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-12-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
-check "full read beside: the takes' writers as before" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-snapshot scale-11-take-cli scale-11-take-cli-full scale-12-snapshot scale-12-take-cli "
+check "full read beside: the others' writers as without it" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-snapshot scale-11-take-cli scale-11-take-cli-full scale-11-take-cli-get scale-11-take-cli-list scale-11-take-cli-members scale-12-snapshot scale-12-take-cli scale-12-take-cli-get scale-12-take-cli-list scale-12-take-cli-members "
 # A count that is part of a listed one is not listed (11 is in 110), and
 # an empty list is none, even at the default's own count.
 OUT=$T/beside-more
@@ -470,7 +517,7 @@ LIMIT=5
 
 # The window file: each line is its script's line on the record's own
 # log and window, and the logs run past the window by the margin.
-for r in snapshot take-cli; do
+for r in snapshot take-cli take-cli-members take-cli-get take-cli-list; do
     IFS=$'\t' read -r w0 w1 < "$OUT/scale-3-$r/window"
     check "window beside $r: t0 before t1" "$(awk -v a="$w0" -v b="$w1" 'BEGIN { print (a < b) ? "yes" : "no" }')" yes
     check "window beside $r: the stall again" "$(python3 "$HERE/dsync_writer.py" stall "$OUT/scale-3-$r/writer.tsv" "$w0" "$w1")" "$(cat "$OUT/scale-3-$r/stall")"
@@ -488,8 +535,16 @@ done
 s0=$(tail -n 1 "$OUT/scale-3-snapshot/txg.tsv" | cut -f2)
 s1=$(head -n 1 "$OUT/scale-3-take-cli/txg.tsv" | cut -f2)
 check "settle beside snapshot: a sync after the probe" "$(awk -v a="$s0" -v b="$s1" '$2 == "sync" && $3 == "skzqs" && $1 >= a && $1 < b' "$T/zpool.calls" | wc -l)" 1
-s0=$(tail -n 1 "$OUT/scale-3-take-cli/txg.tsv" | cut -f2)
-check "settle beside take-cli: a sync after the probe" "$(awk -v a="$s0" '$2 == "sync" && $3 == "skzqs" && $1 >= a' "$T/zpool.calls" | wc -l)" 1
+# And after each read with the load beside it, before the next.
+prev=take-cli
+for r in take-cli-members take-cli-get take-cli-list; do
+    s0=$(tail -n 1 "$OUT/scale-3-$prev/txg.tsv" | cut -f2)
+    s1=$(head -n 1 "$OUT/scale-3-$r/txg.tsv" | cut -f2)
+    check "settle beside $prev: a sync after the probe" "$(awk -v a="$s0" -v b="$s1" '$2 == "sync" && $3 == "skzqs" && $1 >= a && $1 < b' "$T/zpool.calls" | wc -l)" 1
+    prev=$r
+done
+s0=$(tail -n 1 "$OUT/scale-3-take-cli-list/txg.tsv" | cut -f2)
+check "settle beside take-cli-list: a sync after the probe" "$(awk -v a="$s0" '$2 == "sync" && $3 == "skzqs" && $1 >= a' "$T/zpool.calls" | wc -l)" 1
 for r in members take-cli-members; do
     check "members line: $r" "$(grep -c "^scale: scale-3-$r: " "$OUT/about.txt")" 1
 done
@@ -554,7 +609,7 @@ check "no full: the rest recorded" "$(words rig-members)/$(words rig-count)" "zf
 check "no full: scale said" "$(grep -c '^scale 3: the full mode not run: members.lua has none$' "$OUT/about.txt")" 1
 check "no full: no scale line" "$(grep -c '^scale: scale-3-take-cli-full' "$OUT/about.txt")" 0
 OUT=$T/pins
-check "the take's create: -u, each" "$(grep -c '^C create -u skzqs/d[123]$' "$OUT/create-skzqs-3.log")" 3
+check "the take's create: -u and a local property, each" "$(grep -c '^C create -u -o skyzfs:note=local skzqs/d[123]$' "$OUT/create-skzqs-3.log")" 3
 
 # stopped and stop_bg: a process that ended with a status says it; one
 # that ends on SIGTERM gives its status; one that ignores it is killed
@@ -638,5 +693,18 @@ check "scale_all: a long ZCR_SCALE_LUA_MAX capped" "$ZCR_SCALE_LUA_MAX" 999999
 ZCR_SCALE_LUA_MAX=0
 scale_all 5 > /dev/null
 check "scale_all: ZCR_SCALE_LUA_MAX 0 kept" "$ZCR_SCALE_LUA_MAX" 0
+ZCR_SCALE_LUA_MAX=""
+for v in abc 012 -1; do
+    ZCR_SCALE_FULL_MAX=$v
+    scale_all 5 > /dev/null
+    check "scale_all: ZCR_SCALE_FULL_MAX $v refused" "$ZCR_SCALE_FULL_MAX" ""
+done
+check "scale_all: its refusals said" "$(grep -c '^scale: ZCR_SCALE_FULL_MAX is not a count' "$OUT/about.txt")" 3
+ZCR_SCALE_FULL_MAX=99999999999999999999
+scale_all 5 > /dev/null
+check "scale_all: a long ZCR_SCALE_FULL_MAX capped" "$ZCR_SCALE_FULL_MAX" 999999
+ZCR_SCALE_FULL_MAX=0
+scale_all 5 > /dev/null
+check "scale_all: ZCR_SCALE_FULL_MAX 0 kept" "$ZCR_SCALE_FULL_MAX" 0
 
 exit "$fail"

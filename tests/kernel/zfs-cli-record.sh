@@ -63,18 +63,33 @@
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
+#             take-cli-get      zfs get -r -H -p -t filesystem,volume -s
+#                               local -o name,property,value all P: the
+#                               locally set properties of every file
+#                               system and volume, read by the CLI
+#             take-cli-get-json the same with -j in place of -H (ZFS
+#                               2.3 on)
+#             take-cli-list     zfs list -r -H -p -t
+#                               filesystem,volume,snapshot -o
+#                               name,guid,type,createtxg P
 #             take-cli-full     members.lua in its full mode at @c, the
 #                               manifest's read after the take (only
-#                               where members.lua has that mode)
-#           about.txt gives the members that members and
+#                               where members.lua has that mode, and
+#                               not at a count above ZCR_SCALE_FULL_MAX
+#                               when set)
+#           Each file system is made with one user property set
+#           locally (skyzfs:note), so that take-cli-get has a line for
+#           each. about.txt gives the members that members and
 #           take-cli-members counted, which is what hold, tagged,
-#           release and destroy ran on, and the datasets that
-#           take-cli-full listed.
+#           release and destroy ran on, the datasets that take-cli-full
+#           listed and the lines of take-cli-get and take-cli-list.
 #           The snapshot program is not run at a count above
 #           ZCR_SCALE_LUA_MAX, when set; snapshot-cli takes @t there.
-#           Beside the two takes (snapshot, take-cli), and beside
-#           take-cli-full at the counts in ZCR_SCALE_FULL_BESIDE
-#           (default 1000; empty: none), from 2 s before the command to
+#           Beside the two takes (snapshot, take-cli), beside the reads
+#           after the take (take-cli-members, take-cli-get and
+#           take-cli-list) at every count, and beside take-cli-full at
+#           the counts in ZCR_SCALE_FULL_BESIDE (default 1000; empty:
+#           none), from 2 s before the command to
 #           2 s after (writing, below): a writer of 4 KiB
 #           O_DSYNC writes, a writer of new data past the pool's dirty
 #           data limit, and the pool's transaction groups and timed
@@ -82,11 +97,11 @@
 #           (writer.tsv, fill.tsv, txg.tsv), a line for each (stall,
 #           fill, txg) and the window they were read on (window); about.txt
 #           the same lines, and the dirty data limit and txg history.
-#           The takes' secs (and the full read's, where it runs beside
-#           them) are under that load, and so are the lines:
-#           txg's before_sync and before_sync_longest are the load's own
-#           before the take. A bounded zpool sync after each take
-#           syncs what the writer of new data left. At most
+#           The secs of every record with the load beside it are
+#           under that load, and so are the lines: txg's before_sync and
+#           before_sync_longest are the load's own before the command.
+#           A bounded zpool sync after each syncs what the writer of new
+#           data left. At most
 #           three counts, each at most 100000 and each once. Each
 #           command's limit is ZCR_SCALE_LIMIT seconds (default 1800),
 #           or what is left of ZCR_SCALE_BUDGET (default 4800 s, for all
@@ -188,6 +203,31 @@
 #                          whether a limit refuses the take run as root
 #                          (the limit is then lifted and @q destroyed,
 #                          with no record)
+#   odd-set-K              a file system P/odd-K for each kind K of
+#                          value below (made with no record), and zfs set
+#                          skyzfs:v=VALUE on it: nl, a newline inside;
+#                          tab, a tab inside; utf8, bytes above 0x7f in
+#                          UTF-8; raw, bytes that are not UTF-8; forge,
+#                          a newline followed by what reads as one more
+#                          line of odd-get-local (P/child, skyzfs:forged,
+#                          yes); len4095, len4096, len8191 and len8192,
+#                          that many bytes. A set that is refused is
+#                          recorded as such
+#   odd-get-local, odd-get-local-header, odd-get-local-json
+#                          the locally set properties of every file
+#                          system and volume, as take-cli-get reads them
+#                          at scale (-H -p), with its header (-p alone),
+#                          and in JSON (-j -p; ZFS 2.3 on)
+#   odd-value-K            zfs get -H -p -o value skyzfs:v P/odd-K: one
+#                          value alone, whose stdout is the value and a
+#                          newline
+#   odd-take, odd-list, odd-full
+#                          zfs snapshot -r P@g, then zfs list -r -H -p -t
+#                          filesystem,volume,snapshot -o
+#                          name,guid,type,createtxg P, and members.lua's
+#                          full mode at g: the same properties as the
+#                          program reads them. @g and the odd file
+#                          systems are then destroyed, with no record
 #   checkpoint, get-checkpoint, checkpoint-discard
 #                          the same zpool get with a checkpoint
 #   scrub, scrub-status, scrub-status-g
@@ -486,6 +526,48 @@ release_quietly() { # pool t
     done
 }
 
+# The kinds of value of odd-set-K, and each value (odd_value K POOL, on
+# stdout, with no newline at its end).
+ODD_KINDS="nl tab utf8 raw forge len4095 len4096 len8191 len8192"
+odd_value() {
+    case $1 in
+        nl) printf 'one\ntwo' ;;
+        tab) printf 'one\ttwo' ;;
+        utf8) printf 'naïve, 日本, ∅' ;;
+        raw) printf 'a\xff\xfeb\xc3' ;;
+        forge) printf 'one\n%s/child\tskyzfs:forged\tyes' "$2" ;;
+        len*) head -c "${1#len}" /dev/zero | tr '\0' v ;;
+    esac
+}
+
+# record_odd PREFIX POOL: the odd values, and how the CLI and the full
+# mode read them (the header's odd-* records); nothing of them is left.
+record_odd() {
+    local x=$1 p=$2 k
+    for k in $ODD_KINDS; do
+        lim 120 zfs create -u "$p/odd-$k" > /dev/null 2>&1
+        rec "$x-odd-set-$k" zfs set "skyzfs:v=$(odd_value "$k" "$p")" "$p/odd-$k"
+    done
+    rec "$x-odd-get-local" zfs get -r -H -p -t filesystem,volume -s local -o name,property,value all "$p"
+    rec "$x-odd-get-local-header" zfs get -r -p -t filesystem,volume -s local -o name,property,value all "$p"
+    rec "$x-odd-get-local-json" zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all "$p"
+    for k in $ODD_KINDS; do
+        rec "$x-odd-value-$k" zfs get -H -p -o value skyzfs:v "$p/odd-$k"
+    done
+    rec "$x-odd-take" zfs snapshot -r "$p@g"
+    rec "$x-odd-list" zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg "$p"
+    full "$x-odd-full" "$p" g
+    lim 120 zfs destroy -r "$p@g" > /dev/null 2>&1
+    for k in $ODD_KINDS; do
+        lim 120 zfs destroy -r "$p/odd-$k" > /dev/null 2>&1
+    done
+}
+
+# lines_line RECORD: how many lines RECORD's stdout has, in about.txt.
+lines_line() {
+    echo "scale: $1: $(wc -l < "$OUT/$1/stdout" 2> /dev/null || echo no) lines" >> "$OUT/about.txt"
+}
+
 # Everything recorded on a live pool before the changes of its devices.
 record_pool() { # prefix pool
     local x=$1 p=$2
@@ -562,6 +644,7 @@ record_pool() { # prefix pool
     rec "$x-cli-limit-after" zfs list -H -t snapshot -o name -r "$p"
     lim 120 zfs set snapshot_limit=none "$p/child" > /dev/null 2>&1
     lim 120 zfs destroy -r "$p@q" > /dev/null 2>&1
+    record_odd "$x" "$p"
     rec "$x-checkpoint" zpool checkpoint "$p"
     rec "$x-get-checkpoint" zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint "$p"
     rec "$x-checkpoint-discard" zpool checkpoint -d -w "$p"
@@ -606,6 +689,14 @@ scale_all() {
             ;;
     esac
     [ "${#ZCR_SCALE_LUA_MAX}" -gt 6 ] && ZCR_SCALE_LUA_MAX=999999
+    ZCR_SCALE_FULL_MAX=${ZCR_SCALE_FULL_MAX:-}
+    case $ZCR_SCALE_FULL_MAX in
+        *[!0-9]* | 0?*)
+            echo "scale: ZCR_SCALE_FULL_MAX is not a count: $ZCR_SCALE_FULL_MAX; the full read runs at every count" >> "$OUT/about.txt"
+            ZCR_SCALE_FULL_MAX=""
+            ;;
+    esac
+    [ "${#ZCR_SCALE_FULL_MAX}" -gt 6 ] && ZCR_SCALE_FULL_MAX=999999
     for n in "$@"; do
         case $n in *[!0-9]* | 0*) echo "scale: not a count: $n" >> "$OUT/about.txt"; continue ;; esac
         if [ "${#n}" -gt 6 ] || [ "$n" -gt 100000 ]; then
@@ -797,12 +888,12 @@ scale() {
     t0=$(date +%s)
     if scale_limit; then
         rc=0
-        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create -u "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
+        seq 1 "$n" | lim "$LIMIT" xargs -P 8 -I{} zfs create -u -o skyzfs:note=local "$p/d{}" >> "$OUT/create-$p-$n.log" 2>&1 || rc=$?
         [ "$rc" = 124 ] && cut=" (stopped at the limit of $LIMIT s)"
         made=$(lim 120 zfs list -H -o name -r "$p" 2> /dev/null | wc -l)
         echo "scale $n: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
-    for step in count snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-full; do
+    for step in count snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
             echo "scale $n: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
@@ -830,13 +921,29 @@ scale() {
             release) rec "scale-$n-release" zfs release -r "$TAG" "$p@t" ;;
             destroy) rec "scale-$n-destroy" zfs destroy -r "$p@t" ;;
             take-cli) writing "scale-$n-take-cli" "$wdir" "$p" rec "scale-$n-take-cli" zfs snapshot -r "$p@c" ;;
+            # What the manifest reads after the take, at this count: by
+            # the plain program, by the CLI (M2.6c-5), and by the full
+            # program. Each read but the full one, and that one at the
+            # counts asked, with the load beside it.
             take-cli-members)
-                program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c
+                writing "scale-$n-take-cli-members" "$wdir" "$p" program "scale-$n-take-cli-members" "$p" members.lua -n "$p" c
                 members_line "scale-$n-take-cli-members"
                 ;;
-            # What the manifest reads after the take, at this count.
+            take-cli-get)
+                writing "scale-$n-take-cli-get" "$wdir" "$p" rec "scale-$n-take-cli-get" zfs get -r -H -p -t filesystem,volume -s local -o name,property,value all "$p"
+                lines_line "scale-$n-take-cli-get"
+                ;;
+            take-cli-get-json)
+                rec "scale-$n-take-cli-get-json" zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all "$p"
+                ;;
+            take-cli-list)
+                writing "scale-$n-take-cli-list" "$wdir" "$p" rec "scale-$n-take-cli-list" zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg "$p"
+                lines_line "scale-$n-take-cli-list"
+                ;;
             take-cli-full)
-                if [ "$MEMBERS_FULL" = 1 ]; then
+                if [ "$MEMBERS_FULL" = 1 ] && [ -n "${ZCR_SCALE_FULL_MAX:-}" ] && [ "$n" -gt "$ZCR_SCALE_FULL_MAX" ]; then
+                    echo "scale $n: the full mode not run: $n is more than ZCR_SCALE_FULL_MAX ($ZCR_SCALE_FULL_MAX)" >> "$OUT/about.txt"
+                elif [ "$MEMBERS_FULL" = 1 ]; then
                     # The read is read-only (-n): whether it delays
                     # writes or the pool's groups is measured beside it
                     # at the counts asked.

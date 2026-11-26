@@ -2,7 +2,8 @@ name: skyzfs-zfs-cli-record
 
 # Recorded outputs of the ZFS commands the agent's ZFS adapter runs, for
 # its fixtures (the M2.6 plan's Q10): zpool status and get, the holds,
-# the three `zfs program` scripts, on a pool on a ublk device with a log,
+# the three `zfs program` scripts, zfs get and zfs list of what the
+# manifest reads, on a pool on a ublk device with a log,
 # a mirror of files, and a pool that does not exist. Records only: the
 # job is green unless the script could not set up. All the logic is
 # tests/kernel/zfs-cli-record.sh; the artifact is a tarball of its
@@ -17,10 +18,13 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs (the same beside the full members read at 1000); no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r, zfs snapshot -r and the manifest's reads after it (the members program, zfs get of the local properties, zfs list, the full members program) on a pool with that many, timed, with, beside each take and each read, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs (beside the full read at 1000 only); no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
         default: ""
       scale_lua_max:
         description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
+        default: ""
+      scale_full_max:
+        description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). Empty: every count"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
@@ -94,6 +98,7 @@ jobs:
       LUA_REF: ${{ needs.lua.outputs.commit }}
       ZCR_SCALE: ${{ inputs.scale }}
       ZCR_SCALE_LUA_MAX: ${{ inputs.scale_lua_max }}
+      ZCR_SCALE_FULL_MAX: ${{ inputs.scale_full_max }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -140,7 +145,11 @@ jobs:
             *[!0-9]*|0?*) echo "::error::scale_lua_max is a count: $ZCR_SCALE_LUA_MAX"; exit 64 ;;
           esac
           if [ "${#ZCR_SCALE_LUA_MAX}" -gt 6 ]; then echo "::error::scale_lua_max: at most 999999"; exit 64; fi
-          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+          case $ZCR_SCALE_FULL_MAX in
+            *[!0-9]*|0?*) echo "::error::scale_full_max is a count: $ZCR_SCALE_FULL_MAX"; exit 64 ;;
+          esac
+          if [ "${#ZCR_SCALE_FULL_MAX}" -gt 6 ]; then echo "::error::scale_full_max: at most 999999"; exit 64; fi
+          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX,ZCR_SCALE_FULL_MAX tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |
