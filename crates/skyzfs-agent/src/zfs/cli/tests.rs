@@ -1629,8 +1629,16 @@ fn the_sweep_reads_the_holds_of_the_snapshots_that_have_one() {
     );
     assert_eq!(ran[1].limit, read, "the holds");
 
-    // No snapshot with a hold: the list alone.
-    for listed in ["", "tank@a\t0\ntank/db@b\t0\n"] {
+    // No snapshot with a hold, or none with a hold and a name of the
+    // agent's: the list alone. The prefix is matched case and all, and a
+    // snapshot of the agent's renamed is a person's (L1 and TG2 of #168's
+    // review).
+    for listed in [
+        "",
+        "tank@a\t0\ntank/db@b\t0\n",
+        "tank@SKZ-1\t1\n",
+        "tank@keep\t2\ntank/db@Skz-3\t1\n",
+    ] {
         let mut fake = Fake::default();
         fake.ok(TAGGED_LIST, listed);
         let mut zfs = cli(fake);
@@ -2008,8 +2016,8 @@ fn holds_that_do_not_add_up_are_an_error_that_names_the_snapshot() {
             "a line forged whole, of the snapshot itself",
             with(b"x\tY\ntank/db@skz-2\tskyzfs-publish"),
             "`tank/db@skz-2` has 2 lines of holds and 1 holds (`userrefs`): holds were \
-             added between the two reads, again and again, or a line is forged by a tag \
-             with a newline, on the hold just before one of them (of tank/db@skz-2, \
+             placed or released between the two reads, again and again, or a line is forged by \
+             a tag with a newline, on the hold just before one of them (of tank/db@skz-2, \
              tank@skz-1)",
             3,
         ),
@@ -2017,8 +2025,8 @@ fn holds_that_do_not_add_up_are_an_error_that_names_the_snapshot() {
             "a line forged whole, of another snapshot asked",
             with(b"x\tY\ntank@skz-1\tskyzfs-publish"),
             "`tank@skz-1` has 2 lines of holds and 1 holds (`userrefs`): holds were \
-             added between the two reads, again and again, or a line is forged by a tag \
-             with a newline, on the hold just before one of them (of tank/db@skz-2)",
+             placed or released between the two reads, again and again, or a line is forged by \
+             a tag with a newline, on the hold just before one of them (of tank/db@skz-2)",
             3,
         ),
     ];
@@ -2051,10 +2059,15 @@ fn holds_that_do_not_add_up_are_an_error_that_names_the_snapshot() {
     let mut fake = Fake::default();
     fake.ok(TAGGED_LIST, "tank@skz-1\t1\n")
         .give(&holds_of(&["tank@skz-1"]), Ok(bytes_out(cut)));
-    match cli(fake).tagged("tank", HOLD_TAG) {
+    let mut zfs = cli(fake);
+    match zfs.tagged("tank", HOLD_TAG) {
         Err(ZfsError::Other(why)) => assert!(why.contains("does not end with a newline"), "{why}"),
         other => panic!("{other:?}"),
     }
+    // Read once: an output cut short is not a race (TG2 of #168's
+    // review).
+    let read = holds_of(&["tank@skz-1"]);
+    assert_eq!(zfs.host().words(), [TAGGED_LIST, read.as_str()]);
 
     // A hold added between the list and the holds: more lines than the
     // list counted, once. The next read adds up.
@@ -2281,6 +2294,29 @@ fn the_holds_under_a_snapshot_are_checked_as_the_sweeps_are() {
             refs_words(&["tank@skz-1"]).as_str()
         ]
     );
+
+    // Gone at each of the reads: the error says that the snapshot may
+    // never have been, named by a line forged with a newline (N3 of
+    // #165's review, TG2 of #168's).
+    let gone = "cannot open 'tank/db@skz-1': dataset does not exist\n";
+    let mut fake = Fake::default();
+    fake.ok(HOLDS_R, &both_held).fails(&both, 1, gone);
+    let mut zfs = cli(fake);
+    match zfs.held("tank", "skz-1", HOLD_TAG, None) {
+        Err(ZfsError::Vanished(why)) => {
+            assert!(why.contains(&both), "{why}");
+            assert!(
+                why.contains(
+                    "a line forged by a tag with a newline names a snapshot that never was"
+                ),
+                "{why}"
+            );
+            assert!(why.contains(gone.trim_end()), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let once = [HOLDS_R, both.as_str()];
+    assert_eq!(zfs.host().words(), once.repeat(VANISHED_READS as usize));
 }
 
 /// The holds' check of `zfs holds -H -r` in the cases TG1 of #165's

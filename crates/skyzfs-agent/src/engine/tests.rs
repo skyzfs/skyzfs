@@ -3681,6 +3681,44 @@ fn an_agent_given_a_mistyped_directory_releases_no_hold() {
     );
 }
 
+/// The sweep reads only the holds on snapshots named as the agent names
+/// them ([`crate::names::PREFIX`]): a hold of the agent's tag on a
+/// snapshot of another name (a person's hold, or a snapshot of the
+/// agent's renamed) is left, and does not stop the sweep, which releases
+/// the stray hold on a name of the agent's beside it (A4 of #165's
+/// review, TG2 of #168's). Mutants: the fake's or the sweep's filter
+/// dropped; the prefix matched without its case.
+#[test]
+fn the_sweep_leaves_a_hold_of_the_tag_on_a_name_not_the_agents() {
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    keep.0.borrow_mut().marked = true;
+    let others = [
+        format!("{POOL}@keep"),
+        format!("{POOL}/db@SKZ-1"),
+        format!("{POOL}@skz"),
+    ];
+    let stray = format!("{POOL}@skz-stray");
+    {
+        let mut world = world.borrow_mut();
+        let pool = world.pool.as_mut().expect("the pool");
+        for name in others.iter().chain([&stray]) {
+            let snap = fake::Snap {
+                guid: 0xbeef,
+                createtxg: pool.txg,
+                holds: [HOLD_TAG.to_string()].into(),
+                held_in: None,
+            };
+            pool.snaps.insert(name.clone(), snap);
+        }
+    }
+    let mut agent = agent(&world, &keep);
+    agent.settle(LIMIT).expect("settled");
+    let mut left = others.to_vec();
+    left.sort();
+    assert_eq!(holds(&world.borrow()), left);
+}
+
 /// The record says a publish is asked, and is saved, before `publish` is
 /// sent (the lead's decision on L1 of #149's review), so that a publish
 /// recorded held has no request out. A crash between the save and the

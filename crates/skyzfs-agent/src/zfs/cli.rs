@@ -87,7 +87,10 @@
 //! [`Zfs::hold`] and [`Zfs::release`] read them with `zfs list -H -p
 //! -o name,userrefs -t snapshot` after `zfs holds -H -r`. More lines
 //! than holds are read again, at most [`VANISHED_READS`] times in all
-//! (a hold added between the two commands gives them too); a line that
+//! (a hold that changes between the two commands gives them too: one
+//! added after the count, where the count comes first, as in the sweep,
+//! or released after the holds were read, where they come first, as in
+//! [`Zfs::held`], [`Zfs::hold`] and [`Zfs::release`]); a line that
 //! is not a hold is not, since a tag does not change while it is held
 //! (N2 of #165's review). Either is then [`ZfsError::Other`] that names
 //! the snapshot and says what a person does: release that hold by hand.
@@ -411,7 +414,11 @@ pub fn holds_batches<'a, 'b>(names: &'b [&'a str]) -> Vec<&'b [&'a str]> {
 /// name, the conservative reading: a hold of the agent's is never left
 /// unseen on a name of the agent's, whatever form it took. A hold of the
 /// agent's tag on a snapshot of another name, made by hand, is not the
-/// sweep's to release.
+/// sweep's to release. Nor is a hold on a snapshot of the agent's that
+/// a person renamed while it was held (`zfs rename pool@skz-… pool@keep`):
+/// that hold stays until the person releases it (L1 of #168's review,
+/// accepted as the hand-placed tag was). The prefix is matched as it is
+/// written, case and all.
 fn agents_name(snapshot: &str) -> bool {
     snapshot
         .split_once('@')
@@ -424,8 +431,8 @@ fn agents_name(snapshot: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Odd {
     why: String,
-    /// More lines than holds ([`outnumbered`]), which a hold added
-    /// between the two commands gives too: read again. A line that is
+    /// More lines than holds ([`outnumbered`]), which a hold that
+    /// changes between the two commands gives too: read again. A line that is
     /// not a hold ([`hold_lines`]) comes from a tag, which does not
     /// change while it is held: reading it again reads it again, a full
     /// walk each time (N2 of #165's review).
@@ -455,8 +462,9 @@ const ODD_HOLDS: &str = "another holder's tag may hold a tab or a newline: \
 /// end with a newline. Anything else is [`Odd`], not read again, and
 /// not skipped: a skip takes a line out of [`outnumbered`]'s count, so
 /// that a line forged on the same snapshot adds up (N1 of #165's
-/// review; the lead's ruling on M2.6c-5e). A forged line of three fields that names an asked
-/// snapshot is found by the count ([`outnumbered`]). The tags are bytes:
+/// review; the lead's ruling on M2.6c-5e). A forged line of three
+/// fields that names an asked snapshot is found by the count
+/// ([`outnumbered`]). The tags are bytes:
 /// another holder's that is not UTF-8 is no error (D1 and G-UTF of
 /// #162's review).
 fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u8])>, Odd> {
@@ -504,11 +512,13 @@ fn hold_lines(out: &[u8], asked: impl Fn(&str) -> bool) -> Result<Vec<(&str, &[u
 /// that forges a whole line of three fields, naming a snapshot asked,
 /// adds a line and not a hold. The forging tag is on the line just
 /// before a forged one, so the error names the snapshots of those lines
-/// too. Holds added between the two reads give more lines too, held and
-/// released again and again (by `zfs send`, for one): the error says
-/// both, and is read again (N4 of #165's review). Fewer lines than holds
-/// is no error: a hold released between the two reads, or added between
-/// them, whichever came second.
+/// too. Holds that change between the two reads give more lines too,
+/// held and released again and again (by `zfs send`, for one): a hold
+/// added after the count where it comes first (the sweep), or released
+/// after the holds were read where they come first (`held`, `hold`,
+/// `release`). The error says both, and is read again (N4 and N4' of
+/// #165's and #168's reviews). Fewer lines than holds is no error: the
+/// change the other way round.
 fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<(), Odd> {
     let mut lines: BTreeMap<&str, u64> = BTreeMap::new();
     for (snapshot, _) in holds {
@@ -526,9 +536,9 @@ fn outnumbered(holds: &[(&str, &[u8])], refs: impl Fn(&str) -> u64) -> Result<()
             return Err(Odd {
                 why: format!(
                     "`{snapshot}` has {lines} lines of holds and {refs} holds (`userrefs`): \
-                     holds were added between the two reads, again and again, or a line \
-                     is forged by a tag with a newline, on the hold just before one of \
-                     them (of {}); read `zfs holds` of those snapshots and, where a tag \
+                     holds were placed or released between the two reads, again and \
+                     again, or a line is forged by a tag with a newline, on the hold just \
+                     before one of them (of {}); read `zfs holds` of those snapshots and, where a tag \
                      holds a newline, release that hold by hand",
                     if before.is_empty() {
                         "none".to_string()
@@ -964,7 +974,7 @@ impl<H: Host> ZfsCli<H> {
 
     /// A read of holds, made again as [`ZfsCli::again`] makes one, and
     /// also while it reads more lines than holds ([`Odd`] `again`): a
-    /// hold added between its two commands. Holds that still do not add
+    /// hold that changed between its two commands. Holds that still do not add
     /// up after [`VANISHED_READS`] reads, or that have a line that is not
     /// a hold, read once, are [`ZfsError::Other`], which names the
     /// snapshot (the lead's ruling on M2.6c-5e: an error, not a skip; N2
@@ -1068,7 +1078,9 @@ impl<H: Host> ZfsCli<H> {
     /// names a command, each on a read's limit), must not be fewer than
     /// its lines ([`outnumbered`]): another holder's tag cannot forge
     /// the agent's hold, nor hide one (F1-R of #162's review; the lead's
-    /// ruling on M2.6c-5e). A snapshot named and gone before its count
+    /// ruling on M2.6c-5e), unless a hold of that snapshot changes
+    /// between the two commands at the same time (a race accepted: R1 of
+    /// #165's review). A snapshot named and gone before its count
     /// is [`ZfsError::Vanished`].
     fn tagged_snapshots(
         &mut self,
@@ -1155,9 +1167,9 @@ impl<H: Host> ZfsCli<H> {
     /// there and the list exits 0 without that dataset's snapshots,
     /// whose holds are gone with them, which is right for the sweep; the
     /// list's own `no such pool or dataset` is read again all the same,
-    /// defensively (N-a of #162's review). A pool that is not there is [`ZfsError::NoPool`] where
-    /// `zpool list` agrees: `zfs list POOL` says `cannot open 'POOL':
-    /// dataset does not exist` of it.
+    /// defensively (N-a of #162's review). A pool that is not there is
+    /// [`ZfsError::NoPool`] where `zpool list` agrees: `zfs list POOL`
+    /// says `cannot open 'POOL': dataset does not exist` of it.
     fn tagged_once(
         &mut self,
         pool: &str,
@@ -1209,9 +1221,11 @@ impl<H: Host> ZfsCli<H> {
             // Each line a snapshot this command asked for, its tag and
             // when, and no snapshot with more lines than holds: another
             // holder's tag with a tab or a newline is an error that names
-            // the snapshot, after a read again, and neither forges the
-            // agent's hold nor hides one (F1-R of #162's review; the
-            // lead's ruling on M2.6c-5e).
+            // the snapshot (after reads again where there are more lines
+            // than holds), and neither forges the agent's hold nor hides
+            // one, unless a hold of that snapshot changes between the two
+            // commands at the same time (accepted: R1 of #165's review;
+            // F1-R of #162's review; the lead's ruling on M2.6c-5e).
             let asked: BTreeSet<&str> = names.iter().copied().collect();
             let checked =
                 hold_lines(&output.stdout, |name| asked.contains(name)).and_then(|holds| {
