@@ -251,9 +251,13 @@ rig_error() {
     fi
     exit "$rc"
 }
-z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
+# SECONDS COMMAND...: a pool command under a limit; its failure is the
+# rig's error. lim and not timeout(1), which waits for a child that
+# cannot be killed: an export of a pool whose daemon died between the
+# last case and the end would hang the job (G2 of #163's review).
+z() {
     local secs=$1; shift
-    timeout "$secs" "$@" || rig_error "$* failed (status $?)"
+    lim "$secs" "$@" || rig_error "$* failed (status $?)"
 }
 mark() {
     if [ "$SERVER" = daemon ]; then

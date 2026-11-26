@@ -994,6 +994,8 @@ rounds_t() { # ROUNDS WDIR [LIMIT_AFTER [notime]]
 check "rounds: not a count" "$(rounds_t x "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: x "
 check "rounds: 100 refused" "$(rounds_t 100 "$T/w")" "|scale 9: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: 100 "
 check "rounds: 0, nothing" "$(rounds_t 0 "$T/w")" "|"
+# 0 turns the step off: no line at all, not even the writer's absence.
+check "rounds: 0, no line" "$(rounds_t 0 ""; cat "$T/rt/about.txt" 2> /dev/null)" "|"
 check "rounds: no writer" "$(rounds_t 1 "")" "|scale 9: the sweep's rounds not run: no writer "
 check "rounds: no time, said" "$(rounds_t 1 "$T/w" 99 notime)" \
     "scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |scale 9: the sweep's list rounds not run: scale-9-sweep-list has no time "

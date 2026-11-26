@@ -274,8 +274,9 @@ reserve() {
 }
 # The daemon killed by the rig (restart, late). One that had ended by
 # itself before the kill is a verdict, with its status (D10 of #159's
-# review): kill -9 of a child not yet waited for succeeds, so the status
-# and not the kill's says so, as both's does.
+# review). The kill's own status cannot say so: bash has reaped a child
+# that ended, so the kill fails, but it fails as well for other
+# reasons. The status wait gives does: 137 for the rig's kill.
 akill_serve() {
     local rc=0 k=$SERVE_K
     kill -9 "$SERVE_PID" 2>/dev/null || true
@@ -675,6 +676,19 @@ agent_quiet() {
         WRITER=""
     fi
     session_end
+    # A daemon that had ended with no kill of the rig's is a verdict, as
+    # in recover (G5 of #163's review); in a dhook case the rig's own
+    # error about its end comes first.
+    if [ -n "$SERVE_PID" ] && ! kill -0 "$SERVE_PID" 2>/dev/null; then
+        local k=$SERVE_K st=unknown
+        if serve_end 5; then st=$SERVE_RC; fi
+        SERVE_PID=""
+        if [ -n "$CDIR" ] && [ "$SCEN" = dhook ]; then
+            log "$NAME: skyzfsd serve $k had ended (status $st) in a dhook case, after the rig's own error"
+        else
+            agent_daemon_wrong daemon_serving "skyzfsd serve $k had ended (status $st) with no kill of the rig's, seen after the rig's error: $(tail -n 2 "$(serve_log "$k")" 2>/dev/null)"
+        fi
+    fi
     # With no daemon (the error came while the rig had it down, as in a
     # restart case), the export cannot write the pool's labels and waits
     # its whole limit, leaving a command behind on a device with no
