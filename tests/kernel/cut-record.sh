@@ -342,7 +342,11 @@ cleanup() {
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
         serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
-        timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
+    fi
+    # The device deleted whether or not a daemon was still serving it: one
+    # that had ended leaves it behind otherwise. lim, as for the export.
+    if [ "${SERVER:-}" = daemon ] && [ -n "${VOL:-}" ] && [ -d "$VOL" ]; then
+        lim 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
     fi
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null

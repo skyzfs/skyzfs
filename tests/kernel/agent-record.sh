@@ -97,7 +97,7 @@
 #   publish up as too old; the store thaws as in destroy.
 # - sweep (Sweep): a publish first, which marks the directory, then a
 #   hold of the agent's tag that no publish names, on a snapshot of the
-#   rig's (sweep-ID): the case's publish must release it.
+#   rig's (skz-sweep-ID): the case's publish must release it.
 # - gone: the agent killed at `holding:before` (the snapshot taken, no
 #   hold yet), then pool@T destroyed: a snapshot destroyed before the
 #   hold is not published (M2.6's criterion).

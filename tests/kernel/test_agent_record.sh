@@ -821,6 +821,7 @@ cl() { # HOOK_RC|none fail|ok
         lim() { echo "lim $*" >> "$T/calls"; }
         dmsetup() { :; }; log() { :; }
         hook() { echo "hook: $1" >> "$T/calls"; return "$HOOK_RC"; }
+        SERVER=${CL_SERVER:-}; VOL=${CL_VOL:-}; RUN=$T/run; SKYZFSD=skyzfsd
         eval "$(fnc cleanup)"
         trap cleanup EXIT
         set -e
@@ -839,6 +840,13 @@ is "cleanup: errexit with a hook that finds none" "$(cl 0 fail)" \
     "2 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;rig error,a command failed (status 1); the job log names it;"
 is "cleanup: errexit with no hook" "$(cl none fail)" "1 lim 120 zpool export -f skzcut;"
 is "cleanup: an end with no failure" "$(cl 1 ok)" "0 lim 120 zpool export -f skzcut;"
+# A daemon that had ended by the cleanup: its volume's device deleted
+# all the same, under lim; none where the volume is gone (#164's review).
+mkdir -p "$T/clvol"
+is "cleanup: the device deleted with no daemon serving" "$(CL_SERVER=daemon CL_VOL=$T/clvol cl none ok)" \
+    "0 lim 120 zpool export -f skzcut;lim 60 skyzfsd detach --dir $T/clvol --run-dir $T/run;"
+is "cleanup: no volume, no detach" "$(CL_SERVER=daemon CL_VOL=$T/clgone cl none ok)" "0 lim 120 zpool export -f skzcut;"
+is "cleanup: not through the daemon, no detach" "$(CL_VOL=$T/clvol cl none ok)" "0 lim 120 zpool export -f skzcut;"
 
 # end: the hooks cleared once the course is recorded, before its check
 # (the nit on ON_RIG_ERROR).
@@ -931,7 +939,8 @@ quiet_hang() {
         sleep 20 > /dev/null 2>&1 & AGENT_PID=$!; local agent=$AGENT_PID
         sleep 20 > /dev/null 2>&1 & WRITER=$!; local writer=$WRITER
         kill() { [ "$1" = -9 ] || builtin kill "$@"; }
-        seq() { echo 1; }
+        # One try each, the bounds asked for kept (N17 of #164's review).
+        seq() { echo "$*" >> "$T/qh.seq"; echo 1; }
         session_end() { :; }; log() { :; }; lim() { return 0; }
         local t0=$SECONDS took
         agent_quiet
@@ -940,7 +949,11 @@ quiet_hang() {
         if [ "$took" -lt 8 ]; then echo "bounded ${AGENT_PID:-none} ${WRITER:-stopped}"; else echo "waited $took s"; fi
     )
 }
+rm -f "$T/qh.seq"
 is "agent_quiet: an agent and a writer that do not end do not hold it" "$(quiet_hang)" "bounded none stopped"
+# The bounds: 20 tries of 0.25 s for the agent, 120 of 0.5 s for the
+# writer.
+is "agent_quiet: its bounds" "$(tr '\n' ';' < "$T/qh.seq")" "1 20;1 120;"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
