@@ -21,7 +21,7 @@ It brings `zfs-topology` and changes nothing of the package.
 - **N6 is fixed**, with my fix F2, at the asking commit (`engine.rs:1173-1175`). The new test is my N6 course with its 8 rows. Planting the clearing out fails exactly the 4 `moved` rows, as the author says. Three more plants that move the clearing are also killed.
 - **Suggestion 1 is done.** `Error::Unmarked` now says `zfs release -r skyzfs-publish <pool>@<name>` (`engine.rs:371`).
   - The recordings the author cites do show `zfs release -r` exiting 0 on a partial hold, on both images, with no tag left after it.
-  - But the recorded hold is on the child alone, not on the root alone as the answer says (observation O1). The conclusion stands, and for the harder case.
+  - But the recorded hold is on the child alone, not on the root alone as the answer says (nit 2; details under "Suggestion 1" below; O1 is the same mix-up in #153's test). The conclusion stands, and for the harder case.
 - **Codex's two threads from `af50814`** are answered on their threads and resolved. Each answer matches the code at this head, and the plants behind each are killed here.
 - **The gates pass**, the third look's searches pass again at this head, and the CI runs on this head are green (see "CI on the head").
 - **C1 (new, from Codex on this head, unanswered):** the asking record's deadline is stamped before the asking save, and the request is sent after it. If that save, or a stop of the process, takes longer than `HOLD_MARGIN` (40 s), and the answer is then lost, the hold is released while the request pends.
@@ -169,7 +169,7 @@ Read with `gh api`, read-only, including the review threads' route.
 
 | Thread | State | Answer | Checked against the code at `5259bf5` |
 |---|---|---|---|
-| P1, "Keep the hold when recovery receives an inconclusive answer" (`plan.rs`) | resolved | "Fixed in 2d806e8 (the review's B1)" | Right. `given_up` (`plan.rs:494-518`) reads `ended`, `no-answer` and `no-upload` as silence until a withdraw of its own is answered, and waits until `held_until` for a publish asked. Plants B1a and B1f are KILLED at this head. |
+| P1, "Keep the hold when recovery receives an inconclusive answer" (`plan.rs`) | resolved | "Fixed in 2d806e8 (the review's B1)" | Right. `given_up` (`plan.rs:495-533`) reads `ended`, `no-answer` and `no-upload` as silence until a withdraw of its own is answered, and waits until `held_until` for a publish asked. Plants B1a and B1f are KILLED at this head. |
 | P2, "Track the publish across snapshot-name collision retries" (`program.rs`) | resolved, outdated | "Fixed in 2d806e8 (the review's D2)" | Right. `Agent::name_now` (`engine.rs:570`) follows the renames, and `execute` looks the outcome up by it. Plant D2a is KILLED at this head by `a_publish_made_under_its_next_name_exits_by_its_outcome`. |
 | **New:** P2, "Revalidate the recorded deadline before sending the publish" (`engine.rs:1156`) | **open, no answer** (posted 23:39 UTC on `5259bf5`) | none yet | C1 above: valid in substance. |
 
@@ -242,9 +242,20 @@ The run counts are the same as at `09e3227`.
 
 ## CI on the head
 
-Read with `gh api`, read-only (see the final section of the report for the time). All runs on `5259bf5`:
+Read with `gh api`, read-only, at 00:06 UTC on 2026-11-26, the head still `5259bf5`. **All ten runs on `5259bf5` completed with success.**
 
-CI_TABLE
+- **Green with no further reading:** `ci`, `coverage`, `e2e`, `k3s-smoke`, `skyzfs-ci` (on the push), `skyzfs-control-rig`, `skyzfs-nodeb-rig` and `skyzfs-publish-rig`.
+- **`ci`** (`lint`, `test`, `unit-arm64`): fmt, workspace clippy, the workspace tests and the features' clippy and tests are green on amd64 and arm64. So is the new `cargo doc` step in `lint` (plain, `skyzfsd/test-hooks`, `skyzfs-ublk-sys/control-test-program`).
+- **`skyzfs-cut-daemon`:** green on `ubuntu-26.04`, `ubuntu-26.04-arm` and `ubuntu-26.04-upload`. On the upload image every course reads `upload_course: PASS`, `uv1` and `uv1moved` among them; the end-row race was fixed in #152, now merged.
+- **`skyzfs-daemon-rig`** (on `skyzfsd`, in-place store): on `ubuntu-24.04`, `ubuntu-26.04` and `ubuntu-26.04-arm`, the judge's lines read the same as at `09e3227`:
+  - 53 pins `PASS`;
+  - 1 `WAITING`: `pin_failed_volume_while_a_request_is_held`, not built, as the guide says;
+  - 1 pin `NA` and 1 control `NA`, both named by the in-place store's expected table;
+  - the five controls that must fail, fail.
+  - The jobs are green, so the judge exited 0. They built the head merged with `f8e5e0c`, which is still the tip of `zfs-topology`.
+- **`skyzfs-replay-rig`** is not triggered by this pull request (see the third look).
+- **None of these drives the program** (the publish rig's agent is still the Python stand-in), and none builds `skyzfs-agent-cli` with `test-hooks` (L3/T1). A green CI says nothing about C1.
+- **Codex:** its code review of `5259bf5` completed with one finding, C1, which is unresolved. Its security review completed with no findings.
 
 ## What blocks the merge
 
