@@ -8,8 +8,7 @@ comment 7178505979). The review at 65d72ee is `review.md` beside this note.
 
 ## Verdict
 
-**Can merge at 3d40045 once the daemon rig is green on this head and the
-lead has confirmed the 35-minute cap.**
+**Can merge at 3d40045 once the lead has confirmed the 35-minute cap.**
 
 - **D1 is fixed within a process.** A take that is never whole is now taken
   three times, 10 s apart, then given up as `NotWhole`, with a report and
@@ -23,26 +22,26 @@ lead has confirmed the 35-minute cap.**
   agent at one point in every process, and before this PR the loop needed
   no stop at all. It is the lead's call; I do not hold the merge for it.
 
-What blocks the merge:
+What blocks the merge: **the cap of 35 minutes waits on the lead.** The
+author asked the lead to confirm it. The arithmetic is under (d).
 
-1. **The daemon rig on this head** (run 45727016749) was still running its
-   three kernel jobs when this was written:
-   - ubuntu-24.04, daemon;
-   - ubuntu-26.04, daemon;
-   - ubuntu-26.04-arm, daemon.
-
-   The rig runs on this PR only because 9717321 touches
-   `bins/skyzfsd/src/kill.rs`, a doc-only change. The jobs that judge
-   nothing ("which server", "the table and its judge") are green.
-2. **The cap of 35 minutes waits on the lead.** The author asked the lead to
-   confirm it. The arithmetic is under (d).
-
-**CI on 3d40045.** Every check that has finished is green:
+**CI on 3d40045.** Every check is green:
 
 - ci: lint, test, unit-arm64, s3-backends, chart-lint;
 - coverage, e2e, k3s-smoke, skyzfs-ci;
 - the publish rig and cut-daemon;
-- the replay rig's jobs "through skyzfsd" (24.04 and 26.04) and write-into-a-hole.
+- the replay rig's jobs "through skyzfsd" (24.04 and 26.04) and write-into-a-hole;
+- the daemon rig, run 45727016749, on the daemon: ubuntu-24.04, ubuntu-26.04
+  and ubuntu-26.04-arm.
+  - The run ended with exit 0. Each job's table has 55 pins that pass and
+    no pin that fails.
+  - The `ctl_` lines fail, as their controls should.
+  - The pin `pin_failed_volume_while_a_request_is_held` is WAITING, as it
+    has been.
+  - Two lines read NA, for the log, as the in-place store expects.
+  - The rig runs on this PR only because 9717321 touches
+    `bins/skyzfsd/src/kill.rs`, a doc-only change. Nothing in this PR
+    reaches the daemon.
 
 Codex completed on 3d40045 with no findings.
 
