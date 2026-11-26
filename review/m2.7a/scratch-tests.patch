@@ -1,0 +1,488 @@
+diff --git a/crates/skyzfs-agent/src/engine/tests.rs b/crates/skyzfs-agent/src/engine/tests.rs
+index 434df50..5aca615 100644
+--- a/crates/skyzfs-agent/src/engine/tests.rs
++++ b/crates/skyzfs-agent/src/engine/tests.rs
+@@ -4639,3 +4639,19 @@ fn a_destroy_between_two_reads_is_no_missing_pool() {
+         );
+     }
+ }
++
++/// RH (review of #167): what the engine keeps of a publish (its memory)
++/// does not outlast the publish: published or given up, across many
++/// rounds, nothing is kept for a long-lived `run`.
++#[test]
++fn rh_the_memory_of_a_publish_goes_with_it() {
++    let world = World::new(Mode::Busy);
++    let keep = MemKeep::default();
++    let mut a = agent(&world, &keep);
++    for _ in 0..3 {
++        a.begin().expect("begun");
++        a.settle(LIMIT).expect("settled");
++    }
++    assert_eq!(world.borrow().refs.len(), 3);
++    assert!(a.memory.is_empty(), "{:?}", a.memory.keys().collect::<Vec<_>>());
++}
+diff --git a/crates/skyzfs-agent/src/program/tests.rs b/crates/skyzfs-agent/src/program/tests.rs
+index 350ab17..49abe4f 100644
+--- a/crates/skyzfs-agent/src/program/tests.rs
++++ b/crates/skyzfs-agent/src/program/tests.rs
+@@ -1757,3 +1757,459 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
+         );
+     }
+ }
++
++/// The review's scratch tests of #167 (not for the pull request).
++mod review167 {
++    use std::cell::Cell;
++    use std::collections::BTreeSet;
++
++    use super::*;
++    use crate::record::{Loaded, SaveError};
++    use crate::zfs::{Dataset, Held, Layout, Props, ZfsError};
++
++    /// A directory in memory that fails the first save matching `when`
++    /// after writing it (the directory's sync), and the `fail_load`-th
++    /// load (from 1), if any.
++    struct Flaky {
++        keep: MemKeep,
++        when: Box<dyn Fn(&Record) -> bool>,
++        failed: Rc<RefCell<Option<Record>>>,
++        loads: Cell<usize>,
++        fail_load: usize,
++        spoil: Cell<bool>,
++    }
++
++    impl Keep for Flaky {
++        fn load(&self) -> io::Result<Loaded> {
++            self.loads.set(self.loads.get() + 1);
++            if self.loads.get() == self.fail_load {
++                return Err(io::Error::other("the record could not be read"));
++            }
++            self.keep.load()
++        }
++        fn save(&self, record: &Record) -> Result<(), SaveError> {
++            self.keep.save(record)?;
++            if self.failed.borrow().is_none() && (self.when)(record) {
++                *self.failed.borrow_mut() = Some(record.clone());
++                if self.spoil.get() {
++                    if let Some(b) = self.keep.0.borrow_mut().record.as_mut().and_then(|r| r.last_mut()) {
++                        *b ^= 0xff;
++                    }
++                }
++                return Err(io::Error::other("the directory's sync failed").into());
++            }
++            Ok(())
++        }
++        fn write_manifest(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
++            self.keep.write_manifest(name, bytes)
++        }
++        fn read_manifest(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
++            self.keep.read_manifest(name)
++        }
++        fn remove_manifest(&self, name: &str) -> io::Result<()> {
++            self.keep.remove_manifest(name)
++        }
++        fn manifest_names(&self) -> io::Result<Vec<String>> {
++            self.keep.manifest_names()
++        }
++        fn marked(&self) -> io::Result<bool> {
++            self.keep.marked()
++        }
++    }
++
++    fn flaky(when: Box<dyn Fn(&Record) -> bool>, fail_load: usize) -> (Flaky, MemKeep, Rc<RefCell<Option<Record>>>) {
++        let failed = Rc::new(RefCell::new(None));
++        let keep = MemKeep::default();
++        (
++            Flaky {
++                keep: keep.clone(),
++                when,
++                failed: failed.clone(),
++                loads: Cell::new(0),
++                fail_load,
++                spoil: Cell::new(false),
++            },
++            keep,
++            failed,
++        )
++    }
++
++    fn sched_any<Z: Zfs, D: Daemon, K: Keep>(
++        agent: &mut Agent<Z, D, K, FakeClock>,
++        every: Duration,
++        go: &mut dyn FnMut() -> bool,
++    ) -> (i32, String, String) {
++        let (mut out, mut err) = (Shared::default(), Shared::default());
++        let mut told = out.clone();
++        agent.set_outcome_sink(Box::new(move |name, outcome| {
++            let _ = told.write_all(outcome_line(name, outcome).as_bytes());
++        }));
++        let code = schedule(agent, every, go, &mut out, &mut err);
++        (code, out.text(), err.text())
++    }
++
++    fn disk(keep: &MemKeep) -> Record {
++        match Record::decode(keep.0.borrow().record.as_ref().expect("saved")) {
++            Ok(record) => record,
++            Err(why) => panic!("{why}"),
++        }
++    }
++
++    /// RA (Codex's first finding): a begin whose save of its intent
++    /// landed and then failed, in a round that goes on to settle an older
++    /// publish that saves: the intent must not be written out of the
++    /// record by that save.
++    #[test]
++    fn ra_a_begin_whose_save_failed_does_not_lose_its_intent() {
++        let world = World::new(Mode::Busy);
++        world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
++        let (keep, files, failed) = flaky(Box::new(|r: &Record| r.under_way.len() == 2), 0);
++        let mut agent = Agent::new(
++            FakeZfs(world.clone()),
++            FakeDaemon(world.clone()),
++            keep,
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent");
++        let start = mono(&world);
++        let w = world.clone();
++        let mut switched = false;
++        let mut go = move || {
++            let now = mono(&w);
++            if now >= start + 60_000 && !switched {
++                switched = true;
++                let mut w = w.borrow_mut();
++                w.lag_ms = 0;
++                let n = w.now_ms;
++                w.daemon.upload_ends_at(n);
++            }
++            now < start + 200_000
++        };
++        let (_, out, err) = sched_any(&mut agent, Duration::from_secs(60), &mut go);
++        let b = failed.borrow().as_ref().expect("a save failed").under_way[1].name.clone();
++        let rounds = rounds(&out);
++        assert!(rounds[1].starts_with("round 2 failed "), "{out}{err}");
++        let published = world.borrow().refs.contains_key(&b);
++        let under_way = disk(&files).under_way.iter().any(|p| p.name == b);
++        assert!(
++            published || under_way,
++            "the intent of {b}, on the disk after the failed save, is gone:\n{out}{err}"
++        );
++    }
++
++    /// A ZFS whose `count` takes `slow` of the fake clock.
++    struct SlowCount {
++        zfs: FakeZfs,
++        world: Rc<RefCell<World>>,
++        slow: Duration,
++    }
++
++    impl Zfs for SlowCount {
++        fn layout(&mut self, pool: &str) -> Result<Layout, ZfsError> {
++            self.zfs.layout(pool)
++        }
++        fn props(&mut self, pool: &str) -> Result<Props, ZfsError> {
++            self.zfs.props(pool)
++        }
++        fn nocacheflush(&mut self) -> Result<bool, ZfsError> {
++            self.zfs.nocacheflush()
++        }
++        fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
++            self.world.borrow_mut().advance(self.slow);
++            self.zfs.count(pool)
++        }
++        fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
++            self.zfs.snapshot(pool, t)
++        }
++        fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
++            self.zfs.datasets(pool, t)
++        }
++        fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
++            self.zfs.destroy(pool, t)
++        }
++        fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError> {
++            self.zfs.members(pool, t)
++        }
++        fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
++            self.zfs.hold(pool, t, tag)
++        }
++        fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
++            self.zfs.release(pool, t, tag)
++        }
++        fn held(
++            &mut self,
++            pool: &str,
++            t: &str,
++            tag: &str,
++            members: Option<&[Member]>,
++        ) -> Result<Held, ZfsError> {
++            self.zfs.held(pool, t, tag, members)
++        }
++        fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
++            self.zfs.tagged(pool, tag)
++        }
++        fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
++            self.zfs.assist(pool, value)
++        }
++    }
++
++    /// RB (Codex's second finding): "and at least one round of the
++    /// engine" (the docs of `schedule`). With the count of the pool's
++    /// datasets slower than the round's last second, no round of the
++    /// engine runs, and nothing is ever published.
++    #[test]
++    fn rb_a_round_runs_the_engine_once_however_slow_its_reads() {
++        let world = World::new(Mode::Busy);
++        let keep = MemKeep::default();
++        let zfs = SlowCount {
++            zfs: FakeZfs(world.clone()),
++            world: world.clone(),
++            slow: Duration::from_millis(1_500),
++        };
++        let mut agent = Agent::new(
++            zfs,
++            FakeDaemon(world.clone()),
++            keep.clone(),
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent");
++        let start = mono(&world);
++        let (_, out, err) = sched_any(
++            &mut agent,
++            Duration::from_secs(1),
++            &mut until(&world, start + 600_000),
++        );
++        let n = rounds(&out).len();
++        let snaps = out.matches("snap/").count();
++        let phases: Vec<String> = disk(&keep)
++            .under_way
++            .iter()
++            .map(|p| format!("{}:{:?}", p.name, std::mem::discriminant(&p.phase)))
++            .collect();
++        assert!(
++            snaps > 0,
++            "{n} rounds, no publish: under way {phases:?}; last lines {:?} {err}",
++            out.lines().rev().take(3).collect::<Vec<_>>()
++        );
++    }
++
++    /// RC (at 16f3b3b): a begin whose save failed with another publish
++    /// under way, and a restart at once that cannot read the record: the
++    /// round settles nothing on what the process holds (a save of it
++    /// would write the new intent out), and the next round starts again
++    /// and publishes both.
++    #[test]
++    fn rc_a_restart_that_fails_leaves_the_round_alone() {
++        let world = World::new(Mode::Busy);
++        world.borrow_mut().lag_ms = 90_000;
++        // Loads: 1 at Agent::new, 2 at the restart after the failed save
++        // (fails), 3 at the next round's.
++        let (keep, _files, failed) =
++            flaky(Box::new(|r: &Record| r.under_way.len() == 2), 2);
++        let mut agent = Agent::new(
++            FakeZfs(world.clone()),
++            FakeDaemon(world.clone()),
++            keep,
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent");
++        let start = mono(&world);
++        let (code, out, err) = sched_any(
++            &mut agent,
++            Duration::from_secs(60),
++            &mut until(&world, start + 400_000),
++        );
++        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
++        let failed = failed.borrow().clone().expect("a save failed");
++        let rounds = rounds(&out);
++        assert!(rounds[1].starts_with("round 2 failed "), "{out}");
++        assert_eq!(field(rounds[1], "begun"), "-", "{out}");
++        assert!(
++            err.contains("round 2: a manifest's file: the record could not be read"),
++            "{err}"
++        );
++        for publish in &failed.under_way {
++            let told = format!("snap/{} ", publish.name);
++            assert!(
++                out.lines().any(|l| l.starts_with(&told)),
++                "{} not told:\n{out}{err}",
++                publish.name
++            );
++        }
++    }
++
++    /// RD: a round past four ticks: skipped 3, and the ticks add up.
++    #[test]
++    fn rd_the_ticks_add_up_when_a_round_runs_past_several() {
++        let world = World::new(Mode::Busy);
++        let keep = MemKeep::default();
++        let slow = Slow {
++            daemon: FakeDaemon(world.clone()),
++            asked: 0,
++            nth: 0,
++            slow: Duration::from_secs(250),
++        };
++        let mut agent = agent_on(&world, slow, &keep);
++        let start = mono(&world);
++        let every = Duration::from_secs(60);
++        let (_, out, err) = scheduled(&mut agent, every, &mut until(&world, start + 400_000));
++        let rounds = rounds(&out);
++        assert_eq!(field(rounds[0], "skipped"), "3", "{out}{err}");
++        let took = field(rounds[0], "took_ms").parse::<u64>().expect("ms");
++        assert_eq!(field(rounds[1], "late_ms"), (took - 240_000).to_string(), "{out}");
++        let skipped: u64 = rounds.iter().map(|l| field(l, "skipped").parse::<u64>().expect("n")).sum();
++        // Ticks at 0, 60, ..., 360 s: 7, each a round or skipped.
++        assert_eq!(rounds.len() as u64 + skipped, 7, "{out}");
++    }
++
++    /// RE: the give-up's line where its save landed and then failed,
++    /// within one process (no kill): the module docs name only a kill.
++    #[test]
++    fn re_a_give_up_whose_save_failed_is_told() {
++        let world = World::new(Mode::Busy);
++        world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
++        let (keep, files, failed) = flaky(Box::new(|r: &Record| !r.abandoned.is_empty()), 0);
++        let mut agent = Agent::new(
++            FakeZfs(world.clone()),
++            FakeDaemon(world.clone()),
++            keep,
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent")
++        .with_age_max(Duration::from_secs(90));
++        let start = mono(&world);
++        let (_, out, err) = sched_any(
++            &mut agent,
++            Duration::from_secs(60),
++            &mut until(&world, start + 400_000),
++        );
++        let t = failed.borrow().as_ref().expect("a save failed").abandoned[0].name.clone();
++        assert!(disk(&files).abandoned.iter().any(|a| a.name == t));
++        assert!(
++            out.lines().any(|l| l.starts_with(&format!("abandoned {t} "))),
++            "{t} given up and never told:\n{out}{err}"
++        );
++    }
++    /// RF (at 16f3b3b): a record found corrupt when the engine starts
++    /// again (here at once, after a begin whose save failed) ends `run`
++    /// with 6, after the round's line.
++    #[test]
++    fn rf_a_record_found_corrupt_at_a_restart_ends_run() {
++        let world = World::new(Mode::Busy);
++        let (keep, _files, _failed) = flaky(Box::new(|r: &Record| !r.under_way.is_empty()), 0);
++        keep.spoil.set(true);
++        let mut agent = Agent::new(
++            FakeZfs(world.clone()),
++            FakeDaemon(world.clone()),
++            keep,
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent");
++        let start = mono(&world);
++        let (code, out, err) = sched_any(
++            &mut agent,
++            Duration::from_secs(60),
++            &mut until(&world, start + 600_000),
++        );
++        assert_eq!(code, exit::RECORD, "{out}{err}");
++        let rounds = rounds(&out);
++        assert_eq!(rounds.len(), 1, "{out}{err}");
++        assert!(rounds[0].starts_with("round 1 failed "), "{out}");
++        assert!(err.contains("round 1: the record is corrupt"), "{err}");
++    }
++
++    /// The first save that forgets a publish (the record empty again
++    /// after it held one) fails after it was written.
++    fn forget_fails() -> Box<dyn Fn(&Record) -> bool> {
++        let seen = Cell::new(false);
++        Box::new(move |r: &Record| {
++            if r.under_way.is_empty() {
++                seen.get()
++            } else {
++                seen.set(true);
++                false
++            }
++        })
++    }
++
++    /// RI and RJ: a save in the settling that failed after it was
++    /// written (the one that forgets a publish); `fail_load` fails the
++    /// next round's restart too. Its line is told once.
++    fn settle_save_fails(fail_load: usize) -> (String, String) {
++        let world = World::new(Mode::Busy);
++        let (keep, _files, failed) = flaky(forget_fails(), fail_load);
++        let mut agent = Agent::new(
++            FakeZfs(world.clone()),
++            FakeDaemon(world.clone()),
++            keep,
++            FakeClock(world.clone()),
++            VOLUME,
++            POOL,
++        )
++        .expect("the agent");
++        let start = mono(&world);
++        let (code, out, err) = sched_any(
++            &mut agent,
++            Duration::from_secs(60),
++            &mut until(&world, start + 200_000),
++        );
++        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
++        assert!(failed.borrow().is_some(), "no save failed:\n{out}{err}");
++        let rounds = rounds(&out);
++        assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
++        let told: Vec<&str> = out.lines().filter(|l| l.starts_with("snap/")).collect();
++        let once: BTreeSet<&str> = told.iter().copied().collect();
++        assert_eq!(once.len(), told.len(), "a line told twice:\n{out}{err}");
++        (out, err)
++    }
++
++    /// RI (at 16f3b3b): the next round restarts after a save of the
++    /// settling failed.
++    #[test]
++    fn ri_a_settle_whose_save_failed_restarts_at_the_next_round() {
++        let (out, _) = settle_save_fails(0);
++        assert!(rounds(&out)[1].starts_with("round 2 ok "), "{out}");
++    }
++
++    /// RJ (at 16f3b3b): where that restart fails, the round does nothing
++    /// on what the process holds; the next starts again.
++    #[test]
++    fn rj_a_failed_restart_at_a_round_start_leaves_the_round_alone() {
++        let (out, err) = settle_save_fails(2);
++        let rounds = rounds(&out);
++        assert!(rounds[1].starts_with("round 2 failed "), "{out}");
++        assert_eq!(field(rounds[1], "begun"), "-", "{out}");
++        assert!(err.contains("round 2: a manifest's file: "), "{err}");
++    }
++
++    /// RG: a publish stopped for a person is told once while it stays
++    /// under way, across rounds.
++    #[test]
++    fn rg_a_stop_is_told_once_across_rounds() {
++        let world = World::new(Mode::Busy);
++        world.borrow_mut().refuse_every_publish = Some(Code::Name);
++        let keep = MemKeep::default();
++        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
++        let start = mono(&world);
++        let (_, out, err) = scheduled(
++            &mut agent,
++            Duration::from_secs(60),
++            &mut until(&world, start + 200_000),
++        );
++        let stops: Vec<&str> = out.lines().filter(|l| l.starts_with("stopped ")).collect();
++        assert!(!stops.is_empty(), "{out}{err}");
++        let names: BTreeSet<&str> = stops.iter().map(|l| l.split(' ').nth(1).expect("name")).collect();
++        assert_eq!(names.len(), stops.len(), "{out}");
++    }
++}
++

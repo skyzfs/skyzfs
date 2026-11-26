@@ -1,0 +1,43 @@
+# Plants at 16f3b3b, with scratch-tests.patch: BASE and N1 to N7.
+BASE rc= 101 ['test result: FAILED. 232 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.12s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N1 the begin error restarts at the next round, after the settle rc= 101 ['test result: FAILED. 228 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.12s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::a_begin_whose_save_failed_restarts_before_the_round_settles
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+N2 the limit asked before the first pass rc= 101 ['test result: FAILED. 230 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.13s']
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::a_round_settles_once_however_long_the_count_took
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N3 a failed restart after a begin error lets the round settle rc= 101 ['test result: FAILED. 231 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.14s']
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N4 a failed restart at the round top falls through rc= 101 ['test result: FAILED. 231 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rj_a_failed_restart_at_a_round_start_leaves_the_round_alone
+N5 a settle error does not restart rc= 101 ['test result: FAILED. 231 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.28s']
+   FAILED program::tests::review167::ri_a_settle_whose_save_failed_restarts_at_the_next_round
+   FAILED program::tests::review167::rj_a_failed_restart_at_a_round_start_leaves_the_round_alone
+N6 every begin error restarts at once, refusals too rc= 101 ['test result: FAILED. 231 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.03s']
+   FAILED program::tests::a_begin_refused_for_eight_under_way_still_settles
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N7 a begin error that restarts skips the settle rc= 101 ['test result: FAILED. 232 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.13s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+ALLDONE
+# P2 to P7, from the first run at 16f3b3b (tests as in the patch).
+P2 only Unmarked ends run rc= 101 ['test result: FAILED. 229 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+P3 forget drops the stops of publishes under way rc= 101 ['test result: FAILED. 229 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.81s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rg_a_stop_is_told_once_across_rounds
+P4 Forget keeps the memory of the publish rc= 101 ['test result: FAILED. 231 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.20s']
+   FAILED engine::tests::rh_the_memory_of_a_publish_goes_with_it
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P5 restart keeps the memory rc= 101 ['test result: FAILED. 232 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.88s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P7 restart keeps the sweep done rc= 101 ['test result: FAILED. 232 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.67s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+ALLDONE

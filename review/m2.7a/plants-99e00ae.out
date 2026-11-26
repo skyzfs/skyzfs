@@ -1,0 +1,61 @@
+# Plants at 99e00ae, my tests of then (RC and RF in their first form).
+BASE rc= 101 ['test result: FAILED. 226 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.57s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P1 a failed restart falls through to begin and settle rc= 101 ['test result: FAILED. 225 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.94s']
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P2 only Unmarked ends run rc= 101 ['test result: FAILED. 225 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+P3 forget drops the stops of publishes under way rc= 101 ['test result: FAILED. 225 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.35s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rg_a_stop_is_told_once_across_rounds
+P4 Forget keeps the memory of the publish rc= 101 ['test result: FAILED. 225 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.21s']
+   FAILED engine::tests::rh_the_memory_of_a_publish_goes_with_it
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P5 restart keeps the memory rc= 101 ['test result: FAILED. 226 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.16s']
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+P6 a stop is not told to the sink rc= 101 ['test result: FAILED. 224 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.44s']
+   FAILED program::tests::a_stop_for_a_person_exits_stopped_until_recovered
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::rg_a_stop_is_told_once_across_rounds
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P7 restart keeps the sweep done rc= 101 ['test result: FAILED. 226 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+A4 no restart after a failed round rc= 101 ['test result: FAILED. 224 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.08s']
+   FAILED program::tests::a_failed_round_is_told_and_the_next_starts_again_from_the_record
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+A3 a refused begin keeps the round from settling rc= 101 ['test result: FAILED. 226 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s']
+   FAILED program::tests::a_begin_refused_for_eight_under_way_still_settles
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+S1 snap told after the Forget commit rc= 101 ['test result: FAILED. 225 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.36s']
+   FAILED program::tests::an_outcome_is_out_before_the_record_forgets_it
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+FIX1 restart at once after a begin error that restarts, then settle rc= 101 ['test result: FAILED. 226 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.00s']
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::rb_a_round_runs_the_engine_once_however_slow_its_reads
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+FIX2 one round of the engine before the deadline counts rc= 101 ['test result: FAILED. 227 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.09s']
+   FAILED program::tests::review167::ra_a_begin_whose_save_failed_does_not_lose_its_intent
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told

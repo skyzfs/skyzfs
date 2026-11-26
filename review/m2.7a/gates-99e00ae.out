@@ -1,0 +1,20 @@
+head 99e00aeb40916e2e652ac746fc2d91c0110537f4
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
+test plain rc=0 1977 passed 0 failed 16 ignored
+doc plain rc=0
+/dev/vda        252G   25G   14G  64% /
+clippy skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+test skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0 2035 passed 0 failed 16 ignored
+doc skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+/dev/vda        252G   25G   14G  64% /
+clippy skyzfs-ublk-sys_control-test-program rc=0
+test skyzfs-ublk-sys_control-test-program rc=0 2001 passed 0 failed 18 ignored
+doc skyzfs-ublk-sys_control-test-program rc=0
+/dev/vda        252G   25G   14G  64% /
+clippy skyzfs-agent-cli_test-hooks rc=0
+test skyzfs-agent-cli_test-hooks rc=0 1977 passed 0 failed 16 ignored
+doc skyzfs-agent-cli_test-hooks rc=0
+/dev/vda        252G   27G   12G  71% /
+done

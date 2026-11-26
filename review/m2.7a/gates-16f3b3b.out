@@ -1,0 +1,15 @@
+head 16f3b3b8fd94dd33dc6adbd1f7e18f9b19f0ff02
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+tree skyzfs-agent: 0 of the featured crates
+tree skyzfs-agent-cli: 0 of the featured crates
+clippy plain rc=0
+test plain rc=0 230 passed 0 failed 0 ignored
+doc plain rc=0
+/dev/vda        252G   24G   15G  62% /
+clippy skyzfs-agent-cli_test-hooks rc=0
+test skyzfs-agent-cli_test-hooks rc=0 230 passed 0 failed 0 ignored
+doc skyzfs-agent-cli_test-hooks rc=0
+/dev/vda        252G   24G   15G  63% /
+host tests x20: 0 failed runs
+done
