@@ -146,8 +146,7 @@ there, and the user decides when it merges.
   (the program `skyzfs-agent`, M2.6c-3), holds the agent's test hooks
   (`--kill-at`, `--trace-points`, `--expiry-s`, `--assist-after-s`); a
   build without it refuses those options. Run clippy and the tests with
-  it as well. The agent rig (M2.T5) uses that build. CI builds it only
-  once testing's job for it has merged.
+  it as well. The agent rig (M2.T5) uses that build. CI builds it (#156).
 - **Run `rustup update stable` before the local gates.** CI installs the
   current stable toolchain, and a container's can be months older. A
   newer clippy has lints an older one does not, so "clean locally" on
