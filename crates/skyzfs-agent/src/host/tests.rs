@@ -104,7 +104,14 @@ fn a_program_past_its_limit_goes_with_what_it_started() {
     for pid in &pids {
         assert!(soon(|| ended(pid)), "{pid} still runs");
     }
-    assert!(soon(|| stuck() == before), "{} left counted", stuck());
+    // At most as many as before, not as many: a child of the test before
+    // this one (killed at its limit) can still be counted when this one
+    // begins, and is reaped while it runs.
+    assert!(
+        soon(|| stuck() <= before),
+        "{} left counted, {before} before",
+        stuck()
+    );
 }
 
 /// At [`STUCK_MAX`] children left running, a call is refused with the

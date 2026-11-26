@@ -13,6 +13,8 @@
 //!                      [--limit-s S]
 //! skyzfs-agent recover --volume VOL --run RUN --device DEV --pool POOL --dir DIR
 //!                      --name T (--give-up | --retry) [--limit-s S]
+//! skyzfs-agent run     --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+//!                      [--every-s S] [--expiry-s E]
 //! skyzfs-agent record  --dir DIR
 //! ```
 //!
@@ -30,10 +32,12 @@
 //!   its manifests ([`crate::record`]). One agent at a time holds it.
 //!
 //! `publish` begins a publish, then settles every publish under way
-//! ([`crate::engine::Agent::settle`]) for at most `--limit-s` seconds
-//! ([`LIMIT_DEFAULT`]). `--expiry-s` is how long the daemon may keep the
-//! request pending (the protocol's default where it is not given, at
-//! most [`skyzfs_control::EXPIRY_MAX`]). `settle` settles every publish
+//! ([`crate::engine::Agent::settle`]) until `--limit-s` seconds have
+//! passed ([`LIMIT_DEFAULT`]), and in any case through one pass over
+//! the publishes under way, however long the reads before it take.
+//! `--expiry-s` is how long the daemon may keep the request pending
+//! (the protocol's default where it is not given, at most
+//! [`skyzfs_control::EXPIRY_MAX`]). `settle` settles every publish
 //! under way and begins none; it is how a rig, or a person, finishes
 //! what a stopped agent left. `recover` records a person's choice for one
 //! publish under way, then settles: `--give-up` gives it up as
@@ -41,7 +45,74 @@
 //! publish already made kept), and `--retry` clears a stop for a person
 //! ([`crate::record::Person::Stopped`]) so that it is planned again.
 //! `record` prints the record ([`dump`]) without its lock, and changes
-//! nothing. None of them runs as a daemon: each ends.
+//! nothing. Each of these ends; `run` (below) runs until it is told to
+//! end.
+//!
+//! # `run`
+//!
+//! `run` holds the record's directory and publishes at each tick, every
+//! `--every-s` seconds ([`EVERY_DEFAULT`]) on the clock that does not
+//! step, the first at once ([`schedule`]). Each tick's round begins a
+//! publish and then settles every publish under way until the next tick:
+//! a publish that does not settle within its round is settled by the
+//! rounds after it, as `settle` would, and up to
+//! [`crate::record::UNDER_WAY_MAX`] are under way at once (a begin
+//! refused for that is reported and the round still settles). It takes
+//! no `--limit-s`: its limit is the tick.
+//!
+//! After each round, one line on standard output:
+//!
+//! ```text
+//! round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<k> begun=<t|-> under_way=<count>
+//! ```
+//!
+//! - `took_ms`: how long the round ran; `late_ms`: how long after its
+//!   tick it began.
+//! - `skipped`: ticks that passed while this round ran and had no round
+//!   of their own. Rounds never overlap: the next round begins as this
+//!   one ends, for the last tick that passed, and its `late_ms` says by
+//!   how much.
+//! - `begun`: the publish this round began, `-` where its begin failed.
+//! - `under_way`: publishes still under way as the round ended.
+//! - `ok`: no engine call of the round returned an error. It does not
+//!   say that anything moved: a round that waited on the daemon
+//!   throughout is `ok`.
+//! - `failed`: an engine call of the round failed, the two refusals of
+//!   a begin included (8 under way, the pool's premise); each error is
+//!   on standard error as `skyzfs-agent: round <n>: <error>`, and the
+//!   next tick tries again. After an error that may leave the process
+//!   unlike its record (any but those two refusals), the engine reads
+//!   the record again, as a new process would: at once after a begin's
+//!   error, before the round settles; at the next round after a
+//!   settle's error. A reading that fails is tried again at the next
+//!   round, which settles nothing until it succeeds. So `begun=-` can
+//!   follow a `snap/` line for the very publish whose begin failed: its
+//!   intent was saved before the save failed, and the round settled it.
+//!
+//! The outcome lines below are printed as each publish leaves the
+//! record or stops, among the round lines. A `snap/` line is printed
+//! before the record forgets its publish, so that a run killed in
+//! between prints it again when it starts: at least once. An
+//! `abandoned` line is printed just after the record's save that gives
+//! the publish up; a kill between the two loses that line, and so does
+//! that save failing after it was written (the give-up is then on the
+//! disk and the line was never told). The record keeps the give-up among
+//! its abandoned, which `record` prints.
+//!
+//! `run` ends with 0 at SIGTERM or SIGINT, between two rounds of the
+//! engine or while it waits for a tick, within [`WAKE`]; what is under
+//! way stays in the record for the next start. A signal that comes
+//! while the engine works ends `run` only once its step is done (a
+//! begin, or a pass over the publishes under way): a ZFS call is not
+//! cut, and the step's other calls run first, each within its own time
+//! limit. A second signal ends it
+//! at once with 1. It ends with 6 after the round line of a round that
+//! met a record that is corrupt or another volume's, or holds it would
+//! release with no agent's marker: a person judges those. It ends with
+//! 1 or 8 where it cannot start (the record unread, or the directory
+//! held), and with 6 where the record it starts on is one a person
+//! judges. `recover` of a volume whose `run` holds its directory exits 8:
+//! a person stops `run`, recovers, and starts it again.
 //!
 //! # What it prints
 //!
@@ -118,6 +189,14 @@ use crate::zfs::Zfs;
 /// margin, so that any publish whose daemon answers settles within it.
 pub const LIMIT_DEFAULT: Duration = Duration::from_secs(3 * 60 * 60);
 
+/// The time between two rounds of `run` where `--every-s` is not given:
+/// the product's snapshot a minute (design §9, M2's exit criteria).
+pub const EVERY_DEFAULT: Duration = Duration::from_secs(60);
+
+/// How long `run` sleeps at most between two looks at whether it is
+/// told to end, while it waits for the next tick.
+pub const WAKE: Duration = Duration::from_millis(250);
+
 /// The program's exit codes.
 pub mod exit {
     /// Published (`publish`, `recover`), or every publish published or
@@ -160,6 +239,14 @@ pub enum Command {
         name: String,
         /// The choice.
         choice: Choice,
+    },
+    /// Begin a publish every `every`, and settle, until told to end
+    /// ([`schedule`]).
+    Run {
+        /// The volume, the daemon and the pool.
+        run: Run,
+        /// The time between two rounds' ticks.
+        every: Duration,
     },
     /// Print the record in `dir`.
     Record {
@@ -233,6 +320,8 @@ usage:
                        [--limit-s S]
   skyzfs-agent recover --volume VOL --run RUN --device DEV --pool POOL --dir DIR
                        --name T (--give-up | --retry) [--limit-s S]
+  skyzfs-agent run     --volume VOL --run RUN --device DEV --pool POOL --dir DIR
+                       [--every-s S] [--expiry-s E]
   skyzfs-agent record  --dir DIR
 where:
   VOL  the volume's directory, as skyzfsd create made it
@@ -247,7 +336,9 @@ test hooks (a build with the feature test-hooks):
 exit: 0 published, 1 error, 2 usage, 3 abandoned, 4 stopped for a person,
       5 premise refused (publish), 6 record corrupt or another volume's,
       or no agent's marker where holds would be released,
-      7 unsettled at the limit, 8 another agent holds the record";
+      7 unsettled at the limit, 8 another agent holds the record;
+      run: 0 told to end (SIGTERM, SIGINT), 6 as above, 1 another error
+      at its start, 8 as above";
 
 /// Parse the arguments after the program's name. `hooks` says whether
 /// the build takes the test hooks.
@@ -299,15 +390,20 @@ pub fn parse(args: &[String], hooks: bool) -> Result<Command, Usage> {
     let command = match verb.as_str() {
         "publish" => {
             let mut run = take.run()?;
-            run.expiry = take.seconds("expiry-s")?;
-            if let Some(expiry) = run.expiry {
-                if expiry > EXPIRY_MAX {
-                    return usage(format!("--expiry-s: at most {} s", EXPIRY_MAX.as_secs()));
-                }
-            }
+            run.expiry = take.expiry()?;
             Command::Publish(run)
         }
         "settle" => Command::Settle(take.run()?),
+        "run" => {
+            // A round settles until the next tick, not for `--limit-s`.
+            if take.options.iter().any(|(k, _)| k == "limit-s") {
+                return usage("run takes no option --limit-s".into());
+            }
+            let mut run = take.run()?;
+            run.expiry = take.expiry()?;
+            let every = take.seconds("every-s")?.unwrap_or(EVERY_DEFAULT);
+            Command::Run { run, every }
+        }
         "recover" => {
             let run = take.run()?;
             let name = take.required("name")?;
@@ -396,6 +492,18 @@ impl Options {
     fn hook_seconds(&mut self, key: &str) -> Result<Option<Duration>, Usage> {
         self.hook_allowed(key)?;
         self.seconds(key)
+    }
+
+    /// `--expiry-s`, at most [`EXPIRY_MAX`].
+    fn expiry(&mut self) -> Result<Option<Duration>, Usage> {
+        let expiry = self.seconds("expiry-s")?;
+        match expiry {
+            Some(expiry) if expiry > EXPIRY_MAX => Err(Usage(format!(
+                "--expiry-s: at most {} s",
+                EXPIRY_MAX.as_secs()
+            ))),
+            _ => Ok(expiry),
+        }
     }
 
     fn run(&mut self) -> Result<Run, Usage> {
@@ -661,8 +769,10 @@ pub enum Task {
     Recover(String, Choice),
 }
 
-/// Run `task` on `agent`, then settle for at most `limit`: the outcome
-/// lines on `out`, errors on `err`; the exit code ([module docs](self)).
+/// Run `task` on `agent`, then settle for at most `limit`: the
+/// `unsettled` lines on `out`, errors on `err`; the exit code ([module
+/// docs](self)). The outcome lines are the agent's outcome sink's, as
+/// [`wired`] makes it.
 pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     agent: &mut Agent<Z, D, K, C>,
     task: &Task,
@@ -681,10 +791,9 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             Err(e) => return failed(&e, err),
         },
     };
+    // Each outcome line was printed as it was made, by the agent's
+    // outcome sink ([`wired`]; S1 of #149's review).
     let settled = agent.settle(limit);
-    for (name, outcome) in agent.outcomes() {
-        let _ = out.write_all(outcome_line(name, outcome).as_bytes());
-    }
     let unsettled = match &settled {
         Ok(()) => Vec::new(),
         Err(Error::Unsettled(names)) => names.clone(),
@@ -716,6 +825,236 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
 fn failed(e: &Error, err: &mut dyn Write) -> i32 {
     let _ = writeln!(err, "skyzfs-agent: {e}");
     exit_of_error(e)
+}
+
+/// The volume's id from its file `remote`, in the volume's directory
+/// ([`volume_id`]), or what is wrong, naming the file.
+pub fn volume_of(run: &Run) -> Result<[u8; 16], String> {
+    let remote = run.volume.join("remote");
+    match std::fs::read(&remote) {
+        Ok(bytes) => volume_id(&bytes).map_err(|why| format!("{}: {why}", remote.display())),
+        Err(e) => Err(format!(
+            "{}: {e} (a volume with no place in object storage publishes nothing)",
+            remote.display()
+        )),
+    }
+}
+
+/// The agent of `volume` on its adapters, as `run` sets it: its settings
+/// ([`configured`]), each report on `err` as a line ([`report_line`]) and
+/// each outcome on `out` ([`outcome_line`]), each as it is made and
+/// flushed. Everything the program decides before it acts, so that the
+/// engine's fakes test it (S8 and T2 of #149's review); the binary only
+/// makes the adapters of the machine.
+pub fn wired<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+    run: &Run,
+    volume: [u8; 16],
+    (zfs, daemon, keep, clock): (Z, D, K, C),
+    mut out: Box<dyn Write>,
+    mut err: Box<dyn Write>,
+) -> Result<Agent<Z, D, K, C>, Error> {
+    let agent = Agent::new(zfs, daemon, keep, clock, volume, &run.pool)?;
+    let mut agent = configured(agent, run).with_sink(Box::new(move |name, report| {
+        let _ = err.write_all(report_line(name, report).as_bytes());
+        let _ = err.flush();
+    }));
+    agent.set_outcome_sink(Box::new(move |name, outcome| {
+        let _ = out.write_all(outcome_line(name, outcome).as_bytes());
+        let _ = out.flush();
+    }));
+    Ok(agent)
+}
+
+/// Whether `e` ends `run`: the record is corrupt or another volume's, or
+/// the sweep finds no agent's marker. A person judges those, and a round
+/// would find them again ([`exit::RECORD`]). Every other error fails its
+/// round only.
+fn ends_run(e: &Error) -> bool {
+    matches!(e, Error::Corrupt(_) | Error::Volume(_) | Error::Unmarked(_))
+}
+
+/// Whether `run` starts the engine again after a round that failed with
+/// `e` ([`Agent::restart`]): after any error but the two refusals that
+/// [`Agent::begin`] makes before it changes anything, 8 publishes under
+/// way ([`Error::Full`]) and the pool's premise ([`Error::Premise`]).
+/// Before this package an engine call that failed ended the program,
+/// and the next one started from the record; within one process the
+/// engine goes on from such an error only by the same way, so that no
+/// path is new to the crash matrix.
+fn restarts(e: &Error) -> bool {
+    !matches!(e, Error::Full | Error::Premise(_))
+}
+
+/// What one round of `run` did ([`round_line`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Round {
+    /// Its number, from 1.
+    pub n: u64,
+    /// Whether an engine call of the round failed (its error is on
+    /// standard error).
+    pub failed: bool,
+    /// How long after its tick it began, in milliseconds.
+    pub late_ms: u64,
+    /// How long it took, in milliseconds.
+    pub took_ms: u64,
+    /// The ticks that passed while it ran and that get no round of their
+    /// own.
+    pub skipped: u64,
+    /// The name of the publish it began; `None` where it began none.
+    pub begun: Option<String>,
+    /// The publishes under way when it ended.
+    pub under_way: usize,
+}
+
+/// The line of standard output for a round of `run` (M2.T4 reads it):
+///
+/// ```text
+/// round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<ticks> begun=<t|-> under_way=<count>
+/// ```
+pub fn round_line(round: &Round) -> String {
+    format!(
+        "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={}\n",
+        round.n,
+        if round.failed { "failed" } else { "ok" },
+        round.took_ms,
+        round.late_ms,
+        round.skipped,
+        round.begun.as_deref().unwrap_or("-"),
+        round.under_way
+    )
+}
+
+/// `skyzfs-agent run`: a round at each tick, `every` apart on the clock
+/// that does not step, the first at once, until `go` says no; the
+/// exit code ([module docs](self), "`run`").
+///
+/// A round begins a publish ([`Agent::begin`]), then settles every
+/// publish under way ([`Agent::settle_while`]) until the next tick, and
+/// at least one round of the engine: what is still under way then is
+/// settled by the rounds after. A begin that fails (8 under way, the
+/// pool's premise refused, no cuts from the daemon, ZFS) does not keep
+/// the round from settling. The round's line follows on `out`
+/// ([`round_line`]), each error of the round on `err`.
+///
+/// - **No overlap.** A round that runs past the next tick is not cut
+///   short. Where ticks passed while it ran, the next round begins as it
+///   ends, late, for the last of them, and the others are counted as
+///   skipped in the line of the round that ran past them.
+/// - **A failed round**, where an engine call failed, is reported, and
+///   the next tick tries again. Where the error may have left the engine
+///   unlike what it saved (`restarts`), the engine is loaded anew
+///   ([`Agent::restart`]) before it is asked anything more, so that it
+///   goes on as a new process would after a kill at that point: at once
+///   where the begin failed so, before the round settles, and at the
+///   next round's beginning where the settling did. A restart that fails
+///   is tried again at the next round, which settles nothing until it
+///   succeeds. An error that ends `run`
+///   (`ends_run`) ends it at once with [`exit::RECORD`].
+/// - **An end** is asked of `go` before each round, between the engine's
+///   rounds within it, and every [`WAKE`] while it waits for a tick; it
+///   ends `run` with [`exit::PUBLISHED`], with what is under way left in
+///   the record for the next start.
+/// - **What it keeps** of the publishes that left the record is
+///   forgotten after each round ([`Agent::forget`]), once their lines
+///   are out.
+pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+    agent: &mut Agent<Z, D, K, C>,
+    every: Duration,
+    go: &mut dyn FnMut() -> bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let every_ms = ms(every).max(1);
+    let start = agent.clock().mono_ms();
+    let mut tick = 0u64;
+    let mut restart = false;
+    for n in 1u64.. {
+        if !go() {
+            break;
+        }
+        let due = start.saturating_add(tick.saturating_mul(every_ms));
+        let began = agent.clock().mono_ms();
+        let mut failed = Vec::new();
+        let mut begun = None;
+        let mut ended = None;
+        if restart {
+            match agent.restart() {
+                Ok(()) => restart = false,
+                Err(e) => failed.push(e),
+            }
+        }
+        if !restart {
+            match agent.begin() {
+                Ok(name) => begun = Some(name),
+                Err(e) => {
+                    // A begin that may have left the engine unlike what it
+                    // saved (a save whose rename landed) restarts at once,
+                    // before the engine settles anything: a save of the
+                    // publishes under way from its own copy would write the
+                    // new intent out of the record (P2 of Codex on #167).
+                    // A refusal (`Full`, `Premise`) changed nothing.
+                    let reload = restarts(&e);
+                    failed.push(e);
+                    if reload {
+                        if let Err(again) = agent.restart() {
+                            failed.push(again);
+                            restart = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !restart {
+            let next = due.saturating_add(every_ms);
+            let left = next.saturating_sub(agent.clock().mono_ms());
+            let limit = Duration::from_millis(left).max(crate::engine::TICK);
+            match agent.settle_while(limit, go) {
+                Ok(()) | Err(Error::Unsettled(_)) => {}
+                Err(e) => {
+                    restart = restarts(&e);
+                    failed.push(e);
+                }
+            }
+        }
+        for e in &failed {
+            let _ = writeln!(err, "skyzfs-agent: round {n}: {e}");
+            if ends_run(e) {
+                ended = Some(exit_of_error(e));
+            }
+        }
+        let now = agent.clock().mono_ms();
+        let passed = now.saturating_sub(due) / every_ms;
+        let round = Round {
+            n,
+            failed: !failed.is_empty(),
+            late_ms: began.saturating_sub(due),
+            took_ms: now.saturating_sub(began),
+            skipped: passed.saturating_sub(1),
+            begun,
+            under_way: agent.record().under_way.len(),
+        };
+        let _ = out.write_all(round_line(&round).as_bytes());
+        let _ = out.flush();
+        if let Some(code) = ended {
+            return code;
+        }
+        agent.forget();
+        tick = tick.saturating_add(passed.max(1));
+        let due = start.saturating_add(tick.saturating_mul(every_ms));
+        while agent.clock().mono_ms() < due {
+            if !go() {
+                return exit::PUBLISHED;
+            }
+            let left = due.saturating_sub(agent.clock().mono_ms());
+            agent.clock().sleep(Duration::from_millis(left).min(WAKE));
+        }
+    }
+    exit::PUBLISHED
+}
+
+/// `d` in milliseconds.
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The volume's id from the bytes of its file `remote` ([module

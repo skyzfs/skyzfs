@@ -7,6 +7,8 @@
 
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use skyzfs_agent::daemon::DaemonSocket;
 use skyzfs_agent::engine::{Agent, Points, SystemClock};
@@ -46,6 +48,7 @@ fn run() -> i32 {
         Command::Publish(run) => settle(&run, &Task::Publish),
         Command::Settle(run) => settle(&run, &Task::Settle),
         Command::Recover { run, name, choice } => settle(&run, &Task::Recover(name, choice)),
+        Command::Run { run, every } => scheduled(&run, every),
     }
 }
 
@@ -91,44 +94,28 @@ fn dump(dir: &Path) -> i32 {
     }
 }
 
-/// `publish`, `settle` and `recover`.
-fn settle(run: &Run, task: &Task) -> i32 {
-    let remote = run.volume.join("remote");
-    let volume = match std::fs::read(&remote) {
-        Ok(bytes) => match program::volume_id(&bytes) {
-            Ok(volume) => volume,
-            Err(why) => {
-                eprintln!("skyzfs-agent: {}: {why}", remote.display());
-                return exit::ERROR;
-            }
-        },
-        Err(e) => {
-            eprintln!(
-                "skyzfs-agent: {}: {e} (a volume with no place in object storage publishes nothing)",
-                remote.display()
-            );
-            return exit::ERROR;
-        }
-    };
+/// The agent on the machine's adapters ([`program::wired`]), with the
+/// test hooks' points; the exit code where it cannot be made.
+type MachineAgent = Agent<ZfsCli<System>, DaemonSocket<System>, Store, SystemClock>;
+
+fn agent(run: &Run) -> Result<MachineAgent, i32> {
+    let volume = program::volume_of(run).map_err(|why| {
+        eprintln!("skyzfs-agent: {why}");
+        exit::ERROR
+    })?;
     // The daemon's channel, in the volume's own directory under the run
     // directory, named as the daemon names it.
-    let socket = match skyzfs_control::socket_path(&run.run, &run.volume) {
-        Ok(socket) => socket,
-        Err(e) => {
-            eprintln!("skyzfs-agent: {}: {e}", run.volume.display());
-            return exit::ERROR;
+    let socket = skyzfs_control::socket_path(&run.run, &run.volume).map_err(|e| {
+        eprintln!("skyzfs-agent: {}: {e}", run.volume.display());
+        exit::ERROR
+    })?;
+    let store = Store::open(&run.dir).map_err(|e| {
+        eprintln!("skyzfs-agent: {e}");
+        match e {
+            OpenError::Held(_) => exit::HELD,
+            OpenError::Io(_) => exit::ERROR,
         }
-    };
-    let store = match Store::open(&run.dir) {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("skyzfs-agent: {e}");
-            return match e {
-                OpenError::Held(_) => exit::HELD,
-                OpenError::Io(_) => exit::ERROR,
-            };
-        }
-    };
+    })?;
     let zfs = ZfsCli::new(System, Limits::default());
     let daemon = DaemonSocket::new(
         socket,
@@ -136,35 +123,68 @@ fn settle(run: &Run, task: &Task) -> i32 {
         skyzfs_control::ASK_LIMIT,
         System,
     );
-    let agent = match Agent::new(
-        zfs,
-        daemon,
-        store,
-        SystemClock::default(),
+    let parts = (zfs, daemon, store, SystemClock::default());
+    let mut agent = program::wired(
+        run,
         volume,
-        &run.pool,
-    ) {
-        Ok(agent) => agent,
-        Err(e) => {
-            eprintln!("skyzfs-agent: {e}");
-            return program::exit_of_error(&e);
-        }
-    };
-    let mut agent = program::configured(agent, run).with_sink(Box::new(|name, report| {
-        let mut err = io::stderr().lock();
-        let _ = err.write_all(program::report_line(name, report).as_bytes());
-        let _ = err.flush();
-    }));
+        parts,
+        Box::new(io::stdout()),
+        Box::new(io::stderr()),
+    )
+    .map_err(|e| {
+        eprintln!("skyzfs-agent: {e}");
+        program::exit_of_error(&e)
+    })?;
     match points(&run.hooks) {
         Ok(Some(points)) => agent = agent.with_points(points),
         Ok(None) => {}
         Err(e) => {
             eprintln!("skyzfs-agent: --trace-points: {e}");
+            return Err(exit::ERROR);
+        }
+    }
+    Ok(agent)
+}
+
+/// `publish`, `settle` and `recover`.
+fn settle(run: &Run, task: &Task) -> i32 {
+    match agent(run) {
+        Ok(mut agent) => {
+            let (mut out, mut err) = (io::stdout(), io::stderr());
+            program::execute(&mut agent, task, run.limit, &mut out, &mut err)
+        }
+        Err(code) => code,
+    }
+}
+
+/// `run`: until `SIGTERM` or `SIGINT`, which it takes between two rounds
+/// of the engine ([`program::schedule`]). A second one ends it at once,
+/// with exit 1, as a kill would: the agent is made to be killed anywhere.
+fn scheduled(run: &Run, every: std::time::Duration) -> i32 {
+    let told = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+        // The order is signal-hook's own for "a second one ends it": the
+        // conditional exit first, so that the first signal finds the
+        // flag unset and only sets it.
+        let registered = signal_hook::flag::register_conditional_shutdown(
+            signal,
+            exit::ERROR,
+            Arc::clone(&told),
+        )
+        .and_then(|_| signal_hook::flag::register(signal, Arc::clone(&told)));
+        if let Err(e) = registered {
+            eprintln!("skyzfs-agent: the signal {signal}: {e}");
             return exit::ERROR;
         }
     }
-    let (mut out, mut err) = (io::stdout().lock(), io::stderr());
-    program::execute(&mut agent, task, run.limit, &mut out, &mut err)
+    match agent(run) {
+        Ok(mut agent) => {
+            let (mut out, mut err) = (io::stdout(), io::stderr());
+            let mut go = || !told.load(Ordering::SeqCst);
+            program::schedule(&mut agent, every, &mut go, &mut out, &mut err)
+        }
+        Err(code) => code,
+    }
 }
 
 /// The test hooks' points ([`program::points`]).

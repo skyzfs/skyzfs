@@ -34,10 +34,11 @@
 //! agent reports it as a failed call, and a later run tries again (the
 //! lead's L3 on #147). The cap is small and fixed: the agent runs one
 //! command at a time, so four held means the pool is not answering.
-//! The count is of this process only: an agent run by a timer starts
-//! anew at each tick, with none counted, while the children an earlier
-//! tick left may still run. Keeping the cap across ticks is an item of
-//! M2.7's plan (NL-D1 of #147's review).
+//! The count is of this process only. `skyzfs-agent run` is one process
+//! for all its rounds, so it holds the count across ticks; a command
+//! that starts anew each time (`publish` or `settle` run by a timer)
+//! starts with none counted, while the children an earlier one left may
+//! still run (NL-D1 of #147's review).
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt as _;
