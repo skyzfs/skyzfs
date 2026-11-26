@@ -4900,4 +4900,26 @@ mod past {
             assert_eq!(syncs(&world), 0, "{user:?}");
         }
     }
+
+    /// A sync that fails is not counted toward the bound: after more
+    /// failures than the bound, a ZFS that takes the syncs again carries
+    /// the pool past the abandoned groups (Astra's P2 on #170). Mutant:
+    /// the count raised before the sync returns.
+    #[test]
+    fn a_sync_that_failed_is_not_charged_to_the_bound() {
+        let world = rewound(5);
+        world.borrow_mut().assist_fails = SYNC_PAST_MAX + 1;
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        for n in 0..=SYNC_PAST_MAX {
+            let past = agent.sync_past(&mut || true);
+            assert!(matches!(past, Err(Error::Zfs(_))), "{n}: {past:?}");
+        }
+        assert_eq!(syncs(&world), 0);
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("synced"),
+            Past::Clear { synced: 3 }
+        );
+        assert_eq!(newest(&world).map(|(_, itself)| itself), Some(true));
+    }
 }

@@ -125,6 +125,13 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// 2.4.1: [`Zfs::assist`]). More syncs than this without such a cut mean
 /// that something else keeps the newest cut from opening as itself; the
 /// agent then leaves the pool alone and says so each round.
+///
+/// Only a sync that returned is counted. One that failed may have
+/// written a group (a `zpool sync` cut at its time limit) or nothing (a
+/// `zfs set` refused), and the agent cannot tell which; it is not
+/// counted, so that failures while ZFS refuses cannot use up the bound
+/// and leave an idle pool behind once ZFS recovers (Astra's P2 on #170).
+/// Such a sync fails its round, so at most one is made a round.
 pub const SYNC_PAST_MAX: u32 = 128;
 
 /// What [`Agent::sync_past`] found.
@@ -804,9 +811,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             let value = self.clock.now_ms().max(self.assists.saturating_add(1));
             self.assists = value;
             count_before = Some(cuts.count);
+            // Counted once it returned: a sync that failed is not charged
+            // to the bound (Astra's P2 on #170). Such a sync fails the
+            // round, and the next comes a round later.
+            self.zfs.assist(&self.pool, value)?;
             synced = synced.saturating_add(1);
             self.past_synced = self.past_synced.saturating_add(1);
-            self.zfs.assist(&self.pool, value)?;
         }
     }
 

@@ -130,6 +130,11 @@
 //! rounds of this process sync no more until they see a cut that opens
 //! as itself (a change of the pool's own, or a person's `zpool sync`,
 //! makes one); a restart of the engine does not start the count again.
+//! Only syncs that returned count toward it: a sync that fails fails its
+//! round, as a begin's error does, and is not counted. An end asked
+//! during the syncs begins no publish, even where the last of them made
+//! the newest cut open as itself: the round line says `begun=-` and the
+//! process ends.
 //! `publish` does not sync before its begin: a publish asked while the
 //! pool is below the abandoned groups pends, and the planner's own syncs
 //! carry it (the case M2's criterion tests).
@@ -1048,8 +1053,11 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         if !restart {
             match agent.sync_past(go) {
                 Ok(Past::Clear { synced: k }) => {
+                    // An end asked during the syncs begins nothing: the
+                    // begin would be a new step after it (Astra's P2 on
+                    // #170). The settle below then ends at once.
                     synced = k;
-                    clear = true;
+                    clear = k == 0 || go();
                 }
                 Ok(Past::Unseen) => clear = true,
                 Ok(Past::Behind {

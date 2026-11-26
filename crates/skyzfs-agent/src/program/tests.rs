@@ -1505,6 +1505,31 @@ fn a_round_after_a_rewind_import_syncs_past_it_before_it_begins() {
     assert_eq!(world.borrow().refs.len(), 2, "{out}");
 }
 
+/// An end asked during the syncs begins no publish, even where the last
+/// sync made the newest cut open as itself: the begin would be a new
+/// step after the end, and would leave an intent for the next process
+/// (Astra's P2 on #170). Mutant: no `go` asked between the syncs and the
+/// begin.
+#[test]
+fn an_end_during_the_syncs_begins_no_publish() {
+    let world = rewound_t(5);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let watched = world.clone();
+    let mut go = move || watched.borrow().synced_at.len() < 3;
+    let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    assert_eq!((code, err.as_str()), (exit::PUBLISHED, ""), "{out}");
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 1, "{out}");
+    assert!(rounds[0].starts_with("round 1 ok "), "{out}");
+    assert_eq!(field(rounds[0], "synced"), "3", "{out}");
+    assert_eq!(field(rounds[0], "begun"), "-", "{out}");
+    assert_eq!(field(rounds[0], "under_way"), "0", "{out}");
+    assert_eq!(world.borrow().synced_at.len(), 3, "{out}");
+    assert!(world.borrow().programs.is_empty(), "{out}");
+    assert!(keep.0.borrow().record.is_none());
+}
+
 /// A round whose syncs stop with the newest cut still behind begins no
 /// publish, says why on standard error, and is `ok`: nothing failed, and
 /// no cut could carry a publish (M2.7d). The rounds after it sync no
