@@ -1,0 +1,50 @@
+K01 counts: first name, not the middle KILLED 2
+    FAIL: pin counts, one gone: got 'zfs release skyzfs-publish skzq@c /zfs destroy skzq@c /zfs list -H -p -o name,userrefs -t snapshot skzq@c skzq/child@
+    FAIL: counts: the gone one said: got '0', want '1'
+K02 counts: names not made unique KILLED 3
+    FAIL: pin counts: got 'zfs list -H -p -o name,userrefs -t snapshot skzq@t skzq@t skzq/child@t ', want 'zfs list -H -p -o name,userrefs -t snapshot skz
+    FAIL: pin counts, one gone: got 'zfs release skyzfs-publish skzq@c /zfs destroy skzq@c /zfs list -H -p -o name,userrefs -t snapshot skzq@c skzq@c skzq
+    FAIL: counts: the gone one said: got '0', want '1'
+K03 counts: destroyed without its release KILLED 2
+    FAIL: pin counts, one gone: got '/zfs destroy skzq/child@c /zfs list -H -p -o name,userrefs -t snapshot skzq@c skzq/child@c /zfs destroy -r skzq@c ', 
+    FAIL: counts: after holds-r, in order, before hold-2: got 'yesyesyesyesnonoyesyesyes', want 'yesyesyesyesyesyesyesyesyes'
+K04 counts: @c not let go before its destroy SURVIVED 0
+K05 odd tags: a space for the tab KILLED 1
+    FAIL: odd tags: the bytes: got 'other\ holder|$'other\nholder'', want '$'other\tholder'|$'other\nholder''
+K06 odd tags: nl not released KILLED 2
+    FAIL: pin odd tags: got 'zfs hold other	holder skzq@t /zfs holds -H skzq@t /zfs holds -H -r skzq@t /', want 'zfs hold other	holder skzq@t /zfs holds -
+    FAIL: odd tags: in order, after the release, before holds-absent: got 'yesyesyesyesyesnono', want 'yesyesyesyesyesyesyes'
+G01 recover: kill.tsv ignored KILLED 1
+    FAIL recover: in dhook after the hook's end, a daemon that ended is a verdict: got '', want 'daemon_serving'
+G02 quiet: kill.tsv ignored KILLED 1
+    FAIL agent_quiet: dhook's exemption only until the hook's end: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended
+G03 quiet: kill.tsv inverted KILLED 2
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;session_end;log arare: case h1: verdict daemon_s
+    FAIL agent_quiet: dhook's exemption only until the hook's end: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended
+G04 reserve: back to || true KILLED 2
+    FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  serve_again', want 'daemon_stopped skyzfsd serve 2 h
+    FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got 'daemon_stopped skyzfsd serve 2 ended with 5 on SIGTERM
+G05 reserve: no serve again after it KILLED 2
+    FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got 'daemon_stopped skyzfsd serve 2 had ended before SIGTER
+    FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got 'daemon_stopped skyzfsd serve 2 had ended before SIGTER
+G06 reserve: status not read KILLED 2
+    FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got 'daemon_stopped skyzfsd serve 2 had ended before SIGTER
+    FAIL reserve: a daemon that had ended (5) before the stop is a verdict, then served again: got 'daemon_stopped skyzfsd serve 2 had ended before SIGTER
+G07 end_daemon: back to || true KILLED 2
+    FAIL end_daemon: a daemon ended before the stop, the hook's verdict, and on: got 'went on, detached yes', want 'verdict daemon_stopped: skyzfsd serve 
+    FAIL end_daemon: a daemon ended before the stop, with no hook: got 'went on, detached yes', want 'rig error: skyzfsd serve had ended before SIGTERM (s
+G08 end_daemon: no detach after the verdict KILLED 1
+    FAIL end_daemon: a daemon ended before the stop, the hook's verdict, and on: got 'verdict daemon_stopped: skyzfsd serve had ended before SIGTERM (stat
+N01 cleanup: detach only with a daemon KILLED 1
+    FAIL cleanup: the device deleted with no daemon serving: got '0 lim 120 zpool export -f skzcut;', want '0 lim 120 zpool export -f skzcut;lim 60 skyzfs
+N02 cleanup: detach under timeout KILLED 1
+    FAIL cleanup: the device deleted with no daemon serving: got '0 lim 120 zpool export -f skzcut;timeout 60 skyzfsd detach --dir TMPDIR/clv
+N03 cleanup: no volume check KILLED 1
+    FAIL cleanup: no volume, no detach: got '0 lim 120 zpool export -f skzcut;lim 60 skyzfsd detach --dir TMPDIR/clgone --run-dir TMPDIR
+N04 cleanup: not only through the daemon KILLED 1
+    FAIL cleanup: not through the daemon, no detach: got '0 lim 120 zpool export -f skzcut;lim 60 skyzfsd detach --dir TMPDIR/clvol --run-dir
+N05 quiet: agent bound 2000 KILLED 1
+    FAIL agent_quiet: its bounds: got '1 2000;1 120;', want '1 20;1 120;'
+N06 quiet: writer bound 1200 KILLED 1
+    FAIL agent_quiet: its bounds: got '1 20;1 1200;', want '1 20;1 120;'
+END

@@ -1,0 +1,7 @@
+S10 settings line: groups default 3, settle_txgs still 2 SURVIVED 0
+S11 settings line: limit default 3 KILLED 1
+    FAIL: scale_all: the settle's setting said once: got '0', want '1'
+S12 settings line: margin default 5 SURVIVED 0
+S13 settings line: said per entry KILLED 1
+    FAIL: scale_all: the settle's setting said once: got '10', want '1'
+END

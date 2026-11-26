@@ -1,0 +1,53 @@
+S01 settle: after the margin, not before SURVIVED 0
+S02 settle: not called KILLED 9
+    FAIL: rounds list r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds list idle-r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds list r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds list idle-r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds idle-r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds idle-r2: the settle said: got '', want 'settle=off'
+    FAIL: writing: the window after the groups: got 'no 1795722792.285481 1795722792.156823316', want 'yes'
+S03 settle: groups of the kstat history counted KILLED 2
+    FAIL: settle: two groups after the start: got 'settled=S groups=3', want 'settled=S groups=2'
+    FAIL: settle: a group before the start not counted: got 'settled=0.004 groups=2', want 'NOT SETTLED: 1 of 2 groups in 1 s'
+S04 settle: ticks counted as groups KILLED 3
+    FAIL: settle: two groups after the start: got 'NOT SETTLED: 0 of 2 groups in 30 s', want 'settled=S groups=2'
+    FAIL: settle: the default, two: got 'NOT SETTLED: 0 of 2 groups in 0 s', want 'NOT SETTLED: 1 of 2 groups in 0 s'
+    FAIL: settle: waits for the group: got 'NOT SETTLED: 0 of 2 groups in 5 s', want 'yes'
+S05 settle: default one group KILLED 1
+    FAIL: settle: the default, two: got 'settled=0.004 groups=1', want 'NOT SETTLED: 1 of 2 groups in 0 s'
+S06 settle: limit in seconds read as tenths KILLED 1
+    FAIL: settle: waits for the group: got 'NOT SETTLED: 1 of 2 groups in 5 s', want 'yes'
+S07 settle: settled file not written KILLED 9
+    FAIL: rounds list r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds list idle-r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds list r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds list idle-r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds idle-r1: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds r2: the settle said: got '', want 'settle=off'
+    FAIL: rounds holds idle-r2: the settle said: got '', want 'settle=off'
+    FAIL: writing: settled before the window: got '', want 'settled=S groups=N'
+S08 settle: about line not written KILLED 1
+    FAIL: writing: the settle said: got '0', want '1'
+S09 settle: settings line not said KILLED 1
+    FAIL: scale_all: the settle's setting said once: got '0', want '1'
+W01 reading_for: overruns the window KILLED 1
+    FAIL: reading_for: no run that would end past the window: got 'runs=3/1.232', want 'runs=2/yes'
+W02 reading_for: one run only KILLED 7
+    FAIL: reading_for: runs back to back: got '1', want 'yes'
+    FAIL: reading_for: within the window: got '0.113', want 'yes'
+    FAIL: reading_for: no run that would end past the window: got 'runs=1/yes', want 'runs=2/yes'
+    FAIL: rounds list: the windows: got '1.003 1.004 0.123 0.126', want 'yes'
+    FAIL: rounds list: the reads back to back: got '1', want 'yes'
+    FAIL: rounds holds: the windows: got '1.004 1.004 0.124 0.127', want 'yes'
+    FAIL: rounds holds: the reads back to back: got '1', want 'yes'
+W03 rounds: idle the step read, odd KILLED 5
+    FAIL: rounds list: the windows: got '0.020 1.004 1.058 1.064', want 'yes'
+    FAIL: rounds holds: the windows: got '0.018 1.004 1.058 1.063', want 'yes'
+    FAIL: rounds: the window, both sides: got 'scale-9-sweep-list-idle-r1 0.050 scale-9-sweep-list-r1 reading_for 10 ', want 'scale-9-sweep-list-idle-r1 1
+    FAIL: rounds: a longer read, the window its time rounded up: got 'scale-9-sweep-list-idle-r1 12.2 scale-9-sweep-list-r1 reading_for 13 ', want 'scale-
+    FAIL: rounds: window 09 is nine: got 'scale-9-sweep-list-idle-r1 0.050', want 'scale-9-sweep-list-idle-r1 9'
+END

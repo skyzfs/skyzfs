@@ -1,0 +1,24 @@
+W04 rounds: no rounding up KILLED 1
+    FAIL: rounds: a longer read, the window its time rounded up: got 'scale-9-sweep-list-idle-r1 12 scale-9-sweep-list-r1 reading_for 12 ', want 'scale-9-
+W05 rounds: window ignores the step KILLED 2
+    FAIL: rounds: a longer read, the window its time rounded up: got 'scale-9-sweep-list-idle-r1 10 scale-9-sweep-list-r1 reading_for 10 ', want 'scale-9-
+    FAIL: rounds: a whole second not rounded up: got 'scale-9-sweep-list-idle-r1 10', want 'scale-9-sweep-list-idle-r1 12'
+W06 rounds: cut read still run KILLED 1
+    FAIL: rounds: the step's read cut, said: got 'scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1 |', 
+W07 rounds: budget check removed KILLED 1
+    FAIL: rounds: the budget cannot hold a round: got 'scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1
+W08 rounds: need without the settle KILLED 1
+    FAIL: rounds: the budget cannot hold a round: got 'scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-holds-r1
+W09 rounds: limit against one window KILLED 1
+    FAIL: rounds: a record's limit under two windows: got 'scale-9-sweep-list-idle-r1 scale-9-sweep-list-r1 scale-9-sweep-holds-idle-r1 scale-9-sweep-hold
+W10 rounds: octal rounds KILLED 1
+    FAIL: rounds: 08 is eight: got '', want '8'
+W11 rounds: groups read from the control KILLED 1
+    FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads r
+W12 rounds: longest_sync for sync_longest KILLED 1
+    FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads r
+W13 rounds: reads stalls from the control KILLED 1
+    FAIL: rounds: the line from each side's records: got '2/scale 9: sweep-list against an idle control, 2 rounds of 10 s (odd rounds idle first): reads r
+W14 median: > not stripped KILLED 1
+    FAIL: median: >x read as x: got '0.300', want '0.400'
+END
