@@ -66,6 +66,7 @@ on:
       - tests/kernel/cut_watch.py
       - tests/kernel/cut_summary.py
       - tests/kernel/replay_check.py
+      - tests/kernel/logwrites.py
       - tests/lib/**
       # What skyzfs-agent, skyzfs-nodeb and skyzfsd are built from
       # (cargo tree -e normal), and the agent's crate.

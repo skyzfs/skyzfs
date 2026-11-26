@@ -50,6 +50,8 @@ in DIR/cases.tsv. For each case:
   or a later reach not made) ended its first run as FIRST_RC says for
   its scenario: 0, 3 where T is abandoned (destroy, tooold); unmarked's
   own pin judges its 6.
+- pin_ID_settle (server): the settle (the agent's next start) ended 3
+  where its output gives a publish up (`abandoned T WHY`), else 0.
 - pin_ID_clean (server): after the last run, the record has nothing
   under way and reads (the agent's dump, exit 0: a record that does not
   read is exit 6), no hold of the agent's tag is on any snapshot, the
@@ -583,6 +585,8 @@ def main():
                 cont = marks.get(f'continued-{cid}')
                 premise(f'premise_{cid}_answer_lost',
                         late_premise(text_of(os.path.join(cd, 'record-stopped.txt')), t, trace, cont or 0)
+                        + ([] if text_of(os.path.join(cd, 'record-stopped.rc')).strip() == '0'
+                           else ['the record did not read when the agent was stopped'])
                         if cont else ['no mark continued-' + cid],
                         f'{t} asked and not done when the agent stopped; it looked after it went on')
             if scen == 'dhook':
@@ -621,6 +625,14 @@ def main():
                 stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                 holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
                       'server', 'the publish released the hold that no publish named')
+            if 'settle' in outs:
+                src = text_of(os.path.join(cd, 'settle.rc')).strip()
+                want_rc = '3' if outs['settle']['abandoned'] else '0'
+                holds(f'pin_{cid}_settle', [] if src == want_rc else
+                      [f'the settle ended {src or "with no status"}, not {want_rc}: '
+                       f'{flat(text_of(os.path.join(cd, "settle.err"), need=False))[-200:]}'],
+                      'server', f'the settle ended {src}' + (', giving up ' + ', '.join(outs['settle']['abandoned'])
+                                                              if outs['settle']['abandoned'] else ''))
             got = outcome(t, list(outs.values()), set(pub) | set(gone), text_of(os.path.join(cd, 'record-after.txt')))
             want = expected(scen, kill, destroyed, t)
             if want is None:

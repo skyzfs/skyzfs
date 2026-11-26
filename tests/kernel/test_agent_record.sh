@@ -54,7 +54,7 @@ is "a point's reach of 0" "$(refused CUT_AGENT=/bin/true CUT_S3_DOWN=x CUT_S3_UP
 cases() { # SHARD [POINTS]
     # shellcheck disable=SC2034,SC2329
     (
-        RDIR=$T/r; mkdir -p "$RDIR/cases/trace"; echo 0 > "$RDIR/cases/trace/publish.rc"
+        RDIR=$T/r; mkdir -p "$RDIR/cases/trace"
         AGENT_SHARD=$1 AGENT_POINTS=${2:-}
         agent_begin() { :; }; agent_end() { :; }
         rig_error() { echo "rig error: $*"; exit 2; }

@@ -89,7 +89,7 @@ def right():
             ('gone', 'gone', 'holding:before:1', '137', 'g1', {
                 'trace.tsv': trace('g1', *upto('holding', 'before')),
                 'publish.err': 'skyzfs-agent: test hook --kill-at: killed at holding before (1)\n',
-                'destroy.log': '', 'settle.out': 'abandoned g1 destroyed\n',
+                'destroy.log': '', 'settle.out': 'abandoned g1 destroyed\n', 'settle.rc': '3\n',
                 'retry.out': f'snap/a4 {commit_of("a4")}\n', 'retry.rc': '0\n'}),
             ('d-carry-swap', 'dhook', '-', '0', 'a5', {
                 'trace.tsv': trace('a5', *WHOLE), 'publish.out': f'snap/a5 {commit_of("a5")}\n',
@@ -489,7 +489,7 @@ class Main(unittest.TestCase):
         # published-gone.tsv has one.
         c = right()
         c['gone'] = 'gone\tg1\n'
-        c['cases'] = [(i, s, k, r, t, dict(own, **{'settle.out': ''}) if i == 'gone' else own)
+        c['cases'] = [(i, s, k, r, t, dict(own, **{'settle.out': '', 'settle.rc': '0\n'}) if i == 'gone' else own)
                       for i, s, k, r, t, own in c['cases']]
         rc, lines = run_course(course=c)
         self.assertEqual(rc, 1)
@@ -524,6 +524,15 @@ class Main(unittest.TestCase):
         self.assertEqual(lines['pin_K-restart-look-before-2_outcome'][0], 'ok')
         # Abandoned with no kill: 3, as FIRST_RC says.
         self.assertEqual(ac.FIRST_RC['destroy'], '3')
+
+    def test_the_settle_s_status(self):
+        # G5 of #158's review: 0, or 3 where its output gives T up.
+        rc, lines = run_course()
+        self.assertEqual(lines['pin_gone_settle'], ('ok', '[server] the settle ended 3, giving up g1'))
+        self.assertEqual(lines['pin_A-asked-after-1_settle'][0], 'ok')
+        for cid, code in (('A-asked-after-1', '101'), ('A-asked-after-1', '3'), ('gone', '0'), ('gone', '')):
+            rc, lines = run_course(change=case_file(cid, 'settle.rc', code))
+            self.assertEqual((rc, lines[f'pin_{cid}_settle'][0]), (1, 'FAILED'), (cid, code))
 
     def test_a_record_that_does_not_read_ends_1(self):
         # D3 of #158's review: the dump ended 6 and printed nothing under way.
@@ -707,7 +716,7 @@ class Main(unittest.TestCase):
         c = right()
         c['cases'].append(('d6', 'late', '-', '0', 'a6', {
             'trace.tsv': trace('a6', *WHOLE, ns=1000),
-            'record-stopped.txt': RECORD + 'publish a6 phase=asked count=2\n',
+            'record-stopped.txt': RECORD + 'publish a6 phase=asked count=2\n', 'record-stopped.rc': '0\n',
             'publish.out': f'snap/a6 {commit_of("a6")}\n'}))
         c['pub'].append(('d6', 'a6', 90, 507, commit_of('a6')))
         c['rows']['a6'] = (11, 91)
@@ -717,6 +726,10 @@ class Main(unittest.TestCase):
         rc, lines = run_course(course=c, change=write('marks.tsv', '1125\tcontinued-d6\n'))
         self.assertEqual((rc, lines['premise_d6_answer_lost'][0]), (2, 'ERROR'))
         rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['premise_d6_answer_lost'][0]), (2, 'ERROR'))
+        # The record that did not read when the agent was stopped.
+        rc, lines = run_course(course=c, change=lambda d: (write('marks.tsv', '1105\tcontinued-d6\n')(d),
+                                                           case_file('d6', 'record-stopped.rc', '6\n')(d)))
         self.assertEqual((rc, lines['premise_d6_answer_lost'][0]), (2, 'ERROR'))
 
     def test_restart_s_premise(self):
