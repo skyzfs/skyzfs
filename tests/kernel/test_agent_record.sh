@@ -20,7 +20,7 @@ fn() {
     awk -v h="$1() {" '!on && index($0, h) == 1 { on = 1; print; if ($0 ~ /}$/) exit; next }
         on { print; if ($0 == "}") exit }' "$SCRIPT"
 }
-for f in rec_aplain point_reached wait_point case_name; do
+for f in rec_aplain point_reached wait_point case_name published; do
     is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
 done
 
@@ -90,6 +90,20 @@ is "wait_point: an agent that ended is not waited for to the limit" "$((SECONDS 
 sleep 30 & AGENT_PID=$!
 is "wait_point: the limit" "$(wait_point "done" before 1 || echo "not, $?")" "not, 1"
 kill "$AGENT_PID"; wait "$AGENT_PID" 2>/dev/null
+
+# published: a name whose snapshot node A does not have is a line of
+# published-gone.tsv, not the rig's error (D1 of #158's review); a list
+# that fails is the rig's error.
+eval "$(fn published)"
+(
+    fails=0; RDIR=$T/p; CDIR=$RDIR/cases/gone; POOL=skzcut; mkdir -p "$CDIR"; : > "$RDIR/published-gone.tsv"
+    zfs() { [ -n "${ZFS_FAILS:-}" ] && { echo "no pool" >&2; return 1; }; printf '%s\n' "$POOL@other"; }
+    rig_error() { echo "rig error: $*"; exit 2; }
+    published g1; published g1
+    is "published: a name node A has no snapshot of" "$(cat "$RDIR/published-gone.tsv")" "$(printf 'gone\tg1')"
+    is "published: a list that fails" "$(ZFS_FAILS=1 published g2)" "rig error: zfs list of skzcut's snapshots failed: no pool"
+    exit "$fails"
+) || fails=$((fails + $?))
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

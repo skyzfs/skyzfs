@@ -23,8 +23,11 @@
 #   finds no snap/T after the settle, retry.{out,err,rc}: a new publish
 #   in the same directory, which must publish (the milestone's
 #   criterion: "snap/t absent and a retry publishes it");
-# - record-before.txt and record-after.txt: the record (`skyzfs-agent
-#   record`) before the settle and after the last run;
+# - record-before.{txt,err,rc} and record-after.{txt,err,rc}: the record
+#   (`skyzfs-agent record`) before the settle and after the last run,
+#   with its status: a record that does not read (exit 6) is a verdict;
+# - first.{out,err,rc} (sweep): the publish that marks the directory;
+# - both-kill.tsv (both): the daemon's status after the rig's SIGKILL;
 # - snaprow.txt: node B's `snap-row` of T after the settle;
 # - holds.txt: every hold on the pool's snapshots after the last run,
 #   read before the rig releases any it left (holds-released.txt);
@@ -40,12 +43,15 @@
 # of DIR/published.tsv: ID, name, the snapshot's createtxg and guid on
 # node A, and the commit the agent printed for it (`-` where it printed
 # none: it was published by a run that was killed after); the SHA-256 of
-# its files, read through .zfs/snapshot, are DIR/snap-NAME.sha256.
+# its files, read through .zfs/snapshot, are DIR/snap-NAME.sha256. A name
+# published whose snapshot node A no longer has (one destroyed and
+# published all the same) is a line of DIR/published-gone.tsv: ID, name;
+# the check fails it.
 #
 # The scenarios (scen_NAME):
 # - plain: the publish on the pool as it goes on (a writer beside it).
 # - restart (d1; Look, Count, Unasked and asking anew): object storage
-#   frozen (CUT_S3_DOWN, `docker pause`) before the agent starts, so that
+#   frozen (CUT_S3_DOWN, `docker stop`) before the agent starts, so that
 #   no cut can commit and the publish pends; at `asked:after` the daemon
 #   is killed (kill -9), node B reads snap/T with the daemon down
 #   (between.txt: the premise that it had not landed), the store thaws
@@ -105,7 +111,7 @@
 #
 # Needs CUT_AGENT (bins/skyzfs-agent built with --features test-hooks),
 # CUT_S3_DOWN and CUT_S3_UP (the workflow freezes the store with
-# `docker pause`).
+# `docker stop` and thaws it with `docker start`).
 # The scenarios are called by name ("scen_$s"), which shellcheck cannot
 # follow, and the names this file uses that cut-record.sh sets (RDIR,
 # SERVE_RC and the others) are not visible to it.
@@ -245,6 +251,15 @@ writer_off() {
 published() {
     local n=$1 printed
     [ -e "$RDIR/snap-$n.sha256" ] && return 0
+    grep -qxF "$(printf '%s\t%s' "$(basename "$CDIR")" "$n")" "$RDIR/published-gone.tsv" 2>/dev/null && return 0
+    zfs list -H -o name -t snapshot -r "$POOL" > "$CDIR/snapshots.txt" 2> "$CDIR/snapshots.err" \
+        || rig_error "zfs list of $POOL's snapshots failed: $(tail -n 2 "$CDIR/snapshots.err")"
+    if ! grep -qxF "$POOL@$n" "$CDIR/snapshots.txt"; then
+        # Published, and node A has no such snapshot: the check's verdict
+        # (a snapshot destroyed before the hold is never published).
+        printf '%s\t%s\n' "$(basename "$CDIR")" "$n" >> "$RDIR/published-gone.tsv"
+        return 0
+    fi
     (cd "$MNT/.zfs/snapshot/$n" && find . -maxdepth 1 -type f -printf '%P\n' | LC_ALL=C sort | xargs -r sha256sum --) \
         > "$RDIR/snap-$n.sha256" || rig_error "reading the files of $POOL@$n failed"
     printed=$(cat "$CDIR"/*.out 2>/dev/null | awk -v n="snap/$n" '$1 == n { c = $2 } END { print c }')
@@ -260,9 +275,16 @@ snaprow() {
 # After the case's first run: the settle, as the next start of the agent
 # does; node B's look at T; a retry where snap/T is absent; and the
 # pool's state, for the check.
+# LABEL: the record's dump into CDIR/LABEL.txt, its errors and status
+# beside it.
+adump() {
+    local rc=0
+    "$AGENT" record --dir "$ADIR" > "$CDIR/$1.txt" 2> "$CDIR/$1.err" || rc=$?
+    echo "$rc" > "$CDIR/$1.rc"
+}
 asettle() {
     local t n rc
-    "$AGENT" record --dir "$ADIR" > "$CDIR/record-before.txt" 2>&1 || true
+    adump record-before
     acmd settle settle --limit-s 600 "${CASE_AGE[@]}"
     t=$(case_name)
     echo "${t:--}" > "$CDIR/names.txt"
@@ -277,7 +299,7 @@ asettle() {
     # own publish, the sweep's first).
     cat "$CDIR"/*.out 2>/dev/null | awk '$1 ~ /^snap\// { sub(/^snap\//, "", $1); print $1 }' | sort -u > "$CDIR/printed.txt"
     while read -r n; do published "$n"; done < "$CDIR/printed.txt"
-    "$AGENT" record --dir "$ADIR" > "$CDIR/record-after.txt" 2>&1 || true
+    adump record-after
     zfs list -H -t snapshot -o name -r "$POOL" | xargs -r zfs holds -H > "$CDIR/holds.txt" 2> "$CDIR/holds.err" \
         || rig_error "zfs holds failed: $(tail -n 2 "$CDIR/holds.err")"
     find "$ADIR/manifests" -mindepth 1 -printf '%P\n' > "$CDIR/manifests.txt" 2>/dev/null || : > "$CDIR/manifests.txt"
@@ -375,8 +397,8 @@ scen_sweep() {
     local id
     shift
     id=$(basename "$CDIR")
+    # Its status is the check's to judge (pin_ID_first_publish).
     acmd first publish --limit-s 600
-    [ "$(cat "$CDIR/first.rc")" = 0 ] || rig_error "case $id: the publish before the stray hold ended $(cat "$CDIR/first.rc")"
     z 60 zfs snapshot "$POOL@sweep-$id"
     z 60 zfs hold "$HOLD_TAG" "$POOL@sweep-$id"
     acmd publish publish --limit-s 600 "$@"
@@ -452,7 +474,7 @@ scen_late() {
     wait_point asked after 60 || { thaw; rig_error "case $(basename "$CDIR"): the agent did not reach asked:after in 60 s"; }
     kill -STOP "$AGENT_PID"
     mark "stopped-$(basename "$CDIR")"
-    "$AGENT" record --dir "$ADIR" > "$CDIR/record-stopped.txt" 2>&1 || true
+    adump record-stopped
     thaw
     t=$(case_name)
     local _i
@@ -465,10 +487,16 @@ scen_late() {
     await_agent publish 700
 }
 scen_both() {
+    local rc=0
     shift
     abg publish publish --limit-s 600 "$@"
     await_agent publish 300
-    kill_serve
+    # As kill_serve, with the daemon's status kept: 137 where the SIGKILL
+    # ended it, anything else where it had ended by itself.
+    kill -9 "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || rc=$?
+    SERVE_PID=""
+    printf 'killed_rc\t%s\n' "$rc" > "$CDIR/both-kill.tsv"
     serve_again
 }
 
@@ -478,7 +506,7 @@ agent_begin() {
     create_pool
     load 1
     writer_on
-    : > "$RDIR/cases.tsv"; : > "$RDIR/published.tsv"
+    : > "$RDIR/cases.tsv"; : > "$RDIR/published.tsv"; : > "$RDIR/published-gone.tsv"
     [ -S "$(arun)/control" ] || rig_error "no socket control in $(arun): under $RUN are $(find "$RUN" -maxdepth 2 | tr '\n' ' ')"
     printf 'run-dir\t%s\nagent-run\t%s\n' "$RUN" "$(arun)" > "$RDIR/agent-run.tsv"
 }
@@ -489,8 +517,9 @@ agent_end() {
 rec_aplain() {
     local p points k=0 i n
     agent_begin
+    # The traced publish's status is the check's (pin_trace_first_run):
+    # the points come from its trace either way.
     acase trace plain
-    [ "$(cat "$RDIR/cases/trace/publish.rc")" = 0 ] || rig_error "the traced publish ended $(cat "$RDIR/cases/trace/publish.rc")"
     i=${AGENT_SHARD%/*}; n=${AGENT_SHARD#*/}
     points=${AGENT_POINTS:-$(acheck points "$RDIR/cases/trace/trace.tsv")} || rig_error "no points from the trace"
     for p in $points; do

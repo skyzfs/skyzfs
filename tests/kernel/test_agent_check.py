@@ -84,7 +84,7 @@ def right():
                 'publish.err': 'skyzfs-agent: test hook --kill-at: killed at asked after (1)\n',
                 'settle.out': f'snap/a2 {commit_of("a2")}\n'}),
             ('unmarked', 'unmarked', '-', '6', '-', {
-                'record-before.txt': 'absent\n', 'stray-holds.txt': STRAY,
+                'record-before.txt': 'absent\n', 'record-before.rc': '0\n', 'stray-holds.txt': STRAY,
                 'retry.out': f'snap/a3 {commit_of("a3")}\n', 'retry.rc': '0\n'}),
             ('gone', 'gone', 'holding:before:1', '137', 'g1', {
                 'trace.tsv': trace('g1', *upto('holding', 'before')),
@@ -162,15 +162,15 @@ def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=F
     c = course or right()
     d = tempfile.mkdtemp()
     try:
-        files = {'watch.log': '1000\tread cut 5\n', 'marks.tsv': '',
+        files = {'watch.log': '1000\tread cut 5\n', 'marks.tsv': '', 'published-gone.tsv': c.get('gone', ''),
                  'requests.tsv': log_text([(n, g, True) for n, g in sorted(c['rows'].values())], c.get('asks', ())),
                  'published.tsv': ''.join(f'{a}\t{n}\t{t}\t{g}\t{p}\n' for a, n, t, g, p in c['pub']),
                  'cases.tsv': ''.join(f'{i}\t{s}\t{k}\t{r}\t{t}\n' for i, s, k, r, t, _ in c['cases'])}
         for _, n, _, _, _ in c['pub']:
             files[f'snap-{n}.sha256'] = sums_of(n)
         for cid, _, _, _, _, own in c['cases']:
-            base = {'record-after.txt': RECORD, 'holds.txt': '', 'manifests.txt': '', 'assist.txt': ASSIST,
-                    'settle.rc': '0\n'}
+            base = {'record-after.txt': RECORD, 'record-after.rc': '0\n', 'holds.txt': '', 'manifests.txt': '',
+                    'assist.txt': ASSIST, 'settle.rc': '0\n'}
             base.update(own)
             for fn, text in base.items():
                 files[os.path.join('cases', cid, fn)] = text
@@ -348,6 +348,12 @@ class Parts(unittest.TestCase):
         self.assertEqual(len(ac.clean(RECORD, '', '', ASSIST + f'{POOL}/fs\toff\tlocal\n')), 1)
         self.assertEqual(len(ac.clean('', '', '', ASSIST)), 1)
         self.assertEqual(ac.clean(RECORD + 'abandoned t why=destroyed at_ms=1\n', '', '', ASSIST), [])
+        # A record that does not read: its dump's status, whatever it printed.
+        self.assertEqual(ac.clean(RECORD, '', '', ASSIST, '0\n', ''), [])
+        bad = ac.clean(RECORD, '', '', ASSIST, '6\n', 'skyzfs-agent: d: the record is torn\n')
+        self.assertEqual(len(bad), 1)
+        self.assertIn('ended 6', bad[0])
+        self.assertEqual(len(ac.clean(RECORD, '', '', ASSIST, '', '')), 1)
 
     def test_judge_manifest_json(self):
         m = manifest_of('t', 50, 501)
@@ -478,12 +484,87 @@ class Main(unittest.TestCase):
         self.assertEqual((rc, lines['pin_trace_clean'][0]), (1, 'FAILED'))
 
     def test_a_snapshot_destroyed_and_published_ends_1(self):
+        # As the recorder leaves it (D1 of #158's review): node B has
+        # snap/g1, node A has no g1, so published.tsv has no line of it and
+        # published-gone.tsv has one.
         c = right()
-        c['pub'].append(('gone', 'g1', 75, 506, '-'))
-        c['rows']['g1'] = (10, 95)
+        c['gone'] = 'gone\tg1\n'
+        c['cases'] = [(i, s, k, r, t, dict(own, **{'settle.out': ''}) if i == 'gone' else own)
+                      for i, s, k, r, t, own in c['cases']]
         rc, lines = run_course(course=c)
         self.assertEqual(rc, 1)
-        self.assertEqual(lines['pin_gone_outcome'][0], 'FAILED')
+        self.assertEqual(lines['pin_published_snapshots_exist'][0], 'FAILED')
+        self.assertIn('g1 (case gone)', lines['pin_published_snapshots_exist'][1])
+        self.assertEqual(lines['pin_gone_outcome'], ('FAILED', '[server] g1: published, not abandoned destroyed'))
+        self.assertNotIn('rig_error', lines)
+        rc, lines = run_course()
+        self.assertEqual(lines['pin_published_snapshots_exist'][0], 'ok')
+
+    def test_a_first_run_that_ended_otherwise_ends_1(self):
+        # D2 of #158's review: a panic (101) where a plain publish with no
+        # kill ends 0, and a later reach not made where the run ended 1.
+        c = right()
+        c['cases'][0] = c['cases'][0][:3] + ('101',) + c['cases'][0][4:]
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_trace_first_run'][0]), (1, 'FAILED'))
+        self.assertEqual(lines['pin_trace_criterion'][0], 'ok')
+        rc, lines = run_course()
+        self.assertEqual(lines['pin_trace_first_run'][0], 'ok')
+        self.assertNotIn('pin_A-asked-after-1_first_run', lines)
+        self.assertNotIn('pin_unmarked_first_run', lines)
+        c = right()
+        c['cases'].append(('K-restart-look-before-2', 'restart', 'look:before:2', '1', 'k1', {
+            'trace.tsv': trace('k1', *upto('look', 'before')), 'between.txt': 'ref\tnone\nsnaprow\tnone\n',
+            'settle.out': f'snap/k1 {commit_of("k1")}\n'}))
+        c['pub'].append(('K-restart-look-before-2', 'k1', 95, 506, commit_of('k1')))
+        c['rows']['k1'] = (10, 96)
+        rc, lines = run_course(course=c)
+        self.assertEqual(lines['obs_K-restart-look-before-2_not_reached'][0], 'INFO')
+        self.assertEqual((rc, lines['pin_K-restart-look-before-2_first_run'][0]), (1, 'FAILED'))
+        self.assertEqual(lines['pin_K-restart-look-before-2_outcome'][0], 'ok')
+        # Abandoned with no kill: 3, as FIRST_RC says.
+        self.assertEqual(ac.FIRST_RC['destroy'], '3')
+
+    def test_a_record_that_does_not_read_ends_1(self):
+        # D3 of #158's review: the dump ended 6 and printed nothing under way.
+        rc, lines = run_course(change=lambda d: (case_file('trace', 'record-after.rc', '6\n')(d),
+                                                 case_file('trace', 'record-after.err', 'torn\n')(d)))
+        self.assertEqual((rc, lines['pin_trace_clean'][0]), (1, 'FAILED'))
+        self.assertIn('torn', lines['pin_trace_clean'][1])
+        rc, lines = run_course(change=case_file('unmarked', 'record-before.rc', '1\n'))
+        self.assertEqual((rc, lines['pin_unmarked_refused'][0]), (1, 'FAILED'))
+
+    def test_a_verdict_is_not_hidden_by_the_rig_s_error(self):
+        # G3 of #158's review: a premise that does not hold and a pin that
+        # fails end 1, both lines kept.
+        rc, lines = run_course(change=lambda d: (case_file('A-asked-after-1', 'publish.err', '')(d),
+                                                 case_file('trace', 'manifests.txt', 'a1\n')(d)))
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['premise_A-asked-after-1_killed'][0], 'ERROR')
+        self.assertEqual(lines['pin_trace_clean'][0], 'FAILED')
+        # And a later error of the rig (too few names for the controls).
+        c = right()
+        c['cases'] = c['cases'][:1]
+        c['pub'] = c['pub'][:1]
+        c['rows'] = {'a1': c['rows']['a1']}
+        rc, lines = run_course(course=c, change=case_file('trace', 'manifests.txt', 'a1\n'))
+        self.assertEqual((rc, lines['pin_trace_clean'][0]), (1, 'FAILED'))
+        self.assertIn('rig_error', lines)
+
+    def test_both_s_daemon_killed(self):
+        # G2 of #158's review.
+        c = right()
+        c['cases'].append(('b-ask-after-1', 'both', 'ask:after:1', '137', 'a6', {
+            'trace.tsv': trace('a6', *upto('ask', 'after')),
+            'publish.err': 'skyzfs-agent: test hook --kill-at: killed at ask after (1)\n',
+            'both-kill.tsv': 'killed_rc\t137\n', 'settle.out': f'snap/a6 {commit_of("a6")}\n'}))
+        c['pub'].append(('b-ask-after-1', 'a6', 90, 507, '-'))
+        c['rows']['a6'] = (11, 91)
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_b-ask-after-1_daemon_killed'][0]), (0, 'ok'), not_ok(lines))
+        for text in ('killed_rc\t0\n', 'killed_rc\t7\n', ''):
+            rc, lines = run_course(course=c, change=case_file('b-ask-after-1', 'both-kill.tsv', text))
+            self.assertEqual((rc, lines['pin_b-ask-after-1_daemon_killed'][0]), (1, 'FAILED'), text)
 
     def test_t_absent_and_no_retry_published_ends_1(self):
         c = with_case('unmarked', **{'retry.out': '', 'retry.rc': '1\n'})
@@ -609,8 +690,8 @@ class Main(unittest.TestCase):
         c = right()
         c['cases'].append(('sweep', 'sweep', '-', '0', 'a6', {
             'trace.tsv': trace('a6', ('sweep', 'before'), ('sweep', 'after'), *WHOLE),
-            'first.out': f'snap/a7 {commit_of("a7")}\n', 'publish.out': f'snap/a6 {commit_of("a6")}\n',
-            'stray-holds.txt': ''}))
+            'first.out': f'snap/a7 {commit_of("a7")}\n', 'first.rc': '0\n',
+            'publish.out': f'snap/a6 {commit_of("a6")}\n', 'stray-holds.txt': ''}))
         c['pub'] += [('sweep', 'a6', 90, 507, commit_of('a6')), ('sweep', 'a7', 88, 508, commit_of('a7'))]
         c['rows'].update({'a6': (11, 91), 'a7': (10, 89)})
         rc, lines = run_course(course=c)
@@ -618,6 +699,9 @@ class Main(unittest.TestCase):
         rc, lines = run_course(course=c, change=case_file('sweep', 'stray-holds.txt',
                                                           f'{POOL}@sweep-sweep\tskyzfs-publish\tThu\n'))
         self.assertEqual((rc, lines['pin_sweep_swept'][0]), (1, 'FAILED'))
+        # D4 of #158's review: the publish that marks the directory failed.
+        rc, lines = run_course(course=c, change=case_file('sweep', 'first.rc', '1\n'))
+        self.assertEqual((rc, lines['pin_sweep_first_publish'][0]), (1, 'FAILED'))
 
     def test_late_s_premise(self):
         c = right()
@@ -650,11 +734,14 @@ class Main(unittest.TestCase):
 
     def test_a_restart_or_assist_that_did_not_happen_is_the_rig_s_error(self):
         c = right()
-        c['cases'].append(('restart', 'restart', '-', '1', '-', {'retry.out': f'snap/a6 {commit_of("a6")}\n'}))
+        c['cases'].append(('restart', 'restart', '-', '0', '-', {'retry.out': f'snap/a6 {commit_of("a6")}\n'}))
         c['pub'].append(('restart', 'a6', 90, 507, '-'))
         c['rows']['a6'] = (11, 91)
         rc, lines = run_course(course=c)
-        self.assertEqual((rc, lines['premise_restart_pending_at_the_loss'][0]), (2, 'ERROR'))
+        # With no T its outcome fails too, and a FAILED line is never
+        # hidden behind the premise's error (G3 of #158's review).
+        self.assertEqual((rc, lines['premise_restart_pending_at_the_loss'][0]), (1, 'ERROR'))
+        self.assertEqual(lines['pin_restart_outcome'][0], 'FAILED')
         c = right()
         c['cases'].append(('assist', 'assist', '-', '0', 'a6', {
             'trace.tsv': trace('a6', *WHOLE), 'publish.out': f'snap/a6 {commit_of("a6")}\n'}))

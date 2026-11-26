@@ -46,12 +46,20 @@ in DIR/cases.tsv. For each case:
   output or, for a run killed after it abandoned T, in its record. A
   plain case with a kill, and a case killed before T had a name, are
   INFO (obs_ID_outcome): the criterion judges them.
+- pin_ID_first_run (server): a case judged with no kill (none named,
+  or a later reach not made) ended its first run as FIRST_RC says for
+  its scenario: 0, 3 where T is abandoned (destroy, tooold); unmarked's
+  own pin judges its 6.
 - pin_ID_clean (server): after the last run, the record has nothing
-  under way (the agent's dump), no hold of the agent's tag is on any
-  snapshot, the manifests directory is empty, and `skyzfs:assist` is set
-  locally on the pool's root only.
+  under way and reads (the agent's dump, exit 0: a record that does not
+  read is exit 6), no hold of the agent's tag is on any snapshot, the
+  manifests directory is empty, and `skyzfs:assist` is set locally on
+  the pool's root only.
 - Case-specific: unmarked, the publish refused (exit 6) and released
-  nothing; sweep, the stray hold released by the traced publish. The
+  nothing; sweep, the publish that marks the directory ended 0
+  (pin_ID_first_publish) and the stray hold released by the case's
+  publish; both, the daemon ended by the rig's SIGKILL (137) and not
+  before it (pin_ID_daemon_killed, both-kill.tsv). The
   carry hooks (the lead's ruling on #158): the request log's last ask of
   T that the daemon accepted (premise_ID_asked, the rig's), and the row's
   cut one that request accepts, counted after its C, of its G or later,
@@ -80,9 +88,16 @@ manifest judged against another guid.
 obs_points (INFO): the effects the course's traces reached, and those of
 the engine's (crates/skyzfs-agent/src/engine.rs) none reached.
 
+pin_published_snapshots_exist (kernel and server): no name was published
+whose snapshot node A does not have (DIR/published-gone.tsv: the
+recorder found node B's snap/N, or the agent's `snap/N`, and no pool@N).
+Such a name counts as published for its case's outcome.
+
 results.tsv gets the lines (KEY, VERDICT, DETAIL), which cut_summary.py
-prints. Exit 0: every line holds. Exit 1: a verdict. Exit 2: the rig's
-own error, which is also what any exception ends in.
+prints. Exit 0: every line holds. Exit 1: a verdict, whatever else
+happened: a FAILED line is never hidden behind an error of the rig.
+Exit 2: the rig's own error with no line FAILED, which is also what any
+exception ends in.
 """
 import json
 import os
@@ -133,6 +148,21 @@ DAEMON_KILLED = {
     'carry-swap:1': re.compile(r'killed carry-swap:1: after the commit of cut (\d+) \(group (\d+)\)'),
     'manifest:1': re.compile(r'killed after the framed manifest PUT 1 landed'),
     'publish:1': re.compile(r'killed after the transaction of publish 1 \('),
+}
+# The scenario -> the first run's status where no kill fired (run
+# 45751597306's cases).
+FIRST_RC = {
+    'plain': '0',
+    'restart': '0',
+    'assist': '0',
+    'destroy': '3',
+    'tooold': '3',
+    'sweep': '0',
+    'gone': '0',
+    'unmarked': '6',
+    'dhook': '0',
+    'late': '0',
+    'both': '0',
 }
 # The scenario -> T's outcome where the scenario's premise holds; None:
 # the criterion alone (INFO). A plain case with no kill must publish.
@@ -278,9 +308,13 @@ def expected(scen, kill, destroyed, t):
     return EXPECTED[scen]
 
 
-def clean(record, holds, manifests, assist):
-    """After the last run -> [what is left]."""
+def clean(record, holds, manifests, assist, record_rc='0', record_err=''):
+    """After the last run -> [what is left]. RECORD_RC and RECORD_ERR:
+    the dump's status and standard error."""
     bad = []
+    if record_rc.strip() != '0':
+        bad.append(f'the record does not read: `skyzfs-agent record` ended {record_rc.strip() or "with no status"}: '
+                   f'{flat(record_err)[-200:]}')
     under = [ln.split()[1] for ln in record.splitlines() if ln.startswith('publish ') and len(ln.split()) > 1]
     if under:
         bad.append(f'under way in the record: {", ".join(under)}')
@@ -424,15 +458,17 @@ def main():
     t0 = time.monotonic()
     lines = []
     rc = 0
+    any_failed = False
 
     def put(key, verdict, rests, detail):
         lines.append(f'{key}\t{verdict}\t{flat(f"[{rests}] {detail}")}')
         print(f'{name}: {key}: {verdict}: [{rests}] {flat(detail)}', flush=True)
 
     def holds(key, bad, rests, good):
-        nonlocal rc
+        nonlocal rc, any_failed
         if bad:
             rc = max(rc, 1)
+            any_failed = True
             put(key, 'FAILED', rests, '; '.join(bad))
         else:
             put(key, 'ok', rests, good)
@@ -486,6 +522,15 @@ def main():
             if len(f) != 5 or not f[2].isdigit() or not f[3].isdigit():
                 raise RigError(f'published.tsv: not case, name, createtxg, guid, commit: {ln!r}')
             pub[f[1]] = {'case': f[0], 'name': f[1], 'txg': int(f[2]), 'guid': int(f[3]), 'printed': f[4]}
+        gone = {}
+        for ln in text_of('published-gone.tsv').splitlines():
+            f = ln.split('\t')
+            if len(f) != 2 or not f[1]:
+                raise RigError(f'published-gone.tsv: not case, name: {ln!r}')
+            gone[f[1]] = f[0]
+        holds('pin_published_snapshots_exist',
+              [f'{n} (case {c}) is published and {POOL}@{n} is not on node A' for n, c in gone.items()],
+              'kernel and server', 'every name published is a snapshot on node A')
         cases = [ln.split('\t') for ln in text_of('cases.tsv').splitlines() if ln]
         if not cases:
             raise RigError('no case in cases.tsv')
@@ -517,6 +562,10 @@ def main():
             if kill:
                 premise(f'premise_{cid}_killed', killed_at(kill, first_rc, perr, trace),
                         f'killed at {kill}, as the trace and the hook\'s line say')
+            elif scen != 'unmarked':
+                holds(f'pin_{cid}_first_run', [] if first_rc == FIRST_RC[scen]
+                      else [f'the first run ended {first_rc}, not {FIRST_RC[scen]}: {flat(perr)[-200:]}'],
+                      'server', f'the first run ended {first_rc}, as a {scen} case with no kill does')
             destroyed = os.path.exists(os.path.join(rdir, cd, 'destroy.log'))
             # A case with no kill must have done what it names (a case
             # killed early may not have, and is the kill's to judge).
@@ -552,13 +601,27 @@ def main():
                 holds(f'pin_{cid}_refused', ([f'the publish ended {first_rc}, not 6'] if first_rc != '6' else [])
                       + ([] if HOLD_TAG in stray else ['the stray hold was released'])
                       + ([] if text_of(os.path.join(cd, 'record-before.txt')).strip() == 'absent'
+                         and text_of(os.path.join(cd, 'record-before.rc')).strip() == '0'
                          else ['the refused run wrote a record']),
                       'server', 'a fresh directory with a hold of the tag: exit 6, nothing released, no record written')
+            if scen == 'sweep':
+                frc = text_of(os.path.join(cd, 'first.rc')).strip()
+                holds(f'pin_{cid}_first_publish', [] if frc == '0' else
+                      [f'the publish that marks the directory ended {frc or "with no status"}: '
+                       f'{flat(text_of(os.path.join(cd, "first.err"), need=False))[-200:]}'],
+                      'server', 'the publish that marks the directory ended 0')
+            if scen == 'both':
+                kt = dict(ln.split('\t', 1) for ln in text_of(os.path.join(cd, 'both-kill.tsv')).splitlines()
+                          if '\t' in ln)
+                krc = kt.get('killed_rc', '')
+                holds(f'pin_{cid}_daemon_killed', [] if krc == '137' else
+                      [f'the daemon ended {krc or "with no status"}, not by the rig\'s SIGKILL (137): it had '
+                       'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
             if scen == 'sweep' and not kill:
                 stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                 holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
                       'server', 'the publish released the hold that no publish named')
-            got = outcome(t, list(outs.values()), pub, text_of(os.path.join(cd, 'record-after.txt')))
+            got = outcome(t, list(outs.values()), set(pub) | set(gone), text_of(os.path.join(cd, 'record-after.txt')))
             want = expected(scen, kill, destroyed, t)
             if want is None:
                 put(f'obs_{cid}_outcome', 'INFO', 'server', f'{t or "no name"}: {got}')
@@ -568,7 +631,7 @@ def main():
             retry = outs.get('retry', {}).get('published', {})
             if got == 'published':
                 ok = []
-            elif retry and all(n in pub for n in retry):
+            elif retry and all(n in pub or n in gone for n in retry):
                 ok = []
             else:
                 ok = [f'snap/{t or "T"} absent and the retry did not publish '
@@ -578,7 +641,9 @@ def main():
                   f'{", ".join(retry)}')
             holds(f'pin_{cid}_clean',
                   clean(text_of(os.path.join(cd, 'record-after.txt')), text_of(os.path.join(cd, 'holds.txt')),
-                        text_of(os.path.join(cd, 'manifests.txt')), text_of(os.path.join(cd, 'assist.txt'))),
+                        text_of(os.path.join(cd, 'manifests.txt')), text_of(os.path.join(cd, 'assist.txt')),
+                        text_of(os.path.join(cd, 'record-after.rc')),
+                        text_of(os.path.join(cd, 'record-after.err'), need=False)),
                   'server', 'nothing under way, no hold of the tag, no manifest left, the assist on the root only')
             for run, o in outs.items():
                 both = [n for n in o['abandoned'] if n in pub]
@@ -683,6 +748,7 @@ def main():
         verdict, ok, _ = nodeb_check.control_verdict(seen, ('snapshot',))
         put('ctl_early', verdict.upper().replace(' ', '_'), 'check',
             f'snap/{a} asked for {POOL}@{b}: {seen.text()}{"" if ok else "; DIFFERS from caught at snapshot"}')
+        any_failed = any_failed or not ok
         rc = max(rc, 0 if ok else 1)
         wrong = dict(checked[a][1])
         k0 = sorted(wrong)[0]
@@ -691,9 +757,11 @@ def main():
         verdict, ok, _ = nodeb_check.control_verdict(seen, ('files',))
         put('ctl_files', verdict.upper().replace(' ', '_'), 'check',
             f'{k0} with another digest: {seen.text()}{"" if ok else "; DIFFERS from caught at files"}')
+        any_failed = any_failed or not ok
         rc = max(rc, 0 if ok else 1)
         mbad = judge_manifest_json(checked[a][2], a, pub[a]['txg'], pub[a]['guid'] + 1)
         put('ctl_manifest', 'CAUGHT' if mbad else 'MISSED', 'check', '; '.join(mbad) or 'the pin held')
+        any_failed = any_failed or not mbad
         rc = max(rc, 0 if mbad else 1)
         put('obs_points', 'INFO', 'rig', f"reached: {', '.join(e for e in EFFECTS if e in reached)}; none reached: "
             f"{', '.join(e for e in EFFECTS if e not in reached) or 'none'}")
@@ -703,6 +771,8 @@ def main():
     except Exception as e:  # noqa: BLE001 -- anything else is the rig's too, not a verdict
         put('rig_error', 'ERROR', 'rig', f'{type(e).__name__}: {e}')
         rc = 2
+    if any_failed:
+        rc = 1
     put('time', 'INFO', 'rig', f'{time.monotonic() - t0:.0f} s')
     with open(os.path.join(rdir, 'results.tsv'), 'a') as f:
         f.write(''.join(ln + '\n' for ln in lines))

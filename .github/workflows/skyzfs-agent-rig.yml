@@ -59,7 +59,16 @@ on:
       - tests/kernel/nodeb_check.py
       - tests/kernel/cut_daemon_check.py
       - tests/kernel/publish_check.py
+      - tests/kernel/publish_agent.py
+      - tests/kernel/cut_check.py
+      - tests/kernel/cut_ref.py
+      - tests/kernel/cut_hold.py
+      - tests/kernel/cut_watch.py
+      - tests/kernel/cut_summary.py
+      - tests/kernel/replay_check.py
       - tests/lib/**
+      # What skyzfs-agent, skyzfs-nodeb and skyzfsd are built from
+      # (cargo tree -e normal), and the agent's crate.
       - bins/skyzfs-agent/**
       - crates/skyzfs-agent/**
       - bins/skyzfs-nodeb/**
@@ -67,9 +76,17 @@ on:
       - crates/skyzfs-upload/**
       - crates/skyzfs-control/**
       - crates/skyzfs-local/**
+      - crates/skyzfs-ublk/**
+      - crates/skyzfs-ublk-sys/**
+      - crates/skyzfs-blk/**
+      - crates/skyzfs-uberblock/**
+      - crates/skyzfs-mapped/**
       - crates/skynbd-engine/**
       - crates/skynbd-refs/**
       - crates/skynbd-store/**
+      - crates/skynbd-tree/**
+      - crates/skynbd-types/**
+      - crates/skynbd-format/**
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
