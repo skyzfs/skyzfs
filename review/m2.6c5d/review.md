@@ -49,10 +49,19 @@ at `b83ac36`). The rest is low.
     what its host does and not only by the limit it names (Q6).
   - Two survivors, both low (TG-C).
 - **The limits are as ruled**, saturate, and are capped.
-- **TG1 and TG2 are answered.** PLANTS-SUMMARY
+- **TG1 and TG2 are answered.** My versions of the author's 28 plants
+  (21 at `6e420dc`, C1 to C7 at `b83ac36`) are all killed, by the
+  tests the description names. Of mine, eight survive: R1 to R5 and R7
+  at the first look, Q3 and Q4 at the second (TG-A, TG-B, TG-C). All
+  are gaps in tests, not in the code.
 - **The stand-in `zfs` of `program.rs` still drives the sweep's kill
-  point honestly**, through both new commands. AGENT-RIG
-- **Gates and CI.** GATES-SUMMARY
+  point honestly**, through both new commands. On a real pool, the
+  agent rig's sweep course (job k, Ubuntu 26.04, ZFS 2.4.1) passed at
+  `b83ac36`: a stray hold released, a kill at either sweep point, and
+  exit 6 in an unmarked directory with nothing released.
+- **Gates and CI.** fmt, clippy, the tests and the docs are clean on
+  all four feature sets, with the description's counts. Every CI
+  job on `b83ac36` succeeded.
 
 ## Findings, most severe first
 
@@ -121,13 +130,11 @@ at `b83ac36`). The rest is low.
   option 1, plus the error the lead asked for. Checked below,
   "Second look".
 - **Reach now.** The count's 35 minutes is about 1.7 million
-  snapshots at 1.25 ms (24.04, idle). The walks' cap of 35 minutes at
-  10 ms a snapshot comes first, at about 200 000. So the cap's reach
-  is now the round's reach.
-
-### TG-C (low, new at `b83ac36`): two properties of `walked` that no test pins
-
-TG-C-BODY
+  snapshots at 1.25 ms (24.04, idle). The walks' limits stop growing
+  at about 200 000 snapshots, at 35 minutes, and at the recorded rates
+  that still covers the slowest walk (the list, 1.84 ms) up to about
+  1.1 million. So the count is no longer the first to fail at any
+  size; on that run's figures the list is.
 
 ### F1 (low): another holder's tag that holds a newline can add a line to the sweep's read
 
@@ -203,6 +210,27 @@ TG-C-BODY
   goes between the two calls. A case where the first call passes and
   the second says `no such pool` would pin it.
 
+### TG-C (low, new at `b83ac36`): two properties of `walked` that no test pins
+
+- **Q3: a walk's `Vanished` or `NoPool` made `Other` while a count
+  failure is kept** (`walked`'s first arm matching any error). It
+  survives: the new test feeds the walks only `Other`. Were it so,
+  `again` would no longer read a vanished snapshot again in the sweep
+  or the manifest's list, and a missing pool would read as another
+  error.
+- **Q4: the failure cleared only by a count whose snapshot count
+  succeeds**, not after every dataset count. It survives: no test
+  fails a dataset count after a failed snapshot count. Were it so, a
+  round whose dataset count failed would run its walks on the base
+  limits and name a snapshot count that is no longer the reason.
+- **The code is right on both today** (`cli.rs:464-472`,
+  `cli.rs:1051`); only the pins are missing.
+- **Fix.** Two more steps in
+  `a_count_past_the_datasets_limit_is_not_cut_off`, after the failed
+  count: a walk answered by a vanished snapshot, or by a `zpool list`
+  without the pool, whose kind is checked unchanged; and a count whose
+  dataset count fails, then a walk whose error has no note.
+
 ### G-REC (low, for testing; Codex's P2 on the PR): the recorder needs `tagged.lua`
 
 - **Where.** `skyzfs-zfs-cli-record.yml` (`for f in members tagged`)
@@ -218,8 +246,9 @@ TG-C-BODY
     fake below.
   - The list with `userrefs` at R1's scales: its cost is inferred.
   - A tag with a byte above 0x7f, and one with a newline (D1, F1).
-- **Who answers.** Codex posted the same P2 again on `b83ac36`. The
-  author should answer its thread on the pull request.
+- **Who answers.** Codex's state for `b83ac36` still lists it as
+  unresolved. The author should answer its thread on the pull
+  request.
 
 ### Nits
 
@@ -346,9 +375,10 @@ TG-C-BODY
 - **Would it fail if the count used the datasets' limit again?** Yes,
   twice over. C1 (a read's limit, 70.1 s) is killed by it and by the
   three tests that pin the count's limit. Q6 is C1 with the test's two
-  checks of the count's limit taken out of a scratch copy: Q6-RESULT
-  Q2 (the gets' limit, 80.2 s) and C2 (the count's 60 s) are killed
-  too.
+  checks of the count's limit taken out of a scratch copy. That test
+  still kills it: the count is cut off at 70.1 s, and the walks then
+  get a read's limit and not their grown one. Q2 (the gets' limit,
+  80.2 s) and C2 (the count's 60 s) are killed too.
 
 ## What I checked at the first look, by the four questions
 
@@ -504,7 +534,17 @@ TG-C-BODY
   run and parsed. The case arms check the list before `list*`, so the
   count does not take the list's answer.
 - **The rig's judge.** `agent_check.py` judges the sweep's points by
-  name (`sweep:before:N`) and is unchanged. AGENT-RIG-DETAIL
+  name (`sweep:before:N`) and is unchanged.
+- **On a real pool.** Run 45827334221 at `b83ac36`, job k (Ubuntu
+  26.04, ZFS 2.4.1, through `skyzfsd`), the course `sweep`: the stray
+  hold that no publish names is released (`pin_sweep_swept`); killed
+  at `sweep:before:1` and at `sweep:after:1`, the retry publishes and
+  leaves no hold of the tag; in a fresh directory with such a hold,
+  exit 6 with nothing released (`pin_unmarked_refused`). `sweep` is
+  among the points reached. So the list with `userrefs` and `zfs holds
+  -H` of the held snapshots parse as the fakes say on 2.4.1. The rig
+  runs on 26.04 only, and with one stray hold: it does not show a
+  chunk of 1000, a snapshot gone between the reads, or 24.04's 2.2.
 
 ## Plants
 
@@ -566,8 +606,60 @@ count (R8) and the sites `walked` now wraps.
 
 ### Second look, at `b83ac36` (`plants162b.py`, 13 plants)
 
-SECOND-PLANTS
+The baseline passed (205 + 7). 13 plants: my versions of the author's
+C1 to C7, and six of mine. All but two are killed.
+
+| Plant | Result |
+|---|---|
+| C1 the snapshot count on a read's limit (as before) | killed: `a_count_past_…`, `a_value_read_alone_takes_a_reads_limit`, `the_limits_grow_with_the_datasets_counted`, `the_lists_limit_grows_…` |
+| C2 the count on its own 60 s | killed: the same four |
+| C3 `holds -r`'s error not naming the count | killed: `a_count_past_…` |
+| C4 the sweep's list's error not naming it | killed: `a_count_past_…` |
+| C5 the manifest's list's error not naming it | killed: `a_count_past_…` |
+| C6 the failure never cleared | killed: `a_count_past_…` |
+| C7 the failure kept without its reason | killed: `a_count_past_…` |
+| Q1 the count on the other reads' cap (20 min) | killed: the same four as C1 |
+| Q2 the count on the gets' limit (80.2 s at 101 datasets) | killed: the same four as C1 |
+| Q3 a walk's `Vanished` or `NoPool` made `Other` | **survives** (TG-C) |
+| Q4 the failure cleared only when the snapshots are counted | **survives** (TG-C) |
+| Q5 the walk's own error dropped, the count's alone said | killed: `a_count_past_…` |
+| Q6 C1 with the test's two checks of the count's limit taken out | killed: the same four as C1 |
+
+The author's table lists the same tests for C1 to C7.
 
 ## Gates
 
-GATES
+At `b83ac36`, on a scratch worktree, rustc 1.100.0 after `rustup
+update stable`, with `CARGO_INCREMENTAL=0` and no debug info. `cargo
+fmt --all -- --check` is clean. For each feature set: `cargo clippy
+--workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+and `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`.
+
+| Feature set | clippy | tests | doc |
+|---|---|---|---|
+| plain | clean | 1961 passed, 0 failed, 16 ignored | clean |
+| `skyzfsd/test-hooks,skyzfs-local/test-hooks` | clean | 2019 passed, 0 failed, 16 ignored | clean |
+| `skyzfs-ublk-sys/control-test-program` | clean | 1985 passed, 0 failed, 18 ignored | clean |
+| `skyzfs-agent-cli/test-hooks` | clean | 1961 passed, 0 failed, 16 ignored | clean |
+
+The counts are the description's. With `skyzfs-agent-cli/test-hooks`,
+`the_agent_traces_a_point_then_dies_of_sigkill_there` ran and passed
+(it takes the place of a test built without the feature, so the count
+is the plain one).
+
+At `6e420dc` I ran fmt, clippy, tests and doc plain (1960 passed) and
+clippy with the daemon's hooks, all clean, before the new head came.
+
+## CI
+
+At `b83ac36`, read with `gh api .../commits/<head>/check-runs`: every
+job succeeded. The CI suite's test, lint and unit-arm64, coverage,
+e2e-tier-a, the k3s smokes, s3-backends and chart-lint; the agent rig
+(run 45827334221): a1, a2, d and k, all on Ubuntu 26.04, and "the
+check's logic". `skyzfs-ci.yml`'s jobs are skipped, as on any pull
+request. At `6e420dc` the same jobs succeeded but for the rig's d and
+k, which the push of `b83ac36` cancelled.
+
+Codex's review state for `b83ac36` has one unresolved finding, its P2
+on `tagged.lua` (G-REC), and nothing new. Its thread had no reply when
+I read it.
