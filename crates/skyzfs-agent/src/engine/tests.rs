@@ -4287,3 +4287,206 @@ fn a_request_is_sent_within_the_slack_of_its_record_or_not_at_all() {
     }
     assert!(found.is_empty(), "{found:#?}");
 }
+
+/// The world's pool read through the CLI adapter (B1 of #157's review):
+/// [`Zfs::datasets`] renders the pool as `zfs list` and the two `zfs
+/// get -s local` print it, with a snapshot limit set on the root, so
+/// that every dataset has `filesystem_count` and `snapshot_count` with
+/// the source `local`, counted as ZFS counts them (the datasets and the
+/// snapshots under it); and reads that output through
+/// [`crate::zfs::cli::ZfsCli`]. Every other call is the world's.
+struct ThroughCli(FakeZfs);
+
+impl ThroughCli {
+    /// The three reads' output of `pool`: the list, the pairs, the
+    /// values.
+    fn rendered(&self, pool: &str) -> (String, String, String) {
+        let world = self.0 .0.borrow();
+        let (mut list, mut pairs, mut values) = (String::new(), String::new(), String::new());
+        let Some(p) = &world.pool else {
+            return (list, pairs, values);
+        };
+        let mut datasets = p.datasets.clone();
+        datasets.sort_by(|a, b| a.name.cmp(&b.name));
+        for d in &datasets {
+            let kind = match d.kind {
+                crate::manifest::Kind::Filesystem => "filesystem",
+                crate::manifest::Kind::Volume => "volume",
+            };
+            list.push_str(&format!(
+                "{}\t{}\t{kind}\t{}\n",
+                d.name, d.guid, d.createtxg
+            ));
+            let own = format!("{}@", d.name);
+            for (name, snap) in p.snaps.iter().filter(|(name, _)| name.starts_with(&own)) {
+                list.push_str(&format!(
+                    "{name}\t{}\tsnapshot\t{}\n",
+                    snap.guid, snap.createtxg
+                ));
+            }
+            let under = |name: &str| name == d.name || name.starts_with(&format!("{}/", d.name));
+            let filesystems = datasets
+                .iter()
+                .filter(|e| e.name != d.name && under(&e.name))
+                .count();
+            let snapshots = p
+                .snaps
+                .keys()
+                .filter(|k| k.split_once('@').is_some_and(|(ds, _)| under(ds)))
+                .count();
+            let mut local: Vec<(String, String)> = d
+                .local
+                .iter()
+                .map(|(k, v)| (k.clone(), String::from_utf8_lossy(v).into_owned()))
+                .collect();
+            if d.name == pool {
+                local.push(("snapshot_limit".into(), "100".into()));
+            }
+            local.push(("filesystem_count".into(), filesystems.to_string()));
+            local.push(("snapshot_count".into(), snapshots.to_string()));
+            for (property, value) in local {
+                pairs.push_str(&format!("{}\t{property}\n", d.name));
+                values.push_str(&format!("{}\t{property}\t{value}\n", d.name));
+            }
+        }
+        (list, pairs, values)
+    }
+}
+
+impl Zfs for ThroughCli {
+    fn layout(&mut self, pool: &str) -> Result<zfs::Layout, ZfsError> {
+        self.0.layout(pool)
+    }
+    fn props(&mut self, pool: &str) -> Result<zfs::Props, ZfsError> {
+        self.0.props(pool)
+    }
+    fn nocacheflush(&mut self) -> Result<bool, ZfsError> {
+        self.0.nocacheflush()
+    }
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError> {
+        self.0.count(pool)
+    }
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.snapshot(pool, t)
+    }
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<zfs::Dataset>, ZfsError> {
+        // The world's own read first: its calls and its faults.
+        self.0.datasets(pool, t)?;
+        let (list, pairs, values) = self.rendered(pool);
+        let mut host = crate::host::fake::Fake::default();
+        host.ok(
+            &format!("zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg {pool}"),
+            &list,
+        );
+        host.ok(
+            &format!("zfs get -r -H -p -s local -t filesystem,volume -o name,property all {pool}"),
+            &pairs,
+        );
+        host.ok(
+            &format!(
+                "zfs get -r -H -p -s local -t filesystem,volume -o name,property,value all {pool}"
+            ),
+            &values,
+        );
+        zfs::cli::ZfsCli::new(host, zfs::cli::Limits::default()).datasets(pool, t)
+    }
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.destroy(pool, t)
+    }
+    fn members(
+        &mut self,
+        pool: &str,
+        t: &str,
+    ) -> Result<Option<Vec<crate::record::Member>>, ZfsError> {
+        self.0.members(pool, t)
+    }
+    fn hold(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.0.hold(pool, t, tag)
+    }
+    fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError> {
+        self.0.release(pool, t, tag)
+    }
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[crate::record::Member]>,
+    ) -> Result<zfs::Held, ZfsError> {
+        self.0.held(pool, t, tag, members)
+    }
+    fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
+        self.0.tagged(pool, tag)
+    }
+    fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
+        self.0.assist(pool, value)
+    }
+}
+
+/// A publish on a pool with a snapshot limit, read through the CLI, with
+/// a file system created at the point `create` (none where `None`): the
+/// takes it made and its outcomes.
+fn counted_publish(create: Option<Point>, after_take: bool) -> (usize, Vec<(String, Outcome)>) {
+    let world = World::new(Mode::Busy);
+    if after_take {
+        world.borrow_mut().after_take = Some(User::CreateDataset);
+    }
+    let keep = MemKeep::default();
+    let takes = Rc::new(Cell::new(0));
+    let points: Points = Box::new({
+        let (world, takes) = (world.clone(), takes.clone());
+        move |p: Point, _: &str| {
+            if p == at(Effect::Take, false) {
+                takes.set(takes.get() + 1);
+            }
+            if Some(p) == create && takes.get() == 1 {
+                world.borrow_mut().user(User::CreateDataset, "");
+            }
+            false
+        }
+    });
+    let mut agent = Agent::new(
+        ThroughCli(FakeZfs(world.clone())),
+        FakeDaemon(world.clone()),
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(points);
+    agent.begin().expect("begun");
+    if let Err(e) = agent.settle(LIMIT) {
+        panic!(
+            "{e}: {:?}\n{}",
+            agent.outcomes(),
+            world.borrow().log.join("\n")
+        );
+    }
+    (takes.get(), agent.outcomes().to_vec())
+}
+
+/// On a pool with a limit, `filesystem_count` and `snapshot_count` are
+/// read as local and rise with each take; the read leaves them out, so a
+/// take is as read before it (B1 of #157's review, the lead's test). A
+/// file system created after the take, before the read after it, has no
+/// `@t` and raises its parent's `filesystem_count`: the first take is
+/// published. One created between the read before the take and the take
+/// is a member not read before: that take is taken again, once, and the
+/// next is published; neither ends `NotWhole`. Mutants: either counter
+/// kept.
+#[test]
+fn counts_that_rise_with_a_take_do_not_fail_its_check() {
+    for (create, after_take, takes_made) in [
+        (None, false, 1),
+        (None, true, 1),
+        (Some(at(Effect::Take, false)), false, 2),
+    ] {
+        let (takes, outcomes) = counted_publish(create, after_take);
+        assert!(
+            matches!(outcomes[..], [(_, Outcome::Published(_))]),
+            "{create:?} {after_take}: {outcomes:?}"
+        );
+        assert_eq!(takes, takes_made, "{create:?} {after_take}");
+    }
+}

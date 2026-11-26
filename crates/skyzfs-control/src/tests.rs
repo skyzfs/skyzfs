@@ -800,6 +800,7 @@ mod socket {
 /// another; a volume's directory that is not there is an error, and
 /// no socket is named (the lead's ruling on the agent rig's first run:
 /// the agent finds the socket as the daemon names it).
+#[cfg(unix)]
 #[test]
 fn the_socket_is_in_the_volumes_own_run_directory() {
     use std::os::unix::fs::MetadataExt as _;

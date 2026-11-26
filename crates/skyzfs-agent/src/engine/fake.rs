@@ -193,6 +193,9 @@ pub enum User {
     /// `zfs destroy -r pool/vol`: the volume and its snapshots; refused
     /// while one is held. Not in [`USERS`], as [`User::Rename`].
     DestroyDataset,
+    /// `zfs create pool/newN`: a new file system, N the number of
+    /// datasets before it. Not in [`USERS`], as [`User::Rename`].
+    CreateDataset,
 }
 
 /// The people's actions the matrix tries at each point.
@@ -1095,6 +1098,22 @@ impl World {
                 }
                 pool.datasets.retain(|d| d.name != vol);
                 self.sync("destroy dataset");
+            }
+            User::CreateDataset => {
+                let guid = self.guid();
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                let name = format!("{POOL}/new{}", pool.datasets.len());
+                let createtxg = pool.next_txg.unwrap_or(pool.txg + 1);
+                pool.datasets.push(Ds {
+                    name,
+                    kind: Kind::Filesystem,
+                    guid,
+                    createtxg,
+                    local: BTreeMap::new(),
+                });
+                self.sync("create");
             }
             User::Attach | User::Add => {
                 let Some(pool) = &mut self.pool else {

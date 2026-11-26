@@ -186,7 +186,9 @@ pub const SOCKET: &str = "control";
 /// (`skyzfs_ublk::records::volume_run_dir` is this one), so that an agent
 /// given the same run directory and volume finds the same socket. The
 /// volume's directory is read (`stat`, through a symbolic link): any
-/// path to it names the same directory.
+/// path to it names the same directory. Unix only: it names the
+/// directory by its device and inode numbers.
+#[cfg(unix)]
 pub fn volume_run_dir(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::metadata(volume_dir)?;
@@ -196,6 +198,7 @@ pub fn volume_run_dir(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> 
 /// The channel of the volume whose directory is `volume_dir`, served by a
 /// daemon whose run directory is `run_dir`: [`SOCKET`] in
 /// [`volume_run_dir`].
+#[cfg(unix)]
 pub fn socket_path(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
     Ok(volume_run_dir(run_dir, volume_dir)?.join(SOCKET))
 }
