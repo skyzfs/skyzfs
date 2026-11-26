@@ -1,0 +1,17 @@
+PLANTS = [
+ ('C14 not recursive', 'tests/kernel/zfs-cli-record.sh', '        lim "$LIMIT" zfs snapshot -r "$p@r$i"', '        lim "$LIMIT" zfs snapshot "$p@r$i"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C15 16 GiB with K', 'tests/kernel/zfs-cli-record.sh', 'else truncate -s 32G "$WORK/scale.img"; fi', 'else truncate -s 16G "$WORK/scale.img"; fi', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C16 32 GiB without K too', 'tests/kernel/zfs-cli-record.sh', '    if [ "$k" = 0 ]; then truncate -s 16G "$WORK/scale.img"; else', '    if false; then truncate -s 16G "$WORK/scale.img"; else', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C17 K bound 200000', 'tests/kernel/zfs-cli-record.sh', '        if [ "${#r}" -gt 6 ] || [ "$r" -gt 20000 ]; then', '        if [ "${#r}" -gt 6 ] || [ "$r" -gt 200000 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C18 K bound -ge', 'tests/kernel/zfs-cli-record.sh', '        if [ "${#r}" -gt 6 ] || [ "$r" -gt 20000 ]; then', '        if [ "${#r}" -gt 6 ] || [ "$r" -ge 20000 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C19 the tenth says free only', 'tests/kernel/zfs-cli-record.sh', 'allocated and free $(zpool list -Hp -o alloc,free "$p"', 'allocated and free $(zpool list -Hp -o free "$p"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C20 have not recursive', 'tests/kernel/zfs-cli-record.sh', '    have=$(lim 600 zfs list -H -t snapshot -o name -r "$p"', '    have=$(lim 600 zfs list -H -t snapshot -o name "$p"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C21 the floor line without the free', 'tests/kernel/zfs-cli-record.sh', 'cut=" (stopped before @r$i: $free bytes free, under $floor)"', 'cut=" (stopped before @r$i)"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C22 began not called', 'tests/kernel/zfs-cli-record.sh', '    if [ -n "$fpid" ]; then began "$log.tsv" "$log.fill.tsv" "$log.txg.tsv"; else began "$log.tsv" "$log.txg.tsv"; fi\n', '', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C23 began waits for nothing', 'tests/kernel/zfs-cli-record.sh', '        for f in "$@"; do [ -s "$f" ] || ok=0; done', '        :', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C24 began: the fill log not waited for', 'tests/kernel/zfs-cli-record.sh', 'then began "$log.tsv" "$log.fill.tsv" "$log.txg.tsv"; else', 'then began "$log.tsv" "$log.txg.tsv"; else', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('R14 retain always', 'tests/kernel/zfs-cli-record.sh', '    [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"', '    retain "$lbl" "$p" "$n" "$k"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('A07 K the last field', 'tests/kernel/zfs-cli-record.sh', '        case $e in *:*) r=${e#*:} ;; esac', '        case $e in *:*) r=${e##*:} ;; esac', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('A08 an empty N accepted', 'tests/kernel/zfs-cli-record.sh', '        case $n in *[!0-9]* | 0* | \'\') echo "scale: not a count: $e"', '        case $n in *[!0-9]* | 0*) echo "scale: not a count: $e"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('A09 an empty K accepted', 'tests/kernel/zfs-cli-record.sh', "        case $r in 0) ;; *[!0-9]* | 0* | '')", '        case $r in 0) ;; *[!0-9]* | 0*)', 'bash tests/kernel/test_zfs_cli_record.sh'),
+]

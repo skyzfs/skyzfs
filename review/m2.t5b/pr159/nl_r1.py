@@ -1,0 +1,16 @@
+PLANTS = [
+ ('A04a no length check of K', 'tests/kernel/zfs-cli-record.sh', '        if [ "${#r}" -gt 6 ] || [ "$r" -gt 20000 ]; then', '        if [ "$r" -gt 20000 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C01 no floor', 'tests/kernel/zfs-cli-record.sh', '                *) if [ "$free" -lt "$floor" ]; then', '                *) if false; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C02 floor -le', 'tests/kernel/zfs-cli-record.sh', '[ "$free" -lt "$floor" ]', '[ "$free" -le "$floor" ]', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C03 free read every call', 'tests/kernel/zfs-cli-record.sh', '        if [ $(((i - 1) % 100)) = 0 ]; then', '        if true; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C04 free read every 1000', 'tests/kernel/zfs-cli-record.sh', '        if [ $(((i - 1) % 100)) = 0 ]; then', '        if [ $(((i - 1) % 1000)) = 0 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C05 free read before 100, 200', 'tests/kernel/zfs-cli-record.sh', '        if [ $(((i - 1) % 100)) = 0 ]; then', '        if [ $((i % 100)) = 0 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C06 a free that is not a number stops it', 'tests/kernel/zfs-cli-record.sh', "                '' | *[!0-9]*) ;;", '                \'\' | *[!0-9]*) cut=" (free not read)"; break ;;', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C07 floor 0 by default', 'tests/kernel/zfs-cli-record.sh', 'floor=${ZCR_RETAIN_FLOOR:-8589934592}', 'floor=${ZCR_RETAIN_FLOOR:-0}', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C08 a fifth, not a tenth', 'tests/kernel/zfs-cli-record.sh', '    step=$((k / 10))', '    step=$((k / 5))', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C09 no line at the last', 'tests/kernel/zfs-cli-record.sh', '        if [ $((i % step)) = 0 ] || [ "$i" = "$k" ]; then', '        if [ $((i % step)) = 0 ]; then', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C10 no step guard', 'tests/kernel/zfs-cli-record.sh', '    [ "$step" -ge 1 ] || step=1\n', '', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('R09a no budget check', 'tests/kernel/zfs-cli-record.sh', '        if ! scale_limit; then\n            cut=" (stopped: the budget was spent)"', '        if false; then\n            cut=" (stopped: the budget was spent)"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('R10a no time limit a call', 'tests/kernel/zfs-cli-record.sh', '        lim "$LIMIT" zfs snapshot -r "$p@r$i"', '        zfs snapshot -r "$p@r$i"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+ ('C13 a failure goes on', 'tests/kernel/zfs-cli-record.sh', '            cut=" (stopped: zfs snapshot -r of @r$i ended $rc, retain-$p-$lbl.log)"\n            break', '            cut=" (stopped: zfs snapshot -r of @r$i ended $rc, retain-$p-$lbl.log)"', 'bash tests/kernel/test_zfs_cli_record.sh'),
+]

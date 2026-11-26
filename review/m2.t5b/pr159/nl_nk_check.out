@@ -1,0 +1,38 @@
+''                         workflow exit 0   scale_all: nothing
+'10'                       workflow exit 0   scale_all: RUN 10:0 
+'10:1000'                  workflow exit 0   scale_all: RUN 10:1000 
+'10:0'                     workflow exit 0   scale_all: RUN 10:0 
+'100000:1'                 workflow exit 0   scale_all: RUN 100000:1 
+'1:100000'                 workflow exit 64  scale_all: [about: scale: 1:100000 retains more than 20000 of each dataset; not run] 
+'10:10000'                 workflow exit 0   scale_all: RUN 10:10000 
+'4:40000'                  workflow exit 64  scale_all: [about: scale: 4:40000 retains more than 20000 of each dataset; not run] 
+'10:1000 10:1000'          workflow exit 0   scale_all: RUN 10:1000 [about: scale: 10:1000 twice; run once] 
+' 10:1 '                   workflow exit 0   scale_all: RUN 10:1 
+'1:20000'                  workflow exit 0   scale_all: RUN 1:20000 
+'1:20001'                  workflow exit 64  scale_all: [about: scale: 1:20001 retains more than 20000 of each dataset; not run] 
+'10:18181'                 workflow exit 0   scale_all: RUN 10:18181 
+'10:18182'                 workflow exit 64  scale_all: [about: scale: 10:18182 makes more than 200000 snapshots; not run] 
+'9:20000'                  workflow exit 0   scale_all: RUN 9:20000 
+'99999:2'                  workflow exit 0   scale_all: RUN 99999:2 
+'199999:1'                 workflow exit 64  scale_all: [about: scale: 199999 is more than 100000; not run] 
+'1:020000'                 workflow exit 64  scale_all: [about: scale: not a count of snapshots: 1:020000] 
+'10 10:0'                  workflow exit 0   scale_all: RUN 10:0 [about: scale: 10:0 twice; run once] 
+'1 2 3 4'                  workflow exit 64  scale_all: RUN 1:0 RUN 2:0 RUN 3:0 [about: scale: more than three counts; 4 not run] 
+'10:'                      workflow exit 64  scale_all: [about: scale: not a count of snapshots: 10:] 
+':5'                       workflow exit 64  scale_all: [about: scale: not a count: :5] 
+'0'                        workflow exit 64  scale_all: [about: scale: not a count: 0] 
+'0:5'                      workflow exit 64  scale_all: [about: scale: not a count: 0:5] 
+'10:02'                    workflow exit 64  scale_all: [about: scale: not a count of snapshots: 10:02] 
+'010'                      workflow exit 64  scale_all: [about: scale: not a count: 010] 
+'1:2:3'                    workflow exit 64  scale_all: [about: scale: not a count of snapshots: 1:2:3] 
+'10::5'                    workflow exit 64  scale_all: [about: scale: not a count of snapshots: 10::5] 
+'100000:2'                 workflow exit 64  scale_all: [about: scale: 100000:2 makes more than 200000 snapshots; not run] 
+'100001'                   workflow exit 64  scale_all: [about: scale: 100001 is more than 100000; not run] 
+'1:100001'                 workflow exit 64  scale_all: [about: scale: 1:100001 retains more than 20000 of each dataset; not run] 
+'1:999999'                 workflow exit 64  scale_all: [about: scale: 1:999999 retains more than 20000 of each dataset; not run] 
+'9999999'                  workflow exit 64  scale_all: [about: scale: 9999999 is more than 100000; not run] 
+'10:x'                     workflow exit 64  scale_all: [about: scale: not a count of snapshots: 10:x] 
+'a'                        workflow exit 64  scale_all: [about: scale: not a count: a] 
+'5 6 7 8'                  workflow exit 64  scale_all: RUN 5:0 RUN 6:0 RUN 7:0 [about: scale: more than three counts; 8 not run] 
+'1:99999999999999999999'   workflow exit 64  scale_all: [about: scale: 1:99999999999999999999 retains more than 20000 of each dataset; not run] 
+'10	20'                    workflow exit 64  scale_all: RUN 10:0 RUN 20:0 

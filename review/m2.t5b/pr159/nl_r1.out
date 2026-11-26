@@ -1,0 +1,14 @@
+A04a no length check of K SURVIVED 
+C01 no floor KILLED FAIL: retain: none under the floor: got 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|', want '' | FAIL: retain: the floor said: got '0', want '1'
+C02 floor -le KILLED FAIL: retain: at the floor, made: got '', want 'snapshot -r skzqs@r1|'
+C03 free read every call KILLED FAIL: retain: free read before calls 1, 101 and 201: got '250', want '3'
+C04 free read every 1000 KILLED FAIL: retain: free read before calls 1, 101 and 201: got '1', want '3'
+C05 free read before 100, 200 KILLED FAIL: retain: free read before calls 1, 101 and 201: got '2', want '3' | FAIL: retain: none under the floor: got 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|', want ''
+C06 a free that is not a number stops it SURVIVED 
+C07 floor 0 by default KILLED FAIL: retain: none under the floor: got 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|', want '' | FAIL: retain: the floor said: got '0', want '1'
+C08 a fifth, not a tenth KILLED FAIL: retain: the space at each tenth: got 'scale r3-250: retained @r50 at S s: allocated and free 4096 34359738368|scale r3-250: retained @r100 at S s: allocated and free 4096 34359738368|scale r3-250: retained @r150 at S s: allocated and free 4096 34359738368|scale r3-250: retained @r200 at S s: a
+C09 no line at the last SURVIVED 
+C10 no step guard KILLED FAIL: scale 3:2: its reads: got '/', want 'zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg skzqs /zfs get -r -H -p -t filesystem,volume -s local -o name,property all skzqs ' | FAIL: scale 3:2: the retained snapshots, then the take: got '6:snapshot -r skzqs@r1|', want '6:s
+R09a no budget check KILLED FAIL: retain: none once the budget is spent: got 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|snapshot -r skzqs@r4|snapshot -r skzqs@r5|', want '' | FAIL: retain: the budget said: got '0', want '1'
+R10a no time limit a call SURVIVED 
+C13 a failure goes on KILLED FAIL: retain: a call that fails stops it: got 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|snapshot -r skzqs@r3|snapshot -r skzqs@r4|', want 'snapshot -r skzqs@r1|snapshot -r skzqs@r2|'

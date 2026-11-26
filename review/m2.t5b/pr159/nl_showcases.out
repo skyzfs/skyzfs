@@ -1,0 +1,57 @@
+== SC1 G7 as planted at #158: the withdrawn k1 published by a later cut; the retry took k2: exit 1
+   pin_destroy_stays_absent: FAILED  [kernel and server] node B had no snap/k1 after the settle and has it now, on 6ab9f1eb8f7d
+   obs_destroy_name_reused: (none)  
+   pin_destroy_outcome: FAILED  [server] k1: published, not abandoned destroyed
+   pin_destroy_criterion: ok  [kernel and server] k1 published
+== SC1b the same, k1 not published (right): exit 0
+   pin_destroy_stays_absent: ok  [kernel and server] snap/k1, absent after the settle, is still absent at the check
+   obs_destroy_name_reused: (none)  
+   pin_destroy_outcome: ok  [server] k1: abandoned destroyed
+   pin_destroy_criterion: ok  [kernel and server] snap/k1 absent; the retry published k2
+== SC2 an agent that takes the given-up name k1 again; node B has the retry's k1: exit 0
+   pin_destroy_stays_absent: ok  [kernel and server] snap/k1, absent after the settle, is the retry's publish at the check
+   obs_destroy_name_reused: INFO  [server] the retry published a new snapshot under k1's name, 6ab9f1eb8f7d
+   pin_destroy_outcome: ok  [server] k1: abandoned destroyed
+   pin_destroy_criterion: ok  [kernel and server] snap/k1 absent; the retry published k1
+== SC2b the same; node B's k1 is not the retry's (an old request landed): exit 1
+   pin_destroy_stays_absent: FAILED  [kernel and server] node B has snap/k1 on 6ab9f1eb8f7d, not on the retry's eeeeeeeeeeee
+   obs_destroy_name_reused: INFO  [server] the retry published a new snapshot under k1's name, eeeeeeeeeeee
+   pin_destroy_outcome: ok  [server] k1: abandoned destroyed
+   pin_destroy_criterion: ok  [kernel and server] snap/k1 absent; the retry published k1
+   other lines not ok: {'pin_k1_row': 'FAILED'}
+== SC3 kill at take:after; the settle publishes k1-1, the retry k1 in the same second (a2 at b99f21a): right: exit 0
+   pin_A-x_outcome: ok  [server] k1: absent
+   obs_A-x_outcome: (none)  
+   pin_A-x_moved: ok  [server] k1's take destroyed at the next start; the publish went on as k1-1
+   obs_A-x_name_reused: INFO  [server] the retry published a new snapshot under k1's name, 6ab9f1eb8f7d
+   pin_A-x_stays_absent: ok  [kernel and server] snap/k1, absent after the settle, is the retry's publish at the check
+   pin_A-x_criterion: ok  [kernel and server] snap/k1 absent; the retry published k1
+== SC3b the same; node B's k1 is not the retry's: exit 1
+   pin_A-x_outcome: ok  [server] k1: absent
+   obs_A-x_outcome: (none)  
+   pin_A-x_moved: ok  [server] k1's take destroyed at the next start; the publish went on as k1-1
+   obs_A-x_name_reused: INFO  [server] the retry published a new snapshot under k1's name, eeeeeeeeeeee
+   pin_A-x_stays_absent: FAILED  [kernel and server] node B has snap/k1 on 6ab9f1eb8f7d, not on the retry's eeeeeeeeeeee
+   pin_A-x_criterion: ok  [kernel and server] snap/k1 absent; the retry published k1
+   other lines not ok: {'pin_k1_row': 'FAILED'}
+== SC4 kill at take:after; the settle publishes k1-1 and k1-2 (a double publish of one take): exit 0
+   pin_A-x_outcome: ok  [server] k1: absent
+   obs_A-x_outcome: (none)  
+   pin_A-x_moved: ok  [server] k1's take destroyed at the next start; the publish went on as k1-1, k1-2
+   obs_A-x_name_reused: (none)  
+   pin_A-x_stays_absent: ok  [kernel and server] snap/k1, absent after the settle, is still absent at the check
+   pin_A-x_criterion: ok  [kernel and server] snap/k1 absent; the retry published k2
+== SC5 kill at destroy:after; the settle takes k1 again under its name and publishes it (the engine, a_crash_around_the_destroy_takes_again): exit 1
+   pin_A-x_outcome: FAILED  [server] k1: published, not absent
+   obs_A-x_outcome: (none)  
+   pin_A-x_moved: FAILED  [server] the settle published no name but k1: snap/k1 6ab9f1eb8f7d3388f4f9d586f66e99fd54080df2c446f0e58668b09c08a16dd0
+   obs_A-x_name_reused: (none)  
+   pin_A-x_stays_absent: (none)  
+   pin_A-x_criterion: ok  [kernel and server] k1 published
+== SC5b kill at destroy:before; the settle destroys the take and publishes k1-1: right: exit 0
+   pin_A-x_outcome: ok  [server] k1: absent
+   obs_A-x_outcome: (none)  
+   pin_A-x_moved: ok  [server] k1's take destroyed at the next start; the publish went on as k1-1
+   obs_A-x_name_reused: (none)  
+   pin_A-x_stays_absent: ok  [kernel and server] snap/k1, absent after the settle, is still absent at the check
+   pin_A-x_criterion: ok  [kernel and server] snap/k1 absent; the retry published k2

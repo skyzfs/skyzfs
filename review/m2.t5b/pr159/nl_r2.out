@@ -1,0 +1,15 @@
+C14 not recursive KILLED FAIL: scale 3:2: the retained snapshots, then the take: got '6:snapshot skzqs@r1|7:snapshot skzqs@r2|18:snapshot -r skzqs@c|', want '||18:snapshot -r skzqs@c|' | FAIL: scale 3:2: the snapshots before the take: got 'snapshot skzqs@r1|snapshot skzqs@r2|', want 'snapshot -r skzqs@r1|snapshot -r skzqs@r
+C15 16 GiB with K KILLED FAIL: scale 3:2: on a pool of 32 GiB: got '0', want '1'
+C16 32 GiB without K too SURVIVED 
+C17 K bound 200000 KILLED FAIL: scale_all: K at most 20000: got '1:20001 1:20000 1:100000 ', want '1:20000 ' | FAIL: scale_all: K over 20000, said: got '0', want '2'
+C18 K bound -ge KILLED FAIL: scale_all: K at most 20000: got '', want '1:20000 ' | FAIL: scale_all: K over 20000, said: got '3', want '2'
+C19 the tenth says free only KILLED FAIL: retain: the space at each tenth: got 'scale r3-250: retained @r25 at S s: allocated and free 34359738368|scale r3-250: retained @r50 at S s: allocated and free 34359738368|scale r3-250: retained @r75 at S s: allocated and free 34359738368|scale r3-250: retained @r100 at S s: allocated and free
+C20 have not recursive SURVIVED 
+C21 the floor line without the free KILLED FAIL: retain: the floor said: got '0', want '1'
+C22 began not called SURVIVED 
+C23 began waits for nothing SURVIVED 
+C24 began: the fill log not waited for SURVIVED 
+R14 retain always SURVIVED 
+A07 K the last field SURVIVED 
+A08 an empty N accepted SURVIVED 
+A09 an empty K accepted SURVIVED 
