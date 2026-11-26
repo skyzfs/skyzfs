@@ -386,7 +386,9 @@ pub trait Zfs {
     /// calls then say what is wrong). The adapter counts the snapshots
     /// too, for the reads that walk every snapshot: the manifest's list,
     /// `zfs holds -r` and the sweep's list (R1 of #157's review and
-    /// R1-reach of #160's); that count's failure is not returned. The engine counts once at the
+    /// R1-reach of #160's), within the longest limit (the lead's ruling
+    /// on M2.6c-5d); that count's failure is not returned, and the
+    /// walks' errors then name it. The engine counts once at the
     /// start of each round, before the sweep.
     fn count(&mut self, pool: &str) -> Result<u64, ZfsError>;
     /// `zfs snapshot -r pool@t`: `@t` of the pool and every descendant

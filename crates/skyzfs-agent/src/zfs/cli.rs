@@ -259,10 +259,14 @@
 //!     dataset counted, at most 20 minutes;
 //!   - the count itself 60 s; a count that fails leaves the bases. After
 //!     a dataset count, `zfs list -r -H -o name -t snapshot` counts the
-//!     snapshots, within a read's limit. Where that fails, the list takes
-//!     the gets' limit: the conservative reading (the design is silent),
-//!     which gives no longer a limit than before on a pool whose commands
-//!     fail, and the list's own failure then names the read each round.
+//!     snapshots, within 35 minutes: it took 1.25 ms a snapshot on
+//!     Ubuntu 24.04 (126.2 s at 101 000), past a read's limit on the
+//!     datasets, and a limit that rests on the count it makes would cut
+//!     it off (the lead's ruling on M2.6c-5d). Where it fails, the list
+//!     takes the gets' limit and the other walks a read's: the
+//!     conservative reading (the design is silent), which gives no longer
+//!     a limit than before on a pool whose commands fail. A walk that
+//!     then fails says that the snapshots were not counted, and why.
 //!
 //!   They come from testing's recordings on Ubuntu 26.04 (run
 //!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
@@ -436,6 +440,9 @@ pub struct ZfsCli<H> {
     host: H,
     limits: Limits,
     scale: Scale,
+    /// Why the last count did not count the snapshots, where it counted
+    /// the datasets and not them: the walks' errors name it.
+    uncounted: Option<String>,
 }
 
 impl<H: Host> ZfsCli<H> {
@@ -445,6 +452,22 @@ impl<H: Host> ZfsCli<H> {
             host,
             limits,
             scale: Scale::Base,
+            uncounted: None,
+        }
+    }
+
+    /// `e`, a walk's error, with the reason its limit did not grow with
+    /// the snapshots where their count failed (the lead's ruling on
+    /// M2.6c-5d: an error that names the count, and not exit 1 on every
+    /// round with no reason). A missing pool or a vanished snapshot is
+    /// returned as it is.
+    fn walked(&self, e: ZfsError) -> ZfsError {
+        match (e, &self.uncounted) {
+            (ZfsError::Other(why), Some(count)) => ZfsError::Other(format!(
+                "{why} (on a limit that did not grow with the snapshots, since \
+                 their count failed: {count})"
+            )),
+            (e, _) => e,
         }
     }
 
@@ -768,7 +791,7 @@ impl<H: Host> ZfsCli<H> {
         let holds = match self.zfs(&args, limit, true, pool_of(snapshot)) {
             Ok(holds) => holds,
             Err(ZfsError::NoSnapshot) => return Ok(None),
-            Err(e) => return Err(e),
+            Err(e) => return Err(self.walked(e)),
         };
         Ok(Some(
             holds
@@ -806,7 +829,9 @@ impl<H: Host> ZfsCli<H> {
             pool,
         ];
         let limit = self.walk_limit(self.limits.list_per_snapshot);
-        let listed = self.zfs_bytes(&list, limit, pool, true)?;
+        let listed = self
+            .zfs_bytes(&list, limit, pool, true)
+            .map_err(|e| self.walked(e))?;
         let listed = String::from_utf8_lossy(&listed);
         let mut held = Vec::new();
         for line in listed.lines() {
@@ -1023,6 +1048,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
         let counted = self
             .run("zfs", &args, &[], self.limits.count, false, pool)
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        self.uncounted = None;
         let datasets = match counted {
             Ok(n) => n,
             Err(e) => {
@@ -1035,13 +1061,17 @@ impl<H: Host> Zfs for ZfsCli<H> {
             snapshots: None,
         };
         // The snapshots, for the limits of the reads that walk them (the
-        // manifest's list, `zfs holds -r` and the sweep's list), within a
-        // read's limit on the datasets' scale.
+        // manifest's list, `zfs holds -r` and the sweep's list), within
+        // the longest limit: not within one that hangs on the count it
+        // makes (the lead's ruling on M2.6c-5d).
         let args = ["list", "-r", "-H", "-o", "name", "-t", "snapshot", pool];
-        let snapshots = self
-            .run("zfs", &args, &[], self.read_limit(), false, pool)
-            .ok()
-            .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
+        let snapshots = match self.run("zfs", &args, &[], self.limits.full_most, false, pool) {
+            Ok(out) => Some(out.lines().filter(|line| !line.is_empty()).count() as u64),
+            Err(e) => {
+                self.uncounted = Some(e.to_string());
+                None
+            }
+        };
         self.scale = Scale::Counted {
             datasets,
             snapshots,
@@ -1065,7 +1095,9 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         let limit = self.full_read_limit();
         let list = list_words(pool);
-        let listed = self.zfs_bytes(&list, self.list_limit(), pool, true)?;
+        let listed = self
+            .zfs_bytes(&list, self.list_limit(), pool, true)
+            .map_err(|e| self.walked(e))?;
         let mut datasets = parse_listed(&listed, pool, t)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
         let get = get_words(pool, PAIRS);

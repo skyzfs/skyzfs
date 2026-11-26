@@ -882,7 +882,7 @@ fn a_value_read_alone_takes_a_reads_limit() {
     let limits: Vec<Duration> = zfs.host().ran.iter().map(|r| r.limit).collect();
     let full = base.read + base.full_per_dataset * 1000;
     let read = base.read + base.per_dataset * 1000;
-    assert_eq!(limits, [base.count, read, full, full, full, read]);
+    assert_eq!(limits, [base.count, base.full_most, full, full, full, read]);
 }
 
 /// A tiny generator of the tests' worlds (xorshift64).
@@ -1808,7 +1808,8 @@ fn listed(n: usize) -> String {
 /// not scaled, scaled but not capped, the manifest's reads scaled or
 /// capped as a read, a read scaled as the manifest's, a failed count
 /// keeping the last or setting the longest, the count's own limit
-/// scaled.
+/// scaled. The snapshots' count takes the longest limit whatever the
+/// datasets (the lead's ruling on M2.6c-5d).
 #[test]
 fn the_limits_grow_with_the_datasets_counted() {
     let base = Limits::default();
@@ -1921,7 +1922,7 @@ fn the_limits_grow_with_the_datasets_counted() {
         assert_eq!(zfs.count("tank"), Ok(n));
         assert_eq!(zfs.host().words(), [COUNT, SNAPSHOTS]);
         assert_eq!(zfs.host().ran[0].limit, base.count, "{n}");
-        assert_eq!(zfs.host().ran[1].limit, read, "{n}");
+        assert_eq!(zfs.host().ran[1].limit, base.full_most, "{n}");
         assert_eq!(limits(&mut zfs), (change, read, full), "{n}");
     }
     zfs.host().commands.remove(COUNT);
@@ -1958,8 +1959,8 @@ fn the_limits_grow_with_the_datasets_counted() {
 /// R1 of #157's review, the lead's ruling (a): `zfs list` in the
 /// manifest's read lists every snapshot in the pool, so its limit grows
 /// with the snapshots counted as well as the datasets: the count also
-/// counts the snapshots (`zfs list -r -H -o name -t snapshot`, within a
-/// read's limit), and the list takes [`Limits::full_per_dataset`] for
+/// counts the snapshots (`zfs list -r -H -o name -t snapshot`, within
+/// the longest limit), and the list takes [`Limits::full_per_dataset`] for
 /// each dataset and [`Limits::list_per_snapshot`] (10 ms, the lead's
 /// ruling on M2.6c-5d) for each snapshot, at most [`Limits::full_most`]. The
 /// two gets, which read only file systems and volumes, and every other
@@ -2003,7 +2004,7 @@ fn the_lists_limit_grows_with_the_snapshots_counted() {
         zfs.host().ran.clear();
         assert_eq!(zfs.count("tank"), Ok(10), "{m}");
         assert_eq!(zfs.host().words(), [COUNT, SNAPSHOTS], "{m}");
-        assert_eq!(zfs.host().ran[1].limit, at(10, 100), "{m}");
+        assert_eq!(zfs.host().ran[1].limit, base.full_most, "{m}");
         zfs.host().ran.clear();
         let _ = zfs.datasets("tank", "skz-1");
         let _ = zfs.held("tank", "skz-1", "skyzfs-publish", Some(&[]));
@@ -2092,6 +2093,140 @@ fn the_holds_and_the_tags_grow_with_the_snapshots_counted() {
     let ran = &zfs.host().ran;
     assert_eq!(ran[0].limit, read, "holds -r on a read's limit");
     assert_eq!(ran[1].limit, read, "the sweep's list on a read's limit");
+}
+
+/// A host on which some commands take a given time: run within a
+/// shorter limit, such a command ends as the runner ends it there, in
+/// `TimedOut`; otherwise the fake answers it.
+struct Slow {
+    fake: Fake,
+    takes: std::collections::BTreeMap<&'static str, Duration>,
+}
+
+impl Host for Slow {
+    fn run(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> std::io::Result<crate::host::Output> {
+        let words = std::iter::once(program)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        match self.takes.get(words.as_str()) {
+            Some(took) if limit < *took => {
+                self.fake.ran.push(crate::host::fake::Ran {
+                    words,
+                    stdin: stdin.to_vec(),
+                    limit,
+                });
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+            _ => self.fake.run(program, args, stdin, limit),
+        }
+    }
+
+    fn read(&mut self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        self.fake.read(path)
+    }
+
+    fn stat(&mut self, path: &std::path::Path) -> std::io::Result<crate::host::Node> {
+        self.fake.stat(path)
+    }
+}
+
+/// The lead's ruling on M2.6c-5d: the snapshots' count runs within the
+/// longest limit, [`Limits::full_most`], and not within a limit that
+/// depends on the count it is making. On 101 datasets a read's limit is
+/// 70.1 s, and testing's recording counted 101 000 snapshots in 126.2 s
+/// on Ubuntu 24.04 (run 45800940382): that count is not cut off, and
+/// the walks grow with it. A count that still fails, here past the
+/// longest limit, leaves the walks on a read's limit (the list on the
+/// gets'), and each walk that then fails names the count's failure; a
+/// later count that succeeds forgets it. Mutants: the count on a
+/// read's limit (cut off), or on the limit before the datasets were
+/// counted; a walk's error not naming the failed count, at any of the
+/// three walks; the failure not forgotten.
+#[test]
+fn a_count_past_the_datasets_limit_is_not_cut_off() {
+    let base = Limits::default();
+    let ms = Duration::from_millis;
+    let read = base.read + ms(100 * 101);
+    assert_eq!(read, ms(70_100));
+    let recorded = ms(126_200);
+    assert!(read < recorded && recorded < base.full_most);
+    let snapshots: String = (0..101_000).map(|i| format!("tank@s{i}\n")).collect();
+    let mut fake = Fake::default();
+    fake.ok(COUNT, &listed(101));
+    fake.ok(SNAPSHOTS, &snapshots);
+    let gone = "cannot iterate filesystems: I/O error\n";
+    fake.fails(HOLDS_R, 1, gone);
+    fake.fails(TAGGED_LIST, 1, gone);
+    fake.fails(LIST_WORDS, 1, gone);
+    let slow = Slow {
+        fake,
+        takes: std::collections::BTreeMap::from([(SNAPSHOTS, recorded)]),
+    };
+    let mut zfs = ZfsCli::new(slow, base);
+    let walks = |zfs: &mut ZfsCli<Slow>| -> Vec<(Duration, String)> {
+        zfs.host().fake.ran.clear();
+        let held = zfs.held("tank", "skz-1", HOLD_TAG, Some(&[])).map(|_| ());
+        let tagged = zfs.tagged("tank", HOLD_TAG).map(|_| ());
+        let listed = zfs.datasets("tank", "skz-1").map(|_| ());
+        let ran = &zfs.host().fake.ran;
+        let words: Vec<&str> = ran.iter().map(|r| r.words.as_str()).collect();
+        assert_eq!(words, [HOLDS_R, TAGGED_LIST, LIST_WORDS]);
+        [held, tagged, listed]
+            .into_iter()
+            .zip(ran.iter())
+            .map(|(e, r)| match e {
+                Err(ZfsError::Other(why)) => (r.limit, why),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+
+    assert_eq!(zfs.count("tank"), Ok(101));
+    assert_eq!(zfs.host().fake.ran[1].words, SNAPSHOTS);
+    assert_eq!(zfs.host().fake.ran[1].limit, base.full_most);
+    let counted = walks(&mut zfs);
+    assert_eq!(counted[0].0, read + base.holds_per_snapshot * 101_000);
+    assert_eq!(counted[1].0, read + base.list_per_snapshot * 101_000);
+    assert_eq!(
+        counted[2].0,
+        base.read + ms(200 * 101) + base.list_per_snapshot * 101_000
+    );
+    for (_, why) in &counted {
+        assert!(!why.contains("count failed"), "{why}");
+    }
+
+    // A count that takes longer than the longest limit.
+    zfs.host().takes.insert(SNAPSHOTS, base.full_most + ms(1));
+    zfs.host().fake.ran.clear();
+    assert_eq!(zfs.count("tank"), Ok(101), "the datasets' count stands");
+    assert_eq!(zfs.host().fake.ran[1].limit, base.full_most);
+    let uncounted = walks(&mut zfs);
+    let limits: Vec<Duration> = uncounted.iter().map(|(limit, _)| *limit).collect();
+    assert_eq!(limits, [read, read, base.read + ms(200 * 101)]);
+    for (_, why) in &uncounted {
+        assert!(why.contains(gone.trim_end()), "{why}");
+        assert!(
+            why.contains(
+                "(on a limit that did not grow with the snapshots, since their count failed: "
+            ),
+            "{why}"
+        );
+        assert!(why.contains(SNAPSHOTS), "{why}");
+    }
+
+    // A count that succeeds again forgets the failure.
+    zfs.host().takes.insert(SNAPSHOTS, recorded);
+    assert_eq!(zfs.count("tank"), Ok(101));
+    for (_, why) in walks(&mut zfs) {
+        assert!(!why.contains("count failed"), "{why}");
+    }
 }
 
 /// `zfs holds -r`'s default allowance against testing's recording of
