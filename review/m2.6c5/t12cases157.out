@@ -1,0 +1,9 @@
+Q4: FAILED first at: not as before true, stops [Point { effect: Failed, after: true }]
+Q7: FAILED first at: not as before false, stops [Point { effect: Abandon, after: true }]
+Q7b: FAILED first at: not as before true, stops [Point { effect: Failed, after: true }, Point { effect: Abandon, after: true }]
+Q16: FAILED first at: not as before true, stops [Point { effect: Failed, after: true }]
+Q7b without the double-stop cases: PASSED
+Q4 without the double-stop cases: FAILED first at: not as before true, stops [Point { effect: Failed, after: true }]
+Q16 without the double-stop cases: FAILED first at: not as before true, stops [Point { effect: Failed, after: true }]
+head without the double-stop cases (control): PASSED
+worktree after: clean

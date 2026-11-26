@@ -1,0 +1,14 @@
+REVIEW B1 before [("tank", "compression", [111, 102, 102]), ("tank/a", "filesystem_count", [48]), ("tank/a", "snapshot_count", [51])]
+REVIEW B1 after  [("tank", "compression", [111, 102, 102]), ("tank/a", "filesystem_count", [48]), ("tank/a", "snapshot_count", [52])]
+REVIEW exhaustive: 1000810 worlds, 732350 with reads alone
+test zfs::cli::tests::review_scratch::review_exhaustive_no_change ... ok
+REVIEW random: 200000 worlds, 198472 with reads alone
+test zfs::cli::tests::review_scratch::review_random_no_change ... ok
+REVIEW one change: 1087 values never set, 0 reads failed
+test zfs::cli::tests::review_scratch::review_one_change_between_the_gets ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 189 filtered out; finished in 8.49s
+REVIEW never set: tank/c p:x = ""
+--
+REVIEW never set: tank/a b p:y = "-\tp:x\tv"
+--
+REVIEW never set: tank/a p:x = ""

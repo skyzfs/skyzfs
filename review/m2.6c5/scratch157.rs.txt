@@ -1,0 +1,342 @@
+
+/// Review scratch for #157 (not committed): the manifest's read on a
+/// simulated `zfs` whose output is printed from a world of values.
+mod review_scratch {
+    use super::*;
+    use crate::host::{Host, Node, Output};
+    use std::io;
+    use std::path::Path;
+
+    type Triple = (String, String, Vec<u8>);
+
+    const NAMES: [&str; 4] = ["tank", "tank/a", "tank/a b", "tank/c"];
+
+    /// A zfs that prints `states[k]` at its k-th call (the last state
+    /// after that).
+    struct Sim {
+        states: Vec<Vec<Triple>>,
+        calls: usize,
+    }
+
+    impl Sim {
+        fn state(&self) -> &Vec<Triple> {
+            &self.states[self.calls.min(self.states.len() - 1)]
+        }
+    }
+
+    fn ok(stdout: Vec<u8>) -> io::Result<Output> {
+        Ok(Output {
+            code: Some(0),
+            stdout,
+            stderr: Vec::new(),
+        })
+    }
+
+    impl Host for Sim {
+        fn run(
+            &mut self,
+            program: &str,
+            args: &[&str],
+            _stdin: &[u8],
+            _limit: Duration,
+        ) -> io::Result<Output> {
+            assert_eq!(program, "zfs");
+            let state = self.state().clone();
+            self.calls += 1;
+            let mut out = Vec::new();
+            match args {
+                ["list", ..] => {
+                    for (i, n) in NAMES.iter().enumerate() {
+                        out.extend_from_slice(
+                            format!("{n}\t{}\tfilesystem\t{}\n", 10 + i, 1 + i).as_bytes(),
+                        );
+                    }
+                }
+                ["get", "-r", .., "name,property", "all", _] => {
+                    for (n, p, _) in &state {
+                        out.extend_from_slice(format!("{n}\t{p}\n").as_bytes());
+                    }
+                }
+                ["get", "-r", .., "name,property,value", "all", _] => {
+                    for (n, p, v) in &state {
+                        out.extend_from_slice(format!("{n}\t{p}\t").as_bytes());
+                        out.extend_from_slice(v);
+                        out.push(b'\n');
+                    }
+                }
+                ["get", "-H", "-p", "-o", "value", p, n] => {
+                    match state.iter().find(|(a, b, _)| a == n && b == p) {
+                        Some((_, _, v)) => out.extend_from_slice(v),
+                        None => out.push(b'-'),
+                    }
+                    out.push(b'\n');
+                }
+                _ => panic!("unexpected {args:?}"),
+            }
+            ok(out)
+        }
+
+        fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+            Err(io::ErrorKind::NotFound.into())
+        }
+
+        fn stat(&mut self, _path: &Path) -> io::Result<Node> {
+            Err(io::ErrorKind::NotFound.into())
+        }
+    }
+
+    fn read(states: Vec<Vec<Triple>>) -> (Result<Vec<Triple>, ZfsError>, usize) {
+        let mut zfs = ZfsCli::new(Sim { states, calls: 0 }, Limits::default());
+        let got = zfs.datasets("tank", "t").map(|ds| {
+            let mut v = Vec::new();
+            for d in ds {
+                for (p, val) in d.local {
+                    v.push((d.name.clone(), p, val));
+                }
+            }
+            v
+        });
+        let calls = zfs.host().calls;
+        (got, calls)
+    }
+
+    /// Order a world as zfs prints it: by dataset, then property.
+    fn sorted(mut w: Vec<Triple>) -> Vec<Triple> {
+        w.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+        w
+    }
+
+    const ATOMS: [&[u8]; 17] = [
+        b"\n",
+        b"\t",
+        b"-",
+        b"\r",
+        b" ",
+        b"\\n",
+        b"\xff",
+        b"\x7f",
+        b"v",
+        b"tank/a",
+        b"tank/a b",
+        b"p:x",
+        b"\tp:x\t",
+        b"\ntank/a\tp:x\t",
+        b"\ntank\tp:y\t",
+        b"\ntank/zz\tp:q\tv",
+        b"\ntank/a b\tp:y\tforged\n",
+    ];
+
+    /// Every value of at most `k` atoms.
+    fn values(k: usize) -> Vec<Vec<u8>> {
+        let mut out = vec![Vec::new()];
+        let mut layer = vec![Vec::new()];
+        for _ in 0..k {
+            let mut next = Vec::new();
+            for v in &layer {
+                for a in ATOMS {
+                    let mut w = v.clone();
+                    w.extend_from_slice(a);
+                    next.push(w);
+                }
+            }
+            out.extend(next.iter().cloned());
+            layer = next;
+        }
+        out
+    }
+
+    /// Exhaustive, nothing changed between the reads: what is read is
+    /// exactly the world, every value of up to two atoms on two pairs,
+    /// and up to one atom on three.
+    #[test]
+    fn review_exhaustive_no_change() {
+        let pairs: [(&str, &str); 5] = [
+            ("tank", "p:x"),
+            ("tank", "p:y"),
+            ("tank/a", "p:x"),
+            ("tank/a b", "p:y"),
+            ("tank/c", "p:x"),
+        ];
+        let mut worlds = 0u64;
+        let mut alone = 0u64;
+        let v2 = values(2);
+        let v1 = values(1);
+        for i in 0..pairs.len() {
+            for j in i + 1..pairs.len() {
+                for a in &v2 {
+                    for b in &v2 {
+                        let w = vec![
+                            (pairs[i].0.into(), pairs[i].1.into(), a.clone()),
+                            (pairs[j].0.into(), pairs[j].1.into(), b.clone()),
+                        ];
+                        let (got, calls) = read(vec![w.clone()]);
+                        assert_eq!(got.as_ref(), Ok(&sorted(w.clone())), "{w:?}");
+                        worlds += 1;
+                        alone += (calls > 3) as u64;
+                    }
+                }
+            }
+        }
+        for i in 0..pairs.len() {
+            for j in i + 1..pairs.len() {
+                for k in j + 1..pairs.len() {
+                    for a in &v1 {
+                        for b in &v1 {
+                            for c in &v1 {
+                                let w = vec![
+                                    (pairs[i].0.into(), pairs[i].1.into(), a.clone()),
+                                    (pairs[j].0.into(), pairs[j].1.into(), b.clone()),
+                                    (pairs[k].0.into(), pairs[k].1.into(), c.clone()),
+                                ];
+                                let (got, calls) = read(vec![w.clone()]);
+                                assert_eq!(got.as_ref(), Ok(&sorted(w.clone())), "{w:?}");
+                                worlds += 1;
+                                alone += (calls > 3) as u64;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("REVIEW exhaustive: {worlds} worlds, {alone} with reads alone");
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    fn random_world(rng: &mut Rng) -> Vec<Triple> {
+        let props = ["p:a", "p:x", "p:y", "volsize"];
+        let mut w = Vec::new();
+        for n in NAMES {
+            for p in props {
+                if rng.below(2) == 0 {
+                    continue;
+                }
+                let mut v = Vec::new();
+                match rng.below(40) {
+                    0 => v = vec![b'v'; 4095],
+                    1 => v = vec![b'v'; 4096],
+                    2 => v = vec![b'v'; 8191],
+                    3 => {
+                        v = vec![b'v'; 8190];
+                        v.push(b'\n');
+                    }
+                    _ => {
+                        for _ in 0..rng.below(7) {
+                            v.extend_from_slice(ATOMS[rng.below(ATOMS.len())]);
+                        }
+                    }
+                }
+                w.push((n.to_string(), p.to_string(), v));
+            }
+        }
+        w
+    }
+
+    /// Random, nothing changed between the reads: exact.
+    #[test]
+    fn review_random_no_change() {
+        let mut rng = Rng(0x0157_0157_dead_beef);
+        let mut alone = 0;
+        for world in 0..200_000 {
+            let w = random_world(&mut rng);
+            let (got, calls) = read(vec![w.clone()]);
+            assert_eq!(got.as_ref(), Ok(&sorted(w.clone())), "world {world}: {w:?}");
+            alone += (calls > 3) as u64;
+        }
+        eprintln!("REVIEW random: 200000 worlds, {alone} with reads alone");
+    }
+
+    /// One change between the pairs' get and the values' get (a pair
+    /// inherited, a pair set, or a value set): count the reads that
+    /// return a value that the pair had in neither state, and show the
+    /// first few. Observation only.
+    #[test]
+    fn review_one_change_between_the_gets() {
+        let mut rng = Rng(0x0157_0000_1111_2222);
+        let (mut never, mut shown, mut errors) = (0, 0, 0);
+        for _ in 0..200_000 {
+            let w0 = sorted(random_world(&mut rng));
+            let mut w1 = w0.clone();
+            match rng.below(3) {
+                0 if !w1.is_empty() => {
+                    let i = rng.below(w1.len());
+                    w1.remove(i);
+                }
+                1 => {
+                    let n = NAMES[rng.below(NAMES.len())].to_string();
+                    let p = "p:new".to_string();
+                    if !w1.iter().any(|(a, b, _)| *a == n && *b == p) {
+                        w1.push((n, p, b"\ntank/a\tp:x\tz".to_vec()));
+                    }
+                }
+                _ if !w1.is_empty() => {
+                    let i = rng.below(w1.len());
+                    let mut v = Vec::new();
+                    for _ in 0..1 + rng.below(4) {
+                        v.extend_from_slice(ATOMS[rng.below(ATOMS.len())]);
+                    }
+                    w1[i].2 = v;
+                }
+                _ => {}
+            }
+            let w1 = sorted(w1);
+            // list and pairs from w0, values and reads alone from w1.
+            let (got, _) = read(vec![w0.clone(), w0.clone(), w1.clone()]);
+            let Ok(got) = got else {
+                errors += 1;
+                continue;
+            };
+            for (n, p, v) in &got {
+                let had = |w: &Vec<Triple>| w.iter().any(|(a, b, c)| a == n && b == p && c == v);
+                // `-` read alone for a pair gone is the known case.
+                if !had(&w0) && !had(&w1) && v.as_slice() != b"-" {
+                    never += 1;
+                    if shown < 3 {
+                        shown += 1;
+                        eprintln!(
+                            "REVIEW never set: {n} {p} = {:?}\n  w0 {:?}\n  w1 {:?}",
+                            String::from_utf8_lossy(v),
+                            w0,
+                            w1
+                        );
+                    }
+                }
+            }
+        }
+        eprintln!("REVIEW one change: {never} values never set, {errors} reads failed");
+    }
+
+    /// B1: on a pool where a filesystem or snapshot limit was ever set,
+    /// `zfs get -s local` lists `filesystem_count` and `snapshot_count`
+    /// as local (recorded, run 45738224324, both images), and
+    /// `zfs snapshot -r` raises `snapshot_count` by one on each such
+    /// dataset. The reading before the take and the take's members then
+    /// differ, and every take fails the engine's check.
+    #[test]
+    fn review_b1_snapshot_count_differs_across_the_take() {
+        let state = |count: &str| {
+            vec![
+                ("tank".to_string(), "compression".to_string(), b"off".to_vec()),
+                ("tank/a".to_string(), "filesystem_count".to_string(), b"0".to_vec()),
+                ("tank/a".to_string(), "snapshot_count".to_string(), count.as_bytes().to_vec()),
+            ]
+        };
+        let (before, _) = read(vec![state("3")]);
+        let (after, _) = read(vec![state("4")]);
+        let (before, after) = (before.expect("before"), after.expect("after"));
+        eprintln!("REVIEW B1 before {before:?}\nREVIEW B1 after  {after:?}");
+        assert_ne!(before, after);
+        assert!(before.iter().any(|(_, p, _)| p == "snapshot_count"));
+    }
+}
