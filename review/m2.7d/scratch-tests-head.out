@@ -1,0 +1,15 @@
+thread 'program::tests::review170::rp1_an_end_during_the_last_sync_begins_no_publish' (909) panicked at crates/skyzfs-agent/src/program/tests.rs:2299:9:
+assertion `left == right` failed: calls after the end was asked: ["count", "props", "tagged", "props", "cuts", "members"]
+  left: "skz-20261125T010000Z"
+ right: "-"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+--
+thread 'program::tests::review170::rp2_a_round_whose_sync_failed_says_the_syncs_it_ran' (910) panicked at crates/skyzfs-agent/src/program/tests.rs:2336:9:
+assertion `left != right` failed: round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+skyzfs-agent: round 1: zfs: zpool sync: timed out
+
+  left: "0"
+ right: "0"
+stack backtrace:

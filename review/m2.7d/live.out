@@ -1,0 +1,66 @@
+== a_term_waiting: rc=0 elapsed=3.081868648
+   last signal to exit: .073832554 s
+   out: round 1 failed took_ms=71 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   calls started: 4; started after the first signal: 0
+   call -3.00 s start zfs list -r -H -o name -t filesystem,volume tank
+   call -2.99 s end zfs list -r -H -o name -t filesystem,volume tank
+   call -2.98 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.97 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.96 s start zfs list -r -H -o name -t filesystem,volume tank
+   call -2.95 s end zfs list -r -H -o name -t filesystem,volume tank
+   call -2.94 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.94 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+== b_int_waiting: rc=0 elapsed=3.084291462
+   last signal to exit: .080379193 s
+   out: round 1 failed took_ms=54 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   calls started: 4; started after the first signal: 0
+   call -2.97 s start zfs list -r -H -o name -t filesystem,volume tank
+   call -2.97 s end zfs list -r -H -o name -t filesystem,volume tank
+   call -2.97 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.96 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.95 s start zfs list -r -H -o name -t filesystem,volume tank
+   call -2.94 s end zfs list -r -H -o name -t filesystem,volume tank
+   call -2.94 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -2.93 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+== c_term_in_call: rc=0 elapsed=6.036005831
+   last signal to exit: 5.027911861 s
+   out: round 1 failed took_ms=6028 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   calls started: 2; started after the first signal: 1
+   call -1.00 s start zfs list -r -H -o name -t filesystem,volume tank
+   call +2.00 s end zfs list -r -H -o name -t filesystem,volume tank
+   call +2.01 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call +5.02 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+== d_twice_in_call: rc=1 elapsed=1.528122403
+   last signal to exit: .004142805 s
+   calls started: 1; started after the first signal: 0
+   call -0.98 s start zfs list -r -H -o name -t filesystem,volume tank
+== e_term_int_in_call: rc=1 elapsed=1.526303208
+   last signal to exit: .001836476 s
+   calls started: 1; started after the first signal: 0
+   call -0.96 s start zfs list -r -H -o name -t filesystem,volume tank
+== f_behind_no_signal_until_4s: rc=0 elapsed=4.051902973
+   last signal to exit: .046316680 s
+   out: round 1 failed took_ms=41 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   calls started: 4; started after the first signal: 0
+   call -4.00 s start daemon cuts
+   call -4.00 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -3.99 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -3.99 s start zfs list -r -H -o name -t filesystem,volume tank
+   call -3.98 s end zfs list -r -H -o name -t filesystem,volume tank
+   call -3.97 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call -3.97 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+== g_behind_term_in_premise: rc=0 elapsed=3.061926379
+   last signal to exit: 2.054087118 s
+   out: round 1 failed took_ms=3031 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+   err: skyzfs-agent: round 1: zfs: zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank: exit 1: fake zpool: refused
+   calls started: 2; started after the first signal: 0
+   call -0.98 s start daemon cuts
+   call -0.97 s start zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank
+   call +2.04 s end zpool get -H -p -o property,value guid,load_guid,multihost,readonly,checkpoint tank

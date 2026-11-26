@@ -1,0 +1,86 @@
+BASE -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+A1 no syncs -> KILLED rc= 101 test result: FAILED. 237 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.94s
+   FAILED engine::tests::past::a_sync_that_makes_no_cut_ends_the_syncs
+   FAILED engine::tests::past::after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself
+   FAILED engine::tests::past::an_end_stops_the_syncs
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A2 one sync only -> KILLED rc= 101 test result: FAILED. 238 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.95s
+   FAILED engine::tests::past::after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself
+   FAILED engine::tests::past::an_end_stops_the_syncs
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A3 a sync while the newest cut opens -> KILLED rc= 101 test result: FAILED. 238 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.73s
+   FAILED engine::tests::past::after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED engine::tests::past::with_no_cut_behind_nothing_is_synced
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+   FAILED program::tests::an_end_during_a_begin_makes_no_read_after_it
+A4 no bound -> KILLED rc= 101 test result: FAILED. 241 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.00s
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A5 the bound per call -> KILLED rc= 101 test result: FAILED. 241 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.93s
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A6 the count not reset by a cut that opens -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.90s
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+A7 the count reset by a restart -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.13s
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+A8 no NoCut check -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.89s
+   FAILED engine::tests::past::a_sync_that_makes_no_cut_ends_the_syncs
+A9 go not asked in the syncs -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s
+   FAILED engine::tests::past::an_end_stops_the_syncs
+A10 the premise not checked -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.09s
+   FAILED engine::tests::past::a_pool_refused_its_premise_is_not_synced
+A11 a begin while behind -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A12 no sync before the begin -> KILLED rc= 101 test result: FAILED. 241 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.38s
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+A13 synced left out of the line -> KILLED rc= 101 test result: FAILED. 240 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.58s
+   FAILED program::tests::a_round_line_says_what_the_round_did
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+A14 go asked after the count and sweep (n1 undone) -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.45s
+   FAILED program::tests::an_end_during_a_begin_makes_no_read_after_it
+A15 N3a the advice dropped -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.08s
+   FAILED zfs::cli::tests::holds_that_do_not_add_up_are_an_error_that_names_the_snapshot
+A16 A9e the fake filter takes skz- anywhere -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.75s
+   FAILED engine::tests::the_sweep_leaves_a_hold_of_the_tag_on_a_name_not_the_agents
+A17 a round still behind marked failed -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.64s
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+R1 the count reset only by a cut that opens, not by no cut -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.82s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+R2 no cut held taken as behind -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s
+   FAILED engine::tests::past::with_no_cut_behind_nothing_is_synced
+R3 the daemon unread: no begin -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.00s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+R4 NoCut only where the count fell -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.09s
+   FAILED engine::tests::past::a_sync_that_makes_no_cut_ends_the_syncs
+R5 NoCut against the first count, not the last -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.03s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+R6 a failed sync not counted toward the bound -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.46s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+R7 the premise checked only while the bound count is 0 (once per process) -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.40s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+R8 the syncs error does not restart -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.20s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+R9 the syncs error still begins -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.95s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+R10 a failed restart after the syncs error still settles -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.96s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+R11 NoCut resets the bound count -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.67s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+R12 the syncs error restarts even on a refusal -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.01s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+R13 synced of a round left at 0 where behind -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.48s
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+R14 the stderr line of a round behind not printed -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.39s
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+R15 go asked only before the first pass of a settle -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.20s
+   FAILED program::tests::an_end_comes_between_two_rounds_of_the_engine
+R16 the bound checked after go (order) -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.25s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+R17 the sync value not kept for the planner -> KILLED rc= 101 test result: FAILED. 239 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.85s
+   FAILED engine::tests::past::after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself
+   FAILED engine::tests::past::the_syncs_stop_at_their_bound_until_a_cut_opens
+   FAILED program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins
+   FAILED program::tests::a_round_still_behind_begins_no_publish
+R19 the unsettled names dropped at an end (Ok always) -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+R20 a round whose syncs did not clear settles nothing -> SURVIVES rc= 0 test result: ok. 243 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.93s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+A14b go asked where it was before the change (after the count, the sweep and the empty check) -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.98s
+   FAILED program::tests::an_end_during_a_begin_makes_no_read_after_it
+A15b N3a the advice dropped from the missing snapshot error -> KILLED rc= 101 test result: FAILED. 242 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.38s
+   FAILED zfs::cli::tests::the_holds_under_a_snapshot_are_checked_as_the_sweeps_are
+ALLDONE

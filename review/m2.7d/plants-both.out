@@ -1,0 +1,33 @@
+BASE -> SURVIVES rc= 101 test result: FAILED. 255 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.13s
+A14b go asked where it was before the change (after the count, the sweep and the empty check) -> KILLED rc= 101 test result: FAILED. 253 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.99s
+   FAILED engine::tests::review170::rv6_an_end_before_a_pass_names_what_is_under_way
+   FAILED program::tests::an_end_during_a_begin_makes_no_read_after_it
+A15b N3a the advice dropped from the missing snapshot error -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.03s
+   FAILED zfs::cli::tests::the_holds_under_a_snapshot_are_checked_as_the_sweeps_are
+R1 the count reset only by a cut that opens, not by no cut -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.69s
+   FAILED engine::tests::review170::rv4_no_cut_held_starts_the_count_again
+R3 the daemon unread: no begin -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.66s
+   FAILED program::tests::review170::rp6_the_daemon_unread_still_begins
+R5 NoCut against the first count, not the last -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.26s
+   FAILED engine::tests::review170::rv5_no_cut_is_judged_from_the_last_sync
+R6 a failed sync not counted toward the bound -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.06s
+   FAILED engine::tests::review170::rv2_a_failed_sync_counts_toward_the_bound
+R7 the premise checked only while the bound count is 0 (once per process) -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.83s
+   FAILED engine::tests::review170::rv3_the_premise_is_checked_at_each_call
+R8 the syncs error does not restart -> KILLED rc= 101 test result: FAILED. 253 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.10s
+   FAILED program::tests::review170::rp5_a_failed_reading_after_the_syncs_error_settles_nothing
+   FAILED program::tests::review170::rp3_an_error_of_the_syncs_reads_the_record_again
+R9 the syncs error still begins -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.11s
+   FAILED program::tests::review170::rp4_a_round_whose_syncs_were_refused_begins_nothing
+R10 a failed restart after the syncs error still settles -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.04s
+   FAILED program::tests::review170::rp5_a_failed_reading_after_the_syncs_error_settles_nothing
+R11 NoCut resets the bound count -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.91s
+   FAILED engine::tests::review170::rv1_no_cut_at_each_call_still_meets_the_bound
+R12 the syncs error restarts even on a refusal -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.93s
+   FAILED program::tests::review170::rp8_a_refusal_at_the_syncs_reads_the_record_once
+R16 the bound checked after go (order) -> SURVIVES rc= 101 test result: FAILED. 255 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.16s
+R19 the unsettled names dropped at an end (Ok always) -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.98s
+   FAILED engine::tests::review170::rv6_an_end_before_a_pass_names_what_is_under_way
+R20 a round whose syncs did not clear settles nothing -> KILLED rc= 101 test result: FAILED. 254 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.14s
+   FAILED program::tests::review170::rp7_a_round_still_behind_still_settles
+ALLDONE

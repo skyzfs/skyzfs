@@ -86,9 +86,9 @@ Each stop, judged:
 | Stop | Right? | Note |
 |---|---|---|
 | `Clear` on `Some((_, true))` | yes | Resets the bound. |
-| `Clear` on `None` (no cut held) | yes | Nothing can be behind. It also resets the bound; the docs name only "a cut that opens as itself" (n2). |
-| `NoCut` | yes | Judged from the last sync, not the first (a plant of the first survives: T2). It cannot fire before the first sync. A daemon restart between two syncs that lowers the count (a new state) also stops the round; the next round goes on. Harmless. |
-| `Bound` | yes, as a per-process bound | Checked after the cut is read and before `go`. 128 is enough: `-T` loads an uberblock in the ring, so at most 127 abandoned groups are above it (ashift 9: 128 slots of 1 KiB; ashift 12: 32), each assist writes at least one group, and the `Clear` check runs before the bound check, so the 128th read can still clear. A failed assist counts (T2). |
+| `Clear` on `None` (no cut held) | yes | Nothing can be behind. It also resets the bound; the docs name only "a cut that opens as itself" (d2). |
+| `NoCut` | yes | Judged from the last sync, not the first (a plant of the first survives: T1). It cannot fire before the first sync. A daemon restart between two syncs that lowers the count (a new state) also stops the round; the next round goes on. Harmless. |
+| `Bound` | yes, as a per-process bound | Checked after the cut is read and before `go`. 128 is enough: `-T` loads an uberblock in the ring, so at most 127 abandoned groups are above it (ashift 9: 128 slots of 1 KiB; ashift 12: 32), each assist writes at least one group, and the `Clear` check runs before the bound check, so the 128th read can still clear. A failed assist counts (T1). |
 | `Told` | yes | Asked before each sync and after the bound. |
 | Premise | yes | Checked once per call, before the first sync: a pool the agent refuses is never written. The live driver shows it: with the daemon answering `opens=rewind` and `zpool get` refused, no `zfs set` or `zpool sync` ran (`live.out`, cases f and g). |
 
@@ -101,7 +101,7 @@ Each stop, judged:
   with the restart at once where `restarts` says so
   (`program.rs:1067-1079`); a refusal of the premise does not restart.
 - The settle runs in every case but an owed restart, so a round behind
-  still settles what is under way (T2: a plant that skips it survives
+  still settles what is under way (T1: a plant that skips it survives
   the suite).
 - The round line gains ` synced=<k>` at its end. Nothing in the rigs
   reads the round line: `tests/kernel/agent_check.py` reads `snap/` and
@@ -145,14 +145,14 @@ round was `failed` with `begun=- ... synced=0`.
 
 | Item | Where | Judged |
 |---|---|---|
-| `Error::Io` doc (n4) | `engine.rs:385-386` | Right: every `Io` is the record, a manifest, the listing or the marker. |
-| restarts' timing (n5) | `program.rs:921-926` | Right for begin and settle, but it misses the new third case: an error of the syncs restarts at once too (n3). |
-| failed reading (n6) | `program.rs:94-100` | Right. |
+| `Error::Io` doc (#167 n4) | `engine.rs:385-386` | Right: every `Io` is the record, a manifest, the listing or the marker. |
+| restarts' timing (#167 n5) | `program.rs:921-926` | Right for begin and settle, but it misses the new third case: an error of the syncs restarts at once too (d3). |
+| failed reading (#167 n6) | `program.rs:94-100` | Right. |
 | D1's cost | `program.rs:103-107` | Present and right. |
-| 100-column line (n7) | `engine.rs` settle docs | Gone. No added line in the diff is over 100 columns. |
+| 100-column line (#167 n7) | `engine.rs` settle docs | Gone. No added line in the diff is over 100 columns. |
 | "nor hide one" (#168) | `cli.rs:1076-1084`, `1222-1228` | Right now: never hides, forges only under the accepted race. |
 | 103-column line (#168) | `cli.rs:541-542` | Fixed. |
-| ragged break (#168) | `engine.rs:982-983` | **Not fixed** ("publish. One agent runs per pool, and" / "within it ..."), though the description says it is (n5). |
+| ragged break (#168) | `engine.rs:982-983` | **Not fixed** ("publish. One agent runs per pool, and" / "within it ..."), though the description says it is (d5). |
 
 ## Findings, most severe first
 
@@ -253,39 +253,39 @@ head at all (R8, R9, R10, R12). R6 and R11 matter most: each breaks
 the bound. The author may take the review's tests as they are or write
 their own.
 
-### n1-n7 (nits): docs and the description
+### d1-d7 (nits): docs and the description
 
-- **n1** `engine.rs:81`: "(the daemon's `opens=no`)". The control
+- **d1** `engine.rs:81`: "(the daemon's `opens=no`)". The control
   protocol says `opens=rewind` (`crates/skyzfs-control/src/lib.rs:45`,
   `:57-60`, `:710`).
-- **n2** `program.rs:129-132`: "until they see a cut that opens as
+- **d2** `program.rs:129-132`: "until they see a cut that opens as
   itself (a change of the pool's own, or a person's `zpool sync`, makes
   one)". A bare `zpool sync` on an idle pool writes no group (the
   description's own open question 6, and design §5.2 now). And a
   daemon that holds no cut also starts the count again
   (`engine.rs:782-785`); `past_synced`'s doc says so ("since it last
   saw no cut behind"), the module docs do not.
-- **n3** `program.rs:921-926` (`restarts`) and `program.rs:1002-1009`
+- **d3** `program.rs:921-926` (`restarts`) and `program.rs:1002-1009`
   (`schedule`): the restart comes "at once after a begin's error" and
   "at the next round after a settle's error"; an error of the syncs
   restarts at once as well (`program.rs:1067-1079`). And
   `program.rs:1010-1013`, where `go` is asked: now also before each
   sync.
-- **n4** `program.rs:80-82`: `begun=-` lists "its begin failed, or the
+- **d4** `program.rs:80-82`: `begun=-` lists "its begin failed, or the
   round's syncs left the daemon's newest cut still behind". A round
   whose syncs failed (an error, `failed`) begins none either and is in
   neither case.
-- **n5** (description) "The 103-column line in `cli.rs` and the ragged
+- **d5** (description) "The 103-column line in `cli.rs` and the ragged
   break in `engine.rs` are fixed." The first is; the second is not
   (`engine.rs:982-983`). Cosmetic.
-- **n6** (description) P15 is said to be caught by
+- **d6** (description) P15 is said to be caught by
   `the_holds_under_a_snapshot_are_checked_as_the_sweeps_are`. True for
   the advice dropped from the missing-snapshot error
   (`ODD_HOLDS` at `cli.rs:1130-1133`; my A15b); the advice in
   `outnumbered`'s message (`cli.rs:541-542`; my A15) is caught by
   `holds_that_do_not_add_up_are_an_error_that_names_the_snapshot`
   instead. Both caught.
-- **n7** (description) P14, "`go` asked after the count (n1 undone)",
+- **d7** (description) P14, "`go` asked after the count (n1 undone)",
   is said to be caught by `an_end_comes_between…` and
   `an_end_during_a_begin…`. In both forms I made (A14: `go` after the
   count and the sweep; A14b: where it was before the change, after the
@@ -304,7 +304,7 @@ passes: 243 + 0 + 7.
 from the table's one-line descriptions (A1-A17); every one is caught,
 by the tests the table names or a subset of them
 (`plants-author.out`). A14 and A15 differ from the author's forms
-(n6, n7); A14b and A15b are the forms closest to theirs, and both are
+(d6, d7); A14b and A15b are the forms closest to theirs, and both are
 caught.
 
 The review's nineteen (R1-R17, R19, R20; R18 dropped): R2, R4, R13,
@@ -312,7 +312,52 @@ R14, R15 and R17 are caught by the head's suite; the other thirteen
 survive it (T1 above), and the review's tests kill all of them but
 R16 (`plants-both.out`).
 
-PLANTS_TABLE
+In the run with the review's tests (`plants-both.out`), `rp1` and
+`rp2` fail at the head by design (L1, L2) and are not counted as a
+catch; since they fail in the library's test binary, cargo stops there
+and the binary's tests do not run in that mode. Every review test is
+in the library.
+
+| Plant | Caught by the head's suite (`plants-author.out`) | Review's tests that catch it (`plants-both.out`) |
+|---|---|---|
+| A1 no syncs | `a_sync_that_makes_no_cut_ends_the_syncs`, `after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself`, `an_end_stops_the_syncs`, `the_syncs_stop_at_their_bound_until_a_cut_opens`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins`, `a_round_still_behind_begins_no_publish` | - |
+| A2 one sync only | `after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself`, `an_end_stops_the_syncs`, `the_syncs_stop_at_their_bound_until_a_cut_opens`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins`, `a_round_still_behind_begins_no_publish` | - |
+| A3 a sync while the newest cut opens | `after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself`, `the_syncs_stop_at_their_bound_until_a_cut_opens`, `with_no_cut_behind_nothing_is_synced`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins`, `an_end_during_a_begin_makes_no_read_after_it` | - |
+| A4 no bound | `the_syncs_stop_at_their_bound_until_a_cut_opens`, `a_round_still_behind_begins_no_publish` | - |
+| A5 the bound per call | `the_syncs_stop_at_their_bound_until_a_cut_opens`, `a_round_still_behind_begins_no_publish` | - |
+| A6 the count not reset by a cut that opens | `the_syncs_stop_at_their_bound_until_a_cut_opens` | - |
+| A7 the count reset by a restart | `the_syncs_stop_at_their_bound_until_a_cut_opens` | - |
+| A8 no NoCut check | `a_sync_that_makes_no_cut_ends_the_syncs` | - |
+| A9 go not asked in the syncs | `an_end_stops_the_syncs` | - |
+| A10 the premise not checked | `a_pool_refused_its_premise_is_not_synced` | - |
+| A11 a begin while behind | `a_round_still_behind_begins_no_publish` | - |
+| A12 no sync before the begin | `a_round_still_behind_begins_no_publish`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins` | - |
+| A13 synced left out of the line | `a_round_line_says_what_the_round_did`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins`, `a_round_still_behind_begins_no_publish` | - |
+| A14 go asked after the count and sweep (n1 undone) | `an_end_during_a_begin_makes_no_read_after_it` | - |
+| A14b go asked where it was before the change (after the count, the sweep and the empty check) | `an_end_during_a_begin_makes_no_read_after_it` | `rv6_an_end_before_a_pass_names_what_is_under_way` |
+| A15 N3a the advice dropped | `holds_that_do_not_add_up_are_an_error_that_names_the_snapshot` | - |
+| A15b N3a the advice dropped from the missing snapshot error | `the_holds_under_a_snapshot_are_checked_as_the_sweeps_are` | the head's, as before |
+| A16 A9e the fake filter takes skz- anywhere | `the_sweep_leaves_a_hold_of_the_tag_on_a_name_not_the_agents` | - |
+| A17 a round still behind marked failed | `a_round_still_behind_begins_no_publish` | - |
+| R1 the count reset only by a cut that opens, not by no cut | **survives** | `rv4_no_cut_held_starts_the_count_again` |
+| R2 no cut held taken as behind | `with_no_cut_behind_nothing_is_synced` | - |
+| R3 the daemon unread: no begin | **survives** | `rp6_the_daemon_unread_still_begins` |
+| R4 NoCut only where the count fell | `a_sync_that_makes_no_cut_ends_the_syncs` | - |
+| R5 NoCut against the first count, not the last | **survives** | `rv5_no_cut_is_judged_from_the_last_sync` |
+| R6 a failed sync not counted toward the bound | **survives** | `rv2_a_failed_sync_counts_toward_the_bound` |
+| R7 the premise checked only while the bound count is 0 (once per process) | **survives** | `rv3_the_premise_is_checked_at_each_call` |
+| R8 the syncs error does not restart | **survives** | `rp5_a_failed_reading_after_the_syncs_error_settles_nothing`, `rp3_an_error_of_the_syncs_reads_the_record_again` |
+| R9 the syncs error still begins | **survives** | `rp4_a_round_whose_syncs_were_refused_begins_nothing` |
+| R10 a failed restart after the syncs error still settles | **survives** | `rp5_a_failed_reading_after_the_syncs_error_settles_nothing` |
+| R11 NoCut resets the bound count | **survives** | `rv1_no_cut_at_each_call_still_meets_the_bound` |
+| R12 the syncs error restarts even on a refusal | **survives** | `rp8_a_refusal_at_the_syncs_reads_the_record_once` |
+| R13 synced of a round left at 0 where behind | `a_round_still_behind_begins_no_publish` | - |
+| R14 the stderr line of a round behind not printed | `a_round_still_behind_begins_no_publish` | - |
+| R15 go asked only before the first pass of a settle | `an_end_comes_between_two_rounds_of_the_engine` | - |
+| R16 the bound checked after go (order) | **survives** | **survives** |
+| R17 the sync value not kept for the planner | `after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself`, `the_syncs_stop_at_their_bound_until_a_cut_opens`, `a_round_after_a_rewind_import_syncs_past_it_before_it_begins`, `a_round_still_behind_begins_no_publish` | - |
+| R19 the unsettled names dropped at an end (Ok always) | **survives** | `rv6_an_end_before_a_pass_names_what_is_under_way` |
+| R20 a round whose syncs did not clear settles nothing | **survives** | `rp7_a_round_still_behind_still_settles` |
 
 ## Gates (`gates.sh`, `gates.out`)
 
@@ -327,7 +372,20 @@ times: 0 failed runs (250 tests a run). The host tests
 
 ## CI
 
-CI_SECTION
+On bb03454, 42 check runs succeeded and 1 was skipped ("Publish
+badges", which runs on `main` only); none failed. The workflow runs:
+`ci` 45907325720 (lint, test, unit-arm64, s3-backends, chart-lint),
+`coverage` 45907325779, `e2e` 45907325825, `k3s-smoke` 45907325821,
+`skyzfs-ci` 45907308902 (the push), the agent rig 45907325673 (a1, a2,
+d, k on ubuntu-26.04), the publish rig 45907325822, the daemon rig
+45907325700 (on `skyzfsd`, three images), the control rig 45907325687,
+the cut daemon 45907325685 and node B 45907325690. I read the
+conclusions, not each rig's summary table: none of the rigs runs the
+code this package changes (below), so their tables say nothing about
+it.
+
+Codex: its summary comment on the pull request says the review of
+bb03454 failed (a usage limit). There are no Codex findings.
 
 ### Rigs
 
@@ -353,14 +411,14 @@ description's open question 4), and whether 2 groups per assist holds.
   `the_bound_is_the_most_slots_a_ring_holds`): as stated.
 - "The count of syncs toward the bound is kept across
   `Agent::restart` and starts again only when a cut opens as itself":
-  also when the daemon holds no cut (n2).
+  also when the daemon holds no cut (d2).
 - "`sync_past` saves nothing in the record and has no crash points":
   true.
 - `run`: as stated, but "An error from `sync_past` ... fails the round"
   loses its syncs from the line (L2).
 - D1, D2/n1, n4-n7: as stated, except the restarts' docs miss the
-  syncs' error (n3).
-- #168: N3a and A9e as stated; the ragged break is not fixed (n5).
+  syncs' error (d3).
+- #168: N3a and A9e as stated; the ragged break is not fixed (d5).
 - Tests: the seven `past` tests and the three `program` tests do what
   the description says; each fails under the plants it names.
 - Gates: plain `cargo test --workspace` 2003 / 0 / 16, as stated;
