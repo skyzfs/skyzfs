@@ -423,7 +423,8 @@ pub trait Zfs {
         members: Option<&[Member]>,
     ) -> Result<Held, ZfsError>;
     /// The names `t` of every snapshot in the pool, of any dataset, that
-    /// has the hold `tag`.
+    /// has the hold `tag` and a name of the agent's: one that begins with
+    /// [`crate::names::PREFIX`] (A4 of #165's review).
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;
     /// The agent's sync task: `zfs set skyzfs:assist=<value> pool`, then
     /// `zpool sync pool`. The property is a change of the pool's own: the

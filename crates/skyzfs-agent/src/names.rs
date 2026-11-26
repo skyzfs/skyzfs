@@ -7,7 +7,10 @@
 //! form allows. Names of one length sort as their times do, for years
 //! 1970 to 9999.
 
-/// What every name of the agent begins with.
+/// What every name of the agent begins with. The sweep reads the holds
+/// of snapshots with this prefix alone ([`crate::zfs::Zfs::tagged`]): a
+/// change of it would leave every hold on a snapshot of an older name
+/// unswept.
 pub const PREFIX: &str = "skz-";
 
 /// The name for the second `unix_s` (seconds since 1970, UTC), with

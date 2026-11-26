@@ -1622,6 +1622,7 @@ impl Zfs for FakeZfs {
                 .iter()
                 .filter(|(_, s)| s.holds.contains(tag))
                 .filter_map(|(name, _)| name.split_once('@').map(|(_, t)| t.to_string()))
+                .filter(|t| t.starts_with(crate::names::PREFIX))
                 .collect()
         })
     }

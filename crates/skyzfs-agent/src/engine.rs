@@ -738,16 +738,22 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
 
     /// Release each hold [`HOLD_TAG`] in the pool that no publish under
     /// way names, once per import of the pool (per `load_guid`) and at
-    /// the agent's start.
+    /// the agent's start. Only holds on snapshots named as the agent
+    /// names them ([`crate::names::PREFIX`], [`Zfs::tagged`]) are read:
+    /// a hold of the tag on a snapshot of another name, put there by
+    /// hand or left on a snapshot of the agent's that a person renamed
+    /// while it was held, stays until a person releases it (A4 of #165's
+    /// review and L1 of #168's).
     ///
     /// Such a hold was brought back by a rewind: `zpool import -F` or
     /// `-T` back to a group after the hold and before its release, when
     /// the publish has since left the record. Nothing else would release
     /// it, and a person could not destroy the snapshot. A hold of the
-    /// tag is the agent's alone. The agent places one only for a publish
-    /// in the record, and releases it before the publish leaves the
-    /// record (done, or given up after its request ended), so a hold no
-    /// publish names protects no publish. One agent runs per pool, and
+    /// tag on a snapshot of the agent's name is the agent's alone. The
+    /// agent places one only for a publish in the record, and releases
+    /// it before the publish leaves the record (done, or given up after
+    /// its request ended), so a hold no publish names protects no
+    /// publish. One agent runs per pool, and
     /// within it the sweep and the steps of a publish do not overlap.
     /// Not in the plan of M2.6: the crash matrix found it (a rewind
     /// back to after the hold, under a publish already done).
