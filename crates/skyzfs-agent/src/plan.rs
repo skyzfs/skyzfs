@@ -259,6 +259,16 @@ pub const AGE_MAX: Duration = Duration::from_secs(2 * 60 * 60);
 /// ([`ASK_LIMIT`], 40 s; the lead's Q8).
 pub const HOLD_MARGIN: Duration = ASK_LIMIT;
 
+/// The most the agent lets pass between the time it reads before it
+/// records a publish asked and the send of the request (C1 of #149's
+/// next look; Codex's P2 there). The record's `held_until` counts it, so
+/// that a request sent within it is accepted, if at all, by
+/// `ASK_LIMIT` after, and expires [`HOLD_MARGIN`] before the hold ends.
+/// Where the save of the record, or a stop of the process, took longer,
+/// nothing is sent: the next round finds no request (`unknown`) and
+/// asks anew, with a fresh time.
+pub const ASKING_SLACK: Duration = Duration::from_secs(10);
+
 /// What the agent sees of the pool, for one publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolSeen {
@@ -325,7 +335,7 @@ pub struct Seen {
     /// Whether the daemon has answered a withdraw of this publish's
     /// request with an answer that says nothing pends (`withdrawn`,
     /// `unknown`, `expired`), in this process and since a request of it
-    /// was last accepted.
+    /// was last asked.
     pub withdrawn: bool,
     /// The pause that paces the syncs ([`ASSIST_AFTER`] but in the rigs'
     /// test hooks).

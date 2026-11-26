@@ -2973,6 +2973,25 @@ impl Daemon for LoseNth {
     }
 }
 
+/// Whether the daemon has a request of `t` pending now, asked behind
+/// the agent's back (the daemon's absence and silence set aside, and the
+/// call not counted): the time, where it has.
+fn pending_now(world: &Rc<RefCell<World>>, t: &str) -> Option<u64> {
+    let (now, away, silent) = {
+        let mut w = world.borrow_mut();
+        let saved = (w.now_ms, w.away_until, w.silent_until);
+        w.away_until = 0;
+        w.silent_until = 0;
+        saved
+    };
+    let reply = FakeDaemon(world.clone()).ask(&Request::Progress(t.to_string()), &[]);
+    let mut w = world.borrow_mut();
+    w.away_until = away;
+    w.silent_until = silent;
+    w.calls.pop();
+    matches!(reply, Ok(Reply::Pending)).then_some(now)
+}
+
 /// One run of N6: the first request accepted; where `moved`, the pool
 /// exported and imported (`-T`, one group back, after the hold) while it
 /// pends, so that the agent withdraws it (the answer `withdrawn` sets
@@ -2980,8 +2999,10 @@ impl Daemon for LoseNth {
 /// `moved`, to the first) lost; then a person's give-up in the same
 /// process, and a person who destroys `pool@t` as soon as it is not
 /// held. Whether a hold was released while a request pended at the
-/// daemon, and whether `snap/t` was made on a cut without `pool@t`.
-fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, String) {
+/// daemon, whether `snap/t` was made on a cut without `pool@t`, and
+/// whether the course ran as above: the answer lost, where `moved` a
+/// withdraw asked and two publishes sent, and no hold left at the end.
+fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, bool, String) {
     let world = World::new(mode);
     world.borrow_mut().lag_ms = 60_000;
     let keep = MemKeep::default();
@@ -3014,21 +3035,7 @@ fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, String) {
             }
             if p.effect == Effect::Release && !p.after {
                 let t = name.borrow().clone();
-                let (now, away, silent) = {
-                    let mut w = world.borrow_mut();
-                    let saved = (w.now_ms, w.away_until, w.silent_until);
-                    w.away_until = 0;
-                    w.silent_until = 0;
-                    saved
-                };
-                let reply = FakeDaemon(world.clone()).ask(&Request::Progress(t), &[]);
-                {
-                    let mut w = world.borrow_mut();
-                    w.away_until = away;
-                    w.silent_until = silent;
-                    w.calls.pop();
-                }
-                if matches!(reply, Ok(Reply::Pending)) {
+                if let Some(now) = pending_now(&world, &t) {
                     early.borrow_mut().push(now);
                 }
             }
@@ -3067,15 +3074,19 @@ fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, String) {
             .contains_key(&format!("{POOL}@{t}"))
     });
     let early = !early.borrow().is_empty();
+    let count = |call: &str| w.calls.iter().filter(|c| **c == call).count();
+    let (publishes, withdraws) = (count("publish"), count("withdraw"));
+    let course =
+        lost.get() && holds(&w).is_empty() && (!moved || (withdraws >= 1 && publishes >= 2));
     let line = format!(
-        "{mode:?} no_answer={no_answer} moved={moved}: lost {} after {lost_at} s; settled {settled:?}; outcomes {:?}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}\n  log tail {:?}",
+        "{mode:?} no_answer={no_answer} moved={moved}: publishes {publishes}, withdraws {withdraws}; lost {} after {lost_at} s; settled {settled:?}; outcomes {:?}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}\n  log tail {:?}",
         lost.get(),
         outcomes.iter().map(|(n, o)| format!("{n} {o:?}")).collect::<Vec<_>>(),
         w.refs.get(&t).map(|r| r.number),
         holds(&w),
         w.log.iter().rev().take(10).collect::<Vec<_>>()
     );
-    (early, wrong, line)
+    (early, wrong, course, line)
 }
 
 /// A withdraw answered for one request does not count for the next
@@ -3086,17 +3097,201 @@ fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, String) {
 /// `moved`, to the first) lost; then a person's give-up in the same
 /// process, and a person who destroys `pool@t` as soon as it is not held.
 /// No hold is released while a request pends at the daemon, and `snap/t`
-/// is never made on a cut without `pool@t`. Mutant: `withdrawn` not
-/// cleared at the asking commit (4 of the 4 `moved` rows fail).
+/// is never made on a cut without `pool@t`; each row checks that its
+/// course ran (T1 of #149's next look). Mutant: `withdrawn` not cleared
+/// at the asking commit (4 of the 4 `moved` rows fail).
 #[test]
 fn a_withdraw_answered_does_not_count_for_the_request_asked_anew() {
     let mut found = Vec::new();
     for mode in [Mode::Idle, Mode::Busy] {
         for no_answer in [false, true] {
             for moved in [false, true] {
-                let (early, wrong, line) = n6_run(mode, no_answer, moved);
-                if early || wrong {
+                let (early, wrong, course, line) = n6_run(mode, no_answer, moved);
+                if early || wrong || !course {
                     found.push(line);
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+/// One run of C1: the agent's first `asking` record takes `slow_s` to
+/// save (the clock moves on as it is saved); the first request sent is
+/// accepted and its answer lost (an `Err`, or `refused no-answer`), and
+/// the daemon goes away for 900 s; where `stuck`, no upload ever ends,
+/// so that a request accepted pends until it expires; where `give_up`, a
+/// person gives the
+/// publish up in the same process; a person destroys `pool@t` as soon as
+/// it is not held. Whether a hold was released while a request pended,
+/// whether `snap/t` was made on a cut without `pool@t`, how many
+/// `asking` records were saved and how many requests sent.
+fn c1_run(mode: Mode, no_answer: bool, give_up: bool, stuck: bool, slow_s: u64) -> C1Run {
+    let world = World::new(mode);
+    if stuck {
+        world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    }
+    let keep = MemKeep::default();
+    let daemon = LostAnswer {
+        world: world.clone(),
+        lost: false,
+        no_answer,
+        away_s: 900,
+        skew_ms: 0,
+    };
+    let name: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let early: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let askings = Rc::new(Cell::new(0_u32));
+    let span = Rc::new(Cell::new(0_u64));
+    let hook = {
+        let (world, name, early, askings, span, saved) = (
+            world.clone(),
+            name.clone(),
+            early.clone(),
+            askings.clone(),
+            span.clone(),
+            keep.clone(),
+        );
+        move |p: Point, _: &str| {
+            if p == (Point {
+                effect: Effect::Asking,
+                after: true,
+            }) {
+                askings.set(askings.get() + 1);
+                if askings.get() == 1 {
+                    let t = name.borrow().clone();
+                    if let Ok(Loaded::Present(record)) = saved.load() {
+                        if let Some(Phase::Asked {
+                            asked_ms,
+                            held_until_ms,
+                            ..
+                        }) = record.publish(&t).map(|p| &p.phase)
+                        {
+                            span.set(held_until_ms.saturating_sub(*asked_ms));
+                        }
+                    }
+                    world.borrow_mut().advance(Duration::from_secs(slow_s));
+                }
+            }
+            if p.effect == Effect::Release && !p.after {
+                let t = name.borrow().clone();
+                if let Some(now) = pending_now(&world, &t) {
+                    early.borrow_mut().push(now);
+                }
+            }
+            false
+        }
+    };
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        daemon,
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(Box::new(hook));
+    let t = a.begin().expect("begun");
+    name.borrow_mut().clone_from(&t);
+    world.borrow_mut().destroyer = Some(t.clone());
+    if give_up {
+        let _ = a.settle(Duration::from_secs(5));
+        a.recover(&t, Choice::GiveUp).expect("recovered");
+    }
+    let settled = a.settle(LIMIT);
+    let outcomes = a.outcomes().to_vec();
+    drop(a);
+    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+    let w = world.borrow();
+    let wrong = w.refs.get(&t).is_some_and(|r| {
+        !w.commits[&r.commit]
+            .cut
+            .snaps
+            .contains_key(&format!("{POOL}@{t}"))
+    });
+    let sent = w.calls.iter().filter(|c| **c == "publish").count();
+    let early = !early.borrow().is_empty();
+    C1Run {
+        early,
+        wrong,
+        span_ms: span.get(),
+        askings: askings.get(),
+        sent,
+        holds: holds(&w).len(),
+        line: format!(
+            "{mode:?} no_answer={no_answer} give_up={give_up} stuck={stuck} slow={slow_s} s: settled {settled:?}; outcomes {:?}; held for {} ms from asked; askings {}; sent {sent}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}",
+            outcomes.iter().map(|(n, o)| format!("{n} {o:?}")).collect::<Vec<_>>(),
+            span.get(),
+            askings.get(),
+            w.refs.get(&t).map(|r| r.number),
+            holds(&w),
+        ),
+    }
+}
+
+/// What [`c1_run`] saw.
+struct C1Run {
+    early: bool,
+    wrong: bool,
+    /// The first `asking` record's `held_until` less its `asked`.
+    span_ms: u64,
+    askings: u32,
+    sent: usize,
+    holds: usize,
+    line: String,
+}
+
+/// A request is sent within [`plan::ASKING_SLACK`] of the time its
+/// `asking` record counts from, or not at all (C1 of #149's next look;
+/// Codex's P2 there; the reviewer's probe, taken): with the save of the
+/// first `asking` record taking from 0 to 200 s, the answer to the first
+/// request sent lost and the daemon away for 900 s, with uploads that
+/// end or never do, alone or with a person's give-up, no hold is released while a request pends, `snap/t`
+/// is never made on a cut without `pool@t`, and no hold is left. The
+/// `asking` record holds for the slack, the channel's wait, the expiry
+/// and the margin from its `asked`. A save within the slack sends its
+/// request; a longer one sends none, and the publish is asked anew, or,
+/// where a person gives it up first, never sent. Mutants: no check
+/// before the send (the rows past 80 s with uploads that never end
+/// release the hold early; 80 s is the fake's threshold, since it
+/// accepts at the send and so cannot show the slack's own share); the
+/// slack not counted in the record's `held_until` (the record's span).
+#[test]
+fn a_request_is_sent_within_the_slack_of_its_record_or_not_at_all() {
+    let slack = plan::ASKING_SLACK.as_secs();
+    let span = [
+        plan::ASKING_SLACK,
+        skyzfs_control::ASK_LIMIT,
+        EXPIRY_DEFAULT,
+        plan::HOLD_MARGIN,
+    ]
+    .iter()
+    .map(|d| u64::try_from(d.as_millis()).expect("ms"))
+    .sum::<u64>();
+    let mut found = Vec::new();
+    for slow_s in [0, slack, slack + 1, 41, 81, 200] {
+        for mode in [Mode::Idle, Mode::Abandoned, Mode::Busy] {
+            for no_answer in [false, true] {
+                for (give_up, stuck) in [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    let run = c1_run(mode, no_answer, give_up, stuck, slow_s);
+                    let mut bad = run.early || run.wrong || run.holds > 0;
+                    bad |= run.span_ms != span;
+                    // The course: within the slack, a request sent (and its
+                    // answer lost); past it, the first record not sent, and
+                    // one sent from a record after it unless the person
+                    // gave the publish up first.
+                    if slow_s <= slack {
+                        bad |= run.sent == 0;
+                    } else if give_up {
+                        bad |= run.sent != 0;
+                    } else {
+                        bad |= run.sent == 0 || run.sent + 1 > run.askings as usize;
+                    }
+                    if bad {
+                        found.push(run.line);
+                    }
                 }
             }
         }

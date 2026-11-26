@@ -1110,7 +1110,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// The cost: a publish whose ask had no answer, or `asked`, `ended`
     /// or `no-answer`, stays asked, and so does one whose agent stopped
     /// after the record of the ask and before the record of its answer,
-    /// sent or not; if it is then asked anew with no cut counted since
+    /// sent or not, or whose record took longer than
+    /// [`plan::ASKING_SLACK`] to save, and so was not sent; if it is then
+    /// asked anew with no cut counted since
     /// its count, the ask anew counts a stall ([`plan::stalls`]), as for
     /// a request accepted and lost: one stop there costs one stall of the
     /// eight a publish is given. And with
@@ -1146,13 +1148,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         });
         // Recorded asked, and synced, before it is sent (the lead's
         // decision on L1 of #149's review): a publish recorded held has no
-        // request out. A request sent at `sent` is accepted, if at all,
-        // within the channel's wait, so its expiry falls before this
-        // `held_until`.
+        // request out. The request is sent within `ASKING_SLACK` of
+        // `sent` or not at all (below), and is accepted, if at all, within
+        // the channel's wait after that, so its expiry falls before this
+        // `held_until` by the hold's margin (C1 of #149's next look).
         let sent = self.clock.now_ms();
         let sent_mono = self.clock.mono_ms();
         let asking_until = plan::held_until(
-            sent.saturating_add(ms(skyzfs_control::ASK_LIMIT)),
+            sent.saturating_add(ms(plan::ASKING_SLACK))
+                .saturating_add(ms(skyzfs_control::ASK_LIMIT)),
             self.expiry,
         );
         self.commit(Effect::Asking, |r| {
@@ -1174,6 +1178,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         memory.accepted = Some((sent, sent_mono));
         memory.withdrawn = false;
         self.point(Effect::Ask, false)?;
+        // A save, or a stop, that took longer than the slack: the
+        // record's `held_until` would not cover a request sent now, and
+        // none is. The publish stays recorded asked, as after a stop
+        // before the send, and the next round finds no request and asks
+        // anew with a fresh time.
+        if self.clock.mono_ms().saturating_sub(sent_mono) > ms(plan::ASKING_SLACK) {
+            return Ok(Moved::No);
+        }
         let answer = self.daemon.ask(&request, &bytes);
         self.point(Effect::Ask, true)?;
         match answer {
