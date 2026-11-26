@@ -25,7 +25,10 @@
 //! and `zfs get` (M2.6c-5), recorded by testing's run 45738224324 (#156):
 //! each pool's list, its values pass, and each odd value read alone. The
 //! pairs pass (`-o name,property`) was not recorded: the test makes it
-//! from the values pass ([`pairs_of`]).
+//! from the values pass ([`pairs_of`]). The outputs that are not UTF-8
+//! (each pool's values pass and its `raw` value read alone) are kept as
+//! their exact bytes (`stdout_hex`), taken again from the same artifact
+//! (N7 of #157's review).
 //!
 //! `recorded/cli-read-<image>.json` holds testing's second recording of
 //! the three reads (run 45751625028, #158) on one pool in four states,
@@ -112,6 +115,9 @@ const RIG: &str = "skzq";
 const MIRROR: &str = "skzqm";
 /// The pool that does not exist.
 const NONE: &str = "skznone";
+
+/// What the adapter asks where a command says its pool is not there.
+const POOLS: &str = "zpool list -H -o name";
 /// The tag the recorder held with: the agent's.
 const TAG: &str = HOLD_TAG;
 /// The device number the fake gives the rig's leaf.
@@ -218,6 +224,9 @@ impl Recording {
             PathBuf::from(NOCACHEFLUSH),
             self.get("nocacheflush").stdout.into_bytes(),
         );
+        // Not recorded: the recorder's two pools, as `zpool list` would
+        // list them where a command says its pool is not there.
+        fake.ok(POOLS, &format!("{RIG}\n{MIRROR}\n"));
         ZfsCli::new(fake, Limits::default())
     }
 
@@ -544,9 +553,16 @@ fn a_resilver_is_busy_and_a_scrub_is_not_as_recorded() {
 #[test]
 fn a_pool_that_does_not_exist_reads_as_recorded() {
     for rec in recordings() {
+        // Each says no pool only once `zpool list` lists none it names.
+        let gone = |name: &str| ZfsError::NoPool(rec.get(name).words());
+        let confirmed = |names: &[&str]| {
+            let mut words = rec.words(names);
+            words.push(POOLS.to_string());
+            words
+        };
         let mut zfs = rec.adapter(&["none-status"]);
-        assert_eq!(zfs.layout(NONE), Err(ZfsError::NoPool), "{}", rec.image);
-        assert_eq!(ran(&mut zfs), rec.words(&["none-status"]));
+        assert_eq!(zfs.layout(NONE), Err(gone("none-status")), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), confirmed(&["none-status"]));
 
         // ZFS 2.2's `zpool get` says `missing pool name.`: the adapter
         // asks `zpool status`, as recorded beside it.
@@ -556,8 +572,9 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
             vec!["none-get"]
         };
         let mut zfs = rec.adapter(&get);
-        assert_eq!(zfs.props(NONE), Err(ZfsError::NoPool), "{}", rec.image);
-        assert_eq!(ran(&mut zfs), rec.words(&get), "{}", rec.image);
+        let last = get[get.len() - 1];
+        assert_eq!(zfs.props(NONE), Err(gone(last)), "{}", rec.image);
+        assert_eq!(ran(&mut zfs), confirmed(&get), "{}", rec.image);
 
         // `zfs snapshot -r` of a pool that does not exist says `dataset
         // does not exist` with its usage (exit 2): an error, neither a
@@ -580,17 +597,19 @@ fn a_pool_that_does_not_exist_reads_as_recorded() {
         let mut zfs = rec.adapter(&["none-members"]);
         assert_eq!(
             zfs.members(NONE, "t"),
-            Err(ZfsError::NoPool),
+            Err(gone("none-members")),
             "{}",
             rec.image
         );
+        assert_eq!(ran(&mut zfs), confirmed(&["none-members"]));
         let mut zfs = rec.adapter(&["none-tagged"]);
         assert_eq!(
             zfs.tagged(NONE, TAG),
-            Err(ZfsError::NoPool),
+            Err(gone("none-tagged")),
             "{}",
             rec.image
         );
+        assert_eq!(ran(&mut zfs), confirmed(&["none-tagged"]));
 
         // `zfs hold`, `holds` and `release` say `dataset does not exist`
         // of a pool that does not: the snapshot is not there.
@@ -925,6 +944,10 @@ fn the_full_recordings_are_of_the_versions_the_docs_name() {
 /// `dataset does not exist`, exit 1: a failed count, which leaves the
 /// bases. Mutants: a line not counted, the root not counted, a failed
 /// count read as none.
+///
+/// The snapshots' count that follows a dataset count (R1 of #157's
+/// review) was not recorded: here it fails, which the count does not
+/// pass on, and the unit tests in `tests.rs` give it its output.
 #[test]
 fn the_count_as_recorded() {
     let base = Limits::default();
@@ -934,12 +957,14 @@ fn the_count_as_recorded() {
             let count = format!("{prefix}-count");
             let mut zfs = rec.adapter(&[count.as_str()]);
             assert_eq!(zfs.count(pool), Ok(3), "{} {pool}", rec.image);
-            assert_eq!(ran(&mut zfs), rec.words(&[count.as_str()]));
+            let mut words = rec.words(&[count.as_str()]);
+            words.push(format!("zfs list -r -H -o name -t snapshot {pool}"));
+            assert_eq!(ran(&mut zfs), words);
             assert_eq!(zfs.host().ran[0].limit, base.count);
         }
         let mut zfs = rec.adapter(&["none-count"]);
         assert!(zfs.count(NONE).is_err(), "{}", rec.image);
-        assert_eq!(ran(&mut zfs), rec.words(&["none-count"]));
+        assert_eq!(ran(&mut zfs), rec.words(&["none-count"]), "no snapshots");
     }
 }
 
@@ -978,8 +1003,11 @@ fn pairs_of(values: &str, alone: &BTreeMap<(String, String), String>) -> String 
 /// `snapshot_count`, which the recording lists as local on every
 /// dataset under the limit once set on `child`, are left out, while
 /// `snapshot_limit` is kept. The values pass's words are the record's
-/// with its options in the adapter's order. Mutants: either counter
-/// kept, the limit dropped, the bound one more or one less.
+/// with its options in the adapter's order. The adapter is given the
+/// recorded bytes, and the bytes that are not UTF-8 come out exact
+/// (N7 of #157's review). Mutants: either counter kept, the limit
+/// dropped, the bound one more or one less, the values pass given as
+/// text.
 #[test]
 fn the_manifests_read_as_recorded() {
     assert_eq!(VALUE_MOST, 8191);
@@ -997,14 +1025,17 @@ fn the_manifests_read_as_recorded() {
                 "{image} {pool}"
             );
             let mut alone = BTreeMap::new();
+            let mut alone_given = BTreeMap::new();
             for odd in ODD {
                 let record = get(&format!("value-{odd}"));
                 assert_eq!(record.rc, 0, "{image} {pool} {odd}");
-                alone.insert(
-                    (format!("{pool}/odd-{odd}"), "skyzfs:v".to_string()),
-                    record.stdout,
-                );
+                let key = (format!("{pool}/odd-{odd}"), "skyzfs:v".to_string());
+                alone_given.insert(key.clone(), given(&record));
+                alone.insert(key, record.stdout);
             }
+            // The pairs are made from the text, whose names and
+            // properties are exact; the values the adapter reads are the
+            // recorded bytes (N7 of #157's review).
             let pairs = pairs_of(&values.stdout, &alone);
             let get_words = |columns: &str| {
                 format!("zfs get -r -H -p -s local -t filesystem,volume -o {columns} all {pool}")
@@ -1022,26 +1053,33 @@ fn the_manifests_read_as_recorded() {
             let mut fake = Fake::default();
             fake.ok(&list.words(), &list.stdout);
             fake.ok(&get_words("name,property"), &pairs);
-            fake.ok(&get_words("name,property,value"), &values.stdout);
-            for ((name, property), value) in &alone {
-                fake.ok(&format!("zfs get -H -p -o value {property} {name}"), value);
+            fake.give(&get_words("name,property,value"), Ok(given(&values)));
+            for ((name, property), output) in &alone_given {
+                let words = format!("zfs get -H -p -o value {property} {name}");
+                fake.give(&words, Ok(output.clone()));
             }
             // A value not recorded alone is one line of the values pass;
-            // read alone, it is that line's value.
+            // read alone, it is that line's value, its bytes exact.
+            let line_value = |line: &str| -> Vec<u8> {
+                let prefix = format!("{line}\t");
+                values
+                    .stdout_bytes
+                    .split(|&b| b == b'\n')
+                    .find_map(|l| l.strip_prefix(prefix.as_bytes()))
+                    .unwrap_or_else(|| panic!("{image}: no value of {line}"))
+                    .to_vec()
+            };
             for line in pairs.lines() {
                 let (name, property) = line.split_once('\t').unwrap_or((line, ""));
                 if alone.contains_key(&(name.to_string(), property.to_string())) {
                     continue;
                 }
-                let value = values
-                    .stdout
-                    .lines()
-                    .find_map(|l| l.strip_prefix(&format!("{line}\t")))
-                    .unwrap_or_else(|| panic!("{image}: no value of {line}"));
-                fake.ok(
-                    &format!("zfs get -H -p -o value {property} {name}"),
-                    &format!("{value}\n"),
-                );
+                let mut value = line_value(line);
+                value.push(b'\n');
+                let mut out = output(0, "", "");
+                out.stdout = value;
+                let words = format!("zfs get -H -p -o value {property} {name}");
+                fake.give(&words, Ok(out));
             }
             let mut zfs = ZfsCli::new(fake, Limits::default());
             let datasets = zfs
@@ -1079,10 +1117,24 @@ fn the_manifests_read_as_recorded() {
                     assert_eq!(value, None, "{image} {name}");
                     continue;
                 }
-                let recorded = &alone[&(name.clone(), "skyzfs:v".to_string())];
-                let want = recorded.strip_suffix('\n').unwrap_or(recorded).as_bytes();
+                let recorded = &alone_given[&(name.clone(), "skyzfs:v".to_string())].stdout;
+                let want = recorded.strip_suffix(b"\n").unwrap_or(recorded);
                 assert_eq!(value.map(Vec::as_slice), Some(want), "{image} {name}");
             }
+            // The bytes that are not UTF-8 are kept exact, in the value
+            // read alone (`odd-raw`) and in one taken from the values
+            // pass (`child`, read again alone after the forged line).
+            let raw = b"a\xff\xfeb\xc3".as_slice();
+            assert_eq!(
+                local(&format!("{pool}/odd-raw"))["skyzfs:v"],
+                raw,
+                "{image} {pool}"
+            );
+            assert_eq!(
+                local(&format!("{pool}/child"))["skyzfs:raw"],
+                raw,
+                "{image} {pool}"
+            );
             assert_eq!(
                 local(&format!("{pool}/odd-len8191"))["skyzfs:v"].len(),
                 VALUE_MOST,
@@ -1307,10 +1359,12 @@ fn the_three_reads_as_recorded() {
         let none_list = recording.get("read-none-list");
         let mut fake = Fake::default();
         fake.give(&none_list.words(), Ok(given(&none_list)));
+        // Not recorded: no pool, as `zpool list` would list it.
+        fake.ok(POOLS, "");
         let mut zfs = ZfsCli::new(fake, Limits::default());
         assert_eq!(
             zfs.datasets(READ_POOL, "t"),
-            Err(ZfsError::NoPool),
+            Err(ZfsError::NoPool(none_list.words())),
             "{image}"
         );
         let gone = recording.get("read-none-value");

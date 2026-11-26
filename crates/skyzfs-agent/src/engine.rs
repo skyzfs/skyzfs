@@ -770,7 +770,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn sweep(&mut self) -> Result<(), Error> {
         let load_guid = match self.zfs.props(&self.pool) {
             Ok(props) => props.load_guid,
-            Err(ZfsError::NoPool) => return Ok(()),
+            Err(ZfsError::NoPool(_)) => return Ok(()),
             Err(e) => return Err(e.into()),
         };
         if self.swept == Some(load_guid) {
@@ -823,12 +823,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let name = &publish.name;
         let props = match self.zfs.props(pool) {
             Ok(props) => props,
-            Err(ZfsError::NoPool) => return Ok(None),
+            Err(ZfsError::NoPool(_)) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
         let premise = match self.premise(&props) {
             Ok(verdict) => verdict.is_ok(),
-            Err(Error::Zfs(ZfsError::NoPool)) => return Ok(None),
+            Err(Error::Zfs(ZfsError::NoPool(_))) => return Ok(None),
             Err(Error::Daemon(_)) => return Ok(None),
             Err(e) => return Err(e),
         };
@@ -1094,11 +1094,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// datasets read, `zfs snapshot -r`, and the take adopted
     /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
-        // The give-up at the last failed check was decided, and its take
-        // destroyed, before a stop: no take is asked again (D2 of #153's
-        // next look). The datasets that broke it are not known now: the
-        // report's list is empty, as it is where the members differ from
-        // the reading only in their count ([`Report::NotWhole`]).
+        // The give-up at the last failed check was decided before a stop:
+        // no take is asked again (D2 of #153's next look). Its take was
+        // destroyed before the stop, or by this process, which found it
+        // whole with no reading from before it ([`Agent::adopt`] then
+        // retakes without a count; N3 of #157's review). The datasets
+        // that broke it are not known now: the report's list is empty, as
+        // it is where the members differ from the reading only in their
+        // count ([`Report::NotWhole`]).
         if self
             .record
             .publish(name)

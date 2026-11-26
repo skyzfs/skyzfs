@@ -91,13 +91,16 @@
 //! one the kill line names, under either kill point (the lead's ruling,
 //! revised on the agent rig's first run, #158; it supersedes D1 of the
 //! review of #150). After a take-over the agent counts anew and asks
-//! again with a later *C*, so the row moves, as it may, to the first cut
-//! after the last accepted request for the name: count above that
+//! again with a later *C*, so the row moves, as it may, to a cut that
+//! the last accepted request for the name accepts: count above that
 //! request's *C*, group at or above its *G*, opening as itself (§5.2,
-//! the lead's Q2 of M2.5; `skyzfs_upload::publish`'s docs). A difference
-//! from the kill line's cut is information. The finding against the
-//! daemon is a row that names a cut older than the kill line's, or a
-//! `snap/T` that node B does not verify.
+//! the lead's Q2 of M2.5; `skyzfs_upload::publish`'s docs), as the rig's
+//! judge reads it. A difference from the kill line's cut is information.
+//! The finding against the daemon is a row that names a cut older than
+//! the kill line's, or a `snap/T` that node B does not verify. The judge
+//! pins "older than the kill line's" under `carry-swap`; under
+//! `carry-put` it follows from the judge's other pin (N6 of #157's
+//! review).
 //!
 //! The kill line names the cut chosen by its number and group. The hook
 //! also says on standard error, without killing, when it arms (publish N

@@ -451,9 +451,13 @@ pub enum Report {
     /// before them ([`crate::record::Why::NotWhole`]): the datasets that
     /// broke the last, those that lack its `@t` or have one of another
     /// group, or differ from the reading before it (D1 of #153's review).
-    /// Empty in two ways (N11 of #153's review): where the last take
-    /// was destroyed before a stop and the give-up made by the next
-    /// process, which cannot know them (D2 of #153's next look); and
+    /// Empty in two ways (N11 of #153's review): where the give-up is
+    /// made by a process that did not judge the last take, which cannot
+    /// know them (D2 of #153's next look): the take destroyed before a
+    /// stop, or, after a stop between the last failed check's record and
+    /// its destroy, found whole by the next process with no reading from
+    /// before it and destroyed there without a count (N3 of #157's
+    /// review); and
     /// where the last take's members differ from the reading before it
     /// only in their count, every member the same as a dataset read and
     /// every dataset read a member's GUID, which needs two datasets of

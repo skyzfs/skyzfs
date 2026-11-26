@@ -1144,7 +1144,7 @@ impl World {
     /// `zfs destroy -r pool@t`: refused where any member is held.
     fn destroy(&mut self, t: &str) -> Result<(), ZfsError> {
         let Some(pool) = &mut self.pool else {
-            return Err(ZfsError::NoPool);
+            return Err(ZfsError::NoPool("fake".into()));
         };
         let suffix = format!("@{t}");
         let members: Vec<String> = pool
@@ -1170,7 +1170,7 @@ impl World {
     /// none where one exists. The pool as it was in that group.
     fn take(&mut self, t: &str) -> Result<Program, ZfsError> {
         let Some(pool) = &self.pool else {
-            return Err(ZfsError::NoPool);
+            return Err(ZfsError::NoPool("fake".into()));
         };
         let createtxg = pool.next_txg.unwrap_or(pool.txg + 1);
         let skip = self.skip.clone();
@@ -1398,7 +1398,7 @@ impl FakeZfs {
         let world = self.0.borrow();
         match &world.pool {
             Some(p) if pool == POOL => Ok(f(p)),
-            _ => Err(ZfsError::NoPool),
+            _ => Err(ZfsError::NoPool("fake".into())),
         }
     }
 }
@@ -1527,7 +1527,7 @@ impl Zfs for FakeZfs {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
         let Some(p) = &mut world.pool else {
-            return Err(ZfsError::NoPool);
+            return Err(ZfsError::NoPool("fake".into()));
         };
         if !p.snaps.contains_key(&format!("{POOL}@{t}")) {
             return Err(ZfsError::NoSnapshot);
@@ -1566,7 +1566,7 @@ impl Zfs for FakeZfs {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
         let Some(p) = &mut world.pool else {
-            return Err(ZfsError::NoPool);
+            return Err(ZfsError::NoPool("fake".into()));
         };
         let suffix = format!("@{t}");
         let mut changed = false;
