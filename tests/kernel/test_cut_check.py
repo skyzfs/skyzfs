@@ -484,6 +484,24 @@ class PickWiring(unittest.TestCase):
         assert_pick_wiring(self, cut_check.main, 'withheld', 'mid')
 
 
+class ExportRefusalsLine(unittest.TestCase):
+    """#145's third look, T4 (plants C4: no line; C5: the line says 0)."""
+
+    def test_the_line_says_the_count(self):
+        for n in (0, 1, 7):
+            key, verdict, words = cut_check.export_refusals_line(n)
+            self.assertEqual((key, verdict), ('obs_export_refusals', 'INFO'))
+            self.assertTrue(words.startswith(f'{n} busy exports after an import'), words)
+
+    def test_main_puts_the_line_with_the_check_s_count(self):
+        t = tree(cut_check.main)
+        line = calls(t, 'export_refusals_line')
+        self.assertEqual(len(line), 1, 'main puts the line once')
+        self.assertEqual(ast.unparse(line[0].args[0]), 'ck.export_refusals')
+        put = [c for c in calls(t, 'put') if any(a.value is line[0] for a in c.args if isinstance(a, ast.Starred))]
+        self.assertEqual(len(put), 1, 'the line goes to put')
+
+
 class Later(unittest.TestCase):
     def test_the_middle_first_then_earlier(self):
         cs = [cut(n, n, n) for n in range(1, 33)]

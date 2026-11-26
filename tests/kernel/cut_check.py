@@ -678,6 +678,13 @@ def alone_at_mid(ck, c, put):
         put('obs_import_missing_log', 'INFO', f"cut {c['n']}: no import with -m succeeded at this cut")
 
 
+def export_refusals_line(n):
+    """The line of the busy exports after the check's imports, all told
+    (#145's S3): its key, verdict and words (#145's third look, T4)."""
+    return ('obs_export_refusals', 'INFO',
+            f'{n} busy exports after an import, each tried again (the job\'s log has what ran at each)')
+
+
 def control_verdict(failed):
     return 'caught' if failed else 'missed'
 
@@ -790,8 +797,7 @@ def main():
             '; '.join(d for _, _, d in sb) if not none else '; '.join(none))
         if none:
             rc = 1
-        put('obs_export_refusals', 'INFO', f'{ck.export_refusals} busy exports after an import, each tried again '
-            '(the job\'s log has what ran at each)')
+        put(*export_refusals_line(ck.export_refusals))
         # The controls.
         got = {}
         if mid in failures or not bps_at.get('mid'):
