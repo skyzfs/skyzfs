@@ -63,7 +63,7 @@ WHOLE = [('enrol', 'before'), ('enrol', 'after'), ('intent', 'before'), ('intent
          ('look', 'after'), ('release', 'before'), ('release', 'after'), ('done', 'before'), ('done', 'after')]
 RECORD = f'volume {"a" * 64}\nenrolled {POOL} pool_guid=7 leaf_guid=8\n'
 ASSIST = f'{POOL}\ton\tlocal\n{POOL}/fs\ton\tinherited from {POOL}\n'
-STRAY = f'{POOL}@stray-u\tskyzfs-publish\tThu Nov 26 10:00 2026\n'
+STRAY = f'{POOL}@skz-stray-u\tskyzfs-publish\tThu Nov 26 10:00 2026\n'
 
 
 def upto(*last):
@@ -603,6 +603,17 @@ class Main(unittest.TestCase):
         rc, lines = run_course(change=change)
         self.assertEqual((rc, lines['pin_K-x_daemon_stopped'][0]), (1, 'FAILED'))
 
+    def test_a_verdict_of_the_course_s_end(self):
+        # end_daemon's verdict goes to cases/course, which no line of
+        # cases.tsv names (Z08 in G1 of #163's review).
+        def change(d):
+            os.makedirs(os.path.join(d, 'cases', 'course'))
+            write(os.path.join('cases', 'course', 'verdicts.tsv'),
+                  'daemon_stopped\tskyzfsd serve ended with 1 on SIGTERM\n')(d)
+        rc, lines = run_course(change=change)
+        self.assertEqual((rc, lines['pin_course_daemon_stopped'][0]), (1, 'FAILED'))
+        self.assertIn('ended with 1 on SIGTERM', lines['pin_course_daemon_stopped'][1])
+
     def test_a_verdict_line_that_does_not_read_is_the_rig_s_error(self):
         for bad in ('no tab\n', 'Bad-Pin\twhat\n', 'pin\t\n'):
             rc, lines = run_course(change=case_file('trace', 'verdicts.tsv', bad))
@@ -1066,7 +1077,7 @@ class Main(unittest.TestCase):
         rc, lines = run_course(course=c)
         self.assertEqual((rc, lines['pin_sweep_swept'][0]), (0, 'ok'), not_ok(lines))
         rc, lines = run_course(course=c, change=case_file('sweep', 'stray-holds.txt',
-                                                          f'{POOL}@sweep-sweep\tskyzfs-publish\tThu\n'))
+                                                          f'{POOL}@skz-sweep-sweep\tskyzfs-publish\tThu\n'))
         self.assertEqual((rc, lines['pin_sweep_swept'][0]), (1, 'FAILED'))
         # D4 of #158's review: the publish that marks the directory failed.
         rc, lines = run_course(course=c, change=case_file('sweep', 'first.rc', '1\n'))

@@ -83,6 +83,18 @@
 #                               with a hold, the first 1000 of them (the
 #                               adapter's HOLDS_AT_ONCE), with the load
 #                               beside it; about.txt gives its lines
+#             sweep-rounds      whether the sweep's reads stall a writer
+#                               (design §5.2): each of the two again,
+#                               ZCR_SWEEP_ROUNDS times (default 5; 0:
+#                               none), each time paired with an idle
+#                               control, the load alone for as long as
+#                               the step's first read took, the control
+#                               first in odd rounds and second in even
+#                               ones; records sweep-list-rI,
+#                               sweep-list-idle-rI, sweep-holds-rI and
+#                               sweep-holds-idle-rI, and about.txt
+#                               gives both sides' longest writes and
+#                               their medians
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
@@ -1159,6 +1171,77 @@ retain() {
 # programs and holds on it, each timed (the secs of its record); with K,
 # K retained snapshots of each dataset as well (retain), and its records
 # are named scale-N-sK.
+# idle_for SECS: nothing for SECS seconds; the idle control's command.
+idle_for() { sleep "$1"; }
+
+# stall_of NAME: the longest write beside the record NAME (its stall
+# file's longest=), or ? where there is none.
+stall_of() {
+    sed -n 's/^longest=\([^ ]*\) .*/\1/p' "$OUT/$1/stall" 2> /dev/null | grep . || echo '?'
+}
+
+# median VALUE...: the median of the values that are numbers ("<x" read
+# as x), or ? where there is none.
+median() {
+    printf '%s\n' "$@" | sed 's/^<//' | grep -E '^[0-9]+(\.[0-9]+)?$' | sort -g |
+        awk '{ v[NR] = $1 } END { if (NR == 0) print "?"; else if (NR % 2) printf "%.3f\n", v[(NR + 1) / 2]; else printf "%.3f\n", (v[NR / 2] + v[NR / 2 + 1]) / 2 }'
+}
+
+# sweep_rounds LBL WDIR POOL: whether the sweep's reads stall a writer
+# (design §5.2). Each read, sweep-list and sweep-holds as the step
+# before made them, again ZCR_SWEEP_ROUNDS times (5 by default) beside
+# the load, each time paired with an idle control: the load alone for as
+# long as that step's read took. Odd rounds run the control first, even
+# rounds the read, so that the pool's own sync cadence falls on both
+# alike. Records scale-LBL-sweep-KIND-rI and scale-LBL-sweep-KIND-idle-rI;
+# about.txt gets each kind's stalls, read and idle, and their medians.
+sweep_rounds() {
+    local lbl=$1 wdir=$2 p=$3 rounds=${ZCR_SWEEP_ROUNDS:-5} kind i r c secs held reads idles cmd
+    case $rounds in
+        *[!0-9]* | '' | ???*) echo "scale $lbl: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: $rounds" >> "$OUT/about.txt"; return 0 ;;
+    esac
+    [ "$rounds" -gt 0 ] || return 0
+    if [ -z "$wdir" ]; then
+        echo "scale $lbl: the sweep's rounds not run: no writer" >> "$OUT/about.txt"
+        return 0
+    fi
+    mapfile -t held < <(held_names "$OUT/scale-$lbl-sweep-list/stdout")
+    for kind in list holds; do
+        if [ "$kind" = list ]; then
+            cmd=("${SWEEP_LIST[@]}" "$p")
+        elif [ "${#held[@]}" = 0 ]; then
+            echo "scale $lbl: the sweep's holds rounds not run: its list gives no snapshot with a hold" >> "$OUT/about.txt"
+            continue
+        else
+            cmd=(zfs holds -H "${held[@]:0:HOLDS_AT_ONCE}")
+        fi
+        secs=$(cat "$OUT/scale-$lbl-sweep-$kind/secs" 2> /dev/null) || secs=""
+        if ! [[ $secs =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "scale $lbl: the sweep's $kind rounds not run: scale-$lbl-sweep-$kind has no time" >> "$OUT/about.txt"
+            continue
+        fi
+        reads=() idles=()
+        for ((i = 1; i <= rounds; i++)); do
+            if ! scale_limit; then
+                echo "scale $lbl: the budget was spent before the sweep's $kind round $i; it and the rest were not run" >> "$OUT/about.txt"
+                break
+            fi
+            r=scale-$lbl-sweep-$kind-r$i
+            c=scale-$lbl-sweep-$kind-idle-r$i
+            if [ $((i % 2)) = 1 ]; then
+                writing "$c" "$wdir" "$p" idle_for "$secs"
+                writing "$r" "$wdir" "$p" rec "$r" "${cmd[@]}"
+            else
+                writing "$r" "$wdir" "$p" rec "$r" "${cmd[@]}"
+                writing "$c" "$wdir" "$p" idle_for "$secs"
+            fi
+            reads+=("$(stall_of "$r")")
+            idles+=("$(stall_of "$c")")
+        done
+        echo "scale $lbl: sweep-$kind against an idle control of $secs s, ${#reads[@]} rounds (odd rounds idle first): read longest ${reads[*]:-none} (median $(median "${reads[@]}")); idle longest ${idles[*]:-none} (median $(median "${idles[@]}"))" >> "$OUT/about.txt"
+    done
+}
+
 scale() {
     local n=$1 k=${2:-0} lbl p=skzqs t0 made step cut="" rc wdir held
     local LIMIT FILL_SPAN=""
@@ -1195,7 +1278,7 @@ scale() {
         echo "scale $lbl: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
     [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"
-    for step in count count-snapshots snapshot snapshot-cli members hold holds sweep-list sweep-holds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
+    for step in count count-snapshots snapshot snapshot-cli members hold holds sweep-list sweep-holds sweep-rounds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
             echo "scale $lbl: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
@@ -1243,6 +1326,7 @@ scale() {
                     lines_line "scale-$lbl-sweep-holds"
                 fi
                 ;;
+            sweep-rounds) sweep_rounds "$lbl" "$wdir" "$p" ;;
             tagged)
                 if [ "$TAGGED_LUA" = 1 ]; then
                     program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG"
