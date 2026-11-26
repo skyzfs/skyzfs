@@ -232,6 +232,40 @@ check "pin scale release" "$(words scale-3-release)" "zfs release -r skyzfs-publ
 check "pin scale destroy" "$(words scale-3-destroy)" "zfs destroy -r skzqs@t "
 check "pin scale's take by the CLI" "$(words scale-3-take-cli)" "zfs snapshot -r skzqs@c "
 check "pin scale's members after it" "$(words scale-3-take-cli-members)" "zfs program -n $P skzqs - skzqs c "
+# The adapter's count and the members program's full mode (#153).
+check "pin count" "$(words rig-count)" "zfs list -r -H -o name -t filesystem,volume skzq "
+check "pin none's count" "$(words none-count)" "zfs list -r -H -o name -t filesystem,volume skznone "
+check "pin scale's count" "$(words scale-3-count)" "zfs list -r -H -o name -t filesystem,volume skzqs "
+check "pin members full" "$(words rig-members-full)" "zfs program -n $P skzq - skzq t full skyzfs:assist "
+check "pin members full stdin" "$(sed 's/.* < //' "$OUT/rig-members-full/cmd")" "members.lua"
+check "pin members full, absent" "$(words rig-members-full-absent)" "zfs program -n $P skzq - skzq absent full skyzfs:assist "
+check "pin members full, odd" "$(words rig-members-full-odd)" "zfs program -n $P skzq - skzq o0 full skyzfs:assist "
+check "pin members full, odd in C.UTF-8" "$(words rig-members-full-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program -n $P skzq - skzq o2 full skyzfs:assist "
+check "pin none's members full" "$(words none-members-full)" "zfs program -n $P skznone - skznone t full skyzfs:assist "
+check "pin scale's members full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+# Each full record after what it reads: odd after the takes of o0 and
+# o2, and before their destroy.
+# order A B: yes when A's line of the index comes before B's, each looked
+# up by itself (one grep for both would give them in the file's order).
+line_of() { grep -n -m 1 "^$1	" "$OUT/index.tsv" | cut -d: -f1; }
+order() {
+    local a b
+    a=$(line_of "$1")
+    b=$(line_of "$2")
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo yes || echo no
+}
+mkdir -p "$T/ord"
+printf 'x\t0\t\tx\ny\t0\t\ty\n' > "$T/ord/index.tsv"
+check "order: x before y, y not before x, a missing one not" "$(OUT=$T/ord order x y; OUT=$T/ord order y x; OUT=$T/ord order x z)" $'yes\nno\nno'
+check "members full after the take" "$(order rig-snapshot-1 rig-members-full)" yes
+check "members full, odd after its take" "$(order rig-snapshot-odd rig-members-full-odd)" yes
+check "members full, odd in C.UTF-8 after its take" "$(order rig-snapshot-odd-utf8 rig-members-full-odd-utf8)" yes
+check "members full, odd before the destroy" "$(order rig-members-full-odd rig-destroy)" yes
+check "members full, odd in C.UTF-8 before the destroy" "$(order rig-members-full-odd-utf8 rig-destroy-held)" yes
+check "members full, odd after the properties" "$(order rig-set-raw rig-members-full-odd)" yes
+check "pin members full, partial" "$(words rig-members-full-partial)" "zfs program -n $P skzq - skzq p full skyzfs:assist "
+check "members full, partial after the child's @p" "$(order rig-exists-child-pre rig-members-full-partial)" yes
+check "members full, partial before the take at @p" "$(order rig-members-full-partial rig-cli-exists-child)" yes
 # The writer beside each take: its log and its stall, in the record
 # and in about.txt.
 for r in snapshot take-cli; do
@@ -372,7 +406,7 @@ scale 10 > /dev/null 2>> "$T/pins.err"
 unset FAKE_PROGRAM_OUT
 check "partial: what was taken destroyed" "$(words scale-10-snapshot-cli-destroy-partial)" "zfs destroy -r skzqs@t "
 check "partial: then the CLI's @t" "$(words scale-10-snapshot-cli)" "zfs snapshot -r skzqs@t "
-check "partial: in that order" "$(grep -n -e '^scale-10-snapshot-cli-destroy-partial	' -e '^scale-10-snapshot-cli	' "$OUT/index.tsv" | cut -d: -f1 | tr '\n' ' ' | awk '{print ($1 < $2) ? "yes" : "no"}')" yes
+check "partial: in that order" "$(order scale-10-snapshot-cli-destroy-partial scale-10-snapshot-cli)" yes
 check "partial: said, with the count" "$(grep -c '^scale-10-snapshot-cli: scale-10-snapshot failed after taking 4563 snapshots: destroyed, and zfs snapshot -r takes @t$' "$OUT/about.txt")" 1
 check "not partial, @t there: no CLI" "$([ -e "$OUT/scale-9-snapshot-cli" ] && echo yes || echo no)" no
 # In record_pool too.
@@ -390,7 +424,10 @@ printf 'zfs: out of memory\n' > "$OUT/m-bad/stdout"
 members_line m-ok
 members_line m-bad
 members_line m-none
-check "members_line" "$(grep '^scale: m-' "$OUT/about.txt")" $'scale: m-ok: 3 members\nscale: m-bad: not read members\nscale: m-none: not read members'
+mkdir -p "$OUT/m-full"
+printf '%s\n' '{"return":{"datasets":{"skzq":{},"skzq/a":{}}}}' > "$OUT/m-full/stdout"
+members_line m-full
+check "members_line" "$(grep '^scale: m-' "$OUT/about.txt")" $'scale: m-ok: 3 members\nscale: m-bad: not read\nscale: m-none: not read\nscale: m-full: 2 datasets'
 OUT=$T/pins
 LIMIT=5
 
@@ -417,8 +454,69 @@ check "settle beside snapshot: a sync after the probe" "$(awk -v a="$s0" -v b="$
 s0=$(tail -n 1 "$OUT/scale-3-take-cli/txg.tsv" | cut -f2)
 check "settle beside take-cli: a sync after the probe" "$(awk -v a="$s0" '$2 == "sync" && $3 == "skzqs" && $1 >= a' "$T/zpool.calls" | wc -l)" 1
 for r in members take-cli-members; do
-    check "members line: $r" "$(grep -c "^scale: scale-3-$r: .* members$" "$OUT/about.txt")" 1
+    check "members line: $r" "$(grep -c "^scale: scale-3-$r: " "$OUT/about.txt")" 1
 done
+check "members line: take-cli-full" "$(grep -c "^scale: scale-3-take-cli-full: " "$OUT/about.txt")" 1
+
+# Without snapshot.lua (the take is zfs snapshot -r alone since
+# M2.6c-2b): no record runs the program; the CLI takes @t, @o0 and @o2,
+# and the rest is recorded as with it.
+OUT=$T/nolua
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+SNAPSHOT_LUA=0
+SCALE_END=$(($(date +%s) + 600))
+export FAKE_LIST_RC=1 # no @t until the CLI's
+record_pool rig skzq > /dev/null 2> "$T/nolua.err"
+record_none none skznone > /dev/null 2>> "$T/nolua.err"
+ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/nolua.err"
+unset FAKE_LIST_RC
+SNAPSHOT_LUA=1
+check "no lua: no name twice" "$(grep -c twice "$T/nolua.err")" 0
+check "no lua: snapshot.lua run by none" "$(cat "$OUT"/*/cmd | grep -c 'snapshot\.lua')" 0
+check "no lua: none of the program's records" "$(find "$OUT" -mindepth 1 -maxdepth 1 -type d \( -name '*-snapshot-[12]' -o -name '*-snapshot-odd*' -o -name '*-snapshot-exists-child' -o -name scale-3-snapshot \) | wc -l)" 0
+check "no lua: the CLI's @t" "$(words rig-snapshot-cli)" "zfs snapshot -r skzq@t "
+check "no lua: the CLI's @o0" "$(words rig-take-o0)" "zfs snapshot -r skzq@o0 "
+check "no lua: the CLI's @o2" "$(words rig-take-o2)" "zfs snapshot -r skzq@o2 "
+check "no lua: members full after the CLI's take" "$(order rig-snapshot-cli rig-members-full)" yes
+check "no lua: members full, odd after its take" "$(order rig-take-o0 rig-members-full-odd)" yes
+check "no lua: members full, odd in C.UTF-8 after its take" "$(order rig-take-o2 rig-members-full-odd-utf8)" yes
+check "no lua: members full, odd in C.UTF-8" "$(words rig-members-full-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program -n $P skzq - skzq o2 full skyzfs:assist "
+check "no lua: count" "$(words rig-count)/$(words none-count)" "zfs list -r -H -o name -t filesystem,volume skzq /zfs list -r -H -o name -t filesystem,volume skznone "
+check "no lua: members full" "$(words rig-members-full)" "zfs program -n $P skzq - skzq t full skyzfs:assist "
+check "no lua: none's take" "$(words none-snapshot-cli)" "zfs snapshot -r skznone@t "
+check "no lua: the take's failures still recorded" "$(words rig-cli-exists-child)/$(words rig-cli-exists-root)" "zfs snapshot -r skzq@p /zfs snapshot -r skzq@t "
+check "no lua: the child's @p still made" "$(words rig-exists-child-pre)" "zfs snapshot skzq/child@p "
+check "no lua: scale said" "$(grep -c '^scale 3: the snapshot program not run: there is no snapshot.lua$' "$OUT/about.txt")" 1
+check "no lua: scale's @t by the CLI" "$(words scale-3-snapshot-cli)" "zfs snapshot -r skzqs@t "
+check "no lua: scale's full after the take" "$(words scale-3-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+check "no lua: members full, partial" "$(words rig-members-full-partial)" "zfs program -n $P skzq - skzq p full skyzfs:assist "
+check "no lua: main needs members and tagged alone" "$(grep -v '^ *#' "$HERE/zfs-cli-record.sh" | grep -c '^    for f in members tagged; do$')" 1
+
+# A members.lua without the full mode (before #153): no members-full
+# record, as its answer would be the plain mode's under a full name.
+printf -- '-- members\nif not zfs.exists(pool .. "@" .. t) then\n' > "$T/plain.lua"
+printf -- '-- members\nif mode ~= "full" then\n' > "$T/full.lua"
+check "has_full: the plain program" "$(has_full "$T/plain.lua" && echo yes || echo no)" no
+check "has_full: #153's" "$(has_full "$T/full.lua" && echo yes || echo no)" yes
+# shellcheck disable=SC2016 # the line as written in the script
+check "has_full: in main" "$(grep -v '^ *#' "$HERE/zfs-cli-record.sh" | grep -c '^    has_full "$LUA_DIR/members.lua" || MEMBERS_FULL=0$')" 1
+OUT=$T/nofull
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+MEMBERS_FULL=0
+SCALE_END=$(($(date +%s) + 600))
+record_pool rig skzq > /dev/null 2> "$T/nofull.err"
+record_none none skznone > /dev/null 2>> "$T/nofull.err"
+ZCR_SCALE_LIMIT=7 scale 3 > /dev/null 2>> "$T/nofull.err"
+MEMBERS_FULL=1
+check "no full: no name twice" "$(grep -c twice "$T/nofull.err")" 0
+check "no full: no full record" "$(find "$OUT" -mindepth 1 -maxdepth 1 -type d -name '*-full*' | wc -l)" 0
+check "no full: no full mode run" "$(cat "$OUT"/*/argv | tr '\0' ' ' | grep -c ' full skyzfs:assist')" 0
+check "no full: the rest recorded" "$(words rig-members)/$(words rig-count)" "zfs program -n $P skzq - skzq t /zfs list -r -H -o name -t filesystem,volume skzq "
+check "no full: scale said" "$(grep -c '^scale 3: the full mode not run: members.lua has none$' "$OUT/about.txt")" 1
+check "no full: no scale line" "$(grep -c '^scale: scale-3-take-cli-full' "$OUT/about.txt")" 0
+OUT=$T/pins
 check "the take's create: -u, each" "$(grep -c '^C create -u skzqs/d[123]$' "$OUT/create-skzqs-3.log")" 3
 
 # stopped and stop_bg: a process that ended with a status says it; one

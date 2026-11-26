@@ -109,9 +109,22 @@ jobs:
           esac
           git fetch --quiet --depth=1 origin "$LUA_REF"
           mkdir -p lua
-          for f in snapshot members tagged; do
+          for f in members tagged; do
             git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
           done
+          # The snapshot program only where the adapter still has it: the
+          # take is `zfs snapshot -r` alone since M2.6c-2b, and the
+          # recorder then leaves out the records that run the program.
+          s=crates/skyzfs-agent/src/zfs/cli/snapshot.lua
+          if git cat-file -e "FETCH_HEAD:$s" 2> /dev/null; then
+            git show "FETCH_HEAD:$s" > lua/snapshot.lua
+          else
+            echo "No snapshot.lua at $LUA_REF: the snapshot program's records are not made." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # As the recorder's has_full: the full mode is #153's.
+          if ! grep -q '"full"' lua/members.lua; then
+            echo "members.lua at $LUA_REF has no full mode: the members-full records are not made." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Record
         run: |
           case $ZCR_SCALE in
