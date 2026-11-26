@@ -1,0 +1,10 @@
+BASE -> SURVIVES rc= 0 test result: ok. 245 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.66s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+N1 the count raised before the sync returns -> KILLED rc= 101 test result: FAILED. 244 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.90s
+   FAILED engine::tests::past::a_sync_that_failed_is_not_charged_to_the_bound
+N2 no go asked between the syncs and the begin -> KILLED rc= 101 test result: FAILED. 244 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.14s
+   FAILED program::tests::an_end_during_the_syncs_begins_no_publish
+N3 go asked before every begin, a round that synced nothing too -> KILLED rc= 101 test result: FAILED. 244 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.93s
+   FAILED program::tests::an_end_during_a_begin_makes_no_read_after_it
+N4 only the bound count raised after the sync returns -> KILLED rc= 101 test result: FAILED. 244 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s
+   FAILED engine::tests::past::a_sync_that_failed_is_not_charged_to_the_bound
+ALLDONE

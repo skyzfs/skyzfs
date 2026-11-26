@@ -1,12 +1,130 @@
-# Review of skyzfs/skyzfs#170 (M2.7d) at bb03454
+# Review of skyzfs/skyzfs#170 (M2.7d) at bb03454 and at 02af425
 
-Head checked with `gh api repos/skyzfs/skyzfs/pulls/170 --jq .head.sha`
-at the start and at the end: `bb034546b34be39e665cd869bb6a8de220b61e85`
-both times. Two commits on the base fe68a59: 4936585 (the change) and
+The review was made at bb03454. While it ran, the head moved to
+`02af425f6a30ba61a39a4bab0b8d9186e7b33856` (one commit, "count only
+syncs that returned; no begin after an end in the syncs", answering
+two P2 findings of another reviewer on bb03454). The first section
+judges 02af425; the rest is the review of bb03454, with what still
+applies marked there. Head checked with `gh api
+repos/skyzfs/skyzfs/pulls/170 --jq .head.sha`: bb03454 at the start,
+02af425 when told of it and at the end.
+
+bb03454 is two commits on the base fe68a59: 4936585 (the change) and
 bb03454 (a merge of `zfs-topology` at fe68a59, no Rust).
 `zfs-topology` has since moved to 47c11b0, which changes one line of
 `docs/skyzfs-design.md` (the lead's rewording of §5.2 for this
 package); the pull request merges onto it cleanly.
+
+## 02af425 (the head now)
+
+**It can merge from review's side. Nothing blocks.** `git diff bb03454
+02af425` changes `engine.rs`, `program.rs`, the fake and two tests,
+all in `crates/skyzfs-agent/`.
+
+### (a) A failed sync is no longer counted toward the bound
+
+`engine.rs:813-819`: the assist runs first and `synced` and
+`past_synced` rise only after it returned. Right, and the reason is
+sound: at bb03454, 128 rounds whose `zfs set` was refused used the
+bound up, and once ZFS took syncs again an idle pool stayed behind
+for the rest of the process.
+
+What stops a sync that always fails:
+
+- **Within a round**, nothing loops: the `?` on the assist ends
+  `sync_past` with the error, and the round fails (`program.rs:1075`).
+  At most one failed sync a round, as the new doc at `SYNC_PAST_MAX`
+  says.
+- **Across rounds**, nothing counts them: one failed sync a tick (60 s
+  by default) for as long as the process lives and the newest cut stays
+  behind. Each such round is `failed` with the error on standard error,
+  so it is seen. Its cost: a read of `cuts` and the premise's
+  `device` (two short requests to the daemon), the premise's two ZFS
+  reads, the one failed assist, a reading of the record (a `Zfs` error
+  restarts the engine: D1's cost, accepted), and the settle. That does
+  not hammer the daemon.
+- **Writes.** A refused `zfs set` writes nothing. A `zpool sync` cut at
+  its time limit may have written its groups uncounted; each raises the
+  pool's group, so after a rewind the gap still closes. Only where
+  something else keeps the cut from opening and every sync times out
+  does the pool get about two groups a round with no end. That is the
+  case the bound was for; it is now bounded only by the tick (decision
+  5 below). The module docs (`engine.rs:86-90`) still say the syncs are
+  "bounded three ways, so that the agent never writes groups for ever"
+  (d8).
+
+The new test `past::a_sync_that_failed_is_not_charged_to_the_bound`
+fails under the author's plant (the count raised before the sync
+returns: N1) and under mine (only `past_synced` raised before it: N4)
+(`plants2-author.out`).
+
+My RV2 (`a failed sync counts toward the bound`) asserted the old rule
+and now fails, as it should: drop it. R6 is now the code.
+
+### (b) A round that synced asks `go` before it begins
+
+`program.rs:1054-1061`: `clear = k == 0 || go();`. Asking `go` there
+skips only the begin. Nothing requires a begin: the syncs saved
+nothing, the settle still runs and asks its own `go`, an owed restart
+is untouched, and in `run` `go` is a latch (the signal flag), so a no
+there means the round line is printed and the process ends; its next
+start begins. Nothing needed is skipped.
+
+This closes L1's main case: my `rp1_an_end_during_the_last_sync_begins_no_publish`
+passes at 02af425. The new test `an_end_during_the_syncs_begins_no_publish`
+fails under the author's plant (no `go` there: N2). `k == 0 ||` keeps a
+round that synced nothing as it was; dropping it (N3) is caught by
+`an_end_during_a_begin_makes_no_read_after_it`, whose `go` answers yes
+once.
+
+What is left of L1 is a nit: an end during the round's first read of
+`cuts` where nothing is behind (k = 0) still lets the begin run, a
+window one daemon read wider than before this package; and an end
+during the premise's reads, in a round behind, still lets the first
+sync run (`go` was asked before the premise). The signal docs
+(`program.rs:154-158`) and `schedule`'s (`program.rs:1015-1018`) do not
+name the syncs (d3).
+
+### Verified at 02af425
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy -p skyzfs-agent -p skyzfs-agent-cli --all-targets -- -D
+  warnings`, plain and with `skyzfs-agent-cli/test-hooks`: clean.
+- `cargo test -p skyzfs-agent -p skyzfs-agent-cli`, plain and with
+  `skyzfs-agent-cli/test-hooks`: 252 passed, 0 failed each.
+- `RUSTDOCFLAGS=-D warnings cargo doc -p skyzfs-agent -p
+  skyzfs-agent-cli --no-deps`: clean.
+- The full workspace gates ran on bb03454 (below); 02af425 changes no
+  other crate.
+- Plants (`plants2.py`, `plants2-author.out`): N1-N4 all caught.
+- The review's tests (`scratch-tests-02af425.out`): RP1 now passes;
+  RP2 still fails (L2); RV2 fails because the rule changed (above);
+  the other eleven pass.
+- SURVIVORS_02AF425
+
+### Do the findings on bb03454 still apply?
+
+| Finding | At 02af425 |
+|---|---|
+| L1 | Fixed for an end during the syncs; a nit is left (above). |
+| L2 (`synced=0` after a failed sync) | Applies: RP2 still fails, `round 1 failed ... synced=0` after one sync that returned. |
+| T1 (test gaps) | R6 is moot (the rule changed). The others: SURVIVORS_SHORT |
+| d1 (`opens=no`) | Applies (`engine.rs:81`). |
+| d2 (a person's `zpool sync`; no cut held also resets) | Applies (`program.rs:131`). |
+| d3 (restarts' and `schedule`'s docs) | Applies (`program.rs:926-931`, `1015-1018`). |
+| d4 (`begun=-` causes) | Applies (`program.rs:80-82`), now missing also "an end during the syncs" there (the new paragraph at `program.rs:133-137` says it). |
+| d5 (ragged break) | Applies (`engine.rs:992-993`). |
+| d6, d7 | Description only; unchanged. |
+| d8 (new) | `engine.rs:86-90`: "never writes groups for ever" is not so for syncs that fail (above). |
+| Decisions 1-4 | Unchanged; decision 5 is new. |
+
+CI on 02af425: CI_02AF425
+
+Codex: no new review visible on 02af425 at the time of writing.
+
+---
+
+# The review of bb03454
 
 I read CLAUDE.md, design §5.2, §5.4 and §9 (M2), the implementation
 notes on the agent, and the review notes of M2.7a, M2.6c-5e and
@@ -24,7 +142,10 @@ Files beside this one:
 - `scratch-tests.rs`, the review's tests (not for merging as they
   are), with `scratch-tests-head.out` (the two that fail at the head);
 - `gates.sh` with `gates.out`;
-- `live.sh` with `live.out`.
+- `live.sh` with `live.out`;
+- for 02af425: `plants2.py` with `plants2-author.out`,
+  `plants-02af425-survivors.out` (the review's plants that survived at
+  bb03454, against 02af425's tests), and `scratch-tests-02af425.out`.
 
 The scripts take the scratch directory from `$SCRATCH`; the outputs
 print it as `$SCRATCH`.
@@ -364,7 +485,11 @@ in the library.
 rustc 1.100.0 (`rustup update stable` first), in a scratch worktree at
 bb03454, the target cleaned between feature sets.
 
-GATES_TABLE
+| Gate | Plain | `skyzfsd/test-hooks,skyzfs-local/test-hooks` | `skyzfs-ublk-sys/control-test-program` | `skyzfs-agent-cli/test-hooks` |
+|---|---|---|---|---|
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean | clean | clean | clean |
+| `cargo test --workspace` (passed / failed / ignored) | 2003 / 0 / 16 | 2061 / 0 / 16 | 2027 / 0 / 18 | AGENTCLI_TEST |
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` | clean | clean | clean | AGENTCLI_DOC |
 
 `cargo fmt --all -- --check`: clean. The agent crates' tests twenty
 times: 0 failed runs (250 tests a run). The host tests
@@ -422,7 +547,9 @@ description's open question 4), and whether 2 groups per assist holds.
 - Tests: the seven `past` tests and the three `program` tests do what
   the description says; each fails under the plants it names.
 - Gates: plain `cargo test --workspace` 2003 / 0 / 16, as stated;
-  GATES_CLAIM
+  with `skyzfsd/test-hooks,skyzfs-local/test-hooks` 2061 / 0 / 16 and
+  with `skyzfs-ublk-sys/control-test-program` 2027 / 0 / 18, as stated;
+  with `skyzfs-agent-cli/test-hooks`: AGENTCLI_CLAIM
 - "17 of 17": confirmed (above).
 
 ## Decisions for the lead
@@ -460,3 +587,13 @@ None blocks the merge.
    its tick and later rounds are counted as skipped. That is the
    scheduler's rule ("no overlap"), so it is consistent; it is named
    here only so that the choice is seen.
+5. **(02af425) Failed syncs have no bound but the tick.** Since
+   02af425 the 128 count only syncs that returned. A sync that fails
+   fails its round, so there is at most one a round, but there is no
+   end to them: where the newest cut never opens for another reason
+   and every `zpool sync` times out after writing, the pool gets about
+   two groups a round for as long as the process lives, each round
+   `failed`. The alternative (a separate, larger count of failed syncs)
+   would bring back the case 02af425 fixes, an idle pool left behind
+   after ZFS recovers. Review's view: accept it as is, and say it in
+   the module docs (d8).

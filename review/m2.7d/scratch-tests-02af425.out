@@ -1,0 +1,9 @@
+thread 'engine::tests::review170::rv2_a_failed_sync_counts_toward_the_bound' (31123) panicked at crates/skyzfs-agent/src/engine/tests.rs:5057:50:
+seen: Zfs(Other("zpool sync: timed out"))
+thread 'program::tests::review170::rp2_a_round_whose_sync_failed_says_the_syncs_it_ran' (31129) panicked at crates/skyzfs-agent/src/program/tests.rs:2361:9:
+assertion `left != right` failed: round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0
+skyzfs-agent: round 1: zfs: zpool sync: timed out
+
+test result: FAILED. 12 passed; 2 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
