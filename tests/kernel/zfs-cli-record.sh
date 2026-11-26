@@ -68,6 +68,9 @@
 #                               about.txt then says how many it took
 #             members, hold, tagged, release
 #                               at @t, hold and release with -r
+#             holds             zfs holds -H -r P@t while @t is held,
+#                               the agent's read of the holds in each
+#                               round; about.txt gives its lines
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
@@ -1104,7 +1107,7 @@ scale() {
         echo "scale $lbl: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
     [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"
-    for step in count count-snapshots snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
+    for step in count count-snapshots snapshot snapshot-cli members hold holds tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
             echo "scale $lbl: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
@@ -1132,6 +1135,10 @@ scale() {
                 members_line "scale-$lbl-members"
                 ;;
             hold) rec "scale-$lbl-hold" zfs hold -r "$TAG" "$p@t" ;;
+            holds)
+                rec "scale-$lbl-holds" zfs holds -H -r "$p@t"
+                lines_line "scale-$lbl-holds"
+                ;;
             tagged) program "scale-$lbl-tagged" "$p" tagged.lua -n "$p" "$TAG" ;;
             release) rec "scale-$lbl-release" zfs release -r "$TAG" "$p@t" ;;
             destroy) rec "scale-$lbl-destroy" zfs destroy -r "$p@t" ;;

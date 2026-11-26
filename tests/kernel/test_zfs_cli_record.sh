@@ -283,6 +283,9 @@ check "pin scale's get" "$(words scale-3-take-cli-get)" "$GET skzqs "
 check "pin scale's get in JSON" "$(words scale-3-take-cli-get-json)" "zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all skzqs "
 check "pin scale's list" "$(words scale-3-take-cli-list)" "$LIST skzqs "
 check "pin scale's count of the snapshots" "$(words scale-3-count-snapshots)" "zfs list -r -H -o name -t snapshot skzqs "
+check "pin scale's holds" "$(words scale-3-holds)" "zfs holds -H -r skzqs@t "
+check "scale's holds while held" "$(order scale-3-hold scale-3-holds)$(order scale-3-holds scale-3-release)" yesyes
+check "lines said: holds" "$(grep -c "^scale: scale-3-holds: $(wc -l < "$OUT/scale-3-holds/stdout") lines$" "$OUT/about.txt")" 1
 check "scale's counts, then the snapshot" "$(order scale-3-count scale-3-count-snapshots)$(order scale-3-count-snapshots scale-3-snapshot)" yesyes
 check "lines said: count-snapshots" "$(grep -c "^scale: scale-3-count-snapshots: $(wc -l < "$OUT/scale-3-count-snapshots/stdout") lines$" "$OUT/about.txt")" 1
 check "pin scale's get of the pairs" "$(words scale-3-take-cli-get-pairs)" "zfs get -r -H -p -t filesystem,volume -s local -o name,property all skzqs "
@@ -494,8 +497,8 @@ SCALE_END=$(($(date +%s) + 2))
 export FAKE_SLEEP=4
 ZCR_SCALE_LIMIT=7 scale 6 > /dev/null 2>> "$T/pins.err"
 check "budget: the hold cut at what was left" "$(cat "$OUT/scale-6-hold/rc")" 124
-check "budget: nothing after it" "$([ -e "$OUT/scale-6-tagged" ] && echo yes || echo no)" no
-check "budget: said" "$(grep -c '^scale 6: the budget was spent before tagged' "$OUT/about.txt")" 1
+check "budget: nothing after it" "$([ -e "$OUT/scale-6-holds" ] || [ -e "$OUT/scale-6-tagged" ] && echo yes || echo no)" no
+check "budget: said" "$(grep -c '^scale 6: the budget was spent before holds' "$OUT/about.txt")" 1
 unset FAKE_SLEEP
 # Above ZCR_SCALE_LUA_MAX, no program: the CLI takes @t, and the rest
 # runs on it.
