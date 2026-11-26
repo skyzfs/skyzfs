@@ -999,6 +999,9 @@ scale_all() {
             ;;
     esac
     [ "${#ZCR_SCALE_FULL_MAX}" -gt 6 ] && ZCR_SCALE_FULL_MAX=999999
+    # The settle every window waits for, said once (the job's summary
+    # prints about.txt): 0 is the margin alone, as before #169.
+    [ "$#" = 0 ] || echo "scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=${ZCR_SETTLE_TXGS:-2} groups have committed since its probe began, waiting at most ZCR_SETTLE_S=${ZCR_SETTLE_S:-30} s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=${ZCR_WRITER_MARGIN:-2} s alone)" >> "$OUT/about.txt"
     for e in "$@"; do
         n=${e%%:*}
         r=0

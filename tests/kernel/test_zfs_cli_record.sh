@@ -1176,6 +1176,7 @@ check "writing: the window after the groups" "$(awk -F '\t' -v t0="$(cut -f1 "$T
 scale() { echo "$1${2:+:$2}" >> "$T/scaled"; }
 scale_all 5 100001 99999999999999999999 5 abc 012 7 8 9 > /dev/null
 check "scale_all: the counts run" "$(tr '\n' ' ' < "$T/scaled")" "5:0 7:0 8:0 "
+check "scale_all: the settle's setting said once" "$(grep -c '^scale settings: each window beside a writer opens after ZCR_SETTLE_TXGS=0 groups have committed since its probe began, waiting at most ZCR_SETTLE_S=30 s (0 groups: no wait, the margin of ZCR_WRITER_MARGIN=0.3 s alone)$' "$OUT/about.txt")" 1
 check "scale_all: what was not run, said" "$(grep -c '^scale: ' "$OUT/about.txt")" 6
 rm -f "$T/scaled"
 : > "$OUT/about.txt"
