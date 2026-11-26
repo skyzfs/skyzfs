@@ -414,6 +414,8 @@ pub enum Report {
     /// before them ([`crate::record::Why::NotWhole`]): the datasets that
     /// broke the last, those that lack its `@t` or have one of another
     /// group, or differ from the reading before it (D1 of #153's review).
+    /// Empty where the last take was destroyed before a stop, and the
+    /// give-up made by the next process (D2 of #153's next look).
     NotWhole(Vec<String>),
 }
 

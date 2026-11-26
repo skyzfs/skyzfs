@@ -1153,10 +1153,25 @@ fn the_limits_grow_with_the_datasets_counted() {
         let _ = zfs.snapshot("tank", "skz-1");
         let _ = zfs.held("tank", "skz-1", "skyzfs-publish", Some(&[]));
         let _ = zfs.datasets("tank", "skz-1");
+        // The other reads take a read's limit, not the full read's (T10
+        // of #153's next look).
+        let _ = zfs.members("tank", "skz-1");
+        let _ = zfs.tagged("tank", "skyzfs-publish");
+        let _ = zfs.status("tank", false);
         let ran = &zfs.host().ran;
         assert_eq!(ran[0].words, TAKE);
         assert_eq!(ran[1].words, HOLDS_R);
         assert_eq!(ran[2].words, DATASETS_WORDS);
+        assert_eq!(
+            ran[3..]
+                .iter()
+                .map(|r| r.words.as_str())
+                .collect::<Vec<_>>(),
+            [MEMBERS_WORDS, TAGGED_WORDS, "zpool status -P tank"]
+        );
+        for other in &ran[3..] {
+            assert_eq!(other.limit, ran[1].limit, "{}", other.words);
+        }
         (ran[0].limit, ran[1].limit, ran[2].limit)
     };
     assert_eq!(

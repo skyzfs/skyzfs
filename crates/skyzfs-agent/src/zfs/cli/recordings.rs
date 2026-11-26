@@ -797,7 +797,7 @@ fn the_destroy_as_recorded() {
 /// a hold on the root alone is not recorded. Mutants: a part read as
 /// held, the refusal not naming the members.
 #[test]
-fn a_hold_on_the_root_alone_as_recorded() {
+fn a_hold_on_a_part_of_the_take_as_recorded() {
     for rec in recordings() {
         let names = ["rig-hold-r-partial", "rig-members", "rig-holds-r-partial"];
         let mut zfs = rec.adapter(&names);

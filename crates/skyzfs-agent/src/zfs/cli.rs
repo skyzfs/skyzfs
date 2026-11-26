@@ -178,7 +178,20 @@
 //! - **What a publish costs.** A publish reads the pool in full twice
 //!   (before its take and after) and takes it once: about 20 s at 100
 //!   datasets and about 30 minutes at 10 000, from the figures above.
-//!   The design's scale is tens to hundreds of datasets.
+//!   Each round's count, members and `holds -r` reads, the hold, the
+//!   release and the sweep add some 4 to 5 minutes at 10 000 (review of
+//!   #153). The design's scale is tens to hundreds of datasets.
+//! - **A known cost of the full read.** The full read holds the pool's
+//!   config lock for its whole run (N6 of #153's review, from the OpenZFS
+//!   source), and the pool's transaction group does not complete
+//!   meanwhile. Testing's measurement (#155, Ubuntu 26.04, 1 001
+//!   datasets): the read took 31 s, a writer
+//!   of buffered data made no write during it, `zpool sync` took 33 s,
+//!   and an `O_DSYNC` writer was not stalled; beside `zfs snapshot -r`
+//!   the stall was 3.7 s. Two full reads a publish make about 6 s of
+//!   such a stall at 100 datasets. M2.6c-5 replaces the full read by
+//!   `zfs get` and `zfs list` (the lead's decision); until then this is
+//!   accepted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

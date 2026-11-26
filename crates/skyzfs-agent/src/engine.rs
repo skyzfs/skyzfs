@@ -150,6 +150,9 @@ pub enum Effect {
     Intent,
     /// `zfs snapshot -r` (the take).
     Take,
+    /// The record saved with a failed check of a take counted, at
+    /// [`Phase::Intent`], before the take is destroyed.
+    Failed,
     /// `zfs destroy -r` of a take that is not whole or not as read
     /// before it.
     Destroy,
@@ -863,6 +866,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// datasets read, `zfs snapshot -r`, and the take adopted
     /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
+        // The give-up at the last failed check was decided, and its take
+        // destroyed, before a stop: no take is asked again (D2 of #153's
+        // next look). The datasets that broke it are not known now.
+        if self
+            .record
+            .publish(name)
+            .is_some_and(|p| p.attempts >= plan::CHECKS_FAILED_MAX)
+        {
+            self.reports
+                .push((name.to_string(), Report::NotWhole(Vec::new())));
+            self.abandon(name, Why::NotWhole)?;
+            return Ok(Moved::Yes);
+        }
         // The pause after a take that failed its check (D1 of #153's
         // review): no take of the next name before it has passed.
         let retake_after = self.memory.get(name).and_then(|m| m.retake_after);
@@ -945,7 +961,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         match self.memory.get(name).and_then(|m| m.before.as_ref()) {
             // No reading in this process: the take is not judged, and is
             // taken again without counting a failed check.
-            None => return self.retake(name, None),
+            None => return self.retake(name, false),
             Some(before) if !as_before(&program.members, Some(before)) => {
                 let differ = differing(&program.members, before);
                 return self.failed(name, differ);
@@ -1000,12 +1016,26 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     ///
     /// The failed checks are counted in [`Publish::attempts`], which at
     /// [`Phase::Intent`] counts nothing else: "in a row", since a check
-    /// that passes leaves Intent for good. A take retaken where this
-    /// process has no reading from before it (a restart between the take
-    /// and its record) is not counted: it was not judged, and the next
-    /// take has a reading. The conservative choice keeps a restart from
-    /// giving a publish up; it cannot loop, since a process reads the
-    /// pool before each take it asks.
+    /// that passes leaves Intent for good.
+    ///
+    /// # Across restarts
+    ///
+    /// A failed check is recorded before its take is destroyed (D2 of
+    /// #153's next look, the lead's ruling), so a stop after it keeps the
+    /// count. A stop between the record and the destroy has the next
+    /// process find the same take and count it again: the conservative
+    /// side, a give-up one check early, never a take more. A stop after
+    /// the destroy at the last check has the next process give the
+    /// publish up without a take ([`Agent::take`]). So the takes of one
+    /// publish whose checks fail are at most
+    /// [`plan::CHECKS_FAILED_MAX`] whatever the stops.
+    ///
+    /// A whole take retaken where this process has no reading from
+    /// before it (a restart between the take and its adoption) is not
+    /// counted: it was not judged, and the next take has a reading. A
+    /// process that stops at that point every time takes once each, and
+    /// only [`plan::AGE_MAX`] bounds the publish then, as it bounds a
+    /// process that stops at any one point every time.
     ///
     /// A take that cannot be destroyed when it is given up still gives
     /// the publish up, as [`Why::ManifestLost`], the snapshot kept, with
@@ -1016,8 +1046,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             .publish(name)
             .map_or(0, |p| p.attempts)
             .saturating_add(1);
+        self.commit(Effect::Failed, |r| set(r, name, |p| p.attempts = failed))?;
         if failed < plan::CHECKS_FAILED_MAX {
-            return self.retake(name, Some(names));
+            return self.retake(name, true);
         }
         self.reports
             .push((name.to_string(), Report::NotWhole(names)));
@@ -1034,8 +1065,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     /// Destroy the take of `name` (`zfs destroy -r`), and take the next
-    /// name; where the take failed its check (`failed` names what broke
-    /// it, [`Agent::failed`]), counted and after a pause.
+    /// name; where the take failed its check (`failed`, counted by
+    /// [`Agent::failed`]), after a pause.
     ///
     /// A take that cannot be destroyed (a person's hold on one of its
     /// `@t`s, a clone of one) gives the publish up as
@@ -1044,7 +1075,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// does not tell a lasting refusal from one that would pass on a
     /// retry. A destroy killed at its limit may still go through in its
     /// own time; the outcome then says kept of a snapshot that is gone.
-    fn retake(&mut self, name: &str, failed: Option<Vec<String>>) -> Result<Moved, Error> {
+    fn retake(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
         self.point(Effect::Destroy, false)?;
         let destroyed = self.zfs.destroy(&self.pool, name);
         self.point(Effect::Destroy, true)?;
@@ -1052,22 +1083,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             self.abandon(name, Why::ManifestLost)?;
             return Ok(Moved::Yes);
         }
-        self.rename(name, failed.is_some())
+        self.rename(name, failed)
     }
 
     /// The publish of `name` takes the next free name, recorded at
-    /// [`Phase::Intent`]; with a failed check counted
-    /// ([`Agent::failed`]) where `failed`.
+    /// [`Phase::Intent`]; after a pause where its take `failed` its check
+    /// (counted by [`Agent::failed`]).
     fn rename(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
         let next = self.fresh_name()?;
-        self.commit(Effect::Intent, |r| {
-            set(r, name, |p| {
-                p.name = next.clone();
-                if failed {
-                    p.attempts = p.attempts.saturating_add(1);
-                }
-            })
-        })?;
+        self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
         // What this process knows of the publish goes with it: its age is
         // still read from its anchor (N2 of #144's next look). Not the
         // reading before a take, which was of the old name.

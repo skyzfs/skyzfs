@@ -2209,55 +2209,60 @@ fn a_late_take_not_whole_is_destroyed_and_taken_again() {
 }
 
 /// What a run of one publish on a pool whose `pool/vol` every take
-/// skips left: the agent's outcomes and reports, and the world's time at
-/// each take asked.
+/// skips left: the agent's outcomes and reports, the world's time at
+/// each take asked, and the processes it took.
 struct NeverWhole {
     world: Rc<RefCell<World>>,
     outcomes: Vec<(String, Outcome)>,
     reports: Vec<(String, Report)>,
     takes_ms: Vec<u64>,
+    processes: usize,
 }
+
+/// The processes [`never_whole`] runs at most.
+const PROCESSES_MAX: usize = 20;
 
 /// One publish on a pool whose `pool/vol` `zfs snapshot -r` skips (an
 /// inconsistent dataset: a full `zfs receive` into it under way), with
-/// `hook` at the agent's points; where it stops, a new agent goes on.
-fn never_whole(mut hook: impl FnMut(&Rc<RefCell<World>>, Point) -> bool + 'static) -> NeverWhole {
+/// `hook` at the agent's points, given the process's number from 0;
+/// where it stops, a new agent goes on, up to [`PROCESSES_MAX`].
+fn never_whole(
+    hook: impl FnMut(&Rc<RefCell<World>>, usize, Point) -> bool + 'static,
+) -> NeverWhole {
     let world = World::new(Mode::Busy);
     world.borrow_mut().skip = Some(format!("{POOL}/vol"));
     let keep = MemKeep::default();
     let takes_ms = Rc::new(RefCell::new(Vec::new()));
-    let points = |world: &Rc<RefCell<World>>| -> Points {
-        let (world, takes_ms) = (world.clone(), takes_ms.clone());
-        Box::new(move |p: Point| {
-            if p == at(Effect::Take, false) {
-                takes_ms.borrow_mut().push(world.borrow().now_ms);
-            }
-            hook(&world, p)
-        })
-    };
-    let mut first = agent(&world, &keep).with_points(points(&world));
-    let settled = first.begin().and_then(|_| first.settle(LIMIT));
-    let mut outcomes = first.outcomes().to_vec();
-    let mut reports = first.reports().to_vec();
-    drop(first);
-    match settled {
-        Ok(()) => {}
-        Err(Error::Stopped) => {
-            world.borrow_mut().advance(DOWN);
-            let mut again = agent(&world, &keep).with_points(Box::new({
-                let (world, takes_ms) = (world.clone(), takes_ms.clone());
-                move |p: Point| {
-                    if p == at(Effect::Take, false) {
-                        takes_ms.borrow_mut().push(world.borrow().now_ms);
-                    }
-                    false
+    let hook = Rc::new(RefCell::new(hook));
+    let (mut outcomes, mut reports) = (Vec::new(), Vec::new());
+    let mut processes = 0;
+    loop {
+        assert!(processes < PROCESSES_MAX, "{:?}", world.borrow().log);
+        let process = processes;
+        processes += 1;
+        let points: Points = Box::new({
+            let (world, takes_ms, hook) = (world.clone(), takes_ms.clone(), hook.clone());
+            move |p: Point| {
+                if p == at(Effect::Take, false) {
+                    takes_ms.borrow_mut().push(world.borrow().now_ms);
                 }
-            }));
-            again.settle(LIMIT).expect("settled after the restart");
-            outcomes.extend(again.outcomes().iter().cloned());
-            reports.extend(again.reports().iter().cloned());
+                (hook.borrow_mut())(&world, process, p)
+            }
+        });
+        let mut agent = agent(&world, &keep).with_points(points);
+        let settled = if process == 0 {
+            agent.begin().and_then(|_| agent.settle(LIMIT))
+        } else {
+            agent.settle(LIMIT)
+        };
+        outcomes.extend(agent.outcomes().iter().cloned());
+        reports.extend(agent.reports().iter().cloned());
+        drop(agent);
+        match settled {
+            Ok(()) => break,
+            Err(Error::Stopped) => world.borrow_mut().advance(DOWN),
+            Err(e) => panic!("{e:?}"),
         }
-        Err(e) => panic!("{e:?}"),
     }
     let takes_ms = takes_ms.borrow().clone();
     NeverWhole {
@@ -2265,6 +2270,7 @@ fn never_whole(mut hook: impl FnMut(&Rc<RefCell<World>>, Point) -> bool + 'stati
         outcomes,
         reports,
         takes_ms,
+        processes,
     }
 }
 
@@ -2279,7 +2285,7 @@ fn never_whole(mut hook: impl FnMut(&Rc<RefCell<World>>, Point) -> bool + 'stati
 /// record.
 #[test]
 fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
-    let run = never_whole(|_, _| false);
+    let run = never_whole(|_, _, _| false);
     let world = run.world.borrow();
     let [(t, outcome)] = run.outcomes.as_slice() else {
         panic!("{:?}\n{}", run.outcomes, world.log.join("\n"));
@@ -2326,7 +2332,7 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
 #[test]
 fn a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept() {
     let mut takes = 0;
-    let run = never_whole(move |world, p| {
+    let run = never_whole(move |world, _, p| {
         if p == at(Effect::Take, true) {
             takes += 1;
             if takes == plan::CHECKS_FAILED_MAX {
@@ -2366,7 +2372,7 @@ fn a_take_never_whole_that_cannot_be_destroyed_is_given_up_kept() {
 #[test]
 fn a_take_retaken_after_a_restart_is_not_counted_as_failed() {
     let mut stopped = false;
-    let run = never_whole(move |world, p| {
+    let run = never_whole(move |world, _, p| {
         if stopped {
             return false;
         }
@@ -2393,6 +2399,75 @@ fn a_take_retaken_after_a_restart_is_not_counted_as_failed() {
         world.log.join("\n")
     );
     assert_eq!(run.takes_ms.len(), 4, "{:?}", world.log);
+}
+
+/// A stop at the same point of every process, from the first take on,
+/// for [`STOPPING`] processes, then a process with no stop: at each
+/// side of the count of a failed check, of the destroy of the take and
+/// of the record of the next name, the publish is still given up as
+/// [`Why::NotWhole`] with at most [`plan::CHECKS_FAILED_MAX`] takes,
+/// nothing left in the pool, and every report a [`Report::NotWhole`]
+/// (T9 of #153's next look). Mutants: the count after the destroy (D2:
+/// a take more each time a process stops after a destroy); no give-up
+/// without a take after the last destroy (the same, at the last check).
+#[test]
+fn a_take_never_whole_is_given_up_whatever_point_each_process_stops_at() {
+    /// The processes that stop.
+    const STOPPING: usize = 8;
+    let mut found = Vec::new();
+    for effect in [Effect::Failed, Effect::Destroy, Effect::Intent] {
+        for after in [false, true] {
+            let (mut taken, mut stops) = (false, 0);
+            let mut stopped_in = None;
+            let stops_seen = Rc::new(Cell::new(0));
+            let seen = stops_seen.clone();
+            let run = never_whole(move |_, process, p| {
+                taken |= p == at(Effect::Take, true);
+                let stop = taken
+                    && process < STOPPING
+                    && stopped_in != Some(process)
+                    && p == at(effect, after);
+                if stop {
+                    stopped_in = Some(process);
+                    stops += 1;
+                    seen.set(stops);
+                }
+                stop
+            });
+            let world = run.world.borrow();
+            let pool = world.pool.as_ref().expect("the pool");
+            let line = format!(
+                "{effect:?} after={after}: {} takes, {} processes, {} stops, {:?}, {:?}",
+                run.takes_ms.len(),
+                run.processes,
+                stops_seen.get(),
+                run.outcomes,
+                run.reports
+            );
+            let given_up = matches!(
+                run.outcomes.as_slice(),
+                [(_, Outcome::Abandoned(Why::NotWhole))]
+            );
+            let reported = !run.reports.is_empty()
+                && run
+                    .reports
+                    .iter()
+                    .all(|(_, r)| matches!(r, Report::NotWhole(_)));
+            // The course: the point was reached and stopped at, twice at
+            // least.
+            if !given_up
+                || !reported
+                || run.takes_ms.len() > plan::CHECKS_FAILED_MAX as usize
+                || !pool.snaps.is_empty()
+                || !world.refs.is_empty()
+                || !holds(&world).is_empty()
+                || stops_seen.get() < 2
+            {
+                found.push(line);
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 /// A dataset renamed after the take and before its adoption: the members
