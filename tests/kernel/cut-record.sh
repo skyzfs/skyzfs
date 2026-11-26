@@ -342,7 +342,11 @@ cleanup() {
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
         serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
-        timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
+    fi
+    # The device deleted whether or not a daemon was still serving it: one
+    # that had ended leaves it behind otherwise. lim, as for the export.
+    if [ "${SERVER:-}" = daemon ] && [ -n "${VOL:-}" ] && [ -d "$VOL" ]; then
+        lim 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$RUN" > /dev/null 2>&1
     fi
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
@@ -595,12 +599,18 @@ end_daemon() {
         || rig_error "skyzfsd status failed: $(tail -n 2 "$RDIR/status.txt")"
     after=$(python3 -c 'import time; print(time.monotonic_ns())')
     printf '%s\t%s\n' "$before" "$after" > "$RDIR/status-time.tsv"
-    # serve ends on SIGTERM, with 0; detach then deletes the device.
-    kill -TERM "$SERVE_PID" 2>/dev/null || true
-    if ! serve_end 60; then
+    # serve ends on SIGTERM, with 0; detach then deletes the device. A
+    # daemon that had ended before the SIGTERM ended unasked: a verdict.
+    if ! kill -TERM "$SERVE_PID" 2>/dev/null; then
+        local st=unknown
+        if serve_end 5; then st=$SERVE_RC; fi
+        daemon_wrong daemon_stopped "skyzfsd serve had ended before SIGTERM (status $st): $(tail -n 2 "$SERVE_LOG")"
+    elif ! serve_end 60; then
         daemon_wrong daemon_stopped "skyzfsd serve did not end 60 s after SIGTERM: $(tail -n 2 "$SERVE_LOG")"
         kill -9 "$SERVE_PID" 2>/dev/null || true
-        serve_end 10 || rig_error "skyzfsd serve did not end 10 s after SIGKILL"
+        # Unreaped, it is not to be taken later for a daemon that ended
+        # by itself.
+        serve_end 10 || { SERVE_PID=""; rig_error "skyzfsd serve did not end 10 s after SIGKILL"; }
     elif [ "$SERVE_RC" != 0 ]; then
         daemon_wrong daemon_stopped "skyzfsd serve ended with $SERVE_RC on SIGTERM: $(tail -n 2 "$SERVE_LOG")"
     fi

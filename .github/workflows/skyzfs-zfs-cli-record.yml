@@ -27,7 +27,10 @@ on:
         description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). 0: none. Empty: every count"
         default: ""
       sweep_rounds:
-        description: "at each scale count, how many times each of the sweep's two reads runs again beside an idle control of the same length (the writer alone), the two in turn, to tell whether the read stalls the writer; 0: none, at most 20. Empty: 5"
+        description: "at each scale count, how many rounds of each of the sweep's two reads: the read back to back for a window, and an idle control of the same window (the writer alone), each opened after the load's first groups committed; 0: none, at most 20. Empty: 5"
+        default: ""
+      sweep_window:
+        description: "the seconds of each round's window (at least the step's read), 1 to 120. Empty: 10"
         default: ""
   # A dispatch from a branch needs the workflow to have run once: a push
   # runs the unit tests only, and records nothing (the record job is
@@ -103,6 +106,7 @@ jobs:
       ZCR_SCALE_LUA_MAX: ${{ inputs.scale_lua_max }}
       ZCR_SCALE_FULL_MAX: ${{ inputs.scale_full_max }}
       ZCR_SWEEP_ROUNDS: ${{ inputs.sweep_rounds }}
+      ZCR_SWEEP_WINDOW: ${{ inputs.sweep_window }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -170,7 +174,12 @@ jobs:
             *[!0-9]*|0?*|???*) echo "::error::sweep_rounds is a count of at most 20: $ZCR_SWEEP_ROUNDS"; exit 64 ;;
             *) if [ "$ZCR_SWEEP_ROUNDS" -gt 20 ]; then echo "::error::sweep_rounds: at most 20"; exit 64; fi ;;
           esac
-          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX,ZCR_SCALE_FULL_MAX,ZCR_SWEEP_ROUNDS tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
+          case $ZCR_SWEEP_WINDOW in
+            '') unset ZCR_SWEEP_WINDOW ;;
+            *[!0-9]*|0*|????*) echo "::error::sweep_window is a count of seconds, 1 to 120: $ZCR_SWEEP_WINDOW"; exit 64 ;;
+            *) if [ "$ZCR_SWEEP_WINDOW" -gt 120 ]; then echo "::error::sweep_window: at most 120"; exit 64; fi ;;
+          esac
+          sudo --preserve-env=LUA_REF,ZCR_SCALE,ZCR_SCALE_LUA_MAX,ZCR_SCALE_FULL_MAX,ZCR_SWEEP_ROUNDS,ZCR_SWEEP_WINDOW tests/kernel/zfs-cli-record.sh "$PWD/zfs-cli" "$PWD/lua"
       - name: Tarball and summary
         if: always()
         run: |
