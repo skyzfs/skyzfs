@@ -55,10 +55,12 @@
 #   store thaws.
 # - destroy (Withdraw, Abandon, Unlink): the store frozen; at
 #   `asked:after` the rig releases the agent's hold and destroys pool@T,
-#   as a person might; the agent's run and its settle end before the
-#   store thaws, so that no cut can publish T after the destroy.
+#   as a person might; the store thaws once the agent's withdrawal is
+#   answered (or, the agent killed before it, once a settle has
+#   withdrawn), so that no cut can publish T after the destroy, and the
+#   agent then looks snap/T up.
 # - tooold: the store frozen; the agent with --age-max-s 8 gives the
-#   publish up as too old; the store thaws after its settle.
+#   publish up as too old; the store thaws as in destroy.
 # - sweep (Sweep): a publish first, which marks the directory, then a
 #   hold of the agent's tag that no publish names, on a snapshot of the
 #   rig's (sweep-ID): the case's publish must release it.
@@ -89,8 +91,8 @@
 #   (late), and both lost at ask:after:1, asked:after:1, done:before:1.
 # - arare (job K): `trace` (plain), then each of restart, assist,
 #   destroy, tooold and sweep traced, and a case at each point its trace
-#   reached that the plain trace did not (by effect, side and reach);
-#   then gone and unmarked.
+#   reached that the plain trace did not (by effect, side and reach, the
+#   first three reaches of each); then gone and unmarked.
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -328,31 +330,39 @@ scen_assist() {
     await_agent publish 700
 }
 scen_destroy() {
-    local t
+    local t id
     shift
+    id=$(basename "$CDIR")
     freeze
     abg publish publish --limit-s 600 "$@"
     if wait_point asked after 60; then
         t=$(case_name)
         { zfs release "$HOLD_TAG" "$POOL@$t" && zfs destroy "$POOL@$t"; } > "$CDIR/destroy.log" 2>&1 \
             || rig_error "releasing and destroying $POOL@$t failed: $(tail -n 2 "$CDIR/destroy.log")"
-        mark "destroyed-$(basename "$CDIR")"
-        await_agent publish 300
-        # Still frozen: a kill before the withdrawal must not let a cut
-        # after the destroy publish T.
-        acmd settle-frozen settle --limit-s 120
-    else
-        await_agent publish 300
+        mark "destroyed-$id"
+        frozen_until_withdrawn
     fi
     thaw
+    await_agent publish 300
+}
+# Frozen until the agent's withdrawal is answered, so that no cut after
+# the loss can carry T; then its look at snap/T needs the store (run
+# 45745575500: frozen, the agent looked for 300 s). An agent killed
+# before it withdrew: its next start withdraws, the store still frozen
+# (a settle of 30 s, which ends unsettled while it cannot look).
+frozen_until_withdrawn() {
+    wait_point withdraw after 120 && return 0
+    ! kill -0 "$AGENT_PID" 2>/dev/null \
+        || rig_error "case $(basename "$CDIR"): the agent did not withdraw in 120 s"
+    acmd settle-frozen settle --limit-s 30
 }
 scen_tooold() {
     shift
     freeze
     abg publish publish --limit-s 300 --age-max-s 8 "$@"
-    await_agent publish 300
-    acmd settle-frozen settle --limit-s 120
+    frozen_until_withdrawn
     thaw
+    await_agent publish 300
 }
 scen_sweep() {
     local id
@@ -484,6 +494,9 @@ rec_arare() {
         pts=$(acheck points "$RDIR/cases/$s/trace.tsv" "$RDIR/cases/trace/trace.tsv") \
             || rig_error "no points from $s's trace"
         for p in $pts; do
+            # A point reached again and again (a look while the store is
+            # frozen) is killed at its first three reaches.
+            [ "${p##*:}" -le 3 ] || continue
             acase "K-$s-${p//:/-}" "$s" "$p"
         done
     done

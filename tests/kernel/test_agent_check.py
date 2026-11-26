@@ -129,7 +129,7 @@ class FakeNodeB:
         with open(out, 'wb') as f:
             f.write(m)
         h = hashlib.sha256(m).hexdigest()
-        return 0, (f'ref\t{c}\t3\nsnaprow\t{S}\t{n}\t{g}\t{c}\t{t}\t{len(m)}\t{h}\n'
+        return 0, (f'ref\t{c}\t3\nsnaprow\t{S}\t{n}\t{g}\t{c}\t{ULID}\t{len(m)}\t{h}\n'
                    f'manifest\t{len(m)}\t{h}\tmatches\n')
 
     def verify(self, volume, ref, snap, want, damaged):
@@ -542,7 +542,7 @@ class Main(unittest.TestCase):
         c['rows']['a6'] = (11, 91)
         rc, lines = run_course(course=c)
         self.assertEqual((rc, lines['premise_d1_pending_at_the_loss'][0]), (0, 'ok'), not_ok(lines))
-        landed = f'ref\t{commit_of("a6")}\t3\nsnaprow\t{S}\t11\t91\t{commit_of("a6")}\ta6\t1\t{"0" * 64}\n'
+        landed = f'ref\t{commit_of("a6")}\t3\nsnaprow\t{S}\t11\t91\t{commit_of("a6")}\t{ULID}\t1\t{"0" * 64}\n'
         rc, lines = run_course(course=c, change=case_file('d1', 'between.txt', landed))
         self.assertEqual((rc, lines['premise_d1_pending_at_the_loss'][0]), (2, 'ERROR'))
 

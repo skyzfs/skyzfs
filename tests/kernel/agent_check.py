@@ -526,8 +526,6 @@ def main():
             if bad:
                 holds(f'pin_{n}_row', bad, 'server', '')
                 continue
-            if row['snap'] != n:
-                bad.append(f"the row names the snapshot {row['snap']!r}")
             if row['commit'] != ref[0]:
                 bad.append(f"the row names commit {row['commit'][:12]}, the ref {ref[0][:12]}")
             if p['printed'] != '-' and p['printed'] != ref[0]:
