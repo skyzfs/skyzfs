@@ -409,6 +409,30 @@ check "partial: then the CLI's @t" "$(words scale-10-snapshot-cli)" "zfs snapsho
 check "partial: in that order" "$(order scale-10-snapshot-cli-destroy-partial scale-10-snapshot-cli)" yes
 check "partial: said, with the count" "$(grep -c '^scale-10-snapshot-cli: scale-10-snapshot failed after taking 4563 snapshots: destroyed, and zfs snapshot -r takes @t$' "$OUT/about.txt")" 1
 check "not partial, @t there: no CLI" "$([ -e "$OUT/scale-9-snapshot-cli" ] && echo yes || echo no)" no
+# The writers and the probe beside the full read, at the counts in
+# ZCR_SCALE_FULL_BESIDE (1000 by default: not at 3 above).
+check "full read: no writer beside it at 3" "$([ -e "$OUT/scale-3-take-cli-full/writer.tsv" ] && echo yes || echo no)" no
+OUT=$T/beside
+mkdir -p "$OUT"
+: > "$OUT/index.tsv"
+SCALE_END=$(($(date +%s) + 600))
+export FAKE_LIST_RC=1 FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3
+ZCR_SCALE_FULL_BESIDE="5 11" scale 11 > /dev/null 2> "$T/beside.err"
+ZCR_SCALE_FULL_BESIDE="" scale 12 > /dev/null 2>> "$T/beside.err"
+unset FAKE_LIST_RC FAKE_MOUNTED
+check "full read beside: no name twice" "$(grep -c twice "$T/beside.err")" 0
+check "full read beside: the read itself" "$(words scale-11-take-cli-full)" "zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+for f in writer fill txg; do
+    check "full read beside: $f's log" "$(head -n 1 "$OUT/scale-11-take-cli-full/$f.tsv" | cut -f1)" start
+done
+check "full read beside: its window" "$(wc -l < "$OUT/scale-11-take-cli-full/window")" 1
+check "full read beside: covered" "$(cat "$OUT/scale-11-take-cli-full/stall" "$OUT/scale-11-take-cli-full/fill" "$OUT/scale-11-take-cli-full/txg" | grep -c '^NOT COVERED')" 0
+check "full read beside: said" "$(grep -c -e '^scale: writer beside scale-11-take-cli-full: longest=' -e '^scale: new data beside scale-11-take-cli-full: longest=' -e '^scale: txgs beside scale-11-take-cli-full: txgs=' "$OUT/about.txt")" 3
+check "full read beside: its count still said" "$(grep -c '^scale: scale-11-take-cli-full: ' "$OUT/about.txt")" 1
+check "full read beside: settled after it" "$(grep -Ec ' settled=[0-9]+\.[0-9]{3} settle_rc=0$' "$OUT/scale-11-take-cli-full/fill")" 1
+check "full read beside: empty list, none" "$([ -e "$OUT/scale-12-take-cli-full/writer.tsv" ] && echo yes || echo no)/$(words scale-12-take-cli-full)" "no/zfs program -n $P skzqs - skzqs c full skyzfs:assist "
+check "full read beside: the takes' writers as before" "$(find "$OUT" -name writer.tsv | sed 's|.*/\(scale-[0-9]*-[a-z-]*\)/writer.tsv|\1|' | sort | tr '\n' ' ')" "scale-11-snapshot scale-11-take-cli scale-11-take-cli-full scale-12-snapshot scale-12-take-cli "
+OUT=$T/pins
 # In record_pool too.
 OUT=$T/partial
 mkdir -p "$OUT/rp-snapshot-1"

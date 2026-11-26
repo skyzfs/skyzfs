@@ -51,7 +51,10 @@
 #   scale-N skzqs, made only when ZCR_SCALE names N: N file systems
 #           under the root (made with -u, not mounted; the root is),
 #           and on it, each with its wall time in secs:
-#             snapshot          the snapshot program at @t
+#             count             zfs list -r -H -o name -t
+#                               filesystem,volume P, the adapter's count
+#             snapshot          the snapshot program at @t (only with
+#                               snapshot.lua)
 #             snapshot-cli      zfs snapshot -r P@t, only if the program
 #                               did not take the whole @t (as above);
 #                               about.txt then says how many it took
@@ -60,20 +63,27 @@
 #             destroy           zfs destroy -r P@t
 #             take-cli          zfs snapshot -r P@c, the take by the CLI
 #             take-cli-members  members.lua at @c
+#             take-cli-full     members.lua in its full mode at @c, the
+#                               manifest's read after the take (only
+#                               where members.lua has that mode)
 #           about.txt gives the members that members and
 #           take-cli-members counted, which is what hold, tagged,
-#           release and destroy ran on.
+#           release and destroy ran on, and the datasets that
+#           take-cli-full listed.
 #           The snapshot program is not run at a count above
 #           ZCR_SCALE_LUA_MAX, when set; snapshot-cli takes @t there.
-#           Beside the two takes (snapshot, take-cli), from 2 s before
-#           the take to 2 s after (writing, below): a writer of 4 KiB
+#           Beside the two takes (snapshot, take-cli), and beside
+#           take-cli-full at the counts in ZCR_SCALE_FULL_BESIDE
+#           (default 1000; empty: none), from 2 s before the command to
+#           2 s after (writing, below): a writer of 4 KiB
 #           O_DSYNC writes, a writer of new data past the pool's dirty
 #           data limit, and the pool's transaction groups and timed
 #           `zpool sync` runs. The take's record gets their logs
 #           (writer.tsv, fill.tsv, txg.tsv), a line for each (stall,
 #           fill, txg) and the window they were read on (window); about.txt
 #           the same lines, and the dirty data limit and txg history.
-#           The takes' secs are under that load, and so are the lines:
+#           The takes' secs (and the full read's, where it runs beside
+#           them) are under that load, and so are the lines:
 #           txg's before_sync and before_sync_longest are the load's own
 #           before the take. A bounded zpool sync after each take
 #           syncs what the writer of new data left. At most
@@ -827,7 +837,13 @@ scale() {
             # What the manifest reads after the take, at this count.
             take-cli-full)
                 if [ "$MEMBERS_FULL" = 1 ]; then
-                    full "scale-$n-take-cli-full" "$p" c
+                    # The read is read-only (-n): whether it delays
+                    # writes or the pool's groups is measured beside it
+                    # at the counts asked.
+                    case " ${ZCR_SCALE_FULL_BESIDE-1000} " in
+                        *" $n "*) writing "scale-$n-take-cli-full" "$wdir" "$p" full "scale-$n-take-cli-full" "$p" c ;;
+                        *) full "scale-$n-take-cli-full" "$p" c ;;
+                    esac
                     members_line "scale-$n-take-cli-full"
                 else
                     echo "scale $n: the full mode not run: members.lua has none" >> "$OUT/about.txt"
