@@ -1,0 +1,28 @@
+BASE rc= 0 ['test result: ok. 228 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.09s']
+N1 the begin error restarts at the next round, after the settle (fix of 16f3b3b out) rc= 101 ['test result: FAILED. 224 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.45s']
+   FAILED program::tests::a_begin_whose_save_failed_restarts_before_the_round_settles
+   FAILED program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+   FAILED program::tests::restarts::a_restart_that_fails_leaves_the_round_alone
+N2 the limit asked before the first pass rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.56s']
+   FAILED program::tests::a_round_settles_once_however_long_the_count_took
+N3 a failed restart after a begin error lets the round settle rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.58s']
+   FAILED program::tests::restarts::a_restart_that_fails_leaves_the_round_alone
+N4 a failed restart at the round top falls through rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.31s']
+   FAILED program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone
+N5 a settle error does not restart rc= 101 ['test result: FAILED. 226 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.59s']
+   FAILED program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone
+   FAILED program::tests::restarts::a_settle_whose_save_failed_restarts_at_the_next_round
+N6 every begin error restarts at once, refusals too rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.03s']
+   FAILED program::tests::a_begin_refused_for_eight_under_way_still_settles
+N7 a begin error that restarts skips the settle rc= 0 ['test result: ok. 228 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.14s']
+P2 only Unmarked ends run rc= 101 ['test result: FAILED. 226 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.43s']
+   FAILED program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+P2v Volume does not end run rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.34s']
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+P2c Corrupt does not end run rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.06s']
+   FAILED program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run
+P8 a restart takes another volume's record as its own rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.31s']
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+ALLDONE

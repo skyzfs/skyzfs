@@ -1,0 +1,28 @@
+BASE rc= 101 ['test result: FAILED. 237 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.40s']
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N3 a failed restart after a begin error lets the round settle rc= 101 ['test result: FAILED. 235 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.14s']
+   FAILED program::tests::restarts::a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::rc_a_restart_that_fails_leaves_the_round_alone
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+N4 a failed restart at the round top falls through rc= 101 ['test result: FAILED. 235 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.01s']
+   FAILED program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rj_a_failed_restart_at_a_round_start_leaves_the_round_alone
+N5 a settle error does not restart rc= 101 ['test result: FAILED. 234 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.34s']
+   FAILED program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone
+   FAILED program::tests::restarts::a_settle_whose_save_failed_restarts_at_the_next_round
+   FAILED program::tests::review167::ri_a_settle_whose_save_failed_restarts_at_the_next_round
+   FAILED program::tests::review167::rj_a_failed_restart_at_a_round_start_leaves_the_round_alone
+P2 only Unmarked ends run rc= 101 ['test result: FAILED. 234 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.72s']
+   FAILED program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+P2v Volume does not end run rc= 101 ['test result: FAILED. 236 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.30s']
+   FAILED program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+P2c Corrupt does not end run rc= 101 ['test result: FAILED. 235 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.39s']
+   FAILED program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run
+   FAILED program::tests::review167::re_a_give_up_whose_save_failed_is_told
+   FAILED program::tests::review167::rf_a_record_found_corrupt_at_a_restart_ends_run
+ALLDONE

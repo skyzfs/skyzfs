@@ -63,6 +63,9 @@ PLANTS = [
  ('P2 only Unmarked ends run', [(P, ENDS, "matches!(e, Error::Unmarked(_))")]),
  ('P2v Volume does not end run', [(P, ENDS, "matches!(e, Error::Corrupt(_) | Error::Unmarked(_))")]),
  ('P2c Corrupt does not end run', [(P, ENDS, "matches!(e, Error::Volume(_) | Error::Unmarked(_))")]),
+ ('A5 restarts after every error, the author\'s A5', [
+   (P, "    !matches!(e, Error::Full | Error::Premise(_))", "    let _ = e;\n    true"),
+ ]),
  ('P8 a restart takes another volume\'s record as its own', [
    (E, "        Loaded::Present(record) if record.volume != volume => {\n            return Err(Error::Volume(record.volume))\n        }\n", ""),
  ]),

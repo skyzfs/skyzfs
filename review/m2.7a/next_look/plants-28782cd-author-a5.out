@@ -1,0 +1,3 @@
+A5 restarts after every error, the author's A5 rc= 101 ['test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.89s']
+   FAILED program::tests::a_begin_refused_for_eight_under_way_still_settles
+ALLDONE
