@@ -1,11 +1,17 @@
-# Next look at #158 (M2.T5 stage 1, the agent rig) at c580c72
+# Next look at #158 (M2.T5 stage 1, the agent rig) at c580c72 and ea39b27
 
 Pull request: skyzfs/skyzfs#158 (`skyzfs-testing` into `zfs-topology`).
-**Head: c580c72** (checked with `gh api .../pulls/158 --jq .head.sha`).
+**Head: ea39b27** (checked with `gh api .../pulls/158 --jq .head.sha`).
+I was asked to look at c580c72; the head moved to ea39b27 while I
+reviewed: one test-only commit on top of it (`test_agent_record.sh`, the
+test of `published()`, rewritten after B2 below). `git diff c580c72
+ea39b27` touches that file only, so everything said of c580c72's rig and
+judge holds at ea39b27, and the CI reading is ea39b27's.
 Base 77da00c; `zfs-topology` has moved to aa7c9a1 since (notes only).
 Previous review: `review.md` (at de5eac3 and 0604977), posted as
 issuecomment-7182337144; the author's answer is issuecomment-7182453072.
-Line numbers are at c580c72. Plant scripts, outputs, show-cases and stubs
+Line numbers are at c580c72 (the same at ea39b27 except in
+`test_agent_record.sh`). Plant scripts, outputs, show-cases and stubs
 of this look are `pr158/next_*`.
 
 c580c72 changes the agent rig only (`agent-record.sh`, `agent_check.py`,
@@ -238,6 +244,7 @@ Set B (37 plants on c580c72's judge changes, 25 killed):
      | A: last look's survivors, redone | `agent_check.py` | 26 | 3 | 23 |
      | B: on c580c72's fixes | `agent_check.py` | 37 | 25 | 12 |
      | C: last look's shell survivors, and new | `agent-record.sh` | 26 | 4 | 22 |
+     | D: `published()` planted wrong, against ea39b27's rewritten test | `agent-record.sh` | 10 | 7 | 3 |
 
      Set A: P13, P14 and Q01 (restart's, dhook's and both's EXPECTED)
      are killed now. Still surviving as last time: P02, P17, P18, P20,
@@ -246,7 +253,15 @@ Set B (37 plants on c580c72's judge changes, 25 killed):
      new G3 test has the ERROR and the FAILED in two different cases),
      R03, R06, R09, R11. Set B: G9. Set C: the twelve old shell
      survivors and T02, T06, T07 (matching rules of the gone path:
-     benign with the names the agent makes), T10-T31 (G8).
+     benign with the names the agent makes), T10-T31 (G8). Set D (the
+     test as ea39b27 rewrote it): KILLED T01 (the old code, no gone
+     path), T03 (no gone line), T04 (a list that fails goes on), T05 (no
+     early return for a name already gone in the case), T08 (the line
+     without the case), T13 (the list's error lost from the message),
+     T14 (reading the snapshot's files instead: a rig error); SURVIVED
+     T02, T06 (as in set C) and T09 (`>` for `>>`: only the last gone
+     line kept; benign, the pin fails on any line, as N07). **The
+     rewritten test still fails when `published()` is wrong.**
    - **A run that should fail and passes**: show-cases 3 and 4 (G5).
 5. **0604977** (`zfs-cli-record.sh` +89, `test_zfs_cli_record.sh` +32),
    as its own change. `record_reads` makes `skzrd` on a file and records
@@ -271,7 +286,9 @@ Set B (37 plants on c580c72's judge changes, 25 killed):
   `trace/publish.rc`, which `rec_aplain` no longer reads.
 - Codex's P2 thread on 0604977 (`agent-record.sh:280`, the same finding as
   D3) has no answer on its thread; c580c72 fixes it. Answer and resolve it
-  before "ready to merge". Codex has no finding on c580c72.
+  before "ready to merge". Codex has no finding on c580c72, nor on
+  ea39b27 (its code review completed at 04:50; its security review was
+  still running when I read it).
 - Last look's: `test_agent_check.py` and `test_agent_record.sh` still run
   only in this workflow's `unit` job (not in ci.yml's lint job); the push
   trigger's `tests/kernel/agent*` does not match `test_agent_check.py`.
@@ -300,7 +317,7 @@ carry-swap killed at cut 20, row cut 22 (C 21, G 25).
 
 K_RESULT
 
-## Local runs (c580c72)
+## Local runs (c580c72, and again at ea39b27)
 
 `python3 -I tests/kernel/test_agent_check.py`: 47 tests OK.
 `bash tests/kernel/test_agent_record.sh`, `test_cut_record.sh`,
@@ -308,4 +325,8 @@ K_RESULT
 `test_publish_check_main.py`, `test_cut_check.py`, `test_nodeb_check.py`,
 `test_cut_daemon_check.py`: OK. shellcheck 0.9.0 at default severity:
 B2's four lines (as SC2030, SC2317, SC2031), plus info lines in the base;
-CI's newer shellcheck reports only B2's.
+CI's newer shellcheck reports only B2's. At ea39b27 the same tests pass,
+the show-cases give the same exits, and shellcheck 0.9.0 reports no
+SC2030 or SC2031; it still reports SC2317 at 102-103, as it does at 59-62
+in the `cases()` block, whose `disable=SC2329` CI's shellcheck honours
+(c580c72's failing lint named nothing at 55-62).
