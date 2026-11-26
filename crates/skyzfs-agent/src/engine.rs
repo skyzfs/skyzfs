@@ -302,6 +302,11 @@ struct Memory {
     /// publish's name was asked, with no `pool@t` then: what an adoption
     /// compares the take's members with ([`Agent::adopt`]).
     before: Option<Vec<zfs::Dataset>>,
+    /// [`Clock::mono_ms`] before which the publish is not taken again:
+    /// set where a take was destroyed for not being whole or not as read
+    /// before it ([`Agent::retake`], D1 of #153's review), carried with
+    /// the memory to the next name.
+    retake_after: Option<u64>,
 }
 
 /// How the engine came to adopt a take ([`Agent::adopt`]).
@@ -324,14 +329,37 @@ fn as_before(members: &[manifest::Member], before: Option<&Vec<zfs::Dataset>>) -
         return false;
     };
     members.len() == before.len()
-        && members.iter().all(|member| {
-            before.iter().any(|dataset| {
-                dataset.guid == member.guid
-                    && dataset.name == member.name
-                    && dataset.kind == member.kind
-                    && dataset.local == member.local
-            })
-        })
+        && members
+            .iter()
+            .all(|member| before.iter().any(|dataset| same(dataset, member)))
+}
+
+/// Whether `member` is `dataset` as read before the take: the same GUID,
+/// name, type and local properties.
+fn same(dataset: &zfs::Dataset, member: &manifest::Member) -> bool {
+    dataset.guid == member.guid
+        && dataset.name == member.name
+        && dataset.kind == member.kind
+        && dataset.local == member.local
+}
+
+/// The names of the datasets by which the take's `members` are not
+/// `before` ([`as_before`]): each member with no dataset the same in
+/// `before`, then each dataset of `before` that no member has the GUID
+/// of, in the order read.
+fn differing(members: &[manifest::Member], before: &[zfs::Dataset]) -> Vec<String> {
+    let mut names: Vec<String> = members
+        .iter()
+        .filter(|member| !before.iter().any(|dataset| same(dataset, member)))
+        .map(|member| member.name.clone())
+        .collect();
+    names.extend(
+        before
+            .iter()
+            .filter(|dataset| !members.iter().any(|m| m.guid == dataset.guid))
+            .map(|dataset| dataset.name.clone()),
+    );
+    names
 }
 
 /// Whether a round changed anything.
@@ -493,7 +521,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     pub fn settle(&mut self, limit: Duration) -> Result<(), Error> {
         let end = self.clock.mono_ms().saturating_add(ms(limit));
         loop {
-            // Where the count fails, the limits are the longest, and the
+            // Where the count fails, the limits are the bases, and the
             // round's own calls say what is wrong (no pool, or another
             // error): the count is not an error of the round.
             let _counted = self.zfs.count(&self.pool);
@@ -835,6 +863,12 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// datasets read, `zfs snapshot -r`, and the take adopted
     /// ([`Agent::adopt`]).
     fn take(&mut self, name: &str) -> Result<Moved, Error> {
+        // The pause after a take that failed its check (D1 of #153's
+        // review): no take of the next name before it has passed.
+        let retake_after = self.memory.get(name).and_then(|m| m.retake_after);
+        if retake_after.is_some_and(|after| self.clock.mono_ms() < after) {
+            return Ok(Moved::No);
+        }
         let props = self.zfs.props(&self.pool)?;
         let Ok(count) = self.count(props.load_guid) else {
             return Ok(Moved::No);
@@ -868,6 +902,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// take (M2.6c-2b): the name is the one the record holds, so a
     /// `pool@t` of it is the agent's own take, landed late.
     ///
+    /// "The agent's own" is decided by the name alone: a person's take
+    /// under the agent's exact name is adopted where it passes the
+    /// check, or destroyed (`zfs destroy -r`, a member's `@t` of another
+    /// group with it). One agent holds the pool's lock, and names are
+    /// the agent's own (`skz-` and the second, [`names`]), so the name is accepted as the
+    /// mark; a nonce set on the take (`zfs snapshot -r -o
+    /// skyzfs:take=<nonce>`) is not built (the lead's ruling on N1 of
+    /// #153's review).
+    ///
     /// # The members as read before
     ///
     /// ZFS keeps on a snapshot only the properties set on the snapshot
@@ -892,16 +935,22 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     // `EEXIST` with no `pool@t`: a member's `@t` of this
                     // name is someone else's, and nothing was taken. The
                     // publish takes the next name.
-                    Origin::Exists => self.rename(name),
+                    Origin::Exists => self.rename(name, false),
                     Origin::Took | Origin::Seen => Ok(Moved::No),
                 };
             }
-            zfs::Taken::NotWhole(_) => return self.retake(name),
+            zfs::Taken::NotWhole(breaking) => return self.failed(name, breaking),
             zfs::Taken::Whole(program) => program,
         };
-        let before = self.memory.get(name).and_then(|m| m.before.as_ref());
-        if !as_before(&program.members, before) {
-            return self.retake(name);
+        match self.memory.get(name).and_then(|m| m.before.as_ref()) {
+            // No reading in this process: the take is not judged, and is
+            // taken again without counting a failed check.
+            None => return self.retake(name, None),
+            Some(before) if !as_before(&program.members, Some(before)) => {
+                let differ = differing(&program.members, before);
+                return self.failed(name, differ);
+            }
+            Some(_) => {}
         }
         let props = self.zfs.props(&self.pool)?;
         let manifest = Manifest {
@@ -940,8 +989,53 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         Ok(Moved::Yes)
     }
 
+    /// The take of `name` failed its check: not one whole take of the
+    /// pool, or its members not as read before it; `names` are the
+    /// datasets that break it. Destroyed and taken again under the next
+    /// name after a pause ([`plan::RETAKE_PAUSE`]); the
+    /// [`plan::CHECKS_FAILED_MAX`]-th failed check in a row gives the
+    /// publish up as [`Why::NotWhole`], reported with `names`
+    /// ([`Report::NotWhole`]), and its take destroyed (the lead's ruling
+    /// on D1 of #153's review).
+    ///
+    /// The failed checks are counted in [`Publish::attempts`], which at
+    /// [`Phase::Intent`] counts nothing else: "in a row", since a check
+    /// that passes leaves Intent for good. A take retaken where this
+    /// process has no reading from before it (a restart between the take
+    /// and its record) is not counted: it was not judged, and the next
+    /// take has a reading. The conservative choice keeps a restart from
+    /// giving a publish up; it cannot loop, since a process reads the
+    /// pool before each take it asks.
+    ///
+    /// A take that cannot be destroyed when it is given up still gives
+    /// the publish up, as [`Why::ManifestLost`], the snapshot kept, with
+    /// the report made.
+    fn failed(&mut self, name: &str, names: Vec<String>) -> Result<Moved, Error> {
+        let failed = self
+            .record
+            .publish(name)
+            .map_or(0, |p| p.attempts)
+            .saturating_add(1);
+        if failed < plan::CHECKS_FAILED_MAX {
+            return self.retake(name, Some(names));
+        }
+        self.reports
+            .push((name.to_string(), Report::NotWhole(names)));
+        self.point(Effect::Destroy, false)?;
+        let destroyed = self.zfs.destroy(&self.pool, name);
+        self.point(Effect::Destroy, true)?;
+        let why = if destroyed.is_ok() {
+            Why::NotWhole
+        } else {
+            Why::ManifestLost
+        };
+        self.abandon(name, why)?;
+        Ok(Moved::Yes)
+    }
+
     /// Destroy the take of `name` (`zfs destroy -r`), and take the next
-    /// name.
+    /// name; where the take failed its check (`failed` names what broke
+    /// it, [`Agent::failed`]), counted and after a pause.
     ///
     /// A take that cannot be destroyed (a person's hold on one of its
     /// `@t`s, a clone of one) gives the publish up as
@@ -950,7 +1044,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// does not tell a lasting refusal from one that would pass on a
     /// retry. A destroy killed at its limit may still go through in its
     /// own time; the outcome then says kept of a snapshot that is gone.
-    fn retake(&mut self, name: &str) -> Result<Moved, Error> {
+    fn retake(&mut self, name: &str, failed: Option<Vec<String>>) -> Result<Moved, Error> {
         self.point(Effect::Destroy, false)?;
         let destroyed = self.zfs.destroy(&self.pool, name);
         self.point(Effect::Destroy, true)?;
@@ -958,21 +1052,31 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             self.abandon(name, Why::ManifestLost)?;
             return Ok(Moved::Yes);
         }
-        self.rename(name)
+        self.rename(name, failed.is_some())
     }
 
     /// The publish of `name` takes the next free name, recorded at
-    /// [`Phase::Intent`].
-    fn rename(&mut self, name: &str) -> Result<Moved, Error> {
+    /// [`Phase::Intent`]; with a failed check counted
+    /// ([`Agent::failed`]) where `failed`.
+    fn rename(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
         let next = self.fresh_name()?;
-        self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
+        self.commit(Effect::Intent, |r| {
+            set(r, name, |p| {
+                p.name = next.clone();
+                if failed {
+                    p.attempts = p.attempts.saturating_add(1);
+                }
+            })
+        })?;
         // What this process knows of the publish goes with it: its age is
         // still read from its anchor (N2 of #144's next look). Not the
         // reading before a take, which was of the old name.
-        if let Some(mut memory) = self.memory.remove(name) {
-            memory.before = None;
-            self.memory.insert(next, memory);
+        let mut memory = self.memory.remove(name).unwrap_or_default();
+        memory.before = None;
+        if failed {
+            memory.retake_after = Some(self.clock.mono_ms().saturating_add(ms(plan::RETAKE_PAUSE)));
         }
+        self.memory.insert(next, memory);
         // A manifest's file written for the old name before a stop (the
         // take destroyed in the next process): no publish names it now.
         self.unlink(name)?;

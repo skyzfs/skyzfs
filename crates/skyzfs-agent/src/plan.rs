@@ -196,6 +196,21 @@ use crate::zfs::Held;
 /// syncs (`assist_due`).
 pub const ASSIST_AFTER: Duration = Duration::from_secs(10);
 
+/// The checks of a take in a row that may fail (not one whole take of the
+/// pool, or its members not as read before it) before the publish is
+/// given up as [`Why::NotWhole`]: the first two are destroyed and taken
+/// again, the third given up (the lead's ruling on D1 of #153's review).
+/// A dataset that `zfs snapshot -r` skips (inconsistent, a full `zfs
+/// receive` into it under way or interrupted) fails every check, and must
+/// fail visibly: it is not exempted.
+pub const CHECKS_FAILED_MAX: u32 = 3;
+
+/// The least time between a take that failed its check and the next
+/// ([`CHECKS_FAILED_MAX`]): the assist's ([`ASSIST_AFTER`], the lead's
+/// ruling on D1 of #153's review), so that a take that is never whole is
+/// not destroyed and taken again with no pause.
+pub const RETAKE_PAUSE: Duration = ASSIST_AFTER;
+
 /// The least time between two syncs of one publish. "One at a time" (the
 /// plan, §6) is read as one done before the next, at most one a second.
 /// It holds for the first [`ASSIST_QUICK`] syncs of a request; after
@@ -382,7 +397,7 @@ pub enum Stop {
 }
 
 /// What the agent tells a person while it goes on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Report {
     /// `snap/<t>` is this publish's, and `pool@t` or a member's `@t` is
     /// gone: the publish was made before a rewind, or after one through a
@@ -394,6 +409,12 @@ pub enum Report {
     /// A publish too old, or stalled [`STALLS_ABANDONED`] times, given up
     /// where the daemon refused it with this code ([`report`]).
     Refused(Code),
+    /// The publish was given up after [`CHECKS_FAILED_MAX`] takes in a
+    /// row that were not one whole take of the pool or not as read
+    /// before them ([`crate::record::Why::NotWhole`]): the datasets that
+    /// broke the last, those that lack its `@t` or have one of another
+    /// group, or differ from the reading before it (D1 of #153's review).
+    NotWhole(Vec<String>),
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held
@@ -679,7 +700,10 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         Some(Why::Destroyed | Why::Replaced) => Some(Report::SnapshotGone),
         _ => None,
     };
-    let done = |commit: [u8; 32]| Action::Done { commit, report };
+    let done = |commit: [u8; 32]| Action::Done {
+        commit,
+        report: report.clone(),
+    };
     // `done` must name the commit `look` sees; otherwise a person looks.
     let said_done = |commit: &[u8; 32]| match seen.snap {
         None => Action::Look,

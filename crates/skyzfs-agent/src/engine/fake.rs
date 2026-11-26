@@ -186,6 +186,13 @@ pub enum User {
     /// `zfs set user:note=N pool/db`, a new N each time: a property of a
     /// member changed after the take, or before it.
     SetProperty,
+    /// `zfs rename pool/db pool/db2`: its snapshots go with it. Not in
+    /// [`USERS`]: the fake keeps no history of its datasets, so a rewind
+    /// would not undo it.
+    Rename,
+    /// `zfs destroy -r pool/vol`: the volume and its snapshots; refused
+    /// while one is held. Not in [`USERS`], as [`User::Rename`].
+    DestroyDataset,
 }
 
 /// The people's actions the matrix tries at each point.
@@ -429,6 +436,13 @@ pub struct World {
     pub pending_take: Option<(String, usize)>,
     /// How many times a person changed [`NOTE`].
     pub notes: u64,
+    /// A dataset that `zfs snapshot -r` skips, as libzfs skips one that
+    /// is inconsistent (a full `zfs receive` into it under way or
+    /// interrupted; D1 of #153's review): no take has its `@t`.
+    pub skip: Option<String>,
+    /// A person's action as soon as the agent's next take lands, late or
+    /// not (T1 of #153's review), on that take's name.
+    pub after_take: Option<User>,
     /// What happened, for a failure's message.
     pub log: Vec<String>,
     /// How far the agent's wall clock is from the world's (a step of it;
@@ -482,6 +496,8 @@ impl World {
             late_take: None,
             pending_take: None,
             notes: 0,
+            skip: None,
+            after_take: None,
             log: Vec::new(),
             agent_skew_ms: 0,
             assists: Vec::new(),
@@ -1017,6 +1033,51 @@ impl World {
                     self.sync("set");
                 }
             }
+            User::Rename => {
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                let (from, to) = (format!("{POOL}/db"), format!("{POOL}/db2"));
+                let Some(db) = pool.datasets.iter_mut().find(|d| d.name == from) else {
+                    return;
+                };
+                db.name = to.clone();
+                let prefix = format!("{from}@");
+                let moved: Vec<String> = pool
+                    .snaps
+                    .keys()
+                    .filter(|k| k.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                for key in moved {
+                    if let Some(snap) = pool.snaps.remove(&key) {
+                        pool.snaps
+                            .insert(format!("{to}{}", &key[from.len()..]), snap);
+                    }
+                }
+                self.sync("rename");
+            }
+            User::DestroyDataset => {
+                let Some(pool) = &mut self.pool else {
+                    return;
+                };
+                let vol = format!("{POOL}/vol");
+                let prefix = format!("{vol}@");
+                let snaps: Vec<String> = pool
+                    .snaps
+                    .keys()
+                    .filter(|k| k.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                if snaps.iter().any(|k| !pool.snaps[k].holds.is_empty()) {
+                    return;
+                }
+                for key in snaps {
+                    pool.snaps.remove(&key);
+                }
+                pool.datasets.retain(|d| d.name != vol);
+                self.sync("destroy dataset");
+            }
             User::Attach | User::Add => {
                 let Some(pool) = &mut self.pool else {
                     return;
@@ -1075,7 +1136,13 @@ impl World {
             return Err(ZfsError::NoPool);
         };
         let createtxg = pool.next_txg.unwrap_or(pool.txg + 1);
-        let datasets = pool.datasets.clone();
+        let skip = self.skip.clone();
+        let datasets: Vec<Ds> = pool
+            .datasets
+            .iter()
+            .filter(|d| Some(&d.name) != skip.as_ref())
+            .cloned()
+            .collect();
         if datasets
             .iter()
             .any(|d| pool.snaps.contains_key(&format!("{}@{t}", d.name)))
@@ -1120,6 +1187,9 @@ impl World {
             members: program.members,
         };
         self.programs.insert(t.to_string(), manifest);
+        if let Some(user) = self.after_take.take() {
+            self.user(user, t);
+        }
         Ok(())
     }
 

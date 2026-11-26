@@ -258,9 +258,11 @@ pub struct Program {
 pub enum Taken {
     /// `pool@t` does not exist.
     Absent,
-    /// `pool@t` exists, and its members are not one take of the pool
-    /// (in words).
-    NotWhole(String),
+    /// `pool@t` exists, and its members are not one take of the pool:
+    /// the names of the datasets that break it (an `@t` of another group,
+    /// or none on a dataset created in the take's group or before), in
+    /// the order read, or the pool's own name where its root was not read.
+    NotWhole(Vec<String>),
     /// One take of the pool: its manifest's content.
     Whole(Program),
 }
@@ -276,24 +278,25 @@ pub enum Taken {
 /// created in the take's own group after `zfs snapshot -r` listed the
 /// pool's datasets, or before its group (a race of a few milliseconds),
 /// has none either, and is read as not whole: the conservative reading
-/// (the lead's, M2.6c-2b), which costs a take under another name.
+/// (the lead's, M2.6c-2b), which costs a take under another name. So is
+/// a dataset that `zfs snapshot -r` skips (libzfs skips one that is
+/// inconsistent, a full `zfs receive` into it under way or interrupted,
+/// with its children; D1 of #153's review): it is not exempted, and a
+/// pool that holds one fails visibly, given up as
+/// [`crate::record::Why::NotWhole`] (the lead's ruling).
 pub fn taken(datasets: &[Dataset], pool: &str) -> Taken {
     let Some(root) = datasets.iter().find(|d| d.name == pool) else {
-        return Taken::NotWhole(format!("the pool's root `{pool}` was not read"));
+        return Taken::NotWhole(vec![pool.to_string()]);
     };
     let Some(root_at) = root.at else {
         return Taken::Absent;
     };
     let group = root_at.createtxg;
     let mut members = Vec::new();
+    let mut breaking = Vec::new();
     for dataset in datasets {
         match dataset.at {
-            Some(at) if at.createtxg != group => {
-                return Taken::NotWhole(format!(
-                    "{}'s snapshot was created in group {}, the pool's in {group}",
-                    dataset.name, at.createtxg
-                ));
-            }
+            Some(at) if at.createtxg != group => breaking.push(dataset.name.clone()),
             Some(at) => members.push(manifest::Member {
                 name: dataset.name.clone(),
                 kind: dataset.kind,
@@ -301,14 +304,12 @@ pub fn taken(datasets: &[Dataset], pool: &str) -> Taken {
                 snapshot_guid: at.guid,
                 local: dataset.local.clone(),
             }),
-            None if dataset.createtxg <= group => {
-                return Taken::NotWhole(format!(
-                    "{}, created in group {}, has no snapshot of the take in group {group}",
-                    dataset.name, dataset.createtxg
-                ));
-            }
+            None if dataset.createtxg <= group => breaking.push(dataset.name.clone()),
             None => {}
         }
+    }
+    if !breaking.is_empty() {
+        return Taken::NotWhole(breaking);
     }
     members.sort_by(|a, b| (a.name != pool, &a.name).cmp(&(b.name != pool, &b.name)));
     Taken::Whole(Program {
@@ -374,7 +375,8 @@ pub trait Zfs {
     /// How many file systems and volumes the pool has. The count sets
     /// the time limits of the calls that follow it, until the next count
     /// (the adapter's `Limits`; the lead's rule on M2.6c-2b). Where it
-    /// fails, they are the longest. The engine counts once at the start
+    /// fails, they are the bases (N2 of #153's review: the round's own
+    /// calls then say what is wrong). The engine counts once at the start
     /// of each round, before the sweep.
     fn count(&mut self, pool: &str) -> Result<u64, ZfsError>;
     /// `zfs snapshot -r pool@t`: `@t` of the pool and every descendant

@@ -153,9 +153,13 @@
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
 //! - Property values that are not printable ASCII, in hex as above.
-//! - The time limits ([`Limits`]): a read 60 s, a change 120 s, each
-//!   plus 100 ms for each of the pool's datasets as last counted, at
-//!   most 20 minutes; the count itself 60 s. They are provisional (the
+//! - The time limits ([`Limits`]): a read 60 s plus 180 ms, a change
+//!   120 s plus 100 ms, for each of the pool's datasets as last counted,
+//!   at most 35 minutes; the count itself 60 s, and a count that fails
+//!   leaves the bases. A read's 180 ms puts its limit at 10 001
+//!   datasets (1860.2 s) above twice the full read measured there on
+//!   Ubuntu 26.04 (911.8 s, run 45720225770; the lead's ruling on N2 of
+//!   #153's review), and the cap above that. They are provisional (the
 //!   lead's rule on M2.6c-2b, from testing's figures in #152: at 10 001
 //!   file systems on a slow runner `zfs snapshot -r` took 391 s under a
 //!   heavy write load, and `tagged.lua` 68.7 s with none). Correctness
@@ -191,8 +195,9 @@ pub const PROGRAM_INSTRUCTIONS: u64 = 100_000_000;
 /// `zfs_lua_max_memlimit`.
 pub const PROGRAM_MEMORY: u64 = 100 << 20;
 
-/// How long a command may run before it is killed. A read and a change
-/// take [`Limits::per_dataset`] more for each of the pool's datasets as
+/// How long a command may run before it is killed. A read takes
+/// [`Limits::read_per_dataset`] more, and a change
+/// [`Limits::per_dataset`] more, for each of the pool's datasets as
 /// [`Zfs::count`] last read them, up to [`Limits::most`] (the lead's rule
 /// on M2.6c-2b; provisional).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,9 +209,17 @@ pub struct Limits {
     /// written, on a pool of no datasets: `zfs snapshot -r`, `zfs
     /// destroy -r`, `zfs hold`, `zfs release`, `zfs set`, `zpool sync`.
     pub change: Duration,
-    /// What each of the pool's datasets adds to a read or a change.
+    /// What each of the pool's datasets adds to a change.
     pub per_dataset: Duration,
-    /// The most a read or a change is let run, however many datasets.
+    /// What each of the pool's datasets adds to a read: rounded up so
+    /// that a read's limit at 10 001 datasets (1860.2 s) is at least
+    /// twice the full read measured there (testing's run 45720225770 on
+    /// Ubuntu 26.04: `members.lua` in full 911.8 s; the lead's ruling on
+    /// N2 of #153's review).
+    pub read_per_dataset: Duration,
+    /// The most a read or a change is let run, however many datasets: at
+    /// least a read's limit at 10 001 datasets (1860.2 s), which the
+    /// first cap of 20 minutes was not.
     pub most: Duration,
     /// The count of the datasets itself ([`Zfs::count`]), whatever their
     /// number.
@@ -219,7 +232,8 @@ impl Default for Limits {
             read: Duration::from_secs(60),
             change: Duration::from_secs(120),
             per_dataset: Duration::from_millis(100),
-            most: Duration::from_secs(20 * 60),
+            read_per_dataset: Duration::from_millis(180),
+            most: Duration::from_secs(35 * 60),
             count: Duration::from_secs(60),
         }
     }
@@ -228,13 +242,14 @@ impl Default for Limits {
 /// What the limits are scaled by ([`Zfs::count`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scale {
-    /// Not counted yet: the bases.
+    /// Not counted yet, or the last count failed: the bases. A failed
+    /// count does not give the round the longest limits: its own calls
+    /// then say what is wrong, and one round does not wait an hour on a
+    /// pool that holds every command (the lead's ruling on N2 of #153's
+    /// review, which reverses the longest limits first ruled).
     Base,
     /// The pool's datasets as last counted.
     Datasets(u64),
-    /// The last count failed: [`Limits::most`], which kills no command
-    /// sooner than any count would have.
-    Most,
 }
 
 /// [`Zfs`] on the commands ([module docs](self)).
@@ -255,30 +270,30 @@ impl<H: Host> ZfsCli<H> {
         }
     }
 
-    /// The limit of a command whose base is `base` ([`Limits`]).
-    fn scaled(&self, base: Duration) -> Duration {
+    /// The limit of a command whose base is `base`, `per` more for each
+    /// dataset counted ([`Limits`]).
+    fn scaled(&self, base: Duration, per: Duration) -> Duration {
         let limit = match self.scale {
             Scale::Base => base,
             Scale::Datasets(n) => {
                 let more = u32::try_from(n)
                     .ok()
-                    .and_then(|n| self.limits.per_dataset.checked_mul(n))
+                    .and_then(|n| per.checked_mul(n))
                     .unwrap_or(self.limits.most);
                 base.saturating_add(more)
             }
-            Scale::Most => self.limits.most,
         };
         limit.min(self.limits.most)
     }
 
     /// The limit of a command that reads.
     fn read_limit(&self) -> Duration {
-        self.scaled(self.limits.read)
+        self.scaled(self.limits.read, self.limits.read_per_dataset)
     }
 
     /// The limit of a command that changes the pool.
     fn change_limit(&self) -> Duration {
-        self.scaled(self.limits.change)
+        self.scaled(self.limits.change, self.limits.per_dataset)
     }
 
     /// The host, for the tests.
@@ -570,7 +585,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
             .map(|out| out.lines().filter(|line| !line.is_empty()).count() as u64);
         self.scale = match counted {
             Ok(n) => Scale::Datasets(n),
-            Err(_) => Scale::Most,
+            Err(_) => Scale::Base,
         };
         counted
     }

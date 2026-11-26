@@ -30,7 +30,10 @@
 //! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
 //! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; M2.6c-1
 //! appended [`Why::Stopped`] to it, before any agent ran it (S11 of
-//! #146's review); version 1
+//! #146's review), and M2.6c-2b [`Why::NotWhole`], and took
+//! [`Publish::attempts`] to count the failed checks of a take at
+//! [`Phase::Intent`] as well (D1 of #153's review), also before any
+//! agent ran it; version 1
 //! (M2.6b1) is not read, since no agent that wrote it ever ran: the
 //! crate had no engine and no program then. No agent has run version 2
 //! either; from the first run of the program (M2.6c), any change to the
@@ -116,7 +119,11 @@ pub struct Publish {
     pub phase: Phase,
     /// Whether the agent believes its hold placed on `pool@<name>`.
     pub held: bool,
-    /// The requests made of the daemon for it.
+    /// At [`Phase::Intent`], the takes of it in a row that failed their
+    /// check (not one whole take of the pool, or not as read before
+    /// them; [`crate::plan::CHECKS_FAILED_MAX`]); from
+    /// [`Phase::Taken`], those and the requests made of the daemon for
+    /// it.
     pub attempts: u32,
     /// The requests in a row that ended with no cut counted after their
     /// count ([`crate::plan::stalls`]).
@@ -242,6 +249,11 @@ pub enum Why {
     /// The daemon's uploader stopped for good (`refused stopped`) before
     /// it published it (the lead's ruling on #146).
     Stopped,
+    /// [`crate::plan::CHECKS_FAILED_MAX`] takes in a row were not one
+    /// whole take of the pool, or their members not as read before them
+    /// (a dataset that `zfs snapshot -r` skips, for one); the last was
+    /// destroyed (the lead's ruling on D1 of #153's review).
+    NotWhole,
 }
 
 /// Why a record's bytes are not read.
