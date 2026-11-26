@@ -30,8 +30,11 @@
 //! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
 //! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; M2.6c-1
 //! appended [`Why::Stopped`] to it, before any agent ran it (S11 of
-//! #146's review), and M2.6c-3 a person's part in a publish
-//! ([`Person`]) and [`Why::Person`], before any agent ran it; version 1
+//! #146's review), M2.6c-3 a person's part in a publish ([`Person`])
+//! and [`Why::Person`], and M2.6c-2b [`Why::NotWhole`], and took
+//! [`Publish::attempts`] to count the failed checks of a take at
+//! [`Phase::Intent`] as well (D1 of #153's review), all before any
+//! agent ran it; version 1
 //! (M2.6b1) is not read, since no agent that wrote it ever ran: the
 //! crate had no engine and no program then. No agent has run version 2
 //! either; from the first run of the program (M2.6c), any change to the
@@ -147,7 +150,11 @@ pub struct Publish {
     pub phase: Phase,
     /// Whether the agent believes its hold placed on `pool@<name>`.
     pub held: bool,
-    /// The requests made of the daemon for it.
+    /// At [`Phase::Intent`], the takes of it in a row that failed their
+    /// check (not one whole take of the pool, or not as read before
+    /// them; [`crate::plan::CHECKS_FAILED_MAX`]); from
+    /// [`Phase::Taken`], those and the requests made of the daemon for
+    /// it.
     pub attempts: u32,
     /// The requests in a row that ended with no cut counted after their
     /// count ([`crate::plan::stalls`]).
@@ -264,9 +271,14 @@ pub struct Abandoned {
 /// Why a publish was given up (the plan, §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Why {
-    /// `pool@<name>` exists and its manifest does not: the agent stopped
-    /// between the program and the manifest's file (the lead's Q5). The
-    /// snapshot is kept, unpublished.
+    /// A take of `pool@<name>` that the agent could not adopt (not one
+    /// whole take of the pool, or its members not as read before it, or
+    /// no reading from before it in this process) and could not destroy
+    /// (a hold, a clone). The snapshot is kept, unpublished. Before
+    /// M2.6c-2b: `pool@<name>` existed and its manifest did not (the
+    /// lead's Q5), which a record may still say; since then such a take
+    /// is adopted or destroyed and taken again, and this is reached only
+    /// through a destroy that failed.
     ManifestLost,
     /// The manifest is over the protocol's limit.
     ManifestTooLarge,
@@ -296,6 +308,11 @@ pub enum Why {
     /// the give-up: object storage then has `snap/<t>` though the outcome
     /// says given up (an observation of the next look at #149).
     Person,
+    /// [`crate::plan::CHECKS_FAILED_MAX`] takes in a row were not one
+    /// whole take of the pool, or their members not as read before them
+    /// (a dataset that `zfs snapshot -r` skips, for one); the last was
+    /// destroyed (the lead's ruling on D1 of #153's review).
+    NotWhole,
 }
 
 /// Why a record's bytes are not read.

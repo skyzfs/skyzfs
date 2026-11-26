@@ -110,6 +110,7 @@ fn a_record_reads_back_as_written() {
         Why::TooOld,
         Why::Stopped,
         Why::Person,
+        Why::NotWhole,
     ] {
         record.abandoned.push(Abandoned {
             name: format!("{why:?}"),
@@ -408,6 +409,7 @@ fn golden() -> Record {
         Why::TooOld,
         Why::Stopped,
         Why::Person,
+        Why::NotWhole,
     ];
     Record {
         volume: [0x0f; 16],
@@ -459,7 +461,7 @@ fn golden() -> Record {
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
 const GOLDEN: [&str; 18] = [
-    "535a414702000000fb0100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "535a414702000000020200000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
     "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
@@ -473,10 +475,10 @@ const GOLDEN: [&str; 18] = [
     "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444",
     "444444444444444444444444444444444444444444444444444444444444c0c0",
     "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104",
-    "1864000b02773000e80702773101e90702773202ea0702773303eb0702773404",
+    "1864000c02773000e80702773101e90702773202ea0702773303eb0702773404",
     "ec0702773505ed0702773606ee0702773707ef0702773808f00702773909f107",
-    "037731300af2073332f1873595cc4cd429cfa1d4877fb51fb1ef9c630afe29ac",
-    "a1c7cc220bd12c",
+    "037731300af207037731310bf307de59616f3f9c3d57cc676fb03063590b5f74",
+    "84c62c3cb819be7cea6883bc1446",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before

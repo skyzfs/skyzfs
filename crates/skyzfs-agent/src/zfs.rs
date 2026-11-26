@@ -28,10 +28,10 @@
 //! premise while a publish is under way gives it up (the planner's
 //! `Premise`), withdrawing a request that pends.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::manifest;
+use crate::manifest::{self, Kind};
 use crate::record::{Enrolled, Member};
 
 /// The tag of the agent's hold on a snapshot it publishes (the lead's
@@ -215,13 +215,107 @@ pub fn premise(
     Ok(leaf.guid)
 }
 
-/// What the channel program read in the group that took the snapshots.
+/// A file system or volume of the pool, as the members program reads it
+/// in full ([`Zfs::datasets`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dataset {
+    /// Its name.
+    pub name: String,
+    /// A file system or a volume.
+    pub kind: Kind,
+    /// Its GUID.
+    pub guid: u64,
+    /// Its `createtxg`.
+    pub createtxg: u64,
+    /// Its properties set locally, as they are when read: ZFS keeps on a
+    /// snapshot only the properties set on the snapshot itself, and reads
+    /// any other through its dataset (`dsl_prop_get_ds`).
+    pub local: BTreeMap<String, Vec<u8>>,
+    /// Its `@t`, where it exists.
+    pub at: Option<Snap>,
+}
+
+/// A member's `@t`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Snap {
+    /// Its GUID.
+    pub guid: u64,
+    /// Its `createtxg`.
+    pub createtxg: u64,
+}
+
+/// A take's snapshots as read after it, whole: what the manifest holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// `createtxg` of `pool@t`.
     pub createtxg: u64,
     /// Each member: the pool's root, then its descendants.
     pub members: Vec<manifest::Member>,
+}
+
+/// What [`taken`] finds of `pool@t`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Taken {
+    /// `pool@t` does not exist.
+    Absent,
+    /// `pool@t` exists, and its members are not one take of the pool:
+    /// the names of the datasets that break it (an `@t` of another group,
+    /// or none on a dataset created in the take's group or before), in
+    /// the order read, or the pool's own name where its root was not read.
+    NotWhole(Vec<String>),
+    /// One take of the pool: its manifest's content.
+    Whole(Program),
+}
+
+/// Whether `datasets` (the pool's, read after a take of `@t`) hold one
+/// take of the pool (design §6.2; the lead's rule for an `EEXIST` at the
+/// take, M2.6c-2b):
+///
+/// - every member's `@t` has the `createtxg` of `pool@t`;
+/// - every dataset created in that group or before has an `@t`.
+///
+/// A dataset created after that group has none and is not a member. One
+/// created in the take's own group after `zfs snapshot -r` listed the
+/// pool's datasets, or before its group (a race of a few milliseconds),
+/// has none either, and is read as not whole: the conservative reading
+/// (the lead's, M2.6c-2b), which costs a take under another name. So is
+/// a dataset that `zfs snapshot -r` skips (libzfs skips one that is
+/// inconsistent, a full `zfs receive` into it under way or interrupted,
+/// with its children; D1 of #153's review): it is not exempted, and a
+/// pool that holds one fails visibly, given up as
+/// [`crate::record::Why::NotWhole`] (the lead's ruling).
+pub fn taken(datasets: &[Dataset], pool: &str) -> Taken {
+    let Some(root) = datasets.iter().find(|d| d.name == pool) else {
+        return Taken::NotWhole(vec![pool.to_string()]);
+    };
+    let Some(root_at) = root.at else {
+        return Taken::Absent;
+    };
+    let group = root_at.createtxg;
+    let mut members = Vec::new();
+    let mut breaking = Vec::new();
+    for dataset in datasets {
+        match dataset.at {
+            Some(at) if at.createtxg != group => breaking.push(dataset.name.clone()),
+            Some(at) => members.push(manifest::Member {
+                name: dataset.name.clone(),
+                kind: dataset.kind,
+                guid: dataset.guid,
+                snapshot_guid: at.guid,
+                local: dataset.local.clone(),
+            }),
+            None if dataset.createtxg <= group => breaking.push(dataset.name.clone()),
+            None => {}
+        }
+    }
+    if !breaking.is_empty() {
+        return Taken::NotWhole(breaking);
+    }
+    members.sort_by(|a, b| (a.name != pool, &a.name).cmp(&(b.name != pool, &b.name)));
+    Taken::Whole(Program {
+        createtxg: group,
+        members,
+    })
 }
 
 /// Where the agent's hold is on a publish's snapshot ([`Zfs::held`]).
@@ -233,9 +327,11 @@ pub struct Program {
 /// #147's review).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
-    /// No member's `@t` has the tag, or `pool@t` does not exist.
+    /// No member's `@t` has the tag.
     No,
-    /// Some members' `@t` have it and others not.
+    /// Some members' `@t` have it and others not, or `pool@t` does not
+    /// exist and some descendant's `@t` has it (a person released
+    /// `pool@t` and destroyed it alone: FL-F1 of #147's review).
     Part,
     /// Every member's `@t` has it.
     All,
@@ -248,7 +344,7 @@ pub enum ZfsError {
     NoPool,
     /// The snapshot does not exist.
     NoSnapshot,
-    /// A member's `@t` exists already: the program took nothing.
+    /// A member's `@t` exists already: `zfs snapshot -r` took nothing.
     Exists,
     /// Anything else, in words.
     Other(String),
@@ -276,10 +372,22 @@ pub trait Zfs {
     fn props(&mut self, pool: &str) -> Result<Props, ZfsError>;
     /// Whether the module parameter `zfs_nocacheflush` is set.
     fn nocacheflush(&mut self) -> Result<bool, ZfsError>;
-    /// The channel program: take `@t` of the pool and every descendant
-    /// in one group, and read the manifest's content in it. A member's
-    /// `@t` that exists fails it as a whole ([`ZfsError::Exists`]).
-    fn snapshot(&mut self, pool: &str, t: &str) -> Result<Program, ZfsError>;
+    /// How many file systems and volumes the pool has. The count sets
+    /// the time limits of the calls that follow it, until the next count
+    /// (the adapter's `Limits`; the lead's rule on M2.6c-2b). Where it
+    /// fails, they are the bases (N2 of #153's review: the round's own
+    /// calls then say what is wrong). The engine counts once at the start
+    /// of each round, before the sweep.
+    fn count(&mut self, pool: &str) -> Result<u64, ZfsError>;
+    /// `zfs snapshot -r pool@t`: `@t` of the pool and every descendant
+    /// in one group, or none. A member's `@t` that exists fails it as a
+    /// whole ([`ZfsError::Exists`]).
+    fn snapshot(&mut self, pool: &str, t: &str) -> Result<(), ZfsError>;
+    /// Every file system and volume of the pool, with its `@t` where it
+    /// exists: what [`taken`] reads.
+    fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError>;
+    /// `zfs destroy -r pool@t`; no such snapshot is destroyed.
+    fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError>;
     /// Each member's `@t` that exists, with its GUID; `None` where
     /// `pool@t` does not.
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError>;
@@ -288,9 +396,20 @@ pub trait Zfs {
     /// `zfs release -r TAG pool@t`; no such hold, or no such snapshot,
     /// is released.
     fn release(&mut self, pool: &str, t: &str, tag: &str) -> Result<(), ZfsError>;
-    /// Where the hold `tag` is on the members' `@t` (`pool@t` and each of
-    /// [`Zfs::members`]): [`Held::No`] where `pool@t` does not exist.
-    fn held(&mut self, pool: &str, t: &str, tag: &str) -> Result<Held, ZfsError>;
+    /// Where the hold `tag` is on the `@t` of the pool and its
+    /// descendants, whether `pool@t` exists or not ([`Held`]). `members`
+    /// are `@t`'s members as [`Zfs::members`] read them in the same round
+    /// (`None` where `pool@t` did not exist), which this does not read
+    /// again (TL-S2 of #147's review: at 10 000 file systems the read
+    /// took 24 s). A member's `@t` made between the two reads is seen at
+    /// the next round.
+    fn held(
+        &mut self,
+        pool: &str,
+        t: &str,
+        tag: &str,
+        members: Option<&[Member]>,
+    ) -> Result<Held, ZfsError>;
     /// The names `t` of every snapshot in the pool, of any dataset, that
     /// has the hold `tag`.
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError>;

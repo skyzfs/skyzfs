@@ -227,9 +227,12 @@ fn the_agent_traces_a_point_then_dies_of_sigkill_there() {
         "[ \"$1\" = get ] || exit 1\n\
          printf 'guid\\t11\\nload_guid\\t12\\nmultihost\\toff\\nreadonly\\toff\\ncheckpoint\\t-\\n'\n",
     );
+    // The count of the datasets (`zfs list`), read before each sweep,
+    // is not logged: `zfs.calls` holds what else the agent asked.
     script(
         "zfs",
-        "[ \"$1\" = program ] || { echo \"zfs $*\" >> \"$0.calls\"; exit 0; }\n\
+        "[ \"$1\" = list ] && exit 0\n\
+         [ \"$1\" = program ] || { echo \"zfs $*\" >> \"$0.calls\"; exit 0; }\n\
          printf '{\"return\": {\"tagged\": {\"skz-old\": \"1\"}}}\\n'\n",
     );
     let trace = top.path().join("trace");

@@ -516,6 +516,7 @@ pub fn why_word(why: Why) -> &'static str {
         Why::TooOld => "too-old",
         Why::Stopped => "stopped",
         Why::Person => "person",
+        Why::NotWhole => "not-whole",
     }
 }
 
@@ -545,8 +546,34 @@ pub fn report_line(name: &str, report: &Report) -> String {
         Report::HeldAway => "held-away: older than its bound, its hold kept while the daemon \
              does not answer"
             .to_string(),
+        Report::NotWhole(names) => not_whole(names),
     };
     format!("skyzfs-agent: report {name} {what}\n")
+}
+
+/// The datasets named in a `not-whole` report at most (N7 of #153's
+/// review: a report must not carry a pool's every dataset).
+pub const NOT_WHOLE_NAMED: usize = 20;
+
+/// The text of a `not-whole` report: the datasets that broke the last
+/// take, at most [`NOT_WHOLE_NAMED`] of them.
+fn not_whole(names: &[String]) -> String {
+    let given_up = "given up after its takes in a row were not one whole take of the pool";
+    if names.is_empty() {
+        return format!("not-whole: {given_up}; the datasets are not known after a restart");
+    }
+    let shown = names
+        .iter()
+        .take(NOT_WHOLE_NAMED)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let more = names.len().saturating_sub(NOT_WHOLE_NAMED);
+    if more == 0 {
+        format!("not-whole: {given_up}; datasets: {shown}")
+    } else {
+        format!("not-whole: {given_up}; datasets: {shown} and {more} more")
+    }
 }
 
 /// The exit code of one outcome; `None` is a publish still under way.
