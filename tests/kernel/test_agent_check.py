@@ -116,6 +116,16 @@ class FakeNodeB:
     FAIL = set()
     MISS_FILES = False
     MISS_SNAP = False
+    # snap-row's answer changed for a name: ROW_FAIL, the tool fails;
+    # ROW_COMMIT, the row names another commit than the ref; NO_REF, the
+    # ref is none and the row is there; NO_MANIFEST, no manifest object
+    # (the file is still written); MANIFEST_DIFFERS, the object is not of
+    # the row's length and hash.
+    ROW_FAIL = set()
+    ROW_COMMIT = {}
+    NO_REF = set()
+    NO_MANIFEST = set()
+    MANIFEST_DIFFERS = set()
 
     def __init__(self, rdir, logdev):
         self.dir = os.path.join(rdir, 'nodeb')
@@ -124,6 +134,8 @@ class FakeNodeB:
     def tool_run(self, args, timeout=600):
         assert args[0] == 'snap-row', args
         t = args[args.index('--snapshot') + 1]
+        if t in self.ROW_FAIL:
+            return 1, 'skyzfs-nodeb: the store does not answer\n'
         if t not in self.ROWS:
             return 0, 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n'
         n, g, c = self.ROWS[t]
@@ -132,8 +144,11 @@ class FakeNodeB:
             with open(args[args.index('--out') + 1], 'wb') as f:
                 f.write(m)
         h = hashlib.sha256(m).hexdigest()
-        return 0, (f'ref\t{c}\t3\nsnaprow\t{S}\t{n}\t{g}\t{c}\t{ULID}\t{len(m)}\t{h}\n'
-                   f'manifest\t{len(m)}\t{h}\tmatches\n')
+        ref = 'ref\tnone' if t in self.NO_REF else f'ref\t{c}\t3'
+        man = 'manifest\tnone' if t in self.NO_MANIFEST else \
+            f'manifest\t{len(m)}\t{h}\t{"differs" if t in self.MANIFEST_DIFFERS else "matches"}'
+        return 0, f'{ref}\nsnaprow\t{S}\t{n}\t{g}\t{self.ROW_COMMIT.get(t, c)}\t{ULID}\t{len(m)}\t{h}\n{man}\n'
+
 
     def verify(self, volume, ref, snap, want, damaged):
         seen = nodeb_check.Seen()
@@ -159,7 +174,7 @@ def log_text(cuts, asks=()):
     return ''.join(ln + '\n' for ln in out)
 
 
-def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=False, course=None):
+def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=False, course=None, node_b=None):
     c = course or right()
     d = tempfile.mkdtemp()
     try:
@@ -171,7 +186,7 @@ def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=F
             files[f'snap-{n}.sha256'] = sums_of(n)
         for cid, _, _, _, _, own in c['cases']:
             base = {'record-after.txt': RECORD, 'record-after.rc': '0\n', 'holds.txt': '', 'manifests.txt': '',
-                    'assist.txt': ASSIST, 'settle.rc': '0\n'}
+                    'assist.txt': ASSIST, 'settle.rc': '0\n', 'snapshots-after.txt': ''}
             base.update(own)
             for fn, text in base.items():
                 files[os.path.join('cases', cid, fn)] = text
@@ -184,7 +199,7 @@ def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=F
         fake = type('Fake', (FakeNodeB,), {
             'ROWS': {t: (n, g, commit_of(t)) for t, (n, g) in c['rows'].items()},
             'PUB': {n: (t, g) for _, n, t, g, _ in c['pub']},
-            'FAIL': set(fail), 'MISS_FILES': miss_files, 'MISS_SNAP': miss_snap})
+            'FAIL': set(fail), 'MISS_FILES': miss_files, 'MISS_SNAP': miss_snap, **(node_b or {})})
         argv = ['agent_check.py', name, d, os.path.join(d, 'requests.tsv'), '-', '1048576']
         out = io.StringIO()
         with mock.patch.object(nodeb_check, 'NodeB', fake), mock.patch.object(sys, 'argv', argv), \
@@ -684,6 +699,7 @@ class Main(unittest.TestCase):
         self.assertEqual(rc, 0, not_ok(lines))
         self.assertEqual(lines['obs_A-intent-before-1_name_reused'][0], 'INFO')
         self.assertEqual(lines['pin_A-intent-before-1_stays_absent'][0], 'ok')
+        self.assertEqual(lines['pin_A-intent-before-1_name_not_given_up'][0], 'ok')
         self.assertEqual(lines['obs_A-intent-before-1_outcome'], ('INFO', '[server] a9: absent'))
         self.assertEqual(lines['pin_A-intent-before-1_criterion'][0], 'ok')
         # Node B has another publish under the name.
@@ -692,9 +708,45 @@ class Main(unittest.TestCase):
         self.assertEqual(lines['pin_A-intent-before-1_stays_absent'][0], 'FAILED')
         self.assertIn('not on the retry', lines['pin_A-intent-before-1_stays_absent'][1])
 
+    def test_a_retry_under_a_name_given_up(self):
+        # G-a of #159's review: the engine never takes again a name it gave
+        # up (fresh_name skips the record's abandoned names). Gone's T was
+        # given up as destroyed; a retry under its name is a verdict.
+        def course(**files):
+            c = with_case('gone', **dict({'retry.out': f'snap/g1 {commit_of("g1")}\n'}, **files))
+            c['pub'] = [p for p in c['pub'] if p[1] != 'a4'] + [('gone', 'g1', 80, 504, commit_of('g1'))]
+            c['rows'] = {n: r for n, r in c['rows'].items() if n != 'a4'}
+            c['rows']['g1'] = (8, 81)
+            return c
+        rc, lines = run_course(course=course())
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_gone_name_not_given_up'][0], 'FAILED')
+        self.assertIn("took g1's name, which the agent had given up (destroyed)", lines['pin_gone_name_not_given_up'][1])
+        self.assertEqual(lines['pin_gone_stays_absent'][0], 'ok')
+        # Given up in the record alone (a run killed after it abandoned T).
+        rc, lines = run_course(course=course(**{'settle.out': '', 'settle.rc': '0\n',
+                                                'record-after.txt': RECORD + 'abandoned g1 why=destroyed at_ms=5\n'}))
+        self.assertEqual((rc, lines['pin_gone_name_not_given_up'][0]), (1, 'FAILED'))
+
+    def test_stays_absent_only_where_node_b_had_no_t(self):
+        # K21 of #159's review: where node B had snap/T after the settle,
+        # there is nothing to stay absent.
+        rc, lines = run_course(change=case_file('trace', 'snaprow.txt', f'ref\t{commit_of("a1")}\t3\nsnaprow\tnone\n'))
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertNotIn('pin_trace_stays_absent', lines)
+        # K22: node B failing to answer at the check is the check's error
+        # in the case, not an absent T.
+        rc, lines = run_course(node_b={'ROW_FAIL': {'g1'}})
+        self.assertEqual(rc, 2)
+        self.assertEqual(lines['premise_gone_rig'][0], 'ERROR')
+        self.assertIn('snap-row g1: exit 1', lines['premise_gone_rig'][1])
+        self.assertNotIn('pin_gone_stays_absent', lines)
+
     def test_a_kill_between_the_take_and_taken(self):
-        # Run 45774302182 (k, K-sweep-take-after-1): the next start
-        # destroys the take and publishes under a new name.
+        # Run 45800708400 (k, K-sweep-take-after-1): the next start
+        # destroys the take and publishes under a new name. The trace is
+        # that run's: the sweep, two intents (the sweep's publish of the
+        # directory had enrolled it), the take.
         self.assertTrue(ac.moved('take:after:1') and ac.moved('taken:before:1') and ac.moved('manifest:after:2'))
         self.assertFalse(ac.moved('take:before:1') or ac.moved('taken:after:1') or ac.moved('intent:after:1')
                          or ac.moved(''))
@@ -712,8 +764,8 @@ class Main(unittest.TestCase):
 
         def course(**files):
             c = right()
-            own = {'trace.tsv': trace('k5', ('sweep', 'before'), ('sweep', 'after'), ('enrol', 'before'),
-                                      ('enrol', 'after'), ('intent', 'before'), ('intent', 'after'),
+            own = {'trace.tsv': trace('k5', ('sweep', 'before'), ('sweep', 'after'), ('intent', 'before'),
+                                      ('intent', 'after'), ('intent', 'before'), ('intent', 'after'),
                                       ('take', 'before'), ('take', 'after')),
                    'publish.err': 'skyzfs-agent: test hook --kill-at: killed at take after (1)\n',
                    'first.out': f'snap/a7 {commit_of("a7")}\n', 'first.rc': '0\n',
@@ -735,6 +787,21 @@ class Main(unittest.TestCase):
         # The settle published nothing: the publish did not go on.
         rc, lines = run_course(course=course(**{'settle.out': ''}))
         self.assertEqual((rc, lines['pin_K-sweep-take-after-1_moved'][0]), (1, 'FAILED'))
+        # G-b of #159's review: one take, one publish; the settle published
+        # two names for it.
+        c = course(**{'settle.out': f'snap/k6 {commit_of("k6")}\nsnap/k8 {commit_of("k8")}\n'})
+        c['pub'].append(('K-sweep-take-after-1', 'k8', 91, 513, commit_of('k8')))
+        c['rows']['k8'] = (14, 95)
+        rc, lines = run_course(course=c)
+        self.assertEqual((rc, lines['pin_K-sweep-take-after-1_moved'][0]), (1, 'FAILED'))
+        self.assertIn('published 2 names but k5, not 1: k6, k8', lines['pin_K-sweep-take-after-1_moved'][1])
+        # G-c: the take the next start destroyed is still on node A.
+        rc, lines = run_course(course=course(**{'snapshots-after.txt': f'{POOL}@a7\n{POOL}@k5\n{POOL}@k6\n'}))
+        self.assertEqual((rc, lines['pin_K-sweep-take-after-1_moved'][0]), (1, 'FAILED'))
+        self.assertIn(f'{POOL}@k5, the take, is still on node A', lines['pin_K-sweep-take-after-1_moved'][1])
+        # A snapshot whose name only holds T's is not T's take.
+        rc, lines = run_course(course=course(**{'snapshots-after.txt': f'{POOL}@k55\n{POOL}/fs@k5\n'}))
+        self.assertEqual(rc, 0, not_ok(lines))
         # T published after all: its take was adopted across a restart.
         c = course(**{'settle.out': f'snap/k5 {commit_of("k5")}\n', 'snaprow.txt': ''})
         c['pub'].append(('K-sweep-take-after-1', 'k5', 90, 512, commit_of('k5')))
@@ -788,6 +855,98 @@ class Main(unittest.TestCase):
         c['cases'] = [(i, s, k, '0' if i == 'unmarked' else r, t, own) for i, s, k, r, t, own in c['cases']]
         rc, lines = run_course(course=c)
         self.assertEqual((rc, lines['pin_unmarked_refused'][0]), (1, 'FAILED'))
+
+    def test_a_refused_publish_that_released_the_stray_hold_ends_1(self):
+        # P43 of #158's review.
+        rc, lines = run_course(change=case_file('unmarked', 'stray-holds.txt', ''))
+        self.assertEqual((rc, lines['pin_unmarked_refused'][0]), (1, 'FAILED'))
+        self.assertIn('the stray hold was released', lines['pin_unmarked_refused'][1])
+
+    def test_a_retry_whose_name_node_a_never_listed_is_no_publish(self):
+        # P46: the retry printed a name that is neither published nor gone.
+        rc, lines = run_course(change=case_file('gone', 'retry.out', f'snap/zz {commit_of("zz")}\n'))
+        self.assertEqual((rc, lines['pin_gone_criterion'][0]), (1, 'FAILED'))
+        self.assertIn('the retry did not publish', lines['pin_gone_criterion'][1])
+
+    def test_a_retry_published_and_gone_meets_the_criterion(self):
+        # N05 and N07: a name the retry published that node A no longer
+        # has is a verdict of its own (pin_published_snapshots_exist), not
+        # of the criterion; and each gone line counts.
+        c = right()
+        c['pub'] = [p for p in c['pub'] if p[1] != 'a4']
+        c['gone'] = 'gone\ta4\ntrace\ta8\n'
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['pin_gone_criterion'][0], 'ok')
+        self.assertEqual(lines['pin_published_snapshots_exist'][0], 'FAILED')
+        self.assertIn('a4 (case gone)', lines['pin_published_snapshots_exist'][1])
+        self.assertIn('a8 (case trace)', lines['pin_published_snapshots_exist'][1])
+
+    def test_node_b_s_row_against_its_ref_and_object(self):
+        # P48: the row names another commit than the ref.
+        rc, lines = run_course(node_b={'ROW_COMMIT': {'a1': 'f' * 64}})
+        self.assertEqual((rc, lines['pin_a1_row'][0]), (1, 'FAILED'))
+        self.assertIn('the row names commit ffffffffffff', lines['pin_a1_row'][1])
+        # P73: no ref, and a row.
+        rc, lines = run_course(node_b={'NO_REF': {'a2'}})
+        self.assertEqual((rc, lines['pin_a2_row']), (1, ('FAILED', '[server] no ref')))
+        self.assertNotIn('rig_error', lines)
+        # P52: the object is not of the row's length and hash.
+        rc, lines = run_course(node_b={'MANIFEST_DIFFERS': {'a1'}})
+        self.assertEqual((rc, lines['pin_a1_manifest'][0]), (1, 'FAILED'))
+        self.assertIn("not of the row's length and hash", lines['pin_a1_manifest'][1])
+        # P74: no object, though a file was written.
+        rc, lines = run_course(node_b={'NO_MANIFEST': {'a1'}})
+        self.assertEqual((rc, lines['pin_a1_manifest']), (1, ('FAILED', '[server] no manifest object')))
+        self.assertNotIn('rig_error', lines)
+
+    def test_a_destroy_case_with_no_destroy_is_the_rig_s_error(self):
+        # P61.
+        c = right()
+        c['cases'].append(('destroy', 'destroy', '-', '3', 'a6', {
+            'trace.tsv': trace('a6', *upto('look', 'after')), 'publish.out': 'abandoned a6 destroyed\n',
+            'snaprow.txt': 'ref\tnone\nsnaprow\tnone\nmanifest\tnone\n',
+            'retry.out': f'snap/a8 {commit_of("a8")}\n', 'retry.rc': '0\n'}))
+        c['pub'].append(('destroy', 'a8', 90, 507, commit_of('a8')))
+        c['rows']['a8'] = (11, 91)
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 2, not_ok(lines))
+        self.assertEqual(lines['premise_destroy_destroyed'], ('ERROR', '[rig] the rig did not destroy the snapshot'))
+
+    def test_lists_that_do_not_read_say_which(self):
+        # P64: a createtxg or guid that is not a number.
+        rc, lines = run_course(change=write('published.tsv', 'trace\ta1\tfifty\t501\t-\n'))
+        self.assertEqual(rc, 2)
+        self.assertIn('published.tsv: not case, name, createtxg, guid, commit', lines['rig_error'][1])
+        rc, lines = run_course(change=write('published.tsv', 'trace\ta1\t50\t5x1\t-\n'))
+        self.assertIn('published.tsv: not case, name, createtxg, guid, commit', lines['rig_error'][1])
+        # P65: a scenario the check does not know ends that case, and the
+        # next ones are judged.
+        c = right()
+        c['cases'].insert(0, ('x', 'nosuch', '-', '0', '-', {}))
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 2)
+        self.assertEqual(lines['premise_x_rig'][0], 'ERROR')
+        self.assertIn('no scenario nosuch', lines['premise_x_rig'][1])
+        self.assertEqual(lines['pin_trace_criterion'][0], 'ok')
+        self.assertNotIn('rig_error', lines)
+
+    def test_a_kill_premise_that_fails_leaves_the_case_judged(self):
+        # Q23: the premise's ERROR does not stop the case's pins.
+        rc, lines = run_course(change=lambda d: (case_file('A-asked-after-1', 'publish.err', '')(d),
+                                                 case_file('A-asked-after-1', 'manifests.txt', 'a2\n')(d)))
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines['premise_A-asked-after-1_killed'][0], 'ERROR')
+        self.assertEqual(lines['pin_A-asked-after-1_clean'][0], 'FAILED')
+
+    def test_ctl_early_asks_for_a_name_published_after_the_first_s_cut(self):
+        # P67: a2 was taken before a1's cut (group 52); ctl_early asks for
+        # the next name published after it.
+        c = right()
+        c['pub'] = [(a, n, 50 if n == 'a2' else t, g, p) for a, n, t, g, p in c['pub']]
+        rc, lines = run_course(course=c)
+        self.assertEqual(rc, 0, not_ok(lines))
+        self.assertIn(f'snap/a1 asked for {POOL}@a3', lines['ctl_early'][1])
 
     def test_a_refused_publish_that_wrote_a_record_ends_1(self):
         rc, lines = run_course(change=case_file('unmarked', 'record-before.txt', RECORD))

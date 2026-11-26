@@ -89,14 +89,21 @@ in DIR/cases.tsv. For each case:
   has the retry's publish under it and no other; T's outcome is then
   not `published`, and obs_ID_name_reused says so.
 - pin_ID_moved (server): a case killed between the take and `taken`
-  (MOVED): the settle published a name other than T, the publish going
-  on after its take was destroyed; T's outcome is `absent` where the
-  scenario publishes T.
+  (MOVED): the settle published one name other than T, and one only,
+  the publish going on after its take was destroyed, and POOL@T is not
+  on node A after the last run (snapshots-after.txt) unless the retry
+  took T's name again; T's outcome is `absent` where the scenario
+  publishes T.
+- pin_ID_name_not_given_up (server): where the retry published under
+  T's own name, T was not given up first (`abandoned T` on a run's
+  output or in the record): the engine never takes again a name it
+  gave up.
 - pin_ID_PIN (server): each verdict the rig wrote while it drove the
   case (DIR/cases/ID/verdicts.tsv: an agent that did not end, ask or
   withdraw in time, a row that did not land, a daemon that did not stop
   on SIGTERM or had ended by itself), for every case directory, listed
-  in cases.tsv or not (D5).
+  in cases.tsv or not (D5), and DIR/cases/course, the daemon's stop at
+  the course's end (pin_course_PIN, D10 of #159's review).
 - premise_ID_rig (rig): the rig's own error in the case
   (DIR/cases/ID/rig-error.txt), or the check's own in judging it (a file
   of the case that does not read); the case is not judged further, and
@@ -108,7 +115,8 @@ in DIR/cases.tsv. For each case:
 The rig's errors outside a case: rig_error_in_the_course (DIR/rig-error.tsv,
 written where the recorder failed and ran this check on the cases done
 before it) and premise_TRACE_points (DIR/points-error.tsv, a trace that
-gave no points), each an ERROR.
+gave no points, or a rare scenario whose trace adds no point to the
+plain trace's: no kill case of it ran), each an ERROR.
 
 For each name published (DIR/published.tsv), node B: snap-row's ref and
 row on one commit, the commit the agent printed (where it printed one),
@@ -204,10 +212,11 @@ FIRST_RC = {
     'dhook': '0',
     'late': '0',
 }
-# The scenario -> T's outcome where the scenario's premise holds; None:
-# the criterion alone (INFO). A plain case with no kill must publish.
+# The scenario -> T's outcome where the scenario's premise holds and the
+# case has no kill (expected: a kill leaves some to the criterion alone).
+# A plain case with no kill must publish.
 EXPECTED = {
-    'plain': None,
+    'plain': 'published',
     'restart': 'published',
     'assist': 'published',
     'destroy': 'abandoned destroyed',
@@ -378,10 +387,10 @@ def expected(scen, kill, destroyed, t):
     'absent' (MOVED)."""
     if kill and (not t or kill == 'intent:before:1'):
         return None
-    if moved(kill) and (scen == 'plain' or EXPECTED[scen] == 'published'):
+    if moved(kill) and EXPECTED[scen] == 'published':
         return 'absent'
     if scen == 'plain':
-        return None if kill else 'published'
+        return None if kill else EXPECTED['plain']
     if scen in ('destroy', 'gone') and not destroyed:
         return None
     return EXPECTED[scen]
@@ -747,6 +756,15 @@ def main():
                 if reused:
                     put(f'obs_{cid}_name_reused', 'INFO', 'server',
                         f'the retry published a new snapshot under {t}\'s name, {reused[:12]}')
+                    # The engine never takes again a name it gave up
+                    # (fresh_name skips the record's abandoned names): a
+                    # retry under T's name is right only where T was not
+                    # given up (G-a of #159's review).
+                    why = next((o['abandoned'][t] for o in outs.values() if t in o['abandoned']), None) \
+                        or record_abandoned(text_of(os.path.join(cd, 'record-after.txt'))).get(t)
+                    holds(f'pin_{cid}_name_not_given_up', [f'the retry took {t}\'s name, which the agent had given up '
+                                                           f'({why})'] if why else [],
+                          'server', f'{t} was not given up before the retry took its name')
                 got = outcome(t, list(outs.values()), (set(pub) | set(gone)) - ({t} if reused else set()),
                               text_of(os.path.join(cd, 'record-after.txt')))
                 want = expected(scen, kill, destroyed, t)
@@ -756,10 +774,15 @@ def main():
                     holds(f'pin_{cid}_outcome', [] if got == want else [f'{t or "no name"}: {got}, not {want}'],
                           'server', f'{t or "no name"}: {got}')
                 if moved(kill) and t:
+                    # One take, one publish (G-b), and the take the next
+                    # start destroyed is gone from node A, unless the retry
+                    # made a new one under its name (G-c).
                     new = sorted(n for n in outs.get('settle', {}).get('published', {}) if n != t)
-                    holds(f'pin_{cid}_moved', [] if new else
-                          [f'the settle published no name but {t}: '
-                           f'{flat(text_of(os.path.join(cd, "settle.out"), need=False))[-200:] or "nothing"}'],
+                    left = f'{POOL}@{t}' in text_of(os.path.join(cd, 'snapshots-after.txt')).split() and not reused
+                    holds(f'pin_{cid}_moved', ([] if len(new) == 1 else
+                                               [f'the settle published {len(new)} names but {t}, not 1: '
+                                                f'{", ".join(new) or flat(text_of(os.path.join(cd, "settle.out"), need=False))[-200:] or "nothing"}'])
+                          + ([f'{POOL}@{t}, the take, is still on node A after the last run'] if left else []),
                           'server', f'{t}\'s take destroyed at the next start; the publish went on as {", ".join(new)}')
                 if got == 'published':
                     ok = []

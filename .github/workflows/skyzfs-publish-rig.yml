@@ -186,7 +186,8 @@ jobs:
             SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
             SKZ_S3_BUCKET="skyzfs-pub-${{ github.run_id }}-${{ github.run_attempt }}" \
             AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
-            CUT_S3_DOWN="docker stop minio" CUT_S3_UP="docker start minio" \
+            CUT_S3_DOWN="docker stop minio" \
+            CUT_S3_UP='docker start minio && for _ in $(seq 1 120); do curl -sf -m 2 -o /dev/null http://127.0.0.1:9000/minio/health/live && exit 0; sleep 0.5; done; echo "MinIO did not answer 60 s after docker start" >&2; exit 1' \
             CUT_CHECK="python3 $PWD/tests/kernel/publish_check.py" \
             bash tests/kernel/cut-record.sh "$PWD/pub-out" /mnt/skz-cut "${recs[@]}"
       - name: Summary
