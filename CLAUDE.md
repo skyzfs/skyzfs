@@ -142,7 +142,12 @@ there, and the user decides when it merges.
   `skyzfs-ublk-sys/refuse-fetch` (M1.3ah), holds the binding's path that
   sends its own first fetches, so a test can make the driver refuse
   one; both features above enable it, and the default daemon build
-  carries none of it.
+  carries none of it. A fourth feature, `skyzfs-agent-cli/test-hooks`
+  (the program `skyzfs-agent`, M2.6c-3), holds the agent's test hooks
+  (`--kill-at`, `--trace-points`, `--expiry-s`, `--assist-after-s`); a
+  build without it refuses those options. Run clippy and the tests with
+  it as well. The agent rig (M2.T5) uses that build. CI builds it only
+  once testing's job for it has merged.
 - **Run `rustup update stable` before the local gates.** CI installs the
   current stable toolchain, and a container's can be months older. A
   newer clippy has lints an older one does not, so "clean locally" on
