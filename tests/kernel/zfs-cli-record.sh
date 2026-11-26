@@ -57,6 +57,10 @@
 #           of 32 GiB, as many as leave 8 GiB free; #157's R1):
 #             count             zfs list -r -H -o name -t
 #                               filesystem,volume P, the adapter's count
+#             count-snapshots   zfs list -r -H -o name -t snapshot P,
+#                               the adapter's count of the snapshots,
+#                               for the list's limit (#160); about.txt
+#                               gives its lines
 #             snapshot          the snapshot program at @t (only with
 #                               snapshot.lua)
 #             snapshot-cli      zfs snapshot -r P@t, only if the program
@@ -280,6 +284,12 @@
 # `attach -s` waits for the rebuild is not known.
 #   remove-status, remove-status-g, remove, remove-in-progress[-g],
 #   remove-done[-g]        skzqr's second file removed
+#
+# and `zpool list -H -o name`, by which the adapter tells a pool that is
+# not there from a snapshot that went (#160): pools-none before any pool
+# of the recording is made, pools-one with skzq alone, pools-three with
+# skzq, skzqm and skzqr, and none-pools-named of skznone, a pool that
+# does not exist (`zpool list -H -o name skznone`);
 #
 # and, on a pool of their own (skzrd, a file), the manifest's read by the
 # CLI as the adapter runs it (M2.6c-5): read-S-list (zfs list -r -H -p -t
@@ -787,6 +797,7 @@ record_none() { # prefix pool
     rec "$x-release" zfs release -r "$TAG" "$p@t"
     rec "$x-destroy" zfs destroy -r "$p@t"
     rec "$x-snapshot-cli" zfs snapshot -r "$p@t"
+    rec "$x-pools-named" zpool list -H -o name "$p"
 }
 
 # scale_all ENTRY...: scale for each entry, at most three, each once,
@@ -1093,13 +1104,17 @@ scale() {
         echo "scale $lbl: $made datasets (the root among them) made in $(($(date +%s) - t0)) s$cut" >> "$OUT/about.txt"
     fi
     [ "$k" = 0 ] || retain "$lbl" "$p" "$n" "$k"
-    for step in count snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
+    for step in count count-snapshots snapshot snapshot-cli members hold tagged release destroy take-cli take-cli-members take-cli-get take-cli-get-pairs take-cli-get-json take-cli-list take-cli-full; do
         if ! scale_limit; then
             echo "scale $lbl: the budget was spent before $step; it and the rest were not run" >> "$OUT/about.txt"
             break
         fi
         case $step in
             count) rec "scale-$lbl-count" zfs list -r -H -o name -t filesystem,volume "$p" ;;
+            count-snapshots)
+                rec "scale-$lbl-count-snapshots" zfs list -r -H -o name -t snapshot "$p"
+                lines_line "scale-$lbl-count-snapshots"
+                ;;
             snapshot)
                 if [ "$SNAPSHOT_LUA" != 1 ]; then
                     echo "scale $lbl: the snapshot program not run: there is no snapshot.lua" >> "$OUT/about.txt"
@@ -1300,10 +1315,13 @@ main() {
                 zpool sync "$p"
         } >> "$OUT/create-$p.log" 2>&1 || setup_failed "the datasets of $p (create-$p.log)"
     }
+    rec pools-none zpool list -H -o name
     make_pool skzq 1024 /dev/ublkb0 log "$slog"
+    rec pools-one zpool list -H -o name
     make_pool skzqm 1024 mirror "$WORK/m0.img" "$WORK/m1.img" special mirror "$WORK/s0.img" "$WORK/s1.img" \
         dedup mirror "$WORK/d0.img" "$WORK/d1.img" cache "$cache" spare "$WORK/spare.img"
     make_pool skzqr 768 "$WORK/r0.img" "$WORK/r1.img"
+    rec pools-three zpool list -H -o name
     DELAY_POOL=skzqm DELAY=$WORK/m0.img
     if [ -z "$ZINJECT" ]; then
         echo "mirror's scans: no zinject (apt.log); they run as they are" >> "$OUT/about.txt"

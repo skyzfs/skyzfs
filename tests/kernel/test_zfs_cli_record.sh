@@ -254,6 +254,7 @@ check "pin the snapshots after each" "$(words rig-cli-exists-child-after)/$(word
 check "pin the odd one in C.UTF-8" "$(words rig-snapshot-odd-utf8)" "env LC_ALL=C.UTF-8 zfs program $P skzq - skzq o2 skyzfs:assist "
 check "pin the odd one as the adapter" "$(words rig-snapshot-odd)" "zfs program $P skzq - skzq o0 skyzfs:assist "
 check "pin none's assist" "$(words none-assist-set)" "zfs set skyzfs:assist=1700000000001 skznone "
+check "pin none's pools named" "$(words none-pools-named)" "zpool list -H -o name skznone "
 check "pin secs" "$(grep -Ec '^[0-9]+\.[0-9]{3}$' "$OUT/rig-status/secs")" 1
 check "pin a catch's secs" "$(grep -Ec '^[0-9]+\.[0-9]{3}$' "$OUT/rig-scrub-status/secs")" 1
 check "pin scale snapshot" "$(words scale-3-snapshot)" "zfs program $P skzqs - skzqs t skyzfs:assist "
@@ -281,6 +282,9 @@ LIST="zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtx
 check "pin scale's get" "$(words scale-3-take-cli-get)" "$GET skzqs "
 check "pin scale's get in JSON" "$(words scale-3-take-cli-get-json)" "zfs get -j -r -p -t filesystem,volume -s local -o name,property,value all skzqs "
 check "pin scale's list" "$(words scale-3-take-cli-list)" "$LIST skzqs "
+check "pin scale's count of the snapshots" "$(words scale-3-count-snapshots)" "zfs list -r -H -o name -t snapshot skzqs "
+check "scale's counts, then the snapshot" "$(order scale-3-count scale-3-count-snapshots)$(order scale-3-count-snapshots scale-3-snapshot)" yesyes
+check "lines said: count-snapshots" "$(grep -c "^scale: scale-3-count-snapshots: $(wc -l < "$OUT/scale-3-count-snapshots/stdout") lines$" "$OUT/about.txt")" 1
 check "pin scale's get of the pairs" "$(words scale-3-take-cli-get-pairs)" "zfs get -r -H -p -t filesystem,volume -s local -o name,property all skzqs "
 check "scale's reads after the take, in order" "$(order scale-3-take-cli scale-3-take-cli-members)$(order scale-3-take-cli-members scale-3-take-cli-get)$(order scale-3-take-cli-get scale-3-take-cli-get-pairs)$(order scale-3-take-cli-get-pairs scale-3-take-cli-get-json)$(order scale-3-take-cli-get-json scale-3-take-cli-list)$(order scale-3-take-cli-list scale-3-take-cli-full)" yesyesyesyesyesyes
 check "scale's get in JSON: no load beside it" "$([ -e "$OUT/scale-3-take-cli-get-json/writer.tsv" ] && echo yes || echo no)" no
