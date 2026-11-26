@@ -362,6 +362,14 @@ pub struct World {
     pub restart_at_cuts: Option<(usize, Restart)>,
     /// How many times the daemon was asked for its cuts.
     pub cuts_read: usize,
+    /// A daemon that answers what skyzfsd does not: every `publish`
+    /// refused with this code, whatever was asked (S13 of #146's next
+    /// look).
+    pub refuse_every_publish: Option<Code>,
+    /// An uploader in a long step: `progress` and `withdraw` are answered
+    /// `refused no-answer` until then, as skyzfsd answers them, and a
+    /// withdraw does not reach the uploader (B1 of #149's review).
+    pub silent_until: u64,
     /// Questions asked of the world since its clock last moved.
     still: u32,
     /// The channel answers nothing until then (the daemon away).
@@ -417,6 +425,8 @@ impl World {
             },
             die: None,
             restart_at_cuts: None,
+            refuse_every_publish: None,
+            silent_until: 0,
             cuts_read: 0,
             still: 0,
             away_until: 0,
@@ -1057,6 +1067,9 @@ impl World {
                 newest: daemon.cuts.last().map(|c| (c.group, c.itself)),
             }),
             Request::Publish(request) => return self.publish(request, manifest),
+            Request::Progress(_) | Request::Withdraw(_) if self.now_ms < self.silent_until => {
+                Reply::Refused(Code::NoAnswer, "the uploader did not answer".into())
+            }
             Request::Progress(name) => self.progress(name),
             Request::Withdraw(name) => {
                 if let Some(p) = self
@@ -1106,6 +1119,9 @@ impl World {
             ));
         }
         let refused = |code| Ok(Reply::Refused(code, String::new()));
+        if let Some(code) = self.refuse_every_publish {
+            return refused(code);
+        }
         let daemon = &mut self.daemon;
         if daemon.stopped {
             return refused(Code::Stopped);
@@ -1386,6 +1402,9 @@ pub struct MemFiles {
     pub record: Option<Vec<u8>>,
     /// The manifests.
     pub manifests: BTreeMap<String, Vec<u8>>,
+    /// Whether the agent's marker is there ([`record::Store::marked`]): written
+    /// with the first record, as the store writes it.
+    pub marked: bool,
 }
 
 impl Keep for MemKeep {
@@ -1401,7 +1420,9 @@ impl Keep for MemKeep {
 
     fn save(&self, record: &Record) -> Result<(), SaveError> {
         let bytes = record.encode().map_err(SaveError::Rule)?;
-        self.0.borrow_mut().record = Some(bytes);
+        let mut files = self.0.borrow_mut();
+        files.marked = true;
+        files.record = Some(bytes);
         Ok(())
     }
 
@@ -1424,6 +1445,10 @@ impl Keep for MemKeep {
 
     fn manifest_names(&self) -> io::Result<Vec<String>> {
         Ok(self.0.borrow().manifests.keys().cloned().collect())
+    }
+
+    fn marked(&self) -> io::Result<bool> {
+        Ok(self.0.borrow().marked)
     }
 }
 
