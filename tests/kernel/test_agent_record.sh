@@ -196,6 +196,14 @@ for err in none empty; do
     is "recover: in dhook with no error of the rig's ($err), a daemon that ended is a verdict" "$(cut -f1 "$CDIR/verdicts.tsv" 2>/dev/null)" daemon_serving
     kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null
 done
+# Once the hook's end is recorded (kill.tsv), the instance served after
+# it has no hook: one that ended is a verdict, whatever error the case
+# had (G-a of #164's review).
+rm -f "$CDIR"/* "$T/calls"; echo "busy" > "$CDIR/rig-error.txt"; printf 'killed_rc\t3\nserve\t1\n' > "$CDIR/kill.tsv"
+(exit 5) & SERVE_PID=$!; sleep 0.2
+SCEN=dhook recover
+is "recover: in dhook after the hook's end, a daemon that ended is a verdict" "$(cut -f1 "$CDIR/verdicts.tsv" 2>/dev/null)" daemon_serving
+kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null
 # D9 of #159's review: where the rig never stops the daemon, one that
 # ended is a verdict, whatever error the case had.
 for sc in destroy gone plain; do
@@ -218,6 +226,27 @@ bash -c 'trap "exit 0" TERM; sleep 30 & wait' & SERVE_PID=$!; sleep 0.2
 reserve
 is "reserve: a stop that ends 0" "$([ -e "$CDIR/verdicts.tsv" ] && echo verdict) $(cat "$T/calls")" " serve_again"
 kill "$SERVE_PID"; wait "$SERVE_PID" 2>/dev/null
+# A daemon that had ended before the SIGTERM, even with 0, ended unasked:
+# a verdict, then served again (G-b of #164's review).
+for st in 0 5; do
+    rm -f "$CDIR"/* "$T/calls"
+    (exit "$st") & SERVE_PID=$!
+    while kill -0 "$SERVE_PID" 2>/dev/null; do sleep 0.05; done
+    reserve
+    is "reserve: a daemon that had ended ($st) before the stop is a verdict, then served again" \
+        "$(cut -f1 "$CDIR/verdicts.tsv" 2>/dev/null) $(cut -f2 "$CDIR/verdicts.tsv" 2>/dev/null | cut -d: -f1) $(cat "$T/calls")" \
+        "daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status $st) serve_again"
+done
+
+# A daemon that SIGKILL did not end in time is the rig's error, and its
+# pid is let go, so that no later check takes it for one that ended by
+# itself (Q3 of #169's review).
+rm -f "$CDIR"/* "$T/calls"
+bash -c 'trap "" TERM; sleep 30 & wait' & upid=$!; sleep 0.2
+is "reserve: unreaped after SIGKILL, its pid let go" \
+    "$(SERVE_PID=$upid; serve_end() { return 1; }; rig_error() { echo "rig_error [$SERVE_PID] $*" >> "$T/calls"; }; reserve; echo "$(cut -f1 "$CDIR/verdicts.tsv") $(tr '\n' ';' < "$T/calls")"; kill "$SERVE_PID" 2>/dev/null)" \
+    "daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;"
+wait "$upid" 2>/dev/null
 
 # frozen_until_withdrawn and gone, on a stand-in agent.
 acmd() { echo "acmd $*" >> "$T/calls"; }
@@ -737,7 +766,7 @@ is "serve_start: a stale ready file emptied" "$(
 # end_daemon: a daemon that does not end 0 on SIGTERM; its log is the
 # current instance's (D10).
 printf '#!/bin/bash\n[ "$1" != status ] || echo "cut_state idle"\n' > "$T/skyzfsd-ok"; chmod +x "$T/skyzfsd-ok"
-ed_t() { # HOOK [hang]
+ed_t() { # HOOK [hang|gone|unreaped]
     (
         RDIR=$T/ed; rm -rf "${RDIR:?}"; mkdir -p "$RDIR"; VOL=$RDIR/vol; RUN=$RDIR/run; SKYZFSD=$T/skyzfsd-ok
         HOLD_PID=""; WATCH_PID=""; SERVE_LOG=$RDIR/serve-3.log; echo "lease kept" > "$SERVE_LOG"
@@ -753,6 +782,18 @@ ed_t() { # HOOK [hang]
             serve_end() { serve_end_real 1; }
             bash -c 'trap "" TERM; while :; do /bin/sleep 0.1; done' > /dev/null 2>&1 & SERVE_PID=$!
             echo "$SERVE_PID" > "$T/ed.pid"
+        elif [ "${2:-}" = unreaped ]; then
+            # A stop that neither SIGTERM nor SIGKILL ends in time, with a
+            # rig error that returns, to see what is left.
+            serve_end() { return 1; }
+            rig_error() { echo "rig error: $*"; }
+            bash -c 'trap "" TERM; while :; do /bin/sleep 0.1; done' > /dev/null 2>&1 & SERVE_PID=$!
+            echo "$SERVE_PID" > "$T/ed.pid"
+        elif [ "${2:-}" = gone ]; then
+            # Ended by itself, with 0, before the stop.
+            eval "$(fnc serve_end)"
+            ( exit 0 ) & SERVE_PID=$!
+            while kill -0 "$SERVE_PID" 2>/dev/null; do /bin/sleep 0.05; done
         else
             eval "$(fnc serve_end)"
             bash -c 'trap "exit 1" TERM; while :; do /bin/sleep 0.1; done' & SERVE_PID=$!
@@ -760,6 +801,7 @@ ed_t() { # HOOK [hang]
         /bin/sleep 0.2
         end_daemon
         echo "went on, detached $([ -e "$RDIR/detach.log" ] && echo yes)"
+        [ "${2:-}" != unreaped ] || echo "pid [$SERVE_PID]"
     )
     # A stand-in left running by a stop that did not kill it.
     if [ -s "$T/ed.pid" ]; then kill -9 "$(cat "$T/ed.pid")" 2>/dev/null; rm -f "$T/ed.pid"; fi
@@ -773,6 +815,22 @@ went on, detached yes"
 is "end_daemon: a stop that hangs, the hook's verdict, killed, and on" "$(ed_t hook hang)" \
     "verdict daemon_stopped: skyzfsd serve did not end 60 s after SIGTERM: lease kept
 went on, detached yes"
+
+# Unreaped after SIGKILL: the rig's error, and the pid let go (Q3 of
+# #169's review).
+is "end_daemon: unreaped after SIGKILL, its pid let go" "$(ed_t '' unreaped | grep -v '^went on')" \
+    "rig error: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+rig error: skyzfsd serve did not end 10 s after SIGKILL
+pid []"
+
+# A daemon that had ended before the SIGTERM ended unasked, even with 0:
+# the hook's verdict, and on; with no hook, the rig's error (G-b of
+# #164's review).
+is "end_daemon: a daemon ended before the stop, the hook's verdict, and on" "$(ed_t hook gone)" \
+    "verdict daemon_stopped: skyzfsd serve had ended before SIGTERM (status 0): lease kept
+went on, detached yes"
+is "end_daemon: a daemon ended before the stop, with no hook" "$(ed_t '' gone)" \
+    "rig error: skyzfsd serve had ended before SIGTERM (status 0): lease kept"
 
 # cleanup: a command that failed under errexit in a course with a hook:
 # the hook judges, once, and its 1 is the status (D10); with no hook or
@@ -788,6 +846,7 @@ cl() { # HOOK_RC|none fail|ok
         lim() { echo "lim $*" >> "$T/calls"; }
         dmsetup() { :; }; log() { :; }
         hook() { echo "hook: $1" >> "$T/calls"; return "$HOOK_RC"; }
+        SERVER=${CL_SERVER:-}; VOL=${CL_VOL:-}; RUN=$T/run; SKYZFSD=skyzfsd
         eval "$(fnc cleanup)"
         trap cleanup EXIT
         set -e
@@ -806,6 +865,13 @@ is "cleanup: errexit with a hook that finds none" "$(cl 0 fail)" \
     "2 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;rig error,a command failed (status 1); the job log names it;"
 is "cleanup: errexit with no hook" "$(cl none fail)" "1 lim 120 zpool export -f skzcut;"
 is "cleanup: an end with no failure" "$(cl 1 ok)" "0 lim 120 zpool export -f skzcut;"
+# A daemon that had ended by the cleanup: its volume's device deleted
+# all the same, under lim; none where the volume is gone (#164's review).
+mkdir -p "$T/clvol"
+is "cleanup: the device deleted with no daemon serving" "$(CL_SERVER=daemon CL_VOL=$T/clvol cl none ok)" \
+    "0 lim 120 zpool export -f skzcut;lim 60 skyzfsd detach --dir $T/clvol --run-dir $T/run;"
+is "cleanup: no volume, no detach" "$(CL_SERVER=daemon CL_VOL=$T/clgone cl none ok)" "0 lim 120 zpool export -f skzcut;"
+is "cleanup: not through the daemon, no detach" "$(CL_VOL=$T/clvol cl none ok)" "0 lim 120 zpool export -f skzcut;"
 
 # end: the hooks cleared once the course is recorded, before its check
 # (the nit on ON_RIG_ERROR).
@@ -828,7 +894,7 @@ judged_order() {
 }
 is "agent_judged: quiet, then the check; no case under way named none" "$(judged_order)" "$(printf '1 quiet;check; none\tzfs failed')"
 eval "$(fn agent_quiet)"
-quiet_t() { # EXPORT_RC [serving|ended|none [SCEN [CASE]]]
+quiet_t() { # EXPORT_RC [serving|ended|none [SCEN [CASE [killed]]]]
     (
         case ${2:-serving} in
             serving) sleep 30 > /dev/null 2>&1 & SERVE_PID=$! ;;
@@ -850,6 +916,7 @@ quiet_t() { # EXPORT_RC [serving|ended|none [SCEN [CASE]]]
         log() { echo "log $*" >> "$T/calls"; }
         CDIR=""
         if [ -n "${4:-}" ]; then CDIR=$RDIR/cases/$4; mkdir -p "$CDIR"; fi
+        [ "${5:-}" != killed ] || printf 'killed_rc\t3\nserve\t1\n' > "$CDIR/kill.tsv"
         printf 'line 1\nended badly\n' > "$RDIR/serve-2.log"
         EXPORT_RC=$1 agent_quiet
         local rc=$?
@@ -878,6 +945,10 @@ is "agent_quiet: the daemon ended by itself, in a case" "$(quiet_t 0 ended resta
     "0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_serving: skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1;ended badly;log arare: skzcut not exported for the check: no daemon serves its device;|cases/r1-k/verdicts.tsv:daemon_serving,skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1 ended badly;"
 is "agent_quiet: the daemon ended in a dhook case, said only" "$(quiet_t 0 ended dhook h1)" \
     "0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended (status 3) in a dhook case, after the rig's own error;log arare: skzcut not exported for the check: no daemon serves its device;"
+# After the hook's end is recorded, the instance served again has no
+# hook: a verdict (G-a of #164's review).
+is "agent_quiet: dhook's exemption only until the hook's end" "$(quiet_t 0 ended dhook h1 killed)" \
+    "0 none thawed stopped watching up;session_end;log arare: case h1: verdict daemon_serving: skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1;ended badly;log arare: skzcut not exported for the check: no daemon serves its device;|cases/h1/verdicts.tsv:daemon_serving,skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1 ended badly;"
 is "agent_quiet: dhook's exemption only in a case" "$(quiet_t 0 ended dhook)" \
     "0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_serving: skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1;ended badly;log arare: skzcut not exported for the check: no daemon serves its device;|cases/course/verdicts.tsv:daemon_serving,skyzfsd serve 2 had ended (status 3) with no kill of the rig's, seen after the rig's error: line 1 ended badly;"
 is "agent_quiet: a serving daemon, no verdict" "$(quiet_t 0 serving restart r1-k)" \
@@ -893,7 +964,8 @@ quiet_hang() {
         sleep 20 > /dev/null 2>&1 & AGENT_PID=$!; local agent=$AGENT_PID
         sleep 20 > /dev/null 2>&1 & WRITER=$!; local writer=$WRITER
         kill() { [ "$1" = -9 ] || builtin kill "$@"; }
-        seq() { echo 1; }
+        # One try each, the bounds asked for kept (N17 of #164's review).
+        seq() { echo "$*" >> "$T/qh.seq"; echo 1; }
         session_end() { :; }; log() { :; }; lim() { return 0; }
         local t0=$SECONDS took
         agent_quiet
@@ -902,7 +974,11 @@ quiet_hang() {
         if [ "$took" -lt 8 ]; then echo "bounded ${AGENT_PID:-none} ${WRITER:-stopped}"; else echo "waited $took s"; fi
     )
 }
+rm -f "$T/qh.seq"
 is "agent_quiet: an agent and a writer that do not end do not hold it" "$(quiet_hang)" "bounded none stopped"
+# The bounds: 20 tries of 0.25 s for the agent, 120 of 0.5 s for the
+# writer.
+is "agent_quiet: its bounds" "$(tr '\n' ';' < "$T/qh.seq")" "1 20;1 120;"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))
