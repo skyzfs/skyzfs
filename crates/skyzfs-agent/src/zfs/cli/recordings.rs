@@ -788,12 +788,14 @@ fn the_destroy_as_recorded() {
     }
 }
 
-/// A hold on the root's `@t` alone (TL-T2 of #147's review), as
-/// recorded on the rig's pool: `zfs hold -r` says `tag already exists`
-/// and holds none, so the hold is refused, naming the members that lack
-/// it; `held` reads a part; `zfs release -r` then releases it, and
-/// `held` reads none. Mutants: a part read as held, the refusal not
-/// naming the members.
+/// A hold on some members' `@t` only (TL-T2 of #147's review), as
+/// recorded on the rig's pool. On the root's alone, `zfs hold -r` says
+/// `tag already exists` and holds none, so the hold is refused, naming
+/// the members that lack it, and `held` reads a part. On the child's
+/// alone (the recorder releases the root's first), `zfs release -r` of
+/// the pool's `@t` exits 0 and `held` reads none after it. A release of
+/// a hold on the root alone is not recorded. Mutants: a part read as
+/// held, the refusal not naming the members.
 #[test]
 fn a_hold_on_the_root_alone_as_recorded() {
     for rec in recordings() {

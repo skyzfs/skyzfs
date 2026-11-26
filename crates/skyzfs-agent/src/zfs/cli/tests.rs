@@ -1122,7 +1122,7 @@ fn listed(n: usize) -> String {
 /// is `zfs list -r` of the file systems and volumes, within its own
 /// fixed limit; a read or a change then takes 100 ms more for each
 /// dataset counted, at most 20 minutes, and the members program in full
-/// 200 ms more on the read's base, at most 40 minutes; a count that
+/// 200 ms more on the read's base, at most 35 minutes; a count that
 /// fails sets the bases, as before any count. The full read's limit at
 /// 10 001 datasets is at least twice what it took there on Ubuntu 26.04
 /// (911.8 s, run 45720225770). Mutants: the limits not scaled, scaled
@@ -1140,7 +1140,7 @@ fn the_limits_grow_with_the_datasets_counted() {
     );
     assert_eq!(
         (base.per_dataset, base.full_per_dataset, base.full_most),
-        (ms(100), ms(200), s(40 * 60))
+        (ms(100), ms(200), s(35 * 60))
     );
     let at = |n: u64, base: Duration, per_ms: u64| base + Duration::from_millis(per_ms * n);
     let mut fake = Fake::default();
@@ -1179,17 +1179,29 @@ fn the_limits_grow_with_the_datasets_counted() {
             at(5000, base.read, 100),
             at(5000, base.read, 200),
         ),
+        (
+            10_001,
+            at(10_001, base.change, 100),
+            at(10_001, base.read, 100),
+            at(10_001, base.read, 200),
+        ),
+        // 60 s + 2060 s is past 35 minutes: the full read reaches its
+        // own cap first.
+        (
+            10_300,
+            at(10_300, base.change, 100),
+            at(10_300, base.read, 100),
+            base.full_most,
+        ),
         // 120 s + 1080 s is 20 minutes: the change reaches the cap.
         (
             10_800,
             base.most,
             at(10_800, base.read, 100),
-            at(10_800, base.read, 200),
+            base.full_most,
         ),
         // 60 s + 1140 s is 20 minutes: the read reaches it.
-        (11_400, base.most, base.most, at(11_400, base.read, 200)),
-        // 60 s + 2340 s is 40 minutes: the full read reaches its own.
-        (11_700, base.most, base.most, base.full_most),
+        (11_400, base.most, base.most, base.full_most),
         (20_000, base.most, base.most, base.full_most),
         (0, base.change, base.read, base.read),
     ] {

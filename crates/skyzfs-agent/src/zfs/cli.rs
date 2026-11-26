@@ -160,7 +160,7 @@
 //! - The time limits ([`Limits`]), all provisional (the lead's rules on
 //!   M2.6c-2b and on N2 of #153's review):
 //!   - the members program in full ([`Zfs::datasets`]): 60 s plus 200 ms
-//!     for each of the pool's datasets as last counted, at most 40
+//!     for each of the pool's datasets as last counted, at most 35
 //!     minutes;
 //!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
 //!     dataset counted, at most 20 minutes;
@@ -234,7 +234,8 @@ pub struct Limits {
     /// 10 001 datasets, testing's run 45720225770).
     pub full_per_dataset: Duration,
     /// The most the members program in full is let run, however many
-    /// datasets: above its limit at 10 001 datasets (2060.2 s).
+    /// datasets: above its limit at 10 001 datasets (2060.2 s; the
+    /// lead's ruling on N2 of #153's review).
     pub full_most: Duration,
     /// The count of the datasets itself ([`Zfs::count`]), whatever their
     /// number.
@@ -249,7 +250,7 @@ impl Default for Limits {
             per_dataset: Duration::from_millis(100),
             most: Duration::from_secs(20 * 60),
             full_per_dataset: Duration::from_millis(200),
-            full_most: Duration::from_secs(40 * 60),
+            full_most: Duration::from_secs(35 * 60),
             count: Duration::from_secs(60),
         }
     }
