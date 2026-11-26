@@ -1,0 +1,90 @@
+N01 quiet: no verdict block KILLED 4
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: skzcut not exported for th
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: skzcut not exported for the che
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;session_end;log arare: skzcut not exported for t
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: skzcut not exported for the check: n
+N02 quiet: exempt in every case KILLED 1
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended (stat
+N03 quiet: dhook exempt outside a case KILLED 1
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended (status 3)
+N04 quiet: status not read KILLED 4
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemo
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_servi
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_serving:
+N06 quiet: a live daemon judged too KILLED 3
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_se
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict d
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_serving: skyzf
+N07 quiet: verdict, not the course dir KILLED 2
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case : verdict daemon_serv
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case : verdict daemon_serving: skyzf
+N08 quiet: another pin KILLED 3
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemo
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_stopp
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_stopped:
+N09 quiet: recover's rule (rig-error.txt) KILLED 1
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;session_end;log arare: case h1: verdict daemon_s
+N10 quiet: no log tail KILLED 3
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemo
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_servi
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_serving:
+N13 quiet: verdict before session_end KILLED 4
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;log arare: case course: verdict daemon_serving: s
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;log arare: case r1-k: verdict daemon_serving: skyzfsd 
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;log arare: skyzfsd serve 2 had ended (status 3) 
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;log arare: case course: verdict daemon_serving: skyzfsd ser
+N15 quiet: serve_end not waited KILLED 4
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemo
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_servi
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_serving:
+N17 quiet: the writer's bound a million tries SURVIVED 0
+N17b quiet: the agent's bound a million tries SURVIVED 0
+N18 quiet: the writer waited for in a loop KILLED 1
+    FAIL agent_quiet: an agent and a writer that do not end do not hold it: got 'waited 20 s', want 'bounded none stopped'
+N18b quiet: the agent waited for in a loop KILLED 1
+    FAIL agent_quiet: an agent and a writer that do not end do not hold it: got 'waited 20 s', want 'bounded none stopped'
+N20 z: timeout again KILLED 1
+    FAIL z: under lim: got '0/1', want '1/0'
+N21 z: its failure not an error KILLED 15
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL z: under lim: got '0/0', want '1/0'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+N21b z: no limit KILLED 1
+    FAIL z: under lim: got '0/0', want '1/0'
+N23 recover: an empty rig-error.txt exempt KILLED 1
+    FAIL recover: in dhook with no error of the rig's (empty), a daemon that ended is a verdict: got '', want 'daemon_serving'
+N24 late: not served again KILLED 1
+    FAIL late: landed, akill_serve, served again, the agent continued: got 'freeze;abg;kill -STOP;adump record-stopped;thaw;akill;kill -CONT;await publish
+N25 late: the agent left stopped KILLED 1
+    FAIL late: landed, akill_serve, served again, the agent continued: got 'freeze;abg;kill -STOP;adump record-stopped;thaw;akill;serve_again;await publis
+N26 end_daemon: SIGTERM twice KILLED 1
+    FAIL end_daemon: a stop that hangs, the hook's verdict, killed, and on: got 'verdict daemon_stopped: skyzfsd serve did not end 60 s after SIGTERM: lea
+R01 rounds: the idle of no length KILLED 2
+    FAIL: rounds list: the control as long as the read: got 'no', want 'yes'
+    FAIL: rounds holds: the control as long as the read: got 'no', want 'yes'
+R04 rounds: the reads' stalls from the controls SURVIVED 0
+R05 rounds: the medians swapped KILLED 1
+    FAIL: rounds holds: said, with the medians: got '0', want '1'
+X24h quiet: no session_end KILLED 8
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;lim 120 zpool export skzcut;log arare: skzcut exporte
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped watching up;lim 120 zpool export skzcut;log arare: skzcut
+    FAIL agent_quiet: no export with no daemon: got '0 none thawed stopped watching up;log arare: skzcut not exported for the check: no daemon serves its 
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;log arare: case course: verdict daemon_serving: s
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped watching up;log arare: case r1-k: verdict daemon_serving: skyzfsd 
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped watching up;log arare: skyzfsd serve 2 had ended (status 3) 
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;log arare: case course: verdict daemon_serving: skyzfsd ser
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped watching up;lim 120 zpool export skzcut;log arare: skzcut exported for the 

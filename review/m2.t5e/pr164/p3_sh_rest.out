@@ -1,0 +1,378 @@
+S16 dhook no freeze KILLED 1
+    FAIL dhook: carry, the store frozen first; no asked a verdict: got 'reserve --kill-at-upload carry-put:1;abg;thaw;serve_again;await publish 700;asked'
+S17 holds not read before release KILLED 1
+    FAIL asettle: snap/T absent, a retry; its name published; the hold read, then let go; the kill in the line: got 'acmd settle settle --limit-s 600 --ag
+U11 reserve: hung stop not killed KILLED 16
+    FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got '', want 'serve_again;daemon_stopped'
+U13 acase: recover not called KILLED 1
+    FAIL acase: the scenario, recover, the settle; then no case: got 'scen_x arg --trace-points $T/ac/cases/c1/trace.tsv --kill-at kp:bef
+U14 destroy: goes on after its error KILLED 1
+    FAIL destroy: a release that fails: got 'freeze;abg;lim 60 zfs release;mark destroyed-d;frozen;thaw;await publish 700;
+U19 late: no asked verdict, goes on KILLED 1
+    FAIL late: no asked, a verdict, nothing more: got 'freeze;abg;kill -STOP;adump record-stopped;thaw;landed', want 'freeze;abg;asked'
+U30 serve_log: always serve-K KILLED 1
+    FAIL serve_log: the first instance: got '/r/serve-1.log', want '/r/serve.log'
+V01 rig_error: hook 0 passes KILLED 1
+    FAIL rig_error: a hook that ends 3: got '3 hook: zfs failed; rig error;', want '2 hook: zfs failed; rig error;'
+V02 rig_error: hook not cleared KILLED 1
+    FAIL rig_error: the hook's own rig_error ends it, once: got '139 hook: first;hook: again;hook: again;hook: again;hook: again;hook: again;hook: again;h
+V05 rig_error: hook any non-zero kept KILLED 1
+    FAIL rig_error: a hook that ends 3: got '3 hook: zfs failed; rig error;', want '2 hook: zfs failed; rig error;'
+S18r destroy keeps hold KILLED 2
+    FAIL destroy: release, destroy, both bounded: got 'freeze;abg;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 700;
+    FAIL destroy: a release that fails: got 'freeze;abg;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 700;
+U05r recover: no SIGCONT SURVIVED 0
+U05q quiet: no SIGCONT SURVIVED 0
+X01 akill: never a verdict KILLED 2
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+X02 akill: status not taken KILLED 2
+    FAIL akill_serve: a serving daemon, killed: got 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: serve died', want 'n
+    FAIL akill_serve: a daemon that had ended 9: got 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: serve died', want '
+X03 restart: kill_serve again KILLED 1
+    FAIL restart: killed at asked, the store thawed, served again: got 'freeze;abg;thaw;snaprow t1 between.txt;serve_again;await publish 700;', want 'free
+X04 late: kill_serve again KILLED 1
+    FAIL late: landed, akill_serve, served again, the agent continued: got 'freeze;abg;kill -STOP;adump record-stopped;thaw;kill_serve;serve_again;kill -C
+X04b late: the daemon not killed KILLED 1
+    FAIL late: landed, akill_serve, served again, the agent continued: got 'freeze;abg;kill -STOP;adump record-stopped;thaw;serve_again;kill -CONT;await p
+X05 recover: the exemption for every scenario KILLED 3
+    FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+X06 recover: the exemption but in plain KILLED 2
+    FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+X06b recover: dhook always exempt KILLED 2
+    FAIL recover: in dhook with no error of the rig's (none), a daemon that ended is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in dhook with no error of the rig's (empty), a daemon that ended is a verdict: got '', want 'daemon_serving'
+X07 destroy: no asked never a verdict KILLED 1
+    FAIL destroy: no asked with no kill is a verdict: got '', want 'asked'
+X08 restart: no asked never a verdict KILLED 1
+    FAIL restart: no asked with no kill: got 'freeze;abg;thaw;await publish 700;', want 'freeze;abg;thaw;await publish 700;asked'
+X09 destroy: wait 300 again KILLED 16
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL destroy: release, destroy, both bounded: got 'freeze;abg;lim 60 zfs release;lim 60 zfs destroy;mark destroyed-d;frozen;thaw;await publish 300;
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+X10 tooold: wait 300 again KILLED 17
+    FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+X11 both: wait 300 again SURVIVED 0
+X12 asettle: no list of the snapshots after KILLED 17
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL asettle: the snapshots after the case: got 'adump record-before;acmd settle;published t1;adump record-after;k1	plain	-	0	t1
+    FAIL asettle: a list of the snapshots that fails: got 'adump record-before;acmd settle;published t1;adump record-after;k1	plain	-	0	t1
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+X12b asettle: the list before the retry KILLED 14
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+X13 acase: CDIR kept KILLED 13
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL acase: the scenario, recover, the settle; then no case: got 'scen_x arg --trace-points $T/ac/cases/c1/trace.tsv --kill-at kp:bef
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+X14 begin: no daemon hook KILLED 1
+    FAIL agent_begin: the lists of the course before are gone; the course's hooks set: got 'cases.tsv: published.tsv: published-gone.tsv: points-error.tsv
+X15 daemon_wrong: no course dir KILLED 3
+    FAIL daemon_wrong: after the cases, the course's: got 'went on none', want 'went on none
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped watching up;session_end;log arare: case q2: verdict daemon_se
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped watching up;session_end;log arare: case q2: verdict daemon_serving: sky
+X16 judged: no quiet KILLED 1
+    FAIL agent_judged: quiet, then the check; no case under way named none: got '1 check; none	zfs failed', want '1 quiet;check; none	zfs failed'
+X17 judged: quiet only with no check KILLED 15
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_judged: quiet, then the check; no case under way named none: got '1 check; none	zfs failed', want '1 quiet;check; none	zfs failed'
+X18 quiet: the agent not killed KILLED 23
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_quiet: everything put away, the pool exported: got '0 29399 left thawed stopped watching up;session_end;lim 120 zpool export skzcut;log ara
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 29629 left thawed stopped watching up;session_end;lim 120 zpool export skzcut
+    FAIL agent_quiet: no export with no daemon: got '0 29866 left thawed stopped watching up;session_end;log arare: skzcut not exported for the check: no 
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 30110 left thawed stopped watching up;session_end;log arare: case course: verdict
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 30355 left thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 30579 left thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 30797 left thawed stopped watching up;session_end;log arare: case course: verdict daemon_se
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 31092 left thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut
+X19 quiet: the store not thawed KILLED 20
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none 1 stopped watching session_end;lim 120 zpool export skzcut;log arare: skzcut exp
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none 1 stopped watching session_end;lim 120 zpool export skzcut;log arare: sk
+    FAIL agent_quiet: no export with no daemon: got '0 none 1 stopped watching session_end;log arare: skzcut not exported for the check: no daemon serves 
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none 1 stopped watching session_end;log arare: case course: verdict daemon_servin
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none 1 stopped watching session_end;log arare: case r1-k: verdict daemon_serving: skyz
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none 1 stopped watching session_end;log arare: skyzfsd serve 2 had ended (status
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none 1 stopped watching session_end;log arare: case course: verdict daemon_serving: skyzfsd
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none 1 stopped watching session_end;lim 120 zpool export skzcut;log arare: skzcut exported for 
+X20 quiet: the watcher left paused KILLED 22
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped paused up;session_end;lim 120 zpool export skzcut;log arare: skzc
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped paused up;session_end;lim 120 zpool export skzcut;log ara
+    FAIL agent_quiet: no export with no daemon: got '0 none thawed stopped paused up;session_end;log arare: skzcut not exported for the check: no daemon s
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 none thawed stopped paused up;session_end;log arare: case course: verdict daemon_
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 none thawed stopped paused up;session_end;log arare: case r1-k: verdict daemon_serving
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 none thawed stopped paused up;session_end;log arare: skyzfsd serve 2 had ended (
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 none thawed stopped paused up;session_end;log arare: case course: verdict daemon_serving: s
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped paused up;session_end;lim 120 zpool export skzcut;log arare: skzcut exporte
+X21 quiet: the writer not asked to stop KILLED 3
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict daemon_se
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped watching up;session_end;log arare: case course: verdict d
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_serving: skyzf
+X22 quiet: the export fatal (z) KILLED 18
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: skzcut did not export for the 
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped watching up;session_end;log arare: skzcut did not export 
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped watching up;session_end;log arare: skzcut did not export for the check: tes
+X23 quiet: no export KILLED 3
+    FAIL agent_quiet: everything put away, the pool exported: got '0 none thawed stopped watching up;session_end;log arare: skzcut exported for the check 
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 none thawed stopped watching up;session_end;log arare: skzcut exported for th
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 none thawed stopped watching up;session_end;log arare: skzcut exported for the check after the 
+X24 quiet: no session_end BADPLANT 0
+X25 quiet: the writer waited for unbounded KILLED 1
+    FAIL agent_quiet: an agent and a writer that do not end do not hold it: got 'waited 20 s', want 'bounded none stopped'
+X26 quiet: the agent waited for unbounded KILLED 1
+    FAIL agent_quiet: an agent and a writer that do not end do not hold it: got 'waited 20 s', want 'bounded none stopped'
+X27 quiet: AGENT_PID kept KILLED 26
+    FAIL recover: in destroy, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in gone, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL agent_quiet: everything put away, the pool exported: got '0 6443 thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: sk
+    FAIL agent_quiet: a pool that does not export is said, not fatal: got '0 6472 thawed stopped watching up;session_end;lim 120 zpool export skzcut;log a
+    FAIL agent_quiet: no export with no daemon: got '0 6514 thawed stopped watching up;session_end;log arare: skzcut not exported for the check: no daemon
+    FAIL agent_quiet: the daemon ended by itself, outside a case: got '0 6551 thawed stopped watching up;session_end;log arare: case course: verdict daemo
+    FAIL agent_quiet: the daemon ended by itself, in a case: got '0 6598 thawed stopped watching up;session_end;log arare: case r1-k: verdict daemon_servi
+    FAIL agent_quiet: the daemon ended in a dhook case, said only: got '0 6638 thawed stopped watching up;session_end;log arare: skyzfsd serve 2 had ended
+    FAIL agent_quiet: dhook's exemption only in a case: got '0 6673 thawed stopped watching up;session_end;log arare: case course: verdict daemon_serving:
+    FAIL agent_quiet: a serving daemon, no verdict: got '0 6721 thawed stopped watching up;session_end;lim 120 zpool export skzcut;log arare: skzcut expor
+    FAIL agent_quiet: an agent and a writer that do not end do not hold it: got 'bounded 6757 stopped', want 'bounded none stopped'
+Y01 cleanup: no hook KILLED 16
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL cleanup: errexit with a hook that finds a verdict: got '1 lim 120 zpool export -f skzcut;', want '1 hook: a command failed (status 1); the job lo
+    FAIL cleanup: errexit with a hook that finds none: got '1 lim 120 zpool export -f skzcut;', want '2 hook: a command failed (status 1); the job log nam
+Y02 cleanup: hook not cleared before it runs SURVIVED 0
+Y03 cleanup: the hook's status kept as is KILLED 1
+    FAIL cleanup: errexit with a hook that finds none: got '0 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;rig e
+Y04 cleanup: no line KILLED 2
+    FAIL cleanup: errexit with a hook that finds a verdict: got '1 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;
+    FAIL cleanup: errexit with a hook that finds none: got '2 hook: a command failed (status 1); the job log names it;lim 120 zpool export -f skzcut;', wa
+Y05 daemon_wrong: no hook, goes on KILLED 2
+    FAIL daemon_wrong: no hook, the rig's error: got 'went on none', want 'rig error: ended with 1'
+    FAIL end_daemon: a stop that ends 1, with no hook: got 'went on, detached yes', want 'rig error: skyzfsd serve ended with 1 on SIGTERM: lease kept'
+Y06 serve_start: no verdict KILLED 1
+    FAIL serve_start: ended before ready, the hook's verdict first: got 'rig error: skyzfsd serve 2 ended (status 10) before it was ready: no lease', want
+Y07 serve_start: no status KILLED 2
+    FAIL serve_start: ended before ready, with no hook: got 'rig error: skyzfsd serve 2 ended (status unknown) before it was ready: no lease', want 'rig e
+    FAIL serve_start: ended before ready, the hook's verdict first: got 'verdict daemon_ready: skyzfsd serve 2 ended (status unknown) before it was ready:
+Y07b serve_start: verdict, and goes on KILLED 1
+    FAIL serve_start: ended before ready, the hook's verdict first: got 'verdict daemon_ready: skyzfsd serve 2 ended (status 10) before it was ready: no l
+Y08 end_daemon: a stop not 0, the rig's error KILLED 1
+    FAIL end_daemon: a stop that ends 1, the hook's verdict, and on: got 'rig error: skyzfsd serve ended with 1 on SIGTERM: lease kept', want 'verdict dae
+Y09 end_daemon: a hung stop, the rig's error KILLED 1
+    FAIL end_daemon: a stop that hangs, the hook's verdict, killed, and on: got 'rig error: skyzfsd serve did not end 60 s after SIGTERM', want 'verdict d
+Y10 end_daemon: a hung stop not killed KILLED 1
+    FAIL end_daemon: a stop that hangs, the hook's verdict, killed, and on: got 'verdict daemon_stopped: skyzfsd serve did not end 60 s after SIGTERM: lea
+Y11 end_daemon: the first log KILLED 17
+    FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving'
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+    FAIL end_daemon: a stop that ends 1, with no hook: got 'rig error: skyzfsd serve ended with 1 on SIGTERM: ', want 'rig error: skyzfsd serve ended with
+    FAIL end_daemon: a stop that ends 1, the hook's verdict, and on: got 'verdict daemon_stopped: skyzfsd serve ended with 1 on SIGTERM: 
+Y12 end: hooks cleared after the check KILLED 1
+    FAIL end: the hooks cleared before the check: got '0', want '1'
+Y13 serve_start: SERVE_LOG not set KILLED 14
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+Y14 end_daemon: a stop not 0 passes KILLED 2
+    FAIL end_daemon: a stop that ends 1, with no hook: got 'went on, detached yes', want 'rig error: skyzfsd serve ended with 1 on SIGTERM: lease kept'
+    FAIL end_daemon: a stop that ends 1, the hook's verdict, and on: got 'went on, detached yes', want 'verdict daemon_stopped: skyzfsd serve ended with 1
+done

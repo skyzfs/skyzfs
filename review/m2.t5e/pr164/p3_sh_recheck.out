@@ -1,0 +1,20 @@
+U11 reserve: hung stop not killed KILLED 1
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got '', want 'serve_again;daemon_stopped'
+X10 tooold: wait 300 again SURVIVED 0
+X12b asettle: the list before the retry KILLED 14
+    FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again'
+    FAIL reserve: a stop that ends 0: got ' ', want ' serve_again'
+    FAIL frozen_until_withdrawn: an agent still running that has not withdrawn: got ' ', want 'withdrew '
+    FAIL frozen_until_withdrawn: an agent killed before, a settle withdraws: got ' ', want 'acmd settle-frozen settle --limit-s 30 '
+    FAIL gone: no name before the kill is the case's error, not the course's: got '', want 'no name in the trace before the kill'
+    FAIL adump: a record that does not read: got ' |  | ', want 'volume aaaa | skyzfs-agent: d: the record is corrupt | 6'
+    FAIL both: the daemon serving, killed by the rig: got '', want 'killed_rc	137'
+    FAIL both: the daemon had ended 0: got '', want 'killed_rc	0'
+    FAIL both: the daemon had ended 7: got '', want 'killed_rc	7'
+    FAIL akill_serve: a daemon that had ended 0: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 0) before the rig's kill: ser
+    FAIL akill_serve: a daemon that had ended 9: got 'none : ', want 'none daemon_serving: skyzfsd serve 2 had ended (status 9) before the rig's kill: ser
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+    FAIL point_reached: the point: got '', want 'reached'
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+Y13 serve_start: SERVE_LOG not set SURVIVED 0
+done

@@ -1,0 +1,5 @@
+S03 case_name empty name KILLED 1
+    FAIL case_name: a line with an empty name does not clear T: got '', want 't1'
+U12 reserve: hung stop not a verdict KILLED 1
+    FAIL reserve: a stop that hangs, a verdict, killed, served again: got 'serve_again;', want 'serve_again;daemon_stopped'
+done
