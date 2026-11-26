@@ -769,36 +769,41 @@ def a1_premise(g, marks, rows, txgs):
     return True, said + f': assist {crossed[0]} took it across G, and every group from G on that wrote was an assist\'s'
 
 
-def pace_faults(rows, accepted_ns, after, end=None):
+def pace_faults(rows, accepted_ns, after, end=None, name=None):
     """A publish's assists against the decided pace -> (faults, slow).
-    AFTER is the agent's wait A in s, END its end mark (ns, group, verb).
+    AFTER is the agent's wait A in s, END its end mark (ns, group, verb),
+    NAME the publish's name (#145's third look, N1: a publish with no
+    assist has no row to take it from).
 
     The faults are floors, the premise's verdict (#145's G2, and the
     lead's answer to the next look's S1): the first assist at least A
     after the acceptance; each of the next ASSIST_BURST - 1 at least the
     agent's pause after the end of the one before (its loop's sleep(1)
     after the sync, as #144's engine pauses after `assisted_ms`: 1 s at
-    the decided A of ASSIST_AFTER s, scaled with A so a test's clock
-    scales too); the rest at least 0.95 A after the one before, start to
-    start (the agent measures its wait from a kstat read, not from the
-    set).
+    the decided A of ASSIST_AFTER s or more, since neither agent's pause
+    grows with A, and scaled down with a shorter A so a test's clock
+    scales too: #145's third look, S5); the rest at least 0.95 A after
+    the one before, start to start (the agent measures its wait from a
+    kstat read, not from the set).
 
     The slow ones are each gap more than 3 times its decided value
     (the first over 3 A after the acceptance; a pause in the burst over
     3 pauses; a gap past it over 3 A; a publish that ended `pending`
     over 3 A after its last assist's end, or its acceptance with none).
     They are only an observation, obs_assist_gap_over_3x: a slow runner
-    must not make a verdict flaky."""
+    must not make a verdict flaky. Their seconds have two decimals, so
+    that a gap just over 3 times its value does not print as 3 times it
+    (N1)."""
     bad, slow = [], []
     a = after * 1e9
-    pause = a / publish_agent.ASSIST_AFTER
-    name = rows[0]['name'] if rows else 'the publish'
+    pause = min(1e9, a / publish_agent.ASSIST_AFTER)
+    name = name or (rows[0]['name'] if rows else 'the publish')
     if rows:
         first = rows[0]['t0'] - accepted_ns
         if first < a:
             bad.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance, before {after} s")
         if first > 3 * a:
-            slow.append(f"{name}'s first assist {first / 1e9:.1f} s after its acceptance")
+            slow.append(f"{name}'s first assist {first / 1e9:.2f} s after its acceptance")
     for k in range(1, len(rows)):
         if k < publish_agent.ASSIST_BURST:
             gap = rows[k]['t0'] - rows[k - 1]['t1']
@@ -806,19 +811,35 @@ def pace_faults(rows, accepted_ns, after, end=None):
                 bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.2f} s after the end of the one before, "
                            f'in the burst, before the pause of {pause / 1e9:g} s')
             if gap > 3 * pause:
-                slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the end of the one before, in the burst")
+                slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.2f} s after the end of the one before, in the burst")
             continue
         gap = rows[k]['t0'] - rows[k - 1]['t0']
         if gap < 0.95 * a:
             bad.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before, past the burst")
         if gap > 3 * a:
-            slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.1f} s after the one before")
+            slow.append(f"{name}'s assist {k + 1} {gap / 1e9:.2f} s after the one before")
     if end is not None and end[2] == 'pending':
         last = rows[-1]['t1'] if rows else accepted_ns
         if end[0] - last > 3 * a:
             since = 'its last assist' if rows else 'its acceptance, with no assist'
-            slow.append(f'{name} ended pending {(end[0] - last) / 1e9:.1f} s after {since}')
+            slow.append(f'{name} ended pending {(end[0] - last) / 1e9:.2f} s after {since}')
     return bad, slow
+
+
+def assists_paced(rows, marks, names=('a1', 'a2')):
+    """Each accepted publish of NAMES against the decided pace (MARKS as
+    read_marks gives them) -> ([(name, faults)], slow): the faults per
+    publish, and every publish's slow gaps together, a1's and a2's
+    alike (#145's third look, T5: a1's were once replaced by a2's)."""
+    faults, slow = [], []
+    for t in names:
+        if 'accepted' in marks.get(t, {}):
+            early, late = pace_faults([r for r in rows if r['name'] == t], marks[t]['accepted'][0],
+                                      marks[t]['accepted'][2], marks[t].get('end'), t)
+            faults.append((t, early))
+            slow += late
+    return faults, slow
+
 
 def written_groups(text, lo, hi):
     """The txgs kstat -> the groups committed after LO up to HI that wrote
@@ -1132,15 +1153,11 @@ def main():
                 if a1 is None:
                     raise RigError('a1 was accepted and has no request in published.tsv')
                 premise('premise_a1_needed_the_assist', *a1_premise(a1['group'], marks['a1'], mine, txgs))
-            slow = []
-            for t in ('a1', 'a2'):
-                if 'accepted' in marks.get(t, {}):
-                    early, late = pace_faults([r for r in rows if r['name'] == t], marks[t]['accepted'][0],
-                                              marks[t]['accepted'][2], marks[t].get('end'))
-                    premise(f'premise_{t}_assists_at_the_decided_pace', not early,
-                            '; '.join(early) or f"{t}'s assists from {marks[t]['accepted'][2]} s after its "
-                            f'acceptance, {publish_agent.ASSIST_BURST} at first, then spaced, none early')
-                    slow += late
+            faults, slow = assists_paced(rows, marks)
+            for t, early in faults:
+                premise(f'premise_{t}_assists_at_the_decided_pace', not early,
+                        '; '.join(early) or f"{t}'s assists from {marks[t]['accepted'][2]} s after its "
+                        f'acceptance, {publish_agent.ASSIST_BURST} at first, then spaced, none early')
             put('obs_assist_gap_over_3x', 'INFO', 'rig', '; '.join(slow) or
                 'no gap of the assists over 3 times its decided value (first, burst, spaced, end)')
             holds('pin_assist_writes_a_group',

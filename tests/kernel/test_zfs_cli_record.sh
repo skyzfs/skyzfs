@@ -184,6 +184,7 @@ mkdir -p "$WORK"
 SCALE_END=$(($(date +%s) + 600))
 FAKE_ZFS_CALLS=$T/zfs.calls record_pool rig skzq > /dev/null 2> "$T/pins.err"
 record_none none skznone > /dev/null 2>> "$T/pins.err"
+FAKE_ZFS_CALLS=$T/zfs.calls record_reads read skzrd "$WORK/rd.img" > /dev/null 2>> "$T/pins.err"
 export FAKE_LIST_RC=1 # the program took no @t: the CLI's
 export FAKE_MOUNTED=1 ZCR_WRITER_MARGIN=0.3
 mkdir -p "$WORK/mnt/skzqs"
@@ -279,6 +280,37 @@ for k in $ODD_KINDS; do
     check "odd $k: destroyed after" "$(grep -c "^destroy -r skzq/odd-$k$" "$T/zfs.calls")" 1
 done
 check "odd: fourteen kinds" "$(wc -w <<< "$ODD_KINDS")" 14
+# The manifest's read by the CLI (M2.6c-5) on skzrd, in each state, as
+# coding asked: the commands, LC_ALL=C, the states in order.
+for st in tree not odd counts none; do
+    check "read $st: list" "$(words "read-$st-list")" "$LIST skzrd "
+    check "read $st: names" "$(words "read-$st-get-names")" \
+        "zfs get -r -H -p -s local -t filesystem,volume -o name,property all skzrd "
+    check "read $st: values" "$(words "read-$st-get-values")" \
+        "zfs get -r -H -p -s local -t filesystem,volume -o name,property,value all skzrd "
+    for r in list get-names get-values; do
+        check "read $st $r: LC_ALL=C" "$(cut -d' ' -f1 "$OUT/read-$st-$r/stdout")" C
+    done
+done
+check "read: the states in order" \
+    "$(order read-tree-get-values read-not-list)$(order read-not-get-values read-odd-list)$(order read-odd-get-values read-counts-list)$(order read-counts-get-values read-none-list)" yesyesyesyes
+check "read tree: @t, then late made" "$(grep -e '^snapshot -r skzrd@t$' -e '^create skzrd/late$' "$T/zfs.calls" | tr '\n' '|')" \
+    "snapshot -r skzrd@t|create skzrd/late|snapshot -r skzrd@t|snapshot -r skzrd@t|"
+check "read: a value set" "$(words read-value-set)" "zfs get -H -p -o value skyzfs:note skzrd/child "
+check "read: a value unset" "$(words read-value-unset)" "zfs get -H -p -o value skyzfs:unset skzrd/child "
+check "read: a dataset missing" "$(words read-value-missing)" "zfs get -H -p -o value skyzfs:note skzrd/missing "
+check "read not: @t destroyed between" "$(grep -c '^destroy -r skzrd@t$' "$T/zfs.calls")" 2
+for k in $READ_KINDS; do
+    check "read odd $k: set" "$(words "read-odd-set-$k" | tr '\n' '|')" "zfs set skyzfs:v=$(odd_value "$k" skzrd | tr '\n' '|') skzrd/odd-$k "
+    check "read odd $k: its value alone" "$(words "read-odd-value-$k")" "zfs get -H -p -o value skyzfs:v skzrd/odd-$k "
+    check "read odd $k: destroyed before the counts" "$(grep -c "^destroy -r skzrd/odd-$k$" "$T/zfs.calls")" 1
+done
+check "read odd: the kinds coding asked for" "$READ_KINDS" "nl tab utf8 raw forge empty dash cr spaces bslash len8191"
+check "read counts: the limits" "$(words read-counts-set)" "zfs set filesystem_limit=100 snapshot_limit=100 skzrd/child "
+check "read counts: the counts' values" "$(words read-counts-fs)$(words read-counts-snap)" \
+    "zfs get -H -p -o value filesystem_count skzrd/child zfs get -H -p -o value snapshot_count skzrd/child "
+check "read none: the pool destroyed before" "$(grep -c 'destroy -f skzrd' "$OUT/create-skzrd.log")" 1
+check "read none: a value" "$(words read-none-value)" "zfs get -H -p -o value skyzfs:note skzrd/child "
 check "odd: empty is no byte" "$(odd_value empty skzq | wc -c)" 0
 check "odd: dash" "$(odd_value dash skzq | od -An -c | tr -s ' ')" " -"
 check "odd: a carriage return" "$(odd_value cr skzq | od -An -c | tr -s ' ')" " o n e \r t w o"

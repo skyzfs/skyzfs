@@ -576,7 +576,10 @@ is "pidle counts only the groups that wrote (ZFS 2.4 commits empty ones), and an
 # turns during the run adds one (the next look's B2: 3 to 8 runs in 100
 # answered off by one). A pidle that never sleeps would then loop for
 # ever, so the run is a bash of its own under a limit. -> "idle after N s,
-# K sleeps", "error after N s, K sleeps", or "no end in 20 s".
+# K sleeps", "error after N s, K sleeps", "no end in 20 s" for the
+# limit's 124, or "ended with N" for any other failure of the inner bash
+# (#145's third look, N2: a pidle the sed did not find read as a
+# time-out).
 pidle_body='
     unset SECONDS
     mkdir -p "$T/kstat/p"
@@ -592,15 +595,19 @@ pidle_body='
     POOL=p NAME=t
     eval "${PIDLE_FN//\/proc\/spl\/kstat\/zfs/$T/kstat}"
     SECONDS=0
-    pidle "$1"
+    pidle "$1" || exit $?
     echo "idle after $SECONDS s, $slept sleeps"'
 pidle_run() { # LIMIT [grow]: with grow, a group that wrote at every sleep
     rm -rf "${T:?}/kstat"
-    T=$T PIDLE_FN=$pidle_fn GROW=${2:-} timeout 20 bash -c "$pidle_body" pidle_run "$1" || echo "no end in 20 s"
+    local rc=0
+    T=$T PIDLE_FN=$pidle_fn GROW=${2:-} timeout 20 bash -c "$pidle_body" pidle_run "$1" || rc=$?
+    case $rc in 0) ;; 124) echo "no end in 20 s" ;; *) echo "ended with $rc" ;; esac
 }
 is "pidle: a pool whose newest group that wrote stays put is idle after 12 s, not before" "$(pidle_run 120)" "idle after 12 s, 12 sleeps"
 is "pidle: a pool that writes a group every second is the rig's error at its limit" "$(pidle_run 30 grow)" \
     "error after 30 s, 30 sleeps"
+# The diagnosis itself (N2): a pidle that is not there ends 127, not 124.
+is "pidle_run says how the inner bash ended" "$(pidle_fn='' pidle_run 120 2> /dev/null)" "ended with 127"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

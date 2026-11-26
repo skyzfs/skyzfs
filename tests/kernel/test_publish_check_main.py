@@ -846,11 +846,11 @@ class Assist(unittest.TestCase):
         self.assertEqual(lines['obs_assist_gap_over_3x'][0], 'INFO')
         self.assertIn('no gap', lines['obs_assist_gap_over_3x'][1])
         for change, said in ((marks(self.MARKS.replace('a2\tend\t1058', 'a2\tend\t1068')),
-                              'a2 ended pending 0.0 s after its last assist'),
+                              'a2 ended pending 0.00 s after its last assist'),
                              (marks(self.MARKS.replace('a2\taccepted\t1020', 'a2\taccepted\t1004')),
-                              "a2's first assist 0.0 s after its acceptance"),
+                              "a2's first assist 0.00 s after its acceptance"),
                              (assists(self.RIGHT.replace('a2\t1029\t1052', 'a2\t1045\t1052')),
-                              "a2's assist 3 0.0 s after the end of the one before, in the burst")):
+                              "a2's assist 3 0.00 s after the end of the one before, in the burst")):
             with self.subTest(said=said):
                 rc2, lines = run_course('passist', change)
                 self.assertEqual((rc2, lines['obs_assist_gap_over_3x'][0]), (rc, 'INFO'))

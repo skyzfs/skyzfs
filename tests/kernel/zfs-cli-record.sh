@@ -274,6 +274,28 @@
 #   remove-status, remove-status-g, remove, remove-in-progress[-g],
 #   remove-done[-g]        skzqr's second file removed
 #
+# and, on a pool of their own (skzrd, a file), the manifest's read by the
+# CLI as the adapter runs it (M2.6c-5): read-S-list (zfs list -r -H -p -t
+# filesystem,volume,snapshot -o name,guid,type,createtxg P),
+# read-S-get-names and read-S-get-values (zfs get -r -H -p -s local -t
+# filesystem,volume -o name,property[,value] all P), in each state S:
+#
+#   tree     P, P/child (skyzfs:note local) and the volume P/vol with
+#            @t, skyzfs:assist on P, and P/late made after @t, without
+#            it; then read-value-set, read-value-unset and
+#            read-value-missing: zfs get -H -p -o value of skyzfs:note on
+#            P/child, of skyzfs:unset (never set) on it, and of
+#            skyzfs:note on P/missing (no such dataset)
+#   not      the same with no @t
+#   odd      P/odd-K with skyzfs:v of each kind K of READ_KINDS
+#            (read-odd-set-K, odd_value's), all with @t; and
+#            read-odd-value-K, zfs get -H -p -o value skyzfs:v P/odd-K
+#   counts   filesystem_limit and snapshot_limit set on P/child
+#            (read-counts-set), so that filesystem_count and
+#            snapshot_count are tracked, with @t; read-counts-fs and
+#            read-counts-snap the two counts' values on P/child
+#   none     P destroyed: the three reads and read-none-value
+#
 # and once: `nocacheflush` (the module parameter), `version` and
 # `locale`. On the pool that does not exist, every command the adapter
 # runs: status, status-g, get, assist-set, assist-sync, the three
@@ -582,6 +604,70 @@ record_odd() {
     for k in $ODD_KINDS; do
         lim 120 zfs destroy -r "$p/odd-$k" > /dev/null 2>&1
     done
+}
+
+# The manifest's read by the CLI (M2.6c-5), as the adapter runs it: the
+# list of every file system, volume and snapshot, and the locally set
+# properties, names alone and with their values.
+READ_LIST="zfs list -r -H -p -t filesystem,volume,snapshot -o name,guid,type,createtxg"
+READ_NAMES="zfs get -r -H -p -s local -t filesystem,volume -o name,property all"
+READ_VALUES="zfs get -r -H -p -s local -t filesystem,volume -o name,property,value all"
+# The odd values coding asked for (odd_value's kinds).
+READ_KINDS="nl tab utf8 raw forge empty dash cr spaces bslash len8191"
+# read_pass NAME POOL: the three reads, NAME-list, NAME-get-names and
+# NAME-get-values.
+read_pass() {
+    # shellcheck disable=SC2086 # the commands' words
+    rec "$1-list" $READ_LIST "$2"
+    # shellcheck disable=SC2086
+    rec "$1-get-names" $READ_NAMES "$2"
+    # shellcheck disable=SC2086
+    rec "$1-get-values" $READ_VALUES "$2"
+}
+# record_reads PREFIX POOL IMAGE: the read records (the header's
+# PREFIX-*), on a pool of their own on IMAGE, then on that pool once
+# destroyed (a pool that does not exist). Setup steps that fail are said
+# in about.txt.
+record_reads() {
+    local x=$1 p=$2 img=$3 k
+    truncate -s 1G "$img"
+    if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$p" -O compression=off \
+        "$p" "$img" > "$OUT/create-$p.log" 2>&1; then
+        echo "$x: zpool create $p failed (create-$p.log): no read records but none's" >> "$OUT/about.txt"
+    else
+        {
+            lim 120 zfs create "$p/child" && lim 120 zfs create -V 64M "$p/vol" &&
+                lim 120 zfs set "$ASSIST=1700000000000" "$p" && lim 120 zfs set skyzfs:note=local "$p/child" &&
+                lim 120 zfs snapshot -r "$p@t" && lim 120 zfs create "$p/late"
+        } >> "$OUT/create-$p.log" 2>&1 || echo "$x: the tree of $p was not all made (create-$p.log)" >> "$OUT/about.txt"
+        read_pass "$x-tree" "$p"
+        rec "$x-value-set" zfs get -H -p -o value skyzfs:note "$p/child"
+        rec "$x-value-unset" zfs get -H -p -o value skyzfs:unset "$p/child"
+        rec "$x-value-missing" zfs get -H -p -o value skyzfs:note "$p/missing"
+        lim 120 zfs destroy -r "$p@t" >> "$OUT/create-$p.log" 2>&1 || echo "$x: destroy -r $p@t failed" >> "$OUT/about.txt"
+        read_pass "$x-not" "$p"
+        for k in $READ_KINDS; do
+            lim 120 zfs create -u "$p/odd-$k" >> "$OUT/create-$p.log" 2>&1
+            rec "$x-odd-set-$k" zfs set "skyzfs:v=$(odd_value "$k" "$p")" "$p/odd-$k"
+        done
+        lim 120 zfs snapshot -r "$p@t" >> "$OUT/create-$p.log" 2>&1 || echo "$x: the odd pool's @t failed" >> "$OUT/about.txt"
+        read_pass "$x-odd" "$p"
+        for k in $READ_KINDS; do
+            rec "$x-odd-value-$k" zfs get -H -p -o value skyzfs:v "$p/odd-$k"
+        done
+        lim 120 zfs destroy -r "$p@t" >> "$OUT/create-$p.log" 2>&1
+        for k in $READ_KINDS; do
+            lim 120 zfs destroy -r "$p/odd-$k" >> "$OUT/create-$p.log" 2>&1
+        done
+        rec "$x-counts-set" zfs set filesystem_limit=100 snapshot_limit=100 "$p/child"
+        lim 120 zfs snapshot -r "$p@t" >> "$OUT/create-$p.log" 2>&1 || echo "$x: the counts' @t failed" >> "$OUT/about.txt"
+        read_pass "$x-counts" "$p"
+        rec "$x-counts-fs" zfs get -H -p -o value filesystem_count "$p/child"
+        rec "$x-counts-snap" zfs get -H -p -o value snapshot_count "$p/child"
+        lim 180 zpool destroy -f "$p" >> "$OUT/create-$p.log" 2>&1 || echo "$x: zpool destroy $p failed" >> "$OUT/about.txt"
+    fi
+    read_pass "$x-none" "$p"
+    rec "$x-none-value" zfs get -H -p -o value skyzfs:note "$p/child"
 }
 
 # lines_line RECORD: how many lines RECORD's stdout has, in about.txt.
@@ -1028,7 +1114,7 @@ main() {
         set +e
         local p l
         [ -n "$ZINJECT" ] && lim 30 "$ZINJECT" -c all > /dev/null 2>&1
-        for p in skzq skzqm skzqr skzqs; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
+        for p in skzq skzqm skzqr skzqs skzrd; do lim 60 zpool destroy -f "$p" > /dev/null 2>&1; done
         command -v ublk > /dev/null && lim 60 ublk del -a > /dev/null 2>&1
         for l in "${LOOPS[@]}"; do losetup -d "$l" 2> /dev/null; done
         rm -rf "${OUT:?}/.catch"
@@ -1168,6 +1254,7 @@ main() {
     status remove-done skzqr
 
     record_none none skznone
+    record_reads read skzrd "$WORK/rd.img"
 
     # The programs' times on many file systems, when asked.
     local counts

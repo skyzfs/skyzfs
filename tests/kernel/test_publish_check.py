@@ -649,11 +649,11 @@ class Assist(unittest.TestCase):
         # Slow, observed and no fault: each gap over 3 times its value,
         # and a publish pending long after its last assist, or after its
         # acceptance with none.
-        for t0, end, said in (((30.1, 31.2), None, 'first assist 30.1 s after its acceptance'),
-                              ((10.0, 13.1), None, 'assist 2 3.1 s after the end of the one before, in the burst'),
-                              ((10.0, 11.1, 12.2, 42.3), None, 'assist 4 30.1 s after the one before'),
-                              ((10.0, 11.1, 12.2), (int(42.4 * s), 60, 'pending'), 'ended pending 30.2 s after its last'),
-                              ((), (int(30.1 * s), 60, 'pending'), 'ended pending 30.1 s after its acceptance, with no')):
+        for t0, end, said in (((30.1, 31.2), None, 'first assist 30.10 s after its acceptance'),
+                              ((10.0, 13.1), None, 'assist 2 3.08 s after the end of the one before, in the burst'),
+                              ((10.0, 11.1, 12.2, 42.3), None, 'assist 4 30.10 s after the one before'),
+                              ((10.0, 11.1, 12.2), (int(42.4 * s), 60, 'pending'), 'ended pending 30.18 s after its last'),
+                              ((), (int(30.1 * s), 60, 'pending'), 'ended pending 30.10 s after its acceptance, with no')):
             with self.subTest(t0=t0, end=end):
                 bad, slow = pc.pace_faults(rows(*t0), 0, 10.0, end)
                 self.assertEqual((bad, len(slow)), ([], 1), slow)
@@ -663,6 +663,61 @@ class Assist(unittest.TestCase):
         self.assertEqual(pc.pace_faults(rows(30.0, 33.02, 36.04, 66.04), 0, 10.0,
                                         (int(96.06 * s), 60, 'pending')), ([], []))
         self.assertEqual(pc.pace_faults(rows(10.0), 0, 10.0, (int(99 * s), 60, 'done')), ([], []))
+        # Just over 3 times prints as over it (#145's third look, N1).
+        bad, slow = pc.pace_faults(rows(10.0, 11.1, 12.2, 42.22), 0, 10.0)
+        self.assertEqual(bad, [])
+        self.assertIn('assist 4 30.02 s after the one before', slow[0])
+
+    def test_a_spaced_gap_between_0_95_a_and_a(self):
+        """#145's third look, T3: the spaced floor is 0.95 A, not A (plant
+        F9). A spaced gap of 9.6 s at A = 10 s, as replay F4 has, keeps the
+        pace; one of 9.4 s does not."""
+        s = 10**9
+
+        def rows(*t0):
+            return [{'name': 'a2', 't0': int(t * s), 't1': int((t + 0.02) * s)} for t in t0]
+        self.assertEqual(pc.pace_faults(rows(10.0, 11.1, 12.2, 21.8), 0, 10.0), ([], []))
+        self.assertTrue(pc.pace_faults(rows(10.0, 11.1, 12.2, 21.6), 0, 10.0)[0])
+
+    def test_the_burst_s_pause_does_not_grow_past_one_second(self):
+        """#145's third look, S5: neither agent's pause grows with A, so at
+        A over ASSIST_AFTER the burst's floor stays 1 s (replay V8b: the
+        stand-in's pace at A = 20 s, a pause of 1.1 s); a shorter A still
+        scales it down, for the fixtures' clock."""
+        s = 10**9
+
+        def rows(*t0, took=0.02):
+            return [{'name': 'a2', 't0': int(t * s), 't1': int((t + took) * s)} for t in t0]
+        self.assertEqual(pc.pace_faults(rows(20.0, 21.12, 22.24, 42.3), 0, 20.0), ([], []))
+        bad, _ = pc.pace_faults(rows(20.0, 20.9), 0, 20.0)
+        self.assertIn('before the pause of 1 s', bad[0])
+        bad, _ = pc.pace_faults(rows(5.0, 5.4), 0, 5.0)
+        self.assertIn('before the pause of 0.5 s', bad[0])
+        self.assertEqual(pc.pace_faults(rows(5.0, 5.6), 0, 5.0), ([], []))
+
+    def test_no_assist_names_its_publish(self):
+        """#145's third look, N1: a publish with no assist that ended
+        pending is named."""
+        s = 10**9
+        _, slow = pc.pace_faults([], 0, 10.0, (int(31 * s), 60, 'pending'), 'a1')
+        self.assertIn('a1 ended pending 31.00 s after its acceptance', slow[0])
+
+    def test_a1_s_slow_gaps_are_kept_beside_a2_s(self):
+        """#145's third look, T5 (plant F19: a2's slow gaps replaced
+        a1's)."""
+        s = 10**9
+        rows = [{'name': 'a1', 't0': int(40 * s), 't1': int(40.1 * s)},
+                {'name': 'a2', 't0': int(110 * s), 't1': int(110.1 * s)}]
+        marks = {'a1': {'accepted': (0, 50, 10.0)}, 'a2': {'accepted': (int(100 * s), 60, 10.0)}}
+        faults, slow = pc.assists_paced(rows, marks)
+        self.assertEqual(faults, [('a1', []), ('a2', [])])
+        self.assertEqual(len(slow), 1)
+        self.assertIn("a1's first assist 40.00 s", slow[0])
+        rows[1]['t0'], rows[1]['t1'] = int(150 * s), int(150.1 * s)
+        faults, slow = pc.assists_paced(rows, marks)
+        self.assertEqual([x[:9] for x in slow], ["a1's firs", "a2's firs"])
+        # A publish never accepted is not judged.
+        self.assertEqual(pc.assists_paced(rows, {'a2': marks['a2']})[0], [('a2', [])])
 
     def test_the_kstat_s_groups_that_wrote_and_those_that_did_not(self):
         txgs = KSTAT_HEAD + '41 1 C 0 0 4096 0 0\n42 1 C 0 0 0 0 0\n43 1 C 0 0 512 0 0\n44 1 S 0 0 0 0 0\n'
