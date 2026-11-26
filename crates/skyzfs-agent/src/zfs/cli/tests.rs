@@ -649,8 +649,8 @@ fn values_with_tabs_and_any_bytes_are_read_as_they_are() {
 /// values as printed, the values read alone, the datasets read again.
 /// Mutants: no read alone, the line before a suspect one not read
 /// again, a pair twice not suspect, a pair missing not read again, the
-/// order not compared, the last newline not taken off, all of it taken
-/// off.
+/// order not compared, or compared by dataset only, the last newline not
+/// taken off, all of it taken off.
 #[test]
 fn a_value_with_a_newline_is_read_again_alone() {
     struct Case {
@@ -716,6 +716,17 @@ fn a_value_with_a_newline_is_read_again_alone() {
             want: &[
                 ("tank", "a:1", b"p"),
                 ("tank/db", "a:2", b"q"),
+                ("tank/vol", "volsize", b"8192"),
+            ],
+        },
+        Case {
+            what: "one dataset's pairs read in another order (T2 of #157's review)",
+            pairs: "tank\ta:1\ntank\ta:2\ntank/vol\tvolsize\n",
+            values: b"tank\ta:2\tq\ntank\ta:1\tp\ntank/vol\tvolsize\t8192\n",
+            alone: &[("tank", "a:1", b"p\n"), ("tank", "a:2", b"q\n")],
+            want: &[
+                ("tank", "a:1", b"p"),
+                ("tank", "a:2", b"q"),
                 ("tank/vol", "volsize", b"8192"),
             ],
         },
@@ -1063,6 +1074,28 @@ fn datasets_that_cannot_be_read_are_an_error() {
             Err(ZfsError::NoPool),
             "{at}"
         );
+    }
+    // A child that does not exist, named by the same message, is no
+    // pool that does not exist (N5 of #157's review): an error that
+    // names the command and the child.
+    for gone in [
+        "cannot open 'tank/db': dataset does not exist\n",
+        "cannot open 'tank@skz-1': dataset does not exist\n",
+        "cannot open 'tank ': dataset does not exist\n",
+    ] {
+        for at in 0..3 {
+            let mut fake = manifest_reads(PAIRS, VALUES.as_bytes());
+            let words = [LIST_WORDS, PAIRS_WORDS, VALUES_WORDS][at];
+            fake.commands.remove(words);
+            fake.fails(words, 1, gone);
+            assert!(
+                matches!(
+                    cli(fake).datasets("tank", "skz-1"),
+                    Err(ZfsError::Other(why)) if why.contains(words) && why.contains(gone.trim_end())
+                ),
+                "{gone} {at}"
+            );
+        }
     }
     let mut fake = Fake::default();
     fake.fails(LIST_WORDS, 1, "cannot open 'tank': no such pool\n");

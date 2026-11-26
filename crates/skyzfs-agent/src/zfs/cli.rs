@@ -123,14 +123,20 @@
 //!   after the list: it is no member of the take, and is left out. The
 //!   engine's check reads the pool again after its take, and a pool that
 //!   changed between the two reads is taken again.
-//! - (2), (3) and a value read alone are three reads: a property set or
-//!   inherited between them can make a line of (3), or a value read
-//!   alone, wrong. The same check finds it, since the read before the
-//!   take and the read after it then differ. A value of `-` read alone
-//!   may be a property inherited meanwhile: so is it found.
+//! - (2), (3) and a value read alone are three reads, and the rule
+//!   above is exact only where nothing changes between them. A property
+//!   set or inherited between them can make a line of (3), or a value
+//!   read alone, wrong, and a value set between (2) and (3) whose
+//!   newlines make lines of other datasets can give a dataset a value
+//!   nobody set (N2 of #157's review). That needs write access to the
+//!   property it forges, and a change between the gets: the engine's
+//!   check sees it where the read before the take and the read after
+//!   it then differ, which is where the change does not land between
+//!   the gets of both reads alike. A value of `-` read alone may be a
+//!   property inherited meanwhile, and is found the same way.
 //! - A pool that does not exist: `zfs list` and `zfs get` say `dataset
 //!   does not exist` of the pool's name, which is [`ZfsError::NoPool`]
-//!   here.
+//!   here; the same message of another name is an error.
 //!
 //! # What was checked on ZFS, and what was not
 //!
@@ -199,10 +205,15 @@
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
 //! - The manifest's read by `zfs list` and `zfs get` ("The manifest's
-//!   read"): its output is not recorded yet. The parsers and the
-//!   matching are tested on output written by hand from OpenZFS's
-//!   sources: `zfs get -H` writes a value's bytes as they are, with a tab
-//!   between the columns and a newline after each line.
+//!   read"), recorded on Ubuntu 24.04 and 26.04 (testing's run
+//!   45738224324, #156; `recorded/read-*.json`): the list, the values
+//!   pass and each odd value read alone, on two pools that hold values
+//!   with a tab, a newline, a forged line, raw bytes and the longest
+//!   value ZFS sets ([`VALUE_MOST`]; one byte more is refused), and a
+//!   snapshot limit, under which `filesystem_count` and `snapshot_count`
+//!   are listed as local. The pairs pass was not recorded; its test makes
+//!   it from the values pass. `zfs get -H` writes a value's bytes as they
+//!   are, with a tab between the columns and a newline after each line.
 //! - The time limits ([`Limits`]), all provisional (the lead's rules on
 //!   M2.6c-2b and on N2 of #153's review):
 //!   - each of the manifest's three reads ([`Zfs::datasets`]): 60 s plus
@@ -378,21 +389,28 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// `zfs` with `args` within `limit`: its output's bytes where it
-    /// exits 0. Where `pool_named` (the command names the pool's root),
-    /// `dataset does not exist` is [`ZfsError::NoPool`]: `zfs list` and
-    /// `zfs get` say so of a pool that does not exist.
+    /// exits 0. Where the command names a `pool`, `cannot open 'POOL':
+    /// dataset does not exist` is [`ZfsError::NoPool`]: `zfs list` and
+    /// `zfs get` say so of a pool that does not exist. The same message
+    /// of a child or a snapshot is an error (N5 of #157's review).
     fn zfs_bytes(
         &mut self,
         args: &[&str],
         limit: Duration,
-        pool_named: bool,
+        pool: Option<&str>,
     ) -> Result<Vec<u8>, ZfsError> {
         let output = self.exec("zfs", args, &[], limit)?;
         if output.code == Some(0) {
             return Ok(output.stdout);
         }
-        if pool_named && says(&output.stderr, "dataset does not exist") {
-            return Err(ZfsError::NoPool);
+        if let Some(pool) = pool {
+            let gone = format!("cannot open '{pool}': dataset does not exist");
+            if String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .any(|line| line == gone)
+            {
+                return Err(ZfsError::NoPool);
+            }
         }
         Err(failure("zfs", args, &output, false))
     }
@@ -403,7 +421,7 @@ impl<H: Host> ZfsCli<H> {
     /// value longer than ZFS lets one be ([`VALUE_MOST`]), cannot be read.
     fn value(&mut self, name: &str, property: &str) -> Result<Vec<u8>, ZfsError> {
         let args = ["get", "-H", "-p", "-o", "value", property, name];
-        let out = self.zfs_bytes(&args, self.read_limit(), false)?;
+        let out = self.zfs_bytes(&args, self.read_limit(), None)?;
         match out.strip_suffix(b"\n") {
             Some(value) if value.len() <= VALUE_MOST => Ok(value.to_vec()),
             _ => Err(ZfsError::Other(format!(
@@ -727,14 +745,14 @@ impl<H: Host> Zfs for ZfsCli<H> {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError> {
         let limit = self.full_read_limit();
         let list = list_words(pool);
-        let listed = self.zfs_bytes(&list, limit, true)?;
+        let listed = self.zfs_bytes(&list, limit, Some(pool))?;
         let mut datasets = parse_listed(&listed, pool, t)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &list))))?;
         let get = get_words(pool, PAIRS);
-        let pairs = self.zfs_bytes(&get, limit, true)?;
+        let pairs = self.zfs_bytes(&get, limit, Some(pool))?;
         let pairs = parse_pairs(&pairs)
             .map_err(|why| ZfsError::Other(format!("{}: {why}", command("zfs", &get))))?;
-        let values = self.zfs_bytes(&get_words(pool, VALUES), limit, true)?;
+        let values = self.zfs_bytes(&get_words(pool, VALUES), limit, Some(pool))?;
         let (mut read, again) = match_values(&pairs, &values);
         let again = pairs
             .iter()

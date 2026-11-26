@@ -21,12 +21,18 @@
 //! (M2.6c-5), whose recordings are to come; its records are kept as
 //! they were recorded and not read.
 //!
+//! `recorded/read-<image>.json` holds the manifest's read by `zfs list`
+//! and `zfs get` (M2.6c-5), recorded by testing's run 45738224324 (#156):
+//! each pool's list, its values pass, and each odd value read alone. The
+//! pairs pass (`-o name,property`) was not recorded: the test makes it
+//! from the values pass ([`pairs_of`]).
+//!
 //! A `zpool status -P -g` was recorded beside some of the `-P` outputs
 //! only. A `-P` output without its own is read with the `-g` output of
 //! the same tree recorded nearest to it (`GUIDED`); only the shape of
 //! the tree and its GUIDs are taken from it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -52,6 +58,27 @@ const FULL_IMAGES: [(&str, &str); 2] = [
         "ubuntu-26.04",
         include_str!("recorded/full-ubuntu-26.04.json"),
     ),
+];
+
+/// The recordings of the manifest's read by `zfs list` and `zfs get`
+/// (testing's run 45738224324, #156), by image: each pool's list, its
+/// values pass and each odd value read alone.
+const READ_IMAGES: [(&str, &str); 2] = [
+    (
+        "ubuntu-24.04",
+        include_str!("recorded/read-ubuntu-24.04.json"),
+    ),
+    (
+        "ubuntu-26.04",
+        include_str!("recorded/read-ubuntu-26.04.json"),
+    ),
+];
+
+/// The odd values the recorder set as `skyzfs:v`, by the name of their
+/// dataset after `odd-`. `len8192` is too long: its set was refused.
+const ODD: [&str; 14] = [
+    "bslash", "cr", "dash", "empty", "forge", "len4095", "len4096", "len8191", "len8192", "nl",
+    "raw", "spaces", "tab", "utf8",
 ];
 
 /// The rig's pool and the mirror's.
@@ -874,5 +901,168 @@ fn the_count_as_recorded() {
         let mut zfs = rec.adapter(&["none-count"]);
         assert!(zfs.count(NONE).is_err(), "{}", rec.image);
         assert_eq!(ran(&mut zfs), rec.words(&["none-count"]));
+    }
+}
+
+/// The pairs pass that the values pass `values` goes with: each line's
+/// name and property, the lines that continue a value left out. `zfs
+/// get` prints both passes from one walk of the same properties; a value
+/// read alone (`alone`, by name and property) shows how many lines it
+/// has. A value not read alone is taken to have one line.
+fn pairs_of(values: &str, alone: &BTreeMap<(String, String), String>) -> String {
+    let mut pairs = String::new();
+    let mut lines = values.split_inclusive('\n');
+    while let Some(line) = lines.next() {
+        let mut columns = line.splitn(3, '\t');
+        let (Some(name), Some(property), Some(_)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            panic!("not a line of the values pass: {line:?}");
+        };
+        pairs.push_str(&format!("{name}\t{property}\n"));
+        let continued = alone
+            .get(&(name.to_string(), property.to_string()))
+            .map_or(0, |value| value.matches('\n').count().saturating_sub(1));
+        for _ in 0..continued {
+            lines.next();
+        }
+    }
+    pairs
+}
+
+/// The manifest's read on the recorded pools (T1 and B1 of #157's
+/// review): each odd value is what the value read alone gives, a value
+/// that holds a newline included (`nl`, `forge`, which forges a line of
+/// `child`); the longest value (T4: [`VALUE_MOST`] is 8191, and a longer
+/// one cannot be set) is read; the datasets a forged line puts in doubt
+/// are read again alone; and `filesystem_count` and
+/// `snapshot_count`, which the recording lists as local on every
+/// dataset under the limit once set on `child`, are left out, while
+/// `snapshot_limit` is kept. The values pass's words are the record's
+/// with its options in the adapter's order. Mutants: either counter
+/// kept, the limit dropped, the bound one more or one less.
+#[test]
+fn the_manifests_read_as_recorded() {
+    assert_eq!(VALUE_MOST, 8191);
+    for recording in parse(&READ_IMAGES) {
+        for (pool, prefix) in [(RIG, "rig"), (MIRROR, "mirror")] {
+            let image = recording.image;
+            let get = |what: &str| recording.get(&format!("{prefix}-odd-{what}"));
+            let (list, values) = (get("list"), get("get-local"));
+            assert!(
+                values.stdout.contains("\tsnapshot_count\t"),
+                "{image} {pool}"
+            );
+            assert!(
+                values.stdout.contains("\tfilesystem_count\t"),
+                "{image} {pool}"
+            );
+            let mut alone = BTreeMap::new();
+            for odd in ODD {
+                let record = get(&format!("value-{odd}"));
+                assert_eq!(record.rc, 0, "{image} {pool} {odd}");
+                alone.insert(
+                    (format!("{pool}/odd-{odd}"), "skyzfs:v".to_string()),
+                    record.stdout,
+                );
+            }
+            let pairs = pairs_of(&values.stdout, &alone);
+            let get_words = |columns: &str| {
+                format!("zfs get -r -H -p -s local -t filesystem,volume -o {columns} all {pool}")
+            };
+            let sorted = |words: &str| {
+                let mut words: Vec<String> = words.split(' ').map(String::from).collect();
+                words.sort();
+                words
+            };
+            assert_eq!(
+                sorted(&values.words()),
+                sorted(&get_words("name,property,value")),
+                "{image} {pool}"
+            );
+            let mut fake = Fake::default();
+            fake.ok(&list.words(), &list.stdout);
+            fake.ok(&get_words("name,property"), &pairs);
+            fake.ok(&get_words("name,property,value"), &values.stdout);
+            for ((name, property), value) in &alone {
+                fake.ok(&format!("zfs get -H -p -o value {property} {name}"), value);
+            }
+            // A value not recorded alone is one line of the values pass;
+            // read alone, it is that line's value.
+            for line in pairs.lines() {
+                let (name, property) = line.split_once('\t').unwrap_or((line, ""));
+                if alone.contains_key(&(name.to_string(), property.to_string())) {
+                    continue;
+                }
+                let value = values
+                    .stdout
+                    .lines()
+                    .find_map(|l| l.strip_prefix(&format!("{line}\t")))
+                    .unwrap_or_else(|| panic!("{image}: no value of {line}"));
+                fake.ok(
+                    &format!("zfs get -H -p -o value {property} {name}"),
+                    &format!("{value}\n"),
+                );
+            }
+            let mut zfs = ZfsCli::new(fake, Limits::default());
+            let datasets = zfs
+                .datasets(pool, "g")
+                .unwrap_or_else(|e| panic!("{image} {pool}: {e:?}"));
+            let alone_read: Vec<String> = ran(&mut zfs).into_iter().skip(3).collect();
+            for dataset in &datasets {
+                for counter in ["filesystem_count", "snapshot_count"] {
+                    assert!(
+                        !dataset.local.contains_key(counter),
+                        "{image} {}: {counter}",
+                        dataset.name
+                    );
+                }
+            }
+            let local = |name: &str| {
+                &datasets
+                    .iter()
+                    .find(|d| d.name == name)
+                    .unwrap_or_else(|| panic!("{image}: no {name}"))
+                    .local
+            };
+            assert!(
+                local(&format!("{pool}/child")).contains_key("snapshot_limit"),
+                "{image} {pool}"
+            );
+            assert!(
+                !local(&format!("{pool}/child")).contains_key("skyzfs:forged"),
+                "{image} {pool}"
+            );
+            for odd in ODD {
+                let name = format!("{pool}/odd-{odd}");
+                let value = local(&name).get("skyzfs:v");
+                if odd == "len8192" {
+                    assert_eq!(value, None, "{image} {name}");
+                    continue;
+                }
+                let recorded = &alone[&(name.clone(), "skyzfs:v".to_string())];
+                let want = recorded.strip_suffix('\n').unwrap_or(recorded).as_bytes();
+                assert_eq!(value.map(Vec::as_slice), Some(want), "{image} {name}");
+            }
+            assert_eq!(
+                local(&format!("{pool}/odd-len8191"))["skyzfs:v"].len(),
+                VALUE_MOST,
+                "{image} {pool}"
+            );
+            // The forged line names `child`, so `child`, `odd-forge` and
+            // `odd-nl` are read again alone, and no counter is.
+            for odd in ["forge", "nl"] {
+                let words = format!("zfs get -H -p -o value skyzfs:v {pool}/odd-{odd}");
+                assert!(alone_read.contains(&words), "{image}: {alone_read:?}");
+            }
+            let child = format!("zfs get -H -p -o value snapshot_limit {pool}/child");
+            assert!(alone_read.contains(&child), "{image}: {alone_read:?}");
+            for words in &alone_read {
+                assert!(
+                    !words.contains("_count "),
+                    "{image}: a counter read alone: {words}"
+                );
+            }
+        }
     }
 }
