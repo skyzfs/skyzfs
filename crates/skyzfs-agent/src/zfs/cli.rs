@@ -105,9 +105,13 @@
 //! - The members and tagged programs run and return what the parsers
 //!   read, on the rig's pool and on a mirror of two files.
 //! - The channel-program sandbox has no `pcall` (a take program of
-//!   `366b217`, since dropped, failed on it on both images). The members
-//!   program in full has not run on ZFS, nor has the count of the
-//!   datasets (`zfs list -r -H -o name -t filesystem,volume`).
+//!   `366b217`, since dropped, failed on it on both images).
+//! - The members program in full and the count of the datasets (`zfs
+//!   list -r -H -o name -t filesystem,volume`) read what the parsers
+//!   read, on both pools and both images (`recorded/full-<image>.json`):
+//!   a take, an `@t` none has, an `@p` only a child has, values that
+//!   are not ASCII in the locales `C` and `C.UTF-8`, and a pool that
+//!   does not exist.
 //! - A checkpoint is none where `zpool get -p` gives `-`; one that exists
 //!   gives its size.
 //! - A resilver under way says `resilver in progress` on its `scan:`
@@ -153,18 +157,28 @@
 //!   #147); one under way is busy too. `zpool status` never prints an
 //!   indirect vdev.
 //! - Property values that are not printable ASCII, in hex as above.
-//! - The time limits ([`Limits`]): a read 60 s plus 180 ms, a change
-//!   120 s plus 100 ms, for each of the pool's datasets as last counted,
-//!   at most 35 minutes; the count itself 60 s, and a count that fails
-//!   leaves the bases. A read's 180 ms puts its limit at 10 001
-//!   datasets (1860.2 s) above twice the full read measured there on
-//!   Ubuntu 26.04 (911.8 s, run 45720225770; the lead's ruling on N2 of
-//!   #153's review), and the cap above that. They are provisional (the
-//!   lead's rule on M2.6c-2b, from testing's figures in #152: at 10 001
-//!   file systems on a slow runner `zfs snapshot -r` took 391 s under a
-//!   heavy write load, and `tagged.lua` 68.7 s with none). Correctness
-//!   does not rest on them: a take killed at its limit is adopted at a
-//!   later round (above).
+//! - The time limits ([`Limits`]), all provisional (the lead's rules on
+//!   M2.6c-2b and on N2 of #153's review):
+//!   - the members program in full ([`Zfs::datasets`]): 60 s plus 200 ms
+//!     for each of the pool's datasets as last counted, at most 40
+//!     minutes;
+//!   - every other read: 60 s, and a change 120 s, plus 100 ms for each
+//!     dataset counted, at most 20 minutes;
+//!   - the count itself 60 s; a count that fails leaves the bases.
+//!
+//!   They come from testing's recordings on Ubuntu 26.04 (run
+//!   45720225770, one run) at 101, 1 001 and 10 001 datasets: the
+//!   members program in full 8.7, 88.2 and 911.8 s (about 90 ms a
+//!   dataset, linear), so its 200 ms is about twice that; plain 0.34,
+//!   2.2 and 21.5 s; the count 0.23, 1.7 and 16.4 s; `zfs snapshot -r`
+//!   2.2, 4.4 and 46.3 s. In #152, at 10 001 file systems on a slow
+//!   runner, `zfs snapshot -r` took 391 s under a heavy write load, and
+//!   `tagged.lua` 68.7 s with none. Correctness does not rest on them: a
+//!   take killed at its limit is adopted at a later round (above).
+//! - **What a publish costs.** A publish reads the pool in full twice
+//!   (before its take and after) and takes it once: about 20 s at 100
+//!   datasets and about 30 minutes at 10 000, from the figures above.
+//!   The design's scale is tens to hundreds of datasets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -195,11 +209,12 @@ pub const PROGRAM_INSTRUCTIONS: u64 = 100_000_000;
 /// `zfs_lua_max_memlimit`.
 pub const PROGRAM_MEMORY: u64 = 100 << 20;
 
-/// How long a command may run before it is killed. A read takes
-/// [`Limits::read_per_dataset`] more, and a change
-/// [`Limits::per_dataset`] more, for each of the pool's datasets as
-/// [`Zfs::count`] last read them, up to [`Limits::most`] (the lead's rule
-/// on M2.6c-2b; provisional).
+/// How long a command may run before it is killed. A read or a change
+/// takes [`Limits::per_dataset`] more for each of the pool's datasets as
+/// [`Zfs::count`] last read them, up to [`Limits::most`]; the members
+/// program in full takes [`Limits::full_per_dataset`] more, up to
+/// [`Limits::full_most`] (the lead's rules on M2.6c-2b and on N2 of
+/// #153's review; provisional; [module docs](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// A command that reads, on a pool of no datasets: `zpool status`,
@@ -209,18 +224,18 @@ pub struct Limits {
     /// written, on a pool of no datasets: `zfs snapshot -r`, `zfs
     /// destroy -r`, `zfs hold`, `zfs release`, `zfs set`, `zpool sync`.
     pub change: Duration,
-    /// What each of the pool's datasets adds to a change.
+    /// What each of the pool's datasets adds to a read or a change.
     pub per_dataset: Duration,
-    /// What each of the pool's datasets adds to a read: rounded up so
-    /// that a read's limit at 10 001 datasets (1860.2 s) is at least
-    /// twice the full read measured there (testing's run 45720225770 on
-    /// Ubuntu 26.04: `members.lua` in full 911.8 s; the lead's ruling on
-    /// N2 of #153's review).
-    pub read_per_dataset: Duration,
-    /// The most a read or a change is let run, however many datasets: at
-    /// least a read's limit at 10 001 datasets (1860.2 s), which the
-    /// first cap of 20 minutes was not.
+    /// The most a read or a change is let run, however many datasets.
     pub most: Duration,
+    /// What each of the pool's datasets adds to the members program in
+    /// full ([`Zfs::datasets`]), whose base is [`Limits::read`]: about
+    /// twice the 90 ms a dataset it took on Ubuntu 26.04 (911.8 s at
+    /// 10 001 datasets, testing's run 45720225770).
+    pub full_per_dataset: Duration,
+    /// The most the members program in full is let run, however many
+    /// datasets: above its limit at 10 001 datasets (2060.2 s).
+    pub full_most: Duration,
     /// The count of the datasets itself ([`Zfs::count`]), whatever their
     /// number.
     pub count: Duration,
@@ -232,8 +247,9 @@ impl Default for Limits {
             read: Duration::from_secs(60),
             change: Duration::from_secs(120),
             per_dataset: Duration::from_millis(100),
-            read_per_dataset: Duration::from_millis(180),
-            most: Duration::from_secs(35 * 60),
+            most: Duration::from_secs(20 * 60),
+            full_per_dataset: Duration::from_millis(200),
+            full_most: Duration::from_secs(40 * 60),
             count: Duration::from_secs(60),
         }
     }
@@ -271,29 +287,37 @@ impl<H: Host> ZfsCli<H> {
     }
 
     /// The limit of a command whose base is `base`, `per` more for each
-    /// dataset counted ([`Limits`]).
-    fn scaled(&self, base: Duration, per: Duration) -> Duration {
+    /// dataset counted, at most `most` ([`Limits`]).
+    fn scaled(&self, base: Duration, per: Duration, most: Duration) -> Duration {
         let limit = match self.scale {
             Scale::Base => base,
             Scale::Datasets(n) => {
                 let more = u32::try_from(n)
                     .ok()
                     .and_then(|n| per.checked_mul(n))
-                    .unwrap_or(self.limits.most);
+                    .unwrap_or(most);
                 base.saturating_add(more)
             }
         };
-        limit.min(self.limits.most)
+        limit.min(most)
     }
 
     /// The limit of a command that reads.
     fn read_limit(&self) -> Duration {
-        self.scaled(self.limits.read, self.limits.read_per_dataset)
+        let l = &self.limits;
+        self.scaled(l.read, l.per_dataset, l.most)
     }
 
     /// The limit of a command that changes the pool.
     fn change_limit(&self) -> Duration {
-        self.scaled(self.limits.change, self.limits.per_dataset)
+        let l = &self.limits;
+        self.scaled(l.change, l.per_dataset, l.most)
+    }
+
+    /// The limit of the members program in full ([`Zfs::datasets`]).
+    fn full_read_limit(&self) -> Duration {
+        let l = &self.limits;
+        self.scaled(l.read, l.full_per_dataset, l.full_most)
     }
 
     /// The host, for the tests.
@@ -352,8 +376,9 @@ impl<H: Host> ZfsCli<H> {
         text: &str,
         args: &[&str],
         read_only: bool,
+        limit: Duration,
     ) -> Result<serde_json::Map<String, Value>, ZfsError> {
-        let out = self.program_output(pool, text, args, read_only)?;
+        let out = self.program_output(pool, text, args, read_only, limit)?;
         readable(&out).map_err(|why| ZfsError::Other(format!("zfs program: {why}")))
     }
 
@@ -417,13 +442,15 @@ impl<H: Host> ZfsCli<H> {
         ))
     }
 
-    /// A channel program's standard output, where it exits 0.
+    /// A channel program's standard output, where it exits 0 within
+    /// `limit`.
     fn program_output(
         &mut self,
         pool: &str,
         text: &str,
         args: &[&str],
         read_only: bool,
+        limit: Duration,
     ) -> Result<Vec<u8>, ZfsError> {
         let instructions = PROGRAM_INSTRUCTIONS.to_string();
         let memory = PROGRAM_MEMORY.to_string();
@@ -433,11 +460,6 @@ impl<H: Host> ZfsCli<H> {
         }
         all.extend(["-j", "-t", &instructions, "-m", &memory, pool, "-"]);
         all.extend(args);
-        let limit = if read_only {
-            self.read_limit()
-        } else {
-            self.change_limit()
-        };
         let output = self.exec("zfs", &all, text.as_bytes(), limit)?;
         if output.code == Some(0) {
             Ok(output.stdout)
@@ -609,6 +631,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
             MEMBERS_PROGRAM,
             &[pool, t, "full", ASSIST_PROPERTY],
             true,
+            self.full_read_limit(),
         )?;
         parse_datasets(&returned)
             .map_err(|why| ZfsError::Other(format!("zfs program (members, full): {why}")))
@@ -619,7 +642,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError> {
-        let returned = self.program(pool, MEMBERS_PROGRAM, &[pool, t], true)?;
+        let returned = self.program(pool, MEMBERS_PROGRAM, &[pool, t], true, self.read_limit())?;
         parse_members(&returned, pool)
             .map_err(|why| ZfsError::Other(format!("zfs program (members): {why}")))
     }
@@ -723,7 +746,7 @@ impl<H: Host> Zfs for ZfsCli<H> {
     }
 
     fn tagged(&mut self, pool: &str, tag: &str) -> Result<BTreeSet<String>, ZfsError> {
-        let returned = self.program(pool, TAGGED_PROGRAM, &[pool, tag], true)?;
+        let returned = self.program(pool, TAGGED_PROGRAM, &[pool, tag], true, self.read_limit())?;
         match returned.get("tagged") {
             Some(Value::Object(names)) => Ok(names.keys().cloned().collect()),
             // An empty table: ZFS may write it as an empty list.

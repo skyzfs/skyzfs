@@ -1118,53 +1118,80 @@ fn listed(n: usize) -> String {
     (0..n).map(|i| format!("tank/fs{i}\n")).collect()
 }
 
-/// The lead's rule on M2.6c-2b: the count is `zfs list -r` of the file
-/// systems and volumes, within its own fixed limit; a change then takes
-/// 100 ms more and a read 180 ms more for each dataset counted, at most
-/// 35 minutes; a count that fails sets the bases (the lead's ruling on
-/// N2 of #153's review), as before any count. A read's limit at 10 001
-/// datasets is at least twice the full read measured there on Ubuntu
-/// 26.04 (911.8 s, run 45720225770). Mutants: the limits not scaled,
-/// scaled but not capped, a read scaled as a change, a failed count
-/// keeping the last or setting the longest, the count's own limit
-/// scaled.
+/// The lead's rules on M2.6c-2b and on N2 of #153's review: the count
+/// is `zfs list -r` of the file systems and volumes, within its own
+/// fixed limit; a read or a change then takes 100 ms more for each
+/// dataset counted, at most 20 minutes, and the members program in full
+/// 200 ms more on the read's base, at most 40 minutes; a count that
+/// fails sets the bases, as before any count. The full read's limit at
+/// 10 001 datasets is at least twice what it took there on Ubuntu 26.04
+/// (911.8 s, run 45720225770). Mutants: the limits not scaled, scaled
+/// but not capped, the full read scaled or capped as a read, a read
+/// scaled as the full read, a failed count keeping the last or setting
+/// the longest, the count's own limit scaled.
 #[test]
 fn the_limits_grow_with_the_datasets_counted() {
     let base = Limits::default();
     let s = Duration::from_secs;
+    let ms = Duration::from_millis;
     assert_eq!(
         (base.read, base.change, base.count, base.most),
-        (s(60), s(120), s(60), s(35 * 60))
+        (s(60), s(120), s(60), s(20 * 60))
+    );
+    assert_eq!(
+        (base.per_dataset, base.full_per_dataset, base.full_most),
+        (ms(100), ms(200), s(40 * 60))
     );
     let at = |n: u64, base: Duration, per_ms: u64| base + Duration::from_millis(per_ms * n);
     let mut fake = Fake::default();
     fake.ok(TAKE, "");
     fake.ok(HOLDS_R, "");
+    fake.ok(DATASETS_WORDS, DATASETS);
     let mut zfs = cli(fake);
     let limits = |zfs: &mut ZfsCli<Fake>| {
         zfs.host().ran.clear();
         let _ = zfs.snapshot("tank", "skz-1");
         let _ = zfs.held("tank", "skz-1", "skyzfs-publish", Some(&[]));
+        let _ = zfs.datasets("tank", "skz-1");
         let ran = &zfs.host().ran;
         assert_eq!(ran[0].words, TAKE);
         assert_eq!(ran[1].words, HOLDS_R);
-        (ran[0].limit, ran[1].limit)
+        assert_eq!(ran[2].words, DATASETS_WORDS);
+        (ran[0].limit, ran[1].limit, ran[2].limit)
     };
-    assert_eq!(limits(&mut zfs), (base.change, base.read), "no count yet");
+    assert_eq!(
+        limits(&mut zfs),
+        (base.change, base.read, base.read),
+        "no count yet"
+    );
     let full_read_10001 = Duration::from_millis(911_828);
-    assert!(at(10_001, base.read, 180) >= full_read_10001 * 2);
-    for (n, change, read) in [
-        (3, at(3, base.change, 100), at(3, base.read, 180)),
-        (5000, at(5000, base.change, 100), at(5000, base.read, 180)),
+    assert!(at(10_001, base.read, 200) >= full_read_10001 * 2);
+    for (n, change, read, full) in [
         (
-            10_001,
-            at(10_001, base.change, 100),
-            at(10_001, base.read, 180),
+            3,
+            at(3, base.change, 100),
+            at(3, base.read, 100),
+            at(3, base.read, 200),
         ),
-        // 60 s + 2040.12 s is past 35 minutes: the cap, reached by a read.
-        (11_334, at(11_334, base.change, 100), base.most),
-        (20_000, base.most, base.most),
-        (0, base.change, base.read),
+        (
+            5000,
+            at(5000, base.change, 100),
+            at(5000, base.read, 100),
+            at(5000, base.read, 200),
+        ),
+        // 120 s + 1080 s is 20 minutes: the change reaches the cap.
+        (
+            10_800,
+            base.most,
+            at(10_800, base.read, 100),
+            at(10_800, base.read, 200),
+        ),
+        // 60 s + 1140 s is 20 minutes: the read reaches it.
+        (11_400, base.most, base.most, at(11_400, base.read, 200)),
+        // 60 s + 2340 s is 40 minutes: the full read reaches its own.
+        (11_700, base.most, base.most, base.full_most),
+        (20_000, base.most, base.most, base.full_most),
+        (0, base.change, base.read, base.read),
     ] {
         zfs.host().commands.remove(COUNT);
         zfs.host().ok(COUNT, &listed(n as usize));
@@ -1172,7 +1199,7 @@ fn the_limits_grow_with_the_datasets_counted() {
         assert_eq!(zfs.count("tank"), Ok(n));
         assert_eq!(zfs.host().words(), [COUNT]);
         assert_eq!(zfs.host().ran[0].limit, base.count, "{n}");
-        assert_eq!(limits(&mut zfs), (change, read), "{n}");
+        assert_eq!(limits(&mut zfs), (change, read, full), "{n}");
     }
     zfs.host().commands.remove(COUNT);
     zfs.host().ok(COUNT, &listed(7));
@@ -1184,13 +1211,21 @@ fn the_limits_grow_with_the_datasets_counted() {
         "cannot open 'tank': pool I/O is currently suspended\n",
     );
     assert!(zfs.count("tank").is_err());
-    assert_eq!(limits(&mut zfs), (base.change, base.read), "a count failed");
+    assert_eq!(
+        limits(&mut zfs),
+        (base.change, base.read, base.read),
+        "a count failed"
+    );
     zfs.host().commands.remove(COUNT);
     zfs.host().ok(COUNT, &listed(2));
     assert_eq!(zfs.count("tank"), Ok(2));
     assert_eq!(
         limits(&mut zfs),
-        (at(2, base.change, 100), at(2, base.read, 180)),
+        (
+            at(2, base.change, 100),
+            at(2, base.read, 100),
+            at(2, base.read, 200)
+        ),
         "counted again"
     );
 }
